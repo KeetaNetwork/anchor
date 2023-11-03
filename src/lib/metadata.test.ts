@@ -2,11 +2,11 @@ import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
 import Account from '@keetapay/keetanet-client/lib/account';
-import { ASN1toJS } from '@keetapay/keetanet-client/lib/utils/asn1';
+import { ASN1toJS, JStoASN1, asn1 } from '@keetapay/keetanet-client/lib/utils/asn1';
 import { bufferToArrayBuffer } from '@keetapay/keetanet-client/lib/utils/helper';
 
-import { MetadataStore } from './metadata';
-import { ExpectErrorCode } from './error';
+import { EncryptedMetadataWithoutHeader, MetadataStore } from './metadata';
+import { ErrorCode, ExpectErrorCode } from './error';
 
 function generateRandomKeyedAccount() {
 	return(Account.fromSeed(Account.generateRandomSeed(), 0));
@@ -155,4 +155,135 @@ it('Should be able to decrypt + encrypt data, and have multiple accounts', async
 	await ExpectErrorCode('METADATA_ENCRYPTION_KEY_REQUIRED', async function() {
 		new MetadataStore(constructedFromBufferData.data);
 	});
+});
+
+it('ASN.1 Coverage Tests', async () => {
+	const accounts = [
+		generateRandomKeyedAccount(),
+		generateRandomKeyedAccount()
+	]
+
+	const testingData = crypto.randomBytes(32).toString('hex');
+	const builder = await MetadataStore.createFromPlainText(testingData, accounts);
+
+	expect(builder.data.keys.length).toEqual(accounts.length);
+	expect(builder.isEncrypted).toEqual(true);
+
+	const compiledAsBuffer = await builder.build(true);
+
+	const asn1Decoded = ASN1toJS(bufferToArrayBuffer(compiledAsBuffer)) as [ bigint, ...EncryptedMetadataWithoutHeader ];
+
+	if (!Array.isArray(asn1Decoded)) {
+		throw new Error('expected array here');
+	}
+
+	function expectInvalidASN1(input: Parameters<typeof JStoASN1>[0], code: ErrorCode = 'METADATA_INVALID_ASN1_SCHEMA') {
+		return(ExpectErrorCode(code, async function() {
+			await MetadataStore.fromData(JStoASN1(input).toBER(false));
+		}));
+	}
+
+	await expectInvalidASN1([
+		// Version other than zero
+		BigInt(1),
+		...asn1Decoded.slice(1)
+	], 'METADATA_INVALID_VERSION');
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// Invalid encrypted data (should be an array)
+		false
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// Invalid encrypted data (should have a length of 3)
+		[ [], Buffer.from('xyz'), Buffer.from('xyz'), [] ]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// Invalid encrypted data (should have a length of 3)
+		[ [], Buffer.from('xyz'), Buffer.from('xyz'), [] ]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// Keys are not an array
+		[ false, Buffer.from('xyz'), Buffer.from('xyz') ]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		[
+			[
+				// A single key is not an array
+				null
+			],
+			asn1Decoded[2].slice(1)
+		]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		[
+			[
+				// A single key is not an array with a length of 2
+				[ { type: 'bitstring', value: Buffer.from('') }, { type: 'bitstring', value: Buffer.from('') }, { type: 'bitstring', value: Buffer.from('') } ]
+			],
+			asn1Decoded[2].slice(1)
+		]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		[
+			[
+				// A single key does not contain two bitstrings
+				[ { type: 'bitstring', value: Buffer.from('') }, false ]
+			],
+			...asn1Decoded[2].slice(1)
+		]
+	]);
+
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// IV is not a buffer
+		[ [], false, Buffer.from('xyz') ]
+	]);
+
+	await expectInvalidASN1([
+		...asn1Decoded.slice(0, 2),
+		// Data is not a buffer
+		[ [], Buffer.from('xyz'), false ]
+	]);
+
+	await expectInvalidASN1(false);
+	await expectInvalidASN1(null);
+	await expectInvalidASN1([]);
+
+	await expectInvalidASN1([
+		BigInt(0),
+		false,
+		[ Buffer.from('xyz'), true ]
+	]);
+
+	await expectInvalidASN1([
+		BigInt(0),
+		false,
+		[]
+	]);
+
+	await expectInvalidASN1([
+		BigInt(0),
+		false,
+		[ true ]
+	]);
+
+	await expectInvalidASN1([
+		BigInt(0),
+		false,
+		null
+	]);
 });

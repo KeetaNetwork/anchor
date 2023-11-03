@@ -61,23 +61,24 @@ type EncryptedMetadataASN1Schema = [
 	Buffer
 ];
 
-type NetworkMetadataASN1Schema = [
+export type EncryptedMetadataWithoutHeader = [
+	// Boolean indicating that the data is not encrypted
+	true,
+	// The compressed un-encrypted data
+	EncryptedMetadataASN1Schema
+]
+
+export type PlaintextMetadataWithoutHeader = [
+	// Boolean indicating that the data is not encrypted
+	false,
+	// The compressed un-encrypted data
+	PlaintextMetadataASN1Schema
+]
+
+export type NetworkMetadataASN1Schema = [
 	// The version of the metadata schema
 	bigint,
-	...(
-		[
-			// Boolean indicating that the data is not encrypted
-			false,
-			// The compressed un-encrypted data
-			PlaintextMetadataASN1Schema
-		] |
-		[
-			// Boolean indicating that the data is encrypted
-			true,
-			// The encrypted data and information about its encryption
-			EncryptedMetadataASN1Schema
-		]
-	)
+	...(EncryptedMetadataWithoutHeader | PlaintextMetadataWithoutHeader )
 ];
 
 type PlaintextMetadataASN1Schema = [Buffer];
@@ -100,14 +101,10 @@ function isValidKeyStoreASN1Schema(input: unknown): input is KeyStoreASN1Schema 
 		return(false);
 	}
 
-	// Public key
-	if (typeof input[0] !== 'object' || input[0].type !== 'bitstring') {
-		return(false);
-	}
-
-	// Symmetric key
-	if (typeof input[1] !== 'object' || input[1].type !== 'bitstring') {
-		return(false);
+	for (const value of input) {
+		if (typeof value !== 'object' || value.type !== 'bitstring') {
+			return(false);
+		}
 	}
 
 	return(true);
@@ -165,10 +162,6 @@ function isValidEncryptedMetadataASN1Schema(input: unknown): input is EncryptedM
 
 function isValidNetworkMetadataSchema(input: any): input is NetworkMetadataASN1Schema {
 	if (!input || !Array.isArray(input) || input[0] === undefined) {
-		return(false);
-	}
-
-	if (input[0] !== BigInt(0)) {
 		return(false);
 	}
 
