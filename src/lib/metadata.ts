@@ -464,6 +464,10 @@ export class MetadataStore implements MetadataPackage {
 				encryptedKeys.push(MetadataStore.#buildKeyStore(publicKeyBuffer, encryptedKeyBuffer));
 			}
 
+			if (encryptedKeys.length === 0) {
+				throw new AnchorMetadataError('METADATA_KEYS_REQUIRED_WHEN_ENCRYPTED', 'At least one key is required when metadata is encrypted');
+			}
+
 			initializationVector = bufferToArrayBuffer(sequenceData[1]);
 
 			const decryptResponse = await MetadataStore.#decryptData(
