@@ -2,22 +2,6 @@ import type { MetadataErrorCode } from './metadata';
 
 export type ErrorCode = MetadataErrorCode;
 
-export async function ExpectErrorCode(code: ErrorCode, test: () => any) {
-	try {
-		await test();
-
-		throw new Error(`Expected function to throw ${code} but it did not`);
-	} catch (error) {
-		expect(error instanceof AnchorError).toBe(true);
-
-		if (error instanceof AnchorError) {
-			expect(error.code).toEqual(code);
-		} else {
-			expect(true).toEqual(false);
-		}
-	}
-}
-
 interface ValidationOptions {
 	type: string;
 	codes: string[] | Readonly<string[]>;
@@ -51,5 +35,22 @@ export default class AnchorError extends Error {
 
 		this.code = code;
 		this.type = type;
+	}
+}
+
+
+export async function ExpectErrorCode(code: ErrorCode, test: () => any) {
+	try {
+		await test();
+
+		throw new Error(`Expected function to throw ${code} but it did not`);
+	} catch (error) {
+		expect(error instanceof AnchorError).toBe(true);
+
+		if (error instanceof AnchorError) {
+			expect(error.code).toEqual(code);
+		} else {
+			expect(true).toEqual(false);
+		}
 	}
 }

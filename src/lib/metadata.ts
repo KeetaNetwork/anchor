@@ -391,7 +391,7 @@ export class MetadataStore implements MetadataPackage {
 				[
 					// The sequence of keys and encrypted encryption keys
 					this.#getEncryptionKeysSequence(),
-					
+
 					// The IV
 					iv,
 
@@ -406,7 +406,7 @@ export class MetadataStore implements MetadataPackage {
 				false,
 				// The raw decrypted data
 				[ compressedData ]
-			];			
+			];
 		}
 
 		return(JStoASN1(finalSequence).toBER(false));
