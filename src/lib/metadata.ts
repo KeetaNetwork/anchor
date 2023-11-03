@@ -327,10 +327,10 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The Keystore object
 	 */
-	static #buildKeyStore(publicKey: ArrayBuffer, encryptedKey: ArrayBuffer): KeyStore {
+	static #buildKeyStore(publicKey: Buffer, encryptedKey: Buffer): KeyStore {
 		return({
-			publicKey: new BufferStorage(publicKey, publicKey.byteLength),
-			symmetricKey: new BufferStorage(encryptedKey, encryptedKey.byteLength)
+			publicKey: new BufferStorage(bufferToArrayBuffer(publicKey), publicKey.byteLength),
+			symmetricKey: new BufferStorage(bufferToArrayBuffer(encryptedKey), encryptedKey.byteLength)
 		});
 	}
 
@@ -339,11 +339,9 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The encrypted key array
 	 */
-	#getEncryptionKeysSequence(): [ASN1BitString, ASN1BitString][] {
-		const encryptionKeysSequence: [ASN1BitString, ASN1BitString][] = [];
-
-		for (const key of this.data.keys) {
-			encryptionKeysSequence.push([
+	static #getEncryptionKeysSequence(keys: KeyStore[]): [ASN1BitString, ASN1BitString][] {
+		return(keys.map(function(key) {
+			return([
 				// Public Key
 				{
 					type: 'bitstring',
@@ -354,10 +352,8 @@ export class MetadataStore implements MetadataPackage {
 					type: 'bitstring',
 					value: key.symmetricKey.getBuffer()
 				}
-			]);
-		}
-
-		return(encryptionKeysSequence);
+			])
+		}));
 	}
 
 	#getIV() {
@@ -390,7 +386,7 @@ export class MetadataStore implements MetadataPackage {
 				true,
 				[
 					// The sequence of keys and encrypted encryption keys
-					this.#getEncryptionKeysSequence(),
+					MetadataStore.#getEncryptionKeysSequence(this.data.keys),
 
 					// The IV
 					iv,
@@ -457,11 +453,8 @@ export class MetadataStore implements MetadataPackage {
 
 			encryptedKeys = [];
 			for (const asn1key of sequenceData[0]) {
-				const [publicKey, encryptedKey] = asn1key;
-				const publicKeyBuffer = bufferToArrayBuffer(publicKey.value);
-				const encryptedKeyBuffer = bufferToArrayBuffer(encryptedKey.value);
-
-				encryptedKeys.push(MetadataStore.#buildKeyStore(publicKeyBuffer, encryptedKeyBuffer));
+				const [ publicKey, encryptedKey ] = asn1key;
+				encryptedKeys.push(MetadataStore.#buildKeyStore(publicKey.value, encryptedKey.value));
 			}
 
 			if (encryptedKeys.length === 0) {
@@ -517,8 +510,8 @@ export class MetadataStore implements MetadataPackage {
 			this.#_encryptionKey = MetadataStore.#generateEncryptionKey();
 		}
 
-		const publicKey = bufferToArrayBuffer(account.publicKey.getBuffer());
-		const encryptedKey = await account.encrypt(this.#_encryptionKey);
+		const publicKey = account.publicKey.getBuffer();
+		const encryptedKey = Buffer.from(await account.encrypt(this.#_encryptionKey));
 
 		this.data.keys.push(MetadataStore.#buildKeyStore(publicKey, encryptedKey));
 	}
