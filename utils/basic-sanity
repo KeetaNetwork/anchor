@@ -1,0 +1,19 @@
+#! /usr/bin/env bash
+
+dir="$1"
+if [ -z "${dir}" ]; then
+	echo 'Usage: basic-sanity <dir>' >&2
+	exit 1
+fi
+
+cd "${dir}" || exit 1
+
+
+nodeVersion="$(node --version)"
+nvmRcVersion="v$(cat .nvmrc)"
+if [ "${nvmRcVersion}" != "${nodeVersion}" ]; then
+	echo "error: Node version and package .nvmrc disagree: ${nodeVersion} vs. ${nvmRcVersion}" >&2
+	exit 1
+fi
+
+exit 0

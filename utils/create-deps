@@ -1,0 +1,74 @@
+#! /usr/bin/env bash
+
+srcDir="$1"
+if [ -z "${srcDir}" ]; then
+	echo 'Usage: create-deps <dir>' >&2
+	exit 1
+fi
+
+function fullPath() (
+	path="$1"
+	dir="$(dirname "${path}")"
+	path="$(basename "${path}")"
+
+	cd "${dir}" || exit 1
+	echo "$(pwd -P)/${path}"
+)
+
+function processFile() (
+	rootDir="$1"
+	filename="$2"
+
+	rootDir="$(fullPath "${rootDir}")"
+
+	relFilename="$(echo "${filename}" | sed "s|^${rootDir}/*||")"
+
+	dir="$(dirname "${filename}")"
+	filename="$(basename "${filename}")"
+
+	cd "${dir}" || exit 1
+	deps=($(
+		(
+			grep '^import .* from .*;' "${filename}"
+			grep '} from .*;' "${filename}" 
+		) | sed 's@^.* from @@' | sed 's@^['"'"'"]@@;s@;$@@;s@['"'"'"]$@@'
+	))
+
+	fileDeps=()
+	for dep in "${deps[@]}"; do
+		case "${dep}" in
+			*.ts)
+				;;
+			.|..|.*/*)
+				if [ -d "${dep}" ]; then
+					dep="${dep}/index.ts"
+				else
+					dep="${dep}.ts"
+				fi
+				;;
+			*)
+				continue
+				;;
+		esac
+
+		dep="$(fullPath "${dep}")" || exit 1
+		relDep="$(echo "${dep}" | sed "s|^${rootDir}/*||")"
+
+		fileDeps+=("${relDep}")
+	done
+
+	case "${filename}" in
+		generated-*.ts)
+			return
+			;;
+	esac
+
+	echo "${relFilename}: ${fileDeps[@]}"
+
+	exit 0
+)
+
+rootDir="$(pwd -P)"
+find "${srcDir}" -type f -name '*.ts' -print | while IFS='' read -r filename; do
+	processFile "${rootDir}" "${filename}" || exit 1
+done

@@ -1,0 +1,180 @@
+import { VoteStaple } from '@keetapay/keetanet-client/lib/vote';
+import { Account } from '@keetapay/keetanet-client/lib/account';
+import { Block } from '@keetapay/keetanet-client/lib/block';
+
+enum ActionType {
+    FX_REQUEST = 0,
+    RAIL_REQUEST = 1,
+}
+
+abstract class BaseAction<Type extends ActionType> {
+    type: Type;
+
+    constructor(type: Type) {
+        this.type = type;
+    }
+}
+
+class FXRequestAction extends BaseAction<ActionType.FX_REQUEST> {
+    constructor() {
+        super(ActionType.FX_REQUEST);
+    }
+}
+
+/**
+ * Metadata service
+ * Setting metadata
+ * Fetching metadata
+ * Encryption
+ * Standard encoding/decoding of data / multiple formats supported
+ */
+
+type MetadataSpec = any;
+
+class Metadata {
+    static async encrypt(data: any, encryptFor: any[]) {
+        // return Buffer.from('x');
+    }
+
+    static async decrypt() {
+
+    }
+}
+
+/**
+ * API Service
+ * Provide API for other parties to request
+ * Provide responses for off chain actions
+ * Provide library to make requests to other parties
+ * Use metadata package to encrypt/decrypt requests/responses
+ * Have standardized routes to handle payloads with specific metadata encoding
+ */
+class AnchorServer {
+    
+}
+
+
+
+class AnchorAPI {
+    #request<Action extends string>(toPublicKey: string, action: Action, payload?: MetadataContents<Action>) {
+        // Get metadata for "toPublicKey"
+        // Ensure metadata has endpoint URLs defined
+        
+        // encode payload for specific action with destination public key
+        //  -- If necessary for action type -- Encrypt
+
+        // Send to the received URL with a standardized way to perform actions
+
+        // POST /action/:action
+        // Body: Payload
+        
+        // Note: Payload should include a signature with the senders address 
+    }
+
+    
+}
+
+// Performer of the request
+// 1. Performer sends Service Provider request with destination banking information
+// 2. Service provider responds with what data to include in block 
+// 3. Performer sends block with specified information
+
+/**
+ * Network listener
+ * Listen for any incoming payments
+ * Be able to compute which other providers owe recipient money
+ * Be able to send back/"revert" transactions at a basic level
+ * Have callbacks to allow post-processing of transactions (at each stage) to the anchor
+ */
+
+interface Action {
+    type: any;
+    data: any;
+}
+
+interface EventMetadata {
+    voteStaple: VoteStaple;
+    listeningAddress: Account;
+    actionBlockHash: string;
+    actionOperationIndex: number;
+}
+
+interface ActionResponse {
+    handled: boolean;
+    shouldRevert?: boolean;
+}
+
+type EventCallBack = (action: Action, metadata: EventMetadata) => Promise<ActionResponse>;
+
+class NetworkListener {
+    #listeningTo: Account[];
+    #callback: EventCallBack;
+
+    constructor(listenTo: Account[], callback: EventCallBack) {
+        this.#listeningTo = listenTo;
+        this.#callback = callback;
+
+        const p2p = new P2PSwitch();
+
+        p2p.on('add', this.#handleStaple);
+    }
+
+    async #emit(action: Action, metadata: EventMetadata) {
+        try {
+            const response = await this.#callback(action, metadata);
+
+            if (response.shouldRevert) {
+                await revertBlocks(metadata.voteStaple);
+            }
+        } catch (err) {
+            let reason = err.message;
+            await revertBlocks(metadata.voteStaple, reason);
+        }
+    }
+
+    #handleStaple(staple: VoteStaple) {
+        for (const block of staple.blocks) {
+            for (let operationIndex = 0; operationIndex < block.operations.length; operationIndex++) {
+                const operation = block.operations[operationIndex];
+
+                switch (operation.type) {
+                    case Block.OperationType.SEND:
+                    case Block.OperationType.CREATE_IDENTIFIER:
+                    case Block.OperationType.MODIFY_PERMISSIONS:
+                    case Block.OperationType.RECEIVE:
+                        break;
+                    case Block.OperationType.SET_REP:
+                    case Block.OperationType.SET_INFO:
+                    case Block.OperationType.TOKEN_ADMIN_MODIFY_BALANCE:
+                    case Block.OperationType.TOKEN_ADMIN_SUPPLY:
+                        continue;
+                }
+            }
+        }
+    }
+}
+
+const listener = new NetworkListener([], async (event, metadata) => {
+    if (false) {
+        throw new Error();
+    }
+
+    return({ shouldRevert: false });
+});
+
+
+
+////////////////////////////////////////////////////
+
+// User sends acct + routing to provider over API
+// provider (stores this data somehow) and responds with a unique identifier representing this data
+// User sends block to the provider
+// {
+//    type: SEND
+//    amount: 5
+//    external: ${Response from provider}
+// }
+// Provider is listening to the network for sends to itself,
+// Once this send is received it will look at the amount + the external
+// It can revert if for any reason it cannot be completed
+// Otherwise it will complete the necessary off-chain movement of money

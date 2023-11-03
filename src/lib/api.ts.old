@@ -1,0 +1,138 @@
+import { VoteStaple } from '@keetapay/keetanet-client/lib/vote';
+import { Account } from '@keetapay/keetanet-client/lib/account';
+import { Block } from '@keetapay/keetanet-client/lib/block';
+
+class NetworkData<DataType> {
+    #data: DataType;
+    #recipients: Account[] | null;
+
+    get recipients() {
+        return(this.#recipients);
+    }
+
+    get data() {
+        return(this.#data);
+    }
+
+    constructor(data: DataType, recipients: Account[] | null) {
+        this.#data = data;
+        this.#recipients = recipients;
+    }
+
+    addRecipient() {
+
+    }
+
+    async compile() {
+        return('');
+    }
+
+    static async fromEncrypted(input: any): Promise<NetworkData<any>> {
+        return new this('', null);
+    }
+}
+
+type ActionType = any;
+
+class NetworkListener {
+    // Have this here to get network configuration + listeningTo
+    #manager: AnchorManager;
+
+    constructor(manager: AnchorManager) {
+        this.#manager = manager;
+
+        const p2p = new P2PSwitch();
+
+        p2p.on('add', this.#handleStaple);
+    }
+
+    #handleStaple(staple: VoteStaple) {
+        for (const block of staple.blocks) {
+            for (let operationIndex = 0; operationIndex < block.operations.length; operationIndex++) {
+                const operation = block.operations[operationIndex];
+
+                switch (operation.type) {
+                    case Block.OperationType.SEND:
+                    case Block.OperationType.CREATE_IDENTIFIER:
+                    case Block.OperationType.MODIFY_PERMISSIONS:
+                    case Block.OperationType.RECEIVE:
+                        this.#manager.receiveAction('action!!!');
+                        break;
+                    case Block.OperationType.SET_REP:
+                    case Block.OperationType.SET_INFO:
+                    case Block.OperationType.TOKEN_ADMIN_MODIFY_BALANCE:
+                    case Block.OperationType.TOKEN_ADMIN_SUPPLY:
+                        continue;
+                }
+            }
+        }
+    }
+}
+
+class AnchorAPIServer {
+    #manager: AnchorManager;
+
+    constructor(manager: AnchorManager) {
+        this.#manager = manager;
+    }
+
+    async start(port: number): Promise<void> {
+        const actions = ['pay', 'x', 'y', 'z'];
+        const router = 'a' as any;
+        for (const action of actions) {
+            router.post(`/actions/${action}`, async (data) => {
+                this.#manager.receiveAction({ action, data });
+            });
+        }
+    }
+}
+
+type HandleActionFunction = (action: ActionType) => Promise<{ shouldRevert: boolean }>;
+
+interface AnchorManagerConfig {
+    listeningTo?: Account[];
+    handleAction?: HandleActionFunction;
+}
+
+class AnchorManager {
+    readonly config: AnchorManagerConfig;
+
+    constructor(config: AnchorManagerConfig = {}) {
+        this.config = config;
+    }
+
+    async #handleAction(action: ActionType): ReturnType<HandleActionFunction> {
+        return({ shouldRevert: true });
+    }
+
+    async receiveAction(action: ActionType) {
+        let gotError;
+        let actionHandleResponse: Awaited<ReturnType<HandleActionFunction>>;
+        try {
+            if (this.config.handleAction !== undefined) {
+                actionHandleResponse = await this.config.handleAction(action);
+            } else {
+                actionHandleResponse = await this.#handleAction(action);
+            }
+        } catch (error) {
+            actionHandleResponse = { shouldRevert: true };
+            gotError = error;
+        }
+
+        if (actionHandleResponse.shouldRevert) {
+            // revertBlocks(action.voteStaple);
+        }
+
+        if (gotError) {
+            throw gotError;
+        }
+    }
+}
+
+(() => {
+    const manager = new AnchorManager();
+
+    new NetworkListener(manager);
+    new AnchorAPIServer(manager).start(3000);
+
+})
