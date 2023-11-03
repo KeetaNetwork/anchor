@@ -444,7 +444,7 @@ export class MetadataStore implements MetadataPackage {
 		let encryptedKeys: KeyStore[];
 		let bufferData;
 		let decryptedKey: ArrayBuffer | undefined;
-		if (isEncrypted) {
+		if (sequence[1] === true) {
 			if (principals === undefined || principals.length < 1) {
 				throw new AnchorMetadataError('METADATA_PRINCIPAL_REQUIRED_TO_DECRYPT', 'Principal is required to decrypt the metadata');
 			}
@@ -465,12 +465,16 @@ export class MetadataStore implements MetadataPackage {
 			}
 
 			initializationVector = bufferToArrayBuffer(sequenceData[1]);
-			({ data: bufferData, decryptedKey } = await MetadataStore.#decryptData(
+
+			const decryptResponse = await MetadataStore.#decryptData(
 				principals,
 				encryptedData,
 				initializationVector,
 				encryptedKeys
-			));
+			);
+
+			bufferData = decryptResponse.data;
+			decryptedKey = decryptResponse.decryptedKey;
 		} else {
 			if (!isValidPlaintextMetadataASN1Schema(sequenceData)) {
 				throw new AnchorMetadataError('METADATA_INVALID_ASN1_SCHEMA', 'Invalid plaintext metadata sequence');
