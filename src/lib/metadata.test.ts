@@ -6,6 +6,7 @@ import { ASN1toJS } from '@keetapay/keetanet-client/lib/utils/asn1';
 import { bufferToArrayBuffer } from '@keetapay/keetanet-client/lib/utils/helper';
 
 import { MetadataStore } from './metadata';
+import { ExpectErrorCode } from './error';
 
 function generateRandomKeyedAccount() {
 	return(Account.fromSeed(Account.generateRandomSeed(), 0));
@@ -112,21 +113,46 @@ it('Should be able to decrypt + encrypt data, and have multiple accounts', async
 
 	const encryptedForAccountOne = generateRandomKeyedAccount();
 
+	await ExpectErrorCode('METADATA_CANNOT_REVOKE_ACCESS_NOT_ENCRYPTED', async function() {
+		await builder.revokeAccess(encryptedForAccountOne);
+	});
+
 	expect(builder.checkAccountHasAccess(encryptedForAccountOne)).toEqual(false);
 	await builder.grantAccess(encryptedForAccountOne);
 	expect(builder.checkAccountHasAccess(encryptedForAccountOne)).toEqual(true);
+
+	await ExpectErrorCode('METADATA_ACCOUNT_MUST_SUPPORT_ENCRYPTION', async function() {
+		// @ts-expect-error
+		await builder.grantAccess(Account.generateNetworkAddress(BigInt(0)));
+	});
 
 	expect(builder.data.keys.length).toEqual(1);
 	expect(builder.isEncrypted).toEqual(true);
 	expect(builder.data.value).toEqual(testingData);
 
+	await ExpectErrorCode('METADATA_CANNOT_REVOKE_ACCESS_LAST_ACCOUNT', async function() {
+		await builder.revokeAccess(encryptedForAccountOne);
+	});
 
 	// Granting access twice will not do anything
 	await builder.grantAccess(encryptedForAccountOne);
 	expect(builder.data.keys.length).toEqual(1);
 
-	const compiled = await builder.build();
-	const constructedFromData = await MetadataStore.fromData(compiled, [ encryptedForAccountOne ]);
+	const compiledAsString: string = await builder.build();
+	expect(typeof compiledAsString).toEqual('string');
+	const compiledAsBuffer: Buffer = await builder.build(true);
+	expect(Buffer.isBuffer(compiledAsBuffer)).toEqual(true);
+	const constructedFromStringData = await MetadataStore.fromData(compiledAsString, [ encryptedForAccountOne ]);
+	const constructedFromBufferData = await MetadataStore.fromData(compiledAsBuffer, [ encryptedForAccountOne ]);
 
-	expect(constructedFromData.data.value).toEqual(builder.data.value);
+	expect(constructedFromStringData.data.value).toEqual(builder.data.value);
+	expect(constructedFromBufferData.data.value).toEqual(builder.data.value);
+
+	await ExpectErrorCode('METADATA_PRINCIPAL_REQUIRED_TO_DECRYPT', async function() {
+		await MetadataStore.fromData(compiledAsString);
+	});
+
+	await ExpectErrorCode('METADATA_ENCRYPTION_KEY_REQUIRED', async function() {
+		new MetadataStore(constructedFromBufferData.data);
+	});
 });

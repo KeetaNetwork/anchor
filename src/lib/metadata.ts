@@ -10,6 +10,7 @@ import {
 	isValidSequenceSchema,
 	JStoASN1
 } from '@keetapay/keetanet-client/lib/utils/asn1';
+import AnchorMetadataError from './error/metadata';
 
 
 /**
@@ -60,7 +61,24 @@ type EncryptedMetadataASN1Schema = [
 	Buffer
 ];
 
-type NetworkMetadataASN1Schema = [bigint, boolean, EncryptedMetadataASN1Schema | PlaintextMetadataASN1Schema];
+type NetworkMetadataASN1Schema = [
+	// The version of the metadata schema
+	bigint,
+	...(
+		[
+			// Boolean indicating that the data is not encrypted
+			false,
+			// The compressed un-encrypted data
+			PlaintextMetadataASN1Schema
+		] |
+		[
+			// Boolean indicating that the data is encrypted
+			true,
+			// The encrypted data and information about its encryption
+			EncryptedMetadataASN1Schema
+		]
+	)
+];
 
 type PlaintextMetadataASN1Schema = [Buffer];
 type KeyStoreASN1Schema = [Buffer, Buffer];
@@ -188,9 +206,9 @@ export class MetadataStore implements MetadataPackage {
 	get #encryptionKey() {
 		if (!this.#_encryptionKey) {
 			if (this.isEncrypted) {
-				throw new Error('Encryption key should not be set if data is not encrypted');
+				throw new AnchorMetadataError('METADATA_ENCRYPTION_KEY_INVALID_SET', 'Encryption key should not be set if data is not encrypted');
 			} else {
-				throw new Error('Data is not encrypted, cannot get encryption key');
+				throw new AnchorMetadataError('METADATA_ENCRYPTION_KEY_REQUIRED', 'Data is not encrypted, cannot get encryption key');
 			}
 		}
 
@@ -201,7 +219,7 @@ export class MetadataStore implements MetadataPackage {
 		this.#data = data;
 
 		if (this.#data.keys.length > 0 && !encryptionKey) {
-			throw new Error('Encryption key must be defined if constructing metadata store with encrypted data');
+			throw new AnchorMetadataError('METADATA_ENCRYPTION_KEY_REQUIRED', 'Encryption key must be defined if constructing metadata store with encrypted data');
 		}
 	}
 
@@ -237,7 +255,7 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The encryption key
 	 */
-	private static async decryptKey(
+	static async #decryptKey(
 		principals: Account[],
 		keys: KeyStore[]
 	): Promise<{ principal: Account, key: ArrayBuffer }> {
@@ -252,28 +270,14 @@ export class MetadataStore implements MetadataPackage {
 				const tryKey = keys[tryKeyIndex];
 
 				const symmetricKey = bufferToArrayBuffer(tryKey.symmetricKey.getBuffer());
-				try {
-					const key = await principal.decrypt(symmetricKey);
-					return({ principal, key });
-				} catch (e) {
-					throw new Error(`Unable to decrypt metadata encryption key: ${e}`);
-				}
+
+				const key = await principal.decrypt(symmetricKey);
+
+				return({ principal, key });
 			}
 		}
 
-		throw new Error('Unable to decrypt metadata encryption key');
-	}
-
-	/**
-	 * Gets the metadata value and zlib compresses it.
-	 *
-	 * @returns The deflated data
-	 */
-	private getCompressedData(): ArrayBuffer {
-		const bufferData = Buffer.from(this.data.value, 'utf-8');
-		const compressedData = zlib.deflateSync(bufferData);
-
-		return(bufferToArrayBuffer(compressedData));
+		throw new AnchorMetadataError('METADATA_COULD_NOT_FIND_PRINCIPAL_DECRYPTION_MATCH', 'Could not find principal able to decrypt metadata');
 	}
 
 	/**
@@ -281,25 +285,15 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The encrypted metadata and the initialization vector
 	 */
-	private encryptData(data: ArrayBuffer, key: ArrayBuffer): { data: ArrayBuffer; iv: ArrayBuffer } {
-		const initializationVector = crypto.randomBytes(16);
-		const cipher = crypto.createCipheriv(
-			MetadataStore.algorithm,
-			Buffer.from(key),
-			initializationVector
-		);
+	static #encryptDataWithKey(data: Buffer, key: Buffer, iv: Buffer): Buffer {
+		const cipher = crypto.createCipheriv(MetadataStore.algorithm, key, iv);
 
 		const encryptedData = Buffer.concat([
-			cipher.update(Buffer.from(data)),
+			cipher.update(data),
 			cipher.final()
 		]);
 
-		this.data.iv = bufferToArrayBuffer(initializationVector);
-
-		return({
-			data: bufferToArrayBuffer(encryptedData),
-			iv: this.data.iv
-		});
+		return(encryptedData);
 	}
 
 	/**
@@ -307,13 +301,13 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The decrypted metadata
 	 */
-	private static async decryptData(
+	static async #decryptData(
 		principals: Account[],
 		encryptedData: ArrayBuffer,
 		initializationVector: ArrayBuffer,
 		encryptedKeys: KeyStore[]
 	): Promise<{ data: ArrayBuffer, decryptedKey: ArrayBuffer }> {
-		const decryptedKey = await MetadataStore.decryptKey(principals, encryptedKeys);
+		const decryptedKey = await MetadataStore.#decryptKey(principals, encryptedKeys);
 		const initVector = Buffer.from(initializationVector);
 		const decipher = crypto.createDecipheriv(MetadataStore.algorithm, Buffer.from(decryptedKey.key), initVector);
 		const encryptedBufferData = Buffer.from(encryptedData);
@@ -333,7 +327,7 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The Keystore object
 	 */
-	private static buildKeyStore(publicKey: ArrayBuffer, encryptedKey: ArrayBuffer): KeyStore {
+	static #buildKeyStore(publicKey: ArrayBuffer, encryptedKey: ArrayBuffer): KeyStore {
 		return({
 			publicKey: new BufferStorage(publicKey, publicKey.byteLength),
 			symmetricKey: new BufferStorage(encryptedKey, encryptedKey.byteLength)
@@ -345,7 +339,7 @@ export class MetadataStore implements MetadataPackage {
 	 *
 	 * @returns The encrypted key array
 	 */
-	private getEncryptionKeysSequence(): [ASN1BitString, ASN1BitString][] {
+	#getEncryptionKeysSequence(): [ASN1BitString, ASN1BitString][] {
 		const encryptionKeysSequence: [ASN1BitString, ASN1BitString][] = [];
 
 		for (const key of this.data.keys) {
@@ -366,49 +360,56 @@ export class MetadataStore implements MetadataPackage {
 		return(encryptionKeysSequence);
 	}
 
+	#getIV() {
+		if (!this.data.iv) {
+			this.data.iv = bufferToArrayBuffer(crypto.randomBytes(16));
+		}
+
+		return(this.data.iv);
+	}
+
 	/**
 	 * Compiles the ASN.1 for the metadata object.
 	 *
 	 * @returns The ASN.1 BER data
 	 */
-	private async buildASN1(): Promise<ArrayBuffer> {
-		const compressedData = this.getCompressedData();
-		const sequence: Partial<NetworkMetadataASN1Schema> = [];
-		const dataSequence: Partial<EncryptedMetadataASN1Schema> = [];
+	async #buildASN1(): Promise<ArrayBuffer> {
+		const compressedData = zlib.deflateSync(Buffer.from(this.data.value, 'utf-8'));
 
-		sequence.push(this.version);
+		const headerSequence = [
+			this.version
+		] as const;
 
-		let finalData: ArrayBuffer;
+		let finalSequence: NetworkMetadataASN1Schema;
+		if (this.isEncrypted) {
+			const iv = Buffer.from(this.#getIV());
 
-		const isEncrypted = this.isEncrypted;
+			finalSequence = [
+				...headerSequence,
+				// Boolean indicating that the data is encrypted
+				true,
+				[
+					// The sequence of keys and encrypted encryption keys
+					this.#getEncryptionKeysSequence(),
+					
+					// The IV
+					iv,
 
-		sequence.push(isEncrypted);
-
-		if (isEncrypted) {
-			const encryptionKeysSequence = this.getEncryptionKeysSequence();
-			const { data, iv } = this.encryptData(compressedData, this.#encryptionKey);
-
-			dataSequence.push(encryptionKeysSequence);
-			dataSequence.push(Buffer.from(iv));
-
-			finalData = data;
+					// The encrypted data
+					MetadataStore.#encryptDataWithKey(compressedData, Buffer.from(this.#encryptionKey), iv)
+				]
+			];
 		} else {
-			finalData = compressedData;
+			finalSequence = [
+				...headerSequence,
+				// Boolean indicating that the data is decrypted
+				false,
+				// The raw decrypted data
+				[ compressedData ]
+			];			
 		}
 
-		dataSequence.push(Buffer.from(finalData));
-
-		if (!isValidEncryptedMetadataASN1Schema(dataSequence) && !isValidPlaintextMetadataASN1Schema(dataSequence)) {
-			throw new Error('internal error: Constructed invalid data schema');
-		}
-
-		sequence.push(dataSequence);
-
-		if (!isValidNetworkMetadataSchema(sequence)) {
-			throw new Error('internal error: Constructed invalid metadata sequence');
-		}
-
-		return(JStoASN1(sequence).toBER(false));
+		return(JStoASN1(finalSequence).toBER(false));
 	}
 
 	/**
@@ -419,7 +420,7 @@ export class MetadataStore implements MetadataPackage {
 	 */
 	static async fromData(
 		data: ArrayBuffer | string,
-		principals?: Account[]
+		principals: Account[] = []
 	): Promise<MetadataStore> {
 		if (typeof data === 'string') {
 			data = 	bufferToArrayBuffer(Buffer.from(data, 'base64'));
@@ -428,7 +429,12 @@ export class MetadataStore implements MetadataPackage {
 		const sequence = ASN1toJS(data);
 
 		if (!isValidNetworkMetadataSchema(sequence)) {
-			throw new Error('Invalid ASN.1 Sequence: Invalid schema');
+			throw new AnchorMetadataError('METADATA_INVALID_ASN1_SCHEMA', 'Invalid ASN.1 Sequence: Invalid schema');
+		}
+
+		const version = sequence[0];
+		if (version !== BigInt(0)) {
+			throw new AnchorMetadataError('METADATA_INVALID_VERSION', `Cannot parse version ${version}`);
 		}
 
 		const isEncrypted = sequence[1];
@@ -440,43 +446,37 @@ export class MetadataStore implements MetadataPackage {
 		let decryptedKey: ArrayBuffer | undefined;
 		if (isEncrypted) {
 			if (principals === undefined || principals.length < 1) {
-				throw new Error('Principal is required to decrypt the metadata');
+				throw new AnchorMetadataError('METADATA_PRINCIPAL_REQUIRED_TO_DECRYPT', 'Principal is required to decrypt the metadata');
 			}
 
-			/*
-			 * We can safely assert the type is EncryptedMetadataASN1Schema
-			 * because we narrowed it before -- TypeScript just can't
-			 * follow the flow in reverse to narrow it for us.
-			 */
-			// eslint-disable-next-line no-type-assertion/no-type-assertion
-			const schemaData = sequenceData as EncryptedMetadataASN1Schema;
-			const encryptedData = bufferToArrayBuffer(schemaData[2]);
+			if (!isValidEncryptedMetadataASN1Schema(sequenceData)) {
+				throw new AnchorMetadataError('METADATA_INVALID_ASN1_SCHEMA', 'Invalid encrypted metadata sequence');
+			}
+
+			const encryptedData = bufferToArrayBuffer(sequenceData[2]);
 
 			encryptedKeys = [];
-			for (const asn1key of schemaData[0]) {
+			for (const asn1key of sequenceData[0]) {
 				const [publicKey, encryptedKey] = asn1key;
 				const publicKeyBuffer = bufferToArrayBuffer(publicKey.value);
 				const encryptedKeyBuffer = bufferToArrayBuffer(encryptedKey.value);
 
-				encryptedKeys.push(MetadataStore.buildKeyStore(publicKeyBuffer, encryptedKeyBuffer));
+				encryptedKeys.push(MetadataStore.#buildKeyStore(publicKeyBuffer, encryptedKeyBuffer));
 			}
 
-			initializationVector = bufferToArrayBuffer(schemaData[1]);
-			({ data: bufferData, decryptedKey } = await MetadataStore.decryptData(
+			initializationVector = bufferToArrayBuffer(sequenceData[1]);
+			({ data: bufferData, decryptedKey } = await MetadataStore.#decryptData(
 				principals,
 				encryptedData,
 				initializationVector,
 				encryptedKeys
 			));
 		} else {
-			/*
-			 * We can safely assert the type is PlaintextMetadataASN1Schema
-			 * because we narrowed it before -- TypeScript just can't
-			 * follow the flow in reverse to narrow it for us.
-			 */
-			// eslint-disable-next-line no-type-assertion/no-type-assertion
-			const schemaData = sequenceData as PlaintextMetadataASN1Schema;
-			bufferData = bufferToArrayBuffer(schemaData[0]);
+			if (!isValidPlaintextMetadataASN1Schema(sequenceData)) {
+				throw new AnchorMetadataError('METADATA_INVALID_ASN1_SCHEMA', 'Invalid plaintext metadata sequence');
+			}
+
+			bufferData = bufferToArrayBuffer(sequenceData[0]);
 			encryptedKeys = [];
 		}
 
@@ -495,7 +495,7 @@ export class MetadataStore implements MetadataPackage {
 	 */
 	async grantAccess(account: Account) {
 		if (!account.supportsEncryption) {
-			throw new Error('The account does not support encryption');
+			throw new AnchorMetadataError('METADATA_ACCOUNT_MUST_SUPPORT_ENCRYPTION', 'The account does not support encryption');
 		}
 
 		if (this.data.keys.length > 0) {
@@ -512,7 +512,7 @@ export class MetadataStore implements MetadataPackage {
 		const publicKey = bufferToArrayBuffer(account.publicKey.getBuffer());
 		const encryptedKey = await account.encrypt(this.#_encryptionKey);
 
-		this.data.keys.push(MetadataStore.buildKeyStore(publicKey, encryptedKey));
+		this.data.keys.push(MetadataStore.#buildKeyStore(publicKey, encryptedKey));
 	}
 
 	checkAccountHasAccess(account: Account) {
@@ -528,15 +528,15 @@ export class MetadataStore implements MetadataPackage {
 	/**
 	 * Revokes the key to the metadata for the specified account.
 	 */
-	async revokeAccess(account: GenericAccount): Promise<void> {
-		if (this.data.keys.length === 0) {
-			return;
+	async revokeAccess(account: GenericAccount) {
+		if (!this.isEncrypted) {
+			throw new AnchorMetadataError('METADATA_CANNOT_REVOKE_ACCESS_NOT_ENCRYPTED', 'Cannot revoke access when data is not encrypted');
 		}
 
 		const foundMatches = findIndexesOfKeyInKeyStores(this.data.keys, account);
 
 		if (this.data.keys.length - foundMatches.length <= 0) {
-			throw new Error('Cannot revoke access to last account');
+			throw new AnchorMetadataError('METADATA_CANNOT_REVOKE_ACCESS_LAST_ACCOUNT', 'Cannot revoke access to last account');
 		}
 
 		let removedCount = 0;
@@ -555,7 +555,7 @@ export class MetadataStore implements MetadataPackage {
 	async build(asBuffer: true): Promise<Buffer>;
 	async build(asBuffer?: false): Promise<string>;
 	async build(asBuffer?: boolean) {
-		const sequence = await this.buildASN1();
+		const sequence = await this.#buildASN1();
 
 		const buf = Buffer.from(sequence);
 
