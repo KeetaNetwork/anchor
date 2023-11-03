@@ -444,7 +444,7 @@ export class MetadataStore implements MetadataPackage {
 		let encryptedKeys: KeyStore[];
 		let bufferData;
 		let decryptedKey: ArrayBuffer | undefined;
-		if (sequence[1] === true) {
+		if (isEncrypted) {
 			if (principals === undefined || principals.length < 1) {
 				throw new AnchorMetadataError('METADATA_PRINCIPAL_REQUIRED_TO_DECRYPT', 'Principal is required to decrypt the metadata');
 			}
