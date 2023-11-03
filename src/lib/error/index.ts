@@ -16,11 +16,6 @@ export async function ExpectErrorCode(code: ErrorCode, test: () => any) {
 			expect(true).toEqual(false);
 		}
 	}
-	// await expect(test).rejects.toThrow(
-	// 	expect.objectContaining({
-	// 		code: code
-	// 	})
-	// );
 }
 
 interface ValidationOptions {
