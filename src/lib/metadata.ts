@@ -66,19 +66,19 @@ export type EncryptedMetadataWithoutHeader = [
 	true,
 	// The compressed un-encrypted data
 	EncryptedMetadataASN1Schema
-]
+];
 
 export type PlaintextMetadataWithoutHeader = [
 	// Boolean indicating that the data is not encrypted
 	false,
 	// The compressed un-encrypted data
 	PlaintextMetadataASN1Schema
-]
+];
 
 export type NetworkMetadataASN1Schema = [
 	// The version of the metadata schema
 	bigint,
-	...(EncryptedMetadataWithoutHeader | PlaintextMetadataWithoutHeader )
+	...(EncryptedMetadataWithoutHeader | PlaintextMetadataWithoutHeader)
 ];
 
 type PlaintextMetadataASN1Schema = [Buffer];

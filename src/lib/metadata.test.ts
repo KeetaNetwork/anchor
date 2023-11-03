@@ -2,11 +2,13 @@ import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
 import Account from '@keetapay/keetanet-client/lib/account';
-import { ASN1toJS, JStoASN1, asn1 } from '@keetapay/keetanet-client/lib/utils/asn1';
+import { ASN1toJS, JStoASN1 } from '@keetapay/keetanet-client/lib/utils/asn1';
 import { bufferToArrayBuffer } from '@keetapay/keetanet-client/lib/utils/helper';
 
-import { EncryptedMetadataWithoutHeader, MetadataStore } from './metadata';
-import { ErrorCode, ExpectErrorCode } from './error';
+import type { EncryptedMetadataWithoutHeader } from './metadata';
+import { MetadataStore } from './metadata';
+import type { ErrorCode } from './error';
+import { ExpectErrorCode } from './error';
 
 function generateRandomKeyedAccount() {
 	return(Account.fromSeed(Account.generateRandomSeed(), 0));
@@ -161,7 +163,7 @@ it('ASN.1 Coverage Tests', async () => {
 	const accounts = [
 		generateRandomKeyedAccount(),
 		generateRandomKeyedAccount()
-	]
+	];
 
 	const testingData = crypto.randomBytes(32).toString('hex');
 	const builder = await MetadataStore.createFromPlainText(testingData, accounts);
@@ -171,6 +173,7 @@ it('ASN.1 Coverage Tests', async () => {
 
 	const compiledAsBuffer = await builder.build(true);
 
+	// eslint-disable-next-line no-type-assertion/no-type-assertion
 	const asn1Decoded = ASN1toJS(bufferToArrayBuffer(compiledAsBuffer)) as [ bigint, ...EncryptedMetadataWithoutHeader ];
 
 	if (!Array.isArray(asn1Decoded)) {
