@@ -352,7 +352,7 @@ export class MetadataStore implements MetadataPackage {
 					type: 'bitstring',
 					value: key.symmetricKey.getBuffer()
 				}
-			])
+			]);
 		}));
 	}
 
