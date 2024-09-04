@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as KeetaNetClient from '@keetapay/keetanet-client';
 
 const BufferStorage = KeetaNetClient.lib.Utils.Buffer.BufferStorage;
+// eslint-disable-next-line @typescript-eslint/no-redeclare
 type BufferStorage = InstanceType<typeof KeetaNetClient.lib.Utils.Buffer.BufferStorage>;
 type GenericAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromPublicKeyAndType>;
 type Account = InstanceType<typeof KeetaNetClient.lib.Account>;
