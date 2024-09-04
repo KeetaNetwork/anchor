@@ -1,11 +1,12 @@
 import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
-import Account from '@keetapay/keetanet-client/lib/account';
-import { ASN1toJS } from '@keetapay/keetanet-client/lib/utils/asn1';
-import { bufferToArrayBuffer } from '@keetapay/keetanet-client/lib/utils/helper';
-
 import { MetadataStore } from './metadata';
+
+import * as KeetaNetClient from '@keetapay/keetanet-client';
+const Account = KeetaNetClient.lib.Account;
+const ASN1toJS = KeetaNetClient.lib.Utils.ASN1.ASN1toJS;
+const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer;
 
 function generateRandomKeyedAccount() {
 	return(Account.fromSeed(Account.generateRandomSeed(), 0));

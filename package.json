@@ -13,7 +13,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@keetapay/keetanet-client": "0.4.7",
+    "@keetapay/asn1-napi-rs": "1.1.6",
+    "@keetapay/keetanet-client": "0.8.4",
     "typescript": "4.9.5"
   },
   "devDependencies": {

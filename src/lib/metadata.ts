@@ -1,15 +1,19 @@
 import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
-import BufferStorage from '@keetapay/keetanet-client/lib/utils/buffer';
-import type { GenericAccount } from '@keetapay/keetanet-client/lib/account';
-import type Account from '@keetapay/keetanet-client/lib/account';
-import { bufferToArrayBuffer, isBuffer } from '@keetapay/keetanet-client/lib/utils/helper';
-import {
+import * as KeetaNetClient from '@keetapay/keetanet-client';
+
+const BufferStorage = KeetaNetClient.lib.Utils.Buffer.BufferStorage;
+type BufferStorage = InstanceType<typeof KeetaNetClient.lib.Utils.Buffer.BufferStorage>;
+type GenericAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromPublicKeyAndType>;
+type Account = InstanceType<typeof KeetaNetClient.lib.Account>;
+const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer;
+const isBuffer = KeetaNetClient.lib.Utils.Helper.isBuffer;
+const {
 	ASN1toJS,
 	isValidSequenceSchema,
 	JStoASN1
-} from '@keetapay/keetanet-client/lib/utils/asn1';
+} = KeetaNetClient.lib.Utils.ASN1;
 
 
 /**
