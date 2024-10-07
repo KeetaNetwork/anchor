@@ -2,6 +2,7 @@ import { test, expect, describe } from 'vitest';
 import Log from './index.js';
 import type { LogTarget, LogTargetLevel, LogEntry } from './common.js';
 import { canLogForTargetLevel } from './common.js';
+import LogTargetConsole from './target_console.js';
 
 class LogTargetTest implements LogTarget {
 	readonly logs: LogEntry[] = [];
@@ -103,5 +104,51 @@ describe('Log Tests', function() {
 		expect(target_l2t1.logs.length).toEqual(1);
 		expect(target_l2t1.logs[0]?.trace).toBeDefined();
 		expect(target_l1t1.logs[0]?.trace).toBeUndefined();
+	});
+
+	test('Console Tests', async function() {
+		const called = {
+			debug: 0,
+			info: 0,
+			warn: 0,
+			error: 0
+		};
+
+		const logger = new Log();
+		logger.registerTarget(new LogTargetConsole({
+			console: {
+				debug: function() { called.debug++; },
+				info: function() { called.info++; },
+				warn: function() { called.warn++; },
+				error: function() { called.error++; }
+			}
+		}));
+
+		logger.log('console tests', 'Test 1');
+		logger.debug('console tests', 'Test 2');
+		logger.info('console tests', 'Test 3');
+		logger.warn('console tests', 'Test 4');
+		logger.error('console tests', 'Test 5');
+
+		expect(called.debug).toEqual(0);
+		expect(called.info).toEqual(0);
+		expect(called.warn).toEqual(0);
+		expect(called.error).toEqual(0);
+
+		await logger.sync();
+
+		expect(called.debug).toEqual(1);
+		expect(called.info).toEqual(2);
+		expect(called.warn).toEqual(1);
+		expect(called.error).toEqual(1);
+
+		for (const method of ['debug', 'info', 'warn', 'error'] as const) {
+			logger[method]('console tests', 'Test 6');
+			const before = called[method];
+			await logger.sync();
+			const after = called[method];
+
+			expect(after).toEqual(before + 1);
+		}
 	});
 });

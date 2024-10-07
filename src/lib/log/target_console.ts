@@ -1,15 +1,19 @@
 import type { LogEntry, LogTargetLevel, LogTarget } from './common.js';
 import { canLogForTargetLevel } from './common.js';
+import { assertNever } from '../utils/never.js';
 
 type LogTargetConsoleConfig = {
 	logLevel?: LogTargetLevel;
+	console?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
 };
 
 export class LogTargetConsole implements LogTarget {
 	readonly logLevel: LogTargetLevel;
+	#console: NonNullable<LogTargetConsoleConfig['console']>;
 
 	constructor(config?: LogTargetConsoleConfig) {
 		this.logLevel = config?.logLevel ?? 'ALL';
+		this.#console = config?.console ?? console;
 	}
 
 	async emitLogs(logs: LogEntry[]): Promise<void> {
@@ -18,7 +22,7 @@ export class LogTargetConsole implements LogTarget {
 				continue;
 			}
 
-			let method: 'log' | 'info' | 'warn' | 'error';
+			let method: 'debug' | 'info' | 'warn' | 'error';
 
 			switch (log.level) {
 				case 'ERROR':
@@ -27,9 +31,14 @@ export class LogTargetConsole implements LogTarget {
 				case 'WARN':
 					method = 'warn';
 					break;
-				default:
-					method = 'log';
+				case 'INFO':
+					method = 'info';
 					break;
+				case 'DEBUG':
+					method = 'debug';
+					break;
+				default:
+					assertNever(log.level);
 			}
 
 			let requestID = log.options?.currentRequestInfo?.id;
@@ -37,9 +46,9 @@ export class LogTargetConsole implements LogTarget {
 				requestID = '<NO_REQUEST_ID>';
 			}
 
-			console[method](`[${requestID}] ${log.level} ${log.from}:`, ...log.args);
+			this.#console[method](`[${requestID}] ${log.level} ${log.from}:`, ...log.args);
 			if (log.trace !== undefined) {
-				console[method](`[${requestID}] ${log.level} ${log.from} TRACE:`, log.trace);
+				this.#console[method](`[${requestID}] ${log.level} ${log.from} TRACE:`, log.trace);
 			}
 		}
 	}
