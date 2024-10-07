@@ -1,0 +1,37 @@
+{
+	"name": "@keetapay/anchor",
+	"version": "0.1.0",
+	"description": "KeetaPay Network Anchor",
+	"main": "index.js",
+	"scripts": {
+		"tsc": "tsc",
+		"vitest": "vitest",
+		"make:all": "make all",
+		"make:dist": "make dist",
+		"make:test": "make test",
+		"make:clean": "make clean",
+		"make:distclean": "make distclean",
+		"make:do-npm-pack": "make do-npm-pack",
+		"make:do-deploy": "make do-deploy",
+		"prepare": "ts-patch install && typia patch"
+	},
+	"author": "LFG Payments, Inc",
+	"license": "SEE LICENSE IN LICENSE",
+	"type": "module",
+	"devDependencies": {
+		"@ryoppippi/unplugin-typia": "1.0.6",
+		"@types/node": "20.16.10",
+		"@vitest/coverage-v8": "2.1.2",
+		"ts-patch": "3.2.1",
+		"typescript": "5.6.2",
+		"vitest": "2.1.2"
+	},
+	"dependencies": {
+		"@keetapay/currency-info": "1.1.0",
+		"@keetapay/keetanet-node": "0.8.4",
+		"typia": "6.11.1"
+	},
+	"engines": {
+		"node": "20.17.0"
+	}
+}

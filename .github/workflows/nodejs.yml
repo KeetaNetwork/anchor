@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "releases/**" ]
+  pull_request:
+    branches: [ main, "releases/**" ]
+
+jobs:
+  build:
+    name: Tests
+    runs-on: ubuntu-latest-l
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # We need to fetch the parent branch information for SonarCloud
+          fetch-depth: 0
+
+      - name: Read Node Version
+        run: echo "NODE_VERSION=$(jq -crM .engines.node < package.json)" >> $GITHUB_OUTPUT
+        shell: bash
+        id: node_version
+
+      - name: Use Node.js ${{ steps.node_version.outputs.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: '${{ steps.node_version.outputs.NODE_VERSION }}'
+          cache: 'npm'
+
+      - name: Write private key to .npmrc file
+        run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
+
+      - name: Run Tests
+        run: make test
+
+      # Run SonarCloud after completing tests and generating code coverage report
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dproject.settings=./.sonar-project.properties
+

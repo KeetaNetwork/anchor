@@ -1,0 +1,36 @@
+{
+	"compilerOptions": {
+		"incremental": true,
+		"composite": false,
+		"tsBuildInfoFile": "./.tsbuildinfo",
+		"disableSolutionSearching": true,
+		"target": "esnext",
+		"module": "nodenext",
+		"rootDir": "./src",
+		"moduleResolution": "nodenext",
+		"maxNodeModuleJsDepth": 1,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"outDir": "./dist",
+		"removeComments": false,
+		"importHelpers": true,
+		"inlineSources": true,
+		"stripInternal": true,
+		"isolatedModules": true,
+		"isolatedDeclarations": true,
+		"allowSyntheticDefaultImports": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"skipLibCheck": true,
+		"strictNullChecks": true,
+		"plugins": [{
+			"transform": "typia/lib/transform"
+		}]
+	},
+	"include": [
+		"src/**/*.ts"
+	]
+}
