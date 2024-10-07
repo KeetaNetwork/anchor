@@ -15,7 +15,12 @@ export default defineConfig({
 				 * assert a never type -- it can never realistically be
 				 * tested since it prevents compilation
 				 */
-				'src/lib/utils/never.*'
+				'src/lib/utils/never.*',
+				/*
+				 * Exclude test files from coverage since they are not
+				 * part of the source code
+				 */
+				'src/**/*.test.ts'
 			],
 			enabled: true
 		}
