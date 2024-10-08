@@ -112,7 +112,6 @@ const oidDB = {
 */
 async function buildASN1(plaintext: Buffer, toEncryptedBox: false): Promise<Buffer>;
 async function buildASN1(plaintext: Buffer, toEncryptedBox: true, algorithm: string, keys: Account[], cipherKey: Buffer, cipherIV: Buffer): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?: string, keys?: Account[], cipherKey?: Buffer, cipherIV?: Buffer): Promise<Buffer>;
 async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?: string, keys?: Account[], cipherKey?: Buffer, cipherIV?: Buffer): Promise<Buffer> {
 	const compressedPlaintext = await zlibDeflate(plaintext);
 
