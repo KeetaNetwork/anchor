@@ -457,14 +457,12 @@ export class EncryptedContainer {
 	#internalState: encryptedContainerInfo | unencryptedContainerInfo;
 
 	/**
-	 * The plaintext/unencrypted data, if undefined then it has not been generated
+	 * The plaintext or encoded (and possibly encrypted) data
 	 */
-	#plaintext?: Buffer;
-
-	/**
-	 * The formatted data (and possibly encrypted), if undefined then it has not been generated
-	 */
-	#encoded?: Buffer;
+	#data:
+		{ plaintext: Buffer } |
+		{ encoded: Buffer } |
+		{ plaintext: Buffer, encoded: Buffer };
 
 	constructor(principals: Account[] | null) {
 		if (principals === null) {
@@ -477,7 +475,7 @@ export class EncryptedContainer {
 				cipherAlgo: EncryptedContainer.algorithm
 			}
 		};
-		this.#plaintext = Buffer.alloc(0);
+		this.#data = { plaintext: Buffer.alloc(0) };
 	}
 
 	get encrypted(): boolean {
@@ -534,40 +532,69 @@ export class EncryptedContainer {
 			retval.disablePlaintext();
 		}
 
-		retval.setPlaintext(data);
+		retval.setPlaintextBuffer(data);
 
 		return(retval);
 	}
 
 	/**
-	 * Set the plaintext to the specified value
+	 * Set the plaintext buffer to the specified value
 	 */
-	setPlaintext(data: string | Buffer): void {
+	setPlaintextBuffer(data: string | Buffer): void {
 		if (typeof data === 'string') {
 			data = Buffer.from(data, 'utf-8');
 		}
 
-		this.#plaintext = data;
-		this.#encoded = undefined;
+		this.#data = { plaintext: data };
 	}
 
 	/**
-	 * Set the encrypted blob to the specified value
+	 * Set the encoded buffer to the specified value
 	 */
 	setEncodedBuffer(data: Buffer): void {
-		this.#encoded = data;
-		this.#plaintext = undefined;
+		this.#data = { encoded: data };
+	}
+
+	/**
+	 * Update plaintext buffer
+	 */
+	updatePlaintextBuffer(data: Buffer): void {
+		this.#data = { ...this.#data, plaintext: data };
+	}
+
+	/**
+	 * Update encoded buffer
+	 */
+	updateEncodedBuffer(data: Buffer): void {
+		this.#data = { ...this.#data, encoded: data };
+	}
+
+	private get _encoded(): Buffer | undefined {
+		if ('encoded' in this.#data && this.#data.encoded !== undefined) {
+			return(this.#data.encoded);
+		}
+
+		return(undefined);
+	}
+
+	private get _plaintext(): Buffer | undefined {
+		if ('plaintext' in this.#data && this.#data.plaintext !== undefined) {
+			return(this.#data.plaintext);
+		}
+
+		return(undefined);
 	}
 
 	/*
-	 * Populate the symmetric key parameters from the encrypted blob
+	 * Return the decoded data from the encoded blob
+	 * and populate the symmetric key parameters from the encoded blob if it is encrypted
 	 */
 	#computeAndSetKeyInfo(mustBeEncrypted: boolean) {
-		if (this.#encoded === undefined) {
-			throw(new Error('No encrypted data available'));
+		if (this._encoded === undefined) {
+			throw(new Error('No encoded data available'));
 		}
 
-		const plaintextWrapper = parseASN1Bare(this.#encoded);
+		const plaintextWrapper = parseASN1Bare(this._encoded);
 
 		if (mustBeEncrypted && !plaintextWrapper.isEncrypted) {
 			throw(new Error('Unable to set key information from plaintext -- it is not encrypted but that was required'));
@@ -624,12 +651,12 @@ export class EncryptedContainer {
 	 * the encrypted blob
 	 */
 	async #computePlaintext() {
-		if (this.#plaintext !== undefined) {
-			return(this.#plaintext);
+		if (this._plaintext) {
+			return(this._plaintext);
 		}
 
-		if (this.#encoded === undefined) {
-			throw(new Error('No plaintext nor encrypted data available'));
+		if (this._encoded === undefined) {
+			throw(new Error('No plaintext or encoded data available'));
 		}
 
 
@@ -654,12 +681,12 @@ export class EncryptedContainer {
 	 * Compute the encoded version of the plaintext data
 	 */
 	async #computePlaintextEncoded() {
-		if (this.#plaintext === undefined) {
+		if (this._plaintext === undefined) {
 			throw(new Error('No plaintext data available'));
 		}
 
 		const structuredData = await buildASN1(
-			this.#plaintext
+			this._plaintext
 		);
 
 		return(structuredData);
@@ -671,11 +698,11 @@ export class EncryptedContainer {
 	 * initialized they will be initialized at this time.
 	 */
 	async #computeEncryptedEncoded() {
-		if (this.#encoded !== undefined) {
-			return(this.#encoded);
+		if (this._encoded !== undefined) {
+			return(this._encoded);
 		}
 
-		if (this.#plaintext === undefined) {
+		if (this._plaintext === undefined) {
 			throw(new Error('No encrypted nor plaintext data available'));
 		}
 
@@ -694,7 +721,7 @@ export class EncryptedContainer {
 		 * structured data is the ASN.1 encoded structure
 		 */
 		const structuredData = await buildASN1(
-			this.#plaintext,
+			this._plaintext,
 			{
 				keys: this.#internalState.principals,
 				cipherKey: this.#internalState.cipherKey,
@@ -703,7 +730,7 @@ export class EncryptedContainer {
 			}
 		);
 
-		this.#encoded = structuredData;
+		this.updateEncodedBuffer(structuredData);
 
 		return(structuredData);
 	}
@@ -722,7 +749,7 @@ export class EncryptedContainer {
 	 * if it is not
 	 */
 	grantAccessSync(accounts: Account[] | Account): void {
-		if (this.#plaintext === undefined) {
+		if (this._plaintext === undefined) {
 			throw(new Error('Unable to grant access, plaintext not available'));
 		}
 
@@ -730,11 +757,12 @@ export class EncryptedContainer {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
-		this.#encoded = undefined;
-
 		if (!Array.isArray(accounts)) {
 			accounts = [accounts];
 		}
+
+		// Encoded data is invalidated with the new permissions so set only the plaintext data
+		this.setPlaintextBuffer(this._plaintext);
 
 		this.#internalState.principals.push(...accounts);
 	}
@@ -743,7 +771,7 @@ export class EncryptedContainer {
 	 * Grant access to the secret for account(s).
 	 */
 	async grantAccess(accounts: Account[] | Account): Promise<void> {
-		this.#plaintext = await this.#computePlaintext();
+		this.updatePlaintextBuffer(await this.#computePlaintext());
 
 		this.grantAccessSync(accounts);
 	}
@@ -754,7 +782,7 @@ export class EncryptedContainer {
 	 * if it is not
 	 */
 	revokeAccessSync(account: Account): void {
-		if (this.#plaintext === undefined) {
+		if (this._plaintext === undefined) {
 			throw(new Error('Unable to revoke access, plaintext not available'));
 		}
 
@@ -762,7 +790,8 @@ export class EncryptedContainer {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
-		this.#encoded = undefined;
+		// Encoded data is invalidated with the new permissions so set only the plaintext data
+		this.setPlaintextBuffer(this._plaintext);
 
 		this.#internalState.principals = this.#internalState.principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
@@ -773,7 +802,7 @@ export class EncryptedContainer {
 	 * Revoke access to the secret for an account
 	 */
 	async revokeAccess(account: Account): Promise<void> {
-		this.#plaintext = await this.#computePlaintext();
+		this.updatePlaintextBuffer(await this.#computePlaintext());
 		this.revokeAccessSync(account);
 	}
 
@@ -785,9 +814,9 @@ export class EncryptedContainer {
 	}
 
 	async #getPlaintextInternal() {
-		this.#plaintext = await this.#computePlaintext();
+		this.updatePlaintextBuffer(await this.#computePlaintext());
 
-		if (this.#plaintext === undefined) {
+		if (this._plaintext === undefined) {
 			throw(new Error('internal error: Plaintext could not be decoded'));
 		}
 
@@ -796,7 +825,7 @@ export class EncryptedContainer {
 		 * to either our internal buffer or by our caller do not
 		 * interfere
 		 */
-		return(Buffer.from(this.#plaintext));
+		return(Buffer.from(this._plaintext));
 	}
 
 	/**
