@@ -28,6 +28,7 @@
 	},
 	"dependencies": {
 		"@keetapay/currency-info": "1.1.0",
+		"@keetapay/keetanet-client": "0.8.4",
 		"@keetapay/keetanet-node": "0.8.4",
 		"typia": "6.11.1"
 	},
