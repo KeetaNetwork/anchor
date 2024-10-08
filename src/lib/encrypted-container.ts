@@ -7,6 +7,9 @@ import {
 	ASN1toJS,
 	JStoASN1
 } from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
+import type {
+	ASN1OID
+} from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
 import { bufferToArrayBuffer } from '@keetapay/keetanet-node/dist/lib/utils/helper.js';
 import { isArray } from './utils/array.js';
 
@@ -18,82 +21,58 @@ const zlibInflate = util.promisify(zlib.inflate);
  *
  * EncryptedContainer DEFINITIONS ::=
  * BEGIN
- * 	Version	::= INTEGER { v1(0) }
- *
- * 	KeyStore ::= SEQUENCE {
- * 		publicKey              BIT STRING,
- * 		encryptedSymmetricKey  BIT STRING,
- * 		...
- * 	}
- *
- * 	EncryptedContainerBox ::= SEQUENCE {
- * 		keys                   SEQUENCE OF KeyStore,
- * 		initializationVector   OCTET STRING,
- * 		encryptedValue         OCTET STRING,
- * 		...
- * 	}
- *
- * 	PlaintextContainerBox ::= SEQUENCE {
- * 		plainValue             OCTET STRING,
- * 		...
- * 	}
- *
- * 	EncryptedContainerPackage ::= SEQUENCE {
- * 		version                Version (v1),
- * 		isEncrypted            BOOLEAN (TRUE),
- * 		encryptedBox           EncryptedContainerBox,
- * 		...
- * 	}
- *
- * 	PlaintextContainerPackage ::= SEQUENCE {
- * 		version                Version (v1),
- * 		isEncrypted            BOOLEAN (FALSE),
- * 		plaintextBox           PlaintextContainerBox,
- * 		...
- * 	}
+ *         Version        ::= INTEGER { v2(1) }
+ * 
+ *         KeyStore ::= SEQUENCE {
+ *                 publicKey              OCTET STRING,
+ *                 encryptedSymmetricKey  OCTET STRING,
+ *                 ...
+ *         }
+ * 
+ *         EncryptedContainerBox ::= SEQUENCE {
+ *                 keys                   SEQUENCE OF KeyStore,
+ *                 encryptionAlgorithm    OBJECT IDENTIFIER,
+ *                 initializationVector   OCTET STRING,
+ *                 encryptedValue         OCTET STRING,
+ *                 ...
+ *         }
+ * 
+ *         PlaintextContainerBox ::= SEQUENCE {
+ *                 plainValue             OCTET STRING,
+ *                 ...
+ *         }
+ * 
+ *         ContainerPackage ::= SEQUENCE {
+ *                 version                Version (v2),
+ *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
+ *                 plaintextContainer     [1] EXPLICIT PlaintextContainerBox OPTIONAL,
+ *                 ...
+ *         } (WITH COMPONENTS {
+ *                 encryptedContainer PRESENT,
+ *                 plaintextContainer ABSENT
+ *         } |
+ *         WITH COMPONENTS {
+ *                 encryptedContainer ABSENT,
+ *                 plaintextContainer PRESENT
+ *         })
  * END
+ * 
  */
-
-interface ASN1BitString {
-	type: 'bitstring';
-	value: Buffer;
-}
-
-function isASN1BitString(input: unknown): input is ASN1BitString {
-	if (typeof input !== 'object' || input === null) {
-		return(false);
-	}
-
-	if (!('type' in input)) {
-		return(false);
-	}
-
-	if (typeof input.type !== 'string') {
-		return(false);
-	}
-
-	if (!('value' in input)) {
-		return(false);
-	}
-
-	if (!Buffer.isBuffer(input.value)) {
-		return(false);
-	}
-
-	return(true);
-}
 
 type EncryptedContainerKeyStore = [
 	/* publicKey */
-	ASN1BitString,
+	Buffer,
 
 	/* encryptedSymmetricKey */
-	ASN1BitString
+	Buffer
 ];
 
 type EncryptedContainerBoxEncrypted = [
 	/* keys */
 	EncryptedContainerKeyStore[],
+
+	/* encryptionAlgorithm */
+	ASN1OID,
 
 	/* initializationVector */
 	Buffer,
@@ -107,25 +86,24 @@ type EncryptedContainerBoxPlaintext = [
 	Buffer
 ];
 
-type EncryptedContainerPackage = [
+type ContainerPackage = [
 	/* version */
 	number,
 
-	/* isEncrypted */
-	true,
-
-	/* data */
-	EncryptedContainerBoxEncrypted
-] | [
-	/* version */
-	number,
-
-	/* isEncrypted */
-	false,
-
-	/* data */
-	EncryptedContainerBoxPlaintext
+	{
+		type: 'context'
+		value: 0,
+		contains: EncryptedContainerBoxEncrypted
+	} | {
+		type: 'context',
+		value: 1,
+		contains: EncryptedContainerBoxPlaintext
+	}
 ];
+
+const oidDB = {
+	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
+} as const;
 
 /**
 * Compiles the ASN.1 for the container
@@ -138,25 +116,26 @@ async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?:
 async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?: string, keys?: Account[], cipherKey?: Buffer, cipherIV?: Buffer): Promise<Buffer> {
 	const compressedPlaintext = await zlibDeflate(plaintext);
 
-	const sequence: Partial<EncryptedContainerPackage> = [];
+	const sequence: Partial<ContainerPackage> = [];
 
 	/*
-	 * Version v1 (0)
+	 * Version v2 (1)
 	 */
-	sequence[0] = 0;
-
-	/*
-	 * Encrypted box or Plaintext box
-	 */
-	sequence[1] = toEncryptedBox;
+	sequence[0] = 1;
 
 	/*
 	 * Encrypted container box
 	 */
-	if (sequence[1]) {
+	if (toEncryptedBox) {
 		if (keys === undefined || cipherKey === undefined || cipherIV === undefined || algorithm === undefined) {
 			throw(new Error('internal error: Unsupported method invocation'));
 		}
+
+		if (!(algorithm in oidDB)) {
+			throw(new Error(`Unsupported algorithm: ${algorithm}`));
+		}
+
+		const algorithmOID = oidDB[algorithm as keyof typeof oidDB];
 
 		const cipher = crypto.createCipheriv(
 			algorithm,
@@ -174,28 +153,32 @@ async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?:
 		const encryptionKeysSequence = await Promise.all(keys.map(async function(key) {
 			const encryptedSymmetricKey = Buffer.from(await key.encrypt(cipherKeyArrayBuffer));
 			const retval: EncryptedContainerKeyStore = [
-				{
-					type: 'bitstring',
-					value: key.publicKeyAndType
-				}, {
-					type: 'bitstring',
-					value: encryptedSymmetricKey
-				}
+				key.publicKeyAndType,
+				encryptedSymmetricKey
 			];
 
 			return(retval);
 		}));
 
-		sequence[2] = [
-			encryptionKeysSequence,
-			cipherIV,
-			encryptedData
-		];
+		sequence[1] = {
+			type: 'context',
+			value: 0,
+			contains: [
+				encryptionKeysSequence,
+				{ type: 'oid', oid: algorithmOID },
+				cipherIV,
+				encryptedData
+			]
+		};
 	} else {
 		/*
 		 * Otherwise we simply pass in the compressed data
 		 */
-		sequence[2] = [compressedPlaintext];
+		sequence[1] = {
+			type: 'context',
+			value: 1,
+			contains: [compressedPlaintext]
+		};
 	}
 
 	const outputASN1 = JStoASN1(sequence);
@@ -204,9 +187,9 @@ async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?:
 	return(outputDER);
 }
 
-function parseASN1Bare(input: Buffer) {
+function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256-cbc', 'null']) {
 	const inputSequence = ASN1toJS(bufferToArrayBuffer(input));
-	if (!isArray(inputSequence, 3)) {
+	if (!isArray(inputSequence, 2)) {
 		throw(new Error('Malformed data detected (incorrect base format)'));
 	}
 
@@ -215,25 +198,49 @@ function parseASN1Bare(input: Buffer) {
 		throw(new Error('Malformed data detected (version expected at position 0)'));
 	}
 
-	if (version !== BigInt(0)) {
+	if (version !== BigInt(1)) {
 		throw(new Error('Malformed data detected (unsupported version)'));
 	}
 
-	const isEncrypted = inputSequence[1];
-	if (typeof isEncrypted !== 'boolean') {
-		throw(new Error('Malformed data detected (encrypted flag expected at position 1)'));
+	const valueBox = inputSequence[1];
+	if (typeof valueBox !== 'object' || valueBox === null) {
+		throw(new Error('Malformed data detected (data expected at position 1)'));
 	}
 
-	const value: unknown = inputSequence[2];
-	if (!Array.isArray(value)) {
-		throw(new Error('Malformed data detected (data expected at position 2)'));
+	if (!('type' in valueBox) || typeof valueBox.type !== 'string') {
+		throw(new Error('Malformed data detected (expected type at position 1)'));
 	}
 
+	if (valueBox.type !== 'context') {
+		throw(new Error('Malformed data detected (expected context at position 1)'));
+	}
+
+	if (!('value' in valueBox) || typeof valueBox.value !== 'number') {
+		throw(new Error('Malformed data detected (expected context value at position 1)'));
+	}
+
+	if (valueBox.value !== 0 && valueBox.value !== 1) {
+		throw(new Error('Malformed data detected (expected context value of 0 or 1)'));
+	}
+
+	if (!('contains' in valueBox) || typeof valueBox.contains !== 'object' || valueBox.contains === null) {
+		throw(new Error('Malformed data detected (expected contents at position 1)'));
+	}
+
+	let isEncrypted;
+	if (valueBox.value === 0) {
+		isEncrypted = true;
+	} else {
+		isEncrypted = false;
+	}
+
+
+	const value = valueBox.contains;
 	let containedCompressed: Buffer;
 	let cipherInfo;
 	if (isEncrypted) {
-		if (!isArray(value, 3)) {
-			throw(new Error('Malformed data (incorrect number of elements within position 2 -- expected 3)'));
+		if (!isArray(value, 4)) {
+			throw(new Error('Malformed data (incorrect number of elements within position 1 -- expected 4)'));
 		}
 
 		const keyInfoUnchecked = value[0];
@@ -243,23 +250,19 @@ function parseASN1Bare(input: Buffer) {
 
 		const keyInfo = keyInfoUnchecked.map(function(checkKeyInfo) {
 			if (!isArray(checkKeyInfo, 2)) {
-				throw(new Error('Malformed key information (expected sequence of 2 at position 2.0.x)'));
+				throw(new Error('Malformed key information (expected sequence of 2 at position 1.0.x)'));
 			}
 
-			const publicKeyWrapper = checkKeyInfo[0];
-			if (!isASN1BitString(publicKeyWrapper)) {
-				throw(new Error('Malformed key information (expected bitstring for public key at position 2.0.x)'));
+			const publicKeyBuffer = checkKeyInfo[0];
+			if (!Buffer.isBuffer(publicKeyBuffer)) {
+				throw(new Error('Malformed key information (expected octet string for public key at position 1.0.x)'));
 			}
-
-			const publicKeyBuffer = publicKeyWrapper.value;
 			const publicKey = Account.fromPublicKeyAndType(publicKeyBuffer);
 
-			const encryptedSymmetricKeyWrapper = checkKeyInfo[1];
-			if (!isASN1BitString(encryptedSymmetricKeyWrapper)) {
-				throw(new Error('Malformed key information (expected bitstring for cipher key at position 2.0.x)'));
+			const encryptedSymmetricKey = checkKeyInfo[1];
+			if (!Buffer.isBuffer(encryptedSymmetricKey)) {
+				throw(new Error('Malformed key information (expected octet string for cipher key at position 1.0.x)'));
 			}
-
-			const encryptedSymmetricKey = encryptedSymmetricKeyWrapper.value;
 
 			return({
 				publicKey,
@@ -267,32 +270,40 @@ function parseASN1Bare(input: Buffer) {
 			});
 		});
 
+		const encryptionAlgorithmOID = value[1];
+		/* XXX:TODO */
+		const encryptionAlgorithm = 'aes-256-cbc';
 
-		const cipherIV = value[1];
+		const cipherIV = value[2];
 		if (!Buffer.isBuffer(cipherIV)) {
-			throw(new Error('Malformed data (cipher IV expected at position 2.1)'));
+			throw(new Error('Malformed data (cipher IV expected at position 1.2)'));
 		}
 
-		const encryptedCompressedValue = value[2];
+		const encryptedCompressedValue = value[3];
 		if (!Buffer.isBuffer(encryptedCompressedValue)) {
-			throw(new Error('Malformed data (encrypted compressed buffer expected at position 2.2)'));
+			throw(new Error('Malformed data (encrypted compressed buffer expected at position 1.3)'));
 		}
 
 		cipherInfo = {
 			keys: keyInfo,
 			cipherIV: cipherIV,
-			encryptedData: encryptedCompressedValue
+			encryptedData: encryptedCompressedValue,
+			encryptionAlgorithm: encryptionAlgorithm
 		};
 
 		containedCompressed = encryptedCompressedValue;
 	} else {
 		if (!isArray(value, 1)) {
-			throw(new Error('Malformed data (incorrect number of elements within position 2 -- expected 1)'));
+			throw(new Error('Malformed data (incorrect number of elements within position 1 -- expected 1)'));
 		}
 
 		const containedCompressedUnchecked = value[0];
 		if (!Buffer.isBuffer(containedCompressedUnchecked)) {
-			throw(new Error('Malformed data (compressed buffer expected at position 2.0)'));
+			throw(new Error('Malformed data (compressed buffer expected at position 1.0)'));
+		}
+
+		if (!acceptableEncryptionAlgorithms.includes('null')) {
+			throw(new Error('Malformed data (plaintext found but the null encryption algorithm is not acceptable)'));
 		}
 
 		containedCompressed = containedCompressedUnchecked;
@@ -306,7 +317,7 @@ function parseASN1Bare(input: Buffer) {
 	});
 }
 
-async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, algorithm?: string, keys?: Account[]) {
+async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, keys?: Account[]) {
 	let containedCompressed: Buffer;
 	let cipherInfo;
 	if (inputInfo.isEncrypted) {
@@ -314,6 +325,7 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, alg
 			throw(new Error('Encrypted Container found with encryption but no keys for decryption supplied'));
 		}
 
+		const algorithm = inputInfo.encryptionAlgorithm;
 		if (algorithm === undefined) {
 			throw(new Error('Encrypted Container found with encryption but no algorithm supplied'));
 		}
@@ -383,9 +395,9 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, alg
 
 }
 
-async function parseASN1(input: Buffer, algorithm?: string, keys?: Account[]) {
+async function parseASN1(input: Buffer, keys?: Account[]) {
 	const inputInfo = parseASN1Bare(input);
-	const retval = await parseASN1Decrypt(inputInfo, algorithm, keys);
+	const retval = await parseASN1Decrypt(inputInfo, keys);
 
 	return(retval);
 }
@@ -400,8 +412,10 @@ export class EncryptedContainer {
 
 	/**
 	 * Set of accounts which can access the data
+	 *
+	 * If it is set to "null" it means the data should not be encrypted
 	 */
-	#principals: Account[];
+	#principals: Account[] | null;
 
 	/**
 	 * The plaintext/unencrypted data, if undefined then it has not been generated
@@ -411,15 +425,15 @@ export class EncryptedContainer {
 	/**
 	 * The encrypted (and formatted) data, if undefined then it has not been generated
 	 */
-	#encrypted?: Buffer;
+	#encoded?: Buffer;
 
 	/**
-	 * The symmetric cipher key
+	 * The symmetric cipher key (if any)
 	 */
 	#cipherKey?: Buffer;
 
 	/**
-	 * The symmetric cipher IV
+	 * The symmetric cipher IV (if any)
 	 */
 	#cipherIV?: Buffer;
 
@@ -429,12 +443,17 @@ export class EncryptedContainer {
 	#cipherAlgo = EncryptedContainer.algorithm;
 
 	/**
-	 * A flag to indicate whether or not encryption is used for this box
-	 * at all or not -- currently this will always be true
+	 * If the encrypted container is encrypted
 	 */
-	#plaintextEncryptedBuffer = false;
+	readonly encrypted: boolean;
 
-	constructor(principals: Account[]) {
+	constructor(principals: Account[] | null) {
+		if (principals === null) {
+			this.encrypted = false;
+		} else {
+			this.encrypted = true;
+		}
+
 		this.#principals = principals;
 		this.#plaintext = Buffer.alloc(0);
 	}
@@ -450,18 +469,40 @@ export class EncryptedContainer {
 	static fromEncryptedBuffer(data: Buffer, principals: Account[]): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
-		retval.setEncryptedBuffer(data);
-		retval.#computeAndSetKeyInfo();
+		retval.setEncodedBuffer(data);
+		retval.#computeAndSetKeyInfo(true);
+
+		return(retval);
+	}
+
+	static fromEncodedBuffer(data: Buffer, principals: Account[] | null): EncryptedContainer {
+		const retval = new EncryptedContainer(principals);
+
+		retval.setEncodedBuffer(data);
+		retval.#computeAndSetKeyInfo(false);
 
 		return(retval);
 	}
 
 	/**
 	 * Create an instance of the EncryptedContainer from a plaintext.
+	 *
 	 * It will be decryptable by any one of the specified principals
+	 *
+	 * @param data The plaintext data to encrypt or encode
+	 * @param principals The list of principals who can access the data if it is null then the data is not encrypted
+	 * @param locked If true, the plaintext data will not be accessible from this instance; otherwise it will be -- default depends on principals
+	 * @returns The EncryptedContainer instance with the plaintext data and principals set
 	 */
-	static fromPlaintext(data: string | Buffer, principals: Account[], locked = true): EncryptedContainer {
+	static fromPlaintext(data: string | Buffer, principals: Account[] | null, locked?: boolean): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
+
+		if (locked === undefined) {
+			locked = true;
+			if (principals === null) {
+				locked = false;
+			}
+		}
 
 		if (locked) {
 			retval.disablePlaintext();
@@ -481,52 +522,73 @@ export class EncryptedContainer {
 		}
 
 		this.#plaintext = data;
-		this.#encrypted = undefined;
+		this.#encoded = undefined;
 	}
 
 	/**
 	 * Set the encrypted blob to the specified value
 	 */
-	setEncryptedBuffer(data: Buffer): void {
-		this.#encrypted = data;
+	setEncodedBuffer(data: Buffer): void {
+		this.#encoded = data;
 		this.#plaintext = undefined;
 	}
 
 	/*
 	 * Populate the symmetric key parameters from the encrypted blob
 	 */
-	#computeAndSetKeyInfo() {
-		if (this.#encrypted === undefined) {
+	#computeAndSetKeyInfo(mustBeEncrypted: boolean) {
+		if (this.#encoded === undefined) {
 			throw(new Error('No encrypted data available'));
 		}
 
-		const plaintextWrapper = parseASN1Bare(this.#encrypted);
+		const plaintextWrapper = parseASN1Bare(this.#encoded);
 
-		/*
-		 * Compute the new accounts by merging the input from the
-		 * data and the existing list of principals
-		 */
-		/**
-		 * The existing principals from the blob, with existing
-		 * principals substituted in where appropriate
-		 */
-		const blobPrincipals = (plaintextWrapper.keys ?? []).map((keyInfo) => {
-			const currentPublicKey = keyInfo.publicKey;
-			if (!currentPublicKey.isAccount()) {
-				throw(new Error('internal error: Non-account found within the encryption key list'));
+		if (mustBeEncrypted && !plaintextWrapper.isEncrypted) {
+			throw(new Error('Unable to set key information from plaintext -- it is not encrypted but that was required'));
+		}
+
+		if (plaintextWrapper.isEncrypted) {
+			const principals = this.#principals;
+			if (principals === null) {
+				throw(new Error('May not encrypt data with a null set of principals'));
 			}
 
-			for (const checkExistingKey of this.#principals) {
-				if (checkExistingKey.comparePublicKey(currentPublicKey)) {
-					return(checkExistingKey);
+			/*
+			 * Compute the new accounts by merging the input from the
+			 * data and the existing list of principals
+			 */
+			/**
+			 * The existing principals from the blob, with existing
+			 * principals substituted in where appropriate
+			 */
+			const blobPrincipals = (plaintextWrapper.keys ?? []).map((keyInfo) => {
+				const currentPublicKey = keyInfo.publicKey;
+				if (!currentPublicKey.isAccount()) {
+					throw(new Error('internal error: Non-account found within the encryption key list'));
 				}
+
+				for (const checkExistingKey of principals) {
+					if (checkExistingKey.comparePublicKey(currentPublicKey)) {
+						return(checkExistingKey);
+					}
+				}
+
+				return(currentPublicKey);
+			});
+
+			this.#cipherIV = plaintextWrapper?.cipherIV;
+			this.#principals = blobPrincipals;
+
+			if (this.encrypted !== true) {
+				throw(new Error('internal error: Encrypted data found but not marked as encrypted'));
 			}
+		} else {
+			this.#principals = null;
 
-			return(currentPublicKey);
-		});
-
-		this.#cipherIV = plaintextWrapper?.cipherIV;
-		this.#principals = blobPrincipals;
+			if (this.encrypted !== false) {
+				throw(new Error('internal error: Plaintext data found but marked as encrypted'));
+			}
+		}
 
 		return(plaintextWrapper);
 	}
@@ -540,16 +602,42 @@ export class EncryptedContainer {
 			return(this.#plaintext);
 		}
 
-		if (this.#encrypted === undefined) {
+		if (this.#encoded === undefined) {
 			throw(new Error('No plaintext nor encrypted data available'));
 		}
 
-		const info = this.#computeAndSetKeyInfo();
 
-		const plaintextWrapper = await parseASN1Decrypt(info, this.#cipherAlgo, this.#principals);
+		const info = this.#computeAndSetKeyInfo(true);
+
+		let principals = this.#principals;
+		if (info.isEncrypted) {
+			if (principals === null) {
+				throw(new Error('May not decrypt data with a null set of principals'));
+			}
+		} else {
+			principals = [];
+		}
+
+		const plaintextWrapper = await parseASN1Decrypt(info, principals);
 		const plaintext = plaintextWrapper.plaintext;
 
 		return(plaintext);
+	}
+
+	/**
+	 * Compute the encoded version of the plaintext data
+	 */
+	async #computePlaintextEncoded() {
+		if (this.#plaintext === undefined) {
+			throw(new Error('No plaintext data available'));
+		}
+
+		const structuredData = await buildASN1(
+			this.#plaintext,
+			false
+		);
+
+		return(structuredData);
 	}
 
 	/**
@@ -557,9 +645,9 @@ export class EncryptedContainer {
 	 * parameters.  If the symmetric key parameters have not been
 	 * initialized they will be initialized at this time.
 	 */
-	async #computeEncrypted() {
-		if (this.#encrypted !== undefined) {
-			return(this.#encrypted);
+	async #computeEncryptedEncoded() {
+		if (this.#encoded !== undefined) {
+			return(this.#encoded);
 		}
 
 		if (this.#plaintext === undefined) {
@@ -569,19 +657,37 @@ export class EncryptedContainer {
 		this.#cipherKey = crypto.randomBytes(32);
 		this.#cipherIV = crypto.randomBytes(16);
 
+		if (!this.encrypted) {
+			throw(new Error('internal error: Asked to encrypt a plaintext buffer'));
+		}
+
+		if (this.#principals === null) {
+			throw(new Error('internal error: May not encrypt data with a null set of principals'));
+		}
+
 		/**
 		 * structured data is the ASN.1 encoded structure
 		 */
 		const structuredData = await buildASN1(
 			this.#plaintext,
-			!this.#plaintextEncryptedBuffer,
+			true,
 			this.#cipherAlgo,
 			this.#principals,
 			this.#cipherKey,
 			this.#cipherIV
 		);
 
+		this.#encoded = structuredData;
+
 		return(structuredData);
+	}
+
+	async #computeEncoded() {
+		if (!this.encrypted) {
+			return(await this.#computePlaintextEncoded());
+		} else {
+			return(await this.#computeEncryptedEncoded());
+		}
 	}
 
 	/**
@@ -594,7 +700,11 @@ export class EncryptedContainer {
 			throw(new Error('Unable to grant access, plaintext not available'));
 		}
 
-		this.#encrypted = undefined;
+		if (this.#principals === null) {
+			throw(new Error('May not manage access to a plaintext container'));
+		}
+
+		this.#encoded = undefined;
 
 		if (!Array.isArray(accounts)) {
 			accounts = [accounts];
@@ -622,7 +732,11 @@ export class EncryptedContainer {
 			throw(new Error('Unable to revoke access, plaintext not available'));
 		}
 
-		this.#encrypted = undefined;
+		if (this.#principals === null) {
+			throw(new Error('May not manage access to a plaintext container'));
+		}
+
+		this.#encoded = undefined;
 
 		this.#principals = this.#principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
@@ -671,16 +785,16 @@ export class EncryptedContainer {
 	}
 
 	/**
-	 * Get the serializable encrypted buffer which can be stored and reconstructed
+	 * Get the serializable buffer which can be stored and reconstructed
 	 */
-	async getEncryptedBuffer(): Promise<Buffer> {
-		this.#encrypted = await this.#computeEncrypted();
+	async getEncodedBuffer(): Promise<Buffer> {
+		const serialized = await this.#computeEncoded();
 
-		if (this.#encrypted === undefined) {
-			throw(new Error('internal error: Encrypted could not be decoded'));
+		if (serialized === undefined) {
+			throw(new Error('internal error: Could not encode data'));
 		}
 
-		return(Buffer.from(this.#encrypted));
+		return(Buffer.from(serialized));
 	}
 
 	/**
@@ -688,6 +802,10 @@ export class EncryptedContainer {
 	 * this container
 	 */
 	get principals(): Account[] {
+		if (this.#principals === null) {
+			throw(new Error('May not manage access to a plaintext container'));
+		}
+
 		return(this.#principals);
 	}
 }

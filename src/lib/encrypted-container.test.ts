@@ -14,7 +14,7 @@ describe('Encrypted Container Internal Tests', function() {
 		 * Create an unencrypted container
 		 */
 		const plaintextBuffer = await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), false);
-		expect(plaintextBuffer.toString('hex')).toEqual('3016020100010100300e040c789c0b492d2e010003dd01a1');
+		expect(plaintextBuffer.toString('hex')).toEqual('3015020101a110300e040c789c0b492d2e010003dd01a1');
 	});
 
 	test('Parse/Build ASN.1 (Single)', async function() {
@@ -37,7 +37,6 @@ describe('Encrypted Container Internal Tests', function() {
 		 */
 		const decryptedBufferSingle = await EncryptedContainer._Testing.parseASN1(
 			encryptedBufferSingle,
-			cipherAlgorithm,
 			[testAccount1]
 		);
 		expect(decryptedBufferSingle.plaintext.toString('utf-8')).toEqual('Test');
@@ -71,7 +70,6 @@ describe('Encrypted Container Internal Tests', function() {
 		for (const checkAccount of [testAccount1, testAccount2]) {
 			const decryptedBufferMultiPart = await EncryptedContainer._Testing.parseASN1(
 				encryptedBufferMulti,
-				cipherAlgorithm,
 				[checkAccount]
 			);
 
@@ -94,7 +92,7 @@ describe('Encrypted Container Tests', function() {
 		/*
 		 * Verify that it can be encrypted successfully
 		 */
-		const basicCipherText_v1 = await container.getEncryptedBuffer();
+		const basicCipherText_v1 = await container.getEncodedBuffer();
 		expect(basicCipherText_v1.length).toBeGreaterThan(32);
 
 		/*
@@ -126,7 +124,7 @@ describe('Encrypted Container Tests', function() {
 		 */
 		container.grantAccessSync(testAccount2);
 
-		const basicCipherText_v2 = await container.getEncryptedBuffer();
+		const basicCipherText_v2 = await container.getEncodedBuffer();
 		expect(basicCipherText_v2.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
 
 		/*
@@ -154,7 +152,7 @@ describe('Encrypted Container Tests', function() {
 		 * Revoke access for a specific user
 		 */
 		container.revokeAccessSync(testAccount1);
-		const basicCipherText_v3 = await container.getEncryptedBuffer();
+		const basicCipherText_v3 = await container.getEncodedBuffer();
 		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
 		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v2.toString('hex'));
 
@@ -190,16 +188,38 @@ describe('Encrypted Container Tests', function() {
 		const testData1 = Buffer.from('Test', 'utf-8');
 		const testData2 = Buffer.from('More Test', 'utf-8');
 		const container_v1 = EncryptedContainer.EncryptedContainer.fromPlaintext(testData1, [testAccount1, testAccount2]);
-		const encryptedTestData_v1 = await container_v1.getEncryptedBuffer();
+		const encryptedTestData_v1 = await container_v1.getEncodedBuffer();
+		expect(container_v1.encrypted).toBe(true);
 
 		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encryptedTestData_v1, [testAccount2]);
 		container_v2.setPlaintext(testData2);
+		expect(container_v2.encrypted).toBe(true);
 
-		const encryptedTestData_v3 = await container_v2.getEncryptedBuffer();
+		const encryptedTestData_v3 = await container_v2.getEncodedBuffer();
 		const container_v4 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encryptedTestData_v3, [testAccount1]);
 		expect(container_v4.principals.length).toBe(2);
+		expect(container_v4.encrypted).toBe(true);
 
 		const plaintextTestData_v5 = await container_v4.getPlaintext();
 		expect(plaintextTestData_v5).toEqual(testData2);
+	});
+
+	test('Plaintext', async function() {
+		/*
+		 * Create a container with plaintext data
+		 */
+		const testData = Buffer.from('Test', 'utf-8');
+		const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null, false);
+
+		/*
+		 * Verify that the plaintext can be retrieved
+		 */
+		const plaintextData = await container.getPlaintext();
+		expect(container.encrypted).toBe(false);
+		expect(plaintextData).toEqual(testData);
+
+		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncodedBuffer(await container.getEncodedBuffer(), null);
+		expect(container_v2.encrypted).toBe(false);
+		expect(await container_v2.getPlaintext()).toEqual(testData);
 	});
 });
