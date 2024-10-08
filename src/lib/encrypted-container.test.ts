@@ -13,7 +13,7 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create an unencrypted container
 		 */
-		const plaintextBuffer = await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), false);
+		const plaintextBuffer = await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'));
 		expect(plaintextBuffer.toString('hex')).toEqual('3015020101a110300e040c789c0b492d2e010003dd01a1');
 	});
 
@@ -21,13 +21,15 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create a container encrypted with a single public key
 		 */
+		const encryptionOptions: EncryptedContainer.asn1Options = {
+			keys: [testAccount1],
+			cipherKey: testCipherKey,
+			cipherIV: testCipherIV,
+			cipherAlgo: cipherAlgorithm
+		}
 		const encryptedBufferSingle = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
-			true,
-			cipherAlgorithm,
-			[testAccount1],
-			testCipherKey,
-			testCipherIV
+			encryptionOptions
 		);
 		expect(encryptedBufferSingle.toString('hex').slice(0, 120)).toEqual('3081ed0201000101ff3081e43081bd3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
 		expect(encryptedBufferSingle.toString('hex').slice(408)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
@@ -53,13 +55,15 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create a container encrypted with multiple public keys
 		 */
+		const encryptionOptions: EncryptedContainer.asn1Options = {
+			keys: [testAccount1, testAccount2],
+			cipherKey: testCipherKey,
+			cipherIV: testCipherIV,
+			cipherAlgo: cipherAlgorithm
+		}
 		const encryptedBufferMulti = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
-			true,
-			cipherAlgorithm,
-			[testAccount1, testAccount2],
-			testCipherKey,
-			testCipherIV
+			encryptionOptions
 		);
 		expect(encryptedBufferMulti.toString('hex').slice(0, 126)).toEqual('308201ac0201000101ff308201a23082017a3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
 		expect(encryptedBufferMulti.toString('hex').slice(792)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');

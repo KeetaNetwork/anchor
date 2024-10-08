@@ -101,6 +101,28 @@ type ContainerPackage = [
 	}
 ];
 
+type cipherOptions = {
+	/**
+	 * The symmetric cipher key (if any)
+	 */
+	cipherKey?: Buffer;
+	/**
+	 * The symmetric cipher IV (if any)
+	 */
+	cipherIV?: Buffer;
+	/**
+	 * The symmetric cipher algorithm
+	 */
+	cipherAlgo: string;
+}
+
+export type asn1Options = Required<cipherOptions> & {
+	/**
+	 * The set of accounts to encrypt the formatted data
+	 */
+	keys: Account[];
+}
+
 const oidDB = {
 	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
 } as const;
@@ -110,9 +132,9 @@ const oidDB = {
 *
 * @returns The ASN.1 DER data
 */
-async function buildASN1(plaintext: Buffer, toEncryptedBox: false): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, toEncryptedBox: true, algorithm: string, keys: Account[], cipherKey: Buffer, cipherIV: Buffer): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?: string, keys?: Account[], cipherKey?: Buffer, cipherIV?: Buffer): Promise<Buffer> {
+async function buildASN1(plaintext: Buffer): Promise<Buffer>;
+async function buildASN1(plaintext: Buffer, encryptionOptions: asn1Options): Promise<Buffer>;
+async function buildASN1(plaintext: Buffer, encryptionOptions?: asn1Options): Promise<Buffer> {
 	const compressedPlaintext = await zlibDeflate(plaintext);
 
 	const sequence: Partial<ContainerPackage> = [];
@@ -125,19 +147,21 @@ async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?:
 	/*
 	 * Encrypted container box
 	 */
-	if (toEncryptedBox) {
-		if (keys === undefined || cipherKey === undefined || cipherIV === undefined || algorithm === undefined) {
+	if (encryptionOptions) {
+		const { keys, cipherKey, cipherIV, cipherAlgo } = encryptionOptions;
+
+		if (keys === undefined || cipherKey === undefined || cipherIV === undefined || cipherAlgo === undefined) {
 			throw(new Error('internal error: Unsupported method invocation'));
 		}
 
-		if (!(algorithm in oidDB)) {
-			throw(new Error(`Unsupported algorithm: ${algorithm}`));
+		if (!(cipherAlgo in oidDB)) {
+			throw(new Error(`Unsupported algorithm: ${cipherAlgo}`));
 		}
 
-		const algorithmOID = oidDB[algorithm as keyof typeof oidDB];
+		const algorithmOID = oidDB[cipherAlgo as keyof typeof oidDB];
 
 		const cipher = crypto.createCipheriv(
-			algorithm,
+			cipherAlgo,
 			cipherKey,
 			cipherIV
 		);
@@ -401,6 +425,24 @@ async function parseASN1(input: Buffer, keys?: Account[]) {
 	return(retval);
 }
 
+
+
+type encryptedContainerInfo = cipherOptions & {
+	/**
+	 * Set of accounts which can access the data
+	 */
+	principals: Account[];
+	encryptedEncoded?: Buffer;
+}
+
+type unencryptedContainerInfo = {
+	/**
+	 * Unencrypted container should not have any principals
+	 */
+	principals: null;
+	unencryptedEncoded?: Buffer;
+}
+
 export class EncryptedContainer {
 	private static readonly algorithm = 'aes-256-cbc';
 
@@ -410,11 +452,9 @@ export class EncryptedContainer {
 	#mayAccessPlaintext = true;
 
 	/**
-	 * Set of accounts which can access the data
-	 *
-	 * If it is set to "null" it means the data should not be encrypted
+	 * Encryption details
 	 */
-	#principals: Account[] | null;
+	#internalState: encryptedContainerInfo | unencryptedContainerInfo;
 
 	/**
 	 * The plaintext/unencrypted data, if undefined then it has not been generated
@@ -422,39 +462,26 @@ export class EncryptedContainer {
 	#plaintext?: Buffer;
 
 	/**
-	 * The encrypted (and formatted) data, if undefined then it has not been generated
+	 * The formatted data (and possibly encrypted), if undefined then it has not been generated
 	 */
 	#encoded?: Buffer;
 
-	/**
-	 * The symmetric cipher key (if any)
-	 */
-	#cipherKey?: Buffer;
-
-	/**
-	 * The symmetric cipher IV (if any)
-	 */
-	#cipherIV?: Buffer;
-
-	/**
-	 * The symmetric cipher algorithm
-	 */
-	#cipherAlgo = EncryptedContainer.algorithm;
-
-	/**
-	 * If the encrypted container is encrypted
-	 */
-	readonly encrypted: boolean;
-
 	constructor(principals: Account[] | null) {
 		if (principals === null) {
-			this.encrypted = false;
+			this.#internalState = {
+				principals: null
+			};
 		} else {
-			this.encrypted = true;
-		}
-
-		this.#principals = principals;
+			this.#internalState = {
+				principals: principals,
+				cipherAlgo: EncryptedContainer.algorithm
+			}
+		};
 		this.#plaintext = Buffer.alloc(0);
+	}
+
+	get encrypted(): boolean {
+		return(this.#internalState.principals !== null);
 	}
 
 	/**
@@ -547,7 +574,7 @@ export class EncryptedContainer {
 		}
 
 		if (plaintextWrapper.isEncrypted) {
-			const principals = this.#principals;
+			const principals = this.#internalState.principals;
 			if (principals === null) {
 				throw(new Error('May not encrypt data with a null set of principals'));
 			}
@@ -575,14 +602,14 @@ export class EncryptedContainer {
 				return(currentPublicKey);
 			});
 
-			this.#cipherIV = plaintextWrapper?.cipherIV;
-			this.#principals = blobPrincipals;
+			this.#internalState.cipherIV = plaintextWrapper?.cipherIV;
+			this.#internalState.principals = blobPrincipals;
 
 			if (this.encrypted !== true) {
 				throw(new Error('internal error: Encrypted data found but not marked as encrypted'));
 			}
 		} else {
-			this.#principals = null;
+			this.#internalState.principals = null;
 
 			if (this.encrypted !== false) {
 				throw(new Error('internal error: Plaintext data found but marked as encrypted'));
@@ -608,7 +635,7 @@ export class EncryptedContainer {
 
 		const info = this.#computeAndSetKeyInfo(this.encrypted);
 
-		let principals = this.#principals;
+		let principals = this.#internalState.principals;
 		if (info.isEncrypted) {
 			if (principals === null) {
 				throw(new Error('May not decrypt data with a null set of principals'));
@@ -632,8 +659,7 @@ export class EncryptedContainer {
 		}
 
 		const structuredData = await buildASN1(
-			this.#plaintext,
-			false
+			this.#plaintext
 		);
 
 		return(structuredData);
@@ -653,27 +679,28 @@ export class EncryptedContainer {
 			throw(new Error('No encrypted nor plaintext data available'));
 		}
 
-		this.#cipherKey = crypto.randomBytes(32);
-		this.#cipherIV = crypto.randomBytes(16);
-
 		if (!this.encrypted) {
 			throw(new Error('internal error: Asked to encrypt a plaintext buffer'));
 		}
 
-		if (this.#principals === null) {
+		if (this.#internalState.principals === null) {
 			throw(new Error('internal error: May not encrypt data with a null set of principals'));
 		}
+
+		this.#internalState.cipherKey = crypto.randomBytes(32);
+		this.#internalState.cipherIV = crypto.randomBytes(16);
 
 		/**
 		 * structured data is the ASN.1 encoded structure
 		 */
 		const structuredData = await buildASN1(
 			this.#plaintext,
-			true,
-			this.#cipherAlgo,
-			this.#principals,
-			this.#cipherKey,
-			this.#cipherIV
+			{
+				keys: this.#internalState.principals,
+				cipherKey: this.#internalState.cipherKey,
+				cipherIV: this.#internalState.cipherIV,
+				cipherAlgo: this.#internalState.cipherAlgo
+			}
 		);
 
 		this.#encoded = structuredData;
@@ -699,7 +726,7 @@ export class EncryptedContainer {
 			throw(new Error('Unable to grant access, plaintext not available'));
 		}
 
-		if (this.#principals === null) {
+		if (this.#internalState.principals === null) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
@@ -709,7 +736,7 @@ export class EncryptedContainer {
 			accounts = [accounts];
 		}
 
-		this.#principals.push(...accounts);
+		this.#internalState.principals.push(...accounts);
 	}
 
 	/**
@@ -731,13 +758,13 @@ export class EncryptedContainer {
 			throw(new Error('Unable to revoke access, plaintext not available'));
 		}
 
-		if (this.#principals === null) {
+		if (this.#internalState.principals === null) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
 		this.#encoded = undefined;
 
-		this.#principals = this.#principals.filter(function(checkAccount) {
+		this.#internalState.principals = this.#internalState.principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
 		});
 	}
@@ -801,11 +828,11 @@ export class EncryptedContainer {
 	 * this container
 	 */
 	get principals(): Account[] {
-		if (this.#principals === null) {
+		if (this.#internalState.principals === null) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
-		return(this.#principals);
+		return(this.#internalState.principals);
 	}
 }
 
