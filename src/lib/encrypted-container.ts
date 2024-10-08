@@ -470,7 +470,7 @@ export class EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
 		retval.setEncodedBuffer(data);
-		retval.#computeAndSetKeyInfo(true);
+		retval.#computeAndSetKeyInfo(retval.encrypted);
 
 		return(retval);
 	}
@@ -479,7 +479,7 @@ export class EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
 		retval.setEncodedBuffer(data);
-		retval.#computeAndSetKeyInfo(false);
+		retval.#computeAndSetKeyInfo(retval.encrypted);
 
 		return(retval);
 	}
@@ -607,7 +607,7 @@ export class EncryptedContainer {
 		}
 
 
-		const info = this.#computeAndSetKeyInfo(true);
+		const info = this.#computeAndSetKeyInfo(this.encrypted);
 
 		let principals = this.#principals;
 		if (info.isEncrypted) {
