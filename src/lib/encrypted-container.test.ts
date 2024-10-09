@@ -196,7 +196,7 @@ describe('Encrypted Container Tests', function() {
 		expect(container_v1.encrypted).toBe(true);
 
 		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encryptedTestData_v1, [testAccount2]);
-		container_v2.setPlaintextBuffer(testData2);
+		container_v2.setPlaintext(testData2);
 		expect(container_v2.encrypted).toBe(true);
 
 		const encryptedTestData_v3 = await container_v2.getEncodedBuffer();

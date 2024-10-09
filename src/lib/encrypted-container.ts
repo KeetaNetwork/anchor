@@ -432,7 +432,6 @@ type encryptedContainerInfo = cipherOptions & {
 	 * Set of accounts which can access the data
 	 */
 	principals: Account[];
-	encryptedEncoded?: Buffer;
 }
 
 type unencryptedContainerInfo = {
@@ -440,7 +439,6 @@ type unencryptedContainerInfo = {
 	 * Unencrypted container should not have any principals
 	 */
 	principals: null;
-	unencryptedEncoded?: Buffer;
 }
 
 export class EncryptedContainer {
@@ -493,8 +491,8 @@ export class EncryptedContainer {
 	static fromEncryptedBuffer(data: Buffer, principals: Account[]): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
-		retval.setEncodedBuffer(data);
-		retval.#computeAndSetKeyInfo(retval.encrypted);
+		retval.#setEncodedBuffer(data);
+		retval.#computeAndSetKeyInfo(true);
 
 		return(retval);
 	}
@@ -502,8 +500,8 @@ export class EncryptedContainer {
 	static fromEncodedBuffer(data: Buffer, principals: Account[] | null): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
-		retval.setEncodedBuffer(data);
-		retval.#computeAndSetKeyInfo(retval.encrypted);
+		retval.#setEncodedBuffer(data);
+		retval.#computeAndSetKeyInfo(false);
 
 		return(retval);
 	}
@@ -532,7 +530,7 @@ export class EncryptedContainer {
 			retval.disablePlaintext();
 		}
 
-		retval.setPlaintextBuffer(data);
+		retval.setPlaintext(data);
 
 		return(retval);
 	}
@@ -540,7 +538,7 @@ export class EncryptedContainer {
 	/**
 	 * Set the plaintext buffer to the specified value
 	 */
-	setPlaintextBuffer(data: string | Buffer): void {
+	setPlaintext(data: string | Buffer): void {
 		if (typeof data === 'string') {
 			data = Buffer.from(data, 'utf-8');
 		}
@@ -549,24 +547,10 @@ export class EncryptedContainer {
 	}
 
 	/**
-	 * Set the encoded buffer to the specified value
+	 * Set the encoded blob to the specified value
 	 */
-	setEncodedBuffer(data: Buffer): void {
+	#setEncodedBuffer(data: Buffer): void {
 		this.#data = { encoded: data };
-	}
-
-	/**
-	 * Update plaintext buffer
-	 */
-	updatePlaintextBuffer(data: Buffer): void {
-		this.#data = { ...this.#data, plaintext: data };
-	}
-
-	/**
-	 * Update encoded buffer
-	 */
-	updateEncodedBuffer(data: Buffer): void {
-		this.#data = { ...this.#data, encoded: data };
 	}
 
 	private get _encoded(): Buffer | undefined {
@@ -648,7 +632,7 @@ export class EncryptedContainer {
 
 	/**
 	 * Populate the plaintext (as well as symmetric key parameters) from
-	 * the encrypted blob
+	 * the encoded blob
 	 */
 	async #computePlaintext() {
 		if (this._plaintext) {
@@ -673,6 +657,8 @@ export class EncryptedContainer {
 
 		const plaintextWrapper = await parseASN1Decrypt(info, principals);
 		const plaintext = plaintextWrapper.plaintext;
+
+		this.#data = { ...this.#data, plaintext };
 
 		return(plaintext);
 	}
@@ -730,7 +716,7 @@ export class EncryptedContainer {
 			}
 		);
 
-		this.updateEncodedBuffer(structuredData);
+		this.#data = { ...this.#data, encoded: structuredData };
 
 		return(structuredData);
 	}
@@ -762,7 +748,7 @@ export class EncryptedContainer {
 		}
 
 		// Encoded data is invalidated with the new permissions so set only the plaintext data
-		this.setPlaintextBuffer(this._plaintext);
+		this.setPlaintext(this._plaintext);
 
 		this.#internalState.principals.push(...accounts);
 	}
@@ -771,7 +757,7 @@ export class EncryptedContainer {
 	 * Grant access to the secret for account(s).
 	 */
 	async grantAccess(accounts: Account[] | Account): Promise<void> {
-		this.updatePlaintextBuffer(await this.#computePlaintext());
+		await this.#computePlaintext();
 
 		this.grantAccessSync(accounts);
 	}
@@ -791,7 +777,7 @@ export class EncryptedContainer {
 		}
 
 		// Encoded data is invalidated with the new permissions so set only the plaintext data
-		this.setPlaintextBuffer(this._plaintext);
+		this.setPlaintext(this._plaintext);
 
 		this.#internalState.principals = this.#internalState.principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
@@ -802,7 +788,8 @@ export class EncryptedContainer {
 	 * Revoke access to the secret for an account
 	 */
 	async revokeAccess(account: Account): Promise<void> {
-		this.updatePlaintextBuffer(await this.#computePlaintext());
+		await this.#computePlaintext();
+
 		this.revokeAccessSync(account);
 	}
 
@@ -814,7 +801,7 @@ export class EncryptedContainer {
 	}
 
 	async #getPlaintextInternal() {
-		this.updatePlaintextBuffer(await this.#computePlaintext());
+		await this.#computePlaintext();
 
 		if (this._plaintext === undefined) {
 			throw(new Error('internal error: Plaintext could not be decoded'));
