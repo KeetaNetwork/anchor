@@ -31,8 +31,8 @@ describe('Encrypted Container Internal Tests', function() {
 			Buffer.from('Test'),
 			encryptionOptions
 		);
-		expect(encryptedBufferSingle.toString('hex').slice(0, 120)).toEqual('3081ed0201000101ff3081e43081bd3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
-		expect(encryptedBufferSingle.toString('hex').slice(408)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
+		expect(encryptedBufferSingle.toString('hex').slice(0, 116)).toEqual('3081f6020101a081f03081ed3081bb3081b804220002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b04819104');
+		expect(encryptedBufferSingle.toString('hex').slice(404)).toEqual('060960864801650304012a041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
 
 		/*
 		 * Verify that it can be decrypted and get back the original data
@@ -65,8 +65,8 @@ describe('Encrypted Container Internal Tests', function() {
 			Buffer.from('Test'),
 			encryptionOptions
 		);
-		expect(encryptedBufferMulti.toString('hex').slice(0, 126)).toEqual('308201ac0201000101ff308201a23082017a3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
-		expect(encryptedBufferMulti.toString('hex').slice(792)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
+		expect(encryptedBufferMulti.toString('hex').slice(0, 124)).toEqual('308201b4020101a08201ad308201a9308201763081b804220002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b04819104');
+		expect(encryptedBufferMulti.toString('hex').slice(786)).toEqual('060960864801650304012a041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
 
 		/*
 		 * Verify that it can be decrypted by either party
