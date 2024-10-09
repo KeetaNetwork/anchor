@@ -280,7 +280,6 @@ describe('Encrypted Container Tests', function() {
 
 		const fromBufferContainerEncoded = await fromBufferContainer.getEncodedBuffer();
 		expect(fromBufferContainerEncoded.length).toBe(32);
-		expect(await fromBufferContainer.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
 
 		// Sync functions that should fail for a plaintext container
 		const testCases: (() => void | Promise<void>)[] = [
@@ -314,6 +313,8 @@ describe('Encrypted Container Tests', function() {
 				expect(testCase).toThrow();
 			}
 		}
+
+		expect(await fromBufferContainer.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
 
 		/*
 		 * Verify that the plaintext defaults to unlocked when container is constructed without specifying locked
