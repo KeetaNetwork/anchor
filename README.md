@@ -6,6 +6,7 @@ Keeta Anchor Project
 This is the reference implementation of the KeetaPay Anchor SDK.
 
 It implements:
+
 	- The Anchor SDK in TypeScript
 	- The Anchor Client in TypeScript
 
