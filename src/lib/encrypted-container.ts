@@ -689,10 +689,6 @@ export class EncryptedContainer {
 	 * initialized they will be initialized at this time.
 	 */
 	async #computeEncryptedEncoded() {
-		if (this._encoded !== undefined) {
-			return(this._encoded);
-		}
-
 		if (this._plaintext === undefined) {
 			throw(new Error('No encrypted nor plaintext data available'));
 		}
@@ -723,6 +719,10 @@ export class EncryptedContainer {
 	}
 
 	async #computeEncoded() {
+		if (this._encoded !== undefined) {
+			return(this._encoded);
+		}
+
 		if (!this.encrypted) {
 			return(await this.#computePlaintextEncoded());
 		} else {
@@ -801,21 +801,6 @@ export class EncryptedContainer {
 		this.#mayAccessPlaintext = false;
 	}
 
-	async #getPlaintextInternal() {
-		await this.#computePlaintext();
-
-		if (this._plaintext === undefined) {
-			throw(new Error('internal error: Plaintext could not be decoded'));
-		}
-
-		/*
-		 * Make a copy of our internal buffer so that any changes made
-		 * to either our internal buffer or by our caller do not
-		 * interfere
-		 */
-		return(Buffer.from(this._plaintext));
-	}
-
 	/**
 	 * Get the plaintext for this instance
 	 */
@@ -824,23 +809,35 @@ export class EncryptedContainer {
 			throw(new Error('May not access plaintext'));
 		}
 
-		return(await this.#getPlaintextInternal());
+		const plaintext = await this.#computePlaintext();
+
+		if (plaintext === undefined) {
+			throw(new Error('internal error: Plaintext could not be decoded'));
+		}
+
+		/*
+		 * Make a copy of our internal buffer so that any changes made
+		 * to either our internal buffer or by our caller do not
+		 * interfere
+		 */
+		return(Buffer.from(plaintext));
 	}
 
 	/**
 	 * Get the serializable buffer which can be stored and reconstructed
 	 */
 	async getEncodedBuffer(): Promise<Buffer> {
-		if (this._encoded !== undefined) {
-			return(this._encoded);
-		}
-
 		const serialized = await this.#computeEncoded();
 
 		if (serialized === undefined) {
 			throw(new Error('internal error: Could not encode data'));
 		}
 
+		/*
+		 * Make a copy of our internal buffer so that any changes made
+		 * to either our internal buffer or by our caller do not
+		 * interfere
+		 */
 		return(Buffer.from(serialized));
 	}
 
