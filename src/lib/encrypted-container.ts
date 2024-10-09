@@ -150,7 +150,7 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 	if (encryptionOptions) {
 		const { keys, cipherKey, cipherIV, cipherAlgo } = encryptionOptions;
 
-		if (keys === undefined || cipherKey === undefined || cipherIV === undefined || cipherAlgo === undefined) {
+		if (keys === undefined || keys.length === 0 || cipherKey === undefined || cipherIV === undefined || cipherAlgo === undefined) {
 			throw(new Error('internal error: Unsupported method invocation'));
 		}
 
