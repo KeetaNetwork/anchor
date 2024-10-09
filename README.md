@@ -7,8 +7,8 @@ This is the reference implementation of the KeetaPay Anchor SDK.
 
 It implements:
 
-	- The Anchor SDK in TypeScript
-	- The Anchor Client in TypeScript
+  - The Anchor SDK in TypeScript
+  - The Anchor Client in TypeScript
 
 The goal of an Anchor is to bridge the logical (blockchain ledger) and the
 physical (banking, payment networks) realms.  The Anchor SDK is a set of
