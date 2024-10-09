@@ -406,12 +406,12 @@ export class EncryptedContainer {
 	/**
 	 * The plaintext/unencrypted data, if undefined then it has not been generated
 	 */
-	#plaintext?: Buffer;
+	#plaintext: Buffer | undefined;
 
 	/**
 	 * The encrypted (and formatted) data, if undefined then it has not been generated
 	 */
-	#encrypted?: Buffer;
+	#encrypted: Buffer | undefined;
 
 	/**
 	 * The symmetric cipher key
@@ -421,7 +421,7 @@ export class EncryptedContainer {
 	/**
 	 * The symmetric cipher IV
 	 */
-	#cipherIV?: Buffer;
+	#cipherIV: Buffer | undefined;
 
 	/**
 	 * The symmetric cipher algorithm
