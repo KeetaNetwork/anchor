@@ -275,17 +275,32 @@ describe('Encrypted Container Tests', function() {
 		const newTestData = 'New Test Data';
 		container.setPlaintext(newTestData);
 
-		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncodedBuffer(await container.getEncodedBuffer(), null);
-		expect(container_v2.encrypted).toBe(false);
-		expect(await container_v2.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
+		const fromBufferContainer = EncryptedContainer.EncryptedContainer.fromEncodedBuffer(await container.getEncodedBuffer(), null);
+		expect(fromBufferContainer.encrypted).toBe(false);
+
+		const fromBufferContainerEncoded = await fromBufferContainer.getEncodedBuffer();
+		expect(fromBufferContainerEncoded.length).toBe(32);
+		expect(await fromBufferContainer.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
 
 		// Sync functions that should fail for a plaintext container
-		const testCases = [
+		const testCases: (() => void | Promise<void>)[] = [
 			function() {
 				container.grantAccessSync(testAccount1);
 			},
+			async function() {
+				await container.grantAccess(testAccount1);
+			},
+			function() {
+				fromBufferContainer.grantAccessSync(testAccount1);
+			},
 			function() {
 				container.revokeAccessSync(testAccount1);
+			},
+			async function() {
+				await container.revokeAccess(testAccount1);
+			},
+			function() {
+				fromBufferContainer.revokeAccessSync(testAccount1);
 			},
 			function() {
 				container.principals;
@@ -293,7 +308,11 @@ describe('Encrypted Container Tests', function() {
 		];
 
 		for (const testCase of testCases) {
-			expect(testCase).toThrow();
+			if (testCase.constructor.name === 'AsyncFunction') {
+				await expect(testCase).rejects.toThrow();
+			} else {
+				expect(testCase).toThrow();
+			}
 		}
 
 		/*

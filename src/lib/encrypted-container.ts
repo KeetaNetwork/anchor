@@ -831,6 +831,10 @@ export class EncryptedContainer {
 	 * Get the serializable buffer which can be stored and reconstructed
 	 */
 	async getEncodedBuffer(): Promise<Buffer> {
+		if (this._encoded !== undefined) {
+			return(this._encoded);
+		}
+
 		const serialized = await this.#computeEncoded();
 
 		if (serialized === undefined) {
