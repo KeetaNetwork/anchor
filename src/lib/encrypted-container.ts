@@ -452,7 +452,7 @@ export class EncryptedContainer {
 	/**
 	 * Encryption details
 	 */
-	#internalState: encryptedContainerInfo | unencryptedContainerInfo;
+	protected _internalState: encryptedContainerInfo | unencryptedContainerInfo;
 
 	/**
 	 * The plaintext or encoded (and possibly encrypted) data
@@ -464,11 +464,11 @@ export class EncryptedContainer {
 
 	constructor(principals: Account[] | null) {
 		if (principals === null) {
-			this.#internalState = {
+			this._internalState = {
 				principals: null
 			};
 		} else {
-			this.#internalState = {
+			this._internalState = {
 				principals: principals,
 				cipherAlgo: EncryptedContainer.algorithm
 			}
@@ -477,7 +477,11 @@ export class EncryptedContainer {
 	}
 
 	get encrypted(): boolean {
-		return(this.#internalState.principals !== null);
+		return(this._internalState.principals !== null);
+	}
+
+	#isEncrypted(): this is { _internalState: encryptedContainerInfo } {
+		return(this.encrypted);
 	}
 
 	/**
@@ -585,7 +589,7 @@ export class EncryptedContainer {
 		}
 
 		if (plaintextWrapper.isEncrypted) {
-			const principals = this.#internalState.principals;
+			const principals = this._internalState.principals;
 			if (principals === null) {
 				throw(new Error('May not encrypt data with a null set of principals'));
 			}
@@ -613,14 +617,15 @@ export class EncryptedContainer {
 				return(currentPublicKey);
 			});
 
-			this.#internalState.cipherIV = plaintextWrapper?.cipherIV;
-			this.#internalState.principals = blobPrincipals;
+			this._internalState.cipherIV = plaintextWrapper?.cipherIV;
+			this._internalState.principals = blobPrincipals;
 
+			// Confirm updated principals are populated correctly which sets container to encrypted
 			if (this.encrypted !== true) {
 				throw(new Error('internal error: Encrypted data found but not marked as encrypted'));
 			}
 		} else {
-			this.#internalState.principals = null;
+			this._internalState.principals = null;
 
 			if (this.encrypted !== false) {
 				throw(new Error('internal error: Plaintext data found but marked as encrypted'));
@@ -646,7 +651,7 @@ export class EncryptedContainer {
 
 		const info = this.#computeAndSetKeyInfo(this.encrypted);
 
-		let principals = this.#internalState.principals;
+		let principals = this._internalState.principals;
 		if (info.isEncrypted) {
 			if (principals === null) {
 				throw(new Error('May not decrypt data with a null set of principals'));
@@ -692,16 +697,12 @@ export class EncryptedContainer {
 			throw(new Error('No encrypted nor plaintext data available'));
 		}
 
-		if (!this.encrypted) {
+		if (!this.#isEncrypted()) {
 			throw(new Error('internal error: Asked to encrypt a plaintext buffer'));
 		}
 
-		if (this.#internalState.principals === null) {
-			throw(new Error('internal error: May not encrypt data with a null set of principals'));
-		}
-
-		this.#internalState.cipherKey = crypto.randomBytes(32);
-		this.#internalState.cipherIV = crypto.randomBytes(16);
+		this._internalState.cipherKey = crypto.randomBytes(32);
+		this._internalState.cipherIV = crypto.randomBytes(16);
 
 		/**
 		 * structured data is the ASN.1 encoded structure
@@ -709,10 +710,10 @@ export class EncryptedContainer {
 		const structuredData = await buildASN1(
 			this._plaintext,
 			{
-				keys: this.#internalState.principals,
-				cipherKey: this.#internalState.cipherKey,
-				cipherIV: this.#internalState.cipherIV,
-				cipherAlgo: this.#internalState.cipherAlgo
+				keys: this._internalState.principals,
+				cipherKey: this._internalState.cipherKey,
+				cipherIV: this._internalState.cipherIV,
+				cipherAlgo: this._internalState.cipherAlgo
 			}
 		);
 
@@ -739,7 +740,7 @@ export class EncryptedContainer {
 			throw(new Error('Unable to grant access, plaintext not available'));
 		}
 
-		if (this.#internalState.principals === null) {
+		if (!this.#isEncrypted()) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
@@ -750,7 +751,7 @@ export class EncryptedContainer {
 		// Encoded data is invalidated with the new permissions so set only the plaintext data
 		this.setPlaintext(this._plaintext);
 
-		this.#internalState.principals.push(...accounts);
+		this._internalState.principals.push(...accounts);
 	}
 
 	/**
@@ -772,14 +773,14 @@ export class EncryptedContainer {
 			throw(new Error('Unable to revoke access, plaintext not available'));
 		}
 
-		if (this.#internalState.principals === null) {
+		if (!this.#isEncrypted()) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
 		// Encoded data is invalidated with the new permissions so set only the plaintext data
 		this.setPlaintext(this._plaintext);
 
-		this.#internalState.principals = this.#internalState.principals.filter(function(checkAccount) {
+		this._internalState.principals = this._internalState.principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
 		});
 	}
@@ -844,11 +845,11 @@ export class EncryptedContainer {
 	 * this container
 	 */
 	get principals(): Account[] {
-		if (this.#internalState.principals === null) {
+		if (!this.#isEncrypted()) {
 			throw(new Error('May not manage access to a plaintext container'));
 		}
 
-		return(this.#internalState.principals);
+		return(this._internalState.principals);
 	}
 }
 
