@@ -9,6 +9,53 @@ const testCipherIV = Buffer.from('94DE12D10B4455148E92A77BAFEC7D94', 'hex');
 const cipherAlgorithm = 'aes-256-cbc';
 
 describe('Encrypted Container Internal Tests', function() {
+	describe('Build ASN.1', function() {
+		/*
+		* Test cases for invalid parameters
+		*/
+		const defaultTestEncryptionOptions = {
+			keys: [testAccount1],
+			cipherKey: testCipherKey,
+			cipherIV: testCipherIV,
+			cipherAlgo: cipherAlgorithm
+		};
+		const testCases = [
+			{
+				description: 'should fail with undefined keys',
+				encryptionOptions: { ...defaultTestEncryptionOptions, keys: undefined }
+			},
+			{
+				description: 'should fail with missing keys',
+				encryptionOptions: { ...defaultTestEncryptionOptions, keys: [] }
+			},
+
+			{
+				description: 'should fail with undefined cipher key',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherKey: undefined }
+			},
+			{
+				description: 'should fail with undefined cipher IV',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherIV: undefined }
+			},
+			{
+				description: 'should fail with undefined cipher algorithm',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherAlgo: undefined }
+			},
+			{
+				description: 'should fail with unsupported cipher algorithm',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherAlgo: 'xxx' }
+			}
+		];
+		for (const testCase of testCases) {
+			test(testCase.description, async function() {
+				await expect(async function() {
+					// @ts-ignore
+					await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), testCase.encryptionOptions);
+				}).rejects.toThrow();
+			});
+		}
+	});
+
 	test('Parse/Build ASN.1 (Unencrypted)', async function() {
 		/*
 		 * Create an unencrypted container
@@ -210,7 +257,7 @@ describe('Encrypted Container Tests', function() {
 
 	test('Plaintext', async function() {
 		/*
-		 * Create a container with plaintext data
+		 * Create a container with plaintext data as a buffer
 		 */
 		const testData = Buffer.from('Test', 'utf-8');
 		const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null, false);
@@ -222,8 +269,45 @@ describe('Encrypted Container Tests', function() {
 		expect(container.encrypted).toBe(false);
 		expect(plaintextData).toEqual(testData);
 
+		/*
+		 * Verify that the plaintext can be set from a string
+		 */
+		const newTestData = 'New Test Data';
+		container.setPlaintext(newTestData);
+
 		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncodedBuffer(await container.getEncodedBuffer(), null);
 		expect(container_v2.encrypted).toBe(false);
-		expect(await container_v2.getPlaintext()).toEqual(testData);
+		expect(await container_v2.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
+
+		// Sync functions that should fail for a plaintext container
+		const testCases = [
+			function() {
+				container.grantAccessSync(testAccount1);
+			},
+			function() {
+				container.revokeAccessSync(testAccount1);
+			},
+			function() {
+				container.principals;
+			}
+		];
+
+		for (const testCase of testCases) {
+			expect(testCase).toThrow();
+		}
+
+		/*
+		 * Verify that the plaintext defaults to unlocked when container is constructed without specifying locked
+		 */
+		const unlockedContainer = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null);
+		expect(await unlockedContainer.getPlaintext()).toEqual(testData);
+
+		/*
+		 * Verify that the plaintext container is locked when container is constructed with principals and locked is not defined
+		 */
+		const lockedContainer = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, [testAccount1]);
+		await expect(async function() {
+			await lockedContainer.getPlaintext();
+		}).rejects.toThrow();
 	});
 });
