@@ -105,11 +105,11 @@ type CipherOptions = {
 	/**
 	 * The symmetric cipher key (if any)
 	 */
-	cipherKey?: Buffer;
+	cipherKey: Buffer | undefined;
 	/**
 	 * The symmetric cipher IV (if any)
 	 */
-	cipherIV?: Buffer;
+	cipherIV: Buffer | undefined;
 	/**
 	 * The symmetric cipher algorithm
 	 */
@@ -470,6 +470,8 @@ export class EncryptedContainer {
 		} else {
 			this._internalState = {
 				principals: principals,
+				cipherKey: undefined,
+				cipherIV: undefined,
 				cipherAlgo: EncryptedContainer.algorithm
 			}
 		};

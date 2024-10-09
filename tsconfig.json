@@ -26,6 +26,7 @@
 		"noUncheckedIndexedAccess": true,
 		"skipLibCheck": true,
 		"strictNullChecks": true,
+		"exactOptionalPropertyTypes": true,
 		"plugins": [{
 			"transform": "typia/lib/transform"
 		}]

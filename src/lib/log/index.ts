@@ -37,7 +37,7 @@ export class Log implements Logger {
 	/**
 	 * Interval holding the current autoSync process
 	 */
-	#autoSyncInterval?: NodeJS.Timeout;
+	#autoSyncInterval: NodeJS.Timeout | undefined = undefined;
 
 	/**
 	 * Keep track of whether or not we are currently syncing
@@ -60,11 +60,11 @@ export class Log implements Logger {
 	}
 
 	#log(level: LogLevel, options: LogOptionsParam, from: string, ...args: unknown[]): void {
-		let trace: string | undefined;
+		const log: LogEntry = { options, level, from, args };
 		if (this.#logDebugTracing) {
-			trace = new Error().stack?.split('\n').slice(2).join('\n');
+			log.trace = new Error().stack?.split('\n').slice(2).join('\n') ?? '[No stack trace available]';
 		}
-		this.#logs.push({ options, level, from, args, trace });
+		this.#logs.push(log);
 	}
 
 	#extractArguments(args: unknown[]): { options: LogOptionsParam, from: string } {
