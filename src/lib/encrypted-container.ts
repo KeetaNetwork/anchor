@@ -116,7 +116,7 @@ type CipherOptions = {
 	cipherAlgo: string;
 }
 
-export type ASN1Options = Required<CipherOptions> & {
+type ASN1Options = Required<CipherOptions> & {
 	/**
 	 * The set of accounts to encrypt the formatted data
 	 */
