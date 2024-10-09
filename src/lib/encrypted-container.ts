@@ -101,7 +101,7 @@ type ContainerPackage = [
 	}
 ];
 
-type cipherOptions = {
+type CipherOptions = {
 	/**
 	 * The symmetric cipher key (if any)
 	 */
@@ -116,7 +116,7 @@ type cipherOptions = {
 	cipherAlgo: string;
 }
 
-export type asn1Options = Required<cipherOptions> & {
+export type ASN1Options = Required<CipherOptions> & {
 	/**
 	 * The set of accounts to encrypt the formatted data
 	 */
@@ -133,8 +133,8 @@ const oidDB = {
 * @returns The ASN.1 DER data
 */
 async function buildASN1(plaintext: Buffer): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, encryptionOptions: asn1Options): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, encryptionOptions?: asn1Options): Promise<Buffer> {
+async function buildASN1(plaintext: Buffer, encryptionOptions: ASN1Options): Promise<Buffer>;
+async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Promise<Buffer> {
 	const compressedPlaintext = await zlibDeflate(plaintext);
 
 	const sequence: Partial<ContainerPackage> = [];
@@ -427,14 +427,14 @@ async function parseASN1(input: Buffer, keys?: Account[]) {
 
 
 
-type encryptedContainerInfo = cipherOptions & {
+type EncryptedContainerInfo = CipherOptions & {
 	/**
 	 * Set of accounts which can access the data
 	 */
 	principals: Account[];
 }
 
-type unencryptedContainerInfo = {
+type UnencryptedContainerInfo = {
 	/**
 	 * Unencrypted container should not have any principals
 	 */
@@ -452,7 +452,7 @@ export class EncryptedContainer {
 	/**
 	 * Encryption details
 	 */
-	protected _internalState: encryptedContainerInfo | unencryptedContainerInfo;
+	protected _internalState: EncryptedContainerInfo | UnencryptedContainerInfo;
 
 	/**
 	 * The plaintext or encoded (and possibly encrypted) data
@@ -480,7 +480,7 @@ export class EncryptedContainer {
 		return(this._internalState.principals !== null);
 	}
 
-	#isEncrypted(): this is { _internalState: encryptedContainerInfo } {
+	#isEncrypted(): this is { _internalState: EncryptedContainerInfo } {
 		return(this.encrypted);
 	}
 

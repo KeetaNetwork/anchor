@@ -21,7 +21,7 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create a container encrypted with a single public key
 		 */
-		const encryptionOptions: EncryptedContainer.asn1Options = {
+		const encryptionOptions: EncryptedContainer.ASN1Options = {
 			keys: [testAccount1],
 			cipherKey: testCipherKey,
 			cipherIV: testCipherIV,
@@ -55,7 +55,7 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create a container encrypted with multiple public keys
 		 */
-		const encryptionOptions: EncryptedContainer.asn1Options = {
+		const encryptionOptions: EncryptedContainer.ASN1Options = {
 			keys: [testAccount1, testAccount2],
 			cipherKey: testCipherKey,
 			cipherIV: testCipherIV,
