@@ -424,7 +424,7 @@ async function parseASN1(input: Buffer, keys?: Account[]) {
 
 
 
-type EncryptedContainerInfo = CipherOptions & {
+type EncryptedContainerInfo = Pick<CipherOptions, 'cipherAlgo'> & {
 	/**
 	 * Set of accounts which can access the data
 	 */
@@ -467,8 +467,6 @@ export class EncryptedContainer {
 		} else {
 			this._internalState = {
 				principals: principals,
-				cipherKey: undefined,
-				cipherIV: undefined,
 				cipherAlgo: EncryptedContainer.algorithm
 			}
 		};
@@ -616,7 +614,6 @@ export class EncryptedContainer {
 				return(currentPublicKey);
 			});
 
-			this._internalState.cipherIV = plaintextWrapper?.cipherIV;
 			this._internalState.principals = blobPrincipals;
 
 			// Confirm updated principals are populated correctly which sets container to encrypted
@@ -696,9 +693,6 @@ export class EncryptedContainer {
 			throw(new Error('internal error: Asked to encrypt a plaintext buffer'));
 		}
 
-		this._internalState.cipherKey = crypto.randomBytes(32);
-		this._internalState.cipherIV = crypto.randomBytes(16);
-
 		/**
 		 * structured data is the ASN.1 encoded structure
 		 */
@@ -706,8 +700,8 @@ export class EncryptedContainer {
 			this._plaintext,
 			{
 				keys: this._internalState.principals,
-				cipherKey: this._internalState.cipherKey,
-				cipherIV: this._internalState.cipherIV,
+				cipherKey: crypto.randomBytes(32),
+				cipherIV: crypto.randomBytes(16),
 				cipherAlgo: this._internalState.cipherAlgo
 			}
 		);
