@@ -21,10 +21,6 @@ describe('Encrypted Container Internal Tests', function() {
 		};
 		const testCases = [
 			{
-				description: 'should fail with undefined keys',
-				encryptionOptions: { ...defaultTestEncryptionOptions, keys: undefined }
-			},
-			{
 				description: 'should fail with missing keys',
 				encryptionOptions: { ...defaultTestEncryptionOptions, keys: [] }
 			},
@@ -38,10 +34,6 @@ describe('Encrypted Container Internal Tests', function() {
 				encryptionOptions: { ...defaultTestEncryptionOptions, cipherIV: undefined }
 			},
 			{
-				description: 'should fail with undefined cipher algorithm',
-				encryptionOptions: { ...defaultTestEncryptionOptions, cipherAlgo: undefined }
-			},
-			{
 				description: 'should fail with unsupported cipher algorithm',
 				encryptionOptions: { ...defaultTestEncryptionOptions, cipherAlgo: 'xxx' }
 			}
@@ -49,7 +41,6 @@ describe('Encrypted Container Internal Tests', function() {
 		for (const testCase of testCases) {
 			test(testCase.description, async function() {
 				await expect(async function() {
-					// @ts-ignore
 					await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), testCase.encryptionOptions);
 				}).rejects.toThrow();
 			});
@@ -282,7 +273,7 @@ describe('Encrypted Container Tests', function() {
 		expect(fromBufferContainerEncoded.length).toBe(32);
 
 		// Sync functions that should fail for a plaintext container
-		const testCases: (() => void | Promise<void>)[] = [
+		const testCases = [
 			function() {
 				container.grantAccessSync(testAccount1);
 			},

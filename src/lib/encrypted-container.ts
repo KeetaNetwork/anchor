@@ -132,8 +132,6 @@ const oidDB = {
 *
 * @returns The ASN.1 DER data
 */
-async function buildASN1(plaintext: Buffer): Promise<Buffer>;
-async function buildASN1(plaintext: Buffer, encryptionOptions: ASN1Options): Promise<Buffer>;
 async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Promise<Buffer> {
 	const compressedPlaintext = await zlibDeflate(plaintext);
 
@@ -256,7 +254,6 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 	} else {
 		isEncrypted = false;
 	}
-
 
 	const value = valueBox.contains;
 	let containedCompressed: Buffer;
