@@ -1,12 +1,23 @@
 import { test, expect, describe } from 'vitest';
 import { Account } from '@keetapay/keetanet-node/dist/lib/account.js';
 import * as EncryptedContainer from './encrypted-container.js';
+import { JStoASN1 } from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
 
 const testAccount1 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
 const testAccount2 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1);
 const testCipherKey = Buffer.from('379D32897C8726F169621464CB1F0B0940308CD91F32A05728C11237CB79E178', 'hex');
 const testCipherIV = Buffer.from('94DE12D10B4455148E92A77BAFEC7D94', 'hex');
 const cipherAlgorithm = 'aes-256-cbc';
+
+/*
+	* Create a container encrypted with a single public key
+	*/
+const defaultEncryptionOptions = {
+	keys: [testAccount1],
+	cipherKey: testCipherKey,
+	cipherIV: testCipherIV,
+	cipherAlgo: cipherAlgorithm
+}
 
 describe('Encrypted Container Internal Tests', function() {
 	describe('Build ASN.1', function() {
@@ -47,6 +58,78 @@ describe('Encrypted Container Internal Tests', function() {
 		}
 	});
 
+	describe('Parse ASN.1', async function() {
+		const formatASN1 = function(version: string | number, encrypted: string | number, contains: null | string | number | Buffer | string[]) {
+			const sequence = [];
+			sequence[0] = version;
+			sequence[1] = {
+				type: 'context',
+				value: encrypted,
+				contains
+			};
+			const outputASN1 = JStoASN1(sequence);
+			const outputDER = Buffer.from(outputASN1.toBER(false));
+			return(outputDER);
+		};
+		const encryptedBufferSingle = await EncryptedContainer._Testing.buildASN1(
+			Buffer.from('Test'),
+			defaultEncryptionOptions
+		);
+		/*
+		* Test cases for invalid parameters
+		*/
+		const testCases = [
+			{
+				description: 'should fail with missing keys for encrypted buffer',
+				input: encryptedBufferSingle,
+				keys: []
+			},
+			{
+				description: 'should fail with sequence not an array',
+				input: Buffer.from('Test')
+			},
+			{
+				description: 'should fail with version not a bigint',
+				input: formatASN1('test', 0, 0)
+			},
+			{
+				description: 'should fail with unsupported version (0)',
+				input: formatASN1(0, 0, 0)
+			},
+			{
+				description: 'should fail with invalid sequence[1] not an object',
+				input: Buffer.from(JStoASN1([1, 'Test']).toBER(false))
+			},
+			{
+				description: 'should fail with invalid sequence[1] is null',
+				input: Buffer.from(JStoASN1([1, null]).toBER(false))
+			},
+			{
+				description: 'should fail with invalid value range',
+				input: formatASN1(1, -1, 0)
+			},
+			{
+				description: 'should fail with null contains type',
+				input: formatASN1(1, 1, null)
+			},
+			{
+				description: 'should fail with invalid contains type',
+				input: formatASN1(1, 1, 0)
+			},
+			{
+				description: 'should fail with too many values for unencrypted container',
+				input: formatASN1(1, 1, ['test1', 'test2'])
+			}
+		];
+		for (const testCase of testCases) {
+			test(testCase.description, async function() {
+				await expect(async function() {
+					await EncryptedContainer._Testing.parseASN1(testCase.input, testCase.keys);
+				}).rejects.toThrow();
+			});
+		}
+	});
+
 	test('Parse/Build ASN.1 (Unencrypted)', async function() {
 		/*
 		 * Create an unencrypted container
@@ -56,18 +139,9 @@ describe('Encrypted Container Internal Tests', function() {
 	});
 
 	test('Parse/Build ASN.1 (Single)', async function() {
-		/*
-		 * Create a container encrypted with a single public key
-		 */
-		const encryptionOptions = {
-			keys: [testAccount1],
-			cipherKey: testCipherKey,
-			cipherIV: testCipherIV,
-			cipherAlgo: cipherAlgorithm
-		}
 		const encryptedBufferSingle = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
-			encryptionOptions
+			defaultEncryptionOptions
 		);
 		expect(encryptedBufferSingle.toString('hex').slice(0, 116)).toEqual('3081f6020101a081f03081ed3081bb3081b804220002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b04819104');
 		expect(encryptedBufferSingle.toString('hex').slice(404)).toEqual('060960864801650304012a041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
@@ -94,10 +168,8 @@ describe('Encrypted Container Internal Tests', function() {
 		 * Create a container encrypted with multiple public keys
 		 */
 		const encryptionOptions = {
-			keys: [testAccount1, testAccount2],
-			cipherKey: testCipherKey,
-			cipherIV: testCipherIV,
-			cipherAlgo: cipherAlgorithm
+			...defaultEncryptionOptions,
+			keys: [testAccount1, testAccount2]
 		}
 		const encryptedBufferMulti = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
