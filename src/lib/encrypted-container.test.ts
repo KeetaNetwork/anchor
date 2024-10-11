@@ -59,7 +59,7 @@ describe('Encrypted Container Internal Tests', function() {
 	});
 
 	describe('Parse ASN.1', async function() {
-		const formatASN1 = function(version: string | number, encrypted: string | number, contains: null | string | number | Buffer | string[]) {
+		const formatASN1 = function(version: string | number, encrypted: number, contains: null | string | number | Buffer | string[]) {
 			const sequence = [];
 			sequence[0] = version;
 			sequence[1] = {
@@ -86,7 +86,7 @@ describe('Encrypted Container Internal Tests', function() {
 			},
 			{
 				description: 'should fail with sequence not an array',
-				input: Buffer.from('Test')
+				input: Buffer.from(JStoASN1('TEST').toBER(false))
 			},
 			{
 				description: 'should fail with version not a bigint',
@@ -106,7 +106,8 @@ describe('Encrypted Container Internal Tests', function() {
 			},
 			{
 				description: 'should fail with invalid value range',
-				input: formatASN1(1, -1, 0)
+				input: formatASN1(1, 5, 0),
+				keys: []
 			},
 			{
 				description: 'should fail with null contains type',
