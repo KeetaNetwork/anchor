@@ -144,11 +144,10 @@ type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
 type ValuizableArray = Array<Valuizable | undefined>;
 type ValuizableObject = { [key: string]: Valuizable | undefined };
 
-type ValuizableKind = 'any' | 'object' | 'array' | 'aggregate' | 'primitive';
+type ValuizableKind = 'any' | 'object' | 'array' | 'primitive';
 interface Valuizable {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
-	(expect: 'aggregate'): Promise<ValuizableObject | ValuizableArray>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
@@ -342,9 +341,6 @@ class Metadata {
 				return(expectObject(input));
 			case 'array':
 				return(expectArray(input));
-			case 'aggregate':
-				/* XXX:TODO */
-				return(input);
 			case 'primitive':
 				return(expectPrimitive(input));
 			default:
@@ -397,7 +393,6 @@ class Metadata {
 
 	async value(expect: 'object'): Promise<ValuizableObject>;
 	async value(expect: 'array'): Promise<ValuizableArray>;
-	async value(expect: 'aggregate'): Promise<ValuizableObject | ValuizableArray>;
 	async value(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	async value(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	async value(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
