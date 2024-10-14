@@ -1,138 +1,192 @@
-import { test, expect, afterEach } from 'vitest';
+import { test, expect } from 'vitest';
 import Resolver from './resolver.js';
 import * as KeetaNetClient from '@keetapay/keetanet-client';
-import { createTestNode } from '@keetapay/keetanet-node/dist/lib/utils/helper_testing.js';
-import * as KeetaNetNode from '@keetapay/keetanet-node/dist/client';
-import * as util from 'node:util';
+import { createNodeAndClient } from './utils/tests/node.js';
 
-const toCleanup: (() => Promise<void>)[] = [];
-afterEach(async function() {
-	await Promise.all(toCleanup.splice(0).map(async function(code) {
-		await code();
-	}));
-});
-
-/* XXX:TODO: Maybe this should be moved to a helper file ? */
-async function createNodeAndClient(userAccount: InstanceType<typeof KeetaNetClient.lib.Account>, repAccountSeed?: string | bigint): Promise<{
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-	userClient: InstanceType<typeof KeetaNetClient.UserClient>
-}>;
-async function createNodeAndClient(userAccount?: undefined, repAccountSeed?: string | bigint): Promise<{
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-}>;
-async function createNodeAndClient(userAccount?: InstanceType<typeof KeetaNetClient.lib.Account>, repAccountSeed?: string | bigint): Promise<{
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-	userClient?: InstanceType<typeof KeetaNetClient.UserClient>
-}>;
-async function createNodeAndClient(userAccount?: InstanceType<typeof KeetaNetClient.lib.Account>, repAccountSeed?: string | bigint): Promise<{
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-	userClient?: InstanceType<typeof KeetaNetClient.UserClient>
-}> {
-	if (repAccountSeed === undefined) {
-		repAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed({ asString: true });
-	}
-
-	const TestRepAccountNode = KeetaNetNode.lib.Account.fromSeed(repAccountSeed, 0);
-	const TestRepAccountClient = KeetaNetClient.lib.Account.fromSeed(repAccountSeed, 0);
-
-	const testNode = await createTestNode(TestRepAccountNode, {
-		/*
-		 * This does not work because it generates a Serial Number
-		 * of 0, but does not tell the Ledger, so the next vote
-		 * attempt will fail since it is a duplicate
-		 */
-		createInitialVoteStaple: false,
-		nodeConfig: {
-			nodeAlias: 'TEST'
-		},
-	});
-	const testClient = new KeetaNetClient.Client([{
-		endpoints: {
-			// @ts-ignore
-			api: testNode.config.endpoints?.api,
-			// @ts-ignore
-			p2p: testNode.config.endpoints?.p2p
-		},
-		key: TestRepAccountClient
-	}]);
-
-	toCleanup.push(async function() {
-		await testNode.stop();
+async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
+	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
+		client: userClient.client,
+		signer: account,
+		usePublishAid: false,
+		network: userClient.network,
+		/* XXX:TODO: Need to be able to get this from the UserClient/Client */
+		networkAlias: 'test'
 	});
 
-	{
-		/*
-		 * Because "createInitialVoteStaple" is broken, we need to
-		 * manually initialize the chain
-		 */
-		const itaUserClient = new KeetaNetClient.UserClient({
-			client: testClient,
-			network: testNode.config.network,
-			networkAlias: testNode.config.networkAlias,
-			// @ts-ignore
-			signer: TestRepAccountClient,
-			usePublishAid: false
-		});
-		await itaUserClient.initializeChain({
-			addSupplyAmount: BigInt(1000),
-			delegateTo: TestRepAccountClient,
-			/* XXX: This is broken too, so we need to set it to a high number */
-			voteSerial: BigInt('999999999999999999')
-		}, {
-			account: TestRepAccountClient,
-			usePublishAid: false
-		});
-	}
-
-	let userClient;
-	if (userAccount) {
-		userClient = new KeetaNetClient.UserClient({
-			client: testClient,
-			network: testNode.config.network,
-			networkAlias: testNode.config.networkAlias,
-			// @ts-ignore
-			signer: userAccount,
-			usePublishAid: false
-		});
-
-	}
-
-	return({
-		node: testNode,
-		client: testClient,
-		// @ts-ignore
-		computeBuilderBlocks: async function(builder: ReturnType<typeof testClient['makeBuilder']>) {
-			return(await testClient.computeBuilderBlocks(testNode.config.network, builder));
-		},
-		userClient
+	await testAccountExternalUserClient.setInfo({
+		name: 'TEST',
+		description: 'TEST',
+		metadata: Resolver.Metadata.formatMetadata(value)
 	});
 }
 
 test('Basic Tests', async function() {
 	const TestAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
 	const TestAccount = KeetaNetClient.lib.Account.fromSeed(TestAccountSeed, 0);
+	const TestAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const TestAccountExternalRef = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const TestAccountLoop = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 
 	const { userClient } = await createNodeAndClient(TestAccount);
+
+	await setInfo(TestAccountExternal, userClient, {
+		operations: {
+			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		},
+		countryCodes: ['US'],
+		currencyCodes: ['USD'],
+		kycProviders: ['Keeta']
+	});
+
+	await setInfo(TestAccountExternalRef, userClient, {
+		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+		url: `keetanet://${TestAccountExternal.publicKeyString.get()}/metadata`
+	});
+
+	await setInfo(TestAccountLoop, userClient, {
+		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+		url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`
+	});
 
 	await userClient.setInfo({
 		name: 'TEST',
 		description: 'TEST',
-		metadata: 'TEST'
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			services: {
+				banking: {
+					keeta_foo: {
+						operations: {
+							createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+						},
+						countryCodes: ['MX'],
+						currencyCodes: ['MXN'],
+						kycProviders: ['Keeta']
+					},
+					[TestAccountLoop.publicKeyString.get()]: {
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`
+					},
+					[TestAccountExternalRef.publicKeyString.get()]: {
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: `keetanet://${TestAccountExternalRef.publicKeyString.get()}/metadata`
+					},
+					keeta_broken1: {
+						/* Broken KeetaNet Link */
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: `keetanet://keeta_broken/metadata`
+					},
+					keeta_broken2: {
+						/* Broken Link (invalid protocol) */
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: `http://insecure.com/metadata`
+					},
+					keeta_broken3: {
+						/* XXX: Broken Link (currently not implemented) */
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: `https://insecure.com/metadata`
+					},
+					keeta_broken4: {
+						/* Invalid countryCodes schema */
+						operations: {
+							createAccount: 'https://banchor.broken4.com/api/v1/createAccount'
+						},
+						countryCodes: 'USD'
+					},
+					keeta_nomatch1: {
+					},
+					keeta_nomatch2: {
+						operations: {
+							createAccount: 'https://banchor.nomatch2.com/api/v1/createAccount'
+						}
+					}
+				}
+			}
+		})
 	});
 
 	const resolver = new Resolver({
 		root: TestAccount,
 		client: userClient,
-		trustedCAs: []
+		trustedCAs: [],
+		logger: console
 	});
+	expect(resolver.stats.reads).toBe(0);
 
-	const check = await resolver.lookup('BANKING', {
-		countryCodes: ['US']
-	});
+	const checks = [{
+		input: {
+			countryCodes: ['US' as const],
+		},
+		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+	}, {
+		input: {
+			currencyCodes: ['USD' as const],
+		},
+		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+	}, {
+		input: {
+			countryCodes: ['MX' as const] ,
+		},
+		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+	}, {
+		input: {
+			currencyCodes: ['MXN' as const],
+		},
+		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+	}, {
+		input: {
+			countryCodes: ['US' as const],
+			currencyCodes: ['USD' as const],
+		},
+		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+	}, {
+		input: {
+			countryCodes: ['MX' as const] ,
+			currencyCodes: ['MXN' as const],
+		},
+		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+	}, {
+		input: {
+			countryCodes: ['US' as const] ,
+			currencyCodes: ['MXN' as const],
+		},
+		result: undefined
+	}];
 
-	expect(check).toBeDefined();
+	for (const check of checks) {
+		const checkResult = await resolver.lookup('BANKING', check.input);
+
+		if ('result' in check && check.result === undefined) {
+			expect(checkResult).toBeUndefined();
+			continue;
+		}
+
+		expect(checkResult).toBeDefined();
+		if (checkResult === undefined) {
+			throw(new Error('internal error: check is undefined'));
+		}
+
+		const operations = await checkResult.operations?.('object');
+		expect(operations).toBeDefined();
+		if (operations === undefined) {
+			throw(new Error('internal error: operations is undefined'));
+		}
+
+		if ('createAccount' in check) {
+			const checkCreateAccount = await operations.createAccount?.('primitive');
+			expect(checkCreateAccount).toEqual(check.createAccount);
+		}
+	}
+
+	expect(resolver.stats.reads).toBeGreaterThan(0);
+	expect(resolver.stats.cache.hit).toBeGreaterThan(0);
+	expect(resolver.stats.cache.miss).toBeGreaterThan(5);
+	expect(resolver.stats.keetanet.reads).toBeGreaterThan(0);
+
+	/*
+	 * Verify that this internal interface is not exposed to the user
+	 */
+	expect(function() {
+		resolver._mutableStats(Symbol('statsAccessToken'));
+	}).toThrow();
 });
