@@ -16,10 +16,6 @@ type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
-type AddUnionToObjectValues<T extends object, U> = {
-    [K in keyof T]: T[K] extends object ? AddUnionToObjectValues<T[K], U> : U | T[K];
-} | U;
-
 /**
  * A cache object
  */
@@ -140,7 +136,6 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 const isExternalURL = createIs<ExternalURL>();
 
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
-
 type ValuizableArray = Array<Valuizable | undefined>;
 type ValuizableObject = { [key: string]: Valuizable | undefined };
 
@@ -152,6 +147,18 @@ interface Valuizable {
 	(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 };
+type ToValuizable<T extends Object> = {
+	[K in keyof T]: T[K] extends JSONSerializablePrimitive ?
+			(expect: 'primitive') => Promise<JSONSerializablePrimitive> :
+		T[K] extends Array<unknown> ?
+			(expect: 'array') => Promise<ToValuizable<T[K]>> :
+		T[K] extends object ?
+			(expect: 'object') => Promise<ToValuizable<T[K]>> :
+		T[K] extends (infer U | undefined) ?
+			ToValuizable<{ p: U }>['p'] | undefined :
+		never;
+};
+
 
 function expectObject(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined): ValuizableObject {
 	if (typeof input !== 'object' || input === null) {
@@ -423,6 +430,8 @@ type ResolverStats = {
 	}
 };
 
+type ResolverLookupBankingResults = ToValuizable<NonNullable<ServiceMetadata['services']['banking']>[string]>;
+
 export class Resolver {
 	#root: ResolverConfig['root'];
 	#trustedCAs: ResolverConfig['trustedCAs'];
@@ -490,6 +499,22 @@ export class Resolver {
 					continue;
 				}
 
+				if (!('operations' in checkBankingService)) {
+					continue;
+				}
+
+				if (!('countryCodes' in checkBankingService)) {
+					continue;
+				}
+
+				if (!('currencyCodes' in checkBankingService)) {
+					continue;
+				}
+
+				if (!('kycProviders' in checkBankingService)) {
+					continue;
+				}
+
 				if (criteria.currencyCodes !== undefined) {
 					const checkBankingServiceCurrencyCodes = await Promise.all(((await checkBankingService.currencyCodes?.('array')) ?? []).map(function(item) {
 						return(item?.('primitive'));
@@ -529,7 +554,7 @@ export class Resolver {
 					}
 				}
 
-				return(checkBankingService);
+				return(checkBankingService as unknown as ResolverLookupBankingResults);
 			} catch (checkBankingServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking banking service', checkBankingServiceID, ':', checkBankingServiceError, ' -- ignoring');
 			}
@@ -538,7 +563,9 @@ export class Resolver {
 		return(undefined);
 	}
 
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<undefined | ValuizableObject> {
+	async lookup<T extends 'BANKING'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined> {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
 			trustedCAs: this.#trustedCAs,

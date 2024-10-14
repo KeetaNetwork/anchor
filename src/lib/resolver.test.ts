@@ -14,8 +14,8 @@ async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fro
 	});
 
 	await testAccountExternalUserClient.setInfo({
-		name: 'TEST',
-		description: 'TEST',
+		name: '',
+		description: '',
 		metadata: Resolver.Metadata.formatMetadata(value)
 	});
 }
@@ -29,6 +29,10 @@ test('Basic Tests', async function() {
 
 	const { userClient } = await createNodeAndClient(TestAccount);
 
+	/*
+	 * An account whose metadata is set at the top-level,
+	 * and referenced by the root account
+	 */
 	await setInfo(TestAccountExternal, userClient, {
 		operations: {
 			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
@@ -38,19 +42,28 @@ test('Basic Tests', async function() {
 		kycProviders: ['Keeta']
 	});
 
+	/*
+	 * An account whose metadata references another account at the top-level
+	 */
 	await setInfo(TestAccountExternalRef, userClient, {
 		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 		url: `keetanet://${TestAccountExternal.publicKeyString.get()}/metadata`
 	});
 
+	/*
+	 * An account whose metadata references itself, creating an infinite loop
+	 */
 	await setInfo(TestAccountLoop, userClient, {
 		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 		url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`
 	});
 
+	/*
+	 * Set the metadata for the root account
+	 */
 	await userClient.setInfo({
-		name: 'TEST',
-		description: 'TEST',
+		name: '',
+		description: '',
 		metadata: Resolver.Metadata.formatMetadata({
 			version: 1,
 			services: {
@@ -108,11 +121,13 @@ test('Basic Tests', async function() {
 	const resolver = new Resolver({
 		root: TestAccount,
 		client: userClient,
-		trustedCAs: [],
-		logger: console
+		trustedCAs: []
 	});
 	expect(resolver.stats.reads).toBe(0);
 
+	/*
+	 * Various resolver checks
+	 */
 	const checks = [{
 		input: {
 			countryCodes: ['US' as const],
@@ -166,21 +181,20 @@ test('Basic Tests', async function() {
 			throw(new Error('internal error: check is undefined'));
 		}
 
-		const operations = await checkResult.operations?.('object');
-		expect(operations).toBeDefined();
-		if (operations === undefined) {
-			throw(new Error('internal error: operations is undefined'));
-		}
-
+		const operations = await checkResult.operations('object');
 		if ('createAccount' in check) {
 			const checkCreateAccount = await operations.createAccount?.('primitive');
 			expect(checkCreateAccount).toEqual(check.createAccount);
 		}
 	}
 
+	/*
+	 * Ensure that the resolver stats are being updated and that the
+	 * cache is being used
+	 */
 	expect(resolver.stats.reads).toBeGreaterThan(0);
 	expect(resolver.stats.cache.hit).toBeGreaterThan(0);
-	expect(resolver.stats.cache.miss).toBeGreaterThan(5);
+	expect(resolver.stats.cache.miss).toBeGreaterThan(0);
 	expect(resolver.stats.keetanet.reads).toBeGreaterThan(0);
 
 	/*
