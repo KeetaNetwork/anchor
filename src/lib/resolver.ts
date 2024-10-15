@@ -3,7 +3,7 @@ import * as CurrencyInfo from '@keetapay/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
-import { createIs } from 'typia';
+import { createIs, createAssert } from 'typia';
 
 const ExternalURLMarker = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
 
@@ -19,7 +19,15 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 /**
  * A cache object
  */
-type URLCacheObject = Map<string, JSONSerializable>;
+type URLCacheObject = Map<string, {
+	pass: true;
+	value: JSONSerializable;
+	expires: Date;
+} | {
+	pass: false;
+	error: unknown;
+	expires: Date;
+}>;
 
 /**
  * Service Metadata General Structure
@@ -108,6 +116,10 @@ type ResolverConfig = {
 	 * ID for this instance of the resolver
 	 */
 	id?: string;
+	/**
+	 * Caching Parameters
+	 */
+	cache?: Omit<NonNullable<MetadataConfig['cache']>, 'instance'>;
 }
 
 function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencySearchCanonical {
@@ -147,17 +159,19 @@ interface Valuizable {
 	(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 };
-type ToValuizable<T extends Object> = {
-	[K in keyof T]: T[K] extends JSONSerializablePrimitive ?
+type ToValuizableObject<T extends Object> = {
+	[K in keyof T]:
+		T[K] extends JSONSerializablePrimitive ?
 			(expect: 'primitive') => Promise<JSONSerializablePrimitive> :
 		T[K] extends Array<unknown> ?
-			(expect: 'array') => Promise<ToValuizable<T[K]>> :
+			(expect: 'array') => Promise<ToValuizableObject<T[K]>> :
 		T[K] extends object ?
-			(expect: 'object') => Promise<ToValuizable<T[K]>> :
+			(expect: 'object') => Promise<ToValuizableObject<T[K]>> :
 		T[K] extends (infer U | undefined) ?
-			ToValuizable<{ p: U }>['p'] | undefined :
+			ToValuizable<U> | undefined :
 		never;
 };
+type ToValuizable<T> = ToValuizableObject<{ tmp: T }>['tmp'];
 
 
 function expectObject(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined): ValuizableObject {
@@ -194,15 +208,28 @@ function expectPrimitive(input: JSONSerializablePrimitive | ValuizableObject | V
  */
 const statsAccessToken = Symbol('statsAccessToken');
 
+type MetadataConfig = {
+	trustedCAs: ResolverConfig['trustedCAs'];
+	client: KeetaNetClient.Client;
+	logger?: ResolverConfig['logger'];
+	resolver: Resolver;
+	cache?: {
+		instance: URLCacheObject;
+		positiveTTL?: number;
+		negativeTTL?: number;
+	};
+	parent?: Metadata;
+};
 
 class Metadata {
-	#cache: URLCacheObject;
+	#cache: Required<NonNullable<MetadataConfig['cache']>>;
 	#trustedCAs: ResolverConfig['trustedCAs'];
 	#client: KeetaNetClient.Client;
 	#logger: Logger | undefined;
 	#url: URL;
 	#resolver: Resolver;
 	#stats: ResolverStats;
+	private seenURLs: Set<string>;
 
 	private static instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
 
@@ -221,7 +248,7 @@ class Metadata {
 		return(Buffer.from(JSON.stringify(metadata)).toString('base64'));
 	}
 
-	constructor(url: string | URL, config: { trustedCAs: ResolverConfig['trustedCAs']; client: KeetaNetClient.Client; logger?: Logger | undefined; cache?: URLCacheObject; resolver: Resolver }) {
+	constructor(url: string | URL, config: MetadataConfig) {
 		/*
 		 * Define an "instanceTypeID" as an unenumerable property to
 		 * ensure that we can identify this object as an instance of
@@ -232,12 +259,21 @@ class Metadata {
 			enumerable: false
 		});
 		this.#url = new URL(url);
-		this.#cache = config.cache ?? new Map();
+		this.#cache = {
+			instance: config.cache?.instance ?? new Map(),
+			positiveTTL: config.cache?.positiveTTL ?? 60 * 1000,
+			negativeTTL: config.cache?.negativeTTL ?? 5 * 1000
+		};
 		this.#trustedCAs = config.trustedCAs;
 		this.#client = config.client;
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
+		if (config.parent !== undefined) {
+			this.seenURLs = config.parent.seenURLs;
+		} else {
+			this.seenURLs = new Set();
+		}
 	}
 
 	private async parseMetadata(metadata: string) {
@@ -282,18 +318,43 @@ class Metadata {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
-		if (this.#cache.has(cacheKey)) {
+		/*
+		 * To ensure any circular references are handled correctly, we
+		 * keep track of a chain of accessed URLs.  If we see the same
+		 * URL twice, then we have a circular reference.
+		 */
+		if (this.seenURLs.has(cacheKey)) {
+			return('');
+		}
+		this.seenURLs.add(cacheKey);
+
+		let cacheVal = this.#cache.instance.get(cacheKey);
+		/*
+		 * Verify that the cache entry is still valid.  If it is not,
+		 * then remove it from the cache.
+		 */
+		if (this.#cache.instance.has(cacheKey) && cacheVal !== undefined) {
+			if (cacheVal.expires < new Date()) {
+				this.#cache.instance.delete(cacheKey);
+				cacheVal = undefined;
+			}
+		}
+
+		if (this.#cache.instance.has(cacheKey) && cacheVal !== undefined) {
+			if (cacheVal.expires < new Date()) {
+				this.#cache.instance.delete(cacheKey);
+			}
+
 			this.#stats.cache.hit++;
-			return(this.#cache.get(cacheKey));
+
+			if (cacheVal.pass) {
+				return(cacheVal.value);
+			} else {
+				throw(cacheVal.error);
+			}
 		}
 
 		this.#stats.cache.miss++;
-
-		/*
-		 * To ensure any circular references are handled correctly, we
-		 * temporarily cache the URL with an empty value.
-		 */
-		this.#cache.set(cacheKey, '');
 
 		let retval;
 		try {
@@ -306,14 +367,23 @@ class Metadata {
 				throw(new Error(`Unsupported protocol: ${protocol}`));
 			}
 		} catch (readError) {
-			this.#cache.delete(cacheKey);
+			this.#cache.instance.set(cacheKey, {
+				pass: false,
+				error: readError,
+				expires: new Date(Date.now() + this.#cache.negativeTTL)
+			});
+
 			this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
 			throw(readError);
 		}
 
 		this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
 
-		this.#cache.set(cacheKey, retval);
+		this.#cache.instance.set(cacheKey, {
+			pass: true,
+			value: retval,
+			expires: new Date(Date.now() + this.#cache.positiveTTL)
+		});
 
 		return(retval);
 	}
@@ -373,7 +443,8 @@ class Metadata {
 						client: this.#client,
 						logger: this.#logger,
 						resolver: this.#resolver,
-						cache: this.#cache
+						cache: this.#cache,
+						parent: this
 					});
 
 					const newValuizableObject: Valuizable = newMetadataObject.value.bind(newMetadataObject);
@@ -430,7 +501,8 @@ type ResolverStats = {
 	}
 };
 
-type ResolverLookupBankingResults = ToValuizable<NonNullable<ServiceMetadata['services']['banking']>[string]>;
+type ResolverLookupBankingResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>;
+const assertResolverLookupBankingResults = createAssert<ResolverLookupBankingResults>();
 
 export class Resolver {
 	#root: ResolverConfig['root'];
@@ -438,7 +510,7 @@ export class Resolver {
 	#client: KeetaNetClient.Client;
 	#logger: Logger | undefined;
 	#stats: ResolverStats;
-	#metadataCache: URLCacheObject;
+	#metadataCache: NonNullable<MetadataConfig['cache']>;
 
 	readonly id: string;
 
@@ -448,7 +520,11 @@ export class Resolver {
 		this.#root = config.root;
 		this.#trustedCAs = config.trustedCAs;
 		this.#logger = config.logger;
-		this.#metadataCache = new Map();
+		this.#metadataCache = {
+			...config.cache,
+			instance: new Map()
+		};
+
 		this.id = config.id ?? crypto.randomUUID();
 
 		this.#logger?.debug(`Resolver:${this.id}`, 'Creating resolver with root account', this.#root.publicKeyString.get());
@@ -554,7 +630,7 @@ export class Resolver {
 					}
 				}
 
-				return(checkBankingService as unknown as ResolverLookupBankingResults);
+				return(assertResolverLookupBankingResults(checkBankingService));
 			} catch (checkBankingServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking banking service', checkBankingServiceID, ':', checkBankingServiceError, ' -- ignoring');
 			}
@@ -615,7 +691,7 @@ export class Resolver {
 	}
 
 	clearCache(): void {
-		this.#metadataCache.clear();
+		this.#metadataCache.instance.clear();
 	}
 }
 

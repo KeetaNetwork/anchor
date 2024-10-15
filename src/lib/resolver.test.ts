@@ -20,7 +20,7 @@ async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fro
 	});
 }
 
-test('Basic Tests', async function() {
+async function setupForResolverTests() {
 	const TestAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
 	const TestAccount = KeetaNetClient.lib.Account.fromSeed(TestAccountSeed, 0);
 	const TestAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
@@ -123,6 +123,14 @@ test('Basic Tests', async function() {
 		client: userClient,
 		trustedCAs: []
 	});
+
+	return({
+		resolver
+	});
+}
+
+test('Basic Tests', async function() {
+	const { resolver } = await setupForResolverTests();
 	expect(resolver.stats.reads).toBe(0);
 
 	/*
@@ -204,3 +212,30 @@ test('Basic Tests', async function() {
 		resolver._mutableStats(Symbol('statsAccessToken'));
 	}).toThrow();
 });
+
+test('Concurrent Lookups', async function() {
+	const { resolver } = await setupForResolverTests();
+
+	/*
+	 * Concurrent Lookups
+	 */
+	resolver.clearCache();
+	const lookupPromises = [];
+	for (let lookupID = 0; lookupID < 1000; lookupID++) {
+		lookupPromises.push(resolver.lookup('BANKING', {
+			countryCodes: ['US' as const],
+		}));
+	}
+
+	const lookupResults = await Promise.all(lookupPromises);
+	for (const lookupResult of lookupResults) {
+		expect(lookupResult).toBeDefined();
+		const operations = await lookupResult?.operations('object');
+		const createAccount = await operations?.createAccount?.('primitive');
+		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
+	}
+	expect(resolver.stats.reads).toBeGreaterThan(3000);
+	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
+	expect(resolver.stats.cache.miss).toBeLessThan(2000);
+	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads).toBe(resolver.stats.cache.miss);
+}, 30000);
