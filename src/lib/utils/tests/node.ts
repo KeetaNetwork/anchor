@@ -92,14 +92,15 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		});
 	}
 
-	return({
+	const retval: CreateNodeAndClientResponse = {
 		node: testNode,
-		client: testClient,
-		// @ts-ignore
-		computeBuilderBlocks: async function(builder: ReturnType<typeof testClient['makeBuilder']>) {
-			return(await testClient.computeBuilderBlocks(testNode.config.network, builder));
-		},
-		userClient: userClient
-	});
+		client: testClient
+	};
+
+	if (userClient) {
+		retval.userClient = userClient;
+	}
+
+	return(retval);
 }
 
