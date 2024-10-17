@@ -148,19 +148,38 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 const isExternalURL = createIs<ExternalURL>();
 
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
-type ValuizableArray = Array<Valuizable | undefined>;
-type ValuizableObject = { [key: string]: Valuizable | undefined };
+type ValuizableArray = Array<ValuizableMethod | undefined>;
+type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
-type ValuizableKind = 'any' | 'object' | 'array' | 'primitive';
-interface Valuizable {
+type ValuizableKind = 'any' | 'object' | 'array' | 'primitive' | 'string' | 'number' | 'boolean';
+interface ValuizableMethod {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+	(expect: 'string'): Promise<string>;
+	(expect: 'number'): Promise<number>;
+	(expect: 'boolean'): Promise<boolean>;
 	(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 };
+
+interface ToValuizableExpectString {
+	(expect: 'string'): Promise<string>;
+	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+};
+interface ToValuizableExpectNumber {
+	(expect: 'number'): Promise<number>;
+	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+};
+interface ToValuizableExpectBoolean {
+	(expect: 'boolean'): Promise<boolean>;
+	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+};
 type ToValuizableObject<T extends Object> = {
 	[K in keyof T]:
+		T[K] extends string ? ToValuizableExpectString :
+		T[K] extends number ? ToValuizableExpectNumber :
+		T[K] extends boolean ? ToValuizableExpectBoolean :
 		T[K] extends JSONSerializablePrimitive ?
 			(expect: 'primitive') => Promise<JSONSerializablePrimitive> :
 		T[K] extends Array<unknown> ?
@@ -221,7 +240,9 @@ type MetadataConfig = {
 	parent?: Metadata;
 };
 
-class Metadata {
+type ValuizableInstance = { value: ValuizableMethod };
+
+class Metadata implements ValuizableInstance {
 	#cache: Required<NonNullable<MetadataConfig['cache']>>;
 	#trustedCAs: ResolverConfig['trustedCAs'];
 	#client: KeetaNetClient.Client;
@@ -388,10 +409,11 @@ class Metadata {
 		return(retval);
 	}
 
-	private async resolveValue<T extends JSONSerializable | ExternalURL | undefined>(value: T): Promise<Exclude<T, ExternalURL>> {
+	private async resolveValue<T extends ExternalURL | undefined>(value: T): Promise<JSONSerializable>;
+	private async resolveValue<T extends JSONSerializable | undefined>(value: T): Promise<T>;
+	private async resolveValue<T extends JSONSerializable | ExternalURL | undefined>(value: T): Promise<T | JSONSerializable> {
 		if (value === undefined) {
-			// @ts-ignore
-			return(undefined);
+			return(value);
 		}
 
 		/*
@@ -402,11 +424,9 @@ class Metadata {
 			const url = new URL(value.url);
 			const retval = await this.readURL(url);
 
-			// @ts-ignore
 			return(await this.resolveValue(retval));
 		}
 
-		// @ts-ignore
 		return(value);
 	}
 
@@ -420,6 +440,13 @@ class Metadata {
 				return(expectArray(input));
 			case 'primitive':
 				return(expectPrimitive(input));
+			case 'string':
+			case 'number':
+			case 'boolean':
+				if (typeof input !== expect) {
+					throw(new Error(`expected a ${expect}, got ${typeof input}`));
+				}
+				return(input);
 			default:
 				assertNever(expect);
 		}
@@ -434,6 +461,11 @@ class Metadata {
 				newValue = {};
 			}
 			for (const key in value) {
+				/*
+				 * Since `key` is the index of the array or
+				 * object, it is safe to use it to index
+				 * into the array or object.
+				 */
 				// @ts-ignore
 				const keyValue: JSONSerializable = value[key];
 
@@ -447,13 +479,17 @@ class Metadata {
 						parent: this
 					});
 
-					const newValuizableObject: Valuizable = newMetadataObject.value.bind(newMetadataObject);
+					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
 					// @ts-ignore
 					newValue[key] = newValuizableObject;
 				} else {
+					/*
+					 * This is safe because `assertValuizableKind` will
+					 * ensure the correct output type
+					 */
 					// @ts-ignore
-					const newValueEntry: Valuizable = async (expect: ValuizableKind = 'any') => {
+					const newValueEntry: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
 						const retval = this.assertValuizableKind(await this.valuize(keyValue), expect);
 						return(retval);
 					};
@@ -472,6 +508,9 @@ class Metadata {
 	async value(expect: 'object'): Promise<ValuizableObject>;
 	async value(expect: 'array'): Promise<ValuizableArray>;
 	async value(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+	async value(expect: 'string'): Promise<string>;
+	async value(expect: 'number'): Promise<number>;
+	async value(expect: 'boolean'): Promise<boolean>;
 	async value(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	async value(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
 	async value(expect: ValuizableKind = 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined> {

@@ -191,7 +191,7 @@ test('Basic Tests', async function() {
 
 		const operations = await checkResult.operations('object');
 		if ('createAccount' in check) {
-			const checkCreateAccount = await operations.createAccount?.('primitive');
+			const checkCreateAccount = await operations.createAccount?.('string');
 			expect(checkCreateAccount).toEqual(check.createAccount);
 		}
 	}
@@ -231,7 +231,7 @@ test('Concurrent Lookups', async function() {
 	for (const lookupResult of lookupResults) {
 		expect(lookupResult).toBeDefined();
 		const operations = await lookupResult?.operations('object');
-		const createAccount = await operations?.createAccount?.('primitive');
+		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
 	}
 	expect(resolver.stats.reads).toBeGreaterThan(3000);
