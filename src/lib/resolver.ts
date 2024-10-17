@@ -5,7 +5,8 @@ import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
 import { createIs, createAssert } from 'typia';
 
-const ExternalURLMarker = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
+
+const ExternalURLMarker = '2b828e33-2692-46e9-817e-9b93d63f28fd';
 
 type ExternalURL = { external: typeof ExternalURLMarker; url: string; };
 
@@ -243,16 +244,16 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 class Metadata implements ValuizableInstance {
-	#cache: Required<NonNullable<MetadataConfig['cache']>>;
-	#trustedCAs: ResolverConfig['trustedCAs'];
-	#client: KeetaNetClient.Client;
-	#logger: Logger | undefined;
-	#url: URL;
-	#resolver: Resolver;
-	#stats: ResolverStats;
-	private seenURLs: Set<string>;
+	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
+	readonly #trustedCAs: ResolverConfig['trustedCAs'];
+	readonly #client: KeetaNetClient.Client;
+	readonly #logger: Logger | undefined;
+	readonly #url: URL;
+	readonly #resolver: Resolver;
+	readonly #stats: ResolverStats;
+	private readonly seenURLs: Set<string>;
 
-	private static instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
+	private static readonly instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
 
 	static isInstance(value: unknown): value is Metadata {
 		if (typeof value !== 'object' || value === null) {
@@ -544,16 +545,16 @@ type ResolverLookupBankingResults = ToValuizableObject<NonNullable<ServiceMetada
 const assertResolverLookupBankingResults = createAssert<ResolverLookupBankingResults>();
 
 export class Resolver {
-	#root: ResolverConfig['root'];
-	#trustedCAs: ResolverConfig['trustedCAs'];
-	#client: KeetaNetClient.Client;
-	#logger: Logger | undefined;
-	#stats: ResolverStats;
-	#metadataCache: NonNullable<MetadataConfig['cache']>;
+	readonly #root: ResolverConfig['root'];
+	readonly #trustedCAs: ResolverConfig['trustedCAs'];
+	readonly #client: KeetaNetClient.Client;
+	readonly #logger: Logger | undefined;
+	readonly #stats: ResolverStats;
+	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
 
 	readonly id: string;
 
-	static Metadata: typeof Metadata = Metadata;
+	static readonly Metadata: typeof Metadata = Metadata;
 
 	constructor(config: ResolverConfig) {
 		this.#root = config.root;
