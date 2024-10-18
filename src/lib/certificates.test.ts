@@ -72,8 +72,35 @@ test('Sensitive Attributes', async function() {
 	 */
 	const attributeBuffer = Buffer.from(attribute);
 	attributeBuffer.set([0x00], attributeBuffer.length - 3);
-	console.debug(attributeBuffer.toString('base64'));
 	const tamperedAttribute = attributeBuffer.buffer;
 	const sensitiveAttribute4 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, tamperedAttribute);
 	expect(await sensitiveAttribute4.validateProof(sensitiveAttribute1Proof)).toBe(false);
+});
+
+test('Certificates', async function() {
+	/*
+	 * Build a certificate with a test value from the users public key
+	 */
+	/* XXX:TODO: Replace with Enum values */
+	for (const keyKind of [0, 1, 6] as const) {
+		const testAccount1 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0, keyKind);
+		const testAccount2 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1, keyKind);
+
+		const testAccount2NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount2.publicKeyString.get());
+		const builder1 = new Certificates.Certificate.Builder({ issuer: testAccount1, subject: testAccount2NoPrivate });
+		const certificateData = await builder1.build({
+			validFrom: new Date(),
+			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24),
+			serialNumber: 3
+		});
+
+		/* XXX:TODO: Tests */
+		console.debug('Certificate Data:');
+		console.debug(certificateData);
+
+		const certificate = new Certificates.Certificate(certificateData);
+
+		console.debug(Buffer.from(certificateData).toString('base64'));
+		console.debug('Certificate:', certificate);
+	}
 });
