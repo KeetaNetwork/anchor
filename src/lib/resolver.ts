@@ -45,19 +45,34 @@ type ServiceMetadata = {
 				kycProviders: string[];
 			};
 		};
+		fx?: {
+			inputCurrencyCodes: {
+				outputCurrencyCodes: string[];
+				kycProviders: string[];
+			}[];
+		};
+		inbound?: {
+			/* XXX:TODO */
+		};
+		outbound?: {
+			/* XXX:TODO */
+		};
+		cards?: {
+			/* XXX:TODO */
+		};
 	};
 };
 
 /**
  * Types of services which can be resolved
  */
-type Services = 'BANKING' | 'FX' | 'INBOUND' | 'OUTBOUND' | 'CARDS';
+type Services = keyof ServiceMetadata['services'];
 
 /**
  * Search criteria for each service type
  */
 type ServiceSearchCriteria<T extends Services> = {
-	'BANKING': {
+	'banking': {
 		/**
 		 * Search for a banking provider which supports creating
 		 * accounts in ALL of the following currencies.
@@ -75,7 +90,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		kycProviders?: string[]; /* XXX:TODO */
 	};
-	'FX': {
+	'fx': {
 		/**
 		 * Search for a provider which can convert from the following
 		 * input currency
@@ -87,9 +102,15 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		outputCurrencyCode: CurrencySearchInput;
 	};
-	'INBOUND': {};
-	'OUTBOUND': {};
-	'CARDS': {};
+	'inbound': {
+		/* XXX:TODO */
+	};
+	'outbound': {
+		/* XXX:TODO */
+	};
+	'cards': {
+		/* XXX:TODO */
+	};
 }[T];
 
 type ResolverConfig = {
@@ -591,7 +612,7 @@ export class Resolver {
 		return(structuredClone(this.#stats));
 	}
 
-	private async lookupBankingService(bankingServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'BANKING'>) {
+	private async lookupBankingService(bankingServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'banking'>) {
 		if (bankingServices === undefined) {
 			return(undefined);
 		}
@@ -667,7 +688,7 @@ export class Resolver {
 		return(undefined);
 	}
 
-	async lookup<T extends 'BANKING'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
+	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
 	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
 	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined> {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
@@ -701,17 +722,17 @@ export class Resolver {
 
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 		switch (service) {
-			case 'BANKING': {
-				const currentCriteria = criteria as ServiceSearchCriteria<'BANKING'>;
+			case 'banking': {
+				const currentCriteria = criteria as ServiceSearchCriteria<'banking'>;
 				const bankingServices = await definedServices.banking?.('object');
 				this.#logger?.debug(`Resolver:${this.id}`, 'Banking Services:', bankingServices);
 
 				return(await this.lookupBankingService(bankingServices, currentCriteria));
 			}
-			case 'FX':
-			case 'INBOUND':
-			case 'OUTBOUND':
-			case 'CARDS':
+			case 'fx':
+			case 'inbound':
+			case 'outbound':
+			case 'cards':
 				throw(new Error('not implemented'));
 			default:
 				assertNever(service);

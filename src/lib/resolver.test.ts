@@ -177,7 +177,7 @@ test('Basic Tests', async function() {
 	}];
 
 	for (const check of checks) {
-		const checkResult = await resolver.lookup('BANKING', check.input);
+		const checkResult = await resolver.lookup('banking', check.input);
 
 		if ('result' in check && check.result === undefined) {
 			expect(checkResult).toBeUndefined();
@@ -222,7 +222,7 @@ test('Concurrent Lookups', async function() {
 	resolver.clearCache();
 	const lookupPromises = [];
 	for (let lookupID = 0; lookupID < 1000; lookupID++) {
-		lookupPromises.push(resolver.lookup('BANKING', {
+		lookupPromises.push(resolver.lookup('banking', {
 			countryCodes: ['US' as const],
 		}));
 	}
