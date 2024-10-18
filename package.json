@@ -20,6 +20,7 @@
 	"type": "module",
 	"devDependencies": {
 		"@ryoppippi/unplugin-typia": "1.0.6",
+		"@types/asn1js": "2.0.2",
 		"@types/node": "20.16.10",
 		"@vitest/coverage-v8": "2.1.2",
 		"ts-patch": "3.2.1",
@@ -28,6 +29,7 @@
 	},
 	"dependencies": {
 		"@keetapay/currency-info": "1.1.0",
+		"@keetapay/keetanet-client": "0.8.4",
 		"@keetapay/keetanet-node": "0.8.4",
 		"typia": "6.11.1"
 	},
