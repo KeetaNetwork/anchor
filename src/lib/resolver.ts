@@ -5,7 +5,6 @@ import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
 import { createIs, createAssert } from 'typia';
 
-
 const ExternalURLMarker = '2b828e33-2692-46e9-817e-9b93d63f28fd';
 
 type ExternalURL = { external: typeof ExternalURLMarker; url: string; };
@@ -149,6 +148,7 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 const isExternalURL = createIs<ExternalURL>();
 
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
+type ValuizeInput = JSONSerializablePrimitive | ValuizableObject | ValuizableArray;
 type ValuizableArray = Array<ValuizableMethod | undefined>;
 type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
@@ -160,8 +160,8 @@ interface ValuizableMethod {
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
-	(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
-	(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
+	(expect?: 'any'): Promise<ValuizeInput>;
+	(expect?: ValuizableKind): Promise<ValuizeInput>;
 };
 
 interface ToValuizableExpectString {
@@ -192,35 +192,6 @@ type ToValuizableObject<T extends Object> = {
 		never;
 };
 type ToValuizable<T> = ToValuizableObject<{ tmp: T }>['tmp'];
-
-
-function expectObject(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined): ValuizableObject {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`expected an object, got ${typeof input}`));
-	}
-
-	if (Array.isArray(input)) {
-		throw(new Error('expected an object, got an array'));
-	}
-
-	return(input);
-}
-
-function expectArray(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined): ValuizableArray {
-	if (!Array.isArray(input)) {
-		throw(new Error(`expected an array, got ${typeof input}`));
-	}
-
-	return(input);
-}
-
-function expectPrimitive(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined): JSONSerializablePrimitive {
-	if ((typeof input === 'object' && input !== null) || input === undefined) {
-		throw(new Error(`expected a primitive, got ${typeof input}`));
-	}
-
-	return(input);
-}
 
 /*
  * Access token to share with the Metadata object to allow it to
@@ -431,16 +402,36 @@ class Metadata implements ValuizableInstance {
 		return(value);
 	}
 
-	private assertValuizableKind(input: JSONSerializablePrimitive | ValuizableObject | ValuizableArray, expect: ValuizableKind) {
+	private assertValuizableKind(input: ValuizeInput, expect: ValuizableKind) {
 		switch (expect) {
 			case 'any':
 				return(input);
 			case 'object':
-				return(expectObject(input));
+				if (typeof input !== 'object') {
+					throw(new Error(`expected an object, got ${typeof input}`));
+				}
+
+				if (input === null) {
+					throw(new Error('expected an object, got null'));
+				}
+
+				if (Array.isArray(input)) {
+					throw(new Error('expected an object, got an array'));
+				}
+
+				return(input);
 			case 'array':
-				return(expectArray(input));
+				if (!Array.isArray(input)) {
+					throw(new Error(`expected an array, got ${typeof input}`));
+				}
+
+				return(input);
 			case 'primitive':
-				return(expectPrimitive(input));
+				if ((typeof input === 'object' && input !== null) || input === undefined) {
+					throw(new Error(`expected a primitive, got ${typeof input}`));
+				}
+
+				return(input);
 			case 'string':
 			case 'number':
 			case 'boolean':
@@ -453,7 +444,7 @@ class Metadata implements ValuizableInstance {
 		}
 	}
 
-	private async valuize(value: JSONSerializable): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray> {
+	private async valuize(value: JSONSerializable): Promise<ValuizeInput> {
 		if (typeof value === 'object' && value !== null) {
 			let newValue: ValuizableObject | ValuizableArray;
 			if (Array.isArray(value)) {
@@ -512,13 +503,10 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'string'): Promise<string>;
 	async value(expect: 'number'): Promise<number>;
 	async value(expect: 'boolean'): Promise<boolean>;
-	async value(expect?: 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
-	async value(expect?: ValuizableKind): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined>;
-	async value(expect: ValuizableKind = 'any'): Promise<JSONSerializablePrimitive | ValuizableObject | ValuizableArray | undefined> {
+	async value(expect?: 'any'): Promise<ValuizeInput>;
+	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
+	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
 		const value = await this.readURL(this.#url);
-		if (value === undefined) {
-			return(undefined);
-		}
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 
