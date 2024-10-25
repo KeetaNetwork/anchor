@@ -706,8 +706,6 @@ export class EncryptedContainer {
 			}
 		);
 
-		this.#data = { ...this.#data, encoded: structuredData };
-
 		return(structuredData);
 	}
 
@@ -716,11 +714,16 @@ export class EncryptedContainer {
 			return(this._encoded);
 		}
 
+		let computed: Buffer;
 		if (!this.encrypted) {
-			return(await this.#computePlaintextEncoded());
+			computed = await this.#computePlaintextEncoded();
 		} else {
-			return(await this.#computeEncryptedEncoded());
+			computed = await this.#computeEncryptedEncoded();
 		}
+
+		this.#data = { ...this.#data, encoded: computed };
+
+		return(computed);
 	}
 
 	/**
