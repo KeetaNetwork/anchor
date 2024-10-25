@@ -1,9 +1,11 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetapay/keetanet-client';
+import fs from 'node:fs';
 
-const testAccount1 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
-const testAccount2 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1);
+const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
+const testAccount1 = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
+const testAccount2 = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
 
 test('Sensitive Attributes', async function() {
 	/*
@@ -19,7 +21,9 @@ test('Sensitive Attributes', async function() {
 	 */
 	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
 	const sensitiveAttribute1Value = await sensitiveAttribute1.get();
+	const sensitiveAttribute1ValueString = await sensitiveAttribute1.getString();
 	expect(sensitiveAttribute1Value).toEqual((new Uint8Array([0x54, 0x65, 0x73, 0x74, 0x20, 0x56, 0x61, 0x6c, 0x75, 0x65])).buffer);
+	expect(sensitiveAttribute1ValueString).toEqual('Test Value');
 
 	/**
 	 * Process the attribute as JSON
@@ -30,10 +34,11 @@ test('Sensitive Attributes', async function() {
 		throw(new Error('Expected JSON object'));
 	}
 	expect(Object.keys(attributeJSON)).toContain('version');
+	expect(Object.keys(attributeJSON)).toContain('cipher');
 	expect(Object.keys(attributeJSON)).toContain('publicKey');
 	expect(Object.keys(attributeJSON)).toContain('hashedValue');
 	expect(Object.keys(attributeJSON)).toContain('encryptedValue');
-	expect(Object.keys(attributeJSON).length).toBe(4);
+	expect(Object.keys(attributeJSON).length).toBe(5);
 
 	/*
 	 * Validate it with the public key and value
@@ -83,24 +88,108 @@ test('Certificates', async function() {
 	 */
 	/* XXX:TODO: Replace with Enum values */
 	for (const keyKind of [0, 1, 6] as const) {
-		const testAccount1 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0, keyKind);
-		const testAccount2 = KeetaNetClient.lib.Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1, keyKind);
+		const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0, keyKind);
+		const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1, keyKind);
 
-		const testAccount2NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount2.publicKeyString.get());
-		const builder1 = new Certificates.Certificate.Builder({ issuer: testAccount1, subject: testAccount2NoPrivate });
-		const certificateData = await builder1.build({
+		/* Subject Account without a Private Key, for later use */
+		const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
+
+		/* Create a Certificate Builder */
+		const builder1 = new Certificates.Certificate.Builder({ issuer: issuerAccount, subject: subjectAccountNoPrivate });
+
+		/*
+		 * Create a Root CA Certificate
+		 */
+		const certificateCAData = await builder1.build({
+			issuer: issuerAccount,
+			subject: issuerAccount,
 			validFrom: new Date(),
 			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24),
 			serialNumber: 3
 		});
 
-		/* XXX:TODO: Tests */
-		console.debug('Certificate Data:');
-		console.debug(certificateData);
+		/*
+		 * Use the same builder to create a User Certificate
+		 */
+		builder1.setAttribute('fullName', true, 'Test User');
+		builder1.setAttribute('email', true, 'rkeene@keeta.com');
+		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
+		builder1.setAttribute('address', true, '100 Rollingwood Dr, Oldsmar, FL 34677');
+		builder1.setAttribute('dateOfBirth', true, '1980-01-01');
 
+		/**
+		 * A User Certificate
+		 */
+		const certificateData = await builder1.build({
+			validFrom: new Date(),
+			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24),
+			serialNumber: 4
+		});
+
+		/**
+		 * The Certificate (without access to the private key)
+		 */
 		const certificate = new Certificates.Certificate(certificateData);
 
-		console.debug(Buffer.from(certificateData).toString('base64'));
-		console.debug('Certificate:', certificate);
+		/**
+		 * The Certificate (with access to the private key)
+		 */
+		const certificateWithPrivate = new Certificates.Certificate(certificateData, subjectAccount);
+
+		console.debug('Certificate Data:');
+		console.debug(certificateCAData);
+		console.debug(certificateData);
+		console.debug(JSON.stringify(certificate, undefined, 8));
+		if (keyKind === 6) {
+			fs.writeFileSync('/home/rkeene/devel/keetanet/anchor/ca.crt', Buffer.from(certificateCAData));
+			fs.writeFileSync('/home/rkeene/devel/keetanet/anchor/user.crt', Buffer.from(certificateData));
+		}
+
+		expect(certificate.attributes['fullName']?.sensitive).toBe(true);
+		expect(certificateWithPrivate.attributes['fullName']?.sensitive).toBe(true);
+		if (!certificateWithPrivate.attributes['fullName']?.sensitive || !certificate.attributes['fullName']?.sensitive) {
+			throw(new Error('internal error: Expected sensitive attribute'));
+		}
+
+		/**
+		 * The full name attribute with the private key attached
+		 */
+		const fullNameAttrWithPrivate = certificateWithPrivate.attributes['fullName'].value;
+
+		/**
+		 * The full name attribute without the private key attached
+		 */
+		const fullNameAttr = certificate.attributes['fullName'].value;
+		console.debug('Full Name Attribute:', fullNameAttr.toJSON());
+
+		/*
+		 * Get the value of the attribute
+		 */
+		const fullNameValue = await fullNameAttrWithPrivate.getString();
+		expect(fullNameValue).toEqual('Test User');
+
+		/*
+		 * Generate the proof of a plain-text value and validate it
+		 */
+		const toProove = await fullNameAttrWithPrivate.proove();
+		console.debug('Proof:', toProove);
+		expect(Buffer.from(toProove.value, 'base64').toString('utf-8')).toEqual('Test User');
+
+		const valid = await fullNameAttr.validateProof(toProove);
+		expect(valid).toBe(true);
+
+		/*
+		 * Attempt to access the value without the private key
+		 */
+		await expect(async function() {
+			return(await fullNameAttr.getString());
+		}).rejects.toThrow();
+
+		/*
+		 * Attempt to generate a proof without the private key (should fail)
+		 */
+		await expect(async function() {
+			return(await fullNameAttr.proove());
+		}).rejects.toThrow();
 	}
 });

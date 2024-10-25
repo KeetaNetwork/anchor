@@ -2,7 +2,7 @@ import * as KeetaNetClient from '@keetapay/keetanet-client';
 import * as ASN1 from './utils/asn1.js';
 import type { Logger } from './log/index.ts';
 import { assertNever } from './utils/never.js';
-import { createIs, createAssert } from 'typia';
+import { createIs } from 'typia';
 import crypto from 'crypto';
 import util from 'node:util';
 
@@ -66,7 +66,7 @@ function accountToASN1(key: KeetaNetAccount | string) {
 	switch (key.keyType) {
 		case AccountKeyAlgorithm.ED25519:
 			publicKeyInfo = [
-				{ type: 'oid', oid: 'ed25519' },
+				[{ type: 'oid', oid: 'ed25519' }],
 				{ type: 'bitstring', value: key.publicKey.getBuffer() }
 			];
 			break;
@@ -110,6 +110,32 @@ function accountToCryptoKey(key: KeetaNetAccount | string): crypto.KeyObject {
 }
 /* -----END MOVE TO NODE-----*/
 
+function toJSON(data: unknown): unknown {
+	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue) {
+		const value: unknown = this[key];
+
+		if (typeof value === 'object' && value !== null) {
+			if ('publicKeyString' in value && typeof value.publicKeyString === 'object' && value.publicKeyString !== null) {
+				if ('get' in value.publicKeyString && typeof value.publicKeyString.get === 'function') {
+					const publicKeyString: unknown = value.publicKeyString.get();
+					if (typeof publicKeyString === 'string') {
+						return(publicKeyString);
+					}
+				}
+			}
+		}
+
+		if (Buffer.isBuffer(value)) {
+			return(value.toString('base64'));
+		}
+		if (typeof value === 'bigint') {
+			return(value.toString());
+		}
+		return(convertedValue);
+	}));
+
+	return(retval);
+}
 
 const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.bind(KeetaNetClient.lib.Utils.Helper);
 
@@ -120,17 +146,17 @@ const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.
  * SensitiveAttributes DEFINITIONS ::= BEGIN
  *         SensitiveAttribute ::= SEQUENCE {
  *                 version        INTEGER { v1(0) },
+ *                 cipher         SEQUENCE {
+ *                         algorithm    OBJECT IDENTIFIER,
+ *                         ivOrNonce    OCTET STRING,
+ *                         key          OCTET STRING
+ *                 },
  *                 hashedValue    SEQUENCE {
  *                         encryptedSalt  OCTET STRING,
  *                         algorithm      OBJECT IDENTIFIER,
  *                         value          OCTET STRING
  *                 },
  *                 encryptedValue SEQUENCE {
- *                         cipher         SEQUENCE {
- *                                 algorithm    OBJECT IDENTIFIER,
- *                                 ivOrNonce    OCTET STRING,
- *                                 key          OCTET STRING
- *                         },
  *                         value          OCTET STRING
  *                 }
  *         }
@@ -139,6 +165,15 @@ const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.
 type SensitiveAttributeSchema = [
 	/* Version */
 	version: bigint,
+	/* Cipher Details */
+	cipher: [
+		/* Algorithm */
+		algorithm: { type: 'oid', oid: string },
+		/* IV or Nonce */
+		iv: Buffer,
+		/* Symmetric key, encrypted with the public key of the account */
+		key: Buffer
+	],
 	/* Hashed Value */
 	hashedValue: [
 		/* Encrypted Salt */
@@ -148,34 +183,91 @@ type SensitiveAttributeSchema = [
 		/* Hash of <Encrypted Salt> || <Public Key> || <encryptedValue> || <Value> */
 		value: Buffer
 	],
-	/* Encrypted Value */
-	encryptedValue: [
-		/* Cipher Details */
-		cipher: [
-			/* Algorithm */
-			algorithm: { type: 'oid', oid: string },
-			/* IV or Nonce */
-			iv: Buffer,
-			/* Symmetric key, encrypted with the public key of the account */
-			key: Buffer
-		],
-		/* Encrypted Value, encrypted with the Cipher above */
-		value: Buffer
-	]
+	/* Encrypted Value, encrypted with the Cipher above */
+	encryptedValue: Buffer
 ];
 
-const isSensitiveAttributeSchema = function(input: unknown): input is SensitiveAttributeSchema {
-	if (!Array.isArray(input)) {
-		return(false);
-	}
-
-	const isBigInt = function(input: unknown): input is bigint {
+/**
+ * Sequence validation tools, useful for @see ASN1.isValidSequenceSchema
+ */
+const validate = {
+	/**
+	 * Validate that the input is a BigInt
+	 */
+	isBigInt: function(input: unknown): input is bigint {
 		return(typeof input === 'bigint');
-	}
+	},
 
-	const isASNOID = createIs<{ type: 'oid', oid: string }>();
-	const isBuffer = Buffer.isBuffer.bind(Buffer);
-	const isSequence = function(schema: Parameters<typeof ASN1.isValidSequenceSchema>[1]) {
+	/**
+	 * Validate that the input os a context-specific tag
+	 */
+	isContext: function(tag: number, schema: Parameters<typeof ASN1.isValidSequenceSchema>[1][number]) {
+		return(function(schemaInput: unknown) {
+			if (typeof schemaInput !== 'object' || schemaInput === null) {
+				return(false);
+			}
+
+			if (!('type' in schemaInput) || schemaInput.type !== 'context') {
+				return(false);
+			}
+
+			if (!('value' in schemaInput) || schemaInput.value !== tag) {
+				return(false);
+			}
+
+			if (!('contains' in schemaInput)) {
+				return(false);
+			}
+
+			const retval = schema(schemaInput.contains);
+
+			return(retval);
+		});
+	},
+
+	/**
+	 * Validate that the input is an ASN.1 OID
+	 */
+	isASNOID: createIs<{ type: 'oid', oid: string }>(),
+
+	/**
+	 * Validate that the input is a Buffer
+	 */
+	isBuffer: Buffer.isBuffer.bind(Buffer),
+
+	/**
+	 * Validate that the input is a Date
+	 */
+	isDate: util.isDate.bind(util),
+
+	/**
+	 * Validate that the input is a boolean
+	 */
+	isBoolean: util.isBoolean.bind(util),
+
+	/**
+	 * Validate that the input is a bitstring
+	 */
+	isBitstring: function(input: unknown): input is { type: 'bitstring', value: Buffer } {
+		if (typeof input !== 'object' || input === null) {
+			return(false);
+		}
+
+		if (!('type' in input) || input.type !== 'bitstring') {
+			return(false);
+		}
+
+		if (!('value' in input)) {
+			return(false);
+		}
+
+		return(Buffer.isBuffer(input.value));
+	},
+
+	/**
+	 * Validate that the input is an ASN.1 Sequence
+	 */
+	isSequence: function(schema: Parameters<typeof ASN1.isValidSequenceSchema>[1]) {
 		return(function(schemaInput: unknown) {
 			if (!Array.isArray(schemaInput)) {
 				return(false);
@@ -183,35 +275,65 @@ const isSensitiveAttributeSchema = function(input: unknown): input is SensitiveA
 
 			return(ASN1.isValidSequenceSchema(schemaInput, schema));
 		});
+	},
+
+	/**
+	 * Validate that the input is an array of a given type
+	 */
+	isArrayOf: function(schema: Parameters<typeof ASN1.isValidSequenceSchema>[1][number]) {
+		return(function(schemaInput: unknown) {
+			if (!Array.isArray(schemaInput)) {
+				return(false);
+			}
+
+			for (const input of schemaInput) {
+				if (!schema(input)) {
+					return(false);
+				}
+			}
+
+			return(true);
+		});
+	},
+
+	/**
+	 * Validate that the input is an ASN.1 set with an OID for a name a string for value
+	 */
+	isSet: createIs<{ type: 'set', name: { type: 'oid', oid: string }, value: string | { type: 'string', kind: string, value: string } }>()
+};
+
+function isSensitiveAttributeSchema(input: unknown): input is SensitiveAttributeSchema {
+	if (!Array.isArray(input)) {
+		return(false);
 	}
+
 
 	const retval = ASN1.isValidSequenceSchema(input, [
 		/* Version */
-		isBigInt,
+		validate.isBigInt,
+
+		/* Cipher Details */
+		validate.isSequence([
+			/* Algorithm */
+			validate.isASNOID,
+			/* IV or Nonce */
+			validate.isBuffer,
+			/* Symmetric key, encrypted with the public key of the account */
+			validate.isBuffer
+		]),
 
 		/* Hashed Value */
-		isSequence([
-			/* Encrypted Salt */
-			isBuffer,
+		validate.isSequence([
+			/* Encrypted Salt, encrypted with the Cipher above */
+			validate.isBuffer,
 			/* Hashing Algorithm */
-			isASNOID,
+			validate.isASNOID,
 			/* Hash of <Encrypted Salt> || <Public Key> || <Encrypted Value> || <Value> */
-			isBuffer
+			validate.isBuffer
 		]),
-		/* Encrypted Value */
-		isSequence([
-			/* Cipher Details */
-			isSequence([
-				/* Algorithm */
-				isASNOID,
-				/* IV or Nonce */
-				isBuffer,
-				/* Symmetric key, encrypted with the public key of the account */
-				isBuffer
-			]),
-			/* Encrypted Value, encrypted with the Cipher above */
-			isBuffer
-		])
+
+		/* Encrypted Value, encrypted with the Cipher above */
+		validate.isBuffer
 	
 	]);
 
@@ -254,7 +376,6 @@ class SensitiveAttributeBuilder {
 		}
 
 		const salt = crypto.randomBytes(32);
-		const encryptedSalt = await this.#account.encrypt(salt);
 
 		const hashingAlgorithm = KeetaNetClient.lib.Utils.Hash.HashFunctionName;
 		const publicKey = Buffer.from(this.#account.publicKey.get());
@@ -264,9 +385,15 @@ class SensitiveAttributeBuilder {
 		const nonce = crypto.randomBytes(12);
 		const encryptedKey = await this.#account.encrypt(key);
 
-		const cipherObject = crypto.createCipheriv(cipher, key, nonce);
-		let encryptedValue = cipherObject.update(this.#value);
-		encryptedValue = Buffer.concat([encryptedValue, cipherObject.final()]);
+		function encrypt(value: Buffer) {
+			const cipherObject = crypto.createCipheriv(cipher, key, nonce);
+			let retval = cipherObject.update(value);
+			retval = Buffer.concat([retval, cipherObject.final()]);
+			return(retval);
+		}
+
+		const encryptedValue = encrypt(this.#value);
+		const encryptedSalt = encrypt(salt);
 
 		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, this.#value]);
 		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(saltedValue);
@@ -274,6 +401,15 @@ class SensitiveAttributeBuilder {
 		const attributeStructure: SensitiveAttributeSchema = [
 			/* Version */
 			BigInt(0),
+			/* Cipher Details */
+			[
+				/* Algorithm */
+				{ type: 'oid', oid: getOID(cipher, sensitiveAttributeOIDDB) },
+				/* IV or Nonce */
+				nonce,
+				/* Symmetric key, encrypted with the public key of the account */
+				Buffer.from(encryptedKey)
+			],
 			/* Hashed Value */
 			[
 				/* Encrypted Salt */
@@ -283,20 +419,8 @@ class SensitiveAttributeBuilder {
 				/* Hash of <Encrypted Salt> || <Public Key> || <Value> */
 				Buffer.from(hashedAndSaltedValue)
 			],
-			/* Encrypted Value */
-			[
-				/* Cipher Details */
-				[
-					/* Algorithm */
-					{ type: 'oid', oid: getOID(cipher, sensitiveAttributeOIDDB) },
-					/* IV or Nonce */
-					nonce,
-					/* Symmetric key, encrypted with the public key of the account */
-					Buffer.from(encryptedKey)
-				],
-				/* Encrypted Value, encrypted with the Cipher above */
-				encryptedValue
-			]
+			/* Encrypted Value, encrypted with the Cipher above */
+			encryptedValue
 		];
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
 
@@ -330,34 +454,58 @@ class SensitiveAttribute {
 		return({
 			version: decodedVersion + BigInt(1),
 			publicKey: this.#account.publicKeyString.get(),
-			hashedValue: {
-				encryptedSalt: decodedAttribute[1][0],
-				algorithm: lookupByOID(decodedAttribute[1][1].oid, sensitiveAttributeOIDDB),
-				value: decodedAttribute[1][2]
+			cipher: {
+				algorithm: lookupByOID(decodedAttribute[1][0].oid, sensitiveAttributeOIDDB),
+				iv: decodedAttribute[1][1],
+				key: decodedAttribute[1][2]
 			},
-			encryptedValue: {
-				cipher: {
-					algorithm: lookupByOID(decodedAttribute[2][0][0].oid, sensitiveAttributeOIDDB),
-					iv: decodedAttribute[2][0][1],
-					key: decodedAttribute[2][0][2]
-				},
-				value: decodedAttribute[2][1]
-			}
+			hashedValue: {
+				encryptedSalt: decodedAttribute[2][0],
+				algorithm: lookupByOID(decodedAttribute[2][1].oid, sensitiveAttributeOIDDB),
+				value: decodedAttribute[2][2]
+			},
+			encryptedValue: decodedAttribute[3]
 		});
 	}
 
+	async #decryptValue(value: Buffer) {
+		const decryptedKey = await this.#account.decrypt(this.#info.cipher.key);
+		const algorithm = this.#info.cipher.algorithm;
+		const iv = this.#info.cipher.iv;
+
+		const cipher = crypto.createDecipheriv(algorithm, Buffer.from(decryptedKey), iv);
+		const decryptedValue = cipher.update(value);
+
+		return(decryptedValue);
+	}
+
+	/**
+	 * Get the value of the sensitive attribute
+	 *
+	 * This will decrypt the value using the account's private key
+	 * and return the value as an ArrayBuffer
+	 *
+	 * Since sensitive attributes are binary blobs, this returns an
+	 * ArrayBuffer
+	 */
 	async get(): Promise<ArrayBuffer> {
-		const decryptedKey = await this.#account.decrypt(this.#info.encryptedValue.cipher.key);
-		// @ts-ignore
-		const cipher = crypto.createDecipheriv(this.#info.encryptedValue.cipher.algorithm, decryptedKey, this.#info.encryptedValue.cipher.iv);
-		const decryptedValue = cipher.update(this.#info.encryptedValue.value);
+		const decryptedValue = await this.#decryptValue(this.#info.encryptedValue);
 
 		return(bufferToArrayBuffer(decryptedValue));
 	}
 
+	/**
+	 * Get the value of the sensitive attribute as a string after being
+	 * interpreted as UTF-8 ( @see SensitiveAttribute.get for more information)
+	 */
+	async getString(): Promise<string> {
+		const value = await this.get();
+		return(Buffer.from(value).toString('utf-8'));
+	}
+
 	async proove(): Promise<{ value: string; hash: { salt: string } }> {
 		const value = await this.get();
-		const salt = Buffer.from(await this.#account.decrypt(this.#info.hashedValue.encryptedSalt));
+		const salt = await this.#decryptValue(this.#info.hashedValue.encryptedSalt);
 
 		return({
 			value: Buffer.from(value).toString('base64'),
@@ -375,7 +523,7 @@ class SensitiveAttribute {
 		const proofSaltBuffer = Buffer.from(proof.hash.salt, 'base64');
 
 		const publicKeyBuffer = Buffer.from(this.#account.publicKey.get());
-		const encryptedValue = this.#info.encryptedValue.value;
+		const encryptedValue = this.#info.encryptedValue;
 
 		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(Buffer.concat([proofSaltBuffer, publicKeyBuffer, encryptedValue, plaintextValue]));
 		const hashedAndSaltedValueBuffer = Buffer.from(hashedAndSaltedValue);
@@ -384,19 +532,147 @@ class SensitiveAttribute {
 	}
 
 	toJSON(): unknown/* XXX:TODO */ {
-		const retval: unknown = JSON.parse(JSON.stringify(this.#info, function(key, convertedValue) {
-			const value = this[key];
-			if (Buffer.isBuffer(value)) {
-				return(value.toString('base64'));
-			}
-			if (typeof value === 'bigint') {
-				return(value.toString());
-			}
-			return(convertedValue);
-		}));
-
-		return(retval);
+		return(toJSON(this.#info));
 	}
+}
+
+/**
+ * Database of attributes
+ */
+const CertificateAttributeOIDDB = {
+	'fullName': '1.3.6.1.4.1.159660.1.0',
+	'dateOfBirth': '1.3.6.1.4.1.159660.1.1',
+	'address': '1.3.6.1.4.1.159660.1.2',
+	'email': '1.3.6.1.4.1.159660.1.3',
+	'phoneNumber': '1.3.6.1.4.1.159660.1.4'
+};
+type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
+
+type CertificateSchema = [
+	tbsCertificate: [
+		/* Version */
+		version: { type: 'context', value: 0, contains: bigint },
+		/* Serial Number */
+		serialNumber: bigint,
+		/* Signature Algorithm */
+		signatureAlgorithm: { type: 'oid', oid: string }[],
+		/* Issuer */
+		issuer: { type: 'set', name: { type: 'oid', oid: string }, value: string }[],
+		/* Validity Period */
+		validityPeriod: [Date, Date],
+		/* Subject */
+		issuer: { type: 'set', name: { type: 'oid', oid: string }, value: string }[],
+		/* Subject Public Key */
+		subjectPublicKey: ReturnType<typeof accountToASN1>,
+		/* Extensions */
+		extensions: {
+			type: 'context',
+			value: 3,
+			contains: ([
+				/* Extension */
+				id: { type: 'oid', oid: string },
+				/* Critical */
+				critical: boolean,
+				/* Value */
+				value: Buffer
+			] | [
+				/* Extension */
+				id: { type: 'oid', oid: string },
+				/* Value */
+				value: Buffer
+			])[]
+		},
+	],
+	/* Signature Algorithm */
+	signatureAlgorithm: { type: 'oid', oid: string }[],
+	/* Signature */
+	signature: { type: 'bitstring', value: Buffer }
+];
+
+function isCertificateSchema(input: unknown): input is CertificateSchema {
+	if (!Array.isArray(input)) {
+		return(false);
+	}
+
+	const schema: Parameters<typeof ASN1.isValidSequenceSchema>[1] = [
+		validate.isSequence([
+			/* Version */
+			validate.isContext(0, validate.isBigInt),
+			/* Serial Number */
+			validate.isBigInt,
+			/* Signature Algorithm */
+			validate.isArrayOf(validate.isASNOID),
+			/* Issuer */
+			validate.isArrayOf(validate.isSet),
+			/* Validity Period */
+			validate.isSequence([
+				validate.isDate,
+				validate.isDate
+			]),
+			/* Subject */
+			validate.isArrayOf(validate.isSet),
+			/* Subject Public Key */
+			validate.isSequence([
+				validate.isArrayOf(validate.isASNOID),
+				validate.isBitstring
+			]),
+			validate.isContext(3,
+				validate.isArrayOf(function(input: unknown) {
+					if (!Array.isArray(input)) {
+						return(false);
+					}
+
+					if (ASN1.isValidSequenceSchema(input, [
+						validate.isASNOID,
+						validate.isBuffer
+					])) {
+						return(true);
+					}
+
+					if (ASN1.isValidSequenceSchema(input, [
+						validate.isASNOID,
+						validate.isBoolean,
+						validate.isBuffer
+					])) {
+						return(true);
+					}
+
+					return(false);
+				})
+			)
+		]),
+		/* Signature Algorithm */
+		validate.isArrayOf(validate.isASNOID),
+		/* Signature */
+		validate.isBitstring
+	];
+
+	const retval = ASN1.isValidSequenceSchema(input, schema);
+
+	return(retval);
+}
+
+type CertificateKYCAttributeSchema = [
+	{ type: 'oid', oid: string },
+	{ type: 'context', value: number, contains: Buffer }
+];
+
+function isValidAttribute(input: unknown): input is CertificateKYCAttributeSchema {
+	if (!Array.isArray(input)) {
+		return(false);
+	}
+	return(ASN1.isValidSequenceSchema(input, [
+		validate.isASNOID,
+		function(input: unknown) {
+			if (validate.isContext(0, validate.isBuffer)(input)) {
+				return(true);
+			}
+			if (validate.isContext(1, validate.isBuffer)(input)) {
+				return(true);
+			}
+			return(false);
+		}
+	]));
 }
 
 type CertificateBuilderParams = {
@@ -417,7 +693,7 @@ export class CertificateBuilder {
 		};
 	}
 
-	setAttribute(name: string, sensitive: boolean, value: ArrayBuffer | string): void {
+	setAttribute(name: CertificateAttributeNames, sensitive: boolean, value: ArrayBuffer | string): void {
 		this.#attributes[name] = { sensitive, value };
 	}
 
@@ -427,7 +703,7 @@ export class CertificateBuilder {
 			...params
 		};
 
-		/* XXX:TODO: Validate the parameters */
+		/* Validate that required parameters are set */
 		if (!('issuer' in finalParams)) {
 			throw(new Error('"issuer" not set'));
 		}
@@ -448,7 +724,22 @@ export class CertificateBuilder {
 			throw(new Error('"serialNumber" not set'));
 		}
 
-		const hashLib = KeetaNetClient.lib.Utils.Hash;
+
+		const hashLib_ = KeetaNetClient.lib.Utils.Hash;
+		const hashLib = {
+			HashFunctionName: 'sha256',
+			Hash: function(data: Buffer, len?: number): ArrayBuffer {
+				const hash = crypto.createHash('sha256');
+				hash.update(data);
+				let retval = bufferToArrayBuffer(hash.digest());
+				if (len !== undefined) {
+					retval = retval.slice(0, len);
+				}
+
+				return(retval);
+			}
+		}
+
 		const {
 			oid: signatureAlgorithmOID,
 			hashData: hashData
@@ -470,34 +761,132 @@ export class CertificateBuilder {
 			throw(new Error('Unsupported key type'));
 		})();
 
-		const subjectPublicKeyAlgo = (function() {
-			switch (finalParams.subject.keyType) {
-				case AccountKeyAlgorithm.ECDSA_SECP256K1:
-					return([
-						{ type: 'oid', oid: 'ecdsa' },
-						{ type: 'oid', oid: 'secp256k1' }
-					]);
-				case AccountKeyAlgorithm.ECDSA_SECP256R1:
-					return([
-						{ type: 'oid', oid: 'ecdsa' },
-						{ type: 'oid', oid: 'secp256r1' }
-					]);
-				case AccountKeyAlgorithm.ED25519:
-					return([
-						{ type: 'oid', oid: 'ed25519' }
-					]);
+		function extension(oid: string, value: Parameters<typeof ASN1.JStoASN1>[0], critical?: boolean) {
+			let criticalValue: [critical: boolean] | [] = [];
+			if (critical !== undefined) {
+				criticalValue = [critical];
 			}
-		})();
+
+			const retval: [{ type: 'oid', oid: string }, value: Buffer] | [{ type: 'oid', oid: string }, critical: boolean, value: Buffer ] = [
+				{ type: 'oid', oid: oid },
+				...criticalValue,
+				Buffer.from(ASN1.JStoASN1(value).toBER())
+			];
+
+			return(retval);
+		}
+
+		function accountToKeyId(account: KeetaNetAccount) {
+			return(Buffer.from(hashLib.Hash(Buffer.concat([
+				Buffer.from('KeetaKey', 'utf-8'),
+				account.publicKeyAndType
+			]), 20)));
+		}
+
+		/**
+		 * Determine if the certificate is a Certificate Authority,
+		 * and add the appropriate extensions
+		 */
+		let isCertificateAuthority = false;
+		if (finalParams.issuer.comparePublicKey(finalParams.subject)) {
+			isCertificateAuthority = true;
+		}
+
+		/**
+		 * Extensions to add to the certificate
+		 */
+		let extensions = [];
+		if (isCertificateAuthority) {
+			extensions.push(
+				/** Extension: Basic Constraints (CA) */
+				extension('2.5.29.19', [true], true),
+				/** Extension: Key Usage */
+				extension('2.5.29.15', {
+					type: 'bitstring',
+					value: Buffer.from([0
+						| (1 << 1) /* CRL Sign */
+						| (1 << 2) /* Cert Sign */
+						| (0 << 3) /* Key Agreement */
+						| (0 << 4) /* Data Encipherment */
+						| (0 << 5) /* Key Encipherment */
+						| (1 << 6) /* Non Repudiation */
+						| (1 << 7) /* Digital Signature */
+					])
+				}, true)
+			);
+		} else {
+			extensions.push(
+				/** Extension: Key Usage */
+				extension('2.5.29.15', {
+					type: 'bitstring',
+					value: Buffer.from([0
+						| (0 << 1) /* CRL Sign */
+						| (0 << 2) /* Cert Sign */
+						| (0 << 3) /* Key Agreement */
+						| (0 << 4) /* Data Encipherment */
+						| (0 << 5) /* Key Encipherment */
+						| (1 << 6) /* Non Repudiation */
+						| (1 << 7) /* Digital Signature */
+					])
+				}, true)
+			);
+		}
+
+		/* Common Extensions */
+		extensions.push(
+			/** Extension: Authority Key Identifier */
+			extension('2.5.29.35', [
+				{ type: 'context', value: 0, contains: accountToKeyId(finalParams.issuer) }
+			]),
+			/** Extension: Subject Key Identifier */
+			extension('2.5.29.14', accountToKeyId(finalParams.subject))
+		);
+
+		/* Encode the attributes */
+		let certAttributes: CertificateKYCAttributeSchema[] = [];
+		for (const [name, attribute] of Object.entries(this.#attributes)) {
+			if (!(name in CertificateAttributeOIDDB)) {
+				throw(new Error(`Unknown attribute: ${name}`));
+			}
+			const nameOID = CertificateAttributeOIDDB[name as keyof typeof CertificateAttributeOIDDB];
+
+			let value: Buffer;
+			if (attribute.sensitive) {
+				const sensitiveAttribute = new SensitiveAttributeBuilder(finalParams.subject, attribute.value);
+				value = Buffer.from(await sensitiveAttribute.build());
+			} else {
+				if (typeof attribute.value === 'string') {
+					value = Buffer.from(attribute.value, 'utf-8');
+				} else {
+					value = Buffer.from(attribute.value);
+				}
+			}
+
+			certAttributes.push([{
+				type: 'oid',
+				oid: nameOID
+			}, {
+				type: 'context',
+				value: attribute.sensitive ? 1 : 0,
+				contains: value
+			}]);
+		}
+
+		if (certAttributes.length > 0) {
+			extensions.push(
+				extension('1.3.6.1.4.1.159660.0.0', certAttributes)
+			);
+		}
 
 		/**
 		 * Generate the data to be signed within the certificate
 		 */
-		const tbsCertificateData = [
+		const tbsCertificateData: CertificateSchema[0] = [
 			/* Version (v3) */
 			{ type: 'context', value: 0, contains: BigInt(2) },
 
 			/* Serial Number */
-			finalParams.serialNumber,
+			BigInt(finalParams.serialNumber),
 
 			/* Signature Algorithm */
 			[
@@ -538,11 +927,16 @@ export class CertificateBuilder {
 			],
 
 			/* Subject Public Key */
-			accountToASN1(finalParams.subject)
+			accountToASN1(finalParams.subject),
 
-			/* Extensions (XXX:TODO) */
+			/* Extensions */
+			{
+				type: 'context',
+				value: 3,
+				contains: extensions
+			}
+
 		];
-		console.debug('Data to be signed:', util.inspect(tbsCertificateData, { depth: 20, colors: true }));
 		const tbsCertificate = ASN1.JStoASN1(tbsCertificateData).toBER();
 
 		const tbsCertificateBuffer = Buffer.from(tbsCertificate);
@@ -556,12 +950,15 @@ export class CertificateBuilder {
 		} else {
 			toSign = tbsCertificateBuffer;
 		}
-		const signature = await finalParams.issuer.sign(toSign);
+		const signature = await finalParams.issuer.sign(toSign, {
+			raw: true,
+			forCert: true
+		});
 
 		/**
 		 * Emit the final certificate
 		 */
-		const certificate = ASN1.JStoASN1([
+		const certificateObject: CertificateSchema = [
 			/* TBS Certificate */
 			tbsCertificateData,
 
@@ -573,7 +970,9 @@ export class CertificateBuilder {
 
 			/* Signature */
 			{ type: 'bitstring', value: signature.getBuffer() }
-		]).toBER();
+		];
+
+		const certificate = ASN1.JStoASN1(certificateObject).toBER();
 
 		const certificatePEMLines = Buffer.from(certificate).toString('base64').split(/(.{64})/g).filter(function(line) {
 			return(line.length > 0);
@@ -605,7 +1004,184 @@ export class Certificate {
 		}
 	};
 
-	constructor(data: ArrayBuffer | string, moment?: Date) {
+	#parseCertificate(data: Buffer, inputSubjectAccount?: KeetaNetAccount) {
+		const input = ASN1.ASN1toJS(bufferToArrayBuffer(data));
+		const isCertificate = isCertificateSchema(input);
+		if (!isCertificate) {
+			throw(new Error('Invalid certificate: Parse error'));
+		}
+
+		const tbsCertificate = input[0];
+		const version = tbsCertificate[0].contains;
+		const serialNumber = tbsCertificate[1];
+		const signatureAlgorithmSigned = tbsCertificate[2];
+		const issuer = tbsCertificate[3];
+		const validityPeriodBegin = tbsCertificate[4][0];
+		const validityPeriodEnd = tbsCertificate[4][1];
+		const subject = tbsCertificate[5];
+		const subjectPublicKeyInfo = tbsCertificate[6];
+		const extensions = tbsCertificate[7].contains;
+		const signatureAlgorithm = input[1];
+		const signature = input[2].value;
+
+		/*
+		 * Verify signature
+		 */
+		/* XXX:TODO */
+
+		/*
+		 * Perform basic checks
+		 */
+		if (version !== BigInt(2)) {
+			throw(new Error(`Invalid certificate: Unsupported certificate version: ${version}`));
+		}
+
+		if (JSON.stringify(signatureAlgorithmSigned) !== JSON.stringify(signatureAlgorithm)) {
+			throw(new Error('Invalid certificate: Signature algorithm mismatch'));
+		}
+
+		/*
+		 * Compute the Issuer/Subject DN (Distinguished Name) and CN (Common Name)
+		 */
+		const issuerCN = issuer.find(function(nameValue) {
+			return(nameValue.name.oid === 'commonName');
+		})?.value;
+
+		const subjectCN = subject.find(function(nameValue) {
+			return(nameValue.name.oid === 'commonName');
+		})?.value;
+
+		const issuerDN = issuer.map(function(nameValue) {
+			return(`${nameValue.name.oid}=${nameValue.value}`);
+		}).join(', ');
+
+		const subjectDN = subject.map(function(nameValue) {
+			return(`${nameValue.name.oid}=${nameValue.value}`);
+		}).join(', ');
+
+		if (!issuerCN || !subjectCN) {
+			throw(new Error('Invalid certificate: Missing common name for issuer or subject'));
+		}
+
+		const issuerAccount = KeetaNetClient.lib.Account.fromPublicKeyString(issuerCN);
+		let subjectAccount = KeetaNetClient.lib.Account.fromPublicKeyString(subjectCN);
+
+		/*
+		 * Because we may need to perform cryptographic operations
+		 * with the metadata, allow specifying a subject account
+		 * to use which has a private key attached
+		 */
+		if (inputSubjectAccount !== undefined) {
+			if (subjectAccount.comparePublicKey(inputSubjectAccount)) {
+				subjectAccount = inputSubjectAccount;
+			} else {
+				throw(new Error('Invalid certificate: Subject account does not match the provided account'));
+			}
+		}
+
+		/*
+		 * Verify the subject public key info
+		 */
+		/* XXX:TODO */
+
+		/*
+		 * Process the extensions into an easier to work with form
+		 */
+		const processedExtensions = extensions.map(function(extension) {
+			let critical = false;
+			let oid: string;
+			let value: Buffer;
+			if (extension.length === 2) {
+				oid = extension[0].oid;
+				value = extension[1];
+			} else if (extension.length === 3) {
+				critical = extension[1];
+				oid = extension[0].oid;
+				value = extension[2];
+			} else {
+				throw(new Error('Invalid certificate: Invalid extension format'));
+			}
+
+			return({ oid, critical, value });
+		});
+
+		/*
+		 * Verify that we understand all the critical extensions
+		 */
+		/* XXX:TODO */
+
+		/*
+		 * Add the KYC Attributes from the KYC Attributes extension
+		 */
+		const kycAttributesExtension = processedExtensions.find(function(extension) {
+			return(extension.oid === '1.3.6.1.4.1.159660.0.0');
+		});
+
+		const kycAttributes = (() => {
+			if (kycAttributesExtension === undefined) {
+				return(undefined);
+			}
+
+			const toProcessKYC = ASN1.ASN1toJS(bufferToArrayBuffer(kycAttributesExtension.value));
+			if (!Array.isArray(toProcessKYC)) {
+				throw(new Error('Invalid certificate: Invalid KYC Attributes extension'));
+			}
+
+			const kycAttributesFlat = toProcessKYC.map(function(attribute): [name: string, InstanceType<typeof Certificate>['attributes'][string]] {
+				if (!isValidAttribute(attribute)) {
+					throw(new Error('Invalid certificate: Invalid KYC Attribute'));
+				}
+
+				const name = lookupByOID(attribute[0].oid, CertificateAttributeOIDDB);
+				let sensitive;
+				switch (attribute[1].value) {
+					case 0:
+						sensitive = false;
+						break;
+					case 1:
+						sensitive = true;
+						break;
+					default:
+						throw(new Error('Invalid certificate: Invalid KYC Attribute sensitive flag'));
+				}
+
+				const attributeContents = bufferToArrayBuffer(attribute[1].contains);
+
+				if (sensitive) {
+					const sensitiveAttributeContents = new SensitiveAttribute(subjectAccount, attributeContents);
+					return([name, { sensitive: true, value: sensitiveAttributeContents }]);
+				} else {
+					return([name, { sensitive: false, value: attributeContents }]);
+				}
+			});
+
+			const retval = Object.fromEntries(kycAttributesFlat);
+			return(retval);
+		})();
+
+		return({
+			serialNumber,
+			issuer: {
+				'$account': issuerAccount,
+				'$dn': issuerDN,
+				commonName: issuerCN
+			},
+			subject: {
+				'$account': subjectAccount,
+				'$dn': subjectDN,
+				commonName: subjectCN
+			},
+			validity: {
+				notBefore: validityPeriodBegin,
+				notAfter: validityPeriodEnd
+			},
+			attributes: {
+				kyc: kycAttributes
+			}
+		});
+	}
+
+	constructor(data: ArrayBuffer | string, subjectAccount?: KeetaNetAccount, moment?: Date) {
 		let dataBuffer;
 		if (typeof data === 'string') {
 			const lines = data.split('\n');
@@ -632,37 +1208,18 @@ export class Certificate {
 		} else {
 			dataBuffer = Buffer.from(data);
 		}
-		const certificateObject = new crypto.X509Certificate(dataBuffer);
 
-		const issuerDNPublicKey = certificateObject.issuer.replace(/^CN=/, '');
-		const subjectDNPublicKey = certificateObject.subject.replace(/^CN=/, '');
-		this.issuer = KeetaNetClient.lib.Account.toAccount(issuerDNPublicKey);
-		this.subject = KeetaNetClient.lib.Account.toAccount(subjectDNPublicKey);
-		this.notBefore = new Date(certificateObject.validFrom);
-		this.notAfter = new Date(certificateObject.validTo);
-		this.serialNumber = BigInt(certificateObject.serialNumber);
-
-		if (false) {
-			/* XXX:TODO */
-			const subjectPublicKey = cryptoKeyToAccount(certificateObject.publicKey);
-			if (!subjectPublicKey.comparePublicKey(this.subject)) {
-				throw(new Error('Certificate subject does not match public key'));
-			}
-		}
-
-		const issuerKey = accountToCryptoKey(this.issuer);
-		console.debug('Certificate:', certificateObject);
-		console.debug('Issuer Key:', issuerKey);
-		if (!certificateObject.verify(issuerKey)) {
-			throw(new Error('Certificate is invalid'));
-		}
-
-		/* XXX:TODO */
-		this.attributes = {};
+		const certificate = this.#parseCertificate(dataBuffer, subjectAccount);
+		this.serialNumber = certificate.serialNumber;
+		this.issuer = certificate.issuer.$account;
+		this.subject = certificate.subject.$account;
+		this.notBefore = certificate.validity.notBefore;
+		this.notAfter = certificate.validity.notAfter;
+		this.attributes = certificate.attributes.kyc ?? {};
 	}
 
-	toJSON(): void/* XXX:TODO */ {
-		throw(new Error('not implemented'));
+	toJSON(): unknown/* XXX:TODO */ {
+		return(toJSON({ ...this }));
 	}
 }
 
