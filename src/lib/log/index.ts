@@ -114,7 +114,6 @@ export class Log implements Logger {
 	error(...args: unknown[]) {
 		const { options, from } = this.#extractArguments(args);
 
-
 		this.#log('ERROR', options, from, ...args);
 	}
 
