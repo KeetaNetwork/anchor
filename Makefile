@@ -67,6 +67,10 @@ test: node_modules
 	rm -rf .coverage
 	npm run vitest run -- --config ./.vitest.config.js $(ANCHOR_TEST_EXTRA_ARGS)
 
+# Run linting
+do-lint: node_modules
+	npm run eslint src
+
 # Files created during the "build" or "prepare" processes
 # are cleaned up by the "clean" target.
 #
