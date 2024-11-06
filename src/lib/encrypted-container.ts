@@ -198,7 +198,9 @@ async function buildASN1(plaintext: Buffer, toEncryptedBox: boolean, algorithm?:
 		sequence[2] = [compressedPlaintext];
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 	const outputASN1 = JStoASN1(sequence);
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-member-access
 	const outputDER = Buffer.from(outputASN1.toBER(false));
 
 	return(outputDER);

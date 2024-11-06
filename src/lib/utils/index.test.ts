@@ -29,6 +29,7 @@ describe('JSON: Utils', function() {
 			undefined: undefined,
 			account1: testAccount1,
 			account2: testAccount2,
+			// eslint-disable-next-line @typescript-eslint/no-extraneous-class
 			class: class TestClass {},
 			serializable: new (class Serializable {
 				toJSON() {
@@ -146,6 +147,7 @@ describe('JSON: Utils', function() {
 
 			for (const searchable of [true, false]) {
 				const checkResults = JSONUtils.convertToJSON(expected, { searchable });
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				const expectedResults = result[searchable.toString() as 'true' | 'false'];
 
 				try {
@@ -175,7 +177,7 @@ describe('Array: Utils', function() {
 		}, {
 			input: [1],
 			len: 1,
-			result: true, 
+			result: true
 		}, {
 			input: null,
 			result: false

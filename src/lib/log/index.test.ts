@@ -75,7 +75,7 @@ describe('Log Tests', function() {
 		/*
 		 * Ensure logging interfaces work
 		 */
-		logger1.warn({ currentRequestInfo: { id: '1' } }, 'basic tests', 'Test 5');
+		logger1.warn({ currentRequestInfo: { id: '1' }}, 'basic tests', 'Test 5');
 		await logger1.sync();
 		expect(target_l1t1.logs.length).toEqual(5);
 		expect(target_l1t1.logs[3]?.options?.currentRequestInfo?.id).toBeUndefined();

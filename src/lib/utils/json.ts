@@ -129,7 +129,7 @@ function convertToJSONReplacer(this: any, key: string, jsonItem: unknown, option
 		 * be called by the JSON.stringify() function and passed in
 		 * as the second argument to this function (jsonItem).
 		 */
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-return,no-type-assertion/no-type-assertion,@typescript-eslint/no-explicit-any
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-return,@typescript-eslint/no-explicit-any,@typescript-eslint/consistent-type-assertions
 		return(jsonItem as any);
 	}
 
