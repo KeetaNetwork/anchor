@@ -35,6 +35,12 @@ jobs:
       - name: Write private key to .npmrc file
         run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
 
+      # Setup an SSH Agent with the private key stored in the SSH_PRIVATE_KEY secret
+      # Needed to clone private repositories
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
       - name: Run Tests
         run: make test
 
