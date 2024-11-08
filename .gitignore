@@ -4,3 +4,4 @@
 /dist/keetapay-*.tgz
 /keetapay-*.tgz
 /.coverage
+/vendor

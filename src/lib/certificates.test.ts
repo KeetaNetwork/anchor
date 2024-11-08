@@ -95,17 +95,19 @@ test('Certificates', async function() {
 		const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
 
 		/* Create a Certificate Builder */
-		const builder1 = new Certificates.Certificate.Builder({ issuer: issuerAccount, subject: subjectAccountNoPrivate });
+		const builder1 = new Certificates.Certificate.Builder({
+			issuer: issuerAccount,
+			subject: subjectAccountNoPrivate,
+			validFrom: new Date(),
+			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24)
+		});
 
 		/*
 		 * Create a Root CA Certificate
 		 */
 		const certificateCAData = await builder1.build({
-			issuer: issuerAccount,
 			subject: issuerAccount,
-			validFrom: new Date(),
-			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24),
-			serialNumber: 3
+			serial: 3
 		});
 
 		/*
@@ -121,9 +123,7 @@ test('Certificates', async function() {
 		 * A User Certificate
 		 */
 		const certificateData = await builder1.build({
-			validFrom: new Date(),
-			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24),
-			serialNumber: 4
+			serial: 4
 		});
 
 		/**
@@ -134,16 +134,9 @@ test('Certificates', async function() {
 		/**
 		 * The Certificate (with access to the private key)
 		 */
-		const certificateWithPrivate = new Certificates.Certificate(certificateData, subjectAccount);
-
-		console.debug('Certificate Data:');
-		console.debug(certificateCAData);
-		console.debug(certificateData);
-		console.debug(JSON.stringify(certificate, undefined, 8));
-		if (keyKind === 6) {
-			fs.writeFileSync('/home/rkeene/devel/keetanet/anchor/ca.crt', Buffer.from(certificateCAData));
-			fs.writeFileSync('/home/rkeene/devel/keetanet/anchor/user.crt', Buffer.from(certificateData));
-		}
+		const certificateWithPrivate = new Certificates.Certificate(certificateData, {
+			subjectKey: subjectAccount
+		});
 
 		expect(certificate.attributes['fullName']?.sensitive).toBe(true);
 		expect(certificateWithPrivate.attributes['fullName']?.sensitive).toBe(true);
@@ -160,7 +153,6 @@ test('Certificates', async function() {
 		 * The full name attribute without the private key attached
 		 */
 		const fullNameAttr = certificate.attributes['fullName'].value;
-		console.debug('Full Name Attribute:', fullNameAttr.toJSON());
 
 		/*
 		 * Get the value of the attribute
@@ -172,7 +164,6 @@ test('Certificates', async function() {
 		 * Generate the proof of a plain-text value and validate it
 		 */
 		const toProove = await fullNameAttrWithPrivate.proove();
-		console.debug('Proof:', toProove);
 		expect(Buffer.from(toProove.value, 'base64').toString('utf-8')).toEqual('Test User');
 
 		const valid = await fullNameAttr.validateProof(toProove);

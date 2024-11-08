@@ -24,10 +24,36 @@ help:
 	@echo "  do-deploy     - Deploys the package to the Development (or QA) environment"
 	@echo "  do-npm-pack   - Creates a distributable package for this project"
 
+# This is a temporary measure, as needed, for developing alongside the
+# KeetaNet Node project.
+#
+# Create the KeetaNet Node and KeetaNet Client packages from the
+# Git hash specified
+vendor/keetanet-node-%.tgz: KEETANET_NODE_COMMIT=$(shell echo "$@" | sed 's@^.*-@@;s@\.tgz$$@@')
+vendor/keetanet-node-%.tgz: KEETANET_NODE_WORKDIR:=$(shell mktemp -u)
+vendor/keetanet-node-%.tgz:
+	@mkdir -p vendor
+	@echo 'Building KeetaNet Node package from Commit $(KEETANET_NODE_COMMIT)'
+	mkdir -p '$(KEETANET_NODE_WORKDIR)'
+	git clone --no-checkout git@github.com:KeetaPay/node.git '$(KEETANET_NODE_WORKDIR)'
+	cd '$(KEETANET_NODE_WORKDIR)' && git checkout $(KEETANET_NODE_COMMIT)
+	cd '$(KEETANET_NODE_WORKDIR)' && make built/keetanet-clientlib.tar.gz
+	cd '$(KEETANET_NODE_WORKDIR)' && npm pack
+	mv '$(KEETANET_NODE_WORKDIR)'/keetapay-keetanet-node-*.tgz '$@.new'
+	mv '$(KEETANET_NODE_WORKDIR)'/built/keetanet-clientlib.tar.gz vendor/keetanet-client-$(KEETANET_NODE_COMMIT).tgz.new
+	cd '$(KEETANET_NODE_WORKDIR)' && cd .. && rm -rf '$(KEETANET_NODE_WORKDIR)'
+	mv vendor/keetanet-client-$(KEETANET_NODE_COMMIT).tgz.new vendor/keetanet-client-$(KEETANET_NODE_COMMIT).tgz
+	mv '$@.new' '$@'
+
+vendor/keetanet-client-%.tgz: vendor/keetanet-node-%.tgz
+	touch '$@'
+
 # This target creates the "node_modules" directory.
-node_modules/.done: package.json package-lock.json Makefile
+node_modules/.done: package.json package-lock.json Makefile $(shell jq -crM '.dependencies | .[] | match("^file:(vendor/.*)") | .captures[0].string' < package.json)
 	rm -rf node_modules
 	npm clean-install
+	@# TEMPORARY -- The Rust ASN1 library is not yet up-to-date
+	rm -f node_modules/@keetapay/asn1-napi-rs/*.node
 	@touch node_modules/.done
 
 # Creates the "node_modules" directory -- this target is for
@@ -83,5 +109,9 @@ clean:
 # These files should also be added to the ".gitignore" file.
 distclean: clean
 	rm -rf node_modules
+
+# Delete anything that is not part of the project.
+mrproper: distclean
+	rm -rf vendor
 
 .PHONY: all help test clean distclean do-npm-pack do-deploy

@@ -29,8 +29,8 @@
 	},
 	"dependencies": {
 		"@keetapay/currency-info": "1.1.0",
-		"@keetapay/keetanet-client": "0.8.4",
-		"@keetapay/keetanet-node": "0.8.4",
+		"@keetapay/keetanet-client": "file:vendor/keetanet-client-3a91c29f5fbff2745a4555dd5709f56a1f62acb2.tgz",
+		"@keetapay/keetanet-node": "file:vendor/keetanet-node-3a91c29f5fbff2745a4555dd5709f56a1f62acb2.tgz",
 		"typia": "6.11.1"
 	},
 	"engines": {
