@@ -5,7 +5,6 @@ import crypto from 'crypto';
 
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
-const AccountKeyAlgorithm: typeof KeetaNetClient.lib.Account.AccountKeyAlgorithm = KeetaNetClient.lib.Account.AccountKeyAlgorithm;
 
 /**
  * An alias for the KeetaNetAccount type
@@ -143,7 +142,7 @@ const sensitiveAttributeOIDDB = {
 };
 
 class SensitiveAttributeBuilder {
-	#account: KeetaNetAccount;
+	readonly #account: KeetaNetAccount;
 	#value: Buffer | undefined;
 
 	constructor(account: KeetaNetAccount, value?: ArrayBuffer | string) {
@@ -223,8 +222,8 @@ class SensitiveAttributeBuilder {
 }
 
 class SensitiveAttribute {
-	#account: KeetaNetAccount;
-	#info: ReturnType<SensitiveAttribute['decode']>;
+	readonly #account: KeetaNetAccount;
+	readonly #info: ReturnType<SensitiveAttribute['decode']>;
 
 	constructor(account: KeetaNetAccount, data: ArrayBuffer) {
 		this.#account = account;
@@ -451,7 +450,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 }
 
 export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
-	private subjectKey: KeetaNetAccount;
+	private readonly subjectKey: KeetaNetAccount;
 	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
 
 	/**
