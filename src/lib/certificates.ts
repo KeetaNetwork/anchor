@@ -291,6 +291,11 @@ class SensitiveAttribute {
 		return(Buffer.from(value).toString('utf-8'));
 	}
 
+	/**
+	 * Generate a proof that a sensitive attribute is a given value,
+	 * which can be validated by a third party using the certificate
+	 * and the `validateProof` method
+	 */
 	async proove(): Promise<{ value: string; hash: { salt: string } }> {
 		const value = await this.get();
 		const salt = await this.#decryptValue(this.#info.hashedValue.encryptedSalt);
@@ -337,7 +342,13 @@ const CertificateAttributeOIDDB = {
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
 type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>[0]>;
-type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & { subject: BaseCertificateBuilderParams['subjectPublicKey']; }>;
+type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & {
+	/**
+	 * The key of the subject -- used for Sensitive Attributes as well
+	 * as the certificate Subject
+	 */
+	subject: BaseCertificateBuilderParams['subjectPublicKey'];
+}>;
 
 /**
  * ASN.1 Schema for Certificate KYC Attributes Extension
@@ -370,8 +381,12 @@ const CertificateKYCAttributeSchemaValidation = {
 type CertificateKYCAttributeSchema = ASN1.SchemaMap<typeof CertificateKYCAttributeSchemaValidation>;
 
 export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.CertificateBuilder {
-	#attributes: { [name: string]: { sensitive: boolean; value: ArrayBuffer | string } } = {};
+	readonly #attributes: { [name: string]: { sensitive: boolean; value: ArrayBuffer | string } } = {};
 
+	/**
+	 * Map the parameters from the public interface to the internal
+	 * (Certificate library) interface
+	 */
 	private static mapParams(params?: Partial<CertificateBuilderParams>): Partial<BaseCertificateBuilderParams> {
 		const paramsCopy = { ...params };
 		let subjectPublicKey;
@@ -390,6 +405,9 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		super(CertificateBuilder.mapParams(params));
 	}
 
+	/**
+	 * Set a KYC Attribute to a given value
+	 */
 	setAttribute(name: CertificateAttributeNames, sensitive: boolean, value: ArrayBuffer | string): void {
 		this.#attributes[name] = { sensitive, value };
 	}
@@ -438,6 +456,12 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		return(retval);
 	}
 
+	/**
+	 * Create a Certificate object from the builder
+	 *
+	 * The parameters passed in are merged with the parameters passed in
+	 * when constructing the builder
+	 */
 	async build(params?: Partial<CertificateBuilderParams>): Promise<Certificate> {
 		const paramsCopy = CertificateBuilder.mapParams(params);
 		const certificate = await super.buildDER(paramsCopy);
