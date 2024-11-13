@@ -333,11 +333,11 @@ class SensitiveAttribute {
  * Database of attributes
  */
 const CertificateAttributeOIDDB = {
-	'fullName': '1.3.6.1.4.1.159660.1.0',
-	'dateOfBirth': '1.3.6.1.4.1.159660.1.1',
-	'address': '1.3.6.1.4.1.159660.1.2',
-	'email': '1.3.6.1.4.1.159660.1.3',
-	'phoneNumber': '1.3.6.1.4.1.159660.1.4'
+	'fullName': '1.3.6.1.4.1.62675.1.0',
+	'dateOfBirth': '1.3.6.1.4.1.62675.1.1',
+	'address': '1.3.6.1.4.1.62675.1.2',
+	'email': '1.3.6.1.4.1.62675.1.3',
+	'phoneNumber': '1.3.6.1.4.1.62675.1.4'
 };
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -449,7 +449,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 		if (certAttributes.length > 0) {
 			retval.push(
-				KeetaNetClient.lib.Utils.Certificate.CertificateBuilder.extension('1.3.6.1.4.1.159660.0.0', certAttributes)
+				KeetaNetClient.lib.Utils.Certificate.CertificateBuilder.extension('1.3.6.1.4.1.62675.0.0', certAttributes)
 			);
 		}
 
@@ -507,7 +507,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 			return(true);
 		}
 
-		if (id === '1.3.6.1.4.1.159660.0.0') {
+		if (id === '1.3.6.1.4.1.62675.0.0') {
 			const attributesRaw = new ASN1.BufferStorageASN1(value, CertificateKYCAttributeSchemaValidation).getASN1();
 
 			for (const attribute of attributesRaw) {
