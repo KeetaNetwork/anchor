@@ -361,9 +361,9 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
  *                 -- Value of this attribute
  *                 value       CHOICE {
  *                         -- A plain value, not sensitive
- *                         plainValue       [0] OCTET STRING,
+ *                         plainValue       [0] IMPLICIT OCTET STRING,
  *                         -- A sensitive value, encoded as a SensitiveAttribute in DER encoding
- *                         sensitiveValue   [1] OCTET STRING
+ *                         sensitiveValue   [1] IMPLICIT OCTET STRING
  *                 }
  *         }
  * END
@@ -371,8 +371,8 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
 const CertificateKYCAttributeSchemaValidation = {
 	sequenceOf: [ASN1.ValidateASN1.IsOID, {
 		choice: [
-			{ type: 'context' as const, value: 0 as const, contains: ASN1.ValidateASN1.IsOctetString },
-			{ type: 'context' as const, value: 1 as const, contains: ASN1.ValidateASN1.IsOctetString }
+			{ type: 'context' as const, value: 0 as const, kind: 'implicit' as const, contains: ASN1.ValidateASN1.IsOctetString },
+			{ type: 'context' as const, value: 1 as const, kind: 'implicit' as const, contains: ASN1.ValidateASN1.IsOctetString }
 		]
 	}]
 } satisfies ASN1.Schema;
@@ -442,6 +442,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 				oid: nameOID
 			}, {
 				type: 'context',
+				kind: 'implicit',
 				value: attribute.sensitive ? 1 : 0,
 				contains: value
 			}]);
