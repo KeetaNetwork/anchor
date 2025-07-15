@@ -114,9 +114,9 @@ test('Certificates', async function() {
 		 * Use the same builder to create a User Certificate
 		 */
 		builder1.setAttribute('fullName', true, 'Test User');
-		builder1.setAttribute('email', true, 'rkeene@keeta.com');
+		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, '100 Rollingwood Dr, Oldsmar, FL 34677');
+		builder1.setAttribute('address', true, '100 Belgrave Street, Oldsmar, FL 34677');
 		builder1.setAttribute('dateOfBirth', true, '1980-01-01');
 
 		/**
