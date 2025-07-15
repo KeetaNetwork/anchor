@@ -533,6 +533,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 				}
 			}
 
+			return(true);
 		}
 
 		return(false);
