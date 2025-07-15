@@ -86,7 +86,6 @@ test('Certificates', async function() {
 	/*
 	 * Build a certificate with a test value from the users public key
 	 */
-	/* XXX:TODO: Replace with Enum values */
 	for (const keyKind of [
 		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256K1,
 		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256R1,
@@ -133,7 +132,17 @@ test('Certificates', async function() {
 		/**
 		 * The Certificate (without access to the private key)
 		 */
-		const certificate = new Certificates.Certificate(certificateData);
+		const certificate = new Certificates.Certificate(certificateData, {
+			store: {
+				root: new Set([certificateCAData])
+			}
+		});
+
+		/*
+		 * Validate the Certificate was signed by the issuer
+		 */
+		expect(certificate.checkIssued(certificateCAData)).toBe(true);
+		expect(certificate.trusted).toBe(true);
 
 		/**
 		 * The Certificate (with access to the private key)
