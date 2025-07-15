@@ -32,7 +32,7 @@ help:
 	mv .nvmrc.new .nvmrc
 
 # This target creates the "node_modules" directory.
-node_modules/.done: package.json package-lock.json Makefile $(shell jq -crM '.dependencies | .[] | match("^file:(vendor/.*)") | .captures[0].string' < package.json)
+node_modules/.done: package.json package-lock.json Makefile
 	rm -rf node_modules
 	npm clean-install
 	@touch node_modules/.done
@@ -91,9 +91,5 @@ clean:
 distclean: clean
 	rm -rf node_modules
 	rm -f .nvmrc
-
-# Delete anything that is not part of the project.
-mrproper: distclean
-	rm -rf vendor
 
 .PHONY: all help test clean distclean do-npm-pack do-deploy
