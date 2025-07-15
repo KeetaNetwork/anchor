@@ -3,7 +3,7 @@
 Keeta Anchor Project
 ====================
 
-This is the reference implementation of the KeetaPay Anchor SDK.
+This is the reference implementation of the KeetaNetwork Anchor SDK.
 
 It implements:
 

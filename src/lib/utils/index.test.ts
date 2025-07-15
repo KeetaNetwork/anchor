@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'vitest';
 import { JSON as JSONUtils, Array as ArrayUtils } from './index.js';
-import { Account } from '@keetapay/keetanet-node/dist/lib/account.js';
+import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 
 const testAccount1 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
 const testAccount2 = Account.fromPublicKeyString(testAccount1.publicKeyString.get());
@@ -67,8 +67,8 @@ describe('JSON: Utils', function() {
 					symbol: `[${expected.symbol.toString()}]`,
 					undefined: 'undefined',
 					array: [1, 2, 3, 4, null, 'undefined', 'abc'],
-					account1: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PRIVATE]',
-					account2: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PUBLIC]',
+					account1: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PRIVATE]',
+					account2: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PUBLIC]',
 					class: '[Class TestClass]',
 					serializable: 'ToJSON Serializable',
 					unserializable: '[Instance Unserializable]',
@@ -89,8 +89,8 @@ describe('JSON: Utils', function() {
 						symbol: `[${expected.nested.symbol.toString()}]`,
 						undefined: 'undefined',
 						array: [1, 2, 3, 4, null, 'undefined', 'abc'],
-						account1: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PRIVATE]',
-						account2: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PUBLIC]',
+						account1: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PRIVATE]',
+						account2: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PUBLIC]',
 						class: '[Class TestClass]',
 						serializable: 'ToJSON Serializable',
 						unserializable: '[Instance Unserializable]'
@@ -113,8 +113,8 @@ describe('JSON: Utils', function() {
 					symbol: `[${expected.symbol.toString()}]`,
 					undefined: 'undefined',
 					array: [1, 2, 3, 4, null, 'undefined', 'abc'],
-					account1: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PRIVATE]',
-					account2: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PUBLIC]',
+					account1: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PRIVATE]',
+					account2: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PUBLIC]',
 					class: '[Class TestClass]',
 					serializable: 'ToJSON Serializable',
 					unserializable: '[Instance Unserializable]',
@@ -135,8 +135,8 @@ describe('JSON: Utils', function() {
 						symbol: `[${expected.nested.symbol.toString()}]`,
 						undefined: 'undefined',
 						array: [1, 2, 3, 4, null, 'undefined', 'abc'],
-						account1: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PRIVATE]',
-						account2: '[Account keeta_aaafjsbmiuh7ool57oldfishujbtqhdotvvnla2hlnhgoztl5jmxwd3ijallopl PUBLIC]',
+						account1: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PRIVATE]',
+						account2: '[Account keeta_aabkmqlcfb73ts7p3syzker5cim4by3u5nlkygr23jztwm27klf5q62cic23t2y PUBLIC]',
 						class: '[Class TestClass]',
 						serializable: 'ToJSON Serializable',
 						unserializable: '[Instance Unserializable]'
