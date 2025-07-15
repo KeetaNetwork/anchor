@@ -87,7 +87,11 @@ test('Certificates', async function() {
 	 * Build a certificate with a test value from the users public key
 	 */
 	/* XXX:TODO: Replace with Enum values */
-	for (const keyKind of [0, 1, 6] as const) {
+	for (const keyKind of [
+		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256K1,
+		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256R1,
+		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ED25519
+	] as const) {
 		const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0, keyKind);
 		const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1, keyKind);
 
