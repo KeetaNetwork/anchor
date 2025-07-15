@@ -1,5 +1,5 @@
-import * as KeetaNetClient from '@keetapay/keetanet-client';
-import type * as ASN1Types from '@keetapay/keetanet-client/lib/utils/asn1.ts';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts';
 /*
  * We import this file to make sure that the `asn1js` types are
  * defined, since they are required by the `ASN1toJS` and `JStoASN1`

@@ -1,4 +1,4 @@
-import * as KeetaNetClient from '@keetapay/keetanet-client';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as ASN1 from './utils/asn1.js';
 import { assertNever } from './utils/never.js';
 import crypto from 'crypto';

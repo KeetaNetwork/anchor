@@ -1,7 +1,6 @@
 /dist
 /.tsbuildinfo
 /node_modules
-/dist/keetapay-*.tgz
-/keetapay-*.tgz
+/keetanetwork-*.tgz
 /.coverage
 /vendor

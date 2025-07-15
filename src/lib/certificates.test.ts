@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
-import * as KeetaNetClient from '@keetapay/keetanet-client';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import fs from 'node:fs';
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
