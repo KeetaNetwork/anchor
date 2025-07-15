@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 import Resolver from './resolver.js';
-import * as KeetaNetClient from '@keetapay/keetanet-client';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from './utils/tests/node.js';
 
 async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {

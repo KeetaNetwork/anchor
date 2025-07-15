@@ -1,7 +1,7 @@
 import { afterEach } from 'vitest';
-import * as KeetaNetClient from '@keetapay/keetanet-client';
-import { createTestNode } from '@keetapay/keetanet-node/dist/lib/utils/helper_testing.js';
-import * as KeetaNetNode from '@keetapay/keetanet-node/dist/client';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import { createTestNode } from '@keetanetwork/keetanet-node/dist/lib/utils/helper_testing.js';
+import * as KeetaNetNode from '@keetanetwork/keetanet-node/dist/client';
 import { assert } from 'typia';
 
 const toCleanup: (() => Promise<void>)[] = [];
@@ -70,7 +70,7 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			signer: TestRepAccountClient,
 			usePublishAid: false
 		});
-		await itaUserClient.initializeChain({
+		await itaUserClient.initializeNetwork({
 			addSupplyAmount: BigInt(1000),
 			delegateTo: TestRepAccountClient,
 			/* XXX: This is broken too, so we need to set it to a high number */

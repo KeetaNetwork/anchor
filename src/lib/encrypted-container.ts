@@ -2,12 +2,12 @@ import * as zlib from 'node:zlib';
 import * as crypto from 'node:crypto';
 import * as util from 'node:util';
 
-import { Account } from '@keetapay/keetanet-node/dist/lib/account.js';
+import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 import {
 	ASN1toJS,
 	JStoASN1
-} from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
-import { bufferToArrayBuffer } from '@keetapay/keetanet-node/dist/lib/utils/helper.js';
+} from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
+import { bufferToArrayBuffer } from '@keetanetwork/keetanet-node/dist/lib/utils/helper.js';
 import { isArray } from './utils/array.js';
 
 const zlibDeflate = util.promisify(zlib.deflate);
