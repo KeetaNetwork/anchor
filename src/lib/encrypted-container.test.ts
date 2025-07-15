@@ -1,7 +1,7 @@
 import { test, expect, describe } from 'vitest';
-import { Account } from '@keetapay/keetanet-node/dist/lib/account.js';
+import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 import * as EncryptedContainer from './encrypted-container.js';
-import { JStoASN1 } from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
+import { JStoASN1 } from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
 
 const testAccount1 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
 const testAccount2 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1);
@@ -63,7 +63,8 @@ describe('Encrypted Container Internal Tests', function() {
 			const sequence = [];
 			sequence[0] = version;
 			sequence[1] = {
-				type: 'context',
+				type: 'context' as const,
+				kind: 'explicit' as const,
 				value: encrypted,
 				contains
 			};

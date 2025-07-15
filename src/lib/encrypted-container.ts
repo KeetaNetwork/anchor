@@ -2,15 +2,15 @@ import * as zlib from 'node:zlib';
 import * as crypto from 'node:crypto';
 import * as util from 'node:util';
 
-import { Account } from '@keetapay/keetanet-node/dist/lib/account.js';
+import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 import {
 	ASN1toJS,
 	JStoASN1
-} from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
+} from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
 import type {
 	ASN1OID
-} from '@keetapay/keetanet-node/dist/lib/utils/asn1.js';
-import { bufferToArrayBuffer } from '@keetapay/keetanet-node/dist/lib/utils/helper.js';
+} from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
+import { bufferToArrayBuffer } from '@keetanetwork/keetanet-node/dist/lib/utils/helper.js';
 import { isArray } from './utils/array.js';
 
 const zlibDeflate = util.promisify(zlib.deflate);
@@ -93,10 +93,12 @@ type ContainerPackage = [
 	{
 		type: 'context'
 		value: 0,
+		kind: 'explicit',
 		contains: EncryptedContainerBoxEncrypted
 	} | {
 		type: 'context',
 		value: 1,
+		kind: 'explicit',
 		contains: EncryptedContainerBoxPlaintext
 	}
 ];
@@ -184,6 +186,7 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 		sequence[1] = {
 			type: 'context',
 			value: 0,
+			kind: 'explicit',
 			contains: [
 				encryptionKeysSequence,
 				{ type: 'oid', oid: algorithmOID },
@@ -198,6 +201,7 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 		sequence[1] = {
 			type: 'context',
 			value: 1,
+			kind: 'explicit',
 			contains: [compressedPlaintext]
 		};
 	}
