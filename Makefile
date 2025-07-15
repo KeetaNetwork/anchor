@@ -7,8 +7,9 @@
 #
 # To get a list of targets run "make help".
 
-# The default target -- makes the "dist" directory.
-all: dist
+# The default target -- makes the "dist" directory
+# and creates a ".nvmrc" file.
+all: dist .nvmrc
 
 # This target provides a list of targets.
 help:
@@ -16,13 +17,19 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all           - Builds the project"
-	@echo "  dist          - Builds the project"
+	@echo "  dist          - Builds the distribution directory"
 	@echo "  test          - Runs the test suite"
 	@echo "                  Specify extra flags with ANCHOR_TEST_EXTRA_ARGS"
 	@echo "  clean         - Removes build artifacts"
 	@echo "  distclean     - Removes all build artifacts and dependencies"
 	@echo "  do-deploy     - Deploys the package to the Development (or QA) environment"
 	@echo "  do-npm-pack   - Creates a distributable package for this project"
+
+# Create a ".nvmrc" file if it does not exist
+.nvmrc: package.json Makefile
+	rm -f .nvmrc .nvmrc.new
+	jq -rM '"v" + .engines.node' < package.json > .nvmrc.new
+	mv .nvmrc.new .nvmrc
 
 # This target creates the "node_modules" directory.
 node_modules/.done: package.json package-lock.json Makefile $(shell jq -crM '.dependencies | .[] | match("^file:(vendor/.*)") | .captures[0].string' < package.json)
@@ -83,6 +90,7 @@ clean:
 # These files should also be added to the ".gitignore" file.
 distclean: clean
 	rm -rf node_modules
+	rm -f .nvmrc
 
 # Delete anything that is not part of the project.
 mrproper: distclean
