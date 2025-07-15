@@ -1,4 +1,4 @@
-# This is the Makefile for the KeetaPay Anchor project.
+# This is the Makefile for the KeetaNetwork Anchor project.
 # It is used to automate the build, test, and cleanup processes.
 #
 # It is the place where all automation tasks are defined -- not
@@ -55,7 +55,7 @@ dist: dist/.done
 # package for this project.
 do-npm-pack: dist node_modules
 	cd dist && npm pack
-	mv dist/keetapay-anchor-*.tgz .
+	mv dist/keetanetwork-anchor-*.tgz .
 
 # Deploy the package to the Development (or QA) environment.
 do-deploy: dist node_modules
@@ -75,7 +75,7 @@ clean:
 	rm -rf dist
 	rm -rf .coverage
 	rm -f .tsbuildinfo
-	rm -f keetapay-anchor-*.tgz
+	rm -f keetanetwork-anchor-*.tgz
 
 # Files created during the "install" process are cleaned up
 # by the "distclean" target.
