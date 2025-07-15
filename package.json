@@ -1,7 +1,7 @@
 {
-	"name": "@keetapay/anchor",
+	"name": "@keetanetwork/anchor",
 	"version": "0.1.0",
-	"description": "KeetaPay Network Anchor",
+	"description": "KeetaNetwork Network Anchor",
 	"main": "index.js",
 	"scripts": {
 		"tsc": "tsc",
@@ -27,11 +27,11 @@
 		"vitest": "2.1.2"
 	},
 	"dependencies": {
-		"@keetapay/currency-info": "1.1.0",
-		"@keetapay/keetanet-node": "0.8.4",
+		"@keetanetwork/currency-info": "1.1.1",
+		"@keetanetwork/keetanet-node": "0.10.7",
 		"typia": "6.11.1"
 	},
 	"engines": {
-		"node": "20.17.0"
+		"node": "20.18.0"
 	}
 }
