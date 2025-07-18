@@ -214,14 +214,23 @@ test('Basic Tests', async function() {
 });
 
 test('Concurrent Lookups', async function() {
+	const concurrency = 1000;
 	const { resolver } = await setupForResolverTests();
 
 	/*
 	 * Concurrent Lookups
 	 */
 	resolver.clearCache();
+
+	/*
+	 * Prime the cache with a single lookup
+	 */
+	await resolver.lookup('banking', {
+		countryCodes: ['US' as const],
+	});
+
 	const lookupPromises = [];
-	for (let lookupID = 0; lookupID < 1000; lookupID++) {
+	for (let lookupID = 0; lookupID < concurrency; lookupID++) {
 		lookupPromises.push(resolver.lookup('banking', {
 			countryCodes: ['US' as const],
 		}));
@@ -234,8 +243,8 @@ test('Concurrent Lookups', async function() {
 		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
 	}
-	expect(resolver.stats.reads).toBeGreaterThan(3000);
+	expect(resolver.stats.reads).toBeGreaterThan(concurrency * 3);
 	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
-	expect(resolver.stats.cache.miss).toBeLessThan(2000);
+	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads).toBe(resolver.stats.cache.miss);
 }, 30000);

@@ -342,12 +342,12 @@ class Metadata implements ValuizableInstance {
 		}
 		this.seenURLs.add(cacheKey);
 
-		let cacheVal = this.#cache.instance.get(cacheKey);
-
 		/*
 		 * Verify that the cache entry is still valid.  If it is not,
 		 * then remove it from the cache.
 		 */
+		let cacheVal = this.#cache.instance.get(cacheKey);
+
 		if (this.#cache.instance.has(cacheKey) && cacheVal !== undefined) {
 			if (cacheVal.expires < new Date()) {
 				this.#cache.instance.delete(cacheKey);
