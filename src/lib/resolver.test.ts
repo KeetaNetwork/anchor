@@ -67,6 +67,14 @@ async function setupForResolverTests() {
 		metadata: Resolver.Metadata.formatMetadata({
 			version: 1,
 			services: {
+				kyc: {
+					keeta_internal: {
+						operations: {
+							createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
+						},
+						countryCodes: ['US']
+					}
+				},
 				banking: {
 					keeta_foo: {
 						operations: {
@@ -136,63 +144,96 @@ test('Basic Tests', async function() {
 	/*
 	 * Various resolver checks
 	 */
-	const checks = [{
-		input: {
-			countryCodes: ['US' as const],
-		},
-		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
-	}, {
-		input: {
-			currencyCodes: ['USD' as const],
-		},
-		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
-	}, {
-		input: {
-			countryCodes: ['MX' as const] ,
-		},
-		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
-	}, {
-		input: {
-			currencyCodes: ['MXN' as const],
-		},
-		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
-	}, {
-		input: {
-			countryCodes: ['US' as const],
-			currencyCodes: ['USD' as const],
-		},
-		createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
-	}, {
-		input: {
-			countryCodes: ['MX' as const] ,
-			currencyCodes: ['MXN' as const],
-		},
-		createAccount: 'https://banchor.foo.com/api/v1/createAccount'
-	}, {
-		input: {
-			countryCodes: ['US' as const] ,
-			currencyCodes: ['MXN' as const],
-		},
-		result: undefined
-	}];
+	const allChecks = {
+		banking: [{
+			input: {
+				countryCodes: ['US' as const],
+			},
+			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		}, {
+			input: {
+				currencyCodes: ['USD' as const],
+			},
+			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['MX' as const] ,
+			},
+			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+		}, {
+			input: {
+				currencyCodes: ['MXN' as const],
+			},
+			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['US' as const],
+				currencyCodes: ['USD' as const],
+			},
+			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['MX' as const] ,
+				currencyCodes: ['MXN' as const],
+			},
+			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['US' as const] ,
+				currencyCodes: ['MXN' as const],
+			},
+			result: undefined
+		}],
+		kyc: [{
+			input: {
+				countryCodes: ['US' as const],
+			},
+			createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
+		}, {
+			input: {
+				countryCodes: ['MX' as const],
+			},
+			result: undefined
+		}]
+	};
 
-	for (const check of checks) {
-		const checkResult = await resolver.lookup('banking', check.input);
+	for (const checkKind of ['banking', 'kyc'] as const) {
+		const checks = allChecks[checkKind];
+		for (const check of checks) {
+			const checkResult = await resolver.lookup(checkKind, check.input);
 
-		if ('result' in check && check.result === undefined) {
-			expect(checkResult).toBeUndefined();
-			continue;
-		}
+			if ('result' in check && check.result === undefined) {
+				expect(checkResult).toBeUndefined();
+				continue;
+			}
 
-		expect(checkResult).toBeDefined();
-		if (checkResult === undefined) {
-			throw(new Error('internal error: check is undefined'));
-		}
+			expect(checkResult).toBeDefined();
+			if (checkResult === undefined) {
+				throw(new Error('internal error: check is undefined'));
+			}
 
-		const operations = await checkResult.operations('object');
-		if ('createAccount' in check) {
-			const checkCreateAccount = await operations.createAccount?.('string');
-			expect(checkCreateAccount).toEqual(check.createAccount);
+			const operations = await checkResult.operations('object');
+			switch (checkKind) {
+				case 'banking':
+					if (!('createAccount' in operations)) {
+						throw(new Error(`internal error: createAccount not found in operations for ${checkKind}`));
+					}
+					if ('createAccount' in check) {
+						const checkCreateAccount = await operations.createAccount?.('string');
+						expect(checkCreateAccount).toEqual(check.createAccount);
+					}
+					break;
+				case 'kyc':
+					if (!('createVerification' in operations)) {
+						throw(new Error(`internal error: createVerification not found in operations for ${checkKind}`));
+					}
+
+					if ('createVerification' in check) {
+						const checkCreateVerification = await operations.createVerification?.('string');
+						expect(checkCreateVerification).toEqual(check.createVerification);
+					}
+					break;
+			}
 		}
 	}
 

@@ -45,6 +45,14 @@ type ServiceMetadata = {
 				kycProviders: string[];
 			};
 		};
+		kyc?: {
+			[id: string]: {
+				operations: {
+					createVerification?: string;
+				};
+				countryCodes: string[];
+			};
+		};
 		fx?: {
 			inputCurrencyCodes: {
 				outputCurrencyCodes: string[];
@@ -101,6 +109,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * output currency
 		 */
 		outputCurrencyCode: CurrencySearchInput;
+	};
+	'kyc': {
+		/**
+		 * Search for a KYC provider which can verify accounts in ALL
+		 * of the following countries.
+		 */
+		countryCodes?: CountrySearchInput[];
 	};
 	'inbound': {
 		/* XXX:TODO */
@@ -548,6 +563,7 @@ type ResolverStats = {
 };
 
 type ResolverLookupBankingResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>;
+type ResolverLookupKYCResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>;
 const assertResolverLookupBankingResults = createAssert<ResolverLookupBankingResults>();
 
 export class Resolver {
@@ -685,9 +701,59 @@ export class Resolver {
 		return(undefined);
 	}
 
+	private async lookupKYCService(kycServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'kyc'>) {
+		if (kycServices === undefined) {
+			return(undefined);
+		}
+
+		for (const checkKYCServiceID in kycServices) {
+			try {
+				const checkKYCService = await kycServices[checkKYCServiceID]?.('object');
+				if (checkKYCService === undefined) {
+					continue;
+				}
+
+				if (!('operations' in checkKYCService)) {
+					continue;
+				}
+
+				if (!('countryCodes' in checkKYCService)) {
+					continue;
+				}
+
+				if (criteria.countryCodes !== undefined) {
+					const checkKYCServiceCountryCodes = await Promise.all(((await checkKYCService.countryCodes?.('array')) ?? []).map(function(item) {
+						return(item?.('primitive'));
+					}));
+					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYCServiceCountryCodes, 'for', checkKYCServiceID);
+
+					let acceptable = true;
+					for (const checkCountryCode of criteria.countryCodes) {
+						const checkCountryCodeCanonical = convertToCountrySearchCanonical(checkCountryCode);
+						if (!checkKYCServiceCountryCodes.includes(checkCountryCodeCanonical)) {
+							acceptable = false;
+							break;
+						}
+					}
+
+					if (!acceptable) {
+						continue;
+					}
+				}
+
+				return(assertResolverLookupBankingResults(checkKYCService));
+			} catch (checkKYCServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking KYC service', checkKYCServiceID, ':', checkKYCServiceError, ' -- ignoring');
+			}
+		}
+
+		return(undefined);
+	}
+
 	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined> {
+	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupKYCResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
 			trustedCAs: this.#trustedCAs,
@@ -725,6 +791,13 @@ export class Resolver {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Banking Services:', bankingServices);
 
 				return(await this.lookupBankingService(bankingServices, currentCriteria));
+			}
+			case 'kyc': {
+				const currentCriteria = criteria as ServiceSearchCriteria<'kyc'>;
+				const kycServices = await definedServices.kyc?.('object');
+				this.#logger?.debug(`Resolver:${this.id}`, 'KYC Services:', kycServices);
+
+				return(await this.lookupKYCService(kycServices, currentCriteria));
 			}
 			case 'fx':
 			case 'inbound':
