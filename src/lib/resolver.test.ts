@@ -84,6 +84,11 @@ async function setupForResolverTests() {
 						currencyCodes: ['MXN'],
 						kycProviders: ['Keeta']
 					},
+					keeta_https: {
+						/* HTTPS Link */
+						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+						url: 'https://localhost:9341/metadata'
+					},
 					[TestAccountLoop.publicKeyString.get()]: {
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 						url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`

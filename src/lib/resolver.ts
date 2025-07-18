@@ -339,8 +339,39 @@ class Metadata implements ValuizableInstance {
 		return(retval);
 	}
 
-	private async readHTTPSURL(_ignore_url: URL): Promise<JSONSerializable> {
-		throw(new Error('not implemented'));
+	private async readHTTPSURL(url: URL): Promise<JSONSerializable> {
+		this.#stats.https.reads++;
+
+		const results = await fetch(url.toString(), {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			},
+		});
+
+		if (!results.ok) {
+			throw(new Error(`Error HTTP status ${results.status} ${results.statusText} for ${url.toString()}`));
+		}
+
+		if (results.status === 204) {
+			/*
+			 * 204 No Content is a valid response, so we return an empty
+			 * object.
+			 */
+			return({});
+		}
+
+		if (results.status !== 200) {
+			throw(new Error(`Unexpected HTTP status ${results.status} for ${url.toString()}`));
+		}
+
+		const metadata = JSON.stringify(await results.json());
+
+		this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', metadata);
+
+		const retval = await this.parseMetadata(metadata);
+
+		return(retval);
 	}
 
 	private async readURL(url: URL) {
