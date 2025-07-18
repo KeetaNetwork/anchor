@@ -19,19 +19,19 @@
 	"license": "SEE LICENSE IN LICENSE",
 	"type": "module",
 	"devDependencies": {
-		"@ryoppippi/unplugin-typia": "1.0.6",
+		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "20.16.10",
-		"@vitest/coverage-v8": "2.1.2",
-		"ts-patch": "3.2.1",
+		"@vitest/coverage-v8": "3.2.4",
+		"ts-patch": "3.3.0",
 		"typescript": "5.6.2",
-		"vitest": "2.1.2"
+		"vitest": "3.2.4"
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
 		"@keetanetwork/keetanet-client": "0.10.7",
 		"@keetanetwork/keetanet-node": "0.10.7",
-		"typia": "6.11.1"
+		"typia": "9.5.0"
 	},
 	"engines": {
 		"node": "20.18.0"
