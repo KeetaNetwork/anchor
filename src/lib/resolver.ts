@@ -597,7 +597,7 @@ type ResolverLookupBankingResults = ToValuizableObject<NonNullable<ServiceMetada
 type ResolverLookupKYCResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>;
 const assertResolverLookupBankingResults = createAssert<ResolverLookupBankingResults>();
 
-export class Resolver {
+class Resolver {
 	readonly #root: ResolverConfig['root'];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
 	readonly #client: KeetaNetClient.Client;
