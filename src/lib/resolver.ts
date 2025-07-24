@@ -537,7 +537,9 @@ class Metadata implements ValuizableInstance {
 
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
-					// @ts-ignore
+					if (Array.isArray(newValue)) {
+						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can  only be an object'));
+					}
 					newValue[key] = newValuizableObject;
 				} else {
 					/*
@@ -550,6 +552,12 @@ class Metadata implements ValuizableInstance {
 						return(retval);
 					};
 
+					/*
+					 * TypeScript doesn't track that `key`
+					 * is a valid index regardless of the
+					 * type of `newValue` is an array or an
+					 * object, so we need to use `@ts-ignore`
+					 */
 					// @ts-ignore
 					newValue[key] = newValueEntry;
 				}
