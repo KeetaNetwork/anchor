@@ -99,7 +99,7 @@ const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.
  * @internal
  */
 const SensitiveAttributeSchemaInternal: [
-	version: typeof ASN1.ValidateASN1.IsInteger,
+	version: 0n,
 	cipher: [
 		algorithm: typeof ASN1.ValidateASN1.IsOID,
 		iv: typeof ASN1.ValidateASN1.IsOctetString,
@@ -112,7 +112,7 @@ const SensitiveAttributeSchemaInternal: [
 	],
 	encryptedValue: typeof ASN1.ValidateASN1.IsOctetString
 ] = [
-	ASN1.ValidateASN1.IsInteger,
+	0n,
 	[
 		ASN1.ValidateASN1.IsOID,
 		ASN1.ValidateASN1.IsOctetString,
@@ -197,7 +197,7 @@ class SensitiveAttributeBuilder {
 
 		const attributeStructure: SensitiveAttributeSchema = [
 			/* Version */
-			BigInt(0),
+			0n,
 			/* Cipher Details */
 			[
 				/* Algorithm */
