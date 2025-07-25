@@ -1,5 +1,5 @@
-import keetapayConfig from '@keetapay/eslint-config-typescript';
+import keetanetworkConfig from '@keetanetwork/eslint-config-typescript';
 
 export default [
-	...keetapayConfig
+	...keetanetworkConfig
 ];
