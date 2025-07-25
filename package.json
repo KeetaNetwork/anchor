@@ -4,7 +4,7 @@
 	"description": "KeetaPay Network Anchor",
 	"main": "index.js",
 	"scripts": {
-		"eslint": "eslint",
+		"eslint": "eslint --config .eslint.config.mjs",
 		"tsc": "tsc",
 		"vitest": "vitest",
 		"make:all": "make all",
@@ -20,7 +20,7 @@
 	"license": "SEE LICENSE IN LICENSE",
 	"type": "module",
 	"devDependencies": {
-		"@keetapay/eslint-config-typescript": "1.4.3",
+		"@keetanetwork/eslint-config-typescript": "1.4.5",
 		"@ryoppippi/unplugin-typia": "1.0.6",
 		"@types/node": "20.16.10",
 		"@vitest/coverage-v8": "2.1.2",
