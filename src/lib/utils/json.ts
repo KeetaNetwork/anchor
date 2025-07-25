@@ -122,17 +122,6 @@ function convertToJSONReplacer(this: any, key: string, jsonItem: unknown, option
 		throw(new Error(`internal error: Unknown type ${typeof item}`));
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-	if ('toJSON' in item && typeof item.toJSON === 'function') {
-		/*
-		 * No need to call toJSON() if it's a function, as it will
-		 * be called by the JSON.stringify() function and passed in
-		 * as the second argument to this function (jsonItem).
-		 */
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-return,no-type-assertion/no-type-assertion,@typescript-eslint/no-explicit-any
-		return(jsonItem as any);
-	}
-
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-member-access
 	if ('publicKeyString' in item && typeof item.publicKeyString === 'object' && item.publicKeyString !== null) {
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-member-access
@@ -156,6 +145,17 @@ function convertToJSONReplacer(this: any, key: string, jsonItem: unknown, option
 				return(`[Account ${item.publicKeyString.get()} ${addToString}]`);
 			}
 		}
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+	if ('toJSON' in item && typeof item.toJSON === 'function') {
+		/*
+		 * No need to call toJSON() if it's a function, as it will
+		 * be called by the JSON.stringify() function and passed in
+		 * as the second argument to this function (jsonItem).
+		 */
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-return,no-type-assertion/no-type-assertion,@typescript-eslint/no-explicit-any
+		return(jsonItem as any);
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
