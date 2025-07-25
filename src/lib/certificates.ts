@@ -94,6 +94,8 @@ const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.
  *         }
  * END
  *
+ * https://keeta.notion.site/Keeta-KYC-Certificate-Extensions-13e5da848e588042bdcef81fc40458b7
+ *
  * @internal
  */
 const SensitiveAttributeSchemaInternal: [
@@ -367,6 +369,9 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
  *                 }
  *         }
  * END
+ *
+ * https://keeta.notion.site/Keeta-KYC-Certificate-Extensions-13e5da848e588042bdcef81fc40458b7
+ *
  */
 const CertificateKYCAttributeSchemaValidation = {
 	sequenceOf: [ASN1.ValidateASN1.IsOID, {
