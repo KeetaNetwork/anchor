@@ -32,14 +32,20 @@ jobs:
           node-version: '${{ steps.node_version.outputs.NODE_VERSION }}'
           cache: 'npm'
 
-      - name: Write private key to .npmrc file
-        run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
+      - name: Setup NPM Auth for GitHub Package Registry
+        run: echo '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' >> ~/.npmrc
 
       - name: Run Lint
         run: make do-lint
+        env:
+          # Needed to fetch packages from GitHub Package Registry
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Tests
         run: make test
+        env:
+          # Needed to fetch packages from GitHub Package Registry
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Run SonarCloud after completing tests and generating code coverage report
       - name: SonarCloud Scan
