@@ -9,6 +9,7 @@
 		"vitest": "vitest",
 		"make:all": "make all",
 		"make:dist": "make dist",
+		"make:do-lint": "make do-lint",
 		"make:test": "make test",
 		"make:clean": "make clean",
 		"make:distclean": "make distclean",
