@@ -503,10 +503,10 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	readonly attributes: {
 		[name: string]: {
 			sensitive: true;
-			value: SensitiveAttribute
+			value: SensitiveAttribute;
 		} | {
 			sensitive: false;
-			value: ArrayBuffer
+			value: ArrayBuffer;
 		}
 	} = {};
 
