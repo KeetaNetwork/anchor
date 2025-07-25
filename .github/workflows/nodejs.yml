@@ -35,6 +35,9 @@ jobs:
       - name: Setup NPM Auth for GitHub Package Registry
         run: echo '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' >> ~/.npmrc
 
+      - name: Run Lint
+        run: make do-lint
+
       - name: Run Tests
         run: make test
         env:
