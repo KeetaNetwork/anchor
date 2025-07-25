@@ -367,6 +367,10 @@ describe('Encrypted Container Tests', function() {
 				fromBufferContainer.revokeAccessSync(testAccount1);
 			},
 			function() {
+				/*
+				 * This is a getter, so we are running something -- but we do not care about the result
+				 */
+				// eslint-disable-next-line @typescript-eslint/no-unused-expressions
 				container.principals;
 			}
 		];

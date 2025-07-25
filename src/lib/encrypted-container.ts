@@ -22,13 +22,13 @@ const zlibInflate = util.promisify(zlib.inflate);
  * EncryptedContainer DEFINITIONS ::=
  * BEGIN
  *         Version        ::= INTEGER { v2(1) }
- * 
+ *
  *         KeyStore ::= SEQUENCE {
  *                 publicKey              OCTET STRING,
  *                 encryptedSymmetricKey  OCTET STRING,
  *                 ...
  *         }
- * 
+ *
  *         EncryptedContainerBox ::= SEQUENCE {
  *                 keys                   SEQUENCE OF KeyStore,
  *                 encryptionAlgorithm    OBJECT IDENTIFIER,
@@ -36,12 +36,12 @@ const zlibInflate = util.promisify(zlib.inflate);
  *                 encryptedValue         OCTET STRING,
  *                 ...
  *         }
- * 
+ *
  *         PlaintextContainerBox ::= SEQUENCE {
  *                 plainValue             OCTET STRING,
  *                 ...
  *         }
- * 
+ *
  *         ContainerPackage ::= SEQUENCE {
  *                 version                Version (v2),
  *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
@@ -56,7 +56,7 @@ const zlibInflate = util.promisify(zlib.inflate);
  *                 plaintextContainer PRESENT
  *         })
  * END
- * 
+ *
  */
 
 type EncryptedContainerKeyStore = [
@@ -158,6 +158,7 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 			throw(new Error(`Unsupported algorithm: ${cipherAlgo}`));
 		}
 
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const algorithmOID = oidDB[cipherAlgo as keyof typeof oidDB];
 
 		const cipher = crypto.createCipheriv(
@@ -294,6 +295,7 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 			});
 		});
 
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		const encryptionAlgorithmOID = value[1];
 		/* XXX:TODO: Lookup the encryption algorithm from the OID  */
 		const encryptionAlgorithm = 'aes-256-cbc';
@@ -621,13 +623,13 @@ export class EncryptedContainer {
 			this._internalState.principals = blobPrincipals;
 
 			// Confirm updated principals are populated correctly which sets container to encrypted
-			if (this.encrypted !== true) {
+			if (!this.encrypted) {
 				throw(new Error('internal error: Encrypted data found but not marked as encrypted'));
 			}
 		} else {
 			this._internalState.principals = null;
 
-			if (this.encrypted !== false) {
+			if (this.encrypted) {
 				throw(new Error('internal error: Plaintext data found but marked as encrypted'));
 			}
 		}
