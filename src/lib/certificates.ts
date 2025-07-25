@@ -240,13 +240,13 @@ class SensitiveAttribute {
 		const dataObject = new ASN1.BufferStorageASN1(data, SensitiveAttributeSchemaInternal);
 		const decodedAttribute = dataObject.getASN1();
 
-		const decodedVersion = decodedAttribute[0];
-		if (decodedVersion !== BigInt(0)) {
-			throw(new Error(`Unsupported Sensitive Attribute version (${decodedVersion})`));;
+		const decodedVersion = decodedAttribute[0] + 1n;
+		if (decodedVersion !== 1n) {
+			throw(new Error(`Unsupported Sensitive Attribute version (${decodedVersion})`));
 		}
 
 		return({
-			version: decodedVersion + BigInt(1),
+			version: decodedVersion,
 			publicKey: this.#account.publicKeyString.get(),
 			cipher: {
 				algorithm: lookupByOID(decodedAttribute[1][0].oid, sensitiveAttributeOIDDB),
