@@ -43,7 +43,7 @@ export interface Logger {
 }
 
 export function canLogForLevel(level: LogLevel, currentLevel: LogLevel): boolean {
-        return(numericLogLevels[level] >= numericLogLevels[currentLevel]);
+	return(numericLogLevels[level] >= numericLogLevels[currentLevel]);
 }
 
 export function canLogForTargetLevel(level: LogLevel, targetLevel: LogTargetLevel): boolean {
