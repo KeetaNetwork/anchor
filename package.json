@@ -4,10 +4,12 @@
 	"description": "KeetaNetwork Network Anchor",
 	"main": "index.js",
 	"scripts": {
+		"eslint": "eslint",
 		"tsc": "tsc",
 		"vitest": "vitest",
 		"make:all": "make all",
 		"make:dist": "make dist",
+		"make:do-lint": "make do-lint",
 		"make:test": "make test",
 		"make:clean": "make clean",
 		"make:distclean": "make distclean",
@@ -19,11 +21,12 @@
 	"license": "SEE LICENSE IN LICENSE",
 	"type": "module",
 	"devDependencies": {
+		"@keetanetwork/eslint-config-typescript": "1.4.6",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/node": "20.16.10",
 		"@vitest/coverage-v8": "3.2.4",
 		"ts-patch": "3.3.0",
-		"typescript": "5.6.2",
+		"typescript": "5.6.3",
 		"vitest": "3.2.4"
 	},
 	"dependencies": {

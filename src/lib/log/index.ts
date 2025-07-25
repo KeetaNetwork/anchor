@@ -21,7 +21,7 @@ type LogOptions = {
 type LogOptionsParam = LogEntry['options'];
 const assertLogOptionsParam = createAssert<LogOptionsParam>();
 
-type LogTargetID = Symbol & { _branded: 'LogTargetID' };
+type LogTargetID = symbol & { _branded: 'LogTargetID' };
 
 export class Log implements Logger {
 	/**
@@ -51,7 +51,7 @@ export class Log implements Logger {
 	#shouldSyncAgain = false;
 
 	#logDebugTracing = false;
-	#targets: Map<Symbol, LogTarget> = new Map();
+	#targets = new Map<symbol, LogTarget>();
 
 	constructor(options?: LogOptions) {
 		if (options?.logDebugTracing !== undefined) {
@@ -114,7 +114,6 @@ export class Log implements Logger {
 	error(...args: unknown[]) {
 		const { options, from } = this.#extractArguments(args);
 
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 		this.#log('ERROR', options, from, ...args);
 	}
 
@@ -126,6 +125,7 @@ export class Log implements Logger {
 
 		this.#targets.set(id, target);
 
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(id as unknown as LogTargetID);
 	}
 
