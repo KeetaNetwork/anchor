@@ -18,6 +18,7 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Builds the project"
 	@echo "  dist          - Builds the distribution directory"
+	@echo "  do-lint       - Runs eslint on the project source"
 	@echo "  test          - Runs the test suite"
 	@echo "                  Specify extra flags with ANCHOR_TEST_EXTRA_ARGS"
 	@echo "  clean         - Removes build artifacts"
@@ -76,7 +77,7 @@ test: node_modules
 
 # Run linting
 do-lint: node_modules
-	npm run eslint src
+	npm run eslint -- --config .eslint.config.mjs src ${KEETA_ANCHOR_LINT_ARGS}
 
 # Files created during the "build" or "prepare" processes
 # are cleaned up by the "clean" target.
