@@ -152,51 +152,51 @@ test('Basic Tests', async function() {
 	const allChecks = {
 		banking: [{
 			input: {
-				countryCodes: ['US' as const],
+				countryCodes: ['US' as const]
 			},
 			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
 		}, {
 			input: {
-				currencyCodes: ['USD' as const],
+				currencyCodes: ['USD' as const]
+			},
+			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['MX' as const]
+			},
+			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+		}, {
+			input: {
+				currencyCodes: ['MXN' as const]
+			},
+			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+		}, {
+			input: {
+				countryCodes: ['US' as const],
+				currencyCodes: ['USD' as const]
 			},
 			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
 		}, {
 			input: {
 				countryCodes: ['MX' as const] ,
-			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
-		}, {
-			input: {
-				currencyCodes: ['MXN' as const],
-			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
-		}, {
-			input: {
-				countryCodes: ['US' as const],
-				currencyCodes: ['USD' as const],
-			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
-		}, {
-			input: {
-				countryCodes: ['MX' as const] ,
-				currencyCodes: ['MXN' as const],
+				currencyCodes: ['MXN' as const]
 			},
 			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
 		}, {
 			input: {
 				countryCodes: ['US' as const] ,
-				currencyCodes: ['MXN' as const],
+				currencyCodes: ['MXN' as const]
 			},
 			result: undefined
 		}],
 		kyc: [{
 			input: {
-				countryCodes: ['US' as const],
+				countryCodes: ['US' as const]
 			},
 			createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
 		}, {
 			input: {
-				countryCodes: ['MX' as const],
+				countryCodes: ['MX' as const]
 			},
 			result: undefined
 		}]
@@ -272,13 +272,13 @@ test('Concurrent Lookups', async function() {
 	 * Prime the cache with a single lookup
 	 */
 	await resolver.lookup('banking', {
-		countryCodes: ['US' as const],
+		countryCodes: ['US' as const]
 	});
 
 	const lookupPromises = [];
 	for (let lookupID = 0; lookupID < concurrency; lookupID++) {
 		lookupPromises.push(resolver.lookup('banking', {
-			countryCodes: ['US' as const],
+			countryCodes: ['US' as const]
 		}));
 	}
 

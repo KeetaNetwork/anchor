@@ -25,7 +25,6 @@ type KeetaNetClientSeed = Parameters<typeof KeetaNetClient.lib.Account.fromSeed>
  * interact with the network.
  */
 export async function createNodeAndClient(userAccount: KeetaNetClientGenericAccount, repAccountSeed?: KeetaNetClientSeed): Promise<Omit<CreateNodeAndClientResponse, 'userClient'> & Required<Pick<CreateNodeAndClientResponse, 'userClient'>>>;
-export async function createNodeAndClient(userAccount?: undefined, repAccountSeed?: KeetaNetClientSeed): Promise<CreateNodeAndClientResponse>;
 export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAccount, repAccountSeed?: KeetaNetClientSeed): Promise<CreateNodeAndClientResponse>;
 export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAccount, repAccountSeed?: KeetaNetClientSeed): Promise<CreateNodeAndClientResponse> {
 	if (repAccountSeed === undefined) {
@@ -44,7 +43,7 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		createInitialVoteStaple: false,
 		nodeConfig: {
 			nodeAlias: 'TEST'
-		},
+		}
 	});
 
 	const endpoints = assert<Required<NonNullable<typeof testNode.config.endpoints>>>(testNode.config.endpoints);

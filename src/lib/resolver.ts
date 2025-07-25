@@ -5,9 +5,7 @@ import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
 import { createIs, createAssert } from 'typia';
 
-const ExternalURLMarker = '2b828e33-2692-46e9-817e-9b93d63f28fd';
-
-type ExternalURL = { external: typeof ExternalURLMarker; url: string; };
+type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 
@@ -61,12 +59,15 @@ type ServiceMetadata = {
 		};
 		inbound?: {
 			/* XXX:TODO */
+			workInProgress?: true;
 		};
 		outbound?: {
 			/* XXX:TODO */
+			workInProgress?: true;
 		};
 		cards?: {
 			/* XXX:TODO */
+			workInProgress?: true;
 		};
 	};
 };
@@ -119,12 +120,15 @@ type ServiceSearchCriteria<T extends Services> = {
 	};
 	'inbound': {
 		/* XXX:TODO */
+		workInProgress: true;
 	};
 	'outbound': {
 		/* XXX:TODO */
+		workInProgress: true;
 	};
 	'cards': {
 		/* XXX:TODO */
+		workInProgress: true;
 	};
 }[T];
 
@@ -185,7 +189,7 @@ const isExternalURL = createIs<ExternalURL>();
 
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
 type ValuizeInput = JSONSerializablePrimitive | ValuizableObject | ValuizableArray;
-type ValuizableArray = Array<ValuizableMethod | undefined>;
+type ValuizableArray = (ValuizableMethod | undefined)[];
 type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
 type ValuizableKind = 'any' | 'object' | 'array' | 'primitive' | 'string' | 'number' | 'boolean';
@@ -196,7 +200,7 @@ interface ValuizableMethod {
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
-	(expect?: 'any'): Promise<ValuizeInput>;
+	(expect: 'any'): Promise<ValuizeInput>;
 	(expect?: ValuizableKind): Promise<ValuizeInput>;
 };
 
@@ -212,14 +216,15 @@ interface ToValuizableExpectBoolean {
 	(expect: 'boolean'): Promise<boolean>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-type ToValuizableObject<T extends Object> = {
+/* eslint-disable @stylistic/indent */
+type ToValuizableObject<T extends object> = {
 	[K in keyof T]:
 		T[K] extends string ? ToValuizableExpectString :
 		T[K] extends number ? ToValuizableExpectNumber :
 		T[K] extends boolean ? ToValuizableExpectBoolean :
 		T[K] extends JSONSerializablePrimitive ?
 			(expect: 'primitive') => Promise<JSONSerializablePrimitive> :
-		T[K] extends Array<unknown> ?
+		T[K] extends unknown[] ?
 			(expect: 'array') => Promise<ToValuizableObject<T[K]>> :
 		T[K] extends object ?
 			(expect: 'object') => Promise<ToValuizableObject<T[K]>> :
@@ -289,7 +294,8 @@ class Metadata implements ValuizableInstance {
 		});
 		this.#url = new URL(url);
 		this.#cache = {
-			instance: config.cache?.instance ?? new Map(),
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			instance: config.cache?.instance ?? new Map() satisfies URLCacheObject as URLCacheObject,
 			positiveTTL: config.cache?.positiveTTL ?? 60 * 1000,
 			negativeTTL: config.cache?.negativeTTL ?? 5 * 1000
 		};
@@ -306,6 +312,11 @@ class Metadata implements ValuizableInstance {
 	}
 
 	private async parseMetadata(metadata: string) {
+		/*
+		 * JSON.parse() will always return a JSONSerializable,
+		 * and not `unknown`, so we can safely cast it.
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const retval = await this.resolveValue(JSON.parse(metadata) as JSONSerializable);
 
 		return(retval);
@@ -324,7 +335,7 @@ class Metadata implements ValuizableInstance {
 		let account;
 		try {
 			account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
-		} catch (accountError) {
+		} catch {
 			return('');
 		}
 
@@ -346,7 +357,7 @@ class Metadata implements ValuizableInstance {
 			method: 'GET',
 			headers: {
 				'Accept': 'application/json'
-			},
+			}
 		});
 
 		if (!results.ok) {
@@ -523,6 +534,7 @@ class Metadata implements ValuizableInstance {
 				 * into the array or object.
 				 */
 				// @ts-ignore
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 				const keyValue: JSONSerializable = value[key];
 
 				if (isExternalURL(keyValue)) {
@@ -575,7 +587,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'string'): Promise<string>;
 	async value(expect: 'number'): Promise<number>;
 	async value(expect: 'boolean'): Promise<boolean>;
-	async value(expect?: 'any'): Promise<ValuizeInput>;
+	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
 		const value = await this.readURL(this.#url);
@@ -652,7 +664,7 @@ class Resolver {
 	}
 
 	/** @internal */
-	_mutableStats(accessToken: Symbol) {
+	_mutableStats(accessToken: symbol) {
 		if (accessToken !== statsAccessToken) {
 			throw(new Error('Invalid access token'));
 		}
@@ -792,8 +804,8 @@ class Resolver {
 		return(undefined);
 	}
 
-	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | undefined>;
-	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupKYCResults | undefined>;
+	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
+	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<'kyc'>): Promise<ResolverLookupKYCResults | undefined>;
 	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
 	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
@@ -825,17 +837,29 @@ class Resolver {
 		}
 		const definedServices = await definedServicesProperty('object');
 
+		/*
+		 * We need to create a link between the service type and the
+		 * search criteria type, so we can use the correct type
+		 * for the criteria -- to do that we create an object
+		 * that links them together.
+		 */
+		type LookupArgs = {
+			[S in Services]: { service: S; criteria: ServiceSearchCriteria<S> }
+		}[Services];
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const args = { service, criteria } as LookupArgs;
+
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
-		switch (service) {
+		switch (args.service) {
 			case 'banking': {
-				const currentCriteria = criteria as ServiceSearchCriteria<'banking'>;
+				const currentCriteria = args.criteria;
 				const bankingServices = await definedServices.banking?.('object');
 				this.#logger?.debug(`Resolver:${this.id}`, 'Banking Services:', bankingServices);
 
 				return(await this.lookupBankingService(bankingServices, currentCriteria));
 			}
 			case 'kyc': {
-				const currentCriteria = criteria as ServiceSearchCriteria<'kyc'>;
+				const currentCriteria = args.criteria;
 				const kycServices = await definedServices.kyc?.('object');
 				this.#logger?.debug(`Resolver:${this.id}`, 'KYC Services:', kycServices);
 
@@ -847,7 +871,7 @@ class Resolver {
 			case 'cards':
 				throw(new Error('not implemented'));
 			default:
-				assertNever(service);
+				assertNever(args);
 		}
 	}
 
