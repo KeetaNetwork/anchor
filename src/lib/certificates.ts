@@ -480,6 +480,12 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		const paramsCopy = CertificateBuilder.mapParams(params);
 		const certificate = await super.buildDER(paramsCopy);
 		const certificateObject = new Certificate(certificate, {
+			/**
+			 * Specify the moment as `null` to avoid validation
+			 * of the certificate's validity period.  We don't
+			 * care if the certificate is expired or not for
+			 * the purposes of this builder.
+			 */
 			moment: null
 		});
 
