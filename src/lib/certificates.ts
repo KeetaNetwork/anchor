@@ -147,7 +147,7 @@ class SensitiveAttributeBuilder {
 	readonly #account: KeetaNetAccount;
 	#value: Buffer | undefined;
 
-	constructor(account: KeetaNetAccount, value?: ArrayBuffer | string) {
+	constructor(account: KeetaNetAccount, value?: Buffer | ArrayBuffer | string) {
 		this.#account = account;
 
 		if (value) {
@@ -155,8 +155,10 @@ class SensitiveAttributeBuilder {
 		}
 	}
 
-	set(value: ArrayBuffer | string) {
-		if (typeof value === 'string') {
+	set(value: Buffer | ArrayBuffer | string) {
+		if (Buffer.isBuffer(value)) {
+			this.#value = value;
+		} else if (typeof value === 'string') {
 			this.#value = Buffer.from(value, 'utf-8');
 		} else {
 			this.#value = Buffer.from(value);
