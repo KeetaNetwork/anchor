@@ -35,6 +35,9 @@ jobs:
       - name: Write private key to .npmrc file
         run: echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
 
+      - name: Run Lint
+        run: make do-lint
+
       - name: Run Tests
         run: make test
 
