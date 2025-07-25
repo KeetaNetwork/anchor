@@ -50,6 +50,7 @@ dist/.done: $(shell find src -type f) node_modules Makefile
 	cp package.json dist/
 	cp package-lock.json dist/npm-shrinkwrap.json
 	find dist -type f -name '*.test.*' | xargs rm -f
+	rm -rf dist/lib/utils/tests
 	cp LICENSE dist/
 	@touch dist/.done
 

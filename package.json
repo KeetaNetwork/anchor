@@ -31,6 +31,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
+		"@keetanetwork/keetanet-client": "0.10.7",
 		"@keetanetwork/keetanet-node": "0.10.7",
 		"typia": "9.5.0"
 	},
