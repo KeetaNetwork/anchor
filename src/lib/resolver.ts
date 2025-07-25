@@ -693,7 +693,8 @@ class Resolver {
 				}
 
 				if (criteria.currencyCodes !== undefined) {
-					const checkBankingServiceCurrencyCodes = await Promise.all(((await checkBankingService.currencyCodes?.('array')) ?? []).map(function(item) {
+					const currencyCodes = await checkBankingService.currencyCodes?.('array') ?? [];
+					const checkBankingServiceCurrencyCodes = await Promise.all(currencyCodes.map(function(item) {
 						return(item?.('primitive'));
 					}));
 
@@ -712,7 +713,8 @@ class Resolver {
 				}
 
 				if (criteria.countryCodes !== undefined) {
-					const checkBankingServiceCountryCodes = await Promise.all(((await checkBankingService.countryCodes?.('array')) ?? []).map(function(item) {
+					const countryCodes = await checkBankingService.countryCodes?.('array') ?? [];
+					const checkBankingServiceCountryCodes = await Promise.all(countryCodes.map(function(item) {
 						return(item?.('primitive'));
 					}));
 					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkBankingServiceCountryCodes, 'for', checkBankingServiceID);
@@ -761,7 +763,8 @@ class Resolver {
 				}
 
 				if (criteria.countryCodes !== undefined) {
-					const checkKYCServiceCountryCodes = await Promise.all(((await checkKYCService.countryCodes?.('array')) ?? []).map(function(item) {
+					const countryCodes = await checkKYCService.countryCodes?.('array') ?? [];
+					const checkKYCServiceCountryCodes = await Promise.all(countryCodes.map(function(item) {
 						return(item?.('primitive'));
 					}));
 					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYCServiceCountryCodes, 'for', checkKYCServiceID);
