@@ -4,6 +4,7 @@ import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts
  * We import this file to make sure that the `asn1js` types are
  * defined, since they are required by the `ASN1toJS` and `JStoASN1`
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type * as _ignored_asn1js from 'asn1js';
 
 const ASN1: typeof KeetaNetClient.lib.Utils.ASN1 = KeetaNetClient.lib.Utils.ASN1;

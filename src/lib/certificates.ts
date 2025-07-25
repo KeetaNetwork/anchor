@@ -11,9 +11,10 @@ type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyT
  */
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
 
-/* -----MOVE TO NODE AND ASN1NAPIRS-----*/
+/* -----MOVE TO NODE AND ASN1NAPIRS----- */
 function getOID(name: string, oidDB: { [name: string]: string }) {
 	if (name in oidDB) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const oid = oidDB[name as keyof typeof oidDB];
 		if (oid === undefined) {
 			throw(new Error('internal error: OID was undefined'));
@@ -21,7 +22,7 @@ function getOID(name: string, oidDB: { [name: string]: string }) {
 
 		return(oid);
 	} else {
-		throw new Error('Unknown algorithm');
+		throw(new Error('Unknown algorithm'));
 	}
 }
 
@@ -38,15 +39,22 @@ function lookupByOID(oid: string, oidDB: { [name: string]: string }) {
 
 	throw(new Error(`Unknown OID: ${oid}`));
 }
-/* -----END MOVE TO NODE AND ASN1NAPIRS-----*/
+/* -----END MOVE TO NODE AND ASN1NAPIRS----- */
 
 function toJSON(data: unknown): unknown {
-	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue) {
+	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue: unknown) {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 		const value: unknown = this[key];
 
 		if (typeof value === 'object' && value !== null) {
 			if ('publicKeyString' in value && typeof value.publicKeyString === 'object' && value.publicKeyString !== null) {
 				if ('get' in value.publicKeyString && typeof value.publicKeyString.get === 'function') {
+					/*
+					 * If the value has a publicKeyString property that is an
+					 * object with a get method, we assume it is a KeetaNetAccount
+					 * or similar object and we return the public key string
+					 */
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 					const publicKeyString: unknown = value.publicKeyString.get();
 					if (typeof publicKeyString === 'string') {
 						return(publicKeyString);
@@ -61,6 +69,7 @@ function toJSON(data: unknown): unknown {
 		if (typeof value === 'bigint') {
 			return(value.toString());
 		}
+
 		return(convertedValue);
 	}));
 
@@ -306,7 +315,7 @@ class SensitiveAttribute {
 	 * which can be validated by a third party using the certificate
 	 * and the `validateProof` method
 	 */
-	async proove(): Promise<{ value: string; hash: { salt: string } }> {
+	async proove(): Promise<{ value: string; hash: { salt: string }}> {
 		const value = await this.get();
 		const salt = await this.#decryptValue(this.#info.hashedValue.encryptedSalt);
 
@@ -394,7 +403,7 @@ const CertificateKYCAttributeSchemaValidation = {
 type CertificateKYCAttributeSchema = ASN1.SchemaMap<typeof CertificateKYCAttributeSchemaValidation>;
 
 export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.CertificateBuilder {
-	readonly #attributes: { [name: string]: { sensitive: boolean; value: ArrayBuffer | string } } = {};
+	readonly #attributes: { [name: string]: { sensitive: boolean; value: ArrayBuffer | string }} = {};
 
 	/**
 	 * Map the parameters from the public interface to the internal
@@ -431,11 +440,18 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		const subject = args[0].subjectPublicKey;
 
 		/* Encode the attributes */
-		let certAttributes: CertificateKYCAttributeSchema = [];
+		const certAttributes: CertificateKYCAttributeSchema = [];
 		for (const [name, attribute] of Object.entries(this.#attributes)) {
 			if (!(name in CertificateAttributeOIDDB)) {
 				throw(new Error(`Unknown attribute: ${name}`));
 			}
+
+			/*
+			 * Since we are iteratively building the certificate, we
+			 * can assume that the attribute is always present in
+			 * the object
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const nameOID = CertificateAttributeOIDDB[name as keyof typeof CertificateAttributeOIDDB];
 
 			let value: Buffer;
@@ -479,6 +495,8 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	async build(params?: Partial<CertificateBuilderParams>): Promise<Certificate> {
 		const paramsCopy = CertificateBuilder.mapParams(params);
 		const certificate = await super.buildDER(paramsCopy);
+
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const certificateObject = new Certificate(certificate, {
 			/**
 			 * Specify the moment as `null` to avoid validation
@@ -556,7 +574,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		}
 
 		return(false);
-	}	
+	}
 }
 
 /** @internal */
