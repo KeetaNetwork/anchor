@@ -21,19 +21,19 @@ async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fro
 }
 
 async function setupForResolverTests() {
-	const TestAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
-	const TestAccount = KeetaNetClient.lib.Account.fromSeed(TestAccountSeed, 0);
-	const TestAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
-	const TestAccountExternalRef = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
-	const TestAccountLoop = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const testAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
+	const testAccount = KeetaNetClient.lib.Account.fromSeed(testAccountSeed, 0);
+	const testAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const testAccountExternalRef = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const testAccountLoop = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 
-	const { userClient } = await createNodeAndClient(TestAccount);
+	const { userClient } = await createNodeAndClient(testAccount);
 
 	/*
 	 * An account whose metadata is set at the top-level,
 	 * and referenced by the root account
 	 */
-	await setInfo(TestAccountExternal, userClient, {
+	await setInfo(testAccountExternal, userClient, {
 		operations: {
 			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
 		},
@@ -45,17 +45,17 @@ async function setupForResolverTests() {
 	/*
 	 * An account whose metadata references another account at the top-level
 	 */
-	await setInfo(TestAccountExternalRef, userClient, {
+	await setInfo(testAccountExternalRef, userClient, {
 		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-		url: `keetanet://${TestAccountExternal.publicKeyString.get()}/metadata`
+		url: `keetanet://${testAccountExternal.publicKeyString.get()}/metadata`
 	});
 
 	/*
 	 * An account whose metadata references itself, creating an infinite loop
 	 */
-	await setInfo(TestAccountLoop, userClient, {
+	await setInfo(testAccountLoop, userClient, {
 		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-		url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`
+		url: `keetanet://${testAccountLoop.publicKeyString.get()}/metadata`
 	});
 
 	/*
@@ -89,13 +89,13 @@ async function setupForResolverTests() {
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 						url: 'https://localhost:9341/metadata'
 					},
-					[TestAccountLoop.publicKeyString.get()]: {
+					[testAccountLoop.publicKeyString.get()]: {
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `keetanet://${TestAccountLoop.publicKeyString.get()}/metadata`
+						url: `keetanet://${testAccountLoop.publicKeyString.get()}/metadata`
 					},
-					[TestAccountExternalRef.publicKeyString.get()]: {
+					[testAccountExternalRef.publicKeyString.get()]: {
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `keetanet://${TestAccountExternalRef.publicKeyString.get()}/metadata`
+						url: `keetanet://${testAccountExternalRef.publicKeyString.get()}/metadata`
 					},
 					keeta_broken1: {
 						/* Broken KeetaNet Link */
@@ -132,7 +132,7 @@ async function setupForResolverTests() {
 	});
 
 	const resolver = new Resolver({
-		root: TestAccount,
+		root: testAccount,
 		client: userClient,
 		trustedCAs: []
 	});
