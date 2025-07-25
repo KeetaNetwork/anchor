@@ -231,12 +231,16 @@ class SensitiveAttribute {
 	readonly #account: KeetaNetAccount;
 	readonly #info: ReturnType<SensitiveAttribute['decode']>;
 
-	constructor(account: KeetaNetAccount, data: ArrayBuffer) {
+	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer) {
 		this.#account = account;
 		this.#info = this.decode(data);
 	}
 
-	private decode(data: ArrayBuffer) {
+	private decode(data: Buffer | ArrayBuffer) {
+		if (Buffer.isBuffer(data)) {
+			data = bufferToArrayBuffer(data);
+		}
+
 		const dataObject = new ASN1.BufferStorageASN1(data, SensitiveAttributeSchemaInternal);
 		const decodedAttribute = dataObject.getASN1();
 
