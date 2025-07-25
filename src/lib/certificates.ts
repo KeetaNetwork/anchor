@@ -163,6 +163,8 @@ class SensitiveAttributeBuilder {
 		} else {
 			this.#value = Buffer.from(value);
 		}
+
+		return(this);
 	}
 
 	async build() {
