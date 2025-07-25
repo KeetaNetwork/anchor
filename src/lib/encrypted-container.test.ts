@@ -1,6 +1,7 @@
 import { test, expect, describe } from 'vitest';
 import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 import * as EncryptedContainer from './encrypted-container.js';
+import { JStoASN1 } from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
 
 const testAccount1 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
 const testAccount2 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1);
@@ -8,36 +9,150 @@ const testCipherKey = Buffer.from('379D32897C8726F169621464CB1F0B0940308CD91F32A
 const testCipherIV = Buffer.from('94DE12D10B4455148E92A77BAFEC7D94', 'hex');
 const cipherAlgorithm = 'aes-256-cbc';
 
+/*
+	* Create a container encrypted with a single public key
+	*/
+const defaultEncryptionOptions = {
+	keys: [testAccount1],
+	cipherKey: testCipherKey,
+	cipherIV: testCipherIV,
+	cipherAlgo: cipherAlgorithm
+}
+
 describe('Encrypted Container Internal Tests', function() {
+	describe('Build ASN.1', function() {
+		/*
+		* Test cases for invalid parameters
+		*/
+		const defaultTestEncryptionOptions = {
+			keys: [testAccount1],
+			cipherKey: testCipherKey,
+			cipherIV: testCipherIV,
+			cipherAlgo: cipherAlgorithm
+		};
+		const testCases = [
+			{
+				description: 'should fail with missing keys',
+				encryptionOptions: { ...defaultTestEncryptionOptions, keys: [] }
+			},
+
+			{
+				description: 'should fail with undefined cipher key',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherKey: undefined }
+			},
+			{
+				description: 'should fail with undefined cipher IV',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherIV: undefined }
+			},
+			{
+				description: 'should fail with unsupported cipher algorithm',
+				encryptionOptions: { ...defaultTestEncryptionOptions, cipherAlgo: 'xxx' }
+			}
+		];
+		for (const testCase of testCases) {
+			test(testCase.description, async function() {
+				await expect(async function() {
+					await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), testCase.encryptionOptions);
+				}).rejects.toThrow();
+			});
+		}
+	});
+
+	describe('Parse ASN.1', async function() {
+		const formatASN1 = function(version: string | number, encrypted: number, contains: null | string | number | Buffer | string[]) {
+			const sequence = [];
+			sequence[0] = version;
+			sequence[1] = {
+				type: 'context' as const,
+				kind: 'explicit' as const,
+				value: encrypted,
+				contains
+			};
+			const outputASN1 = JStoASN1(sequence);
+			const outputDER = Buffer.from(outputASN1.toBER(false));
+			return(outputDER);
+		};
+		const encryptedBufferSingle = await EncryptedContainer._Testing.buildASN1(
+			Buffer.from('Test'),
+			defaultEncryptionOptions
+		);
+		/*
+		* Test cases for invalid parameters
+		*/
+		const testCases = [
+			{
+				description: 'should fail with missing keys for encrypted buffer',
+				input: encryptedBufferSingle,
+				keys: []
+			},
+			{
+				description: 'should fail with sequence not an array',
+				input: Buffer.from(JStoASN1('TEST').toBER(false))
+			},
+			{
+				description: 'should fail with version not a bigint',
+				input: formatASN1('test', 0, 0)
+			},
+			{
+				description: 'should fail with unsupported version (0)',
+				input: formatASN1(0, 0, 0)
+			},
+			{
+				description: 'should fail with invalid sequence[1] not an object',
+				input: Buffer.from(JStoASN1([1, 'Test']).toBER(false))
+			},
+			{
+				description: 'should fail with invalid sequence[1] is null',
+				input: Buffer.from(JStoASN1([1, null]).toBER(false))
+			},
+			{
+				description: 'should fail with invalid value range',
+				input: formatASN1(1, 5, 0),
+				keys: []
+			},
+			{
+				description: 'should fail with null contains type',
+				input: formatASN1(1, 1, null)
+			},
+			{
+				description: 'should fail with invalid contains type',
+				input: formatASN1(1, 1, 0)
+			},
+			{
+				description: 'should fail with too many values for unencrypted container',
+				input: formatASN1(1, 1, ['test1', 'test2'])
+			}
+		];
+		for (const testCase of testCases) {
+			test(testCase.description, async function() {
+				await expect(async function() {
+					await EncryptedContainer._Testing.parseASN1(testCase.input, testCase.keys);
+				}).rejects.toThrow();
+			});
+		}
+	});
+
 	test('Parse/Build ASN.1 (Unencrypted)', async function() {
 		/*
 		 * Create an unencrypted container
 		 */
-		const plaintextBuffer = await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'), false);
-		expect(plaintextBuffer.toString('hex')).toEqual('3016020100010100300e040c789c0b492d2e010003dd01a1');
+		const plaintextBuffer = await EncryptedContainer._Testing.buildASN1(Buffer.from('Test'));
+		expect(plaintextBuffer.toString('hex')).toEqual('3015020101a110300e040c789c0b492d2e010003dd01a1');
 	});
 
 	test('Parse/Build ASN.1 (Single)', async function() {
-		/*
-		 * Create a container encrypted with a single public key
-		 */
 		const encryptedBufferSingle = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
-			true,
-			cipherAlgorithm,
-			[testAccount1],
-			testCipherKey,
-			testCipherIV
+			defaultEncryptionOptions
 		);
-		expect(encryptedBufferSingle.toString('hex').slice(0, 120)).toEqual('3081ed0201000101ff3081e43081bd3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
-		expect(encryptedBufferSingle.toString('hex').slice(408)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
+		expect(encryptedBufferSingle.toString('hex').slice(0, 116)).toEqual('3081f6020101a081f03081ed3081bb3081b804220002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b04819104');
+		expect(encryptedBufferSingle.toString('hex').slice(404)).toEqual('060960864801650304012a041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
 
 		/*
 		 * Verify that it can be decrypted and get back the original data
 		 */
 		const decryptedBufferSingle = await EncryptedContainer._Testing.parseASN1(
 			encryptedBufferSingle,
-			cipherAlgorithm,
 			[testAccount1]
 		);
 		expect(decryptedBufferSingle.plaintext.toString('utf-8')).toEqual('Test');
@@ -54,16 +169,16 @@ describe('Encrypted Container Internal Tests', function() {
 		/*
 		 * Create a container encrypted with multiple public keys
 		 */
+		const encryptionOptions = {
+			...defaultEncryptionOptions,
+			keys: [testAccount1, testAccount2]
+		}
 		const encryptedBufferMulti = await EncryptedContainer._Testing.buildASN1(
 			Buffer.from('Test'),
-			true,
-			cipherAlgorithm,
-			[testAccount1, testAccount2],
-			testCipherKey,
-			testCipherIV
+			encryptionOptions
 		);
-		expect(encryptedBufferMulti.toString('hex').slice(0, 126)).toEqual('308201ac0201000101ff308201a23082017a3081ba0323000002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b0381920004');
-		expect(encryptedBufferMulti.toString('hex').slice(792)).toEqual('041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
+		expect(encryptedBufferMulti.toString('hex').slice(0, 124)).toEqual('308201b4020101a08201ad308201a9308201763081b804220002a64162287fb9cbefdcb195123d1219c0e374eb56ac1a3ada733b335f52cbd87b04819104');
+		expect(encryptedBufferMulti.toString('hex').slice(786)).toEqual('060960864801650304012a041094de12d10b4455148e92a77bafec7d9404103afda951bb876fae84679edf593b6bf4');
 
 		/*
 		 * Verify that it can be decrypted by either party
@@ -71,7 +186,6 @@ describe('Encrypted Container Internal Tests', function() {
 		for (const checkAccount of [testAccount1, testAccount2]) {
 			const decryptedBufferMultiPart = await EncryptedContainer._Testing.parseASN1(
 				encryptedBufferMulti,
-				cipherAlgorithm,
 				[checkAccount]
 			);
 
@@ -94,7 +208,7 @@ describe('Encrypted Container Tests', function() {
 		/*
 		 * Verify that it can be encrypted successfully
 		 */
-		const basicCipherText_v1 = await container.getEncryptedBuffer();
+		const basicCipherText_v1 = await container.getEncodedBuffer();
 		expect(basicCipherText_v1.length).toBeGreaterThan(32);
 
 		/*
@@ -126,7 +240,7 @@ describe('Encrypted Container Tests', function() {
 		 */
 		container.grantAccessSync(testAccount2);
 
-		const basicCipherText_v2 = await container.getEncryptedBuffer();
+		const basicCipherText_v2 = await container.getEncodedBuffer();
 		expect(basicCipherText_v2.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
 
 		/*
@@ -154,7 +268,7 @@ describe('Encrypted Container Tests', function() {
 		 * Revoke access for a specific user
 		 */
 		container.revokeAccessSync(testAccount1);
-		const basicCipherText_v3 = await container.getEncryptedBuffer();
+		const basicCipherText_v3 = await container.getEncodedBuffer();
 		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
 		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v2.toString('hex'));
 
@@ -190,16 +304,99 @@ describe('Encrypted Container Tests', function() {
 		const testData1 = Buffer.from('Test', 'utf-8');
 		const testData2 = Buffer.from('More Test', 'utf-8');
 		const container_v1 = EncryptedContainer.EncryptedContainer.fromPlaintext(testData1, [testAccount1, testAccount2]);
-		const encryptedTestData_v1 = await container_v1.getEncryptedBuffer();
+		const encryptedTestData_v1 = await container_v1.getEncodedBuffer();
+		expect(container_v1.encrypted).toBe(true);
 
 		const container_v2 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encryptedTestData_v1, [testAccount2]);
 		container_v2.setPlaintext(testData2);
+		expect(container_v2.encrypted).toBe(true);
 
-		const encryptedTestData_v3 = await container_v2.getEncryptedBuffer();
+		const encryptedTestData_v3 = await container_v2.getEncodedBuffer();
 		const container_v4 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encryptedTestData_v3, [testAccount1]);
 		expect(container_v4.principals.length).toBe(2);
+		expect(container_v4.encrypted).toBe(true);
 
 		const plaintextTestData_v5 = await container_v4.getPlaintext();
 		expect(plaintextTestData_v5).toEqual(testData2);
+	});
+
+	test('Plaintext', async function() {
+		/*
+		 * Create a container with plaintext data as a buffer
+		 */
+		const testData = Buffer.from('Test', 'utf-8');
+		const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null, false);
+
+		/*
+		 * Verify that the plaintext can be retrieved
+		 */
+		const plaintextData = await container.getPlaintext();
+		expect(container.encrypted).toBe(false);
+		expect(plaintextData).toEqual(testData);
+
+		/*
+		 * Verify that the plaintext can be set from a string
+		 */
+		const newTestData = 'New Test Data';
+		container.setPlaintext(newTestData);
+
+		const fromBufferContainer = EncryptedContainer.EncryptedContainer.fromEncodedBuffer(await container.getEncodedBuffer(), null);
+		expect(fromBufferContainer.encrypted).toBe(false);
+
+		const fromBufferContainerEncoded = await fromBufferContainer.getEncodedBuffer();
+		expect(fromBufferContainerEncoded.length).toBe(32);
+
+		// Sync functions that should fail for a plaintext container
+		const testCases = [
+			function() {
+				container.grantAccessSync(testAccount1);
+			},
+			async function() {
+				await container.grantAccess(testAccount1);
+			},
+			function() {
+				fromBufferContainer.grantAccessSync(testAccount1);
+			},
+			function() {
+				container.revokeAccessSync(testAccount1);
+			},
+			async function() {
+				await container.revokeAccess(testAccount1);
+			},
+			function() {
+				fromBufferContainer.revokeAccessSync(testAccount1);
+			},
+			function() {
+				/*
+				 * This is a getter, so we are running something -- but we do not care about the result
+				 */
+				// eslint-disable-next-line @typescript-eslint/no-unused-expressions
+				container.principals;
+			}
+		];
+
+		for (const testCase of testCases) {
+			if (testCase.constructor.name === 'AsyncFunction') {
+				await expect(testCase).rejects.toThrow();
+			} else {
+				expect(testCase).toThrow();
+			}
+		}
+
+		expect(await fromBufferContainer.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
+
+		/*
+		 * Verify that the plaintext defaults to unlocked when container is constructed without specifying locked
+		 */
+		const unlockedContainer = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null);
+		expect(await unlockedContainer.getPlaintext()).toEqual(testData);
+
+		/*
+		 * Verify that the plaintext container is locked when container is constructed with principals and locked is not defined
+		 */
+		const lockedContainer = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, [testAccount1]);
+		await expect(async function() {
+			await lockedContainer.getPlaintext();
+		}).rejects.toThrow();
 	});
 });
