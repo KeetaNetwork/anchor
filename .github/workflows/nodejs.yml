@@ -37,6 +37,7 @@ jobs:
 
       - name: Run Lint
         run: make do-lint
+        env:
           # Needed to fetch packages from GitHub Package Registry
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
