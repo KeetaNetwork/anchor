@@ -295,7 +295,7 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 		});
 
 		const encryptionAlgorithmOID = value[1];
-		/* XXX:TODO */
+		/* XXX:TODO: Lookup the encryption algorithm from the OID  */
 		const encryptionAlgorithm = 'aes-256-cbc';
 
 		const cipherIV = value[2];
