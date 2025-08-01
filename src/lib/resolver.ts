@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import * as CurrencyInfo from '@keetanetwork/currency-info';
+import CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
@@ -40,7 +40,7 @@ type ServiceMetadata = {
 				};
 				currencyCodes: string[];
 				countryCodes: string[];
-				kycProviders: string[];
+				kycProviders?: string[];
 			};
 		};
 		kyc?: {
@@ -66,7 +66,7 @@ type ServiceMetadata = {
 					 * Get the certificate for the
 					 * KYC verification
 					 */
-					getCertificate?: string;
+					getCertificates?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
@@ -75,6 +75,13 @@ type ServiceMetadata = {
 				 * validate accounts in any country.
 				 */
 				countryCodes?: string[];
+				/**
+				 * The Certificate Authority (CA) Certificate
+				 * that this KYC provider uses to sign KYC
+				 * certificates.  This is used to identify the
+				 * KYC provider.
+				 */
+				ca: string;
 			};
 		};
 		fx?: {
@@ -260,6 +267,17 @@ type ToValuizableObject<T extends object> = {
 };
 type ToValuizable<T> = ToValuizableObject<{ tmp: T }>['tmp'];
 
+type ToJSONValuizableObject<T extends object> = {
+	[K in keyof T]: (
+		T[K] extends object ?
+			ToJSONValuizableObject<T[K]> :
+		T[K] extends (object | undefined) ?
+			ToJSONValuizableObject<NonNullable<T[K]>> | undefined :
+		T[K]
+	) | ExternalURL;
+};
+type ToJSONValuizable<T> = ToJSONValuizableObject<{ tmp: T }>['tmp'];
+
 /*
  * Access token to share with the Metadata object to allow it to
  * access the mutable stats object.
@@ -280,6 +298,8 @@ type MetadataConfig = {
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
+
+const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -304,8 +324,23 @@ class Metadata implements ValuizableInstance {
 		return(value.instanceID === Metadata.instanceTypeID);
 	}
 
-	static formatMetadata(metadata: JSONSerializable): string {
+	/**
+	 * Format the supplied Metadata as appropriate to be included
+	 * within the Metadata field of a KeetaNet acccount to serve
+	 * as the Metadata for the Resolver.
+	 */
+	static formatMetadata(metadata: ToJSONValuizable<ServiceMetadata>): string;
+	// eslint-disable-next-line @typescript-eslint/unified-signatures
+	static formatMetadata(metadata: JSONSerializable): string;
+	static formatMetadata(metadata: JSONSerializable | ToJSONValuizable<ServiceMetadata>): string {
 		return(Buffer.from(JSON.stringify(metadata)).toString('base64'));
+	}
+
+	/**
+	 * Assert that the supplied value is a valid Metadata Root Object
+	 */
+	static assertMetadata(value: unknown): asserts value is ToJSONValuizable<ServiceMetadata> {
+		assertServiceMetadata(value);
 	}
 
 	constructor(url: string | URL, config: MetadataConfig) {
@@ -645,8 +680,139 @@ type ResolverStats = {
 
 type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
 type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
-const assertResolverLookupBankingResult = createAssert<ResolverLookupBankingResults[string]>();
-const assertResolverLookupKYCResult = createAssert<ResolverLookupKYCResults[string]>();
+const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('operations' in input)) {
+		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
+	}
+
+	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
+		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
+	}
+
+	if (typeof input.operations !== 'function') {
+		for (const operation of Object.keys(input.operations)) {
+			if (typeof operation !== 'string') {
+				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
+			}
+
+			/*
+			 * We know that `operation` is a key of `input.operations`, so we can
+			 * safely use it to index
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const operationValue = input.operations[operation as keyof typeof input.operations];
+			if (typeof operationValue !== 'string') {
+				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
+			}
+		}
+	}
+
+	if (!('countryCodes' in input)) {
+		throw(new Error('Expected "countryCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
+		throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
+	}
+
+	if (Array.isArray(input.countryCodes)) {
+		for (const countryCode of input.countryCodes) {
+			if (typeof countryCode !== 'string') {
+				throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
+			}
+		}
+	}
+
+	if (!('currencyCodes' in input)) {
+		throw(new Error('Expected "currencyCodes" to be present, but it was not found'));
+	}
+
+	if (Array.isArray(input.currencyCodes)) {
+		for (const currencyCode of input.currencyCodes) {
+			if (typeof currencyCode !== 'string') {
+				throw(new Error(`Expected "currencyCodes" to be an array of strings, got ${typeof currencyCode}`));
+			}
+		}
+	}
+
+	if ('kycProviders' in input) {
+		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
+			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
+		}
+
+		if (Array.isArray(input.kycProviders)) {
+			for (const kycProvider of input.kycProviders) {
+				if (typeof kycProvider !== 'string') {
+					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
+				}
+			}
+		}
+	}
+
+	// @ts-ignore
+	return(input);
+
+};
+const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKYCResults[string] {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('operations' in input)) {
+		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
+	}
+
+	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
+		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
+	}
+
+	if (typeof input.operations !== 'function') {
+		for (const operation of Object.keys(input.operations)) {
+			if (typeof operation !== 'string') {
+				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
+			}
+
+			/*
+			 * We know that `operation` is a key of `input.operations`, so we can
+			 * safely use it to index
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const operationValue = input.operations[operation as keyof typeof input.operations];
+			if (typeof operationValue !== 'string') {
+				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
+			}
+		}
+	}
+
+	if (!('ca' in input)) {
+		throw(new Error('Expected "ca" key in KYC service, but it was not found'));
+	}
+
+	if (typeof input.ca !== 'string' && typeof input.ca !== 'function') {
+		throw(new Error(`Expected "ca" to be a string | function, got ${typeof input.ca}`));
+	}
+
+	if ('countryCodes' in input) {
+		if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
+			throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
+		}
+
+		if (Array.isArray(input.countryCodes)) {
+			for (const countryCode of input.countryCodes) {
+				if (typeof countryCode !== 'string') {
+					throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
+				}
+			}
+		}
+	}
+
+	// @ts-ignore
+	return(input);
+};
 
 class Resolver {
 	readonly #root: ResolverConfig['root'];
@@ -724,18 +890,6 @@ class Resolver {
 				}
 
 				if (!('operations' in checkBankingService)) {
-					continue;
-				}
-
-				if (!('countryCodes' in checkBankingService)) {
-					continue;
-				}
-
-				if (!('currencyCodes' in checkBankingService)) {
-					continue;
-				}
-
-				if (!('kycProviders' in checkBankingService)) {
 					continue;
 				}
 
@@ -824,7 +978,7 @@ class Resolver {
 					if ('countryCodes' in checkKYCService) {
 						const countryCodes = await checkKYCService.countryCodes?.('array') ?? [];
 						const checkKYCServiceCountryCodes = await Promise.all(countryCodes.map(async function(item) {
-							return(await item?.('primitive'));
+							return(await item?.('string'));
 						}));
 						this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYCServiceCountryCodes, 'for', checkKYCServiceID);
 

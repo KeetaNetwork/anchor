@@ -72,7 +72,8 @@ async function setupForResolverTests() {
 						operations: {
 							createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
 						},
-						countryCodes: ['US']
+						countryCodes: ['US'],
+						ca: 'TEST'
 					}
 				},
 				banking: {
@@ -154,34 +155,34 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: ['US' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				currencyCodes: ['MXN' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['US' as const],
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const] ,
 				currencyCodes: ['MXN' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['US' as const] ,
@@ -193,7 +194,7 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: ['US' as const]
 			},
-			createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
+			createVerification: ['https://kyc.keeta.com/api/v1/createVerification']
 		}, {
 			input: {
 				countryCodes: ['MX' as const]
@@ -211,42 +212,53 @@ test('Basic Tests', async function() {
 
 				continue;
 			}
+
 			expect(checkResults).toBeDefined();
 			if (checkResults === undefined) {
 				throw(new Error('internal error: checkResults is undefined'));
 			}
 
 			/*
-			 * Just look at the first result
+			 * Accumulate all the results
 			 */
-			const checkResult = checkResults[Object.keys(checkResults)[0] as keyof typeof checkResults];
-			expect(checkResult).toBeDefined();
-			if (checkResult === undefined) {
-				throw(new Error('internal error: checkResult is undefined'));
+			const checkOperationName = Object.keys(check).find(function(key): key is 'createAccount' | 'createVerification' {
+				return(key !== 'input' && key !== 'result');
+			});
+			if (checkOperationName === undefined) {
+				throw(new Error(`internal error: checkOperationName is undefined for ${checkKind}, ${JSON.stringify(check)}`));
 			}
 
-			const operations = await checkResult.operations('object');
-			switch (checkKind) {
-				case 'banking':
-					if (!('createAccount' in operations)) {
-						throw(new Error(`internal error: createAccount not found in operations for ${checkKind}`));
-					}
-					if ('createAccount' in check) {
-						const checkCreateAccount = await operations.createAccount?.('string');
-						expect(checkCreateAccount).toEqual(check.createAccount);
-					}
-					break;
-				case 'kyc':
-					if (!('createVerification' in operations)) {
-						throw(new Error(`internal error: createVerification not found in operations for ${checkKind}`));
+			const foundOperations: string[] = [];
+			for (const checkResultID of Object.keys(checkResults)) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const checkResult = checkResults[checkResultID as keyof typeof checkResults];
+				if (checkResult === undefined) {
+					throw(new Error(`internal error: checkResult for ${checkKind} is undefined`));
+				}
+
+				const operations = await checkResult.operations('object');
+				if (checkOperationName in operations) {
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					const operation = operations[checkOperationName as keyof typeof operations];
+					if (operation === undefined) {
+						throw(new Error(`internal error: operation for ${checkKind}, ${JSON.stringify(check)} is undefined`));
 					}
 
-					if ('createVerification' in check) {
-						const checkCreateVerification = await operations.createVerification?.('string');
-						expect(checkCreateVerification).toEqual(check.createVerification);
-					}
-					break;
+					// @ts-ignore
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+					foundOperations.push(await operation('string'));
+				}
 			}
+
+			if (!(checkOperationName in check)) {
+				throw(new Error(`internal error: checkOperationName ${checkOperationName} not found in check ${JSON.stringify(check)}`));
+			}
+
+			// @ts-ignore
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			const expectedOperations: string[] = check[checkOperationName];
+
+			expect([...foundOperations].sort()).toEqual([...expectedOperations].sort());
 		}
 	}
 
@@ -300,6 +312,7 @@ test('Concurrent Lookups', async function() {
 		/*
 		 * Just look at the first result
 		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const lookupResult = lookupResults[Object.keys(lookupResults)[0] as keyof typeof lookupResults];
 
 		const operations = await lookupResult?.operations('object');
