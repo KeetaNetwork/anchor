@@ -205,16 +205,24 @@ test('Basic Tests', async function() {
 	for (const checkKind of ['banking', 'kyc'] as const) {
 		const checks = allChecks[checkKind];
 		for (const check of checks) {
-			const checkResult = await resolver.lookup(checkKind, check.input);
-
+			const checkResults = await resolver.lookup(checkKind, check.input);
 			if ('result' in check && check.result === undefined) {
-				expect(checkResult).toBeUndefined();
+				expect(checkResults).toBeUndefined();
+
 				continue;
 			}
+			expect(checkResults).toBeDefined();
+			if (checkResults === undefined) {
+				throw(new Error('internal error: checkResults is undefined'));
+			}
 
+			/*
+			 * Just look at the first result
+			 */
+			const checkResult = checkResults[Object.keys(checkResults)[0] as keyof typeof checkResults];
 			expect(checkResult).toBeDefined();
 			if (checkResult === undefined) {
-				throw(new Error('internal error: check is undefined'));
+				throw(new Error('internal error: checkResult is undefined'));
 			}
 
 			const operations = await checkResult.operations('object');
@@ -282,9 +290,18 @@ test('Concurrent Lookups', async function() {
 		}));
 	}
 
-	const lookupResults = await Promise.all(lookupPromises);
-	for (const lookupResult of lookupResults) {
-		expect(lookupResult).toBeDefined();
+	const lookupAllResults = await Promise.all(lookupPromises);
+	for (const lookupResults of lookupAllResults) {
+		expect(lookupResults).toBeDefined();
+		if (lookupResults === undefined) {
+			throw(new Error('internal error: lookupResults is undefined'));
+		}
+
+		/*
+		 * Just look at the first result
+		 */
+		const lookupResult = lookupResults[Object.keys(lookupResults)[0] as keyof typeof lookupResults];
+
 		const operations = await lookupResult?.operations('object');
 		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
@@ -292,5 +309,5 @@ test('Concurrent Lookups', async function() {
 	expect(resolver.stats.reads).toBeGreaterThan(concurrency * 3);
 	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
 	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
-	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads).toBe(resolver.stats.cache.miss);
+	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
