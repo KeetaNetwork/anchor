@@ -35,8 +35,8 @@ function convertToJSONReplacer(this: any, key: string, jsonItem: unknown, option
 			if (item < BigInt(Number.MAX_SAFE_INTEGER) && item > BigInt(Number.MIN_SAFE_INTEGER)) {
 				return(Number(item.toString()));
 			} else {
-				if (item < BigInt(0)) {
-					const absItem = item * BigInt(-1);
+				if (item < 0n) {
+					const absItem = item * -1n;
 					if (options.searchable) {
 						return(`-0x${absItem.toString(16)}`);
 					} else {

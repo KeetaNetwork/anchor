@@ -224,7 +224,7 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 		throw(new Error('Malformed data detected (version expected at position 0)'));
 	}
 
-	if (version !== BigInt(1)) {
+	if (version !== 1n) {
 		throw(new Error('Malformed data detected (unsupported version)'));
 	}
 

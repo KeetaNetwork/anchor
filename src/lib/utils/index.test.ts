@@ -14,7 +14,7 @@ describe('JSON: Utils', function() {
 			number_inf: Infinity,
 			number_neginf: -Infinity,
 			boolean: true,
-			array: [1, 2, 3, BigInt(4), null, undefined, 'abc'],
+			array: [1, 2, 3, 4n, null, undefined, 'abc'],
 			buffer: Buffer.from('abcdef'),
 			arraybuffer: new ArrayBuffer(10),
 			bigint: BigInt('10000000000000000000000000000000000000'),
