@@ -1,6 +1,8 @@
 import Resolver from './lib/resolver.js';
-import type { Client as KeetaNetClient } from '@keetanetwork/keetanet-client';
-import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+import type {
+	Client as KeetaNetClient,
+	UserClient as KeetaNetUserClient
+} from '@keetanetwork/keetanet-client';
 import KeetaNet from '@keetanetwork/keetanet-client';
 
 type KeetaNetNetworks = typeof KeetaNet.Client.Config.networksArray[number];
