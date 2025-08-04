@@ -53,7 +53,7 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 	ok: true;
 	/**
 	 * The certificates that were issued by the KYC Anchor service.
-	 * Typiccally this will just be a single certificate, but
+	 * Typically this will just be a single certificate, but
 	 * it could also be multiple certificates if the service
 	 * issues multiple certificates for a single verification.
 	 *

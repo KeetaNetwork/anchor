@@ -100,7 +100,7 @@ type KeetaKYCVerificationServiceInfo = {
 
 /**
  * For each matching KYC Anchor service, this type describes the
- * oeprations available and the country codes that the service supports.
+ * operations available and the country codes that the service supports.
  */
 type GetEndpointsResult = {
 	[id: ProviderID]: KeetaKYCVerificationServiceInfo;
