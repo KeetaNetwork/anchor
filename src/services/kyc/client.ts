@@ -18,6 +18,8 @@ import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
+const PARANOID = true;
+
 /**
  * The configuration options for the KYC Anchor client.
  */
@@ -407,6 +409,13 @@ class KeetaKYCAnchorClient {
 
 	async createVerification(request: KeetaKYCAnchorClientCreateVerificationRequest): Promise<KeetaKYCProvider[]> {
 		const signedData = await generateSignedData(request.account);
+
+		if (PARANOID) {
+			const check = await verifySignedData({ account: request.account.publicKeyString.get(), signed: signedData });
+			if (!check) {
+				throw(new Error('Failed to verify signed data'));
+			}
+		}
 
 		const signedRequest: KeetaKYCAnchorCreateVerificationRequest = {
 			...request,
