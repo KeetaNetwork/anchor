@@ -14,6 +14,8 @@ export interface KeetaKYCAnchorCreateVerificationRequest {
 	account: ReturnType<InstanceType<typeof KeetaNetLib.Account>['publicKeyString']['get']>;
 	signed: {
 		nonce: string;
+		/* Date and time of the request in ISO 8601 format */
+		timestamp: string;
 		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
 		signature: string;
 	};
@@ -53,7 +55,7 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 	ok: true;
 	/**
 	 * The certificates that were issued by the KYC Anchor service.
-	 * Typiccally this will just be a single certificate, but
+	 * Typically this will just be a single certificate, but
 	 * it could also be multiple certificates if the service
 	 * issues multiple certificates for a single verification.
 	 *

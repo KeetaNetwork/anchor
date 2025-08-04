@@ -132,6 +132,10 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	const rootCAObject = new KeetaNet.lib.Utils.Certificate.Certificate(rootCA, {
 		isTrustedRoot: true
 	});
+
+	const checkIssuerCert = await verification.getProviderIssuerCertificate();
+	expect(checkIssuerCert.subject).toEqual('commonName=Keeta Test Network KYC Demo Anchor');
+
 	while (true) {
 		const results = await verification.getCertificates();
 		if (!results.ok) {
@@ -140,11 +144,15 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 		}
 
 		logger?.log('Certificates:');
-		logger?.log((await Promise.all(results.results.map(async function(certificateGroup) {
+		const output = (await Promise.all(results.results.map(async function(certificateGroup) {
+			let intermediates = certificateGroup.intermediates;
+			if (intermediates === undefined) {
+				intermediates = new Set();
+			}
 			const trustedCertificate = new KYCCertificate(certificateGroup.certificate.toPEM(), {
 				store: {
 					root: new Set([rootCAObject]),
-					...(certificateGroup.intermediates ? { intermediates: certificateGroup.intermediates } : {})
+					intermediate: intermediates
 				},
 				/* If you remove this, you will not be able to retrieve the sensitive attributes */
 				subjectKey: account
@@ -176,7 +184,9 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 				fullName: fullName,
 				valid: trustedCertificate.checkValid()
 			}, { depth: null, colors: true }));
-		}))).join('\n\n'));
+		}))).join('\n\n');
+
+		logger?.log(output);
 		break;
 	}
-});
+}, 30000);

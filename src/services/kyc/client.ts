@@ -20,6 +20,8 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 
+const PARANOID = true;
+
 /**
  * The configuration options for the KYC Anchor client.
  */
@@ -102,7 +104,7 @@ type KeetaKYCVerificationServiceInfo = {
 
 /**
  * For each matching KYC Anchor service, this type describes the
- * oeprations available and the country codes that the service supports.
+ * operations available and the country codes that the service supports.
  */
 type GetEndpointsResult = {
 	[id: ProviderID]: KeetaKYCVerificationServiceInfo;
@@ -337,28 +339,41 @@ class KeetaKYCProvider {
 	}
 }
 
-function formatSignedData(account: InstanceType<typeof KeetaNetLib.Account>, nonce?: string): { nonce: string; verificationData: Buffer; } {
+function formatSignedData(account: InstanceType<typeof KeetaNetLib.Account>, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
 	nonce ??= KeetaNetLib.Utils.Helper.crypto.randomUUID();
+	timestamp ??= new Date();
+
+	let timestampString: string;
+	if (typeof timestamp === 'string') {
+		timestampString = timestamp;
+	} else {
+		timestampString = timestamp.toISOString();
+	}
+
 	const signature = new KeetaNetLib.Utils.ASN1.BufferStorageASN1([
 		nonce,
+		timestampString,
 		account.publicKeyAndType
 	], [
+		{ type: 'string', kind: 'utf8' },
 		{ type: 'string', kind: 'utf8' },
 		KeetaNetLib.Utils.ASN1.ValidateASN1.IsOctetString
 	]);
 
 	return({
 		nonce: nonce,
+		timestamp: timestampString,
 		verificationData: signature.getDERBuffer()
 	});
 }
 
-async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Account>): Promise<{ nonce: string; signature: string; }> {
-	const { nonce, verificationData } = formatSignedData(account);
+async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Account>): Promise<{ nonce: string; timestamp: string; signature: string; }> {
+	const { nonce, timestamp, verificationData } = formatSignedData(account);
 	const signature = await account.sign(verificationData);
 
 	return({
 		nonce: nonce,
+		timestamp: timestamp,
 		signature: signature.getBuffer().toString('base64')
 	});
 }
@@ -368,12 +383,15 @@ async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Accou
 async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
 	const account = KeetaNetLib.Account.toAccount(request.account);
 	const nonce = request.signed.nonce;
+	const timestamp = request.signed.timestamp;
 	const signatureBuffer = Buffer.from(request.signed.signature, 'base64');
-	if (Object.keys(request.signed).length !== 2 || !nonce || !signatureBuffer) {
-		throw(new Error('Invalid signed data: must contain only nonce and signature'));
+	if (Object.keys(request.signed).length !== 3 || !nonce || !signatureBuffer || !timestamp) {
+		throw(new Error('Invalid signed data: must contain only nonce, signature, and timestamp'));
 	}
 
-	const { verificationData } = formatSignedData(account, nonce);
+	/* XXX:TODO: Verify that the timestamp is a valid ISO 8601 date string within a reasonable range */
+
+	const { verificationData } = formatSignedData(account, nonce, timestamp);
 
 	return(account.verify(KeetaNetLib.Utils.Helper.bufferToArrayBuffer(verificationData), KeetaNetLib.Utils.Helper.bufferToArrayBuffer(signatureBuffer)));
 }
@@ -390,15 +408,19 @@ class KeetaKYCAnchorClient {
 	}
 
 	async createVerification(request: KeetaKYCAnchorClientCreateVerificationRequest): Promise<KeetaKYCProvider[]> {
-		const { nonce, signature } = await generateSignedData(request.account);
+		const signedData = await generateSignedData(request.account);
+
+		if (PARANOID) {
+			const check = await verifySignedData({ account: request.account.publicKeyString.get(), signed: signedData });
+			if (!check) {
+				throw(new Error('Failed to verify signed data'));
+			}
+		}
 
 		const signedRequest: KeetaKYCAnchorCreateVerificationRequest = {
 			...request,
 			account: request.account.publicKeyString.get(),
-			signed: {
-				nonce: nonce,
-				signature: signature
-			}
+			signed: signedData
 		};
 
 		const endpoints = await getEndpoints(this.resolver, signedRequest);
