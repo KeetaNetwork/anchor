@@ -70,7 +70,7 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			usePublishAid: false
 		});
 		await itaUserClient.initializeNetwork({
-			addSupplyAmount: BigInt(1000),
+			addSupplyAmount: 1000n,
 			delegateTo: TestRepAccountClient,
 			/* XXX: This is broken too, so we need to set it to a high number */
 			voteSerial: BigInt('999999999999999999')
