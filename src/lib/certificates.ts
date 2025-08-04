@@ -1,7 +1,8 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as ASN1 from './utils/asn1.js';
+import { Buffer } from './utils/buffer.js';
+import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
-import crypto from 'crypto';
 
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];

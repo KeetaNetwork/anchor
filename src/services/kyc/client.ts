@@ -17,6 +17,8 @@ import type {
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { Buffer } from '../../lib/utils/buffer.js';
+import crypto from '../../lib/utils/crypto.js';
 
 /**
  * The configuration options for the KYC Anchor client.
@@ -336,7 +338,7 @@ class KeetaKYCProvider {
 }
 
 function formatSignedData(account: InstanceType<typeof KeetaNetLib.Account>, nonce?: string): { nonce: string; verificationData: Buffer; } {
-	nonce ??= crypto.randomUUID();
+	nonce ??= KeetaNetLib.Utils.Helper.crypto.randomUUID();
 	const signature = new KeetaNetLib.Utils.ASN1.BufferStorageASN1([
 		nonce,
 		account.publicKeyAndType

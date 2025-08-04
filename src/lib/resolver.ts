@@ -3,6 +3,9 @@ import CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
+import { Buffer } from './utils/buffer.js';
+import crypto from './utils/crypto.js';
+
 import { createIs, createAssert } from 'typia';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };

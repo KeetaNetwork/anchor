@@ -1,5 +1,5 @@
 import * as zlib from 'node:zlib';
-import * as crypto from 'node:crypto';
+import crypto from './utils/crypto.js';
 import * as util from 'node:util';
 
 import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
@@ -11,6 +11,7 @@ import type {
 	ASN1OID
 } from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
 import { bufferToArrayBuffer } from '@keetanetwork/keetanet-node/dist/lib/utils/helper.js';
+import { Buffer } from './utils/buffer.js';
 import { isArray } from './utils/array.js';
 
 const zlibDeflate = util.promisify(zlib.deflate);
