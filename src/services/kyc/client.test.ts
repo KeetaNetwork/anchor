@@ -133,6 +133,9 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 		isTrustedRoot: true
 	});
 
+	const checkIssuerCert = await verification.getProviderIssuerCertificate();
+	expect(checkIssuerCert.subject).toEqual('commonName=Keeta Test Network KYC Demo Anchor');
+
 	while (true) {
 		const results = await verification.getCertificates();
 		if (!results.ok) {
