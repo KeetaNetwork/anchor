@@ -339,11 +339,9 @@ class KeetaKYCProvider {
 
 function formatSignedData(account: InstanceType<typeof KeetaNetLib.Account>, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
 	nonce ??= crypto.randomUUID();
+	timestamp ??= new Date();
 
 	let timestampString: string;
-	if (timestamp === undefined) {
-		timestamp = new Date();
-	}
 	if (typeof timestamp === 'string') {
 		timestampString = timestamp;
 	} else {
