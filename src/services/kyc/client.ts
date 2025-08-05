@@ -365,7 +365,6 @@ async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Accou
 }
 
 // TODO
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
 	const account = KeetaNetLib.Account.toAccount(request.account);
 	const nonce = request.signed.nonce;
