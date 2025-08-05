@@ -19,7 +19,7 @@ export interface KeetaKYCAnchorCreateVerificationRequest {
 		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
 		signature: string;
 	};
-};
+}
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaKYCAnchorCreateVerificationResponse = ({

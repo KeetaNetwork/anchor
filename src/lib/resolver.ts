@@ -681,31 +681,9 @@ type ResolverStats = {
 	}
 };
 
-type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
-type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
-const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
+function assertValidCountryCodes(input: unknown): asserts input is { countryCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('operations' in input)) {
-		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
-	}
-
-	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
-		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
-	}
-
-	if (typeof input.operations !== 'function') {
-		for (const [operation, operationValue] of Object.entries(input.operations)) {
-			if (typeof operation !== 'string') {
-				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
-			}
-
-			if (typeof operationValue !== 'string') {
-				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
-			}
-		}
 	}
 
 	if (!('countryCodes' in input)) {
@@ -724,8 +702,32 @@ const assertResolverLookupBankingResult = function(input: unknown): ResolverLook
 		}
 	}
 
+	return;
+}
+
+function assertValidOptionalCountryCodes(input: unknown): asserts input is { countryCodes?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('countryCodes' in input)) {
+		return;
+	}
+
+	assertValidCountryCodes(input);
+}
+
+function assertValidCurrencyCodes(input: unknown): asserts input is { currencyCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['currencyCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
 	if (!('currencyCodes' in input)) {
 		throw(new Error('Expected "currencyCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.currencyCodes !== 'function' && !Array.isArray(input.currencyCodes)) {
+		throw(new Error(`Expected "currencyCodes" to be an array | function, got ${typeof input.currencyCodes}`));
 	}
 
 	if (Array.isArray(input.currencyCodes)) {
@@ -736,25 +738,10 @@ const assertResolverLookupBankingResult = function(input: unknown): ResolverLook
 		}
 	}
 
-	if ('kycProviders' in input) {
-		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
-			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
-		}
+	return;
+}
 
-		if (Array.isArray(input.kycProviders)) {
-			for (const kycProvider of input.kycProviders) {
-				if (typeof kycProvider !== 'string') {
-					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
-				}
-			}
-		}
-	}
-
-	// @ts-ignore
-	return(input);
-
-};
-const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKYCResults[string] {
+function assertValidOperationsBanking(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['operations'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
 	}
@@ -778,6 +765,36 @@ const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKY
 			}
 		}
 	}
+}
+
+function assertValidOperationsKYC(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['operations'] } {
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('kycProviders' in input) {
+		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
+			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
+		}
+
+		if (Array.isArray(input.kycProviders)) {
+			for (const kycProvider of input.kycProviders) {
+				if (typeof kycProvider !== 'string') {
+					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
+				}
+			}
+		}
+	}
+}
+
+function assertValidCA(input: unknown): asserts input is { ca: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['ca'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
 
 	if (!('ca' in input)) {
 		throw(new Error('Expected "ca" key in KYC service, but it was not found'));
@@ -786,22 +803,24 @@ const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKY
 	if (typeof input.ca !== 'string' && typeof input.ca !== 'function') {
 		throw(new Error(`Expected "ca" to be a string | function, got ${typeof input.ca}`));
 	}
+}
 
-	if ('countryCodes' in input) {
-		if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
-			throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
-		}
+type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
+type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
+const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
+	assertValidOperationsBanking(input);
+	assertValidCountryCodes(input);
+	assertValidCurrencyCodes(input);
+	assertValidOptionalKYCProviders(input);
 
-		if (Array.isArray(input.countryCodes)) {
-			for (const countryCode of input.countryCodes) {
-				if (typeof countryCode !== 'string') {
-					throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
-				}
-			}
-		}
-	}
+	return(input);
 
-	// @ts-ignore
+};
+const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKYCResults[string] {
+	assertValidOperationsKYC(input);
+	assertValidOptionalCountryCodes(input);
+	assertValidCA(input);
+
 	return(input);
 };
 

@@ -132,22 +132,22 @@ async function getEndpoints(resolver: Resolver, request: KeetaKYCAnchorCreateVer
 		return(null);
 	}
 
-	const countryCodesPromises = (await response[0]?.countryCodes?.('array'))?.map(async function(countryCode) {
-		return(new CurrencyInfo.Country(CurrencyInfo.Country.assertCountryCode(await countryCode('string'))));
-	});
-
-	let countryCodes: CurrencyInfo.Country[] | undefined;
-	if (countryCodesPromises !== undefined) {
-		const countryCodesResults = await Promise.allSettled(countryCodesPromises);
-		countryCodes = countryCodesResults.map(function(result) {
-			if (result.status === 'fulfilled') {
-				return(result.value);
-			}
-			throw(result.reason);
-		});
-	}
-
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaKYCVerificationServiceInfo]> {
+		const countryCodesPromises = (await serviceInfo.countryCodes?.('array'))?.map(async function(countryCode) {
+			return(new CurrencyInfo.Country(CurrencyInfo.Country.assertCountryCode(await countryCode('string'))));
+		});
+
+		let countryCodes: CurrencyInfo.Country[] | undefined;
+		if (countryCodesPromises !== undefined) {
+			const countryCodesResults = await Promise.allSettled(countryCodesPromises);
+			countryCodes = countryCodesResults.map(function(result) {
+				if (result.status === 'fulfilled') {
+					return(result.value);
+				}
+				throw(result.reason);
+			});
+		}
+
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaKYCVerificationServiceInfo['operations'] = {};
 		for (const [key, operation] of Object.entries(operations)) {
@@ -303,6 +303,10 @@ class KeetaKYCProvider {
 		this.logger = args.logger;
 
 		this.logger?.debug(`Created KYC verification for provider ID: ${args.id}, request: ${JSON.stringify(args.request)}`);
+	}
+
+	async countryCodes(): Promise<CurrencyInfo.Country[] | undefined> {
+		return(this.serviceInfo.countryCodes);
 	}
 
 	async ca(): Promise<KYCCertificate> {

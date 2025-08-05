@@ -49,6 +49,14 @@ test('KYC Anchor Client Test', async function() {
 				version: 1,
 				services: {
 					kyc: {
+						Bad: {
+							countryCodes: ['XX'],
+							ca: 'FOO',
+							operations: {
+								createVerification: 'https://example.com/createVerification.json',
+								getCertificates: 'https://example.com/getCertificates/{id}.json'
+							}
+						},
 						Test: {
 							countryCodes: ['US'],
 							/* XXX: This is the Test
@@ -106,9 +114,13 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	 */
 	logger?.log('Providers:');
 	for (const provider of providers) {
+		const providerCA = await provider.ca();
+		const providerName = providerCA.subject;
+		expect(providerName).toBe('commonName=Keeta Test Network KYC Demo Anchor');
+
 		logger?.log('  Provider:');
 		logger?.log('    ID:', provider.id);
-		logger?.log('    Name:', (await provider.ca()).subject);
+		logger?.log('    Name:', providerName);
 	}
 	expect(providers.length).toBeGreaterThan(0);
 
@@ -119,6 +131,10 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	if (provider === undefined) {
 		throw(new Error('internal error: no providers available'));
 	}
+
+	const providerCountryCodes = await provider.countryCodes();
+	expect(providerCountryCodes).toBeDefined();
+	expect(providerCountryCodes?.[0]?.code).toBe('US');
 
 	const verification = await provider.startVerification();
 	logger?.log('Request ID:', verification.id, 'on provider', verification.providerID);
