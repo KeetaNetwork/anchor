@@ -148,19 +148,7 @@ async function getEndpoints(resolver: Resolver, request: KeetaKYCAnchorCreateVer
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaKYCVerificationServiceInfo]> {
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaKYCVerificationServiceInfo['operations'] = {};
-		for (const keyUntyped of Object.keys(operations)) {
-			/*
-			 * We know that the `keyUntyped` is a key of the
-			 * `operations` object because we are iterating
-			 * over the keys of the `operations` object.
-			 */
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const key = keyUntyped as keyof typeof operations;
-			if (!(key in operations)) {
-				continue;
-			}
-
-			const operation = operations[key];
+		for (const [key, operation] of Object.entries(operations)) {
 			if (operation === undefined) {
 				continue;
 			}
