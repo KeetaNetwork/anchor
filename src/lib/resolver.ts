@@ -697,17 +697,11 @@ const assertResolverLookupBankingResult = function(input: unknown): ResolverLook
 	}
 
 	if (typeof input.operations !== 'function') {
-		for (const operation of Object.keys(input.operations)) {
+		for (const [operation, operationValue] of Object.entries(input.operations)) {
 			if (typeof operation !== 'string') {
 				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
 			}
 
-			/*
-			 * We know that `operation` is a key of `input.operations`, so we can
-			 * safely use it to index
-			 */
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const operationValue = input.operations[operation as keyof typeof input.operations];
 			if (typeof operationValue !== 'string') {
 				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
 			}
@@ -774,17 +768,11 @@ const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKY
 	}
 
 	if (typeof input.operations !== 'function') {
-		for (const operation of Object.keys(input.operations)) {
+		for (const [operation, operationValue] of Object.entries(input.operations)) {
 			if (typeof operation !== 'string') {
 				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
 			}
 
-			/*
-			 * We know that `operation` is a key of `input.operations`, so we can
-			 * safely use it to index
-			 */
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const operationValue = input.operations[operation as keyof typeof input.operations];
 			if (typeof operationValue !== 'string') {
 				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
 			}

@@ -21,7 +21,7 @@
 	"license": "SEE LICENSE IN LICENSE",
 	"type": "module",
 	"devDependencies": {
-		"@keetanetwork/eslint-config-typescript": "1.4.6",
+		"@keetanetwork/eslint-config-typescript": "1.4.7",
 		"@keetanetwork/keetanet-node": "0.12.1",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
