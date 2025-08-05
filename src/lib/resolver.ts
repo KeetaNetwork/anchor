@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import * as CurrencyInfo from '@keetanetwork/currency-info';
+import CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
@@ -40,15 +40,48 @@ type ServiceMetadata = {
 				};
 				currencyCodes: string[];
 				countryCodes: string[];
-				kycProviders: string[];
+				kycProviders?: string[];
 			};
 		};
 		kyc?: {
 			[id: string]: {
 				operations: {
+					/**
+					 * Check if the KYC provider can
+					 * service a more specific locality
+					 * (optional)
+					 */
+					checkLocality?: string;
+					/**
+					 * Request an estimate for a KYC
+					 * verification (optional)
+					 */
+					getEstimate?: string;
+					/**
+					 * Begin the KYC verification process
+					 * with this KYC provider
+					 */
 					createVerification?: string;
+					/**
+					 * Get the certificate for the
+					 * KYC verification
+					 */
+					getCertificates?: string;
 				};
-				countryCodes: string[];
+				/**
+				 * Country codes which this KYC provider can
+				 * validate accounts in.  If this is not
+				 * specified, then the KYC provider can
+				 * validate accounts in any country.
+				 */
+				countryCodes?: string[];
+				/**
+				 * The Certificate Authority (CA) Certificate
+				 * that this KYC provider uses to sign KYC
+				 * certificates.  This is used to identify the
+				 * KYC provider.
+				 */
+				ca: string;
 			};
 		};
 		fx?: {
@@ -116,7 +149,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * Search for a KYC provider which can verify accounts in ALL
 		 * of the following countries.
 		 */
-		countryCodes?: CountrySearchInput[];
+		countryCodes: CountrySearchInput[];
 	};
 	'inbound': {
 		/* XXX:TODO */
@@ -234,6 +267,17 @@ type ToValuizableObject<T extends object> = {
 };
 type ToValuizable<T> = ToValuizableObject<{ tmp: T }>['tmp'];
 
+type ToJSONValuizableObject<T extends object> = {
+	[K in keyof T]: (
+		T[K] extends object ?
+			ToJSONValuizableObject<T[K]> :
+		T[K] extends (object | undefined) ?
+			ToJSONValuizableObject<NonNullable<T[K]>> | undefined :
+		T[K]
+	) | ExternalURL;
+};
+type ToJSONValuizable<T> = ToJSONValuizableObject<{ tmp: T }>['tmp'];
+
 /*
  * Access token to share with the Metadata object to allow it to
  * access the mutable stats object.
@@ -254,6 +298,8 @@ type MetadataConfig = {
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
+
+const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -278,8 +324,23 @@ class Metadata implements ValuizableInstance {
 		return(value.instanceID === Metadata.instanceTypeID);
 	}
 
-	static formatMetadata(metadata: JSONSerializable): string {
+	/**
+	 * Format the supplied Metadata as appropriate to be included
+	 * within the Metadata field of a KeetaNet acccount to serve
+	 * as the Metadata for the Resolver.
+	 */
+	static formatMetadata(metadata: ToJSONValuizable<ServiceMetadata>): string;
+	// eslint-disable-next-line @typescript-eslint/unified-signatures
+	static formatMetadata(metadata: JSONSerializable): string;
+	static formatMetadata(metadata: JSONSerializable | ToJSONValuizable<ServiceMetadata>): string {
 		return(Buffer.from(JSON.stringify(metadata)).toString('base64'));
+	}
+
+	/**
+	 * Assert that the supplied value is a valid Metadata Root Object
+	 */
+	static assertMetadata(value: unknown): asserts value is ToJSONValuizable<ServiceMetadata> {
+		assertServiceMetadata(value);
 	}
 
 	constructor(url: string | URL, config: MetadataConfig) {
@@ -332,7 +393,7 @@ class Metadata implements ValuizableInstance {
 			throw(new Error(`Unsupported path: ${path}`));
 		}
 
-		let account;
+		let account: KeetaNetAccount | string;
 		try {
 			account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
 		} catch {
@@ -424,7 +485,7 @@ class Metadata implements ValuizableInstance {
 
 		this.#stats.cache.miss++;
 
-		let retval;
+		let retval: JSONSerializable;
 		try {
 			const protocol = url.protocol;
 			if (protocol === 'keetanet:') {
@@ -432,6 +493,7 @@ class Metadata implements ValuizableInstance {
 			} else if (protocol === 'https:') {
 				retval = await this.readHTTPSURL(url);
 			} else {
+				this.#stats.unsupported.reads++;
 				throw(new Error(`Unsupported protocol: ${protocol}`));
 			}
 		} catch (readError) {
@@ -606,6 +668,9 @@ type ResolverStats = {
 	https: {
 		reads: number;
 	};
+	unsupported: {
+		reads: number;
+	};
 	reads: number;
 	cache: {
 		hit: number;
@@ -613,9 +678,144 @@ type ResolverStats = {
 	}
 };
 
-type ResolverLookupBankingResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>;
-type ResolverLookupKYCResults = ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>;
-const assertResolverLookupBankingResults = createAssert<ResolverLookupBankingResults>();
+function assertValidCountryCodes(input: unknown): asserts input is { countryCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('countryCodes' in input)) {
+		throw(new Error('Expected "countryCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
+		throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
+	}
+
+	if (Array.isArray(input.countryCodes)) {
+		for (const countryCode of input.countryCodes) {
+			if (typeof countryCode !== 'string') {
+				throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
+			}
+		}
+	}
+}
+
+function assertValidOptionalCountryCodes(input: unknown): asserts input is { countryCodes?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('countryCodes' in input)) {
+		return;
+	}
+
+	assertValidCountryCodes(input);
+}
+
+function assertValidCurrencyCodes(input: unknown): asserts input is { currencyCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['currencyCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('currencyCodes' in input)) {
+		throw(new Error('Expected "currencyCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.currencyCodes !== 'function' && !Array.isArray(input.currencyCodes)) {
+		throw(new Error(`Expected "currencyCodes" to be an array | function, got ${typeof input.currencyCodes}`));
+	}
+
+	if (Array.isArray(input.currencyCodes)) {
+		for (const currencyCode of input.currencyCodes) {
+			if (typeof currencyCode !== 'string') {
+				throw(new Error(`Expected "currencyCodes" to be an array of strings, got ${typeof currencyCode}`));
+			}
+		}
+	}
+}
+
+function assertValidOperationsBanking(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['operations'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('operations' in input)) {
+		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
+	}
+
+	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
+		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
+	}
+
+	if (typeof input.operations !== 'function') {
+		for (const [operation, operationValue] of Object.entries(input.operations)) {
+			if (typeof operation !== 'string') {
+				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
+			}
+
+			if (typeof operationValue !== 'string') {
+				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
+			}
+		}
+	}
+}
+
+function assertValidOperationsKYC(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['operations'] } {
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('kycProviders' in input) {
+		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
+			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
+		}
+
+		if (Array.isArray(input.kycProviders)) {
+			for (const kycProvider of input.kycProviders) {
+				if (typeof kycProvider !== 'string') {
+					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
+				}
+			}
+		}
+	}
+}
+
+function assertValidCA(input: unknown): asserts input is { ca: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['ca'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('ca' in input)) {
+		throw(new Error('Expected "ca" key in KYC service, but it was not found'));
+	}
+
+	if (typeof input.ca !== 'string' && typeof input.ca !== 'function') {
+		throw(new Error(`Expected "ca" to be a string | function, got ${typeof input.ca}`));
+	}
+}
+
+type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
+type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
+const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
+	assertValidOperationsBanking(input);
+	assertValidCountryCodes(input);
+	assertValidCurrencyCodes(input);
+	assertValidOptionalKYCProviders(input);
+
+	return(input);
+
+};
+const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKYCResults[string] {
+	assertValidOperationsKYC(input);
+	assertValidOptionalCountryCodes(input);
+	assertValidCA(input);
+
+	return(input);
+};
 
 class Resolver {
 	readonly #root: ResolverConfig['root'];
@@ -655,6 +855,9 @@ class Resolver {
 			https: {
 				reads: 0
 			},
+			unsupported: {
+				reads: 0
+			},
 			reads: 0,
 			cache: {
 				hit: 0,
@@ -676,11 +879,12 @@ class Resolver {
 		return(structuredClone(this.#stats));
 	}
 
-	private async lookupBankingService(bankingServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'banking'>) {
+	private async lookupBankingServices(bankingServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'banking'>) {
 		if (bankingServices === undefined) {
 			return(undefined);
 		}
 
+		const retval: ResolverLookupBankingResults = {};
 		for (const checkBankingServiceID in bankingServices) {
 			try {
 				const checkBankingService = await bankingServices[checkBankingServiceID]?.('object');
@@ -692,22 +896,10 @@ class Resolver {
 					continue;
 				}
 
-				if (!('countryCodes' in checkBankingService)) {
-					continue;
-				}
-
-				if (!('currencyCodes' in checkBankingService)) {
-					continue;
-				}
-
-				if (!('kycProviders' in checkBankingService)) {
-					continue;
-				}
-
 				if (criteria.currencyCodes !== undefined) {
 					const currencyCodes = await checkBankingService.currencyCodes?.('array') ?? [];
-					const checkBankingServiceCurrencyCodes = await Promise.all(currencyCodes.map(function(item) {
-						return(item?.('primitive'));
+					const checkBankingServiceCurrencyCodes = await Promise.all(currencyCodes.map(async function(item) {
+						return(await item?.('primitive'));
 					}));
 
 					let acceptable = true;
@@ -726,8 +918,8 @@ class Resolver {
 
 				if (criteria.countryCodes !== undefined) {
 					const countryCodes = await checkBankingService.countryCodes?.('array') ?? [];
-					const checkBankingServiceCountryCodes = await Promise.all(countryCodes.map(function(item) {
-						return(item?.('primitive'));
+					const checkBankingServiceCountryCodes = await Promise.all(countryCodes.map(async function(item) {
+						return(await item?.('primitive'));
 					}));
 					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkBankingServiceCountryCodes, 'for', checkBankingServiceID);
 
@@ -745,20 +937,29 @@ class Resolver {
 					}
 				}
 
-				return(assertResolverLookupBankingResults(checkBankingService));
+				retval[checkBankingServiceID] = assertResolverLookupBankingResult(checkBankingService);
 			} catch (checkBankingServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking banking service', checkBankingServiceID, ':', checkBankingServiceError, ' -- ignoring');
 			}
 		}
 
-		return(undefined);
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any banking services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
 	}
 
-	private async lookupKYCService(kycServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'kyc'>) {
+	private async lookupKYCServices(kycServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'kyc'>) {
 		if (kycServices === undefined) {
 			return(undefined);
 		}
 
+		const retval: ResolverLookupKYCResults = {};
 		for (const checkKYCServiceID in kycServices) {
 			try {
 				const checkKYCService = await kycServices[checkKYCServiceID]?.('object');
@@ -770,23 +971,26 @@ class Resolver {
 					continue;
 				}
 
-				if (!('countryCodes' in checkKYCService)) {
-					continue;
-				}
-
 				if (criteria.countryCodes !== undefined) {
-					const countryCodes = await checkKYCService.countryCodes?.('array') ?? [];
-					const checkKYCServiceCountryCodes = await Promise.all(countryCodes.map(function(item) {
-						return(item?.('primitive'));
-					}));
-					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYCServiceCountryCodes, 'for', checkKYCServiceID);
-
 					let acceptable = true;
-					for (const checkCountryCode of criteria.countryCodes) {
-						const checkCountryCodeCanonical = convertToCountrySearchCanonical(checkCountryCode);
-						if (!checkKYCServiceCountryCodes.includes(checkCountryCodeCanonical)) {
-							acceptable = false;
-							break;
+					/*
+					 * If the KYC service does not have a countryCodes
+					 * property, then it can validate accounts in any
+					 * country, so we skip this check.
+					 */
+					if ('countryCodes' in checkKYCService) {
+						const countryCodes = await checkKYCService.countryCodes?.('array') ?? [];
+						const checkKYCServiceCountryCodes = await Promise.all(countryCodes.map(async function(item) {
+							return(await item?.('string'));
+						}));
+						this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYCServiceCountryCodes, 'for', checkKYCServiceID);
+
+						for (const checkCountryCode of criteria.countryCodes) {
+							const checkCountryCodeCanonical = convertToCountrySearchCanonical(checkCountryCode);
+							if (!checkKYCServiceCountryCodes.includes(checkCountryCodeCanonical)) {
+								acceptable = false;
+								break;
+							}
 						}
 					}
 
@@ -795,13 +999,21 @@ class Resolver {
 					}
 				}
 
-				return(assertResolverLookupBankingResults(checkKYCService));
+				retval[checkKYCServiceID] = assertResolverLookupKYCResult(checkKYCService);
 			} catch (checkKYCServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking KYC service', checkKYCServiceID, ':', checkKYCServiceError, ' -- ignoring');
 			}
 		}
 
-		return(undefined);
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any banking services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
 	}
 
 	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
@@ -849,21 +1061,21 @@ class Resolver {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const args = { service, criteria } as LookupArgs;
 
-		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
+		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', args.service, 'with criteria:', args.criteria, 'in', definedServices);
 		switch (args.service) {
 			case 'banking': {
 				const currentCriteria = args.criteria;
 				const bankingServices = await definedServices.banking?.('object');
 				this.#logger?.debug(`Resolver:${this.id}`, 'Banking Services:', bankingServices);
 
-				return(await this.lookupBankingService(bankingServices, currentCriteria));
+				return(await this.lookupBankingServices(bankingServices, currentCriteria));
 			}
 			case 'kyc': {
 				const currentCriteria = args.criteria;
 				const kycServices = await definedServices.kyc?.('object');
 				this.#logger?.debug(`Resolver:${this.id}`, 'KYC Services:', kycServices);
 
-				return(await this.lookupKYCService(kycServices, currentCriteria));
+				return(await this.lookupKYCServices(kycServices, currentCriteria));
 			}
 			case 'fx':
 			case 'inbound':
@@ -877,7 +1089,18 @@ class Resolver {
 
 	clearCache(): void {
 		this.#metadataCache.instance.clear();
+		this.#stats.cache.hit = 0;
+		this.#stats.cache.miss = 0;
+		this.#stats.https.reads = 0;
+		this.#stats.keetanet.reads = 0;
+		this.#stats.unsupported.reads = 0;
+		this.#stats.reads = 0;
 	}
 }
 
 export default Resolver;
+export type {
+	ServiceMetadata,
+	ServiceSearchCriteria,
+	Services
+};

@@ -72,7 +72,8 @@ async function setupForResolverTests() {
 						operations: {
 							createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
 						},
-						countryCodes: ['US']
+						countryCodes: ['US'],
+						ca: 'TEST'
 					}
 				},
 				banking: {
@@ -154,34 +155,34 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: ['US' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				currencyCodes: ['MXN' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['US' as const],
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: 'https://banchor.testaccountexternal.com/api/v1/createAccount'
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const] ,
 				currencyCodes: ['MXN' as const]
 			},
-			createAccount: 'https://banchor.foo.com/api/v1/createAccount'
+			createAccount: ['https://banchor.foo.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['US' as const] ,
@@ -193,7 +194,7 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: ['US' as const]
 			},
-			createVerification: 'https://kyc.keeta.com/api/v1/createVerification'
+			createVerification: ['https://kyc.keeta.com/api/v1/createVerification']
 		}, {
 			input: {
 				countryCodes: ['MX' as const]
@@ -205,40 +206,59 @@ test('Basic Tests', async function() {
 	for (const checkKind of ['banking', 'kyc'] as const) {
 		const checks = allChecks[checkKind];
 		for (const check of checks) {
-			const checkResult = await resolver.lookup(checkKind, check.input);
-
+			const checkResults = await resolver.lookup(checkKind, check.input);
 			if ('result' in check && check.result === undefined) {
-				expect(checkResult).toBeUndefined();
+				expect(checkResults).toBeUndefined();
+
 				continue;
 			}
 
-			expect(checkResult).toBeDefined();
-			if (checkResult === undefined) {
-				throw(new Error('internal error: check is undefined'));
+			expect(checkResults).toBeDefined();
+			if (checkResults === undefined) {
+				throw(new Error('internal error: checkResults is undefined'));
 			}
 
-			const operations = await checkResult.operations('object');
-			switch (checkKind) {
-				case 'banking':
-					if (!('createAccount' in operations)) {
-						throw(new Error(`internal error: createAccount not found in operations for ${checkKind}`));
-					}
-					if ('createAccount' in check) {
-						const checkCreateAccount = await operations.createAccount?.('string');
-						expect(checkCreateAccount).toEqual(check.createAccount);
-					}
-					break;
-				case 'kyc':
-					if (!('createVerification' in operations)) {
-						throw(new Error(`internal error: createVerification not found in operations for ${checkKind}`));
+			/*
+			 * Accumulate all the results
+			 */
+			const checkOperationName = Object.keys(check).find(function(key): key is 'createAccount' | 'createVerification' {
+				return(key !== 'input' && key !== 'result');
+			});
+			if (checkOperationName === undefined) {
+				throw(new Error(`internal error: checkOperationName is undefined for ${checkKind}, ${JSON.stringify(check)}`));
+			}
+
+			const foundOperations: string[] = [];
+			for (const checkResultID of Object.keys(checkResults)) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const checkResult = checkResults[checkResultID as keyof typeof checkResults];
+				if (checkResult === undefined) {
+					throw(new Error(`internal error: checkResult for ${checkKind} is undefined`));
+				}
+
+				const operations = await checkResult.operations('object');
+				if (checkOperationName in operations) {
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					const operation = operations[checkOperationName as keyof typeof operations];
+					if (operation === undefined) {
+						throw(new Error(`internal error: operation for ${checkKind}, ${JSON.stringify(check)} is undefined`));
 					}
 
-					if ('createVerification' in check) {
-						const checkCreateVerification = await operations.createVerification?.('string');
-						expect(checkCreateVerification).toEqual(check.createVerification);
-					}
-					break;
+					// @ts-ignore
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+					foundOperations.push(await operation('string'));
+				}
 			}
+
+			if (!(checkOperationName in check)) {
+				throw(new Error(`internal error: checkOperationName ${checkOperationName} not found in check ${JSON.stringify(check)}`));
+			}
+
+			// @ts-ignore
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			const expectedOperations: string[] = check[checkOperationName];
+
+			expect([...foundOperations].sort()).toEqual([...expectedOperations].sort());
 		}
 	}
 
@@ -282,9 +302,19 @@ test('Concurrent Lookups', async function() {
 		}));
 	}
 
-	const lookupResults = await Promise.all(lookupPromises);
-	for (const lookupResult of lookupResults) {
-		expect(lookupResult).toBeDefined();
+	const lookupAllResults = await Promise.all(lookupPromises);
+	for (const lookupResults of lookupAllResults) {
+		expect(lookupResults).toBeDefined();
+		if (lookupResults === undefined) {
+			throw(new Error('internal error: lookupResults is undefined'));
+		}
+
+		/*
+		 * Just look at the first result
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const lookupResult = lookupResults[Object.keys(lookupResults)[0] as keyof typeof lookupResults];
+
 		const operations = await lookupResult?.operations('object');
 		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
@@ -292,5 +322,5 @@ test('Concurrent Lookups', async function() {
 	expect(resolver.stats.reads).toBeGreaterThan(concurrency * 3);
 	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
 	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
-	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads).toBe(resolver.stats.cache.miss);
+	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
