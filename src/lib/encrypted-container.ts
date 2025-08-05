@@ -1,21 +1,19 @@
-import * as zlib from 'node:zlib';
 import crypto from './utils/crypto.js';
-import * as util from 'node:util';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
-import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
-import {
-	ASN1toJS,
-	JStoASN1
-} from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
 import type {
 	ASN1OID
-} from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
-import { bufferToArrayBuffer } from '@keetanetwork/keetanet-node/dist/lib/utils/helper.js';
+} from '@keetanetwork/keetanet-client/lib/utils/asn1.js';
 import { Buffer } from './utils/buffer.js';
 import { isArray } from './utils/array.js';
 
-const zlibDeflate = util.promisify(zlib.deflate);
-const zlibInflate = util.promisify(zlib.inflate);
+const zlibDeflate = KeetaNetLib.Utils.Buffer.ZlibDeflate; /* XXX:TODO: Change this to ZlibDeflateAsync when merged in */
+const zlibInflate = KeetaNetLib.Utils.Buffer.ZlibInflate; /* XXX:TODO: Change this to ZlibInflateAsync when merged in */
+const ASN1toJS = KeetaNetLib.Utils.ASN1.ASN1toJS;
+const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
+const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;
+type Account = InstanceType<typeof KeetaNetLib.Account>;
+const bufferToArrayBuffer = KeetaNetLib.Utils.Helper.bufferToArrayBuffer;
 
 /*
  * ASN.1 Schema
@@ -136,7 +134,7 @@ const oidDB = {
 * @returns The ASN.1 DER data
 */
 async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Promise<Buffer> {
-	const compressedPlaintext = await zlibDeflate(plaintext);
+	const compressedPlaintext = Buffer.from(zlibDeflate(plaintext));
 
 	const sequence: Partial<ContainerPackage> = [];
 
@@ -412,7 +410,7 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 		};
 	}
 
-	const plaintext = await zlibInflate(containedCompressed);
+	const plaintext = Buffer.from(zlibInflate(containedCompressed));
 
 	return({
 		version: inputInfo.version,
