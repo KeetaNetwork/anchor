@@ -49,6 +49,14 @@ test('KYC Anchor Client Test', async function() {
 				version: 1,
 				services: {
 					kyc: {
+						Bad: {
+							countryCodes: ['XX'],
+							ca: 'FOO',
+							operations: {
+								createVerification: 'https://example.com/createVerification.json',
+								getCertificates: 'https://example.com/getCertificates/{id}.json'
+							}
+						},
 						Test: {
 							countryCodes: ['US'],
 							/* XXX: This is the Test
