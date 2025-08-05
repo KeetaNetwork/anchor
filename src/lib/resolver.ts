@@ -698,8 +698,6 @@ function assertValidCountryCodes(input: unknown): asserts input is { countryCode
 			}
 		}
 	}
-
-	return;
 }
 
 function assertValidOptionalCountryCodes(input: unknown): asserts input is { countryCodes?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
@@ -734,8 +732,6 @@ function assertValidCurrencyCodes(input: unknown): asserts input is { currencyCo
 			}
 		}
 	}
-
-	return;
 }
 
 function assertValidOperationsBanking(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['operations'] } {
