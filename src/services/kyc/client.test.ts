@@ -106,9 +106,13 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	 */
 	logger?.log('Providers:');
 	for (const provider of providers) {
+		const providerCA = await provider.ca();
+		const providerName = providerCA.subject;
+		expect(providerName).toBe('commonName=Keeta Test Network KYC Demo Anchor');
+
 		logger?.log('  Provider:');
 		logger?.log('    ID:', provider.id);
-		logger?.log('    Name:', (await provider.ca()).subject);
+		logger?.log('    Name:', providerName);
 	}
 	expect(providers.length).toBeGreaterThan(0);
 
