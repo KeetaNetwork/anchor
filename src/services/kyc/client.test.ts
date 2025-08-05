@@ -132,6 +132,10 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 		throw(new Error('internal error: no providers available'));
 	}
 
+	const providerCountryCodes = await provider.countryCodes();
+	expect(providerCountryCodes).toBeDefined();
+	expect(providerCountryCodes?.[0]?.code).toBe('US');
+
 	const verification = await provider.startVerification();
 	logger?.log('Request ID:', verification.id, 'on provider', verification.providerID);
 

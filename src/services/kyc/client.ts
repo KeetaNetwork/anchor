@@ -303,6 +303,10 @@ class KeetaKYCProvider {
 		this.logger?.debug(`Created KYC verification for provider ID: ${args.id}, request: ${JSON.stringify(args.request)}`);
 	}
 
+	async countryCodes(): Promise<CurrencyInfo.Country[] | undefined> {
+		return(this.serviceInfo.countryCodes);
+	}
+
 	async ca(): Promise<KYCCertificate> {
 		if (this.cachedCA !== undefined) {
 			return(this.cachedCA);
