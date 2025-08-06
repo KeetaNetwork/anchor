@@ -1,5 +1,6 @@
 import { types as nodeUtilsTypes } from 'util';
-import type { JSONSerializable } from '@keetanetwork/keetanet-node/dist/lib/utils/conversion.js';
+import { Buffer } from './buffer.js';
+import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 export type { JSONSerializable };
 
 type ConvertToJSONOptions = {

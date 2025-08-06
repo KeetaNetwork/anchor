@@ -17,6 +17,8 @@ import type {
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { Buffer } from '../../lib/utils/buffer.js';
+import crypto from '../../lib/utils/crypto.js';
 
 const PARANOID = true;
 

@@ -1,7 +1,10 @@
 import { test, expect, describe } from 'vitest';
-import { Account } from '@keetanetwork/keetanet-node/dist/lib/account.js';
 import * as EncryptedContainer from './encrypted-container.js';
-import { JStoASN1 } from '@keetanetwork/keetanet-node/dist/lib/utils/asn1.js';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+
+const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
+const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;
+type Account = InstanceType<typeof KeetaNetLib.Account>;
 
 const testAccount1 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 0);
 const testAccount2 = Account.fromSeed('D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D', 1);

@@ -22,6 +22,7 @@
 	"type": "module",
 	"devDependencies": {
 		"@keetanetwork/eslint-config-typescript": "1.4.7",
+		"@keetanetwork/keetanet-node": "0.12.1",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "20.16.10",
@@ -32,8 +33,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
-		"@keetanetwork/keetanet-client": "0.12.0",
-		"@keetanetwork/keetanet-node": "0.12.0",
+		"@keetanetwork/keetanet-client": "0.12.1",
 		"typia": "9.5.0"
 	},
 	"engines": {
