@@ -1,8 +1,8 @@
 {
 	"name": "@keetanetwork/anchor",
-	"version": "0.1.0",
+	"version": "0.0.1",
 	"description": "KeetaNetwork Network Anchor",
-	"main": "index.js",
+	"main": "client/index.js",
 	"scripts": {
 		"eslint": "eslint",
 		"tsc": "tsc",
@@ -22,7 +22,7 @@
 	"type": "module",
 	"devDependencies": {
 		"@keetanetwork/eslint-config-typescript": "1.4.7",
-		"@keetanetwork/keetanet-node": "0.12.1",
+		"@keetanetwork/keetanet-node": "0.12.2",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "20.16.10",
@@ -33,7 +33,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
-		"@keetanetwork/keetanet-client": "0.12.1",
+		"@keetanetwork/keetanet-client": "0.12.2",
 		"typia": "9.5.0"
 	},
 	"engines": {
