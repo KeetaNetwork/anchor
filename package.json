@@ -1,6 +1,6 @@
 {
 	"name": "@keetanetwork/anchor",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
@@ -33,7 +33,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
-		"@keetanetwork/keetanet-client": "0.12.2",
+		"@keetanetwork/keetanet-client": "0.14.0",
 		"typia": "9.5.0"
 	},
 	"engines": {
