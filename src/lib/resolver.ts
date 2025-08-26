@@ -10,12 +10,28 @@ import { createIs, createAssert } from 'typia';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
+const AccountKeyAlgorithm: typeof KeetaNetClient.lib.Account.AccountKeyAlgorithm = KeetaNetClient.lib.Account.AccountKeyAlgorithm;
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
+const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
+type KeetaNetAccountPublicKeyString = ReturnType<KeetaNetAccount['publicKeyString']['get']>;
+type KeetaNetAccountTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account<typeof AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
-type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
+/**
+ * Canonical form of a currency code for use in the ServiceMetadata
+ * Which is either the ISO currency code (e.g. "USD", "EUR", "JPY")
+ * or a cryptocurrency code prefixed with a dollar sign (e.g. "$BTC", "$ETH")
+ */
+type ServiceMetadataCurrencyCodeCanonical = CurrencyInfo.ISOCurrencyCode | `$${string}`;
+/**
+ * Input types which can be used to search for which token represents
+ * a given currency or cryptocurrency.
+ */
+type CurrencySearchInput = ServiceMetadataCurrencyCodeCanonical | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
+type CurrencySearchCanonical = ServiceMetadataCurrencyCodeCanonical;
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
+
+const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
 /**
  * A cache object
@@ -35,6 +51,13 @@ type URLCacheObject = Map<string, {
  */
 type ServiceMetadata = {
 	version: number;
+	/**
+	 * Map of the currency code to the token public key which
+	 * represents that currency.
+	 */
+	currencyMap: {
+		[currencyCode in ServiceMetadataCurrencyCodeCanonical]?: KeetaNetAccountTokenPublicKeyString;
+	};
 	services: {
 		banking?: {
 			[id: string]: {
@@ -87,11 +110,41 @@ type ServiceMetadata = {
 				ca: string;
 			};
 		};
+		/**
+		 * Foreign Exchange (FX) services
+		 *
+		 * This is used to identify service providers which
+		 * can convert currency from one currency to another.
+		 */
 		fx?: {
-			inputCurrencyCodes: {
-				outputCurrencyCodes: string[];
-				kycProviders: string[];
-			}[];
+			/**
+			 * Provider ID which identifies the FX provider
+			 */
+			[id: string]: {
+				/**
+				 * Path for which can be used to identify which
+				 * currencies this FX provider can convert
+				 * between.
+				 */
+				from: {
+					/**
+					 * Currency code which this FX provider can
+					 * convert from
+					 */
+					currencyCode: KeetaNetAccountTokenPublicKeyString;
+					/**
+					 * Currency codes which this FX provider can
+					 * convert to from the `from.currencyCode`
+					 */
+					to: KeetaNetAccountTokenPublicKeyString[];
+					/**
+					 * KYC providers which this FX provider
+					 * supports (DN) -- if not specified,
+					 * then it does not require KYC.
+					 */
+					kycProviders?: string[];
+				}[];
+			}
 		};
 		inbound?: {
 			/* XXX:TODO */
@@ -146,6 +199,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * output currency
 		 */
 		outputCurrencyCode: CurrencySearchInput;
+		/**
+		 * Search for a provider which supports ANY of the following
+		 * KYC providers
+		 */
+		kycProviders?: string[];
 	};
 	'kyc': {
 		/**
@@ -203,9 +261,16 @@ function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencyS
 		return(input);
 	} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
 		input = new CurrencyInfo.Currency(input);
+		return(input.code);
+	} else if (typeof input === 'string') {
+		return(input);
+	} else if (input === null) {
+		throw(new Error('Invalid currency input: null'));
+	} else if ('code' in input) {
+		return(input.code);
+	} else {
+		throw(new Error(`Invalid currency input: ${input}`));
 	}
-
-	return(input.code);
 }
 
 function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySearchCanonical {
@@ -1019,10 +1084,7 @@ class Resolver {
 		return(retval);
 	}
 
-	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
-	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<'kyc'>): Promise<ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
+	async #getRootMetadata() {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
 			trustedCAs: this.#trustedCAs,
@@ -1042,6 +1104,103 @@ class Resolver {
 		if (rootMetadataVersion !== 1) {
 			throw(new Error(`Unsupported metadata version: ${rootMetadataVersion}`));
 		}
+
+		return(rootMetadata);
+	}
+
+	async lookupToken(currencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null> {
+		let tokenPublicKey: KeetaNetAccountTokenPublicKeyString | undefined;
+		if (typeof currencyCode === 'string') {
+			try {
+				const token = KeetaNetAccount.fromTokenPublicKey(currencyCode);
+				tokenPublicKey = token.publicKeyString.get();
+			} catch {
+				/* Ignored */
+			}
+		}
+
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedCurrenciesMapProperty = rootMetadata.currencyMap;
+		if (definedCurrenciesMapProperty === undefined) {
+			throw(new Error('Root metadata is missing "currencyMap" property'));
+		}
+		const definedCurrenciesMap = await definedCurrenciesMapProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Defined Currencies Map:', definedCurrenciesMap);
+
+		let currencyCodeFound: CurrencySearchCanonical | undefined;
+		if (tokenPublicKey === undefined) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Performing forward lookup for currency code', currencyCode);
+
+			/*
+			 * Perform a forward lookup from the currency code
+			 * to the token public key
+			 */
+			const currencyCodeCanonical = convertToCurrencySearchCanonical(currencyCode as unknown as any);
+			if (currencyCodeCanonical === undefined) {
+				return(null);
+			}
+
+			const checkToken = await definedCurrenciesMap[currencyCodeCanonical]?.('string');
+			if (checkToken === undefined) {
+				return(null);
+			}
+
+			this.#logger?.debug(`Resolver:${this.id}`, 'Validating token public key for currency code', currencyCodeCanonical, ':', checkToken, typeof checkToken);
+			try {
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(checkToken);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+
+				tokenPublicKey = checkTokenObject.publicKeyString.get();
+				currencyCodeFound = currencyCodeCanonical;
+			} catch (validationError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Token public key for currency code', currencyCodeCanonical, 'is invalid:', validationError);
+
+				return(null);
+			}
+		} else {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Performing reverse lookup for token public key', tokenPublicKey);
+
+			/*
+			 * Perform a reverse lookup from the token public key
+			 * to the currency code
+			 */
+			for (const [checkCurrencyCode, checkTokenProperty] of Object.entries(definedCurrenciesMap)) {
+				const checkToken = await checkTokenProperty?.('string');
+				if (checkToken === undefined) {
+					continue;
+				}
+
+				if (checkToken === tokenPublicKey) {
+					if (isCurrencySearchCanonical(checkCurrencyCode)) {
+						currencyCodeFound = checkCurrencyCode;
+						break;
+					}
+				}
+			}
+
+			if (currencyCodeFound === undefined) {
+				return(null);
+			}
+		}
+
+		return({
+			token: tokenPublicKey,
+			currency: currencyCodeFound
+		});
+	}
+
+	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
+	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<'kyc'>): Promise<ResolverLookupKYCResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
+		const rootMetadata = await this.#getRootMetadata();
 
 		/*
 		 * Get the services object
