@@ -33,7 +33,7 @@
 		"vitest": "3.2.4"
 	},
 	"dependencies": {
-		"@keetanetwork/currency-info": "1.2.4",
+		"@keetanetwork/currency-info": "1.2.5",
 		"@keetanetwork/keetanet-client": "0.14.2",
 		"typia": "9.5.0"
 	},
