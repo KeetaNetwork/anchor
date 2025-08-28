@@ -9,11 +9,11 @@ import type {
 	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
-import type {
-	KeetaKYCAnchorCreateVerificationRequest,
-	KeetaKYCAnchorCreateVerificationResponse,
-	KeetaKYCAnchorGetCertificateResponse
-} from './common.ts';
+// import type {
+// 	KeetaKYCAnchorCreateVerificationRequest,
+// 	KeetaKYCAnchorCreateVerificationResponse,
+// 	KeetaKYCAnchorGetCertificateResponse
+// } from './common.ts';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
@@ -113,6 +113,11 @@ type ConversionInputCanonical = {
 };
 
 type KeetaFXAnchorClientGetEstimateRequest = ConversionInput;
+
+function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
+}
 type KeetaFXServiceInfo = {
 	operations: {
 		[key in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => Promise<URL>;
@@ -250,7 +255,7 @@ class KeetaFXAnchorClient {
 		});
 	}
 
-	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}) {
+	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<any | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
 		const providers = await getEndpoints(this.resolver, conversion, account);
@@ -258,7 +263,7 @@ class KeetaFXAnchorClient {
 			return(null);
 		}
 
-		const estimateProviders = Object.entries(providers).map(async ([providerID, serviceInfo]) => {
+		const estimateProviders = typedFxServiceEntries(providers).map(async ([providerID, serviceInfo]) => {
 			return(new KeetaFXProviderGetEstimate(serviceInfo, providerID, this));
 		});
 	}
@@ -290,3 +295,5 @@ class KeetaFXAnchorClient {
 
 	}
 }
+
+export default KeetaFXAnchorClient;

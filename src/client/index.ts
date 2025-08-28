@@ -1,9 +1,11 @@
 import type {
 	KeetaKYCAnchorClientConfig
 } from '../services/kyc/client.ts';
+import type {
+	KeetaFXAnchorClientConfig
+} from '../services/fx/client.ts';
 import KeetaKYCAnchorClient from '../services/kyc/client.js';
-import KeetaFXAnchorClient from '../services/kyc/fx.js';
-export type { KeetaFXAnchorClientConfig } from '../services/kyc/fx.ts';
+import KeetaFXAnchorClient from '../services/fx/client.js';
 import * as lib from '../lib/index.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 
