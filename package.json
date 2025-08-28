@@ -34,6 +34,7 @@
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.1.1",
 		"@keetanetwork/keetanet-client": "0.14.2",
+		"decimal.js": "10.6.0",
 		"typia": "9.5.0"
 	},
 	"engines": {

@@ -19,6 +19,7 @@ import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
+import { validateURL } from '../../lib/utils/url.js';
 
 const PARANOID = true;
 
@@ -112,16 +113,6 @@ type GetEndpointsResult = {
 
 const isKeetaKYCAnchorCreateVerificationResponse = createIs<KeetaKYCAnchorCreateVerificationResponse>();
 const isKeetaKYCAnchorGetCertificateResponse = createIs<KeetaKYCAnchorGetCertificateResponse>();
-
-function validateURL(url: string | undefined): URL {
-	if (url === undefined || url === null) {
-		throw(new Error('Invalid URL: null or undefined'));
-	}
-
-	const parsedURL = new URL(url);
-
-	return(parsedURL);
-}
 
 async function getEndpoints(resolver: Resolver, request: KeetaKYCAnchorCreateVerificationRequest): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {

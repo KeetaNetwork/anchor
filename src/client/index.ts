@@ -2,6 +2,8 @@ import type {
 	KeetaKYCAnchorClientConfig
 } from '../services/kyc/client.ts';
 import KeetaKYCAnchorClient from '../services/kyc/client.js';
+import KeetaFXAnchorClient from '../services/kyc/fx.js';
+export type { KeetaFXAnchorClientConfig } from '../services/kyc/fx.ts';
 import * as lib from '../lib/index.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 
@@ -10,6 +12,11 @@ import * as KeetaNet from '@keetanetwork/keetanet-client';
 export namespace KYC {
 	export type ClientConfig = KeetaKYCAnchorClientConfig;
 	export const Client: typeof KeetaKYCAnchorClient = KeetaKYCAnchorClient;
+}
+
+export namespace FX {
+	export type ClientConfig = KeetaFXAnchorClientConfig;
+	export const Client: typeof KeetaFXAnchorClient = KeetaFXAnchorClient;
 }
 
 export {
