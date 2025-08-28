@@ -119,7 +119,7 @@ type ServiceMetadata = {
 					 * Get a quote for a currency
 					 * conversion
 					 */
-					getQoute: string;
+					getQuote: string;
 					/**
 					 * Create an exchange to convert
 					 * currency

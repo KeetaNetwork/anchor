@@ -89,7 +89,7 @@ async function setupForResolverTests() {
 				fx: {
 					keeta_fx: {
 						operations: {
-							getQoute: 'https://fx.keeta.com/api/v1/getQuote',
+							getQuote: 'https://fx.keeta.com/api/v1/getQuote',
 							createExchange: 'https://fx.keeta.com/api/v1/createExchange',
 							getEstimate: 'https://fx.keeta.com/api/v1/getEstimate',
 							getExchangeStatus: 'https://fx.keeta.com/api/v1/getStatus/{id}'

@@ -206,7 +206,7 @@ function generateKeetaFXProviderForOperation<Operation extends keyof KeetaFXServ
 }
 
 const KeetaFXProviderGetEstimate = generateKeetaFXProviderForOperation('getEstimate');
-const KeetaFXProviderGetQuote = generateKeetaFXProviderForOperation('getQoute');
+const KeetaFXProviderGetQuote = generateKeetaFXProviderForOperation('getQuote');
 const KeetaFXProviderCreateExchange = generateKeetaFXProviderForOperation('createExchange');
 const KeetaFXProviderGetExchangeStatus = generateKeetaFXProviderForOperation('getExchangeStatus');
 
