@@ -20,6 +20,7 @@
 	"author": "LFG Payments, Inc",
 	"license": "SEE LICENSE IN LICENSE",
 	"type": "module",
+	"sideEffects": false,
 	"devDependencies": {
 		"@keetanetwork/eslint-config-typescript": "1.4.7",
 		"@keetanetwork/keetanet-node": "0.14.2",
@@ -32,7 +33,7 @@
 		"vitest": "3.2.4"
 	},
 	"dependencies": {
-		"@keetanetwork/currency-info": "1.1.1",
+		"@keetanetwork/currency-info": "1.2.5",
 		"@keetanetwork/keetanet-client": "0.14.2",
 		"decimal.js": "10.6.0",
 		"typia": "9.5.0"

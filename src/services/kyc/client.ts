@@ -1,5 +1,5 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import CurrencyInfo from '@keetanetwork/currency-info';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
