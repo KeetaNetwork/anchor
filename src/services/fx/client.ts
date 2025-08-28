@@ -21,6 +21,7 @@ import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
 import type { Brand, BrandedString } from '../../lib/utils/brand.ts';
+import { KeetaFXAnchorEstimateResponse } from './common.js';
 
 const PARANOID = true;
 
@@ -197,8 +198,12 @@ function generateKeetaFXProviderForOperation<Operation extends keyof KeetaFXServ
 			this.logger = parentPrivate.logger;
 		}
 
-		async [operation](): Promise<'not implemented'> {
-			throw(new Error('not implemented'));
+		async [operation]() {
+			const serviceURL = this.serviceInfo.operations[operation];
+			if (serviceURL === undefined) {
+				throw(new Error(`Service for ${operation} is not defined`));
+			}
+			return(await serviceURL());
 		}
 	};
 
@@ -209,6 +214,8 @@ const KeetaFXProviderGetEstimate = generateKeetaFXProviderForOperation('getEstim
 const KeetaFXProviderGetQuote = generateKeetaFXProviderForOperation('getQuote');
 const KeetaFXProviderCreateExchange = generateKeetaFXProviderForOperation('createExchange');
 const KeetaFXProviderGetExchangeStatus = generateKeetaFXProviderForOperation('getExchangeStatus');
+
+const isKeetaFXnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
 
 class KeetaFXAnchorClient {
 	readonly resolver: Resolver;
@@ -266,6 +273,44 @@ class KeetaFXAnchorClient {
 		const estimateProviders = typedFxServiceEntries(providers).map(async ([providerID, serviceInfo]) => {
 			return(new KeetaFXProviderGetEstimate(serviceInfo, providerID, this));
 		});
+
+		const estimates = await Promise.allSettled(estimateProviders.map(async (provider) => {
+			const serviceURL = (await provider).serviceInfo.operations.getEstimate
+			if (serviceURL !== undefined) {
+				const estimateURL = await serviceURL();
+				const requestInformation = await fetch(estimateURL, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Accept': 'application/json'
+					},
+					body: JSON.stringify({
+						request: conversion
+					})
+				});
+
+				const requestInformationJSON: unknown = await requestInformation.json();
+				if (!isKeetaFXnchorEstimateResponse(requestInformationJSON)) {
+					throw(new Error(`Invalid response from FX estimate service: ${JSON.stringify(requestInformationJSON)}`));
+				}
+
+				if (!requestInformationJSON.ok) {
+					throw(new Error(`FX estimate request failed: ${requestInformationJSON.error}`));
+				}
+
+				this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(conversion)}`);
+				return(requestInformationJSON);
+			} else {
+				throw(new Error('Service getEstimate does not exist'));
+			}
+		}));
+
+		const results = estimates.filter(estimate => {
+			if (estimate.status === 'fulfilled') {
+				return(estimate.value);
+			}
+		});
+		return(results);
 	}
 
 	async getQuote(..._ignore_args: any[]): Promise<any> {
