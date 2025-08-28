@@ -116,11 +116,16 @@ function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
 }
+
+type KeetaFXAnchorOperations = {
+	[operation in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => URL;
+};
+
 type KeetaFXServiceInfo = {
 	operations: {
-		[key in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => Promise<URL>;
-	};
-};
+		[operation in keyof KeetaFXAnchorOperations]: Promise<KeetaFXAnchorOperations[operation]>;
+	}
+}
 
 type GetEndpointsResult = {
 	[providerID: ProviderID]: KeetaFXServiceInfo;
@@ -132,9 +137,7 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 	const response = await resolver.lookup('fx', {
 		inputCurrencyCode: request.from,
 		outputCurrencyCode: request.to,
-		/* XXX:TODO: kycProviders from account */
 	});
-
 	if (response === undefined) {
 		return(null);
 	}
@@ -155,7 +158,6 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 						for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
 							substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
 						}
-
 						return(validateURL(substitutedURL));
 					});
 				},
@@ -200,7 +202,7 @@ function generateKeetaFXProviderForOperation<Operation extends keyof KeetaFXServ
 			if (serviceURL === undefined) {
 				throw(new Error(`Service for ${operation} is not defined`));
 			}
-			return(await serviceURL());
+			return(await serviceURL);
 		}
 	};
 
@@ -259,7 +261,7 @@ class KeetaFXAnchorClient {
 		});
 	}
 
-	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<any | null> {
+	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateResponse[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
 		const providers = await getEndpoints(this.resolver, conversion, account);
@@ -267,14 +269,14 @@ class KeetaFXAnchorClient {
 			return(null);
 		}
 
-		const estimateProviders = typedFxServiceEntries(providers).map(async ([providerID, serviceInfo]) => {
+		const estimateProviders = typedFxServiceEntries(providers).map(([providerID, serviceInfo]) => {
 			return(new KeetaFXProviderGetEstimate(serviceInfo, providerID, this));
 		});
 
 		const estimates = await Promise.allSettled(estimateProviders.map(async (provider) => {
-			const serviceURL = (await provider).serviceInfo.operations.getEstimate
+			const serviceURL = await provider.serviceInfo.operations.getEstimate;
 			if (serviceURL !== undefined) {
-				const estimateURL = await serviceURL();
+				const estimateURL = serviceURL();
 				const requestInformation = await fetch(estimateURL, {
 					method: 'POST',
 					headers: {
@@ -302,11 +304,7 @@ class KeetaFXAnchorClient {
 			}
 		}));
 
-		const results = estimates.filter(estimate => {
-			if (estimate.status === 'fulfilled') {
-				return(estimate.value);
-			}
-		});
+		const results = estimates.filter(result => result.status === 'fulfilled').map(estimate => estimate.value);
 		return(results);
 	}
 
