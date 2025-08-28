@@ -1385,6 +1385,49 @@ class Resolver {
 		return(rootMetadata);
 	}
 
+	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedCurrenciesMapProperty = rootMetadata.currencyMap;
+		if (definedCurrenciesMapProperty === undefined) {
+			throw(new Error('Root metadata is missing "currencyMap" property'));
+		}
+		const definedCurrenciesMap = await definedCurrenciesMapProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Defined Currencies Map:', definedCurrenciesMap);
+
+		const retval: { token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[] = [];
+		for (const [checkCurrencyCode, checkTokenProperty] of Object.entries(definedCurrenciesMap)) {
+			const checkToken = await checkTokenProperty?.('string');
+			if (checkToken === undefined) {
+				continue;
+			}
+
+			if (!isCurrencySearchCanonical(checkCurrencyCode)) {
+				continue;
+			}
+
+			try {
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(checkToken);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+
+				retval.push({
+					token: checkTokenObject.publicKeyString.get(),
+					currency: checkCurrencyCode
+				});
+			} catch (validationError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Token public key for currency code', checkCurrencyCode, 'is invalid:', validationError);
+			}
+		}
+
+		return(retval);
+	}
+
 	async lookupToken(currencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null> {
 		let tokenPublicKey: KeetaNetAccountTokenPublicKeyString | undefined;
 		if (typeof currencyCode === 'string') {
