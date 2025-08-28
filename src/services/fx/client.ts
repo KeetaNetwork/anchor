@@ -255,6 +255,11 @@ class KeetaFXAnchorClient {
 		});
 	}
 
+	// XXX:TODO: We should also support to receive `from` or `to` and list the available currencies accordingly
+	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
+		return await this.resolver.listTokens();
+	}
+
 	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<any | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
