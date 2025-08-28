@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import * as KeetaNetAnchor from '../../client/index.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
+import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { Certificate as KYCCertificate } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as util from 'util';
@@ -31,40 +32,33 @@ test('KYC Anchor Client Test', async function() {
 	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 
+	const { userClient: client } = await createNodeAndClient(account);
+
 	const logger = DEBUG ? console : undefined;
 
-	/* XXX: This should spin up a new Keeta Network */
-	const client = KeetaNet.UserClient.fromNetwork('test', account);
-
-	/* XXX: This is disabled because it is already set on the Test network,
-	 *      but it should be re-enabled when a new Keeta Network is created
-	 *      for testing purposes.
-	 */
-	// eslint-disable-next-line no-constant-condition
-	if (false) {
-		const results = await client.setInfo({
-			description: 'KYC Anchor Test Root',
-			name: 'TEST',
-			metadata: KeetaAnchorResolver.Metadata.formatMetadata({
-				version: 1,
-				services: {
-					kyc: {
-						Bad: {
-							countryCodes: ['XX'],
-							ca: 'FOO',
-							operations: {
-								createVerification: 'https://example.com/createVerification.json',
-								getCertificates: 'https://example.com/getCertificates/{id}.json'
-							}
-						},
-						Test: {
-							countryCodes: ['US'],
-							/* XXX: This is the Test
-							 * Network Demo KYC CA --
-							 * should be replaced with
-							 * a dummy intermediate CA
-							 */
-							ca: `-----BEGIN CERTIFICATE-----
+	const results = await client.setInfo({
+		description: 'KYC Anchor Test Root',
+		name: 'TEST',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			services: {
+				kyc: {
+					Bad: {
+						countryCodes: ['XX'],
+						ca: 'FOO',
+						operations: {
+							createVerification: 'https://example.com/createVerification.json',
+							getCertificates: 'https://example.com/getCertificates/{id}.json'
+						}
+					},
+					Test: {
+						countryCodes: ['US'],
+						/* XXX: This is the Test
+						 * Network Demo KYC CA --
+						 * should be replaced with
+						 * a dummy intermediate CA
+						 */
+						ca: `-----BEGIN CERTIFICATE-----
 MIIBhzCCASygAwIBAgIBATALBglghkgBZQMEAwowKTEnMCUGA1UEAxMeS2VldGEg
 VGVzdCBOZXR3b3JrIEtZQyBSb290IENBMB4XDTI1MDgwMTAwMDAwMFoXDTI4MDgw
 MTAwMDAwMFowLTErMCkGA1UEAxMiS2VldGEgVGVzdCBOZXR3b3JrIEtZQyBEZW1v
@@ -75,25 +69,24 @@ IacME4jKWvFC6nSvr2SuObBeAb8wCwYJYIZIAWUDBAMKA0gAMEUCIQDxnt6atJWz
 D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 0w2KBv059QeckO0=
 -----END CERTIFICATE-----`,
-							/*
-							 *  XXX: These are external
-							 * services, should be
-							 * replaced with URLs
-							 * for a KYC Anchor
-							 * Provider that is
-							 * created for testing
-							 */
-							operations: {
-								createVerification: 'https://rkeene.org/KEETA/createVerification.json',
-								getCertificates: 'https://rkeene.org/KEETA/getCertificates/{id}.json'
-							}
+						/*
+						 *  XXX: These are external
+						 * services, should be
+						 * replaced with URLs
+						 * for a KYC Anchor
+						 * Provider that is
+						 * created for testing
+						 */
+						operations: {
+							createVerification: 'https://rkeene.org/KEETA/createVerification.json',
+							getCertificates: 'https://rkeene.org/KEETA/getCertificates/{id}.json'
 						}
 					}
 				}
-			})
-		});
-		logger?.log('Set info results:', results);
-	}
+			}
+		})
+	});
+	logger?.log('Set info results:', results);
 
 	const kycClient = new KeetaNetAnchor.KYC.Client(client, {
 		root: account,
