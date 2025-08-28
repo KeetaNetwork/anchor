@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import Resolver from './resolver.js';
+import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from './utils/tests/node.js';
 import CurrencyInfo from '@keetanetwork/currency-info';
@@ -85,6 +86,21 @@ async function setupForResolverTests() {
 						ca: 'TEST'
 					}
 				},
+				fx: {
+					keeta_fx: {
+						operations: {
+							getQoute: 'https://fx.keeta.com/api/v1/getQuote',
+							createExchange: 'https://fx.keeta.com/api/v1/createExchange',
+							getEstimate: 'https://fx.keeta.com/api/v1/getEstimate',
+							getExchangeStatus: 'https://fx.keeta.com/api/v1/getStatus/{id}'
+						},
+						from: [{
+							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+							to: [testCurrencyMXN.publicKeyString.get()],
+							kycProviders: ['']
+						}],
+					}
+				},
 				banking: {
 					keeta_foo: {
 						operations: {
@@ -110,17 +126,17 @@ async function setupForResolverTests() {
 					keeta_broken1: {
 						/* Broken KeetaNet Link */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `keetanet://keeta_broken/metadata`
+						url: 'keetanet://keeta_broken/metadata'
 					},
 					keeta_broken2: {
 						/* Broken Link (invalid protocol) */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `http://insecure.com/metadata`
+						url: 'http://insecure.com/metadata'
 					},
 					keeta_broken3: {
-						/* XXX: Broken Link (currently not implemented) */
+						/* Broken Link (no such file) */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `https://insecure.com/metadata`
+						url: 'https://keeta.com/__TEST__/metadata'
 					},
 					keeta_broken4: {
 						/* Invalid countryCodes schema */
@@ -128,17 +144,17 @@ async function setupForResolverTests() {
 							createAccount: 'https://banchor.broken4.com/api/v1/createAccount'
 						},
 						countryCodes: 'USD'
-					},
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
 					keeta_nomatch1: {
-					},
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
 					keeta_nomatch2: {
 						operations: {
 							createAccount: 'https://banchor.nomatch2.com/api/v1/createAccount'
 						}
-					}
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string]
 				}
 			}
-		})
+		} satisfies ServiceMetadataExternalizable)
 	});
 
 	const resolver = new Resolver({
@@ -215,10 +231,33 @@ test('Basic Tests', async function() {
 				countryCodes: ['MX' as const]
 			},
 			result: undefined
+		}],
+		fx: [{
+			input: {
+				inputCurrencyCode: 'USD' as const,
+				outputCurrencyCode: 'MXN' as const
+			},
+			createExchange: ['https://fx.keeta.com/api/v1/createExchange']
+		}, {
+			input: {
+				inputCurrencyCode: 'USD' as const,
+				outputCurrencyCode: 'EUR' as const
+			},
+			result: undefined
 		}]
+	} satisfies {
+		[key in keyof NonNullable<ServiceMetadata['services']>]: ({
+			input: ServiceSearchCriteria<key>;
+		} & ({
+			result?: undefined;
+		} | {
+			createAccount?: string[];
+			createVerification?: string[];
+			createExchange?: string[];
+		}))[]
 	};
 
-	for (const checkKind of ['banking', 'kyc'] as const) {
+	for (const checkKind of ['banking', 'kyc', 'fx'] as const) {
 		const checks = allChecks[checkKind];
 		for (const check of checks) {
 			const checkResults = await resolver.lookup(checkKind, check.input);
@@ -228,7 +267,12 @@ test('Basic Tests', async function() {
 				continue;
 			}
 
-			expect(checkResults).toBeDefined();
+			try {
+				expect(checkResults).toBeDefined();
+			} catch (checkError) {
+				console.error(`checkResults for ${checkKind}, ${JSON.stringify(check)} is not defined`);
+				throw(checkError);
+			}
 			if (checkResults === undefined) {
 				throw(new Error('internal error: checkResults is undefined'));
 			}
