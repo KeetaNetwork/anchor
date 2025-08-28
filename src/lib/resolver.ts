@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import CurrencyInfo from '@keetanetwork/currency-info';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
