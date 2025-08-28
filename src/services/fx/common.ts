@@ -3,7 +3,7 @@ import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
-
+    provider: string;
     /**
      * Estimate for this conversion
      */
@@ -39,7 +39,7 @@ export type KeetaFXAnchorEstimateResponse = ({
 
 export type KeetaFXAnchorQuoteResponse = ({
 	ok: true;
-
+    provider: string;
     /**
      * Estimate for this conversion
      */
@@ -84,7 +84,7 @@ export type KeetaFXAnchorQuoteResponse = ({
 
 export type KeetaFXAnchorExchangeResponse = ({
 	ok: true;
-
+    provider: string;
     /**
      * Vote Staple BlocksHash of the completed swap
      */
