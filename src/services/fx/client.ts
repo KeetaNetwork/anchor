@@ -214,7 +214,7 @@ const KeetaFXProviderGetQuote = generateKeetaFXProviderForOperation('getQuote');
 const KeetaFXProviderCreateExchange = generateKeetaFXProviderForOperation('createExchange');
 const KeetaFXProviderGetExchangeStatus = generateKeetaFXProviderForOperation('getExchangeStatus');
 
-const isKeetaFXnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
+const isKeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
 
 class KeetaFXAnchorClient {
 	readonly resolver: Resolver;
@@ -289,7 +289,7 @@ class KeetaFXAnchorClient {
 				});
 
 				const requestInformationJSON: unknown = await requestInformation.json();
-				if (!isKeetaFXnchorEstimateResponse(requestInformationJSON)) {
+				if (!isKeetaFXAnchorEstimateResponse(requestInformationJSON)) {
 					throw(new Error(`Invalid response from FX estimate service: ${JSON.stringify(requestInformationJSON)}`));
 				}
 
