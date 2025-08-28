@@ -9,11 +9,6 @@ import type {
 	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
-// import type {
-// 	KeetaKYCAnchorCreateVerificationRequest,
-// 	KeetaKYCAnchorCreateVerificationResponse,
-// 	KeetaKYCAnchorGetCertificateResponse
-// } from './common.ts';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
@@ -21,7 +16,9 @@ import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
 import type { Brand, BrandedString } from '../../lib/utils/brand.ts';
-import { KeetaFXAnchorEstimateResponse } from './common.js';
+import type {
+	KeetaFXAnchorEstimateResponse
+} from './common.ts';
 
 const PARANOID = true;
 
