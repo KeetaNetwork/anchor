@@ -17,7 +17,8 @@ import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
 import type { Brand, BrandedString } from '../../lib/utils/brand.ts';
 import type {
-	KeetaFXAnchorEstimateResponse
+	KeetaFXAnchorEstimateResponse,
+	KeetaFXAnchorQuoteResponse
 } from './common.ts';
 
 const PARANOID = true;
@@ -111,6 +112,8 @@ type ConversionInputCanonical = {
 };
 
 type KeetaFXAnchorClientGetEstimateRequest = ConversionInput;
+
+type KeetaFXAnchorClientGetQuoteRequest = ConversionInput & { provider: string };
 
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -215,6 +218,7 @@ const KeetaFXProviderCreateExchange = generateKeetaFXProviderForOperation('creat
 const KeetaFXProviderGetExchangeStatus = generateKeetaFXProviderForOperation('getExchangeStatus');
 
 const isKeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
+const isKeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
 
 class KeetaFXAnchorClient {
 	readonly resolver: Resolver;
@@ -308,8 +312,43 @@ class KeetaFXAnchorClient {
 		return(results);
 	}
 
-	async getQuote(..._ignore_args: any[]): Promise<any> {
-		throw(new Error('not implemented'));
+	async getQuote(request: KeetaFXAnchorClientGetQuoteRequest, options: AccountOptions = {}): Promise<KeetaFXAnchorQuoteResponse | null> {
+		const conversion = await this.canonicalizeConversionInput(request);
+		const account = options.account ?? this.#account;
+		const providers = await getEndpoints(this.resolver, conversion, account);
+		if (providers === null) {
+			return(null);
+		}
+
+		const providerID = request.provider as unknown as ProviderID;
+		const provider = providers[providerID];
+		if (provider === undefined) {
+			throw(new Error(`FX provider ${providerID.toString()} not found`));
+		}
+		const quoteProvider = new KeetaFXProviderGetQuote(provider, providerID, this);
+		const serviceURL = (await quoteProvider.serviceInfo.operations.getQuote)();
+		const requestInformation = await fetch(serviceURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				request: conversion
+			})
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorQuoteResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX estimate service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX estimate request failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`FX estimate request successful, to provider ${serviceURL} for ${JSON.stringify(conversion)}`);
+		return(requestInformationJSON);
 	}
 
 	async createExchange(..._ignore_args: any[]): Promise<any> {
