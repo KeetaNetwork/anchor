@@ -4,7 +4,8 @@ import { KeetaNet } from '../../client/index.js';
 import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
-import { KeetaFXAnchorEstimateResponse } from './common.js';
+import { KeetaFXAnchorEstimateResponse, KeetaFXAnchorQuoteResponse } from './common.js';
+import crypto from '../../lib/utils/crypto.js';
 
 const DEBUG = false;
 
@@ -24,7 +25,6 @@ test('KYC Anchor Client Test', async function() {
         ok: true,
         provider: 'Test',
         estimate: {
-            rate: 0.88,
             amount: '88',
             affinity: 'to'
         },
@@ -35,7 +35,25 @@ test('KYC Anchor Client Test', async function() {
         }
     }
     const getEstimateResponseJSON = JSON.stringify(getEstimateResponse);
-    const getEstimateResponseEncoded = encodeURIComponent(getEstimateResponseJSON);
+
+	const getQuoteResponse: KeetaFXAnchorQuoteResponse = {
+		ok: true,
+		provider: 'Test',
+		quote: {
+			amount: '88.2',
+			affinity: 'to',
+			signed: {
+				nonce: crypto.randomUUID(),
+				timestamp: (new Date()).toISOString(),
+				signature: ''
+			}
+		},
+		cost: {
+			amount: '5',
+			token: baseToken.publicKeyString.get()
+		}
+	};
+	const getQuoteResponseJSON = JSON.stringify(getQuoteResponse);
 
 	const results = await client.setInfo({
 		description: 'FX Anchor Test Root',
@@ -67,8 +85,8 @@ test('KYC Anchor Client Test', async function() {
                             to: [testCurrencyEUR.publicKeyString.get()]
                         }],
 						operations: {
-							getEstimate: `data:application/json,${getEstimateResponseEncoded}`,
-							getQuote: 'https://example.com/getQuote.json',
+							getEstimate: `data:application/json,${encodeURIComponent(getEstimateResponseJSON)}`,
+							getQuote: `data:application/json,${encodeURIComponent(getQuoteResponseJSON)}`,
                             createExchange: 'https://example.com/createExchange.json',
                             getExchangeStatus: 'https://example.com/createVerification.json'
 						}
@@ -89,4 +107,10 @@ test('KYC Anchor Client Test', async function() {
         throw(new Error('Estimate is NULL'));
     }
     expect(estimate[0]).toEqual(getEstimateResponse);
+
+    const quote = await fxClient.getQuote({ from: 'USD', to: 'EUR', amount: 100, affinity: 'from', provider: 'Test' });
+    if (quote === null) {
+        throw(new Error('Quote is NULL'));
+    }
+    expect(quote).toEqual(getQuoteResponse);
 });
