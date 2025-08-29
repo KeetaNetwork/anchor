@@ -175,7 +175,6 @@ export class KeetaFXAnchorProvider {
 	readonly client: KeetaFXAnchorClient['client'];
 	readonly conversion: ConversionInputCanonical;
 	private readonly logger?: KeetaFXAnchorClient['logger'];
-	private readonly canonicalizeConversionInput: KeetaFXAnchorClient['canonicalizeConversionInput'];
 
 	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical,  parent: KeetaFXAnchorClient) {
 		this.serviceInfo = serviceInfo;
@@ -185,7 +184,6 @@ export class KeetaFXAnchorProvider {
 		const parentPrivate = parent._private(KeetaFXAnchorClientAccessToken);
 		this.client = parentPrivate.client;
 		this.logger = parentPrivate.logger;
-		this.canonicalizeConversionInput = parentPrivate.canonicalizeConversionInput;
 	}
 
 	async getEstimate(): Promise<KeetaFXAnchorEstimateResponse> {
@@ -383,8 +381,7 @@ class KeetaFXAnchorClient {
 			logger: this.logger,
 			client: this.client,
 			signer: this.#signer,
-			account: this.#account,
-			canonicalizeConversionInput: this.canonicalizeConversionInput
+			account: this.#account
 		});
 
 	}
