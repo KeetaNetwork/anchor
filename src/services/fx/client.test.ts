@@ -23,9 +23,14 @@ test('KYC Anchor Client Test', async function() {
 
     const getEstimateResponse: KeetaFXAnchorEstimateResponse = {
         ok: true,
+		request: {
+			from: 'USD',
+			to: 'EUR',
+			amount: 100,
+			affinity: 'from'
+		},
         estimate: {
-            amount: '88',
-            affinity: 'to'
+            convertedAmount: '88'
         },
         expectedCost: {
             min: '1',
@@ -37,9 +42,14 @@ test('KYC Anchor Client Test', async function() {
 
 	const getQuoteResponse: KeetaFXAnchorQuoteResponse = {
 		ok: true,
+		request: {
+			from: 'USD',
+			to: 'EUR',
+			amount: 100,
+			affinity: 'from'
+		},
 		quote: {
-			amount: '88.2',
-			affinity: 'to',
+			convertedAmount: '88',
 			signed: {
 				nonce: crypto.randomUUID(),
 				timestamp: (new Date()).toISOString(),
