@@ -1,72 +1,71 @@
 import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
+import { KeetaFXAnchorProvider } from './client.js';
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaFXAnchorEstimateResponse = ({
-	ok: true;
-    /**
-     * The provider id for the response
-     */
-    provider: string;
+    ok: true;
     /**
      * Estimate for this conversion
      */
     estimate: {
         /**
-         * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property. 
+         * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property.
          */
         amount: string;
         /**
-	     * Indicates whether the amount specified is in terms of the `from`
-	     * currency (i.e., the user has this much) or the `to` currency
-	     * (i.e., the user wants this much).
-	     */
+         * Indicates whether the amount specified is in terms of the `from`
+         * currency (i.e., the user sends this much) or the `to` currency
+         * (i.e., the user receives this much).
+         */
         affinity: 'from' | 'to';
+    },
+    /**
+     * The expected cost of the fx request, in the form of a
+     * token and a range of minimum and maximum expected costs
+     */
+    expectedCost: {
+        min: string;
+        max: string;
+        token: KeetaNetTokenPublicKeyString;
     }
-	/**
-	 * The expected cost of the fx request, in the form of a
-	 * token and a range of minimum and maximum expected costs
-	 */
-	expectedCost: {
-		min: string;
-		max: string;
-		token: KeetaNetTokenPublicKeyString;
-	};
 } | {
 	ok: false;
 	error: string;
 });
 
+export type KeetaFXAnchorEstimateResponseWithProvider = {
+    provider: KeetaFXAnchorProvider
+} & KeetaFXAnchorEstimateResponse;
+
+export type KeetaFXAnchorQuote = {
+    /**
+     * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property.
+     */
+    amount: string;
+    /**
+     * Indicates whether the amount specified is in terms of the `from`
+     * currency (i.e., the user sends this much) or the `to` currency
+     * (i.e., the user receives this much).
+     */
+    affinity: 'from' | 'to';
+    /**
+     * Signature of the returned data to verify authenticity
+     */
+    signed: {
+        nonce: string;
+        /* Date and time of the request in ISO 8601 format */
+        timestamp: string;
+        /* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
+        signature: string;
+    }
+}
+
 export type KeetaFXAnchorQuoteResponse = ({
 	ok: true;
     /**
-     * The provider id for the response
+     * Quote for this conversion
      */
-    provider: string;
-    /**
-     * Estimate for this conversion
-     */
-    quote: {
-        /**
-         * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property. 
-         */
-        amount: string;
-        /**
-	     * Indicates whether the amount specified is in terms of the `from`
-	     * currency (i.e., the user has this much) or the `to` currency
-	     * (i.e., the user wants this much).
-	     */
-        affinity: 'from' | 'to';
-        /**
-         * Signature of the returned data to verify authenticity
-         */
-        signed: {
-            nonce: string;
-            /* Date and time of the request in ISO 8601 format */
-            timestamp: string;
-            /* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
-            signature: string;
-        };
-    }
+    quote: KeetaFXAnchorQuote,
 	/**
 	 * The cost of the fx request, in the form of a
 	 * token and amount that should be included with the swap
@@ -83,13 +82,9 @@ export type KeetaFXAnchorQuoteResponse = ({
 export type KeetaFXAnchorExchangeResponse = ({
 	ok: true;
     /**
-     * The provider id for the response
+     * ID used to identify the conversion request
      */
-    provider: string;
-    /**
-     * Vote Staple BlocksHash of the completed swap
-     */
-    blocksHash: string
+    exchangeID: string
 } | {
 	ok: false;
 	error: string;

@@ -23,7 +23,6 @@ test('KYC Anchor Client Test', async function() {
 
     const getEstimateResponse: KeetaFXAnchorEstimateResponse = {
         ok: true,
-        provider: 'Test',
         estimate: {
             amount: '88',
             affinity: 'to'
@@ -38,7 +37,6 @@ test('KYC Anchor Client Test', async function() {
 
 	const getQuoteResponse: KeetaFXAnchorQuoteResponse = {
 		ok: true,
-		provider: 'Test',
 		quote: {
 			amount: '88.2',
 			affinity: 'to',
@@ -102,13 +100,19 @@ test('KYC Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-    const estimate = await fxClient.getEstimate({ from: 'USD', to: 'EUR', amount: 100, affinity: 'from'});
-    if (estimate === null) {
-        throw(new Error('Estimate is NULL'));
+    const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: 100, affinity: 'from'});
+    if (estimates === null) {
+        throw(new Error('Estimates is NULL'));
     }
-    expect(estimate[0]).toEqual(getEstimateResponse);
+	const estimate = estimates[0];
+	if (estimate === undefined) {
+		throw(new Error('Estimate is undefined'));
+	}
+    expect(estimate).toEqual({ provider: estimate.provider, ...getEstimateResponse });
+	
+	const fxProvider = estimate.provider;
 
-    const quote = await fxClient.getQuote({ from: 'USD', to: 'EUR', amount: 100, affinity: 'from', provider: 'Test' });
+    const quote = await fxProvider.getQuote();
     if (quote === null) {
         throw(new Error('Quote is NULL'));
     }
