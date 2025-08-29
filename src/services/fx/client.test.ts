@@ -31,7 +31,6 @@ test('FX Anchor Client Test', async function() {
 			affinity: 'from'
 		},
         estimate: {
-			rate: '0.88',
             convertedAmount: '88'
         },
         expectedCost: {
@@ -52,7 +51,6 @@ test('FX Anchor Client Test', async function() {
 		},
 		quote: {
 			account: liquidityProvider.publicKeyString.get(),
-			rate: '0.88',
 			convertedAmount: '88',
 			signed: {
 				nonce: crypto.randomUUID(),
