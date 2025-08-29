@@ -42,6 +42,10 @@ export type KeetaFXAnchorEstimateResponse = ({
      */
     estimate: {
         /**
+         * Conversion rate
+         */
+        rate: string;
+        /**
          * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
          */
         convertedAmount: string;
@@ -65,6 +69,14 @@ export type KeetaFXAnchorEstimateResponseWithProvider = {
 } & KeetaFXAnchorEstimateResponse;
 
 export type KeetaFXAnchorQuote = {
+    /**
+     * The public key of the liquidity provider account
+     */
+    account: string;
+    /**
+     * Conversion rate
+     */
+    rate: string;
     /**
      * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
      */
