@@ -118,8 +118,8 @@ test('Certificates', async function() {
 		builder1.setAttribute('fullName', true, 'Test User');
 		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, '100 Belgrave Street, Oldsmar, FL 34677');
-		builder1.setAttribute('dateOfBirth', true, '1980-01-01');
+		builder1.setAttribute('address', true, ['100 Belgrave Street', 'Oldsmar', 'FL', '34677']);
+		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
 
 		/**
 		 * A User Certificate

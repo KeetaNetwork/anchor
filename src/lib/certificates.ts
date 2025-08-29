@@ -237,13 +237,15 @@ class SensitiveAttributeBuilder {
 	}
 }
 
-class SensitiveAttribute {
+class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	readonly #account: KeetaNetAccount;
 	readonly #info: ReturnType<SensitiveAttribute['decode']>;
+	readonly #schema?: SCHEMA | undefined;
 
-	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer) {
+	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer, schema?: SCHEMA) {
 		this.#account = account;
 		this.#info = this.decode(data);
+		this.#schema = schema;
 	}
 
 	private decode(data: Buffer | ArrayBuffer) {
@@ -311,6 +313,17 @@ class SensitiveAttribute {
 		return(Buffer.from(value).toString('utf-8'));
 	}
 
+	async getValue(): Promise<ASN1.SchemaMap<NonNullable<SCHEMA>>> {
+		if (this.#schema === undefined) {
+			throw(new Error('No schema defined for this sensitive attribute'));
+		}
+
+		const value = await this.get();
+		const decodedValue = decodeAttribute(this.#schema, value);
+
+		return(decodedValue);
+	}
+
 	/**
 	 * Generate a proof that a sensitive attribute is a given value,
 	 * which can be validated by a third party using the certificate
@@ -360,6 +373,14 @@ const CertificateAttributeOIDDB = {
 	'phoneNumber': '1.3.6.1.4.1.62675.1.4'
 };
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
+const CertificateAttributeSchema = {
+	'fullName': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString,
+	'dateOfBirth': ASN1.ValidateASN1.IsDate as typeof ASN1.ValidateASN1.IsDate,
+	'address': { sequenceOf: ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString },
+	'email': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString,
+	'phoneNumber': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString
+} as const;
+CertificateAttributeSchema satisfies { [attribute in CertificateAttributeNames]: ASN1.Schema };
 
 type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>[0]>;
 type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & {
@@ -369,6 +390,40 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
 	 */
 	subject: BaseCertificateBuilderParams['subjectPublicKey'];
 }>;
+
+function encodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer | ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>): ArrayBuffer {
+	if (value instanceof ArrayBuffer) {
+		return(value);
+	}
+
+	const schema = CertificateAttributeSchema[name];
+	const buffer = new ASN1.BufferStorageASN1(value, schema);
+	return(buffer.getDER());
+}
+
+function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]> | ArrayBuffer;
+function decodeAttribute<NAME extends CertificateAttributeNames>(name: string, value: ArrayBuffer): ArrayBuffer;
+function decodeAttribute<NAME extends CertificateAttributeNames>(name: ASN1.Schema, value: ArrayBuffer): ASN1.SchemaMap<typeof name> | ArrayBuffer;
+function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME | string | ASN1.Schema, value: ArrayBuffer): ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]> | ArrayBuffer {
+	let schema: ASN1.Schema;
+	if (typeof name === 'string') {
+		if (!(name in CertificateAttributeSchema)) {
+			return(value);
+		}
+
+		// @ts-ignore
+		schema = CertificateAttributeSchema[name];
+		if (schema === undefined) {
+			return(value);
+		}
+	} else {
+		schema = name;
+	}
+	const buffer = new ASN1.BufferStorageASN1(value, schema);
+
+	// @ts-ignore
+	return(buffer.getASN1());
+}
 
 /**
  * ASN.1 Schema for Certificate KYC Attributes Extension
@@ -431,7 +486,8 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	/**
 	 * Set a KYC Attribute to a given value
 	 */
-	setAttribute(name: CertificateAttributeNames, sensitive: boolean, value: ArrayBuffer | string): void {
+	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: ArrayBuffer | ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>): void {
+		value = encodeAttribute(name, value);
 		this.#attributes[name] = { sensitive, value };
 	}
 
@@ -520,12 +576,12 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	 * User KYC Attributes
 	 */
 	readonly attributes: {
-		[name: string]: {
+		[name in CertificateAttributeNames]?: {
 			sensitive: true;
 			value: SensitiveAttribute;
 		} | {
 			sensitive: false;
-			value: ArrayBuffer;
+			value: ReturnType<typeof decodeAttribute<name>> | ArrayBuffer;
 		}
 	} = {};
 
@@ -557,13 +613,14 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 				switch (valueKind) {
 					case 0:
 						/* Plain Value */
-						this.attributes[name] = { sensitive: false, value: value };
+						this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) };
 						break;
 					case 1:
 						/* Sensitive Value */
+						const schema = CertificateAttributeSchema[name];
 						this.attributes[name] = {
 							sensitive: true,
-							value: new SensitiveAttribute(this.subjectKey, value)
+							value: new SensitiveAttribute(this.subjectKey, value, schema)
 						};
 						break;
 					default:
