@@ -94,6 +94,10 @@ type KeetaFXAnchorClientCreateExchangeRequest = {
 	block: InstanceType<typeof KeetaNetLib.Block>
 };
 
+type KeetaFXAnchorClientGetExchangeStatusRequest = {
+	exchangeID: string
+};
+
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
@@ -230,14 +234,14 @@ export class KeetaFXAnchorProvider {
 
 		const requestInformationJSON: unknown = await requestInformation.json();
 		if (!isKeetaFXAnchorQuoteResponse(requestInformationJSON)) {
-			throw(new Error(`Invalid response from FX estimate service: ${JSON.stringify(requestInformationJSON)}`));
+			throw(new Error(`Invalid response from FX quote service: ${JSON.stringify(requestInformationJSON)}`));
 		}
 
 		if (!requestInformationJSON.ok) {
-			throw(new Error(`FX estimate request failed: ${requestInformationJSON.error}`));
+			throw(new Error(`FX quote request failed: ${requestInformationJSON.error}`));
 		}
 
-		this.logger?.debug(`FX estimate request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
+		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
 		return(requestInformationJSON);
 	}
 
@@ -250,7 +254,8 @@ export class KeetaFXAnchorProvider {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				request
+				quote: request.quote,
+				block: Buffer.from(request.block.toBytes()).toString('base64')
 			})
 		});
 
@@ -267,10 +272,27 @@ export class KeetaFXAnchorProvider {
 		return(requestInformationJSON);
 	}
 
-	async getExchangeStatus(..._ignore_args: any[]): Promise<any> {
-		throw(new Error('not implemented'));
-	}
+	async getExchangeStatus(request: KeetaFXAnchorClientGetExchangeStatusRequest): Promise<KeetaFXAnchorExchangeResponse> {
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)(request);
+		const requestInformation = await fetch(serviceURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
 
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${request}`);
+		return(requestInformationJSON);
+	}
 }
 
 class KeetaFXAnchorClient {
