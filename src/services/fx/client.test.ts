@@ -173,5 +173,5 @@ test('KYC Anchor Client Test', async function() {
 		exchangeID: sendBlock.hash.toString()
 	});
 
-	expect(exchange).toEqual(exchangeResponse);
+	expect(exchangeStatus).toEqual(exchangeResponse);
 });
