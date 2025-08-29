@@ -11,12 +11,14 @@ import type {
 } from '@keetanetwork/keetanet-client';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
-import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
+import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
 import type { Brand, BrandedString } from '../../lib/utils/brand.ts';
 import type {
+	ConversionInput,
+	ConversionInputCanonical,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorEstimateResponseWithProvider,
 	KeetaFXAnchorExchangeResponse,
@@ -86,37 +88,6 @@ export type KeetaFXAnchorClientConfig = {
 	 */
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
-
-type ConversionInput = {
-	/**
-	 * The currency code to convert from (i.e., what the user has).
-	 */
-	from: ServiceSearchCriteria<'fx'>['inputCurrencyCode'];
-	/**
-	 * The currency code to convert to (i.e., what the user wants).
-	 */
-	to: ServiceSearchCriteria<'fx'>['outputCurrencyCode'];
-	/**
-	 * The amount to convert. This is a string or Decimal representing the
-	 * amount in the currency specified by either `from` or `to`, as
-	 * specified by the `affinity` property.
-	 */
-	amount: string | number | Decimal;
-	/**
-	 * Indicates whether the amount specified is in terms of the `from`
-	 * currency (i.e., the user has this much) or the `to` currency
-	 * (i.e., the user wants this much).
-	 */
-	affinity: 'from' | 'to';
-};
-
-type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? string : ConversionInput[k];
-};
-
-type KeetaFXAnchorClientGetEstimateRequest = ConversionInput;
-
-type KeetaFXAnchorClientGetQuoteRequest = ConversionInput;
 
 type KeetaFXAnchorClientCreateExchangeRequest = {
 	quote: KeetaFXAnchorQuote,
@@ -347,7 +318,7 @@ class KeetaFXAnchorClient {
 		});
 	}
 
-	async getProviders(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<KeetaFXAnchorProvider[] | null> {
+	async getProviders(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProvider[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
 		const providerEndpoints = await getEndpoints(this.resolver, request, account);
@@ -362,7 +333,7 @@ class KeetaFXAnchorClient {
 		return(providers);
 	}
 
-	async getEstimates(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateResponseWithProvider[] | null> {
+	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateResponseWithProvider[] | null> {
 		const estimateProviders = await this.getProviders(request);
 		if (estimateProviders === null) {
 			return(null);
