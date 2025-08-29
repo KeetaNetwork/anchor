@@ -13,7 +13,7 @@ const testCurrencyUSD = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.gener
 const testCurrencyEUR = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
-test('KYC Anchor Client Test', async function() {
+test('FX Anchor Client Test', async function() {
     const logger = DEBUG ? console : undefined;
 	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
