@@ -12,10 +12,6 @@ export type KeetaFXAnchorEstimateResponse = ({
      */
     estimate: {
         /**
-         * Rate between the from and to currencies
-         */
-        rate: number;
-        /**
          * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property. 
          */
         amount: string;
@@ -50,10 +46,6 @@ export type KeetaFXAnchorQuoteResponse = ({
      * Estimate for this conversion
      */
     quote: {
-        /**
-         * Rate between the from and to currencies
-         */
-        rate: number;
         /**
          * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property. 
          */
