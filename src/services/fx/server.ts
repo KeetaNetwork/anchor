@@ -6,11 +6,13 @@ import {
 } from '../../lib/error.js';
 import type {
 	ConversionInputCanonical,
+	KeetaFXAnchorClientCreateExchangeRequest,
 	KeetaFXAnchorEstimateResponse,
+	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuoteResponse
-} from './common.ts';
-import type { JSONSerializable } from '../../lib/utils/json.ts';
-import type { Logger } from '../../lib/log/index.ts';
+} from './common.js';
+import type { JSONSerializable } from '../../lib/utils/json.js';
+import type { Logger } from '../../lib/log/index.js';
 import { Log } from '../../lib/log/index.js';
 
 /**
@@ -19,6 +21,7 @@ import { Log } from '../../lib/log/index.js';
 const MAX_REQUEST_SIZE = 1024 * 128;
 
 const assertConversionInputCanonical = createAssert<ConversionInputCanonical>();
+const assertConversionQuote = createAssert<KeetaFXAnchorQuoteResponse>();
 const assertErrorData = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 type Routes = {
@@ -53,9 +56,19 @@ export interface KeetaAnchorFXServerConfig {
 		/**
 		 * Handle the conversion request of one token to another
 		 *
-		 * This is used to handle quotes and estimates
+		 * Estimates are not signed and non-binding
 		 */
-		getConversionRateAndFee: (request: ConversionInputCanonical) => Promise<Omit<Extract<KeetaFXAnchorEstimateResponse, { ok: true }>, 'ok' | 'request'>>;
+		getConversionRateAndFeeEstimate: (request: ConversionInputCanonical) => Promise<Omit<Extract<KeetaFXAnchorEstimateResponse, { ok: true }>, 'ok' | 'request'>>;
+		/**
+		 * Handle the conversion request of one token to another
+		 *
+		 * Quotes are signed and binding within a reasonable timeframe
+		 */
+		getConversionRateAndFeeQuote: (request: ConversionInputCanonical) => Promise<Omit<Extract<KeetaFXAnchorQuoteResponse, { ok: true }>, 'ok' | 'request'>>;
+		/**
+		 * Generate and Publish a swap for a conversion request
+		 */
+		createConversionSwap: (request: KeetaFXAnchorClientCreateExchangeRequest) => Promise<Omit<Extract<KeetaFXAnchorExchangeResponse, { ok: true }>, 'ok'>>;
 	};
 
 	/**
@@ -104,12 +117,15 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	 * Setup the request handler for an estimate request
 	 */
 	routes['POST /api/getEstimate'] = async function(postData) {
-		if (!postData) {
+		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
+		if (!('request' in postData)) {
+			throw(new Error('POST data missing request'));
+		}
 
-		const conversion = assertConversionInputCanonical(postData);
-		const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+		const conversion = assertConversionInputCanonical(postData.request);
+		const rateAndFee = await config.fx.getConversionRateAndFeeEstimate(conversion);
 		const estimateResponse: KeetaFXAnchorEstimateResponse = {
 			ok: true,
 			request: conversion,
@@ -122,12 +138,15 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	}
 
 	routes['POST /api/getQuote'] = async function(postData) {
-		if (!postData) {
+		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
+		if (!('request' in postData)) {
+			throw(new Error('POST data missing request'));
+		}
 
-		const conversion = assertConversionInputCanonical(postData);
-		const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+		const conversion = assertConversionInputCanonical(postData.request);
+		const rateAndFee = await config.fx.getConversionRateAndFeeQuote(conversion);
 		const quoteResponse: KeetaFXAnchorQuoteResponse = {
 			ok: true,
 			request: conversion,
@@ -136,6 +155,39 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 
 		return({
 			output: JSON.stringify(quoteResponse)
+		});
+	}
+
+	routes['POST /api/createExchange'] = async function(postData) {
+		if (!postData || typeof postData !== 'object') {
+			throw(new Error('No POST data provided'));
+		}
+		if (!('request' in postData)) {
+			throw(new Error('POST data missing request'));
+		}
+		const request = postData.request;
+		if (!request || typeof request !== 'object') {
+			throw(new Error('Request is not an object'));
+		}
+
+		if (!('quote' in request)) {
+			throw(new Error('Quote is missing from request'));
+		}
+
+		const quote = assertConversionQuote(request.quote);
+
+		let block = request.block;
+		if (!KeetaNet.lib.Block.isInstance(block)) {
+			throw(new Error('Block is invalid'));
+		}
+		const exchange = await config.fx.createConversionSwap({ quote, block });
+		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
+			ok: true,
+			exchangeID: exchange.exchangeID
+		};
+
+		return({
+			output: JSON.stringify(exchangeResponse)
 		});
 	}
 
@@ -333,7 +385,7 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 			throw(new Error('Server not started'));
 		}
 
-		return(`http://localhost:${this.port}/`);
+		return(`http://localhost:${this.port}`);
 	}
 
 	[Symbol.asyncDispose](): Promise<void> {
