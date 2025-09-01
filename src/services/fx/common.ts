@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
-import { KeetaFXAnchorProvider } from './client.js';
-import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { Decimal } from 'decimal.js';
+
+import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 
 export type ConversionInput = {
 	/**
@@ -32,69 +32,55 @@ export type ConversionInputCanonical = {
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaFXAnchorEstimateResponse = ({
-    ok: true;
-    /**
-     * Conversion request that was provided
-     */
-    request: ConversionInput,
-    /**
-     * Estimate for this conversion
-     */
-    estimate: {
-        /**
-         * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
-         */
-        convertedAmount: string;
-    },
-    /**
-     * The expected cost of the fx request, in the form of a
-     * token and a range of minimum and maximum expected costs
-     */
-    expectedCost: {
-        min: string;
-        max: string;
-        token: KeetaNetTokenPublicKeyString;
-    }
+	ok: true;
+	/**
+	 * Conversion request that was provided
+	 */
+	request: ConversionInputCanonical;
+
+	/**
+	 * Estimate for this conversion
+	 */
+	estimate: {
+		/**
+		 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
+		 */
+		convertedAmount: string;
+	};
+
+	/**
+	 * The expected cost of the fx request, in the form of a
+	 * token and a range of minimum and maximum expected costs
+	 */
+	expectedCost: {
+		min: string;
+		max: string;
+		token: KeetaNetTokenPublicKeyString;
+	};
 } | {
 	ok: false;
 	error: string;
 });
 
-export type KeetaFXAnchorEstimateResponseWithProvider = {
-    provider: KeetaFXAnchorProvider
-} & KeetaFXAnchorEstimateResponse;
-
-export type KeetaFXAnchorQuote = {
-    /**
-     * The public key of the liquidity provider account
-     */
-    account: string;
-    /**
-     * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
-     */
-    convertedAmount: string;
-    /**
-     * Signature of the returned data to verify authenticity
-     */
-    signed: {
-        nonce: string;
-        /* Date and time of the request in ISO 8601 format */
-        timestamp: string;
-        /* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
-        signature: string;
-    }
-}
-
 export type KeetaFXAnchorQuoteResponse = ({
 	ok: true;
-    /**
-     * Conversion request that was provided
-     */
-    request: ConversionInput,
-    /**
-     * Quote for this conversion
-     */
-    quote: KeetaFXAnchorQuote,
+
+	/**
+	 * Conversion request that was provided
+	 */
+	request: ConversionInputCanonical;
+
+	/**
+	 * The public key of the liquidity provider account
+	 */
+	account: string;
+
+	/**
+	 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
+	 */
+
+	convertedAmount: string;
+
 	/**
 	 * The cost of the fx request, in the form of a
 	 * token and amount that should be included with the swap
@@ -103,6 +89,17 @@ export type KeetaFXAnchorQuoteResponse = ({
 		amount: string;
 		token: KeetaNetTokenPublicKeyString;
 	};
+
+	/**
+	 * Signature information to verify the quote
+	 */
+	signed: {
+		nonce: string;
+		/* Date and time of the request in ISO 8601 format */
+		timestamp: string;
+		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
+		signature: string;
+	}
 } | {
 	ok: false;
 	error: string;
@@ -110,10 +107,11 @@ export type KeetaFXAnchorQuoteResponse = ({
 
 export type KeetaFXAnchorExchangeResponse = ({
 	ok: true;
-    /**
-     * ID used to identify the conversion request
-     */
-    exchangeID: string
+
+	/**
+	 * ID used to identify the conversion request
+	 */
+	exchangeID: string
 } | {
 	ok: false;
 	error: string;
