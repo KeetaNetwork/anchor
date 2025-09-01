@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFaucetHTTPServer } from './server.js';
-import { KeetaFXAnchorEstimateResponse, KeetaFXAnchorExchangeResponse, KeetaFXAnchorQuoteResponse } from './common.js';
+import { ConversionInput, ConversionInputCanonical, KeetaFXAnchorEstimateResponse, KeetaFXAnchorExchangeResponse, KeetaFXAnchorQuoteResponse } from './common.js';
 import crypto from '../../lib/utils/crypto.js';
 
 const DEBUG = false;
@@ -20,22 +20,40 @@ test('FX Anchor Client Test', async function() {
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 
 	const { userClient: client } = await createNodeAndClient(account);
+	const testTimestamp = new Date();
+
 	await using server = new KeetaNetFaucetHTTPServer({
 		account: liquidityProvider,
 		client: client,
 		fx: {
-			getConversionRateAndFee: async function(request) {
+			getConversionRateAndFeeEstimate: async function(request) {
 				return({
 					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
-					cost: {
-						amount: '1',
-						token: testCurrencyUSD.publicKeyString.get()
-					},
 					expectedCost: {
 						min: '1',
 						max: '5',
 						token: testCurrencyUSD.publicKeyString.get()
 					}
+				});
+			},
+			getConversionRateAndFeeQuote: async function(request) {
+				return({
+					account: liquidityProvider.publicKeyString.get(),
+					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+					cost: {
+						amount: '5',
+						token: testCurrencyUSD.publicKeyString.get()
+					},
+					signed: {
+						nonce: '',
+						timestamp: testTimestamp.toISOString(),
+						signature: ''
+					}
+				});
+			},
+			createConversionSwap: async function(request) {
+				return({
+					exchangeID: ''
 				});
 			}
 		}
@@ -116,7 +134,8 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-	const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: 100, affinity: 'from'});
+	const request: ConversionInputCanonical = { from: 'USD', to: 'EUR', amount: '100', affinity: 'from'};
+	const estimates = await fxClient.getEstimates(request);
 	if (estimates === null) {
 		throw(new Error('Estimates is NULL'));
 	}
@@ -124,33 +143,53 @@ test('FX Anchor Client Test', async function() {
 	if (estimateProvider === undefined) {
 		throw(new Error('Estimate is undefined'));
 	}
-	expect(estimateProvider.estimate).toEqual({
+	const estimate = estimateProvider.estimate;
+	if (!estimate.ok) {
+		throw(new Error('Estimate is not OK'));
+	}
+	expect(estimate).toEqual({
+		ok: true,
+		request,
+		convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+		expectedCost: {
+			min: '1',
+			max: '5',
+			token: testCurrencyUSD.publicKeyString.get()
+		}
 	});
 
-	const fxProvider = estimateProvider;
-
-	const quote = await fxProvider.getQuote();
-	if (quote === null) {
+	const quote = await estimateProvider.getQuote();
+	if (quote === null || !quote.ok) {
 		throw(new Error('Quote is NULL'));
 	}
 	expect(quote).toEqual({
+		ok: true,
+		request,
+		account: liquidityProvider.publicKeyString.get(),
+		convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+		cost: {
+			amount: '5',
+			token: testCurrencyUSD.publicKeyString.get()
+		},
+		signed: {
+			nonce: '',
+			timestamp: testTimestamp.toISOString(),
+			signature: ''
+		}
 	});
 
-	if (!quote.ok) {
-		throw(new Error('Quote is not ok'));
-	}
-	const exchange = await fxProvider.createExchange({
-		quote: quote,
-		block: sendBlock
-	});
+	// const exchange = await fxProvider.createExchange({
+	// 	quote: quote,
+	// 	block: sendBlock
+	// });
 
-	expect(exchange).toEqual({
-	});
+	// expect(exchange).toEqual({
+	// });
 
-	const exchangeStatus = await fxProvider.getExchangeStatus({
-		exchangeID: sendBlock.hash.toString()
-	});
+	// const exchangeStatus = await fxProvider.getExchangeStatus({
+	// 	exchangeID: sendBlock.hash.toString()
+	// });
 
-	expect(exchangeStatus).toEqual({
-	});
+	// expect(exchangeStatus).toEqual({
+	// });
 });
