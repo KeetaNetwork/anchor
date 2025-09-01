@@ -160,8 +160,7 @@ async function setupForResolverTests() {
 	const resolver = new Resolver({
 		root: testAccount,
 		client: userClient,
-		trustedCAs: [],
-logger: console
+		trustedCAs: []
 	});
 
 	return({
