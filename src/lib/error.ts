@@ -1,7 +1,6 @@
 export class KeetaAnchorUserError extends Error {
 	readonly name: string;
 	protected statusCode = 400;
-	protected contentType: string;
 	protected keetaAnchorUserErrorObjectTypeID!: string;
 	private static readonly keetaAnchorUserErrorObjectTypeID = 'a1e64819-14b6-45ac-a1ec-b9c0bdd51e7b';
 
