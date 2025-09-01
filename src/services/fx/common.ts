@@ -30,6 +30,15 @@ export type ConversionInputCanonical = {
 	[k in keyof ConversionInput]: k extends 'amount' ? string : ConversionInput[k];
 };
 
+export type KeetaFXAnchorClientCreateExchangeRequest = {
+	quote: KeetaFXAnchorQuoteResponse;
+	block: InstanceType<typeof KeetaNetLib.Block>;
+};
+
+export type KeetaFXAnchorClientGetExchangeStatusRequest = {
+	exchangeID: string
+};
+
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
@@ -38,15 +47,10 @@ export type KeetaFXAnchorEstimateResponse = ({
 	 */
 	request: ConversionInputCanonical;
 
-	/**
-	 * Estimate for this conversion
-	 */
-	estimate: {
-		/**
-		 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
-		 */
-		convertedAmount: string;
-	};
+    /**
+     * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
+     */
+    convertedAmount: string;
 
 	/**
 	 * The expected cost of the fx request, in the form of a

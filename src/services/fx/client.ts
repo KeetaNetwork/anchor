@@ -84,15 +84,6 @@ export type KeetaFXAnchorClientConfig = {
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
 
-type KeetaFXAnchorClientCreateExchangeRequest = {
-	quote: KeetaFXAnchorQuoteResponse;
-	block: InstanceType<typeof KeetaNetLib.Block>;
-};
-
-type KeetaFXAnchorClientGetExchangeStatusRequest = {
-	exchangeID: string
-};
-
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
@@ -165,7 +156,7 @@ const isKeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>(
 const isKeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
 const isKeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
 
-class KeetaFXAnchorProviderStart {
+class KeetaFXAnchorProviderBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
 	readonly client: KeetaFXAnchorClient['client'];
@@ -254,9 +245,15 @@ class KeetaFXAnchorProviderStart {
 	}
 
 	async createExchange(quote?: KeetaFXAnchorQuoteResponse, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeResponse> {
-		if (block === undefined) {
-			const builder = new KeetaNetLib.Block.Builder();
-			builder.account = null; // XXX:TODO
+		let swapBlock = block;
+		if (swapBlock === undefined) {
+			// const builder = new KeetaNetLib.Block.Builder();
+			// builder.account = this.parent.; // XXX:TODO
+			throw(new Error('User Swap Block is undefined'));
+		}
+
+		if (swapBlock == undefined) {
+			throw(new Error('User Swap Block is undefined'));
 		}
 
 		const serviceURL = (await this.serviceInfo.operations.createExchange)();
@@ -268,7 +265,7 @@ class KeetaFXAnchorProviderStart {
 			},
 			body: JSON.stringify({
 				quote: quote,
-				block: Buffer.from(request.block.toBytes()).toString('base64')
+				block: Buffer.from(swapBlock.toBytes()).toString('base64')
 			})
 		});
 
@@ -281,12 +278,12 @@ class KeetaFXAnchorProviderStart {
 			throw(new Error(`FX exchange request failed: ${requestInformationJSON.error}`));
 		}
 
-		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${request.block.hash.toString()}`);
+		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
 		return(requestInformationJSON);
 	}
 
-		async getExchangeStatus(): Promise<KeetaFXAnchorExchangeResponse> {
-		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)(request);
+	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchangeResponse> {
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
 			headers: {
@@ -303,7 +300,7 @@ class KeetaFXAnchorProviderStart {
 			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
 		}
 
-		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${request}`);
+		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
 		return(requestInformationJSON);
 	}
 
@@ -415,7 +412,7 @@ class KeetaFXAnchorClient {
 		});
 	}
 
-	async getProviders(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProvider[] | null> {
+	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
 		const providerEndpoints = await getEndpoints(this.resolver, request, account);
@@ -424,14 +421,14 @@ class KeetaFXAnchorClient {
 		}
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
-			return(new KeetaFXAnchorProvider(serviceInfo, providerID, conversion, this));
+			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
 		});
 
 		return(providers);
 	}
 
 	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderWithEstimate[] | null> {
-		const estimateProviders = await this.getProviders(request, options);
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
 		if (estimateProviders === null) {
 			return(null);
 		}
@@ -455,14 +452,14 @@ class KeetaFXAnchorClient {
 		return(results);
 	}
 
-	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderWithQuotes[] | null> {
-		const estimateProviders = await this.getProviders(request, options);
+	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderWithQuote[] | null> {
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
 		if (estimateProviders === null) {
 			return(null);
 		}
 
 		const quotes = await Promise.allSettled(estimateProviders.map(async (provider) => {
-			const estimate = await provider.getQuote();
+			const quote = await provider.getQuote();
 
 			return(KeetaFXAnchorProviderWithQuote.fromProviderAndQuote(provider, quote));
 		}));
