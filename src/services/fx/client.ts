@@ -107,7 +107,7 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: ConversionInput, account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: ConversionInputCanonical, account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('fx', {
 		inputCurrencyCode: request.from,
 		outputCurrencyCode: request.to,
@@ -459,7 +459,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, request, account);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account);
 		if (providerEndpoints === null) {
 			return(null);
 		}
