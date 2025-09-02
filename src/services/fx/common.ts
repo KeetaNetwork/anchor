@@ -27,7 +27,7 @@ export type ConversionInput = {
 };
 
 export type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? string : ConversionInput[k];
+	[k in keyof ConversionInput]: k extends 'amount' ? string : k extends 'from' ? KeetaNetTokenPublicKeyString : k extends 'to' ? KeetaNetTokenPublicKeyString : ConversionInput[k];
 };
 
 export type KeetaFXAnchorClientCreateExchangeRequest = {

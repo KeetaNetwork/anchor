@@ -158,18 +158,15 @@ const isKeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
 const isKeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
 
 interface KeetaFXAnchorBaseConfig {
-	resolver: Resolver;
 	client: KeetaNetUserClient;
 	logger?: Logger | undefined;
 }
 
 class KeetaFXAnchorBase {
-	protected readonly resolver: Resolver;
 	protected readonly logger?: Logger | undefined;
 	protected readonly client: KeetaNetUserClient;
 
 	constructor(config: KeetaFXAnchorBaseConfig) {
-		this.resolver = config.resolver;
 		this.client = config.client;
 		this.logger = config.logger;
 	}
@@ -267,14 +264,6 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			/* Liquidity Provider that will complete the swap */
 			const liquidityProvider = KeetaNetLib.Account.fromPublicKeyString(quote.account);
 
-			const fromToken = await this.resolver.lookupToken(quote.request.from);
-			const toToken = await this.resolver.lookupToken(quote.request.to);
-			if (fromToken === null) {
-				throw(new Error(`Could not convert from: ${quote.request.from} to a token address`));
-			}
-			if (toToken === null) {
-				throw(new Error(`Could not convert to: ${quote.request.to} to a token address`));
-			}
 			/* Assume affinity is 'from' and assign appropriate variables */
 			let sendAmount = BigInt(quote.request.amount);
 			let receiveAmount = BigInt(quote.convertedAmount);
@@ -285,10 +274,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				receiveAmount = BigInt(quote.request.amount);
 			}
 			/* Send the amount to be converted */
-			builder.send(liquidityProvider, sendAmount, KeetaNetLib.Account.fromPublicKeyString(fromToken.token));
+			builder.send(liquidityProvider, sendAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.from));
 
 			/* Create receive to ensure swap is atomic */
-			builder.receive(liquidityProvider, receiveAmount, KeetaNetLib.Account.fromPublicKeyString(toToken.token), true);
+			builder.receive(liquidityProvider, receiveAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.to), true);
 
 			/* Compute the initial swap block */
 			const computedBlocks = (await builder.computeBlocks()).blocks;
@@ -415,13 +404,14 @@ class KeetaFXAnchorExchangeWithProvider {
 }
 
 class KeetaFXAnchorClient extends KeetaFXAnchorBase {
+	readonly resolver: Resolver;
 	readonly id: string;
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
 
 	constructor(client: KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
-		const resolver = config.resolver ?? getDefaultResolver(client, config);
-		super({ resolver, client, logger: config.logger });
+		super({ client, logger: config.logger });
+		this.resolver = config.resolver ?? getDefaultResolver(client, config);
 		this.id = config.id ?? crypto.randomUUID();
 
 		if (config.signer) {
@@ -449,9 +439,20 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			throw(new Error('invalid amount'));
 		}
 
+		const fromToken = await this.resolver.lookupToken(input.from);
+		const toToken = await this.resolver.lookupToken(input.to);
+		if (fromToken === null) {
+			throw(new Error(`Could not convert from: ${input.from} to a token address`));
+		}
+		if (toToken === null) {
+			throw(new Error(`Could not convert to: ${input.to} to a token address`));
+		}
+
 		return({
-			...input,
-			amount: amount.toString()
+			from: fromToken.token,
+			to: toToken.token,
+			amount: amount.toString(),
+			affinity: input.affinity
 		});
 	}
 
@@ -462,8 +463,6 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		if (providerEndpoints === null) {
 			return(null);
 		}
-		const from = await this.resolver.lookupToken(conversion.from);
-		const to = await this.resolver.lookupToken(conversion.to);
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
 			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));

@@ -136,7 +136,13 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-	const request: ConversionInputCanonical = { from: 'USD', to: 'EUR', amount: '100', affinity: 'from'};
+	const request: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
+	const requestCanonical = {
+		from: testCurrencyUSD.publicKeyString.get(),
+		to: testCurrencyEUR.publicKeyString.get(),
+		amount: request.amount.toString(),
+		affinity: request.affinity
+	};
 	const estimates = await fxClient.getEstimates(request);
 	if (estimates === null) {
 		throw(new Error('Estimates is NULL'));
@@ -152,8 +158,8 @@ test('FX Anchor Client Test', async function() {
 	expect(estimate).toEqual({
 		ok: true,
 		estimate: {
-			request,
-			convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+			request: requestCanonical,
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
 			expectedCost: {
 				min: '1',
 				max: '5',
@@ -169,9 +175,9 @@ test('FX Anchor Client Test', async function() {
 	expect(quote.quote).toEqual({
 		ok: true,
 		quote: {
-			request,
+			request: requestCanonical,
 			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
 			cost: {
 				amount: '5',
 				token: testCurrencyUSD.publicKeyString.get()
