@@ -28,6 +28,7 @@ test('FX Anchor Client Test', async function() {
 		fx: {
 			getConversionRateAndFeeEstimate: async function(request) {
 				return({
+					request,
 					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
 					expectedCost: {
 						min: '1',
@@ -38,6 +39,7 @@ test('FX Anchor Client Test', async function() {
 			},
 			getConversionRateAndFeeQuote: async function(request) {
 				return({
+					request,
 					account: liquidityProvider.publicKeyString.get(),
 					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
 					cost: {
@@ -149,47 +151,44 @@ test('FX Anchor Client Test', async function() {
 	}
 	expect(estimate).toEqual({
 		ok: true,
-		request,
-		convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
-		expectedCost: {
-			min: '1',
-			max: '5',
-			token: testCurrencyUSD.publicKeyString.get()
+		estimate: {
+			request,
+			convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+			expectedCost: {
+				min: '1',
+				max: '5',
+				token: testCurrencyUSD.publicKeyString.get()
+			}
 		}
 	});
 
 	const quote = await estimateProvider.getQuote();
-	if (quote === null || !quote.ok) {
+	if (quote.quote === null || !quote.quote.ok) {
 		throw(new Error('Quote is NULL'));
 	}
-	expect(quote).toEqual({
+	expect(quote.quote).toEqual({
 		ok: true,
-		request,
-		account: liquidityProvider.publicKeyString.get(),
-		convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
-		cost: {
-			amount: '5',
-			token: testCurrencyUSD.publicKeyString.get()
-		},
-		signed: {
-			nonce: '',
-			timestamp: testTimestamp.toISOString(),
-			signature: ''
+		quote: {
+			request,
+			account: liquidityProvider.publicKeyString.get(),
+			convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+			cost: {
+				amount: '5',
+				token: testCurrencyUSD.publicKeyString.get()
+			},
+			signed: {
+				nonce: '',
+				timestamp: testTimestamp.toISOString(),
+				signature: ''
+			}
 		}
 	});
 
-	// const exchange = await fxProvider.createExchange({
-	// 	quote: quote,
-	// 	block: sendBlock
-	// });
+	const exchange = await quote.createExchange();
+	expect(exchange.exchange.ok).toBe(true);
+	expect(exchange.exchange.exchangeID).toBeDefined();
 
-	// expect(exchange).toEqual({
-	// });
-
-	// const exchangeStatus = await fxProvider.getExchangeStatus({
-	// 	exchangeID: sendBlock.hash.toString()
-	// });
-
-	// expect(exchangeStatus).toEqual({
-	// });
+	const exchangeStatus = await exchange.getExchangeStatus();
+	expect(exchangeStatus.exchange.ok).toBe(true);
+	expect(exchangeStatus.exchange.exchangeID).toBeDefined();
 });

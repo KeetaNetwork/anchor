@@ -19,8 +19,10 @@ import type { BrandedString } from '../../lib/utils/brand.ts';
 import type {
 	ConversionInput,
 	ConversionInputCanonical,
+	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
+	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
 } from './common.ts';
 
@@ -114,7 +116,6 @@ async function getEndpoints(resolver: Resolver, request: ConversionInput, accoun
 	if (response === undefined) {
 		return(null);
 	}
-
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaFXServiceInfo]> {
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: Partial<KeetaFXServiceInfo['operations']> = {};
@@ -156,23 +157,38 @@ const isKeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>(
 const isKeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
 const isKeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
 
-class KeetaFXAnchorProviderBase {
+interface KeetaFXAnchorBaseConfig {
+	resolver: Resolver;
+	client: KeetaNetUserClient;
+	logger?: Logger | undefined;
+}
+
+class KeetaFXAnchorBase {
+	protected readonly resolver: Resolver;
+	protected readonly logger?: Logger | undefined;
+	protected readonly client: KeetaNetUserClient;
+
+	constructor(config: KeetaFXAnchorBaseConfig) {
+		this.resolver = config.resolver;
+		this.client = config.client;
+		this.logger = config.logger;
+	}
+}
+
+class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
-	readonly client: KeetaFXAnchorClient['client'];
 	readonly conversion: ConversionInputCanonical;
-	private readonly logger?: KeetaFXAnchorClient['logger'];
 	private readonly parent: KeetaFXAnchorClient;
 
 	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient) {
+		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
+		super(parentPrivate);
+
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
 		this.conversion = conversion;
 		this.parent = parent;
-
-		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
-		this.client = parentPrivate.client;
-		this.logger = parentPrivate.logger;
 	}
 
 	async getEstimate(): Promise<KeetaFXAnchorEstimateResponse> {
@@ -218,7 +234,7 @@ class KeetaFXAnchorProviderBase {
 	 *                  (10%).
 	 * @returns A promise that resolves to the quote response
 	 */
-	async getQuote(estimate?: KeetaFXAnchorEstimateResponse, tolerance?: number): Promise<KeetaFXAnchorQuoteResponse> {
+	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuoteResponse> {
 		const serviceURL = (await this.serviceInfo.operations.getQuote)();
 		const requestInformation = await fetch(serviceURL, {
 			method: 'POST',
@@ -244,12 +260,42 @@ class KeetaFXAnchorProviderBase {
 		return(requestInformationJSON);
 	}
 
-	async createExchange(quote?: KeetaFXAnchorQuoteResponse, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeResponse> {
+	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeResponse> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
-			// const builder = new KeetaNetLib.Block.Builder();
-			// builder.account = this.parent.; // XXX:TODO
-			throw(new Error('User Swap Block is undefined'));
+			const builder = this.client.initBuilder();
+			/* Liquidity Provider that will complete the swap */
+			const liquidityProvider = KeetaNetLib.Account.fromPublicKeyString(quote.account);
+
+			const fromToken = await this.resolver.lookupToken(quote.request.from);
+			const toToken = await this.resolver.lookupToken(quote.request.to);
+			if (fromToken === null) {
+				throw(new Error(`Could not convert from: ${quote.request.from} to a token address`));
+			}
+			if (toToken === null) {
+				throw(new Error(`Could not convert to: ${quote.request.to} to a token address`));
+			}
+			/* Assume affinity is 'from' and assign appropriate variables */
+			let sendAmount = BigInt(quote.request.amount);
+			let receiveAmount = BigInt(quote.convertedAmount);
+
+			/* If affinity is 'to' then reverse amounts */
+			if (quote.request.affinity === 'to') {
+				sendAmount = BigInt(quote.convertedAmount);
+				receiveAmount = BigInt(quote.request.amount);
+			}
+			/* Send the amount to be converted */
+			builder.send(liquidityProvider, sendAmount, KeetaNetLib.Account.fromPublicKeyString(fromToken.token));
+
+			/* Create receive to ensure swap is atomic */
+			builder.receive(liquidityProvider, receiveAmount, KeetaNetLib.Account.fromPublicKeyString(toToken.token), true);
+
+			/* Compute the initial swap block */
+			const computedBlocks = (await builder.computeBlocks()).blocks;
+			if (computedBlocks.length > 1) {
+				throw(new Error('Computed more than 1 swap block'));
+			}
+			swapBlock = computedBlocks[0];
 		}
 
 		if (swapBlock == undefined) {
@@ -264,8 +310,10 @@ class KeetaFXAnchorProviderBase {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				quote: quote,
-				block: Buffer.from(swapBlock.toBytes()).toString('base64')
+				request: {
+					quote: quote,
+					block: Buffer.from(swapBlock.toBytes()).toString('base64')
+				}
 			})
 		});
 
@@ -321,65 +369,60 @@ class KeetaFXAnchorProviderBase {
  * Various classes for the state machine:
  *   Estimate(optional) -> Quote(optional) -> Exchange -> ExchangeStatus
  */
-class KeetaFXAnchorProviderWithEstimate extends KeetaFXAnchorProviderBase {
-	readonly estimate: KeetaFXAnchorEstimateResponse;
+class KeetaFXAnchorEstimateWithProvider {
+	constructor(
+		private provider: KeetaFXAnchorProviderBase,
+		public readonly estimate: KeetaFXAnchorEstimateResponse
+	) {}
 
-	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical,  parent: KeetaFXAnchorClient, estimate: KeetaFXAnchorEstimateResponse) {
-		super(serviceInfo, providerID, conversion, parent);
-		this.estimate = estimate;
-	}
-
-	static fromProviderAndEstimate(provider: KeetaFXAnchorProviderBase, estimate: KeetaFXAnchorEstimateResponse): KeetaFXAnchorProviderWithEstimate {
-		const serviceInfo = provider.serviceInfo;
-		const providerID = provider.providerID;
-		const conversion = provider.conversion;
-		const parent = provider._internals(KeetaFXAnchorClientAccessToken).parent;
-		return(new KeetaFXAnchorProviderWithEstimate(serviceInfo, providerID, conversion, parent, estimate));
-	}
-
-	async getEstimate(): Promise<KeetaFXAnchorEstimateResponse> {
-		return(this.estimate);
+	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
+		let estimate: KeetaFXAnchorEstimate | undefined;
+		if (this.estimate.ok === true) {
+			estimate = this.estimate.estimate;
+		}
+		const quote = await this.provider.getQuote(estimate, tolerance);
+		return new KeetaFXAnchorQuoteWithProvider(this.provider, quote);
 	}
 }
 
-class KeetaFXAnchorProviderWithQuote extends KeetaFXAnchorProviderBase {
-	readonly quote: KeetaFXAnchorQuoteResponse;
+class KeetaFXAnchorQuoteWithProvider {
+	constructor(
+		private provider: KeetaFXAnchorProviderBase,
+		public readonly quote: KeetaFXAnchorQuoteResponse
+	) {}
 
-	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical,  parent: KeetaFXAnchorClient, quote: KeetaFXAnchorQuoteResponse) {
-		super(serviceInfo, providerID, conversion, parent);
-		this.quote = quote;
-	}
-
-	static fromProviderAndQuote(provider: KeetaFXAnchorProviderBase, quote: KeetaFXAnchorQuoteResponse): KeetaFXAnchorProviderWithQuote {
-		const serviceInfo = provider.serviceInfo;
-		const providerID = provider.providerID;
-		const conversion = provider.conversion;
-		const parent = provider._internals(KeetaFXAnchorClientAccessToken).parent;
-		return(new KeetaFXAnchorProviderWithQuote(serviceInfo, providerID, conversion, parent, quote));
-	}
-
-	getEstimate(): never {
-		throw(new Error('Cannot get estimate from quote'));
-	}
-
-	async getQuote(): Promise<KeetaFXAnchorQuoteResponse> {
-		return(this.quote);
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
+		if (!this.quote.ok) {
+			throw(new Error('Quote is not OK'));
+		}
+		const exchange = await this.provider.createExchange(this.quote.quote, block);
+		return new KeetaFXAnchorExchangeWithProvider(this.provider, exchange);
 	}
 }
 
-class KeetaFXAnchorClient {
-	readonly resolver: Resolver;
+class KeetaFXAnchorExchangeWithProvider {
+	constructor(
+	  private provider: KeetaFXAnchorProviderBase,
+	  public exchange: KeetaFXAnchorExchangeResponse
+	) {}
+
+	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
+		if (!this.exchange.ok) {
+			this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
+		}
+		return(this);
+	}
+}
+
+class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	readonly id: string;
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
-	private readonly logger?: Logger | undefined;
-	private readonly client: KeetaNetClient | KeetaNetUserClient;
 
-	constructor(client: KeetaNetClient | KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
-		this.resolver = config.resolver ?? getDefaultResolver(client, config);
+	constructor(client: KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
+		const resolver = config.resolver ?? getDefaultResolver(client, config);
+		super({ resolver, client, logger: config.logger });
 		this.id = config.id ?? crypto.randomUUID();
-		this.logger = config.logger;
-		this.client = client;
 
 		if (config.signer) {
 			this.#signer = config.signer;
@@ -419,6 +462,8 @@ class KeetaFXAnchorClient {
 		if (providerEndpoints === null) {
 			return(null);
 		}
+		const from = await this.resolver.lookupToken(conversion.from);
+		const to = await this.resolver.lookupToken(conversion.to);
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
 			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
@@ -427,7 +472,7 @@ class KeetaFXAnchorClient {
 		return(providers);
 	}
 
-	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderWithEstimate[] | null> {
+	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {
 		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
 		if (estimateProviders === null) {
 			return(null);
@@ -436,7 +481,7 @@ class KeetaFXAnchorClient {
 		const estimates = await Promise.allSettled(estimateProviders.map(async (provider) => {
 			const estimate = await provider.getEstimate();
 
-			return(KeetaFXAnchorProviderWithEstimate.fromProviderAndEstimate(provider, estimate));
+			return(new KeetaFXAnchorEstimateWithProvider(provider, estimate));
 		}));
 
 		const results = estimates.filter(function(result) {
@@ -452,7 +497,7 @@ class KeetaFXAnchorClient {
 		return(results);
 	}
 
-	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderWithQuote[] | null> {
+	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorQuoteWithProvider[] | null> {
 		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
 		if (estimateProviders === null) {
 			return(null);
@@ -461,7 +506,7 @@ class KeetaFXAnchorClient {
 		const quotes = await Promise.allSettled(estimateProviders.map(async (provider) => {
 			const quote = await provider.getQuote();
 
-			return(KeetaFXAnchorProviderWithQuote.fromProviderAndQuote(provider, quote));
+			return(new KeetaFXAnchorQuoteWithProvider(provider, quote));
 		}));
 
 		const results = quotes.filter(function(result) {
@@ -485,6 +530,7 @@ class KeetaFXAnchorClient {
 		}
 
 		return({
+			resolver: this.resolver,
 			logger: this.logger,
 			client: this.client,
 			signer: this.#signer,
