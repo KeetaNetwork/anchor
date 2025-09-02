@@ -192,6 +192,24 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
+	routes['GET /api/getExchangeStatus'] = async function(params) {
+		if (!params || !Array.isArray(params) || params.length === 0 ) {
+			throw(new Error('Expected params'));
+		}
+		const exchangeID = params[0];
+		if (typeof exchangeID !== 'string') {
+			throw(new Error('Missing exchangeID in params'));
+		}
+		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
+			ok: true,
+			exchangeID
+		};
+
+		return({
+			output: JSON.stringify(exchangeResponse)
+		});
+	}
+
 
 	routes['ERROR'] = async function(postData) {
 		const errorInfo = assertErrorData(postData);
@@ -237,11 +255,12 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 		const server = new http.Server(async (request, response) => {
 			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
 			const path = url.pathname;
-
+			// Spit path for GET requests
+			const pathSegments = path.split('/').filter(Boolean);
 			/*
 			 * Lookup the route based on the request
 			 */
-			const checkRouteKey = `${request.method ?? 'UNKNOWN'} ${path}`;
+			const checkRouteKey = `${request.method ?? 'UNKNOWN'} /${pathSegments[0]}/${pathSegments[1]}`;
 			const route = routes[checkRouteKey as keyof typeof routes];
 			if (route === undefined) {
 				response.statusCode = 404;
@@ -283,12 +302,14 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 					} else {
 						throw(new Error('Unsupported content type'));
 					}
+					/**
+					 * Call the route handler
+					 */
+					result = await route(postData);
+				} else {
+					result = await route(pathSegments.slice(2));
 				}
 
-				/**
-				 * Call the route handler
-				 */
-				result = await route(postData);
 				generatedResult = true;
 			} catch (err) {
 				/**
