@@ -3,15 +3,18 @@ import type { Decimal } from 'decimal.js';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 
+type KeetaNetToken = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>;
+export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+
 export type ConversionInput = {
 	/**
 	 * The currency code to convert from (i.e., what the user has).
 	 */
-	from: ServiceSearchCriteria<'fx'>['inputCurrencyCode'];
+	from: ServiceSearchCriteria<'fx'>['inputCurrencyCode'] | KeetaNetToken;
 	/**
 	 * The currency code to convert to (i.e., what the user wants).
 	 */
-	to: ServiceSearchCriteria<'fx'>['outputCurrencyCode'];
+	to: ServiceSearchCriteria<'fx'>['outputCurrencyCode'] | KeetaNetToken;
 	/**
 	 * The amount to convert. This is a string or Decimal representing the
 	 * amount in the currency specified by either `from` or `to`, as
@@ -38,8 +41,6 @@ export type KeetaFXAnchorClientCreateExchangeRequest = {
 export type KeetaFXAnchorClientGetExchangeStatusRequest = {
 	exchangeID: string
 };
-
-type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 export type KeetaFXAnchorEstimate = {
 	/**

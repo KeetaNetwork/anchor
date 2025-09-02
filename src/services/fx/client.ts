@@ -24,6 +24,7 @@ import type {
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
+	KeetaNetTokenPublicKeyString,
 } from './common.ts';
 
 /**
@@ -439,18 +440,31 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			throw(new Error('invalid amount'));
 		}
 
-		const fromToken = await this.resolver.lookupToken(input.from);
-		const toToken = await this.resolver.lookupToken(input.to);
-		if (fromToken === null) {
-			throw(new Error(`Could not convert from: ${input.from} to a token address`));
+		let fromToken: KeetaNetTokenPublicKeyString;
+		if (KeetaNetLib.Account.isInstance(input.from) && input.from.isToken()) {
+			fromToken = input.from.publicKeyString.get();
+		} else {
+			const tokenLookup = await this.resolver.lookupToken(input.from);
+			if (tokenLookup === null) {
+				throw(new Error(`Could not convert from: ${input.from} to a token address`));
+			}
+			fromToken = tokenLookup.token;
 		}
-		if (toToken === null) {
-			throw(new Error(`Could not convert to: ${input.to} to a token address`));
+
+		let toToken: KeetaNetTokenPublicKeyString;
+		if (KeetaNetLib.Account.isInstance(input.to) && input.to.isToken()) {
+			toToken = input.to.publicKeyString.get();
+		} else {
+			const tokenLookup = await this.resolver.lookupToken(input.to);
+			if (tokenLookup === null) {
+				throw(new Error(`Could not convert to: ${input.to} to a token address`));
+			}
+			toToken = tokenLookup.token;
 		}
 
 		return({
-			from: fromToken.token,
-			to: toToken.token,
+			from: fromToken,
+			to: toToken,
 			amount: amount.toString(),
 			affinity: input.affinity
 		});
