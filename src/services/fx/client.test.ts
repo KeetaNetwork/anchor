@@ -136,6 +136,13 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
+	const supportedCurrencies = await fxClient.listCurrencies();
+	expect(supportedCurrencies).toEqual([
+		{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
+		{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
+		{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
+	]);
+
 	/* Get Estimate from Currency Codes */
 	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
 	/* Get Estimate from Tokens */
