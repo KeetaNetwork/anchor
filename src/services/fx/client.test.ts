@@ -55,7 +55,7 @@ test('FX Anchor Client Test', async function() {
 			},
 			createConversionSwap: async function(request) {
 				return({
-					exchangeID: ''
+					exchangeID: '123'
 				});
 			}
 		}
@@ -122,7 +122,7 @@ test('FX Anchor Client Test', async function() {
 							getEstimate: `${serverURL}/api/getEstimate`,
 							getQuote: `${serverURL}/api/getQuote`,
 							createExchange: `${serverURL}/api/createExchange`,
-							getExchangeStatus: `${serverURL}/api/getExchangeStatus`
+							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
 						}
 					}
 				}
@@ -153,55 +153,40 @@ test('FX Anchor Client Test', async function() {
 		if (estimates === null) {
 			throw(new Error('Estimates is NULL'));
 		}
-		const estimateProvider = estimates[0];
-		if (estimateProvider === undefined) {
+		const estimate = estimates[0];
+		if (estimate === undefined) {
 			throw(new Error('Estimate is undefined'));
 		}
-		const estimate = estimateProvider.estimate;
-		if (!estimate.ok) {
-			throw(new Error('Estimate is not OK'));
-		}
-		expect(estimate).toEqual({
-			ok: true,
-			estimate: {
-				request: requestCanonical,
-				convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
-				expectedCost: {
-					min: '1',
-					max: '5',
-					token: testCurrencyUSD.publicKeyString.get()
-				}
+		expect(estimate.estimate).toEqual({
+			request: requestCanonical,
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+			expectedCost: {
+				min: '1',
+				max: '5',
+				token: testCurrencyUSD.publicKeyString.get()
 			}
 		});
 
-		const quote = await estimateProvider.getQuote();
-		if (quote.quote === null || !quote.quote.ok) {
-			throw(new Error('Quote is NULL'));
-		}
+		const quote = await estimate.getQuote();
 		expect(quote.quote).toEqual({
-			ok: true,
-			quote: {
-				request: requestCanonical,
-				account: liquidityProvider.publicKeyString.get(),
-				convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
-				cost: {
-					amount: '5',
-					token: testCurrencyUSD.publicKeyString.get()
-				},
-				signed: {
-					nonce: '',
-					timestamp: testTimestamp.toISOString(),
-					signature: ''
-				}
+			request: requestCanonical,
+			account: liquidityProvider.publicKeyString.get(),
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+			cost: {
+				amount: '5',
+				token: testCurrencyUSD.publicKeyString.get()
+			},
+			signed: {
+				nonce: '',
+				timestamp: testTimestamp.toISOString(),
+				signature: ''
 			}
 		});
 
 		const exchange = await quote.createExchange();
-		expect(exchange.exchange.ok).toBe(true);
-		expect(exchange.exchange.exchangeID).toBeDefined();
+		expect(exchange.exchange.exchangeID).toBe('123');
 
 		const exchangeStatus = await exchange.getExchangeStatus();
-		expect(exchangeStatus.exchange.ok).toBe(true);
-		expect(exchangeStatus.exchange.exchangeID).toBeDefined();
+		expect(exchangeStatus.exchange.exchangeID).toBe('123');
 	}
 });

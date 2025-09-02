@@ -118,12 +118,15 @@ export type KeetaFXAnchorQuoteResponse = ({
 	error: string;
 });
 
-export type KeetaFXAnchorExchangeResponse = {
+export type KeetaFXAnchorExchange = {
     /**
 	 * ID used to identify the conversion request
 	 */
 	exchangeID: string
-} & ({
+}
+
+export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange &
+({
 	ok: true;
 } | {
 	ok: false;

@@ -21,6 +21,7 @@ import type {
 	ConversionInputCanonical,
 	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
+	KeetaFXAnchorExchange,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
@@ -189,7 +190,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.parent = parent;
 	}
 
-	async getEstimate(): Promise<KeetaFXAnchorEstimateResponse> {
+	async getEstimate(): Promise<KeetaFXAnchorEstimate> {
 		const serviceURL = await this.serviceInfo.operations.getEstimate;
 		if (serviceURL !== undefined) {
 			const estimateURL = serviceURL();
@@ -214,7 +215,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(this.conversion)}`);
-			return(requestInformationJSON);
+			return(requestInformationJSON.estimate);
 		} else {
 			throw(new Error('Service getEstimate does not exist'));
 		}
@@ -232,7 +233,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	 *                  (10%).
 	 * @returns A promise that resolves to the quote response
 	 */
-	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuoteResponse> {
+	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuote> {
 		const serviceURL = (await this.serviceInfo.operations.getQuote)();
 		const requestInformation = await fetch(serviceURL, {
 			method: 'POST',
@@ -255,10 +256,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
-		return(requestInformationJSON);
+		return(requestInformationJSON.quote);
 	}
 
-	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeResponse> {
+	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
 			const builder = this.client.initBuilder();
@@ -317,10 +318,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
-		return(requestInformationJSON);
+		return({ exchangeID: requestInformationJSON.exchangeID });
 	}
 
-	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchangeResponse> {
+	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
 		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
@@ -339,7 +340,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
-		return(requestInformationJSON);
+		return({ exchangeID: requestInformationJSON.exchangeID });
 	}
 
 	/** @internal */
@@ -362,15 +363,11 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 class KeetaFXAnchorEstimateWithProvider {
 	constructor(
 		private provider: KeetaFXAnchorProviderBase,
-		public readonly estimate: KeetaFXAnchorEstimateResponse
+		public readonly estimate: KeetaFXAnchorEstimate
 	) {}
 
 	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
-		let estimate: KeetaFXAnchorEstimate | undefined;
-		if (this.estimate.ok === true) {
-			estimate = this.estimate.estimate;
-		}
-		const quote = await this.provider.getQuote(estimate, tolerance);
+		const quote = await this.provider.getQuote(this.estimate, tolerance);
 		return new KeetaFXAnchorQuoteWithProvider(this.provider, quote);
 	}
 }
@@ -378,14 +375,11 @@ class KeetaFXAnchorEstimateWithProvider {
 class KeetaFXAnchorQuoteWithProvider {
 	constructor(
 		private provider: KeetaFXAnchorProviderBase,
-		public readonly quote: KeetaFXAnchorQuoteResponse
+		public readonly quote: KeetaFXAnchorQuote
 	) {}
 
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		if (!this.quote.ok) {
-			throw(new Error('Quote is not OK'));
-		}
-		const exchange = await this.provider.createExchange(this.quote.quote, block);
+		const exchange = await this.provider.createExchange(this.quote, block);
 		return new KeetaFXAnchorExchangeWithProvider(this.provider, exchange);
 	}
 }
@@ -393,13 +387,11 @@ class KeetaFXAnchorQuoteWithProvider {
 class KeetaFXAnchorExchangeWithProvider {
 	constructor(
 	  private provider: KeetaFXAnchorProviderBase,
-	  public exchange: KeetaFXAnchorExchangeResponse
+	  public exchange: KeetaFXAnchorExchange
 	) {}
 
 	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
-		if (!this.exchange.ok) {
-			this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
-		}
+		this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
 		return(this);
 	}
 }
