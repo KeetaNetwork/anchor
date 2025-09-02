@@ -136,65 +136,72 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-	const request: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
+	/* Get Estimate from Currency Codes */
+	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
+	/* Get Estimate from Tokens */
+	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from'};
+
 	const requestCanonical = {
 		from: testCurrencyUSD.publicKeyString.get(),
 		to: testCurrencyEUR.publicKeyString.get(),
-		amount: request.amount.toString(),
-		affinity: request.affinity
+		amount: requestCurrencyCodes.amount.toString(),
+		affinity: requestCurrencyCodes.affinity
 	};
-	const estimates = await fxClient.getEstimates(request);
-	if (estimates === null) {
-		throw(new Error('Estimates is NULL'));
-	}
-	const estimateProvider = estimates[0];
-	if (estimateProvider === undefined) {
-		throw(new Error('Estimate is undefined'));
-	}
-	const estimate = estimateProvider.estimate;
-	if (!estimate.ok) {
-		throw(new Error('Estimate is not OK'));
-	}
-	expect(estimate).toEqual({
-		ok: true,
-		estimate: {
-			request: requestCanonical,
-			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
-			expectedCost: {
-				min: '1',
-				max: '5',
-				token: testCurrencyUSD.publicKeyString.get()
-			}
+
+	for (const request of [requestCurrencyCodes, requestTokens]) {
+		const estimates = await fxClient.getEstimates(request);
+		if (estimates === null) {
+			throw(new Error('Estimates is NULL'));
 		}
-	});
-
-	const quote = await estimateProvider.getQuote();
-	if (quote.quote === null || !quote.quote.ok) {
-		throw(new Error('Quote is NULL'));
-	}
-	expect(quote.quote).toEqual({
-		ok: true,
-		quote: {
-			request: requestCanonical,
-			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
-			cost: {
-				amount: '5',
-				token: testCurrencyUSD.publicKeyString.get()
-			},
-			signed: {
-				nonce: '',
-				timestamp: testTimestamp.toISOString(),
-				signature: ''
-			}
+		const estimateProvider = estimates[0];
+		if (estimateProvider === undefined) {
+			throw(new Error('Estimate is undefined'));
 		}
-	});
+		const estimate = estimateProvider.estimate;
+		if (!estimate.ok) {
+			throw(new Error('Estimate is not OK'));
+		}
+		expect(estimate).toEqual({
+			ok: true,
+			estimate: {
+				request: requestCanonical,
+				convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+				expectedCost: {
+					min: '1',
+					max: '5',
+					token: testCurrencyUSD.publicKeyString.get()
+				}
+			}
+		});
 
-	const exchange = await quote.createExchange();
-	expect(exchange.exchange.ok).toBe(true);
-	expect(exchange.exchange.exchangeID).toBeDefined();
+		const quote = await estimateProvider.getQuote();
+		if (quote.quote === null || !quote.quote.ok) {
+			throw(new Error('Quote is NULL'));
+		}
+		expect(quote.quote).toEqual({
+			ok: true,
+			quote: {
+				request: requestCanonical,
+				account: liquidityProvider.publicKeyString.get(),
+				convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+				cost: {
+					amount: '5',
+					token: testCurrencyUSD.publicKeyString.get()
+				},
+				signed: {
+					nonce: '',
+					timestamp: testTimestamp.toISOString(),
+					signature: ''
+				}
+			}
+		});
 
-	const exchangeStatus = await exchange.getExchangeStatus();
-	expect(exchangeStatus.exchange.ok).toBe(true);
-	expect(exchangeStatus.exchange.exchangeID).toBeDefined();
+		const exchange = await quote.createExchange();
+		expect(exchange.exchange.ok).toBe(true);
+		expect(exchange.exchange.exchangeID).toBeDefined();
+
+		const exchangeStatus = await exchange.getExchangeStatus();
+		expect(exchangeStatus.exchange.ok).toBe(true);
+		expect(exchangeStatus.exchange.exchangeID).toBeDefined();
+	}
 });
