@@ -3,7 +3,7 @@ import Resolver from './resolver.js';
 import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from './utils/tests/node.js';
-import CurrencyInfo from '@keetanetwork/currency-info';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
 	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
@@ -160,8 +160,7 @@ async function setupForResolverTests() {
 	const resolver = new Resolver({
 		root: testAccount,
 		client: userClient,
-		trustedCAs: [],
-logger: console
+		trustedCAs: []
 	});
 
 	return({

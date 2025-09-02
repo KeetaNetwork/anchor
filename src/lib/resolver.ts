@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import CurrencyInfo from '@keetanetwork/currency-info';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
 import { assertNever } from './utils/never.js';
@@ -211,12 +211,12 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * Search for a provider which can convert from the following
 		 * input currency
 		 */
-		inputCurrencyCode: CurrencySearchInput;
+		inputCurrencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
 		/**
 		 * Search for a provider which can convert to the following
 		 * output currency
 		 */
-		outputCurrencyCode: CurrencySearchInput;
+		outputCurrencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
@@ -1285,8 +1285,9 @@ class Resolver {
 			return(undefined);
 		}
 
-		const canonicalInputCurrencyCriteria = convertToCurrencySearchCanonical(criteria.inputCurrencyCode);
-		const canonicalOutputCurrencyCriteria = convertToCurrencySearchCanonical(criteria.outputCurrencyCode);
+		const isCurrencySearchInput = createIs<CurrencySearchInput>();
+		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
+		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
 		const inputToken = await this.lookupToken(canonicalInputCurrencyCriteria);
 		const outputToken = await this.lookupToken(canonicalOutputCurrencyCriteria);
 		if (inputToken === null) {
@@ -1432,8 +1433,10 @@ class Resolver {
 		let tokenPublicKey: KeetaNetAccountTokenPublicKeyString | undefined;
 		if (typeof currencyCode === 'string') {
 			try {
-				const token = KeetaNetAccount.fromTokenPublicKey(currencyCode);
-				tokenPublicKey = token.publicKeyString.get();
+				const token = KeetaNetAccount.fromPublicKeyString(currencyCode);
+				if (token.isToken()) {
+					tokenPublicKey = token.publicKeyString.get();
+				}
 			} catch {
 				/* Ignored */
 			}

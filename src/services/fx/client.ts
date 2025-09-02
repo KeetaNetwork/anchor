@@ -1,5 +1,4 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import CurrencyInfo from '@keetanetwork/currency-info';
 import { createIs } from 'typia';
 import { Decimal } from 'decimal.js';
 
@@ -9,20 +8,25 @@ import type {
 	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
-// import type {
-// 	KeetaKYCAnchorCreateVerificationRequest,
-// 	KeetaKYCAnchorCreateVerificationResponse,
-// 	KeetaKYCAnchorGetCertificateResponse
-// } from './common.ts';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
-import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
+import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
-import type { Brand, BrandedString } from '../../lib/utils/brand.ts';
-
-const PARANOID = true;
+import { assertNever } from '../../lib/utils/never.js';
+import type { BrandedString } from '../../lib/utils/brand.ts';
+import type {
+	ConversionInput,
+	ConversionInputCanonical,
+	KeetaFXAnchorEstimate,
+	KeetaFXAnchorEstimateResponse,
+	KeetaFXAnchorExchange,
+	KeetaFXAnchorExchangeResponse,
+	KeetaFXAnchorQuote,
+	KeetaFXAnchorQuoteResponse,
+	KeetaNetTokenPublicKeyString,
+} from './common.ts';
 
 /**
  * An opaque type that represents a provider ID.
@@ -33,7 +37,6 @@ type ProviderID = BrandedString<'FXProviderID'>;
  * An opaque type that represents a FX Anchor request ID
  */
 type RequestID = BrandedString<'FXRequestID'>;
-
 
 type AccountOptions = {
 	/**
@@ -85,44 +88,20 @@ export type KeetaFXAnchorClientConfig = {
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
 
-type ConversionInput = {
-	/**
-	 * The currency code to convert from (i.e., what the user has).
-	 */
-	from: ServiceSearchCriteria<'fx'>['inputCurrencyCode'];
-	/**
-	 * The currency code to convert to (i.e., what the user wants).
-	 */
-	to: ServiceSearchCriteria<'fx'>['outputCurrencyCode'];
-	/**
-	 * The amount to convert. This is a string or Decimal representing the
-	 * amount in the currency specified by either `from` or `to`, as
-	 * specified by the `affinity` property.
-	 */
-	amount: string | number | Decimal;
-	/**
-	 * Indicates whether the amount specified is in terms of the `from`
-	 * currency (i.e., the user has this much) or the `to` currency
-	 * (i.e., the user wants this much).
-	 */
-	affinity: 'from' | 'to';
-};
-
-type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? string : ConversionInput[k];
-};
-
-type KeetaFXAnchorClientGetEstimateRequest = ConversionInput;
-
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
 }
+
+type KeetaFXAnchorOperations = {
+	[operation in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => URL;
+};
+
 type KeetaFXServiceInfo = {
 	operations: {
-		[key in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => Promise<URL>;
-	};
-};
+		[operation in keyof KeetaFXAnchorOperations]: Promise<KeetaFXAnchorOperations[operation]>;
+	}
+}
 
 type GetEndpointsResult = {
 	[providerID: ProviderID]: KeetaFXServiceInfo;
@@ -134,13 +113,11 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 	const response = await resolver.lookup('fx', {
 		inputCurrencyCode: request.from,
 		outputCurrencyCode: request.to,
-		/* XXX:TODO: kycProviders from account */
+		// kycProviders: 'TODO' XXX:TODO
 	});
-
 	if (response === undefined) {
 		return(null);
 	}
-
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaFXServiceInfo]> {
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: Partial<KeetaFXServiceInfo['operations']> = {};
@@ -157,7 +134,6 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 						for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
 							substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
 						}
-
 						return(validateURL(substitutedURL));
 					});
 				},
@@ -179,50 +155,257 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 	return(retval);
 }
 
-function generateKeetaFXProviderForOperation<Operation extends keyof KeetaFXServiceInfo['operations']>(operation: Operation) {
-	const retval = class KeetaFXProviderOperation {
-		readonly serviceInfo: KeetaFXServiceInfo;
-		readonly providerID: ProviderID;
-		readonly client: KeetaFXAnchorClient['client'];;
-		private readonly operation: Operation;
-		private readonly logger?: KeetaFXAnchorClient['logger'];
+const isKeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
+const isKeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
+const isKeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
 
-		constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, parent: KeetaFXAnchorClient) {
-			this.operation = operation;
-			this.serviceInfo = serviceInfo;
-			this.providerID = providerID;
-
-			const parentPrivate = parent._private(KeetaFXAnchorClientAccessToken);
-			this.client = parentPrivate.client;
-			this.logger = parentPrivate.logger;
-		}
-
-		async [operation](): Promise<'not implemented'> {
-			throw(new Error('not implemented'));
-		}
-	};
-
-	return(retval);
+interface KeetaFXAnchorBaseConfig {
+	client: KeetaNetUserClient;
+	logger?: Logger | undefined;
 }
 
-const KeetaFXProviderGetEstimate = generateKeetaFXProviderForOperation('getEstimate');
-const KeetaFXProviderGetQuote = generateKeetaFXProviderForOperation('getQuote');
-const KeetaFXProviderCreateExchange = generateKeetaFXProviderForOperation('createExchange');
-const KeetaFXProviderGetExchangeStatus = generateKeetaFXProviderForOperation('getExchangeStatus');
+class KeetaFXAnchorBase {
+	protected readonly logger?: Logger | undefined;
+	protected readonly client: KeetaNetUserClient;
 
-class KeetaFXAnchorClient {
+	constructor(config: KeetaFXAnchorBaseConfig) {
+		this.client = config.client;
+		this.logger = config.logger;
+	}
+}
+
+class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
+	readonly serviceInfo: KeetaFXServiceInfo;
+	readonly providerID: ProviderID;
+	readonly conversion: ConversionInputCanonical;
+	private readonly parent: KeetaFXAnchorClient;
+
+	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient) {
+		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
+		super(parentPrivate);
+
+		this.serviceInfo = serviceInfo;
+		this.providerID = providerID;
+		this.conversion = conversion;
+		this.parent = parent;
+	}
+
+	async getEstimate(): Promise<KeetaFXAnchorEstimate> {
+		const serviceURL = await this.serviceInfo.operations.getEstimate;
+		if (serviceURL !== undefined) {
+			const estimateURL = serviceURL();
+			const requestInformation = await fetch(estimateURL, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify({
+					request: this.conversion
+				})
+			});
+
+			const requestInformationJSON: unknown = await requestInformation.json();
+			if (!isKeetaFXAnchorEstimateResponse(requestInformationJSON)) {
+				throw(new Error(`Invalid response from FX estimate service: ${JSON.stringify(requestInformationJSON)}`));
+			}
+
+			if (!requestInformationJSON.ok) {
+				throw(new Error(`FX estimate request failed: ${requestInformationJSON.error}`));
+			}
+
+			this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(this.conversion)}`);
+			return(requestInformationJSON.estimate);
+		} else {
+			throw(new Error('Service getEstimate does not exist'));
+		}
+	}
+
+	/**
+	 * Get a quote from the provider.  If an estimate is provided, it will
+	 * be used to validate the quote is within the tolerance range.
+	 *
+	 * @param estimate An optional estimate to validate the quote against
+	 * @param tolerance The tolerance, in percentage points, to allow the
+	 *                  quote to vary from the estimate.  For example, a
+	 *                  tolerance of 1.0 allows the quote to be 100% more
+	 *                  or less than the estimate.  The default is 0.10
+	 *                  (10%).
+	 * @returns A promise that resolves to the quote response
+	 */
+	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuote> {
+		const serviceURL = (await this.serviceInfo.operations.getQuote)();
+		const requestInformation = await fetch(serviceURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				request: this.conversion
+			})
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorQuoteResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX quote service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX quote request failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
+		return(requestInformationJSON.quote);
+	}
+
+	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
+		let swapBlock = block;
+		if (swapBlock === undefined) {
+			const builder = this.client.initBuilder();
+			/* Liquidity Provider that will complete the swap */
+			const liquidityProvider = KeetaNetLib.Account.fromPublicKeyString(quote.account);
+
+			/* Assume affinity is 'from' and assign appropriate variables */
+			let sendAmount = BigInt(quote.request.amount);
+			let receiveAmount = BigInt(quote.convertedAmount);
+
+			/* If affinity is 'to' then reverse amounts */
+			if (quote.request.affinity === 'to') {
+				sendAmount = BigInt(quote.convertedAmount);
+				receiveAmount = BigInt(quote.request.amount);
+			}
+			/* Send the amount to be converted */
+			builder.send(liquidityProvider, sendAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.from));
+
+			/* Create receive to ensure swap is atomic */
+			builder.receive(liquidityProvider, receiveAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.to), true);
+
+			/* Compute the initial swap block */
+			const computedBlocks = (await builder.computeBlocks()).blocks;
+			if (computedBlocks.length > 1) {
+				throw(new Error('Computed more than 1 swap block'));
+			}
+			swapBlock = computedBlocks[0];
+		}
+
+		if (swapBlock == undefined) {
+			throw(new Error('User Swap Block is undefined'));
+		}
+
+		const serviceURL = (await this.serviceInfo.operations.createExchange)();
+		const requestInformation = await fetch(serviceURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				request: {
+					quote: quote,
+					block: Buffer.from(swapBlock.toBytes()).toString('base64')
+				}
+			})
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX exchange service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX exchange request failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
+		return({ exchangeID: requestInformationJSON.exchangeID });
+	}
+
+	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
+		const requestInformation = await fetch(serviceURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
+		return({ exchangeID: requestInformationJSON.exchangeID });
+	}
+
+	/** @internal */
+	_internals(accessToken: symbol) {
+		if (accessToken !== KeetaFXAnchorClientAccessToken) {
+			throw new Error('invalid access token');
+		}
+
+		return({
+			parent: this.parent
+		});
+
+	}
+}
+
+/*
+ * Various classes for the state machine:
+ *   Estimate(optional) -> Quote(optional) -> Exchange -> ExchangeStatus
+ */
+class KeetaFXAnchorEstimateWithProvider {
+	constructor(
+		private provider: KeetaFXAnchorProviderBase,
+		public readonly estimate: KeetaFXAnchorEstimate
+	) {}
+
+	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
+		const quote = await this.provider.getQuote(this.estimate, tolerance);
+		return new KeetaFXAnchorQuoteWithProvider(this.provider, quote);
+	}
+}
+
+class KeetaFXAnchorQuoteWithProvider {
+	constructor(
+		private provider: KeetaFXAnchorProviderBase,
+		public readonly quote: KeetaFXAnchorQuote
+	) {}
+
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange(this.quote, block);
+		return new KeetaFXAnchorExchangeWithProvider(this.provider, exchange);
+	}
+}
+
+class KeetaFXAnchorExchangeWithProvider {
+	constructor(
+	  private provider: KeetaFXAnchorProviderBase,
+	  public exchange: KeetaFXAnchorExchange
+	) {}
+
+	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
+		this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
+		return(this);
+	}
+}
+
+class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	readonly resolver: Resolver;
 	readonly id: string;
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
-	private readonly logger?: Logger | undefined;
-	private readonly client: KeetaNetClient | KeetaNetUserClient;
 
-	constructor(client: KeetaNetClient | KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
+	constructor(client: KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
+		super({ client, logger: config.logger });
 		this.resolver = config.resolver ?? getDefaultResolver(client, config);
 		this.id = config.id ?? crypto.randomUUID();
-		this.logger = config.logger;
-		this.client = client;
 
 		if (config.signer) {
 			this.#signer = config.signer;
@@ -249,49 +432,115 @@ class KeetaFXAnchorClient {
 			throw(new Error('invalid amount'));
 		}
 
+		let fromToken: KeetaNetTokenPublicKeyString;
+		if (KeetaNetLib.Account.isInstance(input.from) && input.from.isToken()) {
+			fromToken = input.from.publicKeyString.get();
+		} else {
+			const tokenLookup = await this.resolver.lookupToken(input.from);
+			if (tokenLookup === null) {
+				throw(new Error(`Could not convert from: ${input.from} to a token address`));
+			}
+			fromToken = tokenLookup.token;
+		}
+
+		let toToken: KeetaNetTokenPublicKeyString;
+		if (KeetaNetLib.Account.isInstance(input.to) && input.to.isToken()) {
+			toToken = input.to.publicKeyString.get();
+		} else {
+			const tokenLookup = await this.resolver.lookupToken(input.to);
+			if (tokenLookup === null) {
+				throw(new Error(`Could not convert to: ${input.to} to a token address`));
+			}
+			toToken = tokenLookup.token;
+		}
+
 		return({
-			...input,
-			amount: amount.toString()
+			from: fromToken,
+			to: toToken,
+			amount: amount.toString(),
+			affinity: input.affinity
 		});
 	}
 
 	// XXX:TODO: We should also support to receive `from` or `to` and list the available currencies accordingly
 	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
-		return await this.resolver.listTokens();
+		return(await this.resolver.listTokens());
 	}
 
-	async getEstimate(request: KeetaFXAnchorClientGetEstimateRequest, options: AccountOptions = {}): Promise<any | null> {
+	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
-		const providers = await getEndpoints(this.resolver, conversion, account);
-		if (providers === null) {
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account);
+		if (providerEndpoints === null) {
 			return(null);
 		}
 
-		const estimateProviders = typedFxServiceEntries(providers).map(async ([providerID, serviceInfo]) => {
-			return(new KeetaFXProviderGetEstimate(serviceInfo, providerID, this));
+		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
+			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
 		});
+
+		return(providers);
 	}
 
-	async getQuote(..._ignore_args: any[]): Promise<any> {
-		throw(new Error('not implemented'));
+	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
+		if (estimateProviders === null) {
+			return(null);
+		}
+
+		const estimates = await Promise.allSettled(estimateProviders.map(async (provider) => {
+			const estimate = await provider.getEstimate();
+
+			return(new KeetaFXAnchorEstimateWithProvider(provider, estimate));
+		}));
+
+		const results = estimates.filter(function(result) {
+			return(result.status === 'fulfilled');
+		}).map(function(result) {
+			return(result.value);
+		});
+
+		if (results.length === 0) {
+			return(null);
+		}
+
+		return(results);
 	}
 
-	async createExchange(..._ignore_args: any[]): Promise<any> {
-		throw(new Error('not implemented'));
+	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorQuoteWithProvider[] | null> {
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
+		if (estimateProviders === null) {
+			return(null);
+		}
+
+		const quotes = await Promise.allSettled(estimateProviders.map(async (provider) => {
+			const quote = await provider.getQuote();
+
+			return(new KeetaFXAnchorQuoteWithProvider(provider, quote));
+		}));
+
+		const results = quotes.filter(function(result) {
+			return(result.status === 'fulfilled');
+		}).map(function(result) {
+			return(result.value);
+		});
+
+		if (results.length === 0) {
+			return(null);
+		}
+
+		return(results);
 	}
 
-	async getExchangeStatus(..._ignore_args: any[]): Promise<any> {
-		throw(new Error('not implemented'));
-	}
 
 	/** @internal */
-	_private(accessToken: symbol) {
+	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaFXAnchorClientAccessToken) {
 			throw new Error('invalid access token');
 		}
 
 		return({
+			resolver: this.resolver,
 			logger: this.logger,
 			client: this.client,
 			signer: this.#signer,
