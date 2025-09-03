@@ -1321,7 +1321,7 @@ class Resolver {
 				for (const fromEntryUnrealized of from) {
 					const fromEntry = await fromEntryUnrealized?.('object');
 
-					if(inputToken) {
+					if (inputToken) {
 						const fromCurrencyCodes = await fromEntry.currencyCodes?.('array') ?? [];
 						const fromCurrencyCodesValues = await Promise.all(fromCurrencyCodes.map(async function(item) {
 							try {
