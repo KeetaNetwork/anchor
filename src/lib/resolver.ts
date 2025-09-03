@@ -1080,7 +1080,7 @@ class Resolver {
 
 	static readonly Metadata: typeof Metadata = Metadata;
 
-	private lookupMap: {
+	private readonly lookupMap: {
 		[Service in Services]: {
 			search: (input: ValuizableObject | undefined, criteria: ServiceSearchCriteria<Service>) => Promise<ResolverLookupServiceResults<Service> | undefined>;
 		};

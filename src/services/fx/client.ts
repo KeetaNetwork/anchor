@@ -372,7 +372,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
  */
 class KeetaFXAnchorExchangeWithProvider {
 	constructor(
-		private provider: KeetaFXAnchorProviderBase,
+		private readonly provider: KeetaFXAnchorProviderBase,
 		public exchange: KeetaFXAnchorExchange
 	) {}
 
@@ -384,7 +384,7 @@ class KeetaFXAnchorExchangeWithProvider {
 
 class KeetaFXAnchorQuoteWithProvider {
 	constructor(
-		private provider: KeetaFXAnchorProviderBase,
+		private readonly provider: KeetaFXAnchorProviderBase,
 		public readonly quote: KeetaFXAnchorQuote
 	) {}
 
@@ -396,7 +396,7 @@ class KeetaFXAnchorQuoteWithProvider {
 
 class KeetaFXAnchorEstimateWithProvider {
 	constructor(
-		private provider: KeetaFXAnchorProviderBase,
+		private readonly provider: KeetaFXAnchorProviderBase,
 		public readonly estimate: KeetaFXAnchorEstimate
 	) {}
 
