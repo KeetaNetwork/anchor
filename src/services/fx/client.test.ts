@@ -197,7 +197,7 @@ test('FX Anchor Client Test', async function() {
 
 	const conversionTests = [
 		{
-			test: async function() { return(await fxClientConversions.listCurrencies()) },
+			test: async function() { return(await fxClientConversions.resolver.listTokens()) },
 			result: [
 				{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
 				{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },

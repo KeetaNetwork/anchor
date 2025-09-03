@@ -530,10 +530,6 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 	}
 
-	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
-		return(await this.resolver.listTokens());
-	}
-
 	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
 		if (input.from !== undefined && input.to !== undefined) {
 			throw(new KeetaAnchorUserError('Only one of from or two should be provided'));
