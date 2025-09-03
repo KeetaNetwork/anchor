@@ -41,7 +41,7 @@ test('FX Anchor Client Test', async function() {
 				return({
 					request,
 					account: liquidityProvider.publicKeyString.get(),
-					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+					convertedAmount: (parseInt(request.amount) * 0.90).toFixed(0),
 					cost: {
 						amount: '5',
 						token: testCurrencyUSD.publicKeyString.get()
@@ -167,11 +167,15 @@ test('FX Anchor Client Test', async function() {
 			}
 		});
 
+		await expect(async function(){
+			await estimate.getQuote(0.001);
+		}).rejects.toThrow();
+
 		const quote = await estimate.getQuote();
 		expect(quote.quote).toEqual({
 			request: requestCanonical,
 			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.90).toFixed(0),
 			cost: {
 				amount: '5',
 				token: testCurrencyUSD.publicKeyString.get()

@@ -233,7 +233,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	 *                  (10%).
 	 * @returns A promise that resolves to the quote response
 	 */
-	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuote> {
+	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance: number = 0.1): Promise<KeetaFXAnchorQuote> {
 		const serviceURL = (await this.serviceInfo.operations.getQuote)();
 		const requestInformation = await fetch(serviceURL, {
 			method: 'POST',
@@ -253,6 +253,15 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		if (!requestInformationJSON.ok) {
 			throw(new Error(`FX quote request failed: ${requestInformationJSON.error}`));
+		}
+
+		if (estimate !== undefined && tolerance !== undefined) {
+			const quoteAmount = new Decimal(requestInformationJSON.quote.convertedAmount);
+			const estimateAmount = new Decimal(estimate.convertedAmount);
+			const variation = Math.abs(quoteAmount.dividedBy(estimateAmount).toNumber() - 1);
+			if (variation > tolerance) {
+				throw(new Error(`FX Quote amount: ${requestInformationJSON.quote.convertedAmount} differs more than tolerance limit: ${tolerance} from estimate`));
+			}
 		}
 
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
