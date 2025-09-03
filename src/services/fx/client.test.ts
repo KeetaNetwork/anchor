@@ -11,6 +11,7 @@ const DEBUG = false;
 const testCurrencyUSD = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const testCurrencyEUR = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+const testCurrencyETH = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 test('FX Anchor Client Test', async function() {
 	const logger = DEBUG ? console : undefined;
@@ -95,7 +96,8 @@ test('FX Anchor Client Test', async function() {
 			currencyMap: {
 				USD: testCurrencyUSD.publicKeyString.get(),
 				EUR: testCurrencyEUR.publicKeyString.get(),
-				'$BTC': testCurrencyBTC.publicKeyString.get()
+				'$BTC': testCurrencyBTC.publicKeyString.get(),
+				'$ETH': testCurrencyETH.publicKeyString.get(),
 			},
 			services: {
 				fx: {
@@ -132,6 +134,20 @@ test('FX Anchor Client Test', async function() {
 							createExchange: `${serverURL}/api/createExchange`,
 							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
 						}
+					},
+					Test2: {
+						from: [
+							{
+								currencyCodes: [testCurrencyETH.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()],
+								to: [testCurrencyBTC.publicKeyString.get()]
+							}
+						],
+						operations: {
+							getEstimate: `${serverURL}/api/getEstimate`,
+							getQuote: `${serverURL}/api/getQuote`,
+							createExchange: `${serverURL}/api/createExchange`,
+							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
+						}
 					}
 				}
 			}
@@ -148,7 +164,8 @@ test('FX Anchor Client Test', async function() {
 	expect(supportedCurrencies).toEqual([
 		{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
 		{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
-		{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
+		{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' },
+		{ token: testCurrencyETH.publicKeyString.get(), currency: '$ETH' },
 	]);
 
 	const possibleUSDConversions = await fxClient.listPossibleConversions({ from: 'USD' });
@@ -160,8 +177,11 @@ test('FX Anchor Client Test', async function() {
 	const possibleBTCConversions = await fxClient.listPossibleConversions({ from: '$BTC' });
 	expect(possibleBTCConversions?.conversions).toEqual([]);
 
+	const possibleETHConversions = await fxClient.listPossibleConversions({ from: '$ETH' });
+	expect(possibleETHConversions?.conversions).toEqual([testCurrencyBTC.publicKeyString.get()]);
+
 	const possibleToBTCConversions = await fxClient.listPossibleConversions({ to: '$BTC' });
-	expect(possibleToBTCConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
+	expect(possibleToBTCConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get(), testCurrencyETH.publicKeyString.get()]);
 
 	/* Get Estimate from Currency Codes */
 	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
