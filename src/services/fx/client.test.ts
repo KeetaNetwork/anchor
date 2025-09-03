@@ -3,7 +3,7 @@ import { KeetaNet } from '../../client/index.js';
 import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
-import { KeetaNetFaucetHTTPServer } from './server.js';
+import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { ConversionInput } from './common.js';
 
 const DEBUG = false;
@@ -21,7 +21,7 @@ test('FX Anchor Client Test', async function() {
 	const { userClient: client } = await createNodeAndClient(account);
 	const testTimestamp = new Date();
 
-	await using server = new KeetaNetFaucetHTTPServer({
+	await using server = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
 		client: client,
 		fx: {

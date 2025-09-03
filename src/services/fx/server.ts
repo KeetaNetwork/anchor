@@ -224,7 +224,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	return(routes);
 }
 
-export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerConfig> {
+export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerConfig> {
 	readonly port: NonNullable<KeetaAnchorFXServerConfig['port']>;
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly client: KeetaAnchorFXServerConfig['client'];
