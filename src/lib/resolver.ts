@@ -209,12 +209,12 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * Search for a provider which can convert from the following
 		 * input currency
 		 */
-		inputCurrencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
+		inputCurrencyCode?: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
 		/**
 		 * Search for a provider which can convert to the following
 		 * output currency
 		 */
-		outputCurrencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
+		outputCurrencyCode?: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
@@ -1287,16 +1287,18 @@ class Resolver {
 		}
 
 		const isCurrencySearchInput = createIs<CurrencySearchInput>();
+		// if currency code is provided then convert to canonical format otherwise token public key string was provided
 		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
 		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
-		const inputToken = await this.lookupToken(canonicalInputCurrencyCriteria);
-		const outputToken = await this.lookupToken(canonicalOutputCurrencyCriteria);
-		if (inputToken === null) {
+		// if search criteria is not provided then set token to undefined
+		const inputToken = canonicalInputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalInputCurrencyCriteria) : undefined;
+		const outputToken = canonicalOutputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalOutputCurrencyCriteria) : undefined;
+		if (criteria.inputCurrencyCode !== undefined && inputToken === null) {
 			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', canonicalInputCurrencyCriteria, 'could not be resolved to a token');
 			return(undefined);
 		}
 
-		if (outputToken === null) {
+		if (criteria.outputCurrencyCode !== undefined && outputToken === null) {
 			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', canonicalOutputCurrencyCriteria, 'could not be resolved to a token');
 			return(undefined);
 		}
@@ -1318,30 +1320,37 @@ class Resolver {
 				let acceptable = false;
 				for (const fromEntryUnrealized of from) {
 					const fromEntry = await fromEntryUnrealized?.('object');
-					const fromCurrencyCodes = await fromEntry.currencyCodes?.('array') ?? [];
-					const fromCurrencyCodesValues = await Promise.all(fromCurrencyCodes.map(async function(item) {
-						try {
-							return(await item?.('string'));
-						} catch {
-							return(undefined);
-						}
-					}));
 
-					if (!fromCurrencyCodesValues.includes(inputToken.token)) {
-						continue;
+					if (inputToken) {
+						const fromCurrencyCodes = await fromEntry.currencyCodes?.('array') ?? [];
+						const fromCurrencyCodesValues = await Promise.all(fromCurrencyCodes.map(async function(item) {
+							try {
+								return(await item?.('string'));
+							} catch {
+								return(undefined);
+							}
+						}));
+
+						// If inputToken was provided, check if it matches providers supported input currencies
+						if (!fromCurrencyCodesValues.includes(inputToken.token)) {
+							continue;
+						}
 					}
 
-					const toCurrencyCodes = await fromEntry.to?.('array') ?? [];
-					const toCurrencyCodesValues = await Promise.all(toCurrencyCodes.map(async function(item) {
-						try {
-							return(await item?.('string'));
-						} catch {
-							return(undefined);
-						}
-					}));
+					if (outputToken) {
+						const toCurrencyCodes = await fromEntry.to?.('array') ?? [];
+						const toCurrencyCodesValues = await Promise.all(toCurrencyCodes.map(async function(item) {
+							try {
+								return(await item?.('string'));
+							} catch {
+								return(undefined);
+							}
+						}));
 
-					if (!toCurrencyCodesValues.includes(outputToken.token)) {
-						continue;
+						// If outputToken was provided, check if it matches providers supported output currencies
+						if (!toCurrencyCodesValues.includes(outputToken.token)) {
+							continue;
+						}
 					}
 
 					/* XXX:TODO: Check kycProviders */

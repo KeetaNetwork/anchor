@@ -112,10 +112,20 @@ test('FX Anchor Client Test', async function() {
 						}
 					},
 					Test: {
-						from: [{
-							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-							to: [testCurrencyEUR.publicKeyString.get()]
-						}],
+						from: [
+							{
+								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+								to: [testCurrencyEUR.publicKeyString.get()]
+							},
+							{
+								currencyCodes: [testCurrencyEUR.publicKeyString.get()],
+								to: [testCurrencyUSD.publicKeyString.get()]
+							},
+							{
+								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+								to: [testCurrencyBTC.publicKeyString.get()]
+							}
+						],
 						operations: {
 							getEstimate: `${serverURL}/api/getEstimate`,
 							getQuote: `${serverURL}/api/getQuote`,
@@ -140,6 +150,18 @@ test('FX Anchor Client Test', async function() {
 		{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
 		{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
 	]);
+
+	const possibleUSDConversions = await fxClient.listPossibleConversions({ from: 'USD' });
+	expect(possibleUSDConversions?.conversions).toEqual([testCurrencyEUR.publicKeyString.get(), testCurrencyBTC.publicKeyString.get()]);
+
+	const possibleEURConversions = await fxClient.listPossibleConversions({ from: 'EUR' });
+	expect(possibleEURConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
+
+	const possibleBTCConversions = await fxClient.listPossibleConversions({ from: '$BTC' });
+	expect(possibleBTCConversions?.conversions).toEqual([]);
+
+	const possibleToBTCConversions = await fxClient.listPossibleConversions({ to: '$BTC' });
+	expect(possibleToBTCConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
 
 	/* Get Estimate from Currency Codes */
 	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
