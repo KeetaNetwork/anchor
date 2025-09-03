@@ -216,6 +216,14 @@ test('FX Anchor Client Test', async function() {
 			// @ts-expect-error
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ to: 'BAR' })) },
 			result: false
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({})) },
+			result: false
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'USD', to: 'EUR' })) },
+			result: false
 		}
 	];
 

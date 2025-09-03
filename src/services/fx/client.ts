@@ -25,6 +25,7 @@ import type {
 	KeetaFXAnchorQuoteResponse,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
+import { KeetaAnchorUserError } from '../../lib/error.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -531,10 +532,10 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
 		if (input.from !== undefined && input.to !== undefined) {
-			throw(new Error('Only one of from or two should be provided'));
+			throw(new KeetaAnchorUserError('Only one of from or two should be provided'));
 		}
 		if (input.from === undefined && input.to === undefined) {
-			throw(new Error('Either from or to should be provided'));
+			throw(new KeetaAnchorUserError('At least one of from or two should be provided'));
 		}
 		const conversion = await this.canonicalizeConversionTokens(input);
 		const account = options.account ?? this.#account;
