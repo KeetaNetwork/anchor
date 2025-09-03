@@ -144,8 +144,7 @@ test('FX Anchor Client Test', async function() {
 						operations: {
 							getEstimate: `${serverURL}/api/getEstimate`,
 							getQuote: `${serverURL}/api/getQuote`,
-							createExchange: `${serverURL}/api/createExchange`,
-							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
+							createExchange: `${serverURL}/api/createExchange`
 						}
 					}
 				}
@@ -196,15 +195,36 @@ test('FX Anchor Client Test', async function() {
 		},
 		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: '$BTC' })) },
-			result: { conversions: [] }
+			result: null
 		},
 		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ to: '$BTC' })) },
 			result: { conversions: [testCurrencyUSD.publicKeyString.get()] }
 		},
 		{
+			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			result: null
+		},
+		{
+			test: async function() { return(await fxClientConversions.getQuotes({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			result: null
+		},
+		{
 			// @ts-expect-error
 			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			result: false
+		},
+		{
+			// @ts-expect-error
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			result: false
+		},
+		{
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
+			result: false
+		},
+		{
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
 			result: false
 		},
 		{
@@ -275,11 +295,14 @@ test('FX Anchor Client Test', async function() {
 			}
 		});
 
-		await expect(async function(){
-			await estimate.getQuote(0.001);
-		}).rejects.toThrow();
-
-		const quote = await estimate.getQuote();
+		const quotes = await fxClient.getQuotes(request);
+		if (quotes === null) {
+			throw(new Error('Estimates is NULL'));
+		}
+		const quote = quotes[0];
+		if (quote === undefined) {
+			throw(new Error('Estimate is undefined'));
+		}
 		expect(quote.quote).toEqual({
 			request: requestCanonical,
 			account: liquidityProvider.publicKeyString.get(),
@@ -295,11 +318,31 @@ test('FX Anchor Client Test', async function() {
 			}
 		});
 
-		const exchangeWithBlock = await quote.createExchange(sendBlock);
+		await expect(async function(){
+			await estimate.getQuote(0.001);
+		}).rejects.toThrow();
+
+		const quoteFromEstimate = await estimate.getQuote();
+		expect(quoteFromEstimate.quote).toEqual({
+			request: requestCanonical,
+			account: liquidityProvider.publicKeyString.get(),
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.90).toFixed(0),
+			cost: {
+				amount: '5',
+				token: testCurrencyUSD.publicKeyString.get()
+			},
+			signed: {
+				nonce: '',
+				timestamp: testTimestamp.toISOString(),
+				signature: ''
+			}
+		});
+
+		const exchangeWithBlock = await quoteFromEstimate.createExchange(sendBlock);
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
 		expect(exchangeWithBlock.exchange.exchangeID).toBe('123');
 
-		const exchange = await quote.createExchange();
+		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBe('123');
 
 		const exchangeStatus = await exchange.getExchangeStatus();
