@@ -137,7 +137,8 @@ test('FX Anchor Client Test', async function() {
 						from: [
 							{
 								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-								to: [testCurrencyBTC.publicKeyString.get()]
+								to: [testCurrencyBTC.publicKeyString.get()],
+								kycProviders: ['Test']
 							}
 						],
 						operations: {
@@ -153,43 +154,101 @@ test('FX Anchor Client Test', async function() {
 	});
 	logger?.log('Set info results:', results);
 
+	await expect(async function() {
+		const noSignerUserClient = new  KeetaNet.UserClient({
+			client: client.client,
+			network: client.network,
+			networkAlias: client.config.networkAlias,
+			account: KeetaNet.lib.Account.fromPublicKeyString(account.publicKeyString.get()),
+			signer: null,
+			usePublishAid: false
+		});
+		// Should fail with no signer error
+		new KeetaNetAnchor.FX.Client(noSignerUserClient, {
+			root: account,
+			...(logger ? { logger: logger } : {})
+		});
+	}).rejects.toThrow();
+
+	const fxClientConversions = new KeetaNetAnchor.FX.Client(client, {
+		root: account,
+		signer: account,
+		account: account,
+		...(logger ? { logger: logger } : {})
+	});
+
+	const conversionTests = [
+		{
+			test: async function() { return(await fxClientConversions.listCurrencies()) },
+			result: [
+				{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
+				{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
+				{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
+			]
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'USD' })) },
+			result: { conversions: [testCurrencyEUR.publicKeyString.get(), testCurrencyBTC.publicKeyString.get()] }
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'EUR' })) },
+			result: { conversions: [testCurrencyUSD.publicKeyString.get()] }
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: '$BTC' })) },
+			result: { conversions: [] }
+		},
+		{
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ to: '$BTC' })) },
+			result: { conversions: [testCurrencyUSD.publicKeyString.get()] }
+		},
+		{
+			// @ts-expect-error
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			result: false
+		},
+		{
+			// @ts-expect-error
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'FOO' })) },
+			result: false
+		},
+		{
+			// @ts-expect-error
+			test: async function() { return(await fxClientConversions.listPossibleConversions({ to: 'BAR' })) },
+			result: false
+		}
+	];
+
+	for (const test of conversionTests) {
+		if (test.result === false) {
+			await expect(test.test()).rejects.toThrow();
+		} else {
+			const result = await test.test();
+			expect(result).toEqual(test.result);
+		}
+	}
+
 	const fxClient = new KeetaNetAnchor.FX.Client(client, {
 		root: account,
 		...(logger ? { logger: logger } : {})
 	});
 
-	const supportedCurrencies = await fxClient.listCurrencies();
-	expect(supportedCurrencies).toEqual([
-		{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
-		{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
-		{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
-	]);
-
-	const possibleUSDConversions = await fxClient.listPossibleConversions({ from: 'USD' });
-	expect(possibleUSDConversions?.conversions).toEqual([testCurrencyEUR.publicKeyString.get(), testCurrencyBTC.publicKeyString.get()]);
-
-	const possibleEURConversions = await fxClient.listPossibleConversions({ from: 'EUR' });
-	expect(possibleEURConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
-
-	const possibleBTCConversions = await fxClient.listPossibleConversions({ from: '$BTC' });
-	expect(possibleBTCConversions?.conversions).toEqual([]);
-
-	const possibleToBTCConversions = await fxClient.listPossibleConversions({ to: '$BTC' });
-	expect(possibleToBTCConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
-
 	/* Get Estimate from Currency Codes */
 	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
 	/* Get Estimate from Tokens */
 	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from' };
+	/* Get Estimate from Currency Codes Affinity: to */
+	// TODO - provide more dynamic KeetaNetFXAnchorHTTPServer responses
+	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'to' };
 
-	const requestCanonical = {
-		from: testCurrencyUSD.publicKeyString.get(),
-		to: testCurrencyEUR.publicKeyString.get(),
-		amount: requestCurrencyCodes.amount.toString(),
-		affinity: requestCurrencyCodes.affinity
-	};
+	for (const request of [requestCurrencyCodes, requestTokens, requestCurrencyCodesTo]) {
+		const requestCanonical = {
+			from: testCurrencyUSD.publicKeyString.get(),
+			to: testCurrencyEUR.publicKeyString.get(),
+			amount: request.amount.toString(),
+			affinity: request.affinity
+		};
 
-	for (const request of [requestCurrencyCodes, requestTokens]) {
 		const estimates = await fxClient.getEstimates(request);
 		if (estimates === null) {
 			throw(new Error('Estimates is NULL'));
