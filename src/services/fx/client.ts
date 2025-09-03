@@ -184,6 +184,11 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 			}
 		]);
 	});
+
+	if (serviceInfoPromises.length === 0) {
+		return(null);
+	}
+
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	const retval = Object.fromEntries(await Promise.all(serviceInfoPromises)) satisfies GetEndpointsResult as GetEndpointsResult;
 
