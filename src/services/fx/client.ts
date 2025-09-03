@@ -31,11 +31,6 @@ import type {
  */
 type ProviderID = BrandedString<'FXProviderID'>;
 
-/**
- * An opaque type that represents a FX Anchor request ID
- */
-// type RequestID = BrandedString<'FXRequestID'>;
-
 type AccountOptions = {
 	/**
 	 * The account to use for signing requests. If not provided, the
