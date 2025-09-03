@@ -40,7 +40,7 @@ export interface KeetaAnchorFXServerConfig {
 	 * The account to use for performing swaps for a given pair
 	 *
 	 * This may be either a function or a KeetaNet Account instance.
-	 */ 
+	 */
 	account: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonical) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
 	/**
 	 * Account which can be used to sign transactions
@@ -193,7 +193,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	}
 
 	routes['GET /api/getExchangeStatus'] = async function(params) {
-		if (!params || !Array.isArray(params) || params.length === 0 ) {
+		if (!params || !Array.isArray(params) || params.length === 0) {
 			throw(new Error('Expected params'));
 		}
 		const exchangeID = params[0];
@@ -261,6 +261,7 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 			 * Lookup the route based on the request
 			 */
 			const checkRouteKey = `${request.method ?? 'UNKNOWN'} /${pathSegments[0]}/${pathSegments[1]}`;
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const route = routes[checkRouteKey as keyof typeof routes];
 			if (route === undefined) {
 				response.statusCode = 404;
@@ -281,6 +282,7 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 				let postData: JSONSerializable | undefined;
 				if (request.method === 'POST') {
 					const data = await request.map(function(chunk) {
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 						return(Buffer.from(chunk));
 					}).reduce(function(prev, curr) {
 						if (prev.length > MAX_REQUEST_SIZE) {
@@ -295,8 +297,9 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 
 					if (request.headers['content-type'] === 'application/json') {
 						try {
+							// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 							postData = JSON.parse(data.toString('utf-8'));
-						} catch (err) {
+						} catch {
 							throw(new Error('Invalid JSON data'));
 						}
 					} else {
@@ -377,7 +380,7 @@ export class KeetaNetFaucetHTTPServer implements Required<KeetaAnchorFXServerCon
 				onSetPort?.(this.port);
 			}
 			this.logger?.debug('KeetaAnchorFX.Server', 'Listening on port:', this.port);
-                });
+		});
 
 		/**
 		 * Wait for the server to close

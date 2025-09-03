@@ -10,11 +10,9 @@ import { createIs, createAssert } from 'typia';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
-const AccountKeyAlgorithm: typeof KeetaNetClient.lib.Account.AccountKeyAlgorithm = KeetaNetClient.lib.Account.AccountKeyAlgorithm;
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
-type KeetaNetAccountPublicKeyString = ReturnType<KeetaNetAccount['publicKeyString']['get']>;
-type KeetaNetAccountTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account<typeof AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+type KeetaNetAccountTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account<typeof KeetaNetAccount.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 /**
  * Canonical form of a currency code for use in the ServiceMetadata
@@ -404,6 +402,7 @@ const assertResolverLookupFXResult = async function(input: unknown): Promise<Res
 	}
 
 	const fromUnrealized = input.from;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
 	if (!Metadata.isValuizable(fromUnrealized)) {
 		throw(new Error(`Expected "from" to be an Valuizable, got ${typeof fromUnrealized}`));
 	}
@@ -430,6 +429,7 @@ async function isValidOperations(input: unknown): Promise<{ operations: Valuizab
 	}
 
 	const operations = input.operations;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
 	if (!Metadata.isValuizable(operations)) {
 		return(false);
 	}
@@ -438,6 +438,23 @@ async function isValidOperations(input: unknown): Promise<{ operations: Valuizab
 		...input,
 		operations
 	});
+}
+
+function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencySearchCanonical {
+	if (CurrencyInfo.Currency.isCurrencyCode(input)) {
+		return(input);
+	} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
+		input = new CurrencyInfo.Currency(input);
+		return(input.code);
+	} else if (typeof input === 'string') {
+		return(input);
+	} else if (input === null) {
+		throw(new Error('Invalid currency input: null'));
+	} else if ('code' in input) {
+		return(input.code);
+	} else {
+		throw(new Error(`Invalid currency input: ${input}`));
+	}
 }
 
 async function hasAllCurrencyCodes(input: unknown, criteria: { currencyCodes: CurrencySearchCanonical[] }): Promise<boolean> {
@@ -471,6 +488,7 @@ async function hasAnyCountryCodes(input: unknown, criteria: { countryCodes: Coun
 			continue;
 		}
 
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 		if (criteria.countryCodes.includes(countryCodeValue as any)) {
 			return(true);
 		}
@@ -480,23 +498,6 @@ async function hasAnyCountryCodes(input: unknown, criteria: { countryCodes: Coun
 }
 
 // #endregion
-
-function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencySearchCanonical {
-	if (CurrencyInfo.Currency.isCurrencyCode(input)) {
-		return(input);
-	} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
-		input = new CurrencyInfo.Currency(input);
-		return(input.code);
-	} else if (typeof input === 'string') {
-		return(input);
-	} else if (input === null) {
-		throw(new Error('Invalid currency input: null'));
-	} else if ('code' in input) {
-		return(input.code);
-	} else {
-		throw(new Error(`Invalid currency input: ${input}`));
-	}
-}
 
 function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySearchCanonical {
 	if (CurrencyInfo.Country.isCountryCode(input)) {
@@ -1094,12 +1095,12 @@ class Resolver {
 			search: this.lookupFXServices.bind(this)
 		},
 		'inbound': {
-			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'inbound'>) => {
+			search: async (_ignored_input: ValuizableObject | undefined, _ignored_criteria: ServiceSearchCriteria<'inbound'>) => {
 				throw(new Error('not implemented'));
 			}
 		},
 		'outbound': {
-			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'outbound'>) => {
+			search: async (_ignored_input: ValuizableObject | undefined, _ignored_criteria: ServiceSearchCriteria<'outbound'>) => {
 				throw(new Error('not implemented'));
 			}
 		},
@@ -1303,13 +1304,12 @@ class Resolver {
 		const retval: ResolverLookupServiceResults<'fx'> = {};
 		for (const checkFXServiceID in fxServices) {
 			try {
-				const checkFXService = await isValidOperations(await fxServices[checkFXServiceID]?.('object'));
+				const checkFXService = await assertResolverLookupFXResult(await fxServices[checkFXServiceID]?.('object'));
 				if (!checkFXService) {
 					continue;
 				}
 
-				// @ts-ignore
-				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = await checkFXService.from;
+				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
 				const from = await fromUnrealized?.('array');
 				if (from === undefined) {
 					continue;
@@ -1463,6 +1463,7 @@ class Resolver {
 			 * Perform a forward lookup from the currency code
 			 * to the token public key
 			 */
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 			const currencyCodeCanonical = convertToCurrencySearchCanonical(currencyCode as unknown as any);
 			if (currencyCodeCanonical === undefined) {
 				return(null);
@@ -1534,6 +1535,7 @@ class Resolver {
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
 		const serviceLookup = this.lookupMap[service].search;
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 		return(await serviceLookup(await definedServices[service]?.('object'), criteria as any));
 	}
 

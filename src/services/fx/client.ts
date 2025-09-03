@@ -5,7 +5,6 @@ import { Decimal } from 'decimal.js';
 import { getDefaultResolver } from '../../config.js';
 
 import type {
-	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
 import type { Logger } from '../../lib/log/index.ts';
@@ -14,7 +13,6 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
-import { assertNever } from '../../lib/utils/never.js';
 import type { BrandedString } from '../../lib/utils/brand.ts';
 import type {
 	ConversionInput,
@@ -25,7 +23,7 @@ import type {
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
-	KeetaNetTokenPublicKeyString,
+	KeetaNetTokenPublicKeyString
 } from './common.ts';
 
 /**
@@ -36,7 +34,7 @@ type ProviderID = BrandedString<'FXProviderID'>;
 /**
  * An opaque type that represents a FX Anchor request ID
  */
-type RequestID = BrandedString<'FXRequestID'>;
+// type RequestID = BrandedString<'FXRequestID'>;
 
 type AccountOptions = {
 	/**
@@ -109,15 +107,17 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: ConversionInputCanonical, account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: ConversionInputCanonical, _ignored_account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('fx', {
 		inputCurrencyCode: request.from,
-		outputCurrencyCode: request.to,
+		outputCurrencyCode: request.to
 		// kycProviders: 'TODO' XXX:TODO
 	});
+
 	if (response === undefined) {
 		return(null);
 	}
+
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaFXServiceInfo]> {
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: Partial<KeetaFXServiceInfo['operations']> = {};
@@ -145,11 +145,12 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
 			{
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				operations: operationsFunctions as KeetaFXServiceInfo['operations']
 			}
 		]);
 	});
-
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	const retval = Object.fromEntries(await Promise.all(serviceInfoPromises)) satisfies GetEndpointsResult as GetEndpointsResult;
 
 	return(retval);
@@ -233,7 +234,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	 *                  (10%).
 	 * @returns A promise that resolves to the quote response
 	 */
-	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance?: number): Promise<KeetaFXAnchorQuote> {
+	async getQuote(estimate?: KeetaFXAnchorEstimate, tolerance: number = 0.1): Promise<KeetaFXAnchorQuote> {
 		const serviceURL = (await this.serviceInfo.operations.getQuote)();
 		const requestInformation = await fetch(serviceURL, {
 			method: 'POST',
@@ -253,6 +254,15 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		if (!requestInformationJSON.ok) {
 			throw(new Error(`FX quote request failed: ${requestInformationJSON.error}`));
+		}
+
+		if (estimate !== undefined && tolerance !== undefined) {
+			const quoteAmount = new Decimal(requestInformationJSON.quote.convertedAmount);
+			const estimateAmount = new Decimal(estimate.convertedAmount);
+			const variation = Math.abs(quoteAmount.dividedBy(estimateAmount).toNumber() - 1);
+			if (variation > tolerance) {
+				throw(new Error(`FX Quote amount: ${requestInformationJSON.quote.convertedAmount} differs more than tolerance limit: ${tolerance} from estimate`));
+			}
 		}
 
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(this.conversion)}`);
@@ -346,7 +356,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	/** @internal */
 	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaFXAnchorClientAccessToken) {
-			throw new Error('invalid access token');
+			throw(new Error('invalid access token'));
 		}
 
 		return({
@@ -360,15 +370,15 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
  * Various classes for the state machine:
  *   Estimate(optional) -> Quote(optional) -> Exchange -> ExchangeStatus
  */
-class KeetaFXAnchorEstimateWithProvider {
+class KeetaFXAnchorExchangeWithProvider {
 	constructor(
 		private provider: KeetaFXAnchorProviderBase,
-		public readonly estimate: KeetaFXAnchorEstimate
+		public exchange: KeetaFXAnchorExchange
 	) {}
 
-	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
-		const quote = await this.provider.getQuote(this.estimate, tolerance);
-		return new KeetaFXAnchorQuoteWithProvider(this.provider, quote);
+	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
+		this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
+		return(this);
 	}
 }
 
@@ -380,19 +390,19 @@ class KeetaFXAnchorQuoteWithProvider {
 
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange(this.quote, block);
-		return new KeetaFXAnchorExchangeWithProvider(this.provider, exchange);
+		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 }
 
-class KeetaFXAnchorExchangeWithProvider {
+class KeetaFXAnchorEstimateWithProvider {
 	constructor(
-	  private provider: KeetaFXAnchorProviderBase,
-	  public exchange: KeetaFXAnchorExchange
+		private provider: KeetaFXAnchorProviderBase,
+		public readonly estimate: KeetaFXAnchorEstimate
 	) {}
 
-	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
-		this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
-		return(this);
+	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
+		const quote = await this.provider.getQuote(this.estimate, tolerance);
+		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
 	}
 }
 
@@ -414,7 +424,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else if ('account' in client && client.account.hasPrivateKey) {
 			this.#signer = client.account;
 		} else {
-			throw new Error('KeetaFXAnchorClient requires a Signer or a UserClient with an associated Signer');
+			throw(new Error('KeetaFXAnchorClient requires a Signer or a UserClient with an associated Signer'));
 		}
 
 		if (config.account) {
@@ -422,7 +432,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else if ('account' in client) {
 			this.#account = client.account;
 		} else {
-			throw new Error('KeetaFXAnchorClient requires an Account or a UserClient with an associated Account');
+			throw(new Error('KeetaFXAnchorClient requires an Account or a UserClient with an associated Account'));
 		}
 	}
 
@@ -438,6 +448,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else {
 			const tokenLookup = await this.resolver.lookupToken(input.from);
 			if (tokenLookup === null) {
+				// eslint-disable-next-line @typescript-eslint/no-base-to-string
 				throw(new Error(`Could not convert from: ${input.from} to a token address`));
 			}
 			fromToken = tokenLookup.token;
@@ -449,6 +460,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else {
 			const tokenLookup = await this.resolver.lookupToken(input.to);
 			if (tokenLookup === null) {
+				// eslint-disable-next-line @typescript-eslint/no-base-to-string
 				throw(new Error(`Could not convert to: ${input.to} to a token address`));
 			}
 			toToken = tokenLookup.token;
@@ -536,7 +548,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	/** @internal */
 	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaFXAnchorClientAccessToken) {
-			throw new Error('invalid access token');
+			throw(new Error('invalid access token'));
 		}
 
 		return({
