@@ -132,6 +132,20 @@ test('FX Anchor Client Test', async function() {
 							createExchange: `${serverURL}/api/createExchange`,
 							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
 						}
+					},
+					Test2: {
+						from: [
+							{
+								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+								to: [testCurrencyBTC.publicKeyString.get()]
+							}
+						],
+						operations: {
+							getEstimate: `${serverURL}/api/getEstimate`,
+							getQuote: `${serverURL}/api/getQuote`,
+							createExchange: `${serverURL}/api/createExchange`,
+							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
+						}
 					}
 				}
 			}

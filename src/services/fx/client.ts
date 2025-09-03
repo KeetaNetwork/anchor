@@ -543,23 +543,23 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			return(null);
 		}
 
-		const conversions: KeetaNetTokenPublicKeyString[] = [];
+		const conversions = new Set<KeetaNetTokenPublicKeyString>();
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		for (const [_ignored_providerID, serviceInfo] of typedFxServiceEntries(providerEndpoints)) {
 			for (const conversionPair of serviceInfo.from) {
 				if (conversion.from !== undefined) {
 					if (conversionPair.currencyCodes.includes(conversion.from)) {
-						conversions.push(...conversionPair.to);
+						conversionPair.to.forEach(token => conversions.add(token));
 					}
 				} else if (conversion.to !== undefined) {
 					if (conversionPair.to.includes(conversion.to)) {
-						conversions.push(...conversionPair.currencyCodes);
+						conversionPair.currencyCodes.forEach(token => conversions.add(token));
 					}
 				}
 			}
 		};
 
-		return({ conversions });
+		return({ conversions: [...conversions] });
 	}
 
 	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {
