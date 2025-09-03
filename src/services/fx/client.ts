@@ -1,5 +1,5 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import { createIs } from 'typia';
+import { createAssert, createIs } from 'typia';
 import { Decimal } from 'decimal.js';
 
 import { getDefaultResolver } from '../../config.js';
@@ -9,7 +9,7 @@ import type {
 } from '@keetanetwork/keetanet-client';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
@@ -98,7 +98,8 @@ type KeetaFXAnchorOperations = {
 type KeetaFXServiceInfo = {
 	operations: {
 		[operation in keyof KeetaFXAnchorOperations]: Promise<KeetaFXAnchorOperations[operation]>;
-	}
+	},
+	from: NonNullable<ServiceMetadata['services']['fx']>[string]['from'];
 }
 
 type GetEndpointsResult = {
@@ -107,10 +108,18 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: ConversionInputCanonical, _ignored_account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
+const assertKeetaNetTokenPublicKeyString = createAssert<KeetaNetTokenPublicKeyString>();
+async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
+	const criteria: ServiceSearchCriteria<'fx'> = {};
+	if (request.from !== undefined) {
+		criteria.inputCurrencyCode = request.from;
+	}
+	if (request.to !== undefined) {
+		criteria.outputCurrencyCode = request.to;
+	}
+
 	const response = await resolver.lookup('fx', {
-		inputCurrencyCode: request.from,
-		outputCurrencyCode: request.to
+		...criteria
 		// kycProviders: 'TODO' XXX:TODO
 	});
 
@@ -141,12 +150,41 @@ async function getEndpoints(resolver: Resolver, request: ConversionInputCanonica
 				configurable: true
 			});
 		}
+
+		const fromInfo = await serviceInfo.from('array');
+		const allFrom = await Promise.all(fromInfo.map(async function(fromFn) {
+			const from = await fromFn('object');
+
+			const currencyCodes = await Promise.all((await from.currencyCodes('array')).map(async (currencyCode) => {
+				const code = await currencyCode('string');
+				return(assertKeetaNetTokenPublicKeyString(code));
+			}));
+
+			const to = await Promise.all((await from.to('array')).map(async (currencyCode) => {
+				const code = await currencyCode('string');
+				return(assertKeetaNetTokenPublicKeyString(code));
+			}));
+
+			const kycProvidersEntry = (await from.kycProviders?.('array'))?.map(async (providerFn) => {
+				const provider = await providerFn('string');
+				return(provider);
+			});
+
+			// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+			let kycProviders: { kycProviders: string[] } | {} = {};
+			if (kycProvidersEntry && kycProvidersEntry.length > 0) {
+				kycProviders = { kycProviders: await Promise.all(kycProvidersEntry) }
+			}
+
+			return({ currencyCodes, to, ...kycProviders });
+		}));
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
 			{
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				operations: operationsFunctions as KeetaFXServiceInfo['operations']
+				operations: operationsFunctions as KeetaFXServiceInfo['operations'],
+				from: allFrom
 			}
 		]);
 	});
@@ -436,42 +474,97 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 	}
 
+	private async canonicalizeConversionTokens(input: Partial<ConversionInput>): Promise<Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>> {
+		let from = {}
+		if (input.from !== undefined) {
+			let fromToken: KeetaNetTokenPublicKeyString;
+			if (KeetaNetLib.Account.isInstance(input.from) && input.from.isToken()) {
+				fromToken = input.from.publicKeyString.get();
+			} else {
+				const tokenLookup = await this.resolver.lookupToken(input.from);
+				if (tokenLookup === null) {
+					// eslint-disable-next-line @typescript-eslint/no-base-to-string
+					throw(new Error(`Could not convert from: ${input.from} to a token address`));
+				}
+				fromToken = tokenLookup.token;
+			}
+			from = { from: fromToken };
+		}
+
+		let to = {};
+		if (input.to !== undefined) {
+			let toToken: KeetaNetTokenPublicKeyString;
+			if (KeetaNetLib.Account.isInstance(input.to) && input.to.isToken()) {
+				toToken = input.to.publicKeyString.get();
+			} else {
+				const tokenLookup = await this.resolver.lookupToken(input.to);
+				if (tokenLookup === null) {
+					// eslint-disable-next-line @typescript-eslint/no-base-to-string
+					throw(new Error(`Could not convert to: ${input.to} to a token address`));
+				}
+				toToken = tokenLookup.token;
+			}
+			to = { to: toToken };
+		}
+		return({ ...from, ...to });
+	}
+
 	private async canonicalizeConversionInput(input: ConversionInput): Promise<ConversionInputCanonical> {
 		const amount = new Decimal(input.amount);
 		if (amount.isNaN() || amount.lte(0)) {
 			throw(new Error('invalid amount'));
 		}
 
-		let fromToken: KeetaNetTokenPublicKeyString;
-		if (KeetaNetLib.Account.isInstance(input.from) && input.from.isToken()) {
-			fromToken = input.from.publicKeyString.get();
-		} else {
-			const tokenLookup = await this.resolver.lookupToken(input.from);
-			if (tokenLookup === null) {
-				// eslint-disable-next-line @typescript-eslint/no-base-to-string
-				throw(new Error(`Could not convert from: ${input.from} to a token address`));
-			}
-			fromToken = tokenLookup.token;
-		}
+		const { from, to } = await this.canonicalizeConversionTokens(input);
 
-		let toToken: KeetaNetTokenPublicKeyString;
-		if (KeetaNetLib.Account.isInstance(input.to) && input.to.isToken()) {
-			toToken = input.to.publicKeyString.get();
-		} else {
-			const tokenLookup = await this.resolver.lookupToken(input.to);
-			if (tokenLookup === null) {
-				// eslint-disable-next-line @typescript-eslint/no-base-to-string
-				throw(new Error(`Could not convert to: ${input.to} to a token address`));
-			}
-			toToken = tokenLookup.token;
+		if (from === undefined || to === undefined) {
+			throw(new Error('From and To are both required for a conversion'));
 		}
 
 		return({
-			from: fromToken,
-			to: toToken,
+			from,
+			to,
 			amount: amount.toString(),
 			affinity: input.affinity
 		});
+	}
+
+	// XXX:TODO: We should also support to receive `from` or `to` and list the available currencies accordingly
+	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
+		return(await this.resolver.listTokens());
+	}
+
+	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
+		if (input.from !== undefined && input.to !== undefined) {
+			throw(new Error('Only one of from or two should be provided'));
+		}
+		if (input.from === undefined && input.to === undefined) {
+			throw(new Error('Either from or to should be provided'));
+		}
+		const conversion = await this.canonicalizeConversionTokens(input);
+		const account = options.account ?? this.#account;
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account);
+		if (providerEndpoints === null) {
+			return(null);
+		}
+
+		const conversions: KeetaNetTokenPublicKeyString[] = [];
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		for (const [_ignored_providerID, serviceInfo] of typedFxServiceEntries(providerEndpoints)) {
+			for (const conversionPair of serviceInfo.from) {
+				if (conversion.from !== undefined) {
+					if (conversionPair.currencyCodes.includes(conversion.from)) {
+						conversions.push(...conversionPair.to);
+					}
+				} else if (conversion.to !== undefined) {
+					if (conversionPair.to.includes(conversion.to)) {
+						conversions.push(...conversionPair.currencyCodes);
+					}
+				}
+			}
+		};
+
+		return({ conversions });
 	}
 
 	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {

@@ -488,6 +488,17 @@ test('Basic Tests', async function() {
 			throw(lookupError);
 		}
 	}
+
+	/**
+	 * List all tokens and their associated currencies
+	 */
+	const allTokens = await resolver.listTokens();
+	expect(allTokens.length).toBe(3);
+	expect(allTokens.map(t => t.currency).sort()).toEqual(Object.keys(tokens).sort());
+	for (const { token, currency } of allTokens) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		expect(token).toBe(tokens[currency as keyof typeof tokens].publicKeyString.get());
+	}
 });
 
 test('Concurrent Lookups', async function() {
