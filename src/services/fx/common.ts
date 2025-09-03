@@ -48,10 +48,10 @@ export type KeetaFXAnchorEstimate = {
 	 */
 	request: ConversionInputCanonical;
 
-    /**
-     * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
-     */
-    convertedAmount: string;
+	/**
+	 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
+	 */
+	convertedAmount: string;
 
 	/**
 	 * The expected cost of the fx request, in the form of a
@@ -66,60 +66,60 @@ export type KeetaFXAnchorEstimate = {
 
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
-    estimate: KeetaFXAnchorEstimate;
+	estimate: KeetaFXAnchorEstimate;
 } | {
 	ok: false;
 	error: string;
 });
 
 export type KeetaFXAnchorQuote = {
-    /**
-         * Conversion request that was provided
-         */
-    request: ConversionInputCanonical;
+	/**
+		 * Conversion request that was provided
+		 */
+	request: ConversionInputCanonical;
 
-    /**
-     * The public key of the liquidity provider account
-     */
-    account: string;
+	/**
+	 * The public key of the liquidity provider account
+	 */
+	account: string;
 
-    /**
-     * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
-     */
+	/**
+	 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
+	 */
 
-    convertedAmount: string;
+	convertedAmount: string;
 
-    /**
-     * The cost of the fx request, in the form of a
-     * token and amount that should be included with the swap
-     */
-    cost: {
-        amount: string;
-        token: KeetaNetTokenPublicKeyString;
-    };
+	/**
+	 * The cost of the fx request, in the form of a
+	 * token and amount that should be included with the swap
+	 */
+	cost: {
+		amount: string;
+		token: KeetaNetTokenPublicKeyString;
+	};
 
-    /**
-     * Signature information to verify the quote
-     */
-    signed: {
-        nonce: string;
-        /* Date and time of the request in ISO 8601 format */
-        timestamp: string;
-        /* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
-        signature: string;
-    }
+	/**
+	 * Signature information to verify the quote
+	 */
+	signed: {
+		nonce: string;
+		/* Date and time of the request in ISO 8601 format */
+		timestamp: string;
+		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
+		signature: string;
+	}
 };
 
 export type KeetaFXAnchorQuoteResponse = ({
 	ok: true;
-    quote: KeetaFXAnchorQuote
+	quote: KeetaFXAnchorQuote
 } | {
 	ok: false;
 	error: string;
 });
 
 export type KeetaFXAnchorExchange = {
-    /**
+	/**
 	 * ID used to identify the conversion request
 	 */
 	exchangeID: string

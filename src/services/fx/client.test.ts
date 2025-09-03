@@ -4,8 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFaucetHTTPServer } from './server.js';
-import { ConversionInput, ConversionInputCanonical, KeetaFXAnchorEstimateResponse, KeetaFXAnchorExchangeResponse, KeetaFXAnchorQuoteResponse } from './common.js';
-import crypto from '../../lib/utils/crypto.js';
+import type { ConversionInput } from './common.js';
 
 const DEBUG = false;
 
@@ -53,14 +52,13 @@ test('FX Anchor Client Test', async function() {
 					}
 				});
 			},
-			createConversionSwap: async function(request) {
+			createConversionSwap: async function(_ignored_request) {
 				return({
 					exchangeID: '123'
 				});
 			}
 		}
 	});
-	const baseToken = client.baseToken;
 
 	/*
 	 * Start the FX Anchor Server and get the URL
@@ -137,9 +135,9 @@ test('FX Anchor Client Test', async function() {
 	});
 
 	/* Get Estimate from Currency Codes */
-	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
+	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
 	/* Get Estimate from Tokens */
-	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from'};
+	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from' };
 
 	const requestCanonical = {
 		from: testCurrencyUSD.publicKeyString.get(),
@@ -186,6 +184,10 @@ test('FX Anchor Client Test', async function() {
 				signature: ''
 			}
 		});
+
+		const exchangeWithBlock = await quote.createExchange(sendBlock);
+		// TODO - fix createConversionSwap in server setup to complete swap and return ID
+		expect(exchangeWithBlock.exchange.exchangeID).toBe('123');
 
 		const exchange = await quote.createExchange();
 		expect(exchange.exchange.exchangeID).toBe('123');
