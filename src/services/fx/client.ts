@@ -530,7 +530,6 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 	}
 
-	// XXX:TODO: We should also support to receive `from` or `to` and list the available currencies accordingly
 	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
 		return(await this.resolver.listTokens());
 	}
