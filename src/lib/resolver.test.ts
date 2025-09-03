@@ -259,7 +259,58 @@ test('Basic Tests', async function() {
 		}))[]
 	};
 
+	const allChecksInvalid = {
+		banking: [{
+			// @ts-expect-error
+			input: {
+				countryCodes: undefined
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				currencyCodes: null
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			// @ts-expect-error
+			input: {
+				countryCodes: undefined
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				countryCodes: null
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				countryCodes: '123'
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}],
+		kyc: [],
+		fx: []
+	} satisfies {
+		[key in keyof NonNullable<ServiceMetadata['services']>]: ({
+			input: ServiceSearchCriteria<key>;
+		} & ({
+			result?: undefined;
+		} | {
+			createAccount?: string[];
+			createVerification?: string[];
+			createExchange?: string[];
+		}))[]
+	};
+
 	for (const checkKind of ['banking', 'kyc', 'fx'] as const) {
+		const checksInvalid = allChecksInvalid[checkKind];
+		for (const invalid of checksInvalid) {
+			// @ts-expect-error
+			await expect(resolver.lookup(checkKind, invalid.input)).rejects.toThrow()
+		}
 		const checks = allChecks[checkKind];
 		for (const check of checks) {
 			const checkResults = await resolver.lookup(checkKind, check.input);
