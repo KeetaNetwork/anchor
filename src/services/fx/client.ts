@@ -152,21 +152,25 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 			});
 		}
 
-		const from = await serviceInfo.from('array');
-		const allFrom = await Promise.all(from.map(async function (fn) {
-			const obj = await fn('object');
-			const currencyCodes = await Promise.all((await obj.currencyCodes('array')).map(async (currencyCode) => {
+		const fromInfo = await serviceInfo.from('array');
+		const allFrom = await Promise.all(fromInfo.map(async function (fromFn) {
+			const from = await fromFn('object');
+
+			const currencyCodes = await Promise.all((await from.currencyCodes('array')).map(async (currencyCode) => {
 				const code = await currencyCode('string');
 				return(assertKeetaNetTokenPublicKeyString(code));
 			}));
-			const to = await Promise.all((await obj.to('array')).map(async (currencyCode) => {
+
+			const to = await Promise.all((await from.to('array')).map(async (currencyCode) => {
 				const code = await currencyCode('string');
 				return(assertKeetaNetTokenPublicKeyString(code));
 			}));
-			const kycProvidersEntry = (await obj.kycProviders?.('array'))?.map(async (providerFn) => {
+
+			const kycProvidersEntry = (await from.kycProviders?.('array'))?.map(async (providerFn) => {
 				const provider = await providerFn('string');
 				return(provider);
 			});
+
 			let kycProviders: { kycProviders: string[] } | {} = {};
 			if (kycProvidersEntry && kycProvidersEntry.length > 0) {
 				kycProviders = { kycProviders: await Promise.all(kycProvidersEntry) }
