@@ -15,7 +15,8 @@ export namespace KYC {
 	export type ClientConfig = KeetaKYCAnchorClientConfig;
 	export const Client: typeof KeetaKYCAnchorClient = KeetaKYCAnchorClient;
 }
-
+// TODO: Determine how we want to export the client
+// eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace FX {
 	export type ClientConfig = KeetaFXAnchorClientConfig;
 	export const Client: typeof KeetaFXAnchorClient = KeetaFXAnchorClient;

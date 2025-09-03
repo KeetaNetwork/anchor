@@ -4,8 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFaucetHTTPServer } from './server.js';
-import { ConversionInput, ConversionInputCanonical, KeetaFXAnchorEstimateResponse, KeetaFXAnchorExchangeResponse, KeetaFXAnchorQuoteResponse } from './common.js';
-import crypto from '../../lib/utils/crypto.js';
+import type { ConversionInput } from './common.js';
 
 const DEBUG = false;
 
@@ -41,7 +40,7 @@ test('FX Anchor Client Test', async function() {
 				return({
 					request,
 					account: liquidityProvider.publicKeyString.get(),
-					convertedAmount: (parseInt(request.amount) * 0.88).toFixed(0),
+					convertedAmount: (parseInt(request.amount) * 0.90).toFixed(0),
 					cost: {
 						amount: '5',
 						token: testCurrencyUSD.publicKeyString.get()
@@ -53,14 +52,13 @@ test('FX Anchor Client Test', async function() {
 					}
 				});
 			},
-			createConversionSwap: async function(request) {
+			createConversionSwap: async function(_ignored_request) {
 				return({
 					exchangeID: '123'
 				});
 			}
 		}
 	});
-	const baseToken = client.baseToken;
 
 	/*
 	 * Start the FX Anchor Server and get the URL
@@ -166,9 +164,9 @@ test('FX Anchor Client Test', async function() {
 	expect(possibleToBTCConversions?.conversions).toEqual([testCurrencyUSD.publicKeyString.get()]);
 
 	/* Get Estimate from Currency Codes */
-	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from'};
+	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
 	/* Get Estimate from Tokens */
-	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from'};
+	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from' };
 
 	const requestCanonical = {
 		from: testCurrencyUSD.publicKeyString.get(),
@@ -196,11 +194,15 @@ test('FX Anchor Client Test', async function() {
 			}
 		});
 
+		await expect(async function(){
+			await estimate.getQuote(0.001);
+		}).rejects.toThrow();
+
 		const quote = await estimate.getQuote();
 		expect(quote.quote).toEqual({
 			request: requestCanonical,
 			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * 0.88).toFixed(0),
+			convertedAmount: (parseInt(requestCanonical.amount) * 0.90).toFixed(0),
 			cost: {
 				amount: '5',
 				token: testCurrencyUSD.publicKeyString.get()
@@ -211,6 +213,10 @@ test('FX Anchor Client Test', async function() {
 				signature: ''
 			}
 		});
+
+		const exchangeWithBlock = await quote.createExchange(sendBlock);
+		// TODO - fix createConversionSwap in server setup to complete swap and return ID
+		expect(exchangeWithBlock.exchange.exchangeID).toBe('123');
 
 		const exchange = await quote.createExchange();
 		expect(exchange.exchange.exchangeID).toBe('123');

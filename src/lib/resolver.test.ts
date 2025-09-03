@@ -98,7 +98,7 @@ async function setupForResolverTests() {
 							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
 							to: [testCurrencyMXN.publicKeyString.get()],
 							kycProviders: ['']
-						}],
+						}]
 					}
 				},
 				banking: {
@@ -138,6 +138,7 @@ async function setupForResolverTests() {
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 						url: 'https://keeta.com/__TEST__/metadata'
 					},
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_broken4: {
 						/* Invalid countryCodes schema */
 						operations: {
@@ -145,8 +146,10 @@ async function setupForResolverTests() {
 						},
 						countryCodes: 'USD'
 					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_nomatch1: {
 					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_nomatch2: {
 						operations: {
 							createAccount: 'https://banchor.nomatch2.com/api/v1/createAccount'
@@ -442,12 +445,14 @@ test('Basic Tests', async function() {
 	 */
 	if (currencyChecksPassValid.length < 0) {
 		for (const currencyCheck of currencyChecksPassValid) {
-			resolver.lookupToken(currencyCheck.input);
+			await resolver.lookupToken(currencyCheck.input);
 		}
 	}
 
 	for (const currencyCheck of [...currencyChecksPassValid, ...currencyChecksPassInvalid]) {
 		try {
+			// TODO - how should we handle types for BTC etc
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
 			const currencyResult = await resolver.lookupToken(currencyCheck.input as any);
 			let expectedResult;
 			if ('result' in currencyCheck) {
@@ -474,6 +479,7 @@ test('Basic Tests', async function() {
 	for (const currencyCheck of currencyChecksFail) {
 		try {
 			await expect(async function() {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
 				return(await resolver.lookupToken(currencyCheck.input as any));
 			}).rejects.toThrow();
 		} catch (lookupError) {
