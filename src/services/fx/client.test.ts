@@ -16,6 +16,7 @@ test('FX Anchor Client Test', async function() {
 	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
+	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -43,6 +44,7 @@ test('FX Anchor Client Test', async function() {
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
 		client: client,
+		quoteSigner: quoteSigner,
 		fx: {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			getConversionRateAndFee: async function() { return({} as Omit<KeetaFXAnchorQuote, 'request' | 'signed' >) }
@@ -51,6 +53,7 @@ test('FX Anchor Client Test', async function() {
 	await using server = new KeetaNetFXAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		account: liquidityProvider,
+		quoteSigner: quoteSigner,
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		fx: {
 			getConversionRateAndFee: async function(request) {

@@ -12,6 +12,7 @@ import type {
 	KeetaFXAnchorQuoteResponse
 } from './common.ts';
 import { acceptSwapRequest } from './common.js';
+import * as Signing from '../../lib/utils/signing.js';
 import type { JSONSerializable } from '../../lib/utils/json.js';
 import type { Logger } from '../../lib/log/index.js';
 import { Log } from '../../lib/log/index.js';
@@ -26,7 +27,7 @@ const assertConversionQuote = createAssert<KeetaFXAnchorQuote>();
 const assertErrorData = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 type Routes = {
-	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; }>;
+	[route: string]: (server: KeetaNetFXAnchorHTTPServer, urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; }>;
 };
 
 export interface KeetaAnchorFXServerConfig {
@@ -49,6 +50,11 @@ export interface KeetaAnchorFXServerConfig {
 	 * This may be either a function or a KeetaNet Account instance.
 	 */
 	signer?: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonical) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
+
+	/**
+	 * Account which performs the signing and validation of quotes
+	 */
+	quoteSigner: Signing.SignableAccount;
 
 	/**
 	 * Configuration for FX handling
@@ -77,6 +83,54 @@ export interface KeetaAnchorFXServerConfig {
 	 */
 	logger?: Logger;
 };
+
+async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>, ttl?: number): Promise<Signing.Signable> {
+	const retval: Signing.Signable = [
+		unsignedQuote.request.from,
+		unsignedQuote.request.to,
+		unsignedQuote.request.amount,
+		unsignedQuote.request.affinity,
+		unsignedQuote.convertedAmount,
+		unsignedQuote.cost.token,
+		unsignedQuote.cost.amount
+	];
+
+	if (ttl !== undefined) {
+		retval.push(ttl);
+	}
+
+	return(retval);
+}
+
+async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>): Promise<KeetaFXAnchorQuote> {
+	const signableQuote = await formatQuoteSignable(unsignedQuote);
+	const signed = await Signing.SignData(signer, signableQuote);
+
+	return({
+		...unsignedQuote,
+		signed: signed
+	});
+}
+
+async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuote): Promise<boolean> {
+	const signableQuote = await formatQuoteSignable(quote);
+
+	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
+}
+
+async function requestToAccount(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonical): Promise<Signing.SignableAccount> {
+	const account = KeetaNet.lib.Account.isInstance(config.account) ? config.account : await config.account(request);
+	let signer: Signing.SignableAccount | null = null;
+	if (config.signer !== undefined) {
+		signer = (KeetaNet.lib.Account.isInstance(config.signer) ? config.signer : await config.signer(request)).assertAccount();
+	}
+
+	if (signer !== null) {
+		return(signer);
+	}
+
+	return(account.assertAccount());
+}
 
 async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	const routes: Routes = {};
@@ -107,7 +161,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	/**
 	 * Setup the request handler for an estimate request
 	 */
-	routes['POST /api/getEstimate'] = async function(_ignore_params, postData) {
+	routes['POST /api/getEstimate'] = async function(_ignore_server, _ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -135,7 +189,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
+	routes['POST /api/getQuote'] = async function(server, _ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -145,20 +199,16 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 
 		const conversion = assertConversionInputCanonical(postData.request);
 		const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
-		const nonce = crypto.randomUUID();
-		const timestamp = (new Date()).toISOString();
-		const signature = ''; // TODO implement signature
+
+		const unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'> = {
+			request: conversion,
+			...rateAndFee
+		};
+
+		const signedQuote = await generateSignedQuote(server.quoteSigner, unsignedQuote);
 		const quoteResponse: KeetaFXAnchorQuoteResponse = {
 			ok: true,
-			quote: {
-				request: conversion,
-				...rateAndFee,
-				signed: {
-					nonce,
-					timestamp,
-					signature
-				}
-			}
+			quote: signedQuote
 		};
 
 		return({
@@ -166,7 +216,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['POST /api/createExchange'] = async function(_ignore_params, postData) {
+	routes['POST /api/createExchange'] = async function(server, _ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -187,6 +237,10 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		}
 
 		const quote = assertConversionQuote(request.quote);
+		const isValidQuote = await verifySignedData(server.quoteSigner, quote);
+		if (!isValidQuote) {
+			throw(new Error('Invalid quote signature'));
+		}
 
 		const block = new KeetaNet.lib.Block(request.block);
 		let userClient: KeetaNet.UserClient;
@@ -203,7 +257,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 				client: config.client.client,
 				network: config.client.network,
 				networkAlias: config.client.networkAlias,
-				account,
+				account: account,
 				signer: signer
 			});
 		}
@@ -225,7 +279,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['GET /api/getExchangeStatus/:id'] = async function(params) {
+	routes['GET /api/getExchangeStatus/:id'] = async function(_ignore_server, params) {
 		if (params === undefined || params === null) {
 			throw(new Error('Expected params'));
 		}
@@ -248,7 +302,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	}
 
 
-	routes['ERROR'] = async function(_ignore_params, postData) {
+	routes['ERROR'] = async function(_ignore_server, _ignore_params, postData) {
 		const errorInfo = assertErrorData(postData);
 
 		return({
@@ -268,6 +322,7 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 	readonly logger: NonNullable<KeetaAnchorFXServerConfig['logger']>;
 	readonly account: KeetaAnchorFXServerConfig['account'];
 	readonly signer: NonNullable<KeetaAnchorFXServerConfig['signer']>;
+	readonly quoteSigner: KeetaAnchorFXServerConfig['quoteSigner'];
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
@@ -279,6 +334,7 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 		this.fx = config.fx;
 		this.account = config.account;
 		this.signer = config.signer ?? config.account;
+		this.quoteSigner = config.quoteSigner;
 		this.logger = config.logger ?? new Log();
 	}
 
@@ -402,9 +458,9 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 					/**
 					 * Call the route handler
 					 */
-					result = await route(params, postData);
+					result = await route(this, params, postData);
 				} else {
-					result = await route(params, undefined);
+					result = await route(this, params, undefined);
 				}
 
 				generatedResult = true;
@@ -421,7 +477,7 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 					if (KeetaAnchorUserError.isInstance(err)) {
 						const errorHandlerRoute = routes['ERROR'];
 						if (errorHandlerRoute !== undefined) {
-							result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
+							result = await errorHandlerRoute(this, new Map(), err.asErrorResponse('application/json'));
 							generatedResult = true;
 						}
 					}
