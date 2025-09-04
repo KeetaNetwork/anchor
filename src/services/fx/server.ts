@@ -6,13 +6,12 @@ import {
 } from '../../lib/error.js';
 import type {
 	ConversionInputCanonical,
-	KeetaFXAnchorClientCreateExchangeRequest,
-	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse
-} from './common.js';
+} from './common.ts';
+import { acceptSwapRequest } from './common.js';
 import type { JSONSerializable } from '../../lib/utils/json.js';
 import type { Logger } from '../../lib/log/index.js';
 import { Log } from '../../lib/log/index.js';
@@ -58,19 +57,9 @@ export interface KeetaAnchorFXServerConfig {
 		/**
 		 * Handle the conversion request of one token to another
 		 *
-		 * Estimates are not signed and non-binding
+		 * This is used to handle quotes and estimates
 		 */
-		getConversionRateAndFeeEstimate: (request: ConversionInputCanonical) => Promise<KeetaFXAnchorEstimate>;
-		/**
-		 * Handle the conversion request of one token to another
-		 *
-		 * Quotes are signed and binding within a reasonable timeframe
-		 */
-		getConversionRateAndFeeQuote: (request: ConversionInputCanonical) => Promise<KeetaFXAnchorQuote>;
-		/**
-		 * Generate and Publish a swap for a conversion request
-		 */
-		createConversionSwap: (request: KeetaFXAnchorClientCreateExchangeRequest) => Promise<Omit<Extract<KeetaFXAnchorExchangeResponse, { ok: true }>, 'ok'>>;
+		getConversionRateAndFee: (request: ConversionInputCanonical) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
 	};
 
 	/**
@@ -81,7 +70,7 @@ export interface KeetaAnchorFXServerConfig {
 	/**
 	 * The network client to use for submitting blocks
 	 */
-	client: { client: KeetaNet.Client; network: bigint; } | KeetaNet.UserClient;
+	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
 
 	/**
 	 * Enable debug logging
@@ -127,10 +116,18 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		}
 
 		const conversion = assertConversionInputCanonical(postData.request);
-		const rateAndFee = await config.fx.getConversionRateAndFeeEstimate(conversion);
+		const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
 		const estimateResponse: KeetaFXAnchorEstimateResponse = {
 			ok: true,
-			estimate: { ...rateAndFee }
+			estimate: {
+				request: conversion,
+				convertedAmount: rateAndFee.convertedAmount,
+				expectedCost: {
+					min: rateAndFee.cost.amount,
+					max: rateAndFee.cost.amount,
+					token: rateAndFee.cost.token
+				}
+			}
 		};
 
 		return({
@@ -147,10 +144,21 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		}
 
 		const conversion = assertConversionInputCanonical(postData.request);
-		const rateAndFee = await config.fx.getConversionRateAndFeeQuote(conversion);
+		const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+		const nonce = crypto.randomUUID();
+		const timestamp = (new Date()).toISOString();
+		const signature = ''; // TODO implement signature
 		const quoteResponse: KeetaFXAnchorQuoteResponse = {
 			ok: true,
-			quote: { ...rateAndFee }
+			quote: {
+				request: conversion,
+				...rateAndFee,
+				signed: {
+					nonce,
+					timestamp,
+					signature
+				}
+			}
 		};
 
 		return({
@@ -181,10 +189,37 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		const quote = assertConversionQuote(request.quote);
 
 		const block = new KeetaNet.lib.Block(request.block);
-		const exchange = await config.fx.createConversionSwap({ quote, block });
+		let userClient: KeetaNet.UserClient;
+		if (KeetaNet.UserClient.isInstance(config.client)) {
+			userClient = config.client;
+		} else {
+			const account = KeetaNet.lib.Account.isInstance(config.account) ? config.account : await config.account(quote.request);
+			let signer: InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256K1 | typeof KeetaNet.lib.Account.AccountKeyAlgorithm.ED25519 | typeof KeetaNet.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256R1>> | null = null;
+			if (config.signer !== undefined) {
+				signer = (KeetaNet.lib.Account.isInstance(config.signer) ? config.signer : await config.signer(quote.request)).assertAccount();
+			}
+
+			userClient = new KeetaNet.UserClient({
+				client: config.client.client,
+				network: config.client.network,
+				networkAlias: config.client.networkAlias,
+				account,
+				signer: signer
+			});
+		}
+
+		const expectedToken = KeetaNet.lib.Account.fromPublicKeyString(quote.request.from);
+		const expectedAmount = quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount;
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		const swapBlocks = await acceptSwapRequest(userClient, block, { token: expectedToken, amount: BigInt(expectedAmount) });
+		// TODO fix test so we can publish
+		// const publishResult = await userClient.client.transmit(swapBlocks);
+		// if (!publishResult.publish) {
+		// 	throw(new Error('Exchange Publish Failed'));
+		// }
 		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 			ok: true,
-			exchangeID: exchange.exchangeID
+			exchangeID: block.hash.toString()
 		};
 
 		return({

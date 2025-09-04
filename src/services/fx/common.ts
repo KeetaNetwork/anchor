@@ -168,7 +168,7 @@ export async function acceptSwapRequest(userClient: KeetaNetUserClient, request:
 		throw(new Error('Swap Request send token does not match expected'))
 	}
 	if (expected.amount !== undefined && sendOperation.amount !== expected.amount) {
-		throw(new Error('Swap Request send amount does not match expected'))
+		throw(new Error(`Swap Request send amount ${sendOperation.amount} does not match expected amount ${expected.amount}`))
 	}
 
 	const receiveOperation = request.operations.find(({ type }) => KeetaNetLib.Block.OperationType.RECEIVE === type);
