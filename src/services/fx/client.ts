@@ -23,6 +23,8 @@ import type {
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
+	KeetaNetAccount,
+	KeetaNetToken,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import { KeetaAnchorUserError } from '../../lib/error.js';
@@ -311,7 +313,6 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
-			const builder = this.client.initBuilder();
 			/* Liquidity Provider that will complete the swap */
 			const liquidityProvider = KeetaNetLib.Account.fromPublicKeyString(quote.account);
 
@@ -324,18 +325,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				sendAmount = BigInt(quote.convertedAmount);
 				receiveAmount = BigInt(quote.request.amount);
 			}
-			/* Send the amount to be converted */
-			builder.send(liquidityProvider, sendAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.from));
 
-			/* Create receive to ensure swap is atomic */
-			builder.receive(liquidityProvider, receiveAmount, KeetaNetLib.Account.fromPublicKeyString(quote.request.to), true);
-
-			/* Compute the initial swap block */
-			const computedBlocks = (await builder.computeBlocks()).blocks;
-			if (computedBlocks.length > 1) {
-				throw(new Error('Computed more than 1 swap block'));
-			}
-			swapBlock = computedBlocks[0];
+			const from = { account: this.client.account, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.from), amount: sendAmount };
+			const to = { account: liquidityProvider, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.to), amount: receiveAmount };
+			swapBlock = await this.parent.createSwapRequest(from, to);
 		}
 
 		if (swapBlock == undefined) {
@@ -635,6 +628,51 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 
 		return(results);
+	}
+
+	async createSwapRequest(from: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }, to: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>> {
+		const builder = this.client.initBuilder();
+		builder.send(to.account, from.amount, from.token);
+		builder.receive(to.account, to.amount, to.token, true)
+		const blocks = await builder.computeBlocks();
+
+		if (blocks.blocks.length !== 1) {
+			throw(new Error('Compute Swap Request Generated more than 1 block'));
+		}
+
+		const block = blocks.blocks[0];
+		if (block === undefined) {
+			throw(new Error('Swap Block is undefined'));
+		}
+
+		return(block);
+	}
+
+	async acceptSwapRequest(request: InstanceType<typeof KeetaNetLib.Block>, expected: { token?: KeetaNetToken, amount?: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>[]> {
+		const builder = this.client.initBuilder();
+
+		const sendOperation = request.operations.find(({ type }) => KeetaNetLib.Block.OperationType.SEND === type);
+		if (!sendOperation || sendOperation.type !== KeetaNetLib.Block.OperationType.SEND) {
+			throw(new Error('Swap Request is missing send'));
+		}
+		if (!sendOperation.to.comparePublicKey(this.client.account)) {
+			throw(new Error(`Swap Request send account does not match`));
+		}
+		if (expected.token !== undefined && !sendOperation.token.comparePublicKey(expected.token)) {
+			throw(new Error('Swap Request send token does not match expected'))
+		}
+		if (expected.amount !== undefined && sendOperation.amount !== expected.amount) {
+			throw(new Error('Swap Request send amount does not match expected'))
+		}
+
+		const receiveOperation = request.operations.find(({ type }) => KeetaNetLib.Block.OperationType.RECEIVE === type);
+		if (!receiveOperation || receiveOperation.type !== KeetaNetLib.Block.OperationType.RECEIVE) {
+			throw(new Error("Swap Request is missing receive operation"));
+		}
+		builder.send(request.account, receiveOperation.amount, receiveOperation.token);
+
+		const blocks = await builder.computeBlocks();
+		return([...blocks.blocks, request]);
 	}
 
 

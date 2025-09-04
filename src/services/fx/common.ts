@@ -3,7 +3,8 @@ import type { Decimal } from 'decimal.js';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 
-type KeetaNetToken = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>;
+export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
+export type KeetaNetToken = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 export type ConversionInput = {
