@@ -410,22 +410,28 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
  *   Estimate(optional) -> Quote(optional) -> Exchange -> ExchangeStatus
  */
 class KeetaFXAnchorExchangeWithProvider {
-	constructor(
-		private readonly provider: KeetaFXAnchorProviderBase,
-		public exchange: KeetaFXAnchorExchange
-	) {}
+	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly exchange: KeetaFXAnchorExchange
 
-	async getExchangeStatus(): Promise<KeetaFXAnchorExchangeWithProvider> {
-		this.exchange = await this.provider.getExchangeStatus(this.exchange.exchangeID);
-		return(this);
+	constructor(provider: KeetaFXAnchorProviderBase, exchange: KeetaFXAnchorExchange) {
+		this.provider = provider;
+		this.exchange = exchange;
+	}
+
+	async getExchangeStatus(): Promise<KeetaFXAnchorExchange> {
+		/* XXX:TODO: This should return something useful -- right now  it just returns the exchange ID... */
+		return(await this.provider.getExchangeStatus(this.exchange.exchangeID));
 	}
 }
 
 class KeetaFXAnchorQuoteWithProvider {
-	constructor(
-		private readonly provider: KeetaFXAnchorProviderBase,
-		public readonly quote: KeetaFXAnchorQuote
-	) {}
+	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly quote: KeetaFXAnchorQuote;
+
+	constructor(provider: KeetaFXAnchorProviderBase, quote: KeetaFXAnchorQuote) {
+		this.provider = provider;
+		this.quote = quote;
+	}
 
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange(this.quote, block);
@@ -434,10 +440,13 @@ class KeetaFXAnchorQuoteWithProvider {
 }
 
 class KeetaFXAnchorEstimateWithProvider {
-	constructor(
-		private readonly provider: KeetaFXAnchorProviderBase,
-		public readonly estimate: KeetaFXAnchorEstimate
-	) {}
+	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly estimate: KeetaFXAnchorEstimate;
+
+	constructor(provider: KeetaFXAnchorProviderBase, estimate: KeetaFXAnchorEstimate) {
+		this.provider = provider;
+		this.estimate = estimate;
+	}
 
 	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
 		const quote = await this.provider.getQuote(this.estimate, tolerance);
