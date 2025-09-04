@@ -23,10 +23,9 @@ import type {
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse,
-	KeetaNetAccount,
-	KeetaNetToken,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
+import { createSwapRequest } from './common.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
 /**
@@ -328,7 +327,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 			const from = { account: this.client.account, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.from), amount: sendAmount };
 			const to = { account: liquidityProvider, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.to), amount: receiveAmount };
-			swapBlock = await this.parent.createSwapRequest(from, to);
+			swapBlock = await createSwapRequest(this.client, from, to);
 		}
 
 		if (swapBlock == undefined) {
@@ -629,52 +628,6 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 		return(results);
 	}
-
-	async createSwapRequest(from: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }, to: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>> {
-		const builder = this.client.initBuilder();
-		builder.send(to.account, from.amount, from.token);
-		builder.receive(to.account, to.amount, to.token, true)
-		const blocks = await builder.computeBlocks();
-
-		if (blocks.blocks.length !== 1) {
-			throw(new Error('Compute Swap Request Generated more than 1 block'));
-		}
-
-		const block = blocks.blocks[0];
-		if (block === undefined) {
-			throw(new Error('Swap Block is undefined'));
-		}
-
-		return(block);
-	}
-
-	async acceptSwapRequest(request: InstanceType<typeof KeetaNetLib.Block>, expected: { token?: KeetaNetToken, amount?: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>[]> {
-		const builder = this.client.initBuilder();
-
-		const sendOperation = request.operations.find(({ type }) => KeetaNetLib.Block.OperationType.SEND === type);
-		if (!sendOperation || sendOperation.type !== KeetaNetLib.Block.OperationType.SEND) {
-			throw(new Error('Swap Request is missing send'));
-		}
-		if (!sendOperation.to.comparePublicKey(this.client.account)) {
-			throw(new Error(`Swap Request send account does not match`));
-		}
-		if (expected.token !== undefined && !sendOperation.token.comparePublicKey(expected.token)) {
-			throw(new Error('Swap Request send token does not match expected'))
-		}
-		if (expected.amount !== undefined && sendOperation.amount !== expected.amount) {
-			throw(new Error('Swap Request send amount does not match expected'))
-		}
-
-		const receiveOperation = request.operations.find(({ type }) => KeetaNetLib.Block.OperationType.RECEIVE === type);
-		if (!receiveOperation || receiveOperation.type !== KeetaNetLib.Block.OperationType.RECEIVE) {
-			throw(new Error("Swap Request is missing receive operation"));
-		}
-		builder.send(request.account, receiveOperation.amount, receiveOperation.token);
-
-		const blocks = await builder.computeBlocks();
-		return([...blocks.blocks, request]);
-	}
-
 
 	/** @internal */
 	_internals(accessToken: symbol) {
