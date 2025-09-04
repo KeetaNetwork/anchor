@@ -233,6 +233,10 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		if (typeof exchangeID !== 'string') {
 			throw(new Error('Missing exchangeID in params'));
 		}
+		const blockLookup = await config.client.client.getVoteStaple(exchangeID);
+		if (blockLookup === null) {
+			throw(new Error('Block Not Found'));
+		}
 		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 			ok: true,
 			exchangeID: exchangeID
