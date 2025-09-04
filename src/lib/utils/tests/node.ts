@@ -62,6 +62,8 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		 * Because "createInitialVoteStaple" is broken, we need to
 		 * manually initialize the chain
 		 */
+		const { networkAddress } = KeetaNetClient.lib.Account.generateBaseAddresses(testNode.config.network);
+
 		const itaUserClient = new KeetaNetClient.UserClient({
 			client: testClient,
 			network: testNode.config.network,
@@ -78,6 +80,14 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			account: TestRepAccountClient,
 			usePublishAid: false
 		});
+
+		// TODO - move this to generateInitialVoteStaple in Node
+		await itaUserClient.setInfo({
+			name: 'KEETANET',
+			description: 'Network Address For KeetaNet',
+			metadata: '',
+			defaultPermission: new KeetaNetClient.lib.Permissions(['TOKEN_ADMIN_CREATE','STORAGE_CREATE','ACCESS'])
+		}, { account: networkAddress });
 	}
 
 	let userClient;
