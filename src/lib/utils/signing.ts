@@ -54,7 +54,9 @@ export function FormatData(account: VerifableAccount, data: Signable, nonce?: st
 	 * Verify that the generated ASN.1 data matches the expected schema before returning it.
 	 */
 	// @ts-ignore
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 	const inputCanonical = KeetaNetLib.Utils.ASN1.ValidateASN1.againstSchema(input, schema);
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 	const verificationData = KeetaNetLib.Utils.ASN1.JStoASN1(inputCanonical);
 
 	return({

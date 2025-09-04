@@ -322,7 +322,7 @@ class KeetaKYCProvider {
 	}
 }
 
-async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Account>): Promise<{ nonce: string; timestamp: string; signature: string; }> {
+async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
 	return(await Signing.SignData(account, []));
 }
 
@@ -343,7 +343,7 @@ class KeetaKYCAnchorClient {
 	}
 
 	async createVerification(request: KeetaKYCAnchorClientCreateVerificationRequest): Promise<KeetaKYCProvider[]> {
-		const signedData = await generateSignedData(request.account);
+		const signedData = await generateSignedData(request.account.assertAccount());
 
 		if (PARANOID) {
 			const check = await verifySignedData({ account: request.account.publicKeyString.get(), signed: signedData });

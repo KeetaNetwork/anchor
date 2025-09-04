@@ -327,6 +327,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 			const from = { account: this.client.account, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.from), amount: sendAmount };
 			const to = { account: liquidityProvider, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.to), amount: receiveAmount };
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
 			swapBlock = await createSwapRequest(this.client, from, to);
 		}
 
