@@ -338,6 +338,6 @@ test('FX Anchor Client Test', async function() {
 		expect(exchange.exchange.exchangeID).toBe('123');
 
 		const exchangeStatus = await exchange.getExchangeStatus();
-		expect(exchangeStatus.exchange.exchangeID).toBe('123');
+		expect(exchangeStatus.exchangeID).toBe('123');
 	}
 });

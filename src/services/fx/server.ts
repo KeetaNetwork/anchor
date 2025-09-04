@@ -27,7 +27,7 @@ const assertConversionQuote = createAssert<KeetaFXAnchorQuote>();
 const assertErrorData = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 type Routes = {
-	[route: string]: (postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; }>;
+	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; }>;
 };
 
 export interface KeetaAnchorFXServerConfig {
@@ -118,7 +118,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	/**
 	 * Setup the request handler for an estimate request
 	 */
-	routes['POST /api/getEstimate'] = async function(postData) {
+	routes['POST /api/getEstimate'] = async function(_ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -138,7 +138,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['POST /api/getQuote'] = async function(postData) {
+	routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -158,7 +158,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['POST /api/createExchange'] = async function(postData) {
+	routes['POST /api/createExchange'] = async function(_ignore_params, postData) {
 		if (!postData || typeof postData !== 'object') {
 			throw(new Error('No POST data provided'));
 		}
@@ -192,17 +192,17 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 		});
 	}
 
-	routes['GET /api/getExchangeStatus'] = async function(params) {
-		if (!params || !Array.isArray(params) || params.length === 0) {
+	routes['GET /api/getExchangeStatus/:id'] = async function(params) {
+		if (params === undefined || params === null) {
 			throw(new Error('Expected params'));
 		}
-		const exchangeID = params[0];
+		const exchangeID = params.get('id');
 		if (typeof exchangeID !== 'string') {
 			throw(new Error('Missing exchangeID in params'));
 		}
 		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 			ok: true,
-			exchangeID
+			exchangeID: exchangeID
 		};
 
 		return({
@@ -211,7 +211,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	}
 
 
-	routes['ERROR'] = async function(postData) {
+	routes['ERROR'] = async function(_ignore_params, postData) {
 		const errorInfo = assertErrorData(postData);
 
 		return({
@@ -245,6 +245,60 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 		this.logger = config.logger ?? new Log();
 	}
 
+	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string> } | { match: false }) {
+		const requestURLPaths = requestURL.pathname.split('/');
+		const routeURLPaths = routeURL.pathname.split('/');
+
+		if (requestURLPaths.length !== routeURLPaths.length) {
+			return({ match: false });
+		}
+
+		const params = new Map<string, string>();
+		for (let partIndex = 0; partIndex < requestURLPaths.length; partIndex++) {
+			const requestPath = requestURLPaths[partIndex];
+			const routePath = routeURLPaths[partIndex];
+
+			if (routePath === undefined || requestPath === undefined) {
+				return({ match: false });
+			}
+
+			if (routePath.startsWith(':')) {
+				params.set(routePath.slice(1), requestPath);
+			} else if (requestPath !== routePath) {
+				return({ match: false });
+			}
+		}
+
+		return({ match: true, params: params });
+	}
+
+	private static routeFind(method: string, requestURL: URL, routes: Routes): { route: Routes[keyof Routes]; params: Map<string, string> } | null {
+		for (const routeKey in routes) {
+			const route = routes[routeKey];
+			if (route === undefined) {
+				continue;
+			}
+
+			const [routeMethod, ...routePathParts] = routeKey.split(' ');
+			const routePath = `/${routePathParts.join(' ')}`.replace(/^\/+/, '/');
+
+			if (method !== routeMethod) {
+				continue;
+			}
+
+			const routeURL = new URL(routePath, 'http://localhost');
+			const matchResult = this.routeMatch(requestURL, routeURL);
+			if (matchResult.match) {
+				return({
+					route: route,
+					params: matchResult.params
+				});
+			}
+		}
+
+		return(null);
+	}
+
 	private async main(onSetPort?: (port: number) => void): Promise<void> {
 		this.logger?.debug('KeetaAnchorFX.Server', 'Starting HTTP server...');
 
@@ -254,22 +308,25 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 
 		const server = new http.Server(async (request, response) => {
 			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-			const path = url.pathname;
-			// Spit path for GET requests
-			const pathSegments = path.split('/').filter(Boolean);
+			const method = request.method ?? 'GET';
+
 			/*
 			 * Lookup the route based on the request
 			 */
-			const checkRouteKey = `${request.method ?? 'UNKNOWN'} /${pathSegments[0]}/${pathSegments[1]}`;
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const route = routes[checkRouteKey as keyof typeof routes];
-			if (route === undefined) {
+			const requestedRouteAndParams = KeetaNetFXAnchorHTTPServer.routeFind(method, url, routes);
+			if (requestedRouteAndParams === null) {
 				response.statusCode = 404;
 				response.setHeader('Content-Type', 'text/plain');
 				response.write('Not Found');
 				response.end();
 				return;
 			}
+
+			/*
+			 * Extract the route handler and the parameters from
+			 * the request
+			 */
+			const { route, params } = requestedRouteAndParams;
 
 			/**
 			 * Attempt to run the route, catch any errors
@@ -308,9 +365,9 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 					/**
 					 * Call the route handler
 					 */
-					result = await route(postData);
+					result = await route(params, postData);
 				} else {
-					result = await route(pathSegments.slice(2));
+					result = await route(params, undefined);
 				}
 
 				generatedResult = true;
@@ -327,7 +384,7 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 					if (KeetaAnchorUserError.isInstance(err)) {
 						const errorHandlerRoute = routes['ERROR'];
 						if (errorHandlerRoute !== undefined) {
-							result = await errorHandlerRoute(err.asErrorResponse('application/json'));
+							result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
 							generatedResult = true;
 						}
 					}
