@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
-import type { ConversionInput } from './common.js';
+import type { ConversionInput, KeetaFXAnchorEstimate, KeetaFXAnchorExchangeResponse, KeetaFXAnchorQuote } from './common.js';
 
 const DEBUG = false;
 
@@ -21,6 +21,18 @@ test('FX Anchor Client Test', async function() {
 	const { userClient: client } = await createNodeAndClient(account);
 	const testTimestamp = new Date();
 
+	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
+		account: liquidityProvider,
+		client: client,
+		fx: {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			getConversionRateAndFeeEstimate: async function() { return({} as KeetaFXAnchorEstimate) },
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			getConversionRateAndFeeQuote: async function() { return({} as KeetaFXAnchorQuote) },
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			createConversionSwap: async function() { return({} as KeetaFXAnchorExchangeResponse) }
+		}
+	});
 	await using server = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
 		client: client,
@@ -63,6 +75,8 @@ test('FX Anchor Client Test', async function() {
 	/*
 	 * Start the FX Anchor Server and get the URL
 	 */
+	await invalidServer.start();
+	const invalidServerURL = invalidServer.url;
 	await server.start();
 	const serverURL = server.url;
 
@@ -139,12 +153,17 @@ test('FX Anchor Client Test', async function() {
 								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
 								to: [testCurrencyBTC.publicKeyString.get()],
 								kycProviders: ['Test']
+							},
+							{
+								currencyCodes: [testCurrencyEUR.publicKeyString.get()],
+								to: [testCurrencyBTC.publicKeyString.get()],
+								kycProviders: ['Test']
 							}
 						],
 						operations: {
-							getEstimate: `${serverURL}/api/getEstimate`,
-							getQuote: `${serverURL}/api/getQuote`,
-							createExchange: `${serverURL}/api/createExchange`
+							getEstimate: `${invalidServerURL}/api/getEstimate`,
+							getQuote: `${invalidServerURL}/api/getQuote`,
+							createExchange: `${invalidServerURL}/api/createExchange`
 						}
 					}
 				}
@@ -183,7 +202,7 @@ test('FX Anchor Client Test', async function() {
 		},
 		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'EUR' })) },
-			result: { conversions: [testCurrencyUSD.publicKeyString.get()] }
+			result: { conversions: [testCurrencyUSD.publicKeyString.get(), testCurrencyBTC.publicKeyString.get()] }
 		},
 		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: '$BTC' })) },
@@ -191,9 +210,10 @@ test('FX Anchor Client Test', async function() {
 		},
 		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ to: '$BTC' })) },
-			result: { conversions: [testCurrencyUSD.publicKeyString.get()] }
+			result: { conversions: [testCurrencyUSD.publicKeyString.get(), testCurrencyEUR.publicKeyString.get()] }
 		},
 		{
+			// no provider offers this pair
 			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
 			result: null
 		},
@@ -202,6 +222,7 @@ test('FX Anchor Client Test', async function() {
 			result: null
 		},
 		{
+			// invalid currency codes
 			// @ts-expect-error
 			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
 			result: false
@@ -212,12 +233,22 @@ test('FX Anchor Client Test', async function() {
 			result: false
 		},
 		{
+			// Cannot convert negative amount
 			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
 			result: false
 		},
 		{
 			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
 			result: false
+		},
+		{
+			// invalid anchor server throws an error but SDK returns null
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			result: null
+		},
+		{
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			result: null
 		},
 		{
 			// @ts-expect-error
