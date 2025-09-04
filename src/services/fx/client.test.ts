@@ -178,14 +178,6 @@ test('FX Anchor Client Test', async function() {
 
 	const conversionTests = [
 		{
-			test: async function() { return(await fxClientConversions.listCurrencies()) },
-			result: [
-				{ token: testCurrencyUSD.publicKeyString.get(), currency: 'USD' },
-				{ token: testCurrencyEUR.publicKeyString.get(), currency: 'EUR' },
-				{ token: testCurrencyBTC.publicKeyString.get(), currency: '$BTC' }
-			]
-		},
-		{
 			test: async function() { return(await fxClientConversions.listPossibleConversions({ from: 'USD' })) },
 			result: { conversions: [testCurrencyEUR.publicKeyString.get(), testCurrencyBTC.publicKeyString.get()] }
 		},

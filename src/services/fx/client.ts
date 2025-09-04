@@ -530,11 +530,6 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 	}
 
-	// XXX:TODO: We should also support to receive `from` or `to` and list the available currencies accordingly
-	async listCurrencies(): ReturnType<typeof this.resolver.listTokens> {
-		return(await this.resolver.listTokens());
-	}
-
 	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
 		if (input.from !== undefined && input.to !== undefined) {
 			throw(new KeetaAnchorUserError('Only one of from or two should be provided'));
