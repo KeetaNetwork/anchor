@@ -210,13 +210,11 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 
 		const expectedToken = KeetaNet.lib.Account.fromPublicKeyString(quote.request.from);
 		const expectedAmount = quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount;
-		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		const swapBlocks = await acceptSwapRequest(userClient, block, { token: expectedToken, amount: BigInt(expectedAmount) });
-		// TODO fix test so we can publish
-		// const publishResult = await userClient.client.transmit(swapBlocks);
-		// if (!publishResult.publish) {
-		// 	throw(new Error('Exchange Publish Failed'));
-		// }
+		const publishResult = await userClient.client.transmit(swapBlocks);
+		if (!publishResult.publish) {
+			throw(new Error('Exchange Publish Failed'));
+		}
 		const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 			ok: true,
 			exchangeID: block.hash.toString()

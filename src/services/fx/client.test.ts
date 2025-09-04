@@ -4,21 +4,41 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
-import type { ConversionInput, KeetaFXAnchorQuote } from './common.js';
+import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
-const DEBUG = true;
+const DEBUG = false;
+const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
-const testCurrencyUSD = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-const testCurrencyEUR = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 test('FX Anchor Client Test', async function() {
 	const logger = DEBUG ? console : undefined;
 	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const { userClient: client } = await createNodeAndClient(account);
 
-	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSD.isToken()) {
+		throw(new Error('USD is not a token'));
+	}
+	const initialAccountUSDBalance = 500000n;
+	await client.modTokenSupplyAndBalance(initialAccountUSDBalance, testCurrencyUSD);
+
+	const initialAccountBalances = await client.allBalances();
+	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: initialAccountUSDBalance }]));
+
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyEUR.isToken()) {
+		throw(new Error('USD is not a token'));
+	}
+	const initialLiquidityProviderEURBalance = 100000n;
+	await client.modTokenSupplyAndBalance(initialLiquidityProviderEURBalance, testCurrencyEUR, { account: liquidityProvider });
+	const permissionsPublish = await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
+	expect(permissionsPublish.publish).toBe(true);
+
+	const initialLiquidityProviderBalances = await client.allBalances({ account: liquidityProvider });
+	expect(toJSONSerializable(initialLiquidityProviderBalances)).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: initialLiquidityProviderEURBalance }]));
 
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
@@ -249,6 +269,8 @@ test('FX Anchor Client Test', async function() {
 	// TODO - provide more dynamic KeetaNetFXAnchorHTTPServer responses
 	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 88, affinity: 'to' };
 
+	let cumulativeEURChange = 0n;
+	let cumulativeUSDChange = 0n;
 	for (const request of [requestCurrencyCodes, requestTokens, requestCurrencyCodesTo]) {
 		const requestCanonical = {
 			from: testCurrencyUSD.publicKeyString.get(),
@@ -319,8 +341,8 @@ test('FX Anchor Client Test', async function() {
 			}
 		});
 
-		const sendAmount = request.affinity === 'from' ? request.amount : quoteFromEstimate.quote.convertedAmount;
-		const receiveAmount = request.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : request.amount;
+		const sendAmount = requestCanonical.affinity === 'from' ? requestCanonical.amount : quoteFromEstimate.quote.convertedAmount;
+		const receiveAmount = requestCanonical.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : requestCanonical.amount;
 		const headBlock = await client.head();
 		const sendBlock = await (new KeetaNet.lib.Block.Builder({
 			account,
@@ -352,5 +374,15 @@ test('FX Anchor Client Test', async function() {
 
 		const exchangeStatus = await exchange.getExchangeStatus();
 		expect(exchangeStatus.exchangeID).toBe(exchange.exchange.exchangeID);
+
+		/* Multiply by 2 since we createExchange twice for the same swap */
+		cumulativeEURChange += BigInt(receiveAmount) * 2n;
+		cumulativeUSDChange += BigInt(sendAmount) * 2n;
+
+		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
+		const newAccountBalances = await client.allBalances({ account });
+		expect(toJSONSerializable([...newAccountBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: cumulativeEURChange }, { token: testCurrencyUSD, balance: (initialAccountUSDBalance - cumulativeUSDChange) }].sort(sortBalances)));
+		const newLiquidityBalances = await client.allBalances({ account: liquidityProvider });
+		expect(toJSONSerializable([...newLiquidityBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: cumulativeUSDChange }, { token: testCurrencyEUR, balance: (initialLiquidityProviderEURBalance - cumulativeEURChange) }].sort(sortBalances)));
 	}
 });
