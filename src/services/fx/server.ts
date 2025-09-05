@@ -277,7 +277,7 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 
 	routes['GET /api/getExchangeStatus/:id'] = async function(params) {
 		if (params === undefined || params === null) {
-			throw(new Error('Expected params'));
+			throw(new KeetaAnchorUserError('Expected params'));
 		}
 		const exchangeID = params.get('id');
 		if (typeof exchangeID !== 'string') {
@@ -449,7 +449,7 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 							throw(new Error('Invalid JSON data'));
 						}
 					} else {
-						throw(new Error('Unsupported content type'));
+						throw(new KeetaAnchorUserError('Unsupported content type'));
 					}
 					/**
 					 * Call the route handler
@@ -469,13 +469,11 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 				/**
 				 * If it is a user error, provide a user-friendly error page
 				 */
-				if (typeof err === 'object' && err !== null && 'userError' in err && err.userError === true) {
-					if (KeetaAnchorUserError.isInstance(err)) {
-						const errorHandlerRoute = routes['ERROR'];
-						if (errorHandlerRoute !== undefined) {
-							result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
-							generatedResult = true;
-						}
+				if (KeetaAnchorUserError.isInstance(err)) {
+					const errorHandlerRoute = routes['ERROR'];
+					if (errorHandlerRoute !== undefined) {
+						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
+						generatedResult = true;
 					}
 				}
 

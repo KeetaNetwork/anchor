@@ -32,45 +32,51 @@ test('FX Server Tests', async function() {
 		{ request: { quote: {}}},
 		{ request: { quote: {}, block: null }},
 		{ request: { quote: {}, block: undefined }},
+		{ request: { quote: {}, block: 123 }},
 		{ request: { quote: {}, block: '' }}
 	]
 
 	const postRoutes = [
-		'/api/getEstimate',
-		'/api/getQuote',
-		'/api/createExchange'
+		{ test: '/api/getEstimate', error: 500 },
+		{ test: '/api/getQuote', error: 500 },
+		{ test: '/api/createExchange', error: 500 },
+		{ test: '/api/missing', error: 404 },
+		{ test: '/api/getEstimate', error: 500, skipJSON: true },
+		{ test: '/api/getEstimate', error: 400, contentType: 'text/plain' }
 	]
 
 	for (const route of postRoutes) {
 		for (const data of testData) {
-			const serverURL = `${url}${route}`;
+			const serverURL = `${url}${route.test}`;
 			const results = await fetch(serverURL, {
 				method: 'POST',
 				headers: {
-					'Content-Type': 'application/json',
+					'Content-Type': route.contentType ?? 'application/json',
 					'Accept': 'application/json'
 				},
-				body: JSON.stringify({
+				body: route.skipJSON ? '123' : JSON.stringify({
 					request: data
 				})
 			});
-			expect(results.status).toBe(500);
+			expect(results.status).toBe(route.error);
 		}
 	}
 
 
 	const getParams = [
-		''
-		// '123' // TODO node client takes too long to timeout retries
+		{ test: '', error: 404 },
+		// eslint-disable-next-line @typescript-eslint/no-base-to-string
+		{ test: `/${{}}`, error: 500 }
+		// { test: '123', error: 500 } // TODO node client takes too long to timeout retries
 	]
 	for (const param of getParams) {
-		const serverURL = `${url}/api/getExchangeStatus${param}`;
+		const serverURL = `${url}/api/getExchangeStatus${param.test}`;
 		const result = await fetch(serverURL, {
 			method: 'GET',
 			headers: {
 				'Accept': 'application/json'
 			}
 		});
-		expect(result.status).toBe(404);
+		expect(result.status).toBe(param.error);
 	}
 });
