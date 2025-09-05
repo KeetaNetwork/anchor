@@ -552,11 +552,19 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			for (const conversionPair of serviceInfo.from) {
 				if (conversion.from !== undefined) {
 					if (conversionPair.currencyCodes.includes(conversion.from)) {
-						conversionPair.to.forEach(token => conversions.add(token));
+						conversionPair.to.forEach((token) => {
+							if (conversion.from !== token) {
+								conversions.add(token);
+							}
+						});
 					}
 				} else if (conversion.to !== undefined) {
 					if (conversionPair.to.includes(conversion.to)) {
-						conversionPair.currencyCodes.forEach(token => conversions.add(token));
+						conversionPair.currencyCodes.forEach((token) => {
+							if (conversion.to !== token) {
+								conversions.add(token);
+							}
+						});
 					}
 				}
 			}

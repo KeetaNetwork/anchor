@@ -109,7 +109,7 @@ test('FX Anchor Client Test', async function() {
 						from: [
 							{
 								currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-								to: [testCurrencyEUR.publicKeyString.get()]
+								to: [testCurrencyEUR.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()]
 							},
 							{
 								currencyCodes: [testCurrencyEUR.publicKeyString.get()],
