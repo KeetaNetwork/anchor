@@ -1,7 +1,9 @@
 import { test, expect } from 'vitest';
 import Resolver from './resolver.js';
+import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from './utils/tests/node.js';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
 	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
@@ -26,6 +28,9 @@ async function setupForResolverTests() {
 	const testAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const testAccountExternalRef = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const testAccountLoop = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const testCurrencyUSD = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyMXN = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyBTC = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 	const { userClient } = await createNodeAndClient(testAccount);
 
@@ -66,6 +71,11 @@ async function setupForResolverTests() {
 		description: '',
 		metadata: Resolver.Metadata.formatMetadata({
 			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				MXN: testCurrencyMXN.publicKeyString.get(),
+				'$BTC': testCurrencyBTC.publicKeyString.get()
+			},
 			services: {
 				kyc: {
 					keeta_internal: {
@@ -74,6 +84,21 @@ async function setupForResolverTests() {
 						},
 						countryCodes: ['US'],
 						ca: 'TEST'
+					}
+				},
+				fx: {
+					keeta_fx: {
+						operations: {
+							getQuote: 'https://fx.keeta.com/api/v1/getQuote',
+							createExchange: 'https://fx.keeta.com/api/v1/createExchange',
+							getEstimate: 'https://fx.keeta.com/api/v1/getEstimate',
+							getExchangeStatus: 'https://fx.keeta.com/api/v1/getStatus/{id}'
+						},
+						from: [{
+							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+							to: [testCurrencyMXN.publicKeyString.get()],
+							kycProviders: ['']
+						}]
 					}
 				},
 				banking: {
@@ -101,35 +126,38 @@ async function setupForResolverTests() {
 					keeta_broken1: {
 						/* Broken KeetaNet Link */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `keetanet://keeta_broken/metadata`
+						url: 'keetanet://keeta_broken/metadata'
 					},
 					keeta_broken2: {
 						/* Broken Link (invalid protocol) */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `http://insecure.com/metadata`
+						url: 'http://insecure.com/metadata'
 					},
 					keeta_broken3: {
-						/* XXX: Broken Link (currently not implemented) */
+						/* Broken Link (no such file) */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-						url: `https://insecure.com/metadata`
+						url: 'https://keeta.com/__TEST__/metadata'
 					},
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_broken4: {
 						/* Invalid countryCodes schema */
 						operations: {
 							createAccount: 'https://banchor.broken4.com/api/v1/createAccount'
 						},
 						countryCodes: 'USD'
-					},
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_nomatch1: {
-					},
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string],
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					keeta_nomatch2: {
 						operations: {
 							createAccount: 'https://banchor.nomatch2.com/api/v1/createAccount'
 						}
-					}
+					} as unknown as NonNullable<ServiceMetadata['services']['banking']>[string]
 				}
 			}
-		})
+		} satisfies ServiceMetadataExternalizable)
 	});
 
 	const resolver = new Resolver({
@@ -139,12 +167,17 @@ async function setupForResolverTests() {
 	});
 
 	return({
-		resolver
+		resolver,
+		tokens: {
+			USD: testCurrencyUSD,
+			MXN: testCurrencyMXN,
+			'$BTC': testCurrencyBTC
+		}
 	});
 }
 
 test('Basic Tests', async function() {
-	const { resolver } = await setupForResolverTests();
+	const { resolver, tokens } = await setupForResolverTests();
 	expect(resolver.stats.reads).toBe(0);
 
 	/*
@@ -200,10 +233,84 @@ test('Basic Tests', async function() {
 				countryCodes: ['MX' as const]
 			},
 			result: undefined
+		}],
+		fx: [{
+			input: {
+				inputCurrencyCode: 'USD' as const,
+				outputCurrencyCode: 'MXN' as const
+			},
+			createExchange: ['https://fx.keeta.com/api/v1/createExchange']
+		}, {
+			input: {
+				inputCurrencyCode: 'USD' as const,
+				outputCurrencyCode: 'EUR' as const
+			},
+			result: undefined
 		}]
+	} satisfies {
+		[key in keyof NonNullable<ServiceMetadata['services']>]: ({
+			input: ServiceSearchCriteria<key>;
+		} & ({
+			result?: undefined;
+		} | {
+			createAccount?: string[];
+			createVerification?: string[];
+			createExchange?: string[];
+		}))[]
 	};
 
-	for (const checkKind of ['banking', 'kyc'] as const) {
+	const allChecksInvalid = {
+		banking: [{
+			// @ts-expect-error
+			input: {
+				countryCodes: undefined
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				currencyCodes: null
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			// @ts-expect-error
+			input: {
+				countryCodes: undefined
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				countryCodes: null
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}, {
+			input: {
+				// @ts-expect-error
+				countryCodes: '123'
+			},
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+		}],
+		kyc: [],
+		fx: []
+	} satisfies {
+		[key in keyof NonNullable<ServiceMetadata['services']>]: ({
+			input: ServiceSearchCriteria<key>;
+		} & ({
+			result?: undefined;
+		} | {
+			createAccount?: string[];
+			createVerification?: string[];
+			createExchange?: string[];
+		}))[]
+	};
+
+	for (const checkKind of ['banking', 'kyc', 'fx'] as const) {
+		const checksInvalid = allChecksInvalid[checkKind];
+		for (const invalid of checksInvalid) {
+			// @ts-expect-error
+			await expect(resolver.lookup(checkKind, invalid.input)).rejects.toThrow()
+		}
 		const checks = allChecks[checkKind];
 		for (const check of checks) {
 			const checkResults = await resolver.lookup(checkKind, check.input);
@@ -213,7 +320,12 @@ test('Basic Tests', async function() {
 				continue;
 			}
 
-			expect(checkResults).toBeDefined();
+			try {
+				expect(checkResults).toBeDefined();
+			} catch (checkError) {
+				console.error(`checkResults for ${checkKind}, ${JSON.stringify(check)} is not defined`);
+				throw(checkError);
+			}
 			if (checkResults === undefined) {
 				throw(new Error('internal error: checkResults is undefined'));
 			}
@@ -277,6 +389,167 @@ test('Basic Tests', async function() {
 	expect(function() {
 		resolver._mutableStats(Symbol('statsAccessToken'));
 	}).toThrow();
+
+	/*
+	 * Verify that currency lookups work
+	 */
+	/*
+	 * These should not return an error, but may return null
+	 * if the currency is not found
+	 */
+	const currencyChecksPassValid = [
+		{
+			input: 'USD',
+			result: {
+				token: tokens.USD.publicKeyString.get(),
+				currency: 'USD'
+			}
+		},
+		{
+			input: 'MXN',
+			result: {
+				token: tokens.MXN.publicKeyString.get(),
+				currency: 'MXN'
+			}
+		},
+		{
+			input: '$BTC',
+			result: {
+				token: tokens['$BTC'].publicKeyString.get(),
+				currency: '$BTC'
+			}
+		},
+		{
+			input: 'EUR',
+			result: null
+		},
+		{
+			input: new CurrencyInfo.Currency('USD'),
+			result: {
+				token: tokens.USD.publicKeyString.get(),
+				currency: 'USD'
+			}
+		},
+		{
+			input: (new CurrencyInfo.Currency('USD')).isoNumber,
+			result: {
+				token: tokens.USD.publicKeyString.get(),
+				currency: 'USD'
+			}
+		},
+		{
+			input: "840",
+			result: {
+				token: tokens.USD.publicKeyString.get(),
+				currency: 'USD'
+			}
+		},
+		{
+			input: "973",
+			result: null
+		},
+		{
+			input: 'EUR',
+			result: null
+		}
+	] as const;
+
+	/*
+	 * These are invalid by type, but should not return an error -- they
+	 * should return null
+	 */
+	const currencyChecksPassInvalid = [
+		{
+			input: '$USD'
+		},
+		{
+			input: 'BTC'
+		}
+	] as const;
+
+	/*
+	 * These are invalid input and should throw an error
+	 */
+	const currencyChecksFail = [
+		{
+			input: null
+		},
+		{
+			input: undefined
+		},
+		{
+			input: {}
+		},
+		{
+			input: []
+		},
+		{
+			input: ['USD']
+		}
+	];
+
+	/*
+	 * Type check the valid checks that should pass
+	 *
+	 * The condition is always false, so this block never runs
+	 * but the type checker sees it
+	 */
+	if (currencyChecksPassValid.length < 0) {
+		for (const currencyCheck of currencyChecksPassValid) {
+			await resolver.lookupToken(currencyCheck.input);
+		}
+	}
+
+	for (const currencyCheck of [...currencyChecksPassValid, ...currencyChecksPassInvalid]) {
+		try {
+			// TODO - how should we handle types for BTC etc
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+			const currencyResult = await resolver.lookupToken(currencyCheck.input as any);
+			let expectedResult;
+			if ('result' in currencyCheck) {
+				expectedResult = currencyCheck.result;
+			} else {
+				expectedResult = null;
+			}
+			if (expectedResult === null) {
+				expect(currencyResult).toBeNull();
+			} else {
+				expect(currencyResult).toBeDefined();
+				if (currencyResult === undefined) {
+					throw(new Error('internal error: currencyResult is undefined'));
+				}
+
+				expect(currencyResult).toEqual(expectedResult);
+			}
+		} catch (lookupError) {
+			console.error('resolver.lookupToken failed for', currencyCheck.input);
+			throw(lookupError);
+		}
+	}
+
+	for (const currencyCheck of currencyChecksFail) {
+		try {
+			await expect(async function() {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
+				return(await resolver.lookupToken(currencyCheck.input as any));
+			}).rejects.toThrow();
+		} catch (lookupError) {
+			console.error('resolver.lookupToken failed for', currencyCheck.input);
+
+			throw(lookupError);
+		}
+	}
+
+	/**
+	 * List all tokens and their associated currencies
+	 */
+	const allTokens = await resolver.listTokens();
+	expect(allTokens.length).toBe(3);
+	expect(allTokens.map(t => t.currency).sort()).toEqual(Object.keys(tokens).sort());
+	for (const { token, currency } of allTokens) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		expect(token).toBe(tokens[currency as keyof typeof tokens].publicKeyString.get());
+	}
 });
 
 test('Concurrent Lookups', async function() {
