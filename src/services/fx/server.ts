@@ -15,6 +15,7 @@ import { acceptSwapRequest } from './common.js';
 import * as Signing from '../../lib/utils/signing.js';
 import type { JSONSerializable } from '../../lib/utils/json.js';
 import type { Logger } from '../../lib/log/index.js';
+import type { AssertNever } from '../../lib/utils/never.ts';
 import { Log } from '../../lib/log/index.js';
 
 /**
@@ -84,22 +85,34 @@ export interface KeetaAnchorFXServerConfig {
 	logger?: Logger;
 };
 
-async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>, ttl?: number): Promise<Signing.Signable> {
+async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>): Promise<Signing.Signable> {
 	const retval: Signing.Signable = [
 		unsignedQuote.request.from,
 		unsignedQuote.request.to,
 		unsignedQuote.request.amount,
 		unsignedQuote.request.affinity,
+		unsignedQuote.account,
 		unsignedQuote.convertedAmount,
 		unsignedQuote.cost.token,
 		unsignedQuote.cost.amount
 	];
 
-	if (ttl !== undefined) {
-		retval.push(ttl);
-	}
-
 	return(retval);
+
+	/**
+	 * This is a static assertion to ensure that this function is updated
+	 * if new fields are added to the KeetaFXAnchorQuote type to ensure
+	 * that we are always signing all the fields.
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
+	type _ignore_static_assert = AssertNever<
+		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
+		AssertNever<keyof Omit<typeof unsignedQuote['request'], 'from' | 'to' | 'amount' | 'affinity'>> &
+		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
+		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'token' | 'amount'>> &
+		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
+		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account'>>
+	>;
 }
 
 async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>): Promise<KeetaFXAnchorQuote> {
