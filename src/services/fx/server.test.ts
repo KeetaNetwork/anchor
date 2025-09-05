@@ -1,8 +1,7 @@
-import { expect, test } from "vitest";
-import { KeetaNetFXAnchorHTTPServer } from "./server.js";
+import { expect, test } from 'vitest';
+import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
-import { createNodeAndClient } from "../../lib/utils/tests/node.js";
-import type { KeetaFXAnchorQuote } from "./common.js";
+import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 
 test('FX Server Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -13,8 +12,16 @@ test('FX Server Tests', async function() {
 		client: client,
 		quoteSigner: account,
 		fx: {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			getConversionRateAndFee: async function() { return({} as Omit<KeetaFXAnchorQuote, 'request' | 'signed' >) }
+			getConversionRateAndFee: async function() {
+				return({
+					account: account.publicKeyString.get(),
+					convertedAmount: '1000',
+					cost: {
+						amount: '0',
+						token: KeetaNet.lib.Account.fromTokenPublicKey(KeetaNet.lib.Account.generateRandomSeed()).publicKeyString.get()
+					}
+				});
+			}
 		}
 	});
 
@@ -78,5 +85,60 @@ test('FX Server Tests', async function() {
 			}
 		});
 		expect(result.status).toBe(param.error);
+	}
+
+	{
+		/*
+		 * Verify that CORS headers are set correctly
+		 */
+		const corsTestURL = `${url}/api/getEstimate`;
+
+		const checks = [
+			{
+				request: {
+					from: 'keeta_amx',
+					to: 'keeta_anx',
+					amount: '1.00',
+					affinity: 'to'
+				},
+				responseStatus: 200
+			}, {
+				request: {},
+				responseStatus: 500
+			}
+		];
+		for (const check of checks) {
+			const result_POST = await fetch(corsTestURL, {
+				method: 'POST',
+				headers: {
+					'Origin': 'http://example.com',
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify({
+					request: check.request
+				})
+			});
+
+			expect(result_POST.status).toBe(check.responseStatus);
+			expect(result_POST.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		}
+
+		const result_OPTIONS = await fetch(corsTestURL, {
+			method: 'OPTIONS',
+			headers: {
+				'Origin': 'http://example.com',
+				'Access-Control-Request-Method': 'POST',
+				'Access-Control-Request-Headers': 'Content-Type'
+			}
+		});
+
+		expect(result_OPTIONS.status).toBe(204);
+		expect(result_OPTIONS.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(result_OPTIONS.headers.get('Access-Control-Allow-Methods')?.split(',').map(function(part) {
+			return(part.trim());
+		}).sort().join(',')).toBe('OPTIONS,POST');
+		expect(result_OPTIONS.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type');
+		expect(Number(result_OPTIONS.headers.get('Access-Control-Max-Age'))).toBeGreaterThan(30);
 	}
 });

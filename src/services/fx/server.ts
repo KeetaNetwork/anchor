@@ -27,7 +27,7 @@ const assertConversionQuote = createAssert<KeetaFXAnchorQuote>();
 const assertErrorData = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 type Routes = {
-	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; }>;
+	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 };
 
 export interface KeetaAnchorFXServerConfig {
@@ -301,11 +301,13 @@ async function initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 	routes['ERROR'] = async function(_ignore_params, postData) {
 		const errorInfo = assertErrorData(postData);
 
-		return({
+		const retval = {
 			output: errorInfo.error,
 			statusCode: errorInfo.statusCode ?? 400,
 			contentType: errorInfo.contentType ?? 'text/plain'
-		});
+		};
+
+		return(retval);
 	}
 
 	return(routes);
@@ -388,12 +390,114 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 		return(null);
 	}
 
+	private static addCORS(routes: Routes): Routes {
+		const newRoutes: Routes = {};
+
+		const validMethods = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD']);
+
+		const methodsByPath: { [key: string]: Set<string>; } = {};
+		for (const routeKey in routes) {
+			const methodAndPath = routeKey.split(' ');
+			const method = methodAndPath[0];
+			const path = methodAndPath.slice(1).join(' ');
+
+			if (method === undefined || path === undefined) {
+				continue;
+			}
+
+			if (!validMethods.has(method)) {
+				continue;
+			}
+
+			if (!(path in methodsByPath)) {
+				methodsByPath[path] = new Set<string>();
+			}
+
+			if (methodsByPath[path] === undefined) {
+				throw(new Error(`internal error: methodsByPath missing path for ${path}`));
+			}
+
+			methodsByPath[path].add(method);
+		}
+
+		const seenPaths = new Set<string>();
+		for (const routeKey in routes) {
+			const methodAndPath = routeKey.split(' ');
+			const method = methodAndPath[0];
+			const path = methodAndPath.slice(1).join(' ');
+
+			const routeHandler = routes[routeKey];
+			if (routeHandler === undefined) {
+				throw(new Error(`internal error: routeHandler missing for routeKey ${routeKey}`));
+			}
+
+			if (method !== 'ERROR') {
+				if (method === undefined || path === undefined) {
+					newRoutes[routeKey] = routeHandler;
+
+					continue;
+				}
+
+				if (!validMethods.has(method)) {
+					newRoutes[routeKey] = routeHandler;
+
+					continue;
+				}
+			}
+
+			const validMethodsForPath = methodsByPath[path];
+
+			let validMethodsForPathParts: string[] = [];
+			if (validMethodsForPath !== undefined) {
+				validMethodsForPath.add('OPTIONS');
+				validMethodsForPathParts = Array.from(validMethodsForPath);
+			} else {
+				validMethodsForPathParts = [...Array.from(validMethods), 'OPTIONS'];
+			}
+
+			newRoutes[routeKey] = async function(...args: Parameters<typeof routes[keyof typeof routes]>) {
+				const retval = await routeHandler(...args);
+
+				/* Add CORS headers to the response for the original route handler */
+				if (retval.contentType === 'application/json' || retval.contentType === undefined) {
+					if (!('headers' in retval) || retval.headers === undefined) {
+						retval.headers = {};
+					}
+					retval.headers['Access-Control-Allow-Origin'] = '*';
+				}
+
+				return(retval);
+			};
+
+			if (!seenPaths.has(path) && path !== '' && path !== undefined) {
+				const corsRouteKey = `OPTIONS ${path}`;
+
+				newRoutes[corsRouteKey] = async function() {
+					return({
+						output: '',
+						statusCode: 204,
+						contentType: 'text/plain',
+						headers: {
+							'Access-Control-Allow-Origin': '*',
+							'Access-Control-Allow-Methods': validMethodsForPathParts.join(', '),
+							'Access-Control-Allow-Headers': 'Content-Type',
+							'Access-Control-Max-Age': '86400'
+						}
+					});
+				};
+				seenPaths.add(path);
+			}
+		}
+
+		return(newRoutes);
+	}
+
 	private async main(onSetPort?: (port: number) => void): Promise<void> {
 		this.logger?.debug('KeetaAnchorFX.Server', 'Starting HTTP server...');
 
 		const port = this.port;
 
-		const routes = await initRoutes(this);
+		const routes = KeetaNetFXAnchorHTTPServer.addCORS(await initRoutes(this));
 
 		const server = new http.Server(async (request, response) => {
 			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -469,10 +573,17 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 				/**
 				 * If it is a user error, provide a user-friendly error page
 				 */
-				if (KeetaAnchorUserError.isInstance(err)) {
-					const errorHandlerRoute = routes['ERROR'];
-					if (errorHandlerRoute !== undefined) {
+				const errorHandlerRoute = routes['ERROR'];
+				if (errorHandlerRoute !== undefined) {
+					if (KeetaAnchorUserError.isInstance(err)) {
 						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
+						generatedResult = true;
+					} else {
+						result = await errorHandlerRoute(new Map(), {
+							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
+							statusCode: 500,
+							contentType: 'application/json'
+						});
 						generatedResult = true;
 					}
 				}
@@ -497,6 +608,14 @@ export class KeetaNetFXAnchorHTTPServer implements Required<KeetaAnchorFXServerC
 			 * Write the response to the client
 			 */
 			response.statusCode = result.statusCode ?? 200;
+
+			for (const headerKey in result.headers ?? {}) {
+				const headerValue = result.headers?.[headerKey];
+				if (headerValue !== undefined) {
+					response.setHeader(headerKey, headerValue);
+				}
+			}
+
 			response.setHeader('Content-Type', result.contentType ?? 'application/json');
 			response.write(result.output);
 			response.end();
