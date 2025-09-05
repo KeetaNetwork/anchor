@@ -4,16 +4,16 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
-import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
+import { acceptSwapRequest, createSwapRequest, type ConversionInput, type KeetaFXAnchorQuote, type KeetaNetToken } from './common.js';
 
 const DEBUG = false;
+const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
 test('FX Anchor Client Test', async function() {
-	const logger = DEBUG ? console : undefined;
-	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
@@ -387,5 +387,54 @@ test('FX Anchor Client Test', async function() {
 		expect(toJSONSerializable([...newAccountBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: cumulativeEURChange }, { token: testCurrencyUSD, balance: (initialAccountUSDBalance - cumulativeUSDChange) }].sort(sortBalances)));
 		const newLiquidityBalances = await client.allBalances({ account: liquidityProvider });
 		expect(toJSONSerializable([...newLiquidityBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: cumulativeUSDChange }, { token: testCurrencyEUR, balance: (initialLiquidityProviderEURBalance - cumulativeEURChange) }].sort(sortBalances)));
+	}
+});
+
+test('Swap Function Negative Tests', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const account2 = KeetaNet.lib.Account.fromSeed(seed, 1);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	const { account: newToken } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!newToken.isToken()) {
+		throw(new Error('New Token not Token'));
+	}
+	const from = { account, token: testCurrencyBTC, amount: 10n }
+	const to = { account: account2, token: newToken, amount: 15n }
+	// eslint-disable-next-line @typescript-eslint/no-deprecated
+	const swapBlockNewToken = await createSwapRequest(client, from, to);
+
+	const swapMissingReceive = await (new KeetaNet.lib.Block.Builder({
+		account,
+		network: client.network,
+		previous: KeetaNet.lib.Block.NO_PREVIOUS,
+		operations: [
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: account,
+				token: testCurrencyBTC,
+				amount: 5n
+			}
+		]
+	}).seal());
+
+	const testFails = [
+		// @ts-expect-error
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		async function() { await acceptSwapRequest(client, undefined, undefined) },
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		async function() { await acceptSwapRequest(client, swapBlockNewToken, {}) },
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		async function() { await acceptSwapRequest(client, swapBlockNewToken, { token: testCurrencyBTC }) },
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		async function() { await acceptSwapRequest(client, swapBlockNewToken, { amount: 5n }) },
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		async function() { await acceptSwapRequest(client, swapMissingReceive, {}) }
+	]
+
+	for (const test of testFails) {
+		await expect(async function() {
+			await test()
+		}).rejects.toThrow();
 	}
 });

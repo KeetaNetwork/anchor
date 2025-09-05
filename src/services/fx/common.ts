@@ -134,7 +134,9 @@ export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange &
 	error: string;
 });
 
-/** @deprecated Use the Node UserClient methods in the future instead of this function */
+/**
+ * @deprecated Use the Node UserClient methods in the future instead of this function
+ */
 export async function createSwapRequest(userClient: KeetaNetUserClient, from: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }, to: { account: KeetaNetAccount, token: KeetaNetToken, amount: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>> {
 	const builder = userClient.initBuilder();
 	builder.send(to.account, from.amount, from.token);
@@ -153,7 +155,9 @@ export async function createSwapRequest(userClient: KeetaNetUserClient, from: { 
 	return(block);
 }
 
-/** @deprecated Use the Node UserClient methods in the future instead of this function */
+/**
+ * @deprecated Use the Node UserClient methods in the future instead of this function
+ */
 export async function acceptSwapRequest(userClient: KeetaNetUserClient, request: InstanceType<typeof KeetaNetLib.Block>, expected: { token?: KeetaNetToken, amount?: bigint }): Promise<InstanceType<typeof KeetaNetLib.Block>[]> {
 	const builder = userClient.initBuilder();
 

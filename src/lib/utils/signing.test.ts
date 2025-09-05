@@ -48,7 +48,7 @@ test('Basic Tests (Sign and Verify Data)', async function() {
 		 */
 		const alteredSignatureInfo = {
 			...signatureInfo,
-			signature: signatureInfo.signature.slice(0, 10) + (signatureInfo.signature.slice(10,11) === 'A' ? 'B' : 'A') + signatureInfo.signature.slice(11)
+			signature: signatureInfo.signature.slice(0, 10) + (signatureInfo.signature.slice(10, 11) === 'A' ? 'B' : 'A') + signatureInfo.signature.slice(11)
 		};
 		const isAlteredValid = await Signing.VerifySignedData(
 			account,
