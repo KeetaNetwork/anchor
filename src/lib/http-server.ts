@@ -206,7 +206,20 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 		const port = this.port;
 
-		const routes = KeetaNetAnchorHTTPServer.addCORS(await this.initRoutes(this.#config));
+		const routes = KeetaNetAnchorHTTPServer.addCORS({
+			ERROR: async function(_ignore_params, postData) {
+				const errorInfo = AssertHTTPErrorData(postData);
+
+				const retval = {
+					output: errorInfo.error,
+					statusCode: errorInfo.statusCode ?? 400,
+					contentType: errorInfo.contentType ?? 'text/plain'
+				};
+
+				return(retval);
+			},
+			...(await this.initRoutes(this.#config))
+		});
 
 		const server = new http.Server(async (request, response) => {
 			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);

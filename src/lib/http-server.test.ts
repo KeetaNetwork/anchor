@@ -83,16 +83,6 @@ test('Basic Functionality', async function() {
 					throw(new KeetaAnchorUserError('This is a user error'));
 				};
 
-				routes['ERROR'] = async function(_ignored_params, body) {
-					const errorInfo = HTTPServer.AssertHTTPErrorData(body);
-
-					return({
-						output: errorInfo.error,
-						statusCode: errorInfo.statusCode ?? 500,
-						contentType: errorInfo.contentType ?? 'application/json'
-					});
-				};
-
 				return(routes);
 			}
 		})({ port: 0, attr: 'test-attribute' });

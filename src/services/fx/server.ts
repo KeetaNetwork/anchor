@@ -306,19 +306,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			});
 		}
 
-
-		routes['ERROR'] = async function(_ignore_params, postData) {
-			const errorInfo = KeetaAnchorHTTPServer.AssertHTTPErrorData(postData);
-
-			const retval = {
-				output: errorInfo.error,
-				statusCode: errorInfo.statusCode ?? 400,
-				contentType: errorInfo.contentType ?? 'text/plain'
-			};
-
-			return(retval);
-		}
-
 		return(routes);
 	}
 }
