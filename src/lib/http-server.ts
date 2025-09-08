@@ -35,7 +35,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	readonly logger: NonNullable<KeetaAnchorHTTPServerConfig['logger']>;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
-	#config: ConfigType;
+	readonly #config: ConfigType;
 
 	constructor(config: ConfigType) {
 		this.#config = { ...config };
