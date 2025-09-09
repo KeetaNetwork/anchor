@@ -7,6 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -93,13 +94,38 @@ type ServiceMetadata = {
 				kycProviders: string[];
 			}[];
 		};
-		inbound?: {
-			/* XXX:TODO */
-			workInProgress?: true;
-		};
-		outbound?: {
-			/* XXX:TODO */
-			workInProgress?: true;
+		assetMovement?: {
+			[id: string]: {
+				// assets: {
+				// 	asset: string;
+				// 	locations: {
+				// 		location: string;
+				// 		tokenAddress: string | null; // defined if location !== keeta
+				// 	}[]
+				// }[];
+
+				// supportedPaths: {
+				// 	from: string;
+				// 	to: string;
+				// 	assets: string[];
+				// 	rails?: string[];
+				// }[];
+
+				supportedAssets: {
+					asset: string;
+
+					paths: {
+						from: string;
+						to: string;
+						rails?: string[];
+					}[]
+				}[];
+
+				operations: {
+					initiateTransfer?: string;
+					getTransfer?: string;
+				};
+			}
 		};
 		cards?: {
 			/* XXX:TODO */
@@ -154,13 +180,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		countryCodes: CountrySearchInput[];
 	};
-	'inbound': {
-		/* XXX:TODO */
-		workInProgress: true;
-	};
-	'outbound': {
-		/* XXX:TODO */
-		workInProgress: true;
+	'assetMovement': {
+		asset: string;
+		from: string;
+		to: string;
+		rail?: string;
 	};
 	'cards': {
 		/* XXX:TODO */
@@ -801,6 +825,7 @@ function assertValidCA(input: unknown): asserts input is { ca: ToValuizableObjec
 	}
 }
 
+type ResolverLookupAssetMovementResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]> };
 type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
 type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
 const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
@@ -819,6 +844,17 @@ const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKY
 
 	return(input);
 };
+
+const assertResolverLookupAssetMovementResults = function(input: unknown): ResolverLookupAssetMovementResults[string] {
+	// assertValidOperationsKYC(input);
+	// assertValidOptionalCountryCodes(input);
+	// assertValidCA(input);
+
+	console.warn('assertResolverLookupAssetMovementResults is not implemented yet, returning input as-is');
+
+	return(input);
+};
+
 
 class Resolver {
 	readonly #root: ResolverConfig['root'];
@@ -1019,10 +1055,127 @@ class Resolver {
 		return(retval);
 	}
 
+	private async lookupAssetMovementServices(kycServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'assetMovement'>) {
+		if (kycServices === undefined) {
+			return(undefined);
+		}
+
+		const assetCanonical = convertAssetSearchInputToCanonical(criteria.asset);
+		const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
+		const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
+
+		const retval: ResolverLookupAssetMovementResults = {};
+		for (const checkAssetMovementServiceID in kycServices) {
+			try {
+				const checkAssetMovementService = await kycServices[checkAssetMovementServiceID]?.('object');
+				if (checkAssetMovementService === undefined) {
+					continue;
+				}
+
+				if (!('operations' in checkAssetMovementService)) {
+					continue;
+				}
+
+				if (criteria.rail !== undefined) {
+					throw(new Error('Asset movement service does not support rail search criteria'));
+				}
+
+				let acceptable = true;
+				if ('supportedAssets' in checkAssetMovementService) {
+					const supportedAssets = await checkAssetMovementService.supportedAssets?.('array') ?? [];
+
+					const supportedAssetsList = await Promise.all(supportedAssets.map(async function(item) {
+						const supportedAssetObject = await item?.('object');
+
+						if (supportedAssetObject === undefined) {
+							return(undefined);
+						}
+
+						if (!('asset' in supportedAssetObject)) {
+							throw(new Error('Asset movement service does not have asset field'));
+						}
+
+						const asset = await supportedAssetObject.asset?.('string');
+
+						const supportedAssetPaths = await supportedAssetObject?.paths?.('array') ?? [];
+
+						return({
+							asset: asset,
+							paths: await Promise.all(supportedAssetPaths.map(async function(pathItem) {
+								const pathObject = await pathItem?.('object');
+
+								if (pathObject === undefined) {
+									return(undefined);
+								}
+
+								if (!('from' in pathObject) || !('to' in pathObject)) {
+									throw(new Error('Asset movement service does not have from/to fields'));
+								}
+
+								if ('rails' in pathObject) {
+									throw(new Error('Asset movement service does not support rails'));
+								}
+							
+								return({
+									from: await pathObject.from?.('string'),
+									to: await pathObject.to?.('string')
+								});
+							}))
+						})
+					}));
+
+					for (const item of supportedAssetsList) {
+						if (item === undefined) {
+							continue;
+						}
+
+						if (item.asset !== assetCanonical) {
+							continue;
+						}
+
+						const hasPath = item.paths.some(function(path) {
+							if (path === undefined) {
+								return(false);
+							}
+
+							return(path.from === fromCanonical && path.to === toCanonical);
+						});
+
+						if (hasPath) {
+							acceptable = true;
+							break;
+						}
+					}
+				} else {
+					throw(new Error('Asset movement service does not have supportedAssets field'));
+				}
+
+				if (!acceptable) {
+					continue;
+				}
+
+				retval[checkAssetMovementServiceID] = assertResolverLookupAssetMovementResults(checkAssetMovementService);
+			} catch (checkAssetMovementServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking assetMovement service', checkAssetMovementServiceID, ':', checkAssetMovementServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any banking services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	async lookup<T extends 'assetMovement'>(service: T, criteria: ServiceSearchCriteria<'assetMovement'>): Promise<ResolverLookupAssetMovementResults | undefined>;
 	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
 	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<'kyc'>): Promise<ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | ResolverLookupAssetMovementResults | undefined>;
+	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | ResolverLookupAssetMovementResults | undefined> {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
 			trustedCAs: this.#trustedCAs,
@@ -1080,9 +1233,14 @@ class Resolver {
 
 				return(await this.lookupKYCServices(kycServices, currentCriteria));
 			}
+			case 'assetMovement': {
+				const currentCriteria = args.criteria;
+				const assetMovementServices = await definedServices.assetMovement?.('object');
+				this.#logger?.debug(`Resolver:${this.id}`, 'Asset Movement Services:', assetMovementServices);
+
+				return(await this.lookupAssetMovementServices(assetMovementServices, currentCriteria));
+			}
 			case 'fx':
-			case 'inbound':
-			case 'outbound':
 			case 'cards':
 				throw(new Error('not implemented'));
 			default:
