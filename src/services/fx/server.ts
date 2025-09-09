@@ -14,6 +14,7 @@ import type {
 import { acceptSwapRequest } from './common.js';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
+import type { ServiceMetadata } from '../../lib/resolver.ts';
 
 const assertConversionInputCanonical = createAssert<ConversionInputCanonical>();
 const assertConversionQuote = createAssert<KeetaFXAnchorQuote>();
@@ -308,4 +309,21 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 		return(routes);
 	}
+
+	// TODO
+//	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
+//		return({
+//			from: [{
+//				currencyCodes: ['keeta_....'],
+//				to: ['keeta_....'],
+//				// kycProviders: []
+//			}],
+//			operations: {
+//				createExchange: (new URL('/api/createExchange', this.url)).toString(),
+//				getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
+//				getExchangeStatus: (new URL('/api/getExchangeStatus/{id}', this.url)).toString(),
+//				getQuote: (new URL('/api/getQuote', this.url)).toString()
+//			}
+//		});
+//	}
 }
