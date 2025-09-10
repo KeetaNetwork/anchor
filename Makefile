@@ -49,7 +49,7 @@ dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
 	mkdir -p dist
 	jq '. | del(.devDependencies)' < package.json > dist/package.json
 	cp package-lock.json dist/
-	test -e .npmrc && cp .npmrc dist/
+	test -e .npmrc && cp .npmrc dist/ || :
 	cd dist && npm shrinkwrap
 	cd dist && npm dedupe
 	rm -f dist/.npmrc
