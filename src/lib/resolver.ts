@@ -7,7 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { assertAssetLocationString, convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -1397,9 +1397,9 @@ class Resolver {
 			return(undefined);
 		}
 
-		const assetCanonical = convertAssetSearchInputToCanonical(criteria.asset);
-		const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
-		const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
+		// const assetCanonical = convertAssetSearchInputToCanonical(criteria.asset);
+		//const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
+		//const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
 
 		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
 		for (const checkAssetMovementServiceID in assetServices) {
@@ -1466,16 +1466,16 @@ class Resolver {
 							continue;
 						}
 
-						if (item.asset !== assetCanonical) {
-							continue;
-						}
+						// if (item.asset !== assetCanonical) {
+						// 	continue;
+						// }
 
 						const hasPath = item.paths.some(function(path) {
 							if (path === undefined) {
 								return(false);
 							}
 
-							return(path.from === fromCanonical && path.to === toCanonical);
+							// return(path.from === fromCanonical && path.to === toCanonical);
 						});
 
 						if (hasPath) {

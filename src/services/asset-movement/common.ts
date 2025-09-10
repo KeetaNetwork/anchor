@@ -1,6 +1,6 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import CurrencyInfo from '@keetanetwork/currency-info';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
@@ -136,7 +136,7 @@ export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	error: string;
 })
 
-export interface KeetaAssetMovementAnchorGetStatusRequest {
+export interface KeetaAssetMovementAnchorGetStatusRequest extends KeetaAssetMovementAnchorInitiateTransferRequest{
 	id: string;
 }
 
