@@ -54,8 +54,7 @@ dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
 	cd dist && npm dedupe
 	rm -f dist/.npmrc
 	rm -f dist/package-lock.json
-	sed '/"resolved":/d' dist/npm-shrinkwrap.json > dist/npm-shrinkwrap.json.new
-	jq --tab . < dist/npm-shrinkwrap.json.new > /dev/null
+	jq --tab 'del(.. | .resolved?)' < dist/npm-shrinkwrap.json > dist/npm-shrinkwrap.json.new
 	mv dist/npm-shrinkwrap.json.new dist/npm-shrinkwrap.json
 
 dist/.done: $(shell find src -type f) dist/npm-shrinkwrap.json node_modules Makefile
