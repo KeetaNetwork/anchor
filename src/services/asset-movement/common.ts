@@ -64,7 +64,6 @@ export function toAssetLocationFromString(input: string): AssetLocation {
 	return({} as any);
 }
 
-
 export function convertAssetLocationInputToCanonical(input: AssetLocationInput): AssetLocationCanonical {
 	if (typeof input === 'string') {
 		return(input);
