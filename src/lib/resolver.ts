@@ -7,7 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical } from '../services/asset-movement/common.js';
+import { AssetPath, AssetWithRailsMetadata, convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, Rail } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -157,35 +157,25 @@ type ServiceMetadata = {
 		};
 		assetMovement?: {
 			[id: string]: {
-				// assets: {
-				// 	asset: string;
-				// 	locations: {
-				// 		location: string;
-				// 		tokenAddress: string | null; // defined if location !== keeta
-				// 	}[]
-				// }[];
-
-				// supportedPaths: {
-				// 	from: string;
-				// 	to: string;
-				// 	assets: string[];
-				// 	rails?: string[];
-				// }[];
-
-				supportedAssets: {
-					asset: string;
-
-					paths: {
-						from: string;
-						to: string;
-						rails?: string[];
-					}[]
-				}[];
-
 				operations: {
 					initiateTransfer?: string;
 					getTransfer?: string;
 				};
+
+				supportedAssets: {
+					asset: KeetaNetAccountTokenPublicKeyString;
+
+					paths: {
+						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
+
+						/**
+						 * KYC providers which this Asset Movement Provider
+						 * supports (DN) -- if not specified,
+						 * then it does not require KYC.
+						 */
+						kycProviders?: string[];
+					}[];
+				}[];
 			}
 		};
 		cards?: {
@@ -251,10 +241,15 @@ type ServiceSearchCriteria<T extends Services> = {
 		countryCodes: CountrySearchInput[];
 	};
 	'assetMovement': {
-		asset: string;
-		from: string;
-		to: string;
-		rail?: string;
+		asset: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
+		from?: string;
+		to?: string;
+		rail?: Rail;
+		/**
+		 * Search for a provider which supports ANY of the following
+		 * KYC providers
+		 */
+		kycProviders?: string[];
 	};
 	'cards': {
 		/* XXX:TODO */
