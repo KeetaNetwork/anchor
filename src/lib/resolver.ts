@@ -7,7 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { AssetPath, AssetWithRailsMetadata, convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, Rail } from '../services/asset-movement/common.js';
+import type { AssetWithRailsMetadata, Rail } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -360,6 +360,11 @@ function assertValidOperationsFX(input: unknown): asserts input is { operations:
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsAssetMovement(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
 function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
@@ -433,12 +438,26 @@ const assertResolverLookupFXResult = async function(input: unknown): Promise<Res
 };
 
 const assertResolverLookupAssetMovementResults = async function(input: unknown): Promise<ResolverLookupServiceResults<'assetMovement'>[string]> {
+	assertValidOperationsAssetMovement(input);
 	// assertValidOperationsKYC(input);
 	// assertValidOptionalCountryCodes(input);
 	// assertValidCA(input);
+	if (!('supportedAssets' in input)) {
+		throw(new Error('Expected "supportedAssets" key in asset movement service, but it was not found'));
+	}
 
-	throw(new Error('assertResolverLookupAssetMovementResults is not implemented yet, returning input as-is'));
-	// return(input);
+	const fromUnrealized = input.supportedAssets;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(fromUnrealized)) {
+		throw(new Error(`Expected "supportedAssets" to be an Valuizable, got ${typeof fromUnrealized}`));
+	}
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
+	await fromUnrealized('object');
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
+	// @ts-ignore
+	return(input);
 };
 
 // #endregion
@@ -1395,8 +1414,8 @@ class Resolver {
 		}
 
 		// const assetCanonical = convertAssetSearchInputToCanonical(criteria.asset);
-		//const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
-		//const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
+		// const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
+		// const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
 
 		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
 		for (const checkAssetMovementServiceID in assetServices) {
@@ -1449,7 +1468,7 @@ class Resolver {
 								if ('rails' in pathObject) {
 									throw(new Error('Asset movement service does not support rails'));
 								}
-							
+
 								return({
 									from: await pathObject.from?.('string'),
 									to: await pathObject.to?.('string')
@@ -1471,7 +1490,7 @@ class Resolver {
 							if (path === undefined) {
 								return(false);
 							}
-
+							throw(new Error('Match not found'));
 							// return(path.from === fromCanonical && path.to === toCanonical);
 						});
 

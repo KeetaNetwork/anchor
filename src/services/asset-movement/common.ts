@@ -1,7 +1,7 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
-import { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
 type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
@@ -14,7 +14,7 @@ export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchC
 export type MovableAsset = TokenAddress | CurrencyInfo.Currency;
 
 export function assertMovableAsset(input: unknown): asserts input is MovableAsset {
-	
+
 }
 
 export type AssetLocationInput = AssetLocation | AssetLocationString;
@@ -36,8 +36,10 @@ export type AssetLocation = {
 	workInProgress?: never;
 }
 
-export type AssetLocationString = 
+// Disable bank-account until it's implemented
+export type AssetLocationString =
 	`chain:${'keeta' | 'evm'}:${bigint}` |
+// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 	`bank-account:${never}`;
 
 export type AssetLocationLike = AssetLocation | AssetLocationString;
@@ -57,7 +59,7 @@ export interface AssetWithRails extends Asset {
 		inbound?: Rail[];
 		outbound: Rail[];
 	}) & {
-		common?: Rail[]; 
+		common?: Rail[];
 	});
 };
 
@@ -120,8 +122,8 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 	throw(new Error(`Invalid AssetLocation type: ${JSON.stringify(input)}`));
 }
 
-export function toAssetLocationFromString(input: string): AssetLocation {
-	return({} as any);
+export function toAssetLocationFromString(_ignore_input: string): AssetLocation {
+	throw(new Error('Not Implemented'));
 }
 
 export function convertAssetLocationInputToCanonical(input: AssetLocationInput): AssetLocationCanonical {
@@ -142,7 +144,7 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 		} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
 			input = new CurrencyInfo.Currency(input);
 		}
-		
+
 		return(input.code);
 	} else {
 		if (typeof input === 'string') {
