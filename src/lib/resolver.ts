@@ -160,6 +160,8 @@ type ServiceMetadata = {
 				operations: {
 					initiateTransfer?: string;
 					getTransfer?: string;
+					createPersistentForwarding?: string;
+					listPersistentForwardingTransactions?: string
 				};
 
 				supportedAssets: {
