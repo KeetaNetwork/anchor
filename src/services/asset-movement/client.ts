@@ -3,7 +3,6 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
-import { Certificate as KYCCertificate } from '../../lib/certificates.js';
 
 import type {
 	Client as KeetaNetClient,
@@ -13,7 +12,10 @@ import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
     KeetaAssetMovementAnchorInitiateTransferResponse,
     KeetaAssetMovementAnchorGetStatusRequest,
-    KeetaAssetMovementAnchorGetStatusResponse
+    KeetaAssetMovementAnchorGetStatusResponse,
+	AssetPath,
+	AssetWithRails,
+	Rail
 } from './common.js';
 import {
     AssetLocationString, MovableAsset, MovableAssetSearchCanonical, AssetLocation, AssetMovementRail, toAssetLocationFromString, assertMovableAsset,
@@ -23,13 +25,13 @@ import {
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
+import { BrandedString } from '../../lib/utils/brand.js';
 
 const PARANOID = true;
 
 /**
- * The configuration options for the KYC Anchor client.
+ * The configuration options for the Asset Movement (Inbound/Outbound) Anchor client.
  */
 export type KeetaAssetMovementClientConfig = {
 	/**
@@ -43,51 +45,43 @@ export type KeetaAssetMovementClientConfig = {
 	 */
 	logger?: Logger;
 	/**
-	 * The resolver to use for resolving KYC Anchor services. If not
+	 * The resolver to use for resolving Asset Movement Anchor services. If not
 	 * provided, a default resolver will be created using the provided
 	 * client and network (if the network is also not provided and the
 	 * client is not a UserClient, an error occurs).
 	 */
 	resolver?: Resolver;
+	/**
+	 * The account to use for signing requests. If not provided, the
+	 * account associated with the provided client will be used. If there
+	 * is no account associated with the client, an error occurs.
+	 */
+	signer?: InstanceType<typeof KeetaNetLib.Account>;
+	/**
+	 * Account to perform changes on. If not provided, the account
+	 * associated with the provided client will be used. If there is no
+	 * account associated with the client, an error occurs.
+	 */
+	account?: InstanceType<typeof KeetaNetLib.Account>;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'>;
-
-/**
- * Any kind of X.509v3 Certificate.  This may or may not be a KYC certificate.
- */
-type BaseCertificate = InstanceType<typeof KeetaNetLib.Utils.Certificate.Certificate>;
-
-/**
- * The response type for the {@link KeetaKYCAnchorClient['getCertificates']()} method of the KYC Anchor client.
- * It contains the certificate and optionally a set of intermediate certificates.
- */
-type KeetaKYCAnchorClientGetCertificateResponse = ({
-	ok: true;
-	results: {
-		certificate: KYCCertificate;
-		intermediates?: Set<BaseCertificate> | undefined;
-	}[]
-} | {
-	ok: false;
-	retryAfter: number;
-	reason: string;
-});
 
 /**
  * An opaque type that represents a provider ID.
  */
-type ProviderID = string & {
-	readonly __providerID: unique symbol;
-};
+type ProviderID = BrandedString<'AssetMovementProviderID'>;
 
 /**
- * An opaque type that represents a KYC Anchor request ID
+ * An opaque type that represents an Asset Movement Anchor request ID
  */
-type RequestID = string & {
-	readonly __requestID: unique symbol;
-};
+type RequestID = BrandedString<'AssetMovementRequestID'>;
+
+function typedAssetMovementServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
+}
 
 /**
- * A list of operations that can be performed by the KYC Anchor service.
+ * A list of operations that can be performed by the Asset Movement Anchor service.
  */
 type KeetaAssetMovementAnchorOperations = {
 	[operation in keyof NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations']]?: (params?: { [key: string]: string; }) => URL;
@@ -96,20 +90,16 @@ type KeetaAssetMovementAnchorOperations = {
 /**
  * The service information for a KYC Anchor service.
  */
-type KeetaKYCVerificationServiceInfo = {
+type KeetaAssetMovementServiceInfo = {
 	operations: {
 		[operation in keyof KeetaAssetMovementAnchorOperations]: Promise<KeetaAssetMovementAnchorOperations[operation]>;
 	};
 
-    supportedAssets: {
-    	asset: MovableAsset;
-
-    	paths: {
-    		from: AssetLocation;
-    		to: AssetLocation;
-    		rails?: AssetMovementRail[];
-    	}[]
-    }[];
+	supportedAssets: {
+		asset: MovableAsset;
+		paths: AssetPath[];
+	}[];
+    
 };
 
 /**
@@ -117,11 +107,14 @@ type KeetaKYCVerificationServiceInfo = {
  * operations available and the country codes that the service supports.
  */
 type GetEndpointsResult = {
-	[id: ProviderID]: KeetaKYCVerificationServiceInfo;
+	[id: ProviderID]: KeetaAssetMovementServiceInfo;
 };
 
 const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
 const isKeetaAssetMovementAnchorGetStatusResponse = createIs<KeetaAssetMovementAnchorGetStatusResponse>();
+const isKeetaAssetWithRails = createIs<AssetWithRails>();
+const isKeetaAssetRail = createIs<Rail>();
+const isKeetaLocationString = createIs<AssetLocationString>();
 
 function validateURL(url: string | undefined): URL {
 	if (url === undefined || url === null) {
@@ -148,8 +141,8 @@ async function getEndpoints(resolver: Resolver, request: KeetaAssetMovementAncho
 		return(null);
 	}
 
-	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaKYCVerificationServiceInfo]> {
-		const supportedAssetPromises = (await serviceInfo.supportedAssets?.('array'))?.map(async function(supportedAssetObject): Promise<KeetaKYCVerificationServiceInfo['supportedAssets'][number]> {
+	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
+		const supportedAssetPromises = (await serviceInfo.supportedAssets?.('array'))?.map(async function(supportedAssetObject): Promise<KeetaAssetMovementServiceInfo['supportedAssets'][number]> {
 			
             const resolvedAssetObject = await supportedAssetObject('object');
 
@@ -161,30 +154,103 @@ async function getEndpoints(resolver: Resolver, request: KeetaAssetMovementAncho
 
             assertMovableAsset(asset);
 
-            const paths = await Promise.all((await resolvedAssetObject.paths('array')).map(async function(pathObject) {
+            const paths: AssetPath[] = await Promise.all((await resolvedAssetObject.paths('array')).map(async function(pathObject) {
                 const resolvedPathObject = await pathObject('object');
 
                 if (!resolvedPathObject) {
                     throw new Error('Path object resolved to undefined')
                 }
 
-                if (resolvedPathObject.rails) {
-                    throw new Error('rails not supported');
+				const pair = await resolvedPathObject.pair('array');
+				if (pair.length !== 2) {
+					throw new Error(`Asset Movement pair should have 2 entries, found: ${pair.length}`);
+				}
+
+				const assetPair: Partial<AssetWithRails>[] = await Promise.all(pair.map(async function(assetPath) {
+					const path = await assetPath('object');
+					const location = await path.location('string');
+					if (!isKeetaLocationString(location)) {
+						throw new Error('Location is not a valid location format');
+					}
+
+					const id = await path.id('string');
+					const railsValuizable = await path.rails('object');
+
+					const { inbound: inboundFn, outbound: outboundFn, common: commonFn } = railsValuizable;
+
+					if ((inboundFn && outboundFn)) {
+						throw new Error('Cannot define inbound and outbound simultaneously in asset with rails');
+					}
+					if ((commonFn && (inboundFn || outboundFn))) {
+						throw new Error('Cannot use inbound or outbound with common in asset with rails');
+					}
+
+					//let rails: { inbound?: Rail[]; outbound?: Rail[], common?: Rail[] } = {};
+					let inbound: { rails: { inbound: Rail[] }} | {} = {};
+					let outbound: { rails: { inbound: Rail[] }} | {} = {};
+					let common: { rails: { inbound: Rail[] }} | {} = {};
+					if (inboundFn) {
+						const rails = [];
+						const inboundList = await inboundFn('array');
+						for(const inboundEntry of inboundList) {
+							const rail = await inboundEntry('string');
+							if (isKeetaAssetRail(rail)) {
+								rails.push(rail);
+							}
+						}
+						inbound = { rails: { inbound: rails }};
+					} else if (outboundFn) {
+						const rails = [];
+						const outboundList = await outboundFn('array');
+						for(const outboundEntry of outboundList) {
+							const rail = await outboundEntry('string');
+							if (isKeetaAssetRail(rail)) {
+								rails.push(rail);
+							}
+						}
+						outbound = { rails: { outbound: rails }};
+					} else if (commonFn) {
+						const rails = [];
+						const commonList = await commonFn('array');
+						for(const commonEntry of commonList) {
+							const rail = await commonEntry('string');
+							if (isKeetaAssetRail(rail)) {
+								rails.push(rail);
+							}
+						}
+						common = { rails: { common: rails }};
+					}
+
+					return({
+						location,
+						id,
+						...inbound,
+						...outbound,
+						...common
+					})
+				}));
+
+                if (assetPair.length !== 2) {
+                    throw new Error(`Asset Movement pair should have 2 entries, found: ${pair.length}`);
                 }
 
-                const [ to, from ] = await Promise.all(([ 'to', 'from' ] as const).map(async function(key) {
-                    const resolvedValue = await resolvedPathObject[key]('string');
+				const [ pair0, pair1 ] = assetPair;
 
-                    return(toAssetLocationFromString(resolvedValue));
-                }));
 
-                if (!to || !from) {
-                    throw new Error('Could not get to or from from asset metadata');
-                }
+				if (!pair0 || !pair1) {
+					throw new Error('Asset pair is undefined');
+				}
+
+				if (!isKeetaAssetWithRails(pair0)) {
+					throw new Error('pair is not a valid asset with rails')
+				}				
+				if (!isKeetaAssetWithRails(pair1)) {
+					throw new Error('pair is not a valid asset with rails')
+				}
 
                 return({
-                    to, from
-                })
+					pair: [pair0, pair1]
+				});
             }));
 
             return({
@@ -193,10 +259,10 @@ async function getEndpoints(resolver: Resolver, request: KeetaAssetMovementAncho
             })
 		});
 
-		const supportedAssets: KeetaKYCVerificationServiceInfo['supportedAssets'] = await Promise.all(supportedAssetPromises);
+		const supportedAssets: KeetaAssetMovementServiceInfo['supportedAssets'] = await Promise.all(supportedAssetPromises);
 
 		const operations = await serviceInfo.operations('object');
-		const operationsFunctions: KeetaKYCVerificationServiceInfo['operations'] = {};
+		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
 		for (const [key, operation] of Object.entries(operations)) {
 			if (operation === undefined) {
 				continue;
@@ -221,10 +287,10 @@ async function getEndpoints(resolver: Resolver, request: KeetaAssetMovementAncho
 
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id as ProviderID,
+			id as unknown as ProviderID,
 			{
-				supportedAssets: supportedAssets,
-				operations: operationsFunctions
+				operations: operationsFunctions as KeetaAssetMovementServiceInfo['operations'],
+				supportedAssets: supportedAssets
 			}
 		]);
 	});
@@ -236,10 +302,9 @@ async function getEndpoints(resolver: Resolver, request: KeetaAssetMovementAncho
 
 type KeetaAssetMovementAnchorCommonConfig = {
 	id: ProviderID;
-	serviceInfo: KeetaKYCVerificationServiceInfo;
+	serviceInfo: KeetaAssetMovementServiceInfo;
 	request: KeetaAssetMovementAnchorInitiateTransferRequest;
 	client: KeetaAssetMovementAnchorClient;
-	operations: NonNullable<Pick<KeetaAssetMovementAnchorOperations, 'initiateTransfer' | 'getTransfer'>>;
 	logger?: Logger | undefined;
 };
 
@@ -258,26 +323,26 @@ class KeetaAssetMovementTransfer {
 	private constructor(args: KeetaAssetMovementAnchorCommonConfig, response: Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>) {
 		this.providerID = args.id;
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		this.id = response.id as RequestID;
+		this.id = response.id as unknown as RequestID;
 		this.serviceInfo = args.serviceInfo;
 		this.request = args.request;
 		this.client = args.client;
 		this.logger = args.logger;
 		this.response = response;
 
-		this.logger?.debug(`Created KYC verification for provider ID: ${this.providerID}, request: ${JSON.stringify(args.request)}, response: ${JSON.stringify(response)}`);
+		this.logger?.debug(`Created KYC verification for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(args.request)}, response: ${JSON.stringify(response)}`);
 	}
 
 	static async start(args: KeetaAssetMovementAnchorCommonConfig): Promise<KeetaAssetMovementTransfer> {
-		args.logger?.debug(`Starting KYC verification for provider ID: ${args.id}, request: ${JSON.stringify(args.request)}`);
+		args.logger?.debug(`Starting KYC verification for provider ID: ${String(args.id)}, request: ${JSON.stringify(args.request)}`);
 
-		const endpoints = args.operations;
-		const createVerification = endpoints.initiateTransfer?.();
+		const endpoints = args.serviceInfo.operations;
+		const createVerification = await endpoints.initiateTransfer;
 		if (createVerification === undefined) {
 			throw(new Error('KYC verification service does not support createVerification operation'));
 		}
-
-		const requestInformation = await fetch(createVerification, {
+		const createVerificationURL = createVerification();
+		const requestInformation = await fetch(createVerificationURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -317,26 +382,24 @@ class KeetaAssetMovementTransfer {
  */
 class KeetaAssetMovementProvider {
 	readonly id: ProviderID;
-	private readonly serviceInfo: KeetaKYCVerificationServiceInfo;
+	private readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	private readonly request: KeetaAssetMovementAnchorInitiateTransferRequest;
 	private readonly logger?: Logger | undefined;
 	private readonly client: KeetaAssetMovementAnchorClient;
-	private readonly operations: NonNullable<Pick<KeetaAssetMovementAnchorOperations, 'getTransfer' | 'initiateTransfer'>>;
 
 	constructor(args: KeetaAssetMovementAnchorCommonConfig) {
 		this.id = args.id;
 		this.serviceInfo = args.serviceInfo;
 		this.request = args.request;
 		this.client = args.client;
-		this.operations = args.operations;
 		this.logger = args.logger;
 
-		this.logger?.debug(`Created KYC verification for provider ID: ${args.id}`);
+		this.logger?.debug(`Created KYC verification for provider ID: ${String(args.id)}`);
         // XXX:TODO handle bigints here
 		// this.logger?.debug(`Created KYC verification for provider ID: ${args.id}, request: ${JSON.stringify(args.request)}`);
 	}
 
-	get supportedAssets(): KeetaKYCVerificationServiceInfo['supportedAssets'] {
+	get supportedAssets(): KeetaAssetMovementServiceInfo['supportedAssets'] {
 		return(this.serviceInfo.supportedAssets);
 	}
 
@@ -346,7 +409,6 @@ class KeetaAssetMovementProvider {
 			serviceInfo: this.serviceInfo,
 			request: this.request,
 			client: this.client,
-			operations: this.operations,
 			logger: this.logger
 		}));
 	}
@@ -371,61 +433,17 @@ class KeetaAssetMovementAnchorClient {
 
         console.log('got endpoints', endpoints);
 
-		const validEndpoints = await Promise.allSettled(Object.entries(endpoints).map(async ([id, serviceInfo]) => {
-			const endpoints = serviceInfo.operations;
-			/*
-			 * Verify that we have the required operations
-			 * available to perform a KYC verification.
-			 */
-			const initiateTransfer = await endpoints.initiateTransfer;
-			const getTransfer = await endpoints.getTransfer;
-			if (getTransfer === undefined || initiateTransfer === undefined) {
-				this.logger?.warn(`Asset movement provider ${id} does not support required operations (initiateTransfer, getTransfer)`);
-				return(null);
-			}
-
-			/*
-			 * We can safely cast the ID to a ProviderID because it's a branded type
-			 * for this specific type
-			 */
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const providerID = id as ProviderID;
+		const validEndpoints = typedAssetMovementServiceEntries(endpoints).map(([id, serviceInfo]) => {
 			return(new KeetaAssetMovementProvider({
-				id: providerID,
+				id,
 				serviceInfo: serviceInfo,
 				request: request,
 				client: this,
-				logger: this.logger,
-				operations: {
-					initiateTransfer,
-					getTransfer
-				}
+				logger: this.logger
 			}));
-		}));
-
-		/*
-		 * Filter out any endpoints that were not able to be resolved
-		 * or that did not have the required operations.
-		 */
-		const retval = validEndpoints.map(function(result) {
-			if (result.status !== 'fulfilled') {
-                console.log('throwing rerrrr');
-                throw(result.reason)
-				return(null);
-			}
-			if (result.value === null) {
-				return(null);
-			}
-			return(result.value);
-		}).filter(function(result) {
-			return(result !== null);
 		});
 
-		if (retval.length === 0) {
-			throw(new Error('No valid Asset movement endpoints found'));
-		}
-
-		return(retval);
+		return(validEndpoints);
 	}
 
 	async getTransferStatus(providerID: ProviderID, request: KeetaAssetMovementAnchorGetStatusRequest & { id: RequestID; }): Promise<KeetaAssetMovementAnchorGetStatusResponse> {
@@ -435,7 +453,7 @@ class KeetaAssetMovementAnchorClient {
 		}
 		const providerEndpoints = endpoints[providerID];
 		if (providerEndpoints === undefined) {
-			throw(new Error(`No KYC endpoints found for provider ID: ${providerID}`));
+			throw(new Error(`No KYC endpoints found for provider ID: ${String(providerID)}`));
 		}
 
 		const requestID = request.id;
