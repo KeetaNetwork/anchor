@@ -42,6 +42,66 @@ export type AssetLocationString =
 
 export type AssetLocationLike = AssetLocation | AssetLocationString;
 
+export interface Asset {
+	location?: AssetLocationString;
+	id: string; // keeta token pub or evm contract address or currency code
+}
+
+export type Rail = 'ACH_SEND' | 'ACH_DEBIT' | 'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL';
+
+export interface AssetWithRails extends Asset {
+	rails: Rail[] | (({
+		inbound: Rail[];
+		outbound?: Rail[];
+	} | {
+		inbound?: Rail[];
+		outbound: Rail[];
+	}) & {
+		common?: Rail[]; 
+	});
+};
+
+export interface AssetPath {
+	pair: [ AssetWithRails, AssetWithRails ];
+	kycProviders?: string[];
+};
+
+export interface AssetWithRailsMetadata {
+	location: string;
+	id: string;
+	rails: (({
+		inbound: string[];
+		outbound?: string[];
+	} | {
+		inbound?: string[];
+		outbound: string[];
+	}) & {
+		common?: string[];
+	});
+}
+
+// Example Asset Paths
+// paths: [
+// 	{
+// 		pair: [
+// 			{ location: 'keeta:123', id: 'keeta_KT1EXmXoG7fV8b2c5rYkUu4j3t6b3v6v5X8m', rails: { common: [ 'KEETA_SEND' ] } },
+// 			{ location: 'evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] } }
+// 		]
+// 	},
+// 	{
+// 		pair: [
+// 			{ location: 'keeta:123', id: 'keeta_USDCPUB', rails: ['KEETA_SEND'] },
+// 			{ location: 'bank-account:US', id: 'USD', rails: { common: ['ACH_SEND'], inbound: ['ACH_DEBIT'] } }
+// 		]
+// 	},
+// 	{
+// 		pair: [
+// 			{ location: 'bank-account:EU', id: 'EUR', rails: { inbound: [ 'WIRE_SEND' }] },
+// 			{ location: 'keeta:123', id: 'keeta_EURCPUB', rails: { outbound: [ 'KEETA_SEND' ]} }
+// 		]
+// 	}
+// ];
+
 export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
 	if (typeof input === 'string') {
 		return(input);
