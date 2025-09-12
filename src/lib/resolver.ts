@@ -159,9 +159,9 @@ type ServiceMetadata = {
 			[id: string]: {
 				operations: {
 					initiateTransfer?: string;
-					getTransfer?: string;
+					getTransferStatus?: string;
 					createPersistentForwarding?: string;
-					listPersistentForwardingTransactions?: string
+					listTransactions?: string
 				};
 
 				supportedAssets: {

@@ -374,7 +374,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 	async getTransferStatus(args: KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
 		const endpoints = this.serviceInfo.operations;
-		const getTransferStatus = await endpoints.getTransfer;
+		const getTransferStatus = await endpoints.getTransferStatus;
 		if (getTransferStatus === undefined) {
 			throw(new Error('Asset Movement service does not support initiateTransfer operation'));
 		}
@@ -419,7 +419,7 @@ class KeetaAssetMovementTransfer {
 		const transfer = await this.provider.initiateTransfer();
 		if (transfer.ok) {
 			this.transferID = transfer.id;
-			this.transferInstructions = transfer.instructions;
+			this.transferInstructions = transfer.instructionChoices;
 		}
 		return(transfer);
 	}

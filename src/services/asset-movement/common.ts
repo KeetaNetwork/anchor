@@ -3,6 +3,8 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
+type HexString = `0x${string}`;
+
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
@@ -163,14 +165,14 @@ export type OperationNames = keyof Operations;
 
 export type KeetaAssetMovementAnchorInitiateTransferRequest = {
 	asset: MovableAsset;
-	from: { location: AssetLocationLike; sender: string; };
+	from: { location: AssetLocationLike };
 	to: { location: AssetLocationLike; recipient: string; };
 	value: bigint;
 	allowedRails?: AssetMovementRail[];
 }
 
 export type AssetTransferInstructions = ({
-	type: 'SEND';
+	type: 'KEETA_SEND';
 	location: AssetLocationLike;
 
 	sendToAddress: string;
@@ -179,6 +181,13 @@ export type AssetTransferInstructions = ({
 
 	external?: string;
 } | {
+	type: 'EVM_SEND';
+	location: AssetLocationLike;
+
+	sendToAddress: string;
+	value: bigint;
+	tokenAddress: HexString;
+} | {
 	type: 'EVM_CALL';
 	location: AssetLocationLike;
 
@@ -186,14 +195,14 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 }) & ({
-	chain: AssetLocation;
+	location: AssetLocation;
 	assetFee: bigint;
 });
 
 export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	ok: true;
 	id: string;
-	instructions: AssetTransferInstructions[];
+	instructionChoices: AssetTransferInstructions[];
 }) | ({
 	ok: false;
 	error: string;
@@ -218,8 +227,9 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	asset: MovableAsset;
-	location: AssetLocationLike;
-	source: KeetaNetTokenPublicKeyString;
+	destinationLocation: AssetLocationLike;
+	destinationAddress: string;
+	sourceLocation: AssetLocationLike;
 }
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
@@ -230,10 +240,11 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
 	error: string;
 });
 
-export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsRequest = {
+export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+	persistentAddress: string;
+	fromAddress: string;
 	asset?: MovableAsset;
-	location: AssetLocationLike;
-	address: string;
+	location?: AssetLocationLike;
 }
 
 export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = ({
