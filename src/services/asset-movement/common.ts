@@ -1,7 +1,9 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+
+export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
 type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
@@ -151,18 +153,17 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 			return(input);
 		}
 
-		input.assertKeyType(KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
 		return(input.publicKeyString.get());
 	}
 }
 
-
 export type Operations = NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
-export interface KeetaAssetMovementAnchorInitiateTransferRequest {
+export type KeetaAssetMovementAnchorInitiateTransferRequest = {
 	asset: MovableAsset;
-	from: { location: AssetLocationLike; };
+	from: { location: AssetLocationLike; sender: string; };
 	to: { location: AssetLocationLike; recipient: string; };
 	value: bigint;
 	allowedRails?: AssetMovementRail[];
@@ -198,18 +199,46 @@ export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	error: string;
 })
 
-export interface KeetaAssetMovementAnchorGetStatusRequest extends KeetaAssetMovementAnchorInitiateTransferRequest{
+export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
 }
 
 type TransactionStatus = 'A' | 'B' | 'C';
 
-export type KeetaAssetMovementAnchorGetStatusResponse = ({
+export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
 
 	status: TransactionStatus;
 
 	// additional
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
+	asset: MovableAsset;
+	location: AssetLocationLike;
+	source: KeetaNetTokenPublicKeyString;
+}
+
+export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
+	ok: true;
+	address: string;
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsRequest = {
+	asset?: MovableAsset;
+	location: AssetLocationLike;
+	address: string;
+}
+
+export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = ({
+	ok: true;
+	transactions: string[] // TODO What format should this be?
 } | {
 	ok: false;
 	error: string;

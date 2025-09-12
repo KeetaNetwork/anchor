@@ -10,8 +10,8 @@ import type {
 import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
-	KeetaAssetMovementAnchorGetStatusRequest,
-	KeetaAssetMovementAnchorGetStatusResponse,
+	KeetaAssetMovementAnchorGetTransferStatusRequest,
+	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	AssetPath,
 	AssetWithRails,
 	Rail
@@ -110,7 +110,7 @@ type GetEndpointsResult = {
 };
 
 const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
-const isKeetaAssetMovementAnchorGetStatusResponse = createIs<KeetaAssetMovementAnchorGetStatusResponse>();
+const isKeetaAssetMovementAnchorGetStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 // const isKeetaAssetPath = createIs<AssetPath>();
 const isKeetaAssetWithRails = createIs<AssetWithRails>();
 const isKeetaAssetRail = createIs<Rail>();
@@ -449,7 +449,7 @@ class KeetaAssetMovementAnchorClient {
 		return(validEndpoints);
 	}
 
-	async getTransferStatus(providerID: ProviderID, request: KeetaAssetMovementAnchorGetStatusRequest & { id: RequestID; }): Promise<KeetaAssetMovementAnchorGetStatusResponse> {
+	async getTransferStatus(providerID: ProviderID, request: KeetaAssetMovementAnchorInitiateTransferRequest & KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
 		const endpoints = await getEndpoints(this.resolver, request);
 		if (endpoints === null) {
 			throw(new Error('No KYC endpoints found for the given criteria'));
