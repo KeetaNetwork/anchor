@@ -321,7 +321,7 @@ class KeetaAssetMovementAnchorBase {
 	}
 }
 
-class KeetaAssetMovementAnchorProviderBase extends KeetaAssetMovementAnchorBase {
+class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	readonly transfer: KeetaAssetMovementAnchorInitiateTransferRequest;
@@ -337,8 +337,8 @@ class KeetaAssetMovementAnchorProviderBase extends KeetaAssetMovementAnchorBase 
 		this.parent = parent;
 	}
 
-	async initiateTransfer(args: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
-		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(args)}`);
+	async initiateTransfer(): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(this.transfer)}`);
 
 		const endpoints = this.serviceInfo.operations;
 		const initiateTransfer = await endpoints.initiateTransfer;
@@ -353,7 +353,7 @@ class KeetaAssetMovementAnchorProviderBase extends KeetaAssetMovementAnchorBase 
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				request: args
+				request: this.transfer
 			})
 		});
 
@@ -407,18 +407,16 @@ class KeetaAssetMovementAnchorProviderBase extends KeetaAssetMovementAnchorBase 
  * Represents an in-progress Asset Movement request.
  */
 class KeetaAssetMovementTransfer {
-	private readonly provider: KeetaAssetMovementAnchorProviderBase;
-	private readonly transfer: KeetaAssetMovementAnchorInitiateTransferRequest;
+	private readonly provider: KeetaAssetMovementAnchorProvider;
 	private transferID: string | undefined;
 	private transferInstructions: AssetTransferInstructions[] | undefined;
 
-	constructor(provider: KeetaAssetMovementAnchorProviderBase, transfer: KeetaAssetMovementAnchorInitiateTransferRequest) {
+	constructor(provider: KeetaAssetMovementAnchorProvider) {
 		this.provider = provider;
-		this.transfer = transfer;
 	}
 
 	async startTransfer(): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
-		const transfer = await this.provider.initiateTransfer(this.transfer);
+		const transfer = await this.provider.initiateTransfer();
 		if (transfer.ok) {
 			this.transferID = transfer.id;
 			this.transferInstructions = transfer.instructions;
@@ -431,7 +429,7 @@ class KeetaAssetMovementTransfer {
 			throw(new Error('Transfer not started'));
 		}
 
-		return(await this.provider.getTransferStatus({ ...this.transfer, id: this.transferID }));
+		return(await this.provider.getTransferStatus({ id: this.transferID }));
 	}
 
 	get transferId(): typeof this.transferID {
@@ -453,7 +451,7 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		this.id = config.id ?? crypto.randomUUID();
 	}
 
-	async getProvidersForTransfer(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementAnchorProviderBase[] | null> {
+	async getProvidersForTransfer(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementAnchorProvider[] | null> {
 		const endpoints = await getEndpoints(this.resolver, request);
 		if (endpoints === null) {
 			return(null);
@@ -462,14 +460,14 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		this.logger?.debug('got endpoints', endpoints);
 
 		const providers = typedAssetMovementServiceEntries(endpoints).map(([id, serviceInfo]) => {
-			return(new KeetaAssetMovementAnchorProviderBase(serviceInfo, id, request, this));
+			return(new KeetaAssetMovementAnchorProvider(serviceInfo, id, request, this));
 		});
 
 		return(providers);
 	}
 
-	async startTransfer(provider: KeetaAssetMovementAnchorProviderBase, request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
-		const assetTransfer = new KeetaAssetMovementTransfer(provider, request);
+	async startTransfer(provider: KeetaAssetMovementAnchorProvider): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
+		const assetTransfer = new KeetaAssetMovementTransfer(provider);
 		const initTransfer = await assetTransfer.startTransfer();
 		return(initTransfer);
 	}
