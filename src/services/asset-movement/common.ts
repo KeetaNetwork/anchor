@@ -169,7 +169,7 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = {
 	allowedRails?: AssetMovementRail[];
 }
 
-type AssetTransferInstructions = ({
+export type AssetTransferInstructions = ({
 	type: 'SEND';
 	location: AssetLocationLike;
 
