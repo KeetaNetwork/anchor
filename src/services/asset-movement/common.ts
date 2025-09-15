@@ -195,7 +195,6 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 }) & ({
-	location: AssetLocation;
 	assetFee: bigint;
 });
 
