@@ -1461,17 +1461,12 @@ class Resolver {
 									return(undefined);
 								}
 
-								if (!('from' in pathObject) || !('to' in pathObject)) {
-									throw(new Error('Asset movement service does not have from/to fields'));
-								}
-
-								if ('rails' in pathObject) {
-									throw(new Error('Asset movement service does not support rails'));
+								if (!('pair' in pathObject)) {
+									throw(new Error('Asset movement service does not have pair defined'));
 								}
 
 								return({
-									from: await pathObject.from?.('string'),
-									to: await pathObject.to?.('string')
+									pair: await pathObject.pair?.('array')
 								});
 							}))
 						})
@@ -1515,7 +1510,7 @@ class Resolver {
 
 		if (Object.keys(retval).length === 0) {
 			/*
-			 * If we didn't find any banking services, then we return
+			 * If we didn't find any asset movement services, then we return
 			 * undefined to indicate that no services were found.
 			 */
 			return(undefined);
@@ -1546,6 +1541,45 @@ class Resolver {
 		}
 
 		return(rootMetadata);
+	}
+
+	async listTransferrableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
+		const rootMetadata = await this.#getRootMetadata();
+		const assetMovement = rootMetadata.assetMovement;
+		if (assetMovement === undefined) {
+			throw(new Error('Root metadata is missing "assetMovement" property'));
+		}
+		const assetMovementServices = await assetMovement('object');
+		const allAssets: KeetaNetAccountTokenPublicKeyString[] = [];
+		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+			if (service === undefined) {
+				throw(new Error('assetMovement has undefined service entry'));
+			}
+			const serviceEntry = await service('object');
+			if (!('supportedAssets' in serviceEntry) || serviceEntry.supportedAssets === undefined) {
+				throw(new Error('service entry is missing "supportedAssets"'));
+			}
+
+			const supportedAssets = await serviceEntry.supportedAssets('array');
+			const assets = await Promise.all(supportedAssets.map(async function(supportedAsset) {
+				if (supportedAsset === undefined) {
+					throw(new Error('supportedAsset entry is undefined'));
+				}
+				const assetEntry = await supportedAsset('object');
+				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
+					throw(new Error('asset is missing from supportedAsset entry'));
+				}
+				const asset = await assetEntry.asset('string');
+
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+				allAssets.push(checkTokenObject.publicKeyString.get());
+			}));
+		}));
+
+		return(allAssets);
 	}
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
