@@ -26,6 +26,9 @@ export type AssetLocationCanonical = AssetLocationString;
 
 export type AssetMovementRail = unknown;
 
+/**
+ * Defines the chain and id for a supported asset location
+ */
 export type AssetLocation = {
 	type: 'chain';
 	chain: {
@@ -48,6 +51,7 @@ export type AssetLocationString =
 
 export type AssetLocationLike = AssetLocation | AssetLocationString;
 
+// A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
 	location?: AssetLocationString;
 	id: string; // keeta token pub or evm contract address or currency code
@@ -55,8 +59,9 @@ export interface Asset {
 
 export type Rail = 'ACH_SEND' | 'ACH_DEBIT' | 'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL';
 
+// Rails can be inbound, outbound or common (inbound and outbound)
 export interface AssetWithRails extends Asset {
-	rails: Rail[] | (({
+	rails: (({
 		inbound: Rail[];
 		outbound?: Rail[];
 	} | {
@@ -67,6 +72,7 @@ export interface AssetWithRails extends Asset {
 	});
 };
 
+// A given asset path should consist of exactly one tuple of locations
 export interface AssetPath {
 	pair: [ AssetWithRails, AssetWithRails ];
 	kycProviders?: string[];
@@ -217,7 +223,6 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
 
 	status: TransactionStatus;
-
 	// additional
 } | {
 	ok: false;
