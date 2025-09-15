@@ -1543,7 +1543,7 @@ class Resolver {
 		return(rootMetadata);
 	}
 
-	async listTransferrableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
+	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
 		const rootMetadata = await this.#getRootMetadata();
 		const servicesFn = rootMetadata.services;
 		if (servicesFn === undefined) {

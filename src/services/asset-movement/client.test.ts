@@ -151,26 +151,28 @@ test('FX Anchor Client Test', async function() {
 		});
 	}).rejects.toThrow();
 
-	const assetClientTransfer = new KeetaNetAnchor.AssetMovement.Client(client, {
+	const assetTransferClient = new KeetaNetAnchor.AssetMovement.Client(client, {
 		root: account,
 		signer: account,
 		account: account,
 		...(logger ? { logger: logger } : {})
 	});
 
+	const baseTokenProvider = await assetTransferClient.getProvidersForTransfer({ asset: baseToken })
+
 	const conversionTests = [
 		{
-			test: async function() { return((await assetClientTransfer.resolver.listTransferrableAssets()).sort()) },
+			test: async function() { return((await assetTransferClient.resolver.listTransferableAssets()).sort()) },
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
 			// no provider offers this pair
-			test: async function() { return(await assetClientTransfer.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n })) },
+			test: async function() { return(await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n })) },
 			result: null
 		},
 		{
 			// @ts-expect-error
-			test: async function() { return(await assetClientTransfer.createPersistentForwardingAddress(TODO_PROVIDER, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
+			test: async function() { return(await assetTransferClient.createPersistentForwardingAddress(TODO_PROVIDER, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: false
 		}
 	];
