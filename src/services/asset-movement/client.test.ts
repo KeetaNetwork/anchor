@@ -160,18 +160,19 @@ test('FX Anchor Client Test', async function() {
 
 	const conversionTests = [
 		{
-			test: async function() { return(await assetClientTransfer.resolver.listTransferrableAssets()) },
-			result: [baseToken.publicKeyString.get(), testCurrencyUSDC.publicKeyString.get()]
+			test: async function() { return((await assetClientTransfer.resolver.listTransferrableAssets()).sort()) },
+			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
 			// no provider offers this pair
 			test: async function() { return(await assetClientTransfer.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n })) },
+			result: null
+		},
+		{
+			// @ts-expect-error
+			test: async function() { return(await assetClientTransfer.createPersistentForwardingAddress(TODO_PROVIDER, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: false
 		}
-		// {
-		// 	test: async function() { return(await assetClientTransfer.createPersistentForwardingAddress(TODO_PROVIDER, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100'})) },
-		// 	result: null
-		// },
 	];
 
 	for (const test of conversionTests) {

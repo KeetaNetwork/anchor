@@ -1545,12 +1545,16 @@ class Resolver {
 
 	async listTransferrableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
 		const rootMetadata = await this.#getRootMetadata();
-		const assetMovement = rootMetadata.assetMovement;
-		if (assetMovement === undefined) {
+		const servicesFn = rootMetadata.services;
+		if (servicesFn === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const services = await servicesFn('object');
+		if (!('assetMovement' in services) || services.assetMovement === undefined) {
 			throw(new Error('Root metadata is missing "assetMovement" property'));
 		}
-		const assetMovementServices = await assetMovement('object');
-		const allAssets: KeetaNetAccountTokenPublicKeyString[] = [];
+		const assetMovementServices = await services.assetMovement('object');
+		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
 		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
 			if (service === undefined) {
 				throw(new Error('assetMovement has undefined service entry'));
@@ -1575,11 +1579,11 @@ class Resolver {
 				if (!checkTokenObject.isToken()) {
 					throw(new Error('Not a token account'));
 				}
-				allAssets.push(checkTokenObject.publicKeyString.get());
+				allAssets.add(checkTokenObject.publicKeyString.get());
 			}));
 		}));
 
-		return(allAssets);
+		return([...allAssets]);
 	}
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
