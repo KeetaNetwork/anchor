@@ -503,7 +503,7 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 	}
 
 	async createPersistentForwardingAddress(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
-		return(provider.createPersistentForwardingAddress(request));
+		return(await provider.createPersistentForwardingAddress(request));
 	}
 
 	async startTransfer(provider: KeetaAssetMovementAnchorProvider): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {

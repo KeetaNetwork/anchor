@@ -1561,7 +1561,7 @@ class Resolver {
 			}
 
 			const supportedAssets = await serviceEntry.supportedAssets('array');
-			const assets = await Promise.all(supportedAssets.map(async function(supportedAsset) {
+			await Promise.all(supportedAssets.map(async function(supportedAsset) {
 				if (supportedAsset === undefined) {
 					throw(new Error('supportedAsset entry is undefined'));
 				}
