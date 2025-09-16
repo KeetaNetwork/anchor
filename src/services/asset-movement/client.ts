@@ -13,9 +13,6 @@ import type {
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
-	AssetWithRails,
-	Rail,
-	AssetLocationString,
 	MovableAsset,
 	AssetTransferInstructions,
 	SupportedAssets
@@ -25,7 +22,7 @@ import {
 	convertAssetSearchInputToCanonical
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
-import type Resolver from '../../lib/resolver.ts';
+import Resolver from "../../lib/resolver.js";
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
@@ -145,7 +142,7 @@ async function getEndpoints(resolver: Resolver, request: Partial<KeetaAssetMovem
 	}
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
-		const supportedAssetsMetadata = await resolver.parseSupportedAssets(serviceInfo);
+		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
 		const supportedAssets = asserKeetaSupportedAssets(supportedAssetsMetadata);
 
 		const operations = await serviceInfo.operations('object');
