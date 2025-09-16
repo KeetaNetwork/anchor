@@ -7,7 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -692,7 +692,7 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
-const assertAssetWithRailsMetadata = createAssert<AssetWithRailsMetadata>();
+const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -1512,118 +1512,7 @@ class Resolver {
 		return(retval);
 	}
 
-	private async locationMatch(pair: AssetWithRailsMetadata, locationCheck: AssetLocationString, direction: 'inbound' | 'outbound'): Promise<AssetWithRailsMetadata | undefined> {
-		if (locationCheck !== pair.location) {
-			return(undefined);
-		}
-
-		let foundRailMatch = false;
-		if ('common' in pair.rails || direction in pair.rails) {
-			foundRailMatch = true;
-		}
-
-		if (!foundRailMatch) {
-			return(undefined);
-		}
-
-		return(pair);
-	}
-
-	private async parseAssetMovementAssetWithRails(pair: ValuizableObject) {
-		if (!('location' in pair) || !('id' in pair) || !('rails' in pair)) {
-			return(undefined);
-		}
-		const locationFn = pair.location;
-		if (locationFn === undefined) {
-			return(undefined);
-		}
-		const location = await locationFn('string');
-
-		const idFn = pair.id;
-		if (idFn === undefined) {
-			return(undefined);
-		}
-		const id = await idFn('string');
-
-		const railsFn = pair.rails;
-		if (railsFn === undefined) {
-			return(undefined);
-		}
-		const railObj = await railsFn('object');
-
-		// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-		let parsedRails: Pick<AssetWithRailsMetadata, 'rails'> | {} = {};
-		if ('inbound' in railObj) {
-			const inboundRailsFn = railObj.inbound;
-			if (inboundRailsFn === undefined) {
-				return(undefined);
-			}
-
-			const inboundRails: string[] = [];
-			const inboundRailsList = await inboundRailsFn('array');
-			for (const railItem of inboundRailsList) {
-				if (railItem === undefined) {
-					return(undefined);
-				}
-				const rail = await railItem('string');
-				inboundRails.push(rail);
-			}
-			if (inboundRails.length === 0) {
-				return(undefined);
-			}
-			parsedRails = { inbound: inboundRails };
-		}
-		if ('outbound' in railObj) {
-			const outboundRailsFn = railObj.outbound;
-			if (outboundRailsFn === undefined) {
-				return(undefined);
-			}
-
-			const outboundRails: string[] = [];
-			const outboundRailsList = await outboundRailsFn('array');
-			for (const railItem of outboundRailsList) {
-				if (railItem === undefined) {
-					return(undefined);
-				}
-				const rail = await railItem('string');
-				outboundRails.push(rail);
-			}
-			if (outboundRails.length === 0) {
-				return(undefined);
-			}
-			parsedRails = { outbound: outboundRails };
-		}
-		if ('common' in railObj) {
-			const commonRailsFn = railObj.common;
-			if (commonRailsFn === undefined) {
-				return(undefined);
-			}
-
-			const commonRails: string[] = [];
-			const commonRailsList = await commonRailsFn('array');
-			for (const railItem of commonRailsList) {
-				if (railItem === undefined) {
-					return(undefined);
-				}
-				const rail = await railItem('string');
-				commonRails.push(rail);
-			}
-			if (commonRails.length === 0) {
-				return(undefined);
-			}
-			parsedRails = { ...parsedRails, common: commonRails };
-		}
-
-		if (Object.keys(parsedRails).length === 0) {
-			return(undefined);
-		}
-
-		const assetWithRails = assertAssetWithRailsMetadata({ location, id, rails: parsedRails });
-
-		return(assetWithRails);
-	}
-
-	async parseSupportedAssets(assetService: ValuizableObject | ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets']> {
+	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
 		if (criteria.rail !== undefined) {
 			throw(new Error('Asset movement service does not support rail search criteria'));
 		}
@@ -1631,119 +1520,51 @@ class Resolver {
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
-		const supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'] = [];
-		if ('supportedAssets' in assetService) {
-			const supportedAssetsList = await assetService.supportedAssets?.('array') ?? [];
+		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
+		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
 
-			for (const supportedAssetEntry of supportedAssetsList) {
-				const supportedAssetObject = await supportedAssetEntry?.('object');
-				if (supportedAssetObject === undefined) {
-					throw(new Error('supportedAsset is undefined'));
-				}
-
-				if (!('asset' in supportedAssetObject) || supportedAssetObject.asset === undefined) {
-					throw(new Error('Asset movement service does not have asset field'));
-				}
-				const asset = await supportedAssetObject.asset('string');
-				if (assetCanonical && asset !== assetCanonical) {
-					continue;
-				}
-
-				if (!('paths' in supportedAssetObject) || supportedAssetObject.paths === undefined) {
-					throw(new Error('Asset movement service does not have paths field'));
-				}
-				const supportedAssetPathsList = await supportedAssetObject.paths('array') ?? [];
-
-				const supportedAssetPaths: {
-					pair: [AssetWithRailsMetadata, AssetWithRailsMetadata];
-					kycProviders?: string[];
-				}[] = [];
-				for (const pathItem of supportedAssetPathsList) {
-					const pathObject = await pathItem?.('object');
-					if (pathObject === undefined) {
-						throw(new Error('Asset movement service does not have paths field'));
-					}
-
-					if (!('pair' in pathObject) || pathObject.pair === undefined) {
-						throw(new Error('Asset movement service does not have pair defined'));
-					}
-
-					const pair = await pathObject.pair('array');
-
-					if (pair === undefined) {
-						throw(new Error('Asset movement service does not have pair defined'));
-					}
-
-					const pair0Fn = pair[0];
-					const pair1Fn = pair[1];
-
-					if (pair0Fn === undefined || pair1Fn === undefined) {
-						throw(new Error('Asset movement service does not have pair defined'));
-					}
-
-					const pair0Entry = await pair0Fn('object');
-					const parsed0Pair = await this.parseAssetMovementAssetWithRails(pair0Entry);
-					const pair1Entry = await pair1Fn('object');
-					const parsed1Pair = await this.parseAssetMovementAssetWithRails(pair1Entry);
-
-					if (parsed0Pair === undefined || parsed1Pair === undefined) {
-						throw(new Error('Asset movement service does not have pair defined'));
-					}
-					if (fromCanonical) {
-						const locationMatch = await Promise.all([parsed0Pair, parsed1Pair].map(async (pair) => {
-							const match = await this.locationMatch(pair, fromCanonical, 'inbound');
-							return(match);
-						}));
-
-						let locationFoundMatch = false;
-						for (const match of locationMatch) {
-							if (match === undefined) {
-								continue;
-							}
-							locationFoundMatch = true;
-						}
-
-						if (!locationFoundMatch) {
-							continue;
-						}
-					}
-
-					if (toCanonical) {
-						const locationMatch = await Promise.all([parsed0Pair, parsed1Pair].map(async (pair) => {
-							const match = await this.locationMatch(pair, toCanonical, 'inbound');
-							return(match);
-						}));
-
-						let locationFoundMatch = false;
-						for (const match of locationMatch) {
-							if (match === undefined) {
-								continue;
-							}
-							locationFoundMatch = true;
-						}
-
-						if (!locationFoundMatch) {
-							continue;
-						}
-					}
-
-					supportedAssetPaths.push({
-						pair: [parsed0Pair, parsed1Pair]
-					});
-				}
-				const token = KeetaNetClient.lib.Account.toAccount(asset);
-				if (!token.isToken()) {
-					continue;
-				}
-				supportedAssets.push({
-					asset: token.publicKeyString.get(),
-					paths: supportedAssetPaths
-				});
+		const filteredAssetMovement: SupportedAssets[] = [];
+		for (const supportedAsset of supportedAssets) {
+			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
+				continue;
 			}
-			return(supportedAssets);
-		} else {
-			throw(new Error('Asset movement service does not have supportedAssets field'));
+			if (fromCanonical) {
+				let fromMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === fromCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const outboundPairMatch = pair.rails.outbound && pair.rails.outbound.length > 0;
+							if (commonPairMatch || outboundPairMatch) {
+								fromMatch = true;
+							}
+						}
+					}
+				}
+				if (!fromMatch) {
+					continue;
+				}
+			}
+			if (toCanonical) {
+				let toMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === toCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const inboundPairMatch = pair.rails.inbound && pair.rails.inbound.length > 0;
+							if (commonPairMatch || inboundPairMatch) {
+								toMatch = true;
+							}
+						}
+					}
+				}
+				if (!toMatch) {
+					continue;
+				}
+			}
+			filteredAssetMovement.push(supportedAsset);
 		}
+		return(filteredAssetMovement);
 	}
 
 	private async lookupAssetMovementServices(assetServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'assetMovement'>) {
@@ -1764,9 +1585,9 @@ class Resolver {
 			}
 
 			try {
-				const supportedAssets = await this.parseSupportedAssets(checkAssetMovementService, criteria);
+				const supportedAssets = await this.filterSupportedAssets(checkAssetMovementService, criteria);
 				if (supportedAssets.length === 0) {
-					return(undefined);
+					continue;
 				}
 				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
 			} catch (parseError) {

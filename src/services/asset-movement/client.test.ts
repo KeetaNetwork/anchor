@@ -10,7 +10,7 @@ const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
-test('FX Anchor Client Test', async function() {
+test('Asset Movement Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	// const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	// const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
@@ -136,6 +136,27 @@ test('FX Anchor Client Test', async function() {
 								]
 							}
 						]
+					},
+					Test2: {
+						operations: {
+							initiateTransfer: `${serverURL}/api/initiateTransfer`,
+							getTransferStatus: `${serverURL}/api/getTransferStatus`,
+							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
+							listTransactions: `${serverURL}/api/listTransactions`
+						},
+						supportedAssets: [
+							{
+								asset: testCurrencyUSDC.publicKeyString.get(),
+								paths: [
+									{
+										pair: [
+											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+										]
+									}
+								]
+							}
+						]
 					}
 				}
 			}
@@ -170,6 +191,7 @@ test('FX Anchor Client Test', async function() {
 	if (baseTokenProviderList === null) {
 		throw(new Error('Did not find any matching asset movement providers'));
 	}
+	expect(baseTokenProviderList.length).toBe(1);
 	const baseTokenProvider = baseTokenProviderList[0];
 	if (baseTokenProvider === undefined) {
 		throw(new Error('Base token provider is undefined'));
@@ -181,7 +203,7 @@ test('FX Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:123' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
 			result: 1
 		},
 		{
