@@ -1,7 +1,11 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+
+type HexString = `0x${string}`;
+
+export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
 type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
@@ -11,7 +15,7 @@ type TokenSearchCanonical = TokenPublicKeyString;
 
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical;
-export type MovableAsset = TokenAddress | CurrencyInfo.Currency;
+export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencyInfo.Currency;
 
 export function assertMovableAsset(input: unknown): asserts input is MovableAsset {
 
@@ -22,6 +26,9 @@ export type AssetLocationCanonical = AssetLocationString;
 
 export type AssetMovementRail = unknown;
 
+/**
+ * Defines the chain and id for a supported asset location
+ */
 export type AssetLocation = {
 	type: 'chain';
 	chain: {
@@ -44,6 +51,7 @@ export type AssetLocationString =
 
 export type AssetLocationLike = AssetLocation | AssetLocationString;
 
+// A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
 	location?: AssetLocationString;
 	id: string; // keeta token pub or evm contract address or currency code
@@ -51,22 +59,32 @@ export interface Asset {
 
 export type Rail = 'ACH_SEND' | 'ACH_DEBIT' | 'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL';
 
+// Rails can be inbound, outbound or common (inbound and outbound)
 export interface AssetWithRails extends Asset {
-	rails: Rail[] | (({
+	rails: (({
 		inbound: Rail[];
 		outbound?: Rail[];
 	} | {
 		inbound?: Rail[];
 		outbound: Rail[];
+	} | {
+		inbound: never;
+		outbound: never;
 	}) & {
 		common?: Rail[];
 	});
 };
 
+// A given asset path should consist of exactly one tuple of locations
 export interface AssetPath {
 	pair: [ AssetWithRails, AssetWithRails ];
 	kycProviders?: string[];
 };
+
+export interface SupportedAssets {
+	asset: MovableAsset,
+	paths: AssetPath[]
+}
 
 export interface AssetWithRailsMetadata {
 	location: string;
@@ -77,10 +95,14 @@ export interface AssetWithRailsMetadata {
 	} | {
 		inbound?: string[];
 		outbound: string[];
+	} | {
+		inbound: never;
+		outbound: never;
 	}) & {
 		common?: string[];
-	});
+	})
 }
+
 
 // Example Asset Paths
 // paths: [
@@ -151,25 +173,24 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 			return(input);
 		}
 
-		input.assertKeyType(KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
 		return(input.publicKeyString.get());
 	}
 }
 
-
 export type Operations = NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
-export interface KeetaAssetMovementAnchorInitiateTransferRequest {
+export type KeetaAssetMovementAnchorInitiateTransferRequest = {
 	asset: MovableAsset;
-	from: { location: AssetLocationLike; };
+	from: { location: AssetLocationLike };
 	to: { location: AssetLocationLike; recipient: string; };
 	value: bigint;
 	allowedRails?: AssetMovementRail[];
 }
 
-type AssetTransferInstructions = ({
-	type: 'SEND';
+export type AssetTransferInstructions = ({
+	type: 'KEETA_SEND';
 	location: AssetLocationLike;
 
 	sendToAddress: string;
@@ -178,6 +199,13 @@ type AssetTransferInstructions = ({
 
 	external?: string;
 } | {
+	type: 'EVM_SEND';
+	location: AssetLocationLike;
+
+	sendToAddress: string;
+	value: bigint;
+	tokenAddress: HexString;
+} | {
 	type: 'EVM_CALL';
 	location: AssetLocationLike;
 
@@ -185,31 +213,59 @@ type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 }) & ({
-	chain: AssetLocation;
 	assetFee: bigint;
 });
 
 export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	ok: true;
 	id: string;
-	instructions: AssetTransferInstructions[];
+	instructionChoices: AssetTransferInstructions[];
 }) | ({
 	ok: false;
 	error: string;
 })
 
-export interface KeetaAssetMovementAnchorGetStatusRequest extends KeetaAssetMovementAnchorInitiateTransferRequest{
+export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
 }
 
 type TransactionStatus = 'A' | 'B' | 'C';
 
-export type KeetaAssetMovementAnchorGetStatusResponse = ({
+export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
 
 	status: TransactionStatus;
-
 	// additional
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
+	asset: MovableAsset;
+	destinationLocation: AssetLocationLike;
+	destinationAddress: string;
+	sourceLocation: AssetLocationLike;
+}
+
+export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
+	ok: true;
+	address: string;
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+	persistentAddress: string;
+	fromAddress: string;
+	asset?: MovableAsset;
+	location?: AssetLocationLike;
+}
+
+export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = ({
+	ok: true;
+	transactions: string[] // TODO What format should this be?
 } | {
 	ok: false;
 	error: string;

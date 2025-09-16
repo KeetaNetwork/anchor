@@ -7,7 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import type { AssetWithRailsMetadata, Rail } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -159,9 +159,9 @@ type ServiceMetadata = {
 			[id: string]: {
 				operations: {
 					initiateTransfer?: string;
-					getTransfer?: string;
+					getTransferStatus?: string;
 					createPersistentForwarding?: string;
-					listPersistentForwardingTransactions?: string
+					listTransactions?: string
 				};
 
 				supportedAssets: {
@@ -243,9 +243,9 @@ type ServiceSearchCriteria<T extends Services> = {
 		countryCodes: CountrySearchInput[];
 	};
 	'assetMovement': {
-		asset: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
-		from?: string;
-		to?: string;
+		asset?: MovableAssetSearchInput;
+		from?: AssetLocationString;
+		to?: AssetLocationString;
 		rail?: Rail;
 		/**
 		 * Search for a provider which supports ANY of the following
@@ -453,7 +453,7 @@ const assertResolverLookupAssetMovementResults = async function(input: unknown):
 	}
 
 	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
-	await fromUnrealized('object');
+	await fromUnrealized('array');
 
 	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
 	// @ts-ignore
@@ -684,6 +684,7 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
+const assertAssetWithRailsMetadata = createAssert<AssetWithRailsMetadata>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -1408,114 +1409,271 @@ class Resolver {
 		return(retval);
 	}
 
+	private async locationMatch(pair: AssetWithRailsMetadata, locationCheck: AssetLocationString, direction: 'inbound' | 'outbound'): Promise<AssetWithRailsMetadata | undefined> {
+		if (locationCheck !== pair.location) {
+			return(undefined);
+		}
+
+		let foundRailMatch = false;
+		if ('common' in pair.rails || direction in pair.rails) {
+			foundRailMatch = true;
+		}
+
+		if (!foundRailMatch) {
+			return(undefined);
+		}
+
+		return(pair);
+	}
+
+	private async parseAssetMovementAssetWithRails(pair: ValuizableObject) {
+		if (!('location' in pair) || !('id' in pair) || !('rails' in pair)) {
+			return(undefined);
+		}
+		const locationFn = pair.location;
+		if (locationFn === undefined) {
+			return(undefined);
+		}
+		const location = await locationFn('string');
+
+		const idFn = pair.id;
+		if (idFn === undefined) {
+			return(undefined);
+		}
+		const id = await idFn('string');
+
+		const railsFn = pair.rails;
+		if (railsFn === undefined) {
+			return(undefined);
+		}
+		const railObj = await railsFn('object');
+
+		// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+		let parsedRails: Pick<AssetWithRailsMetadata, 'rails'> | {} = {};
+		if ('inbound' in railObj) {
+			const inboundRailsFn = railObj.inbound;
+			if (inboundRailsFn === undefined) {
+				return(undefined);
+			}
+
+			const inboundRails: string[] = [];
+			const inboundRailsList = await inboundRailsFn('array');
+			for (const railItem of inboundRailsList) {
+				if (railItem === undefined) {
+					return(undefined);
+				}
+				const rail = await railItem('string');
+				inboundRails.push(rail);
+			}
+			if (inboundRails.length === 0) {
+				return(undefined);
+			}
+			parsedRails = { inbound: inboundRails };
+		}
+		if ('outbound' in railObj) {
+			const outboundRailsFn = railObj.outbound;
+			if (outboundRailsFn === undefined) {
+				return(undefined);
+			}
+
+			const outboundRails: string[] = [];
+			const outboundRailsList = await outboundRailsFn('array');
+			for (const railItem of outboundRailsList) {
+				if (railItem === undefined) {
+					return(undefined);
+				}
+				const rail = await railItem('string');
+				outboundRails.push(rail);
+			}
+			if (outboundRails.length === 0) {
+				return(undefined);
+			}
+			parsedRails = { outbound: outboundRails };
+		}
+		if ('common' in railObj) {
+			const commonRailsFn = railObj.common;
+			if (commonRailsFn === undefined) {
+				return(undefined);
+			}
+
+			const commonRails: string[] = [];
+			const commonRailsList = await commonRailsFn('array');
+			for (const railItem of commonRailsList) {
+				if (railItem === undefined) {
+					return(undefined);
+				}
+				const rail = await railItem('string');
+				commonRails.push(rail);
+			}
+			if (commonRails.length === 0) {
+				return(undefined);
+			}
+			parsedRails = { ...parsedRails, common: commonRails };
+		}
+
+		if (Object.keys(parsedRails).length === 0) {
+			return(undefined);
+		}
+
+		const assetWithRails = assertAssetWithRailsMetadata({ location, id, rails: parsedRails });
+
+		return(assetWithRails);
+	}
+
+	async parseSupportedAssets(assetService: ValuizableObject | ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets']> {
+		if (criteria.rail !== undefined) {
+			throw(new Error('Asset movement service does not support rail search criteria'));
+		}
+		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
+		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
+		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
+
+		const supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'] = [];
+		if ('supportedAssets' in assetService) {
+			const supportedAssetsList = await assetService.supportedAssets?.('array') ?? [];
+
+			for (const supportedAssetEntry of supportedAssetsList) {
+				const supportedAssetObject = await supportedAssetEntry?.('object');
+				if (supportedAssetObject === undefined) {
+					throw(new Error('supportedAsset is undefined'));
+				}
+
+				if (!('asset' in supportedAssetObject) || supportedAssetObject.asset === undefined) {
+					throw(new Error('Asset movement service does not have asset field'));
+				}
+				const asset = await supportedAssetObject.asset('string');
+				if (assetCanonical && asset !== assetCanonical) {
+					continue;
+				}
+
+				if (!('paths' in supportedAssetObject) || supportedAssetObject.paths === undefined) {
+					throw(new Error('Asset movement service does not have paths field'));
+				}
+				const supportedAssetPathsList = await supportedAssetObject.paths('array') ?? [];
+
+				const supportedAssetPaths: {
+					pair: [AssetWithRailsMetadata, AssetWithRailsMetadata];
+					kycProviders?: string[];
+				}[] = [];
+				for (const pathItem of supportedAssetPathsList) {
+					const pathObject = await pathItem?.('object');
+					if (pathObject === undefined) {
+						throw(new Error('Asset movement service does not have paths field'));
+					}
+
+					if (!('pair' in pathObject) || pathObject.pair === undefined) {
+						throw(new Error('Asset movement service does not have pair defined'));
+					}
+
+					const pair = await pathObject.pair('array');
+
+					if (pair === undefined) {
+						throw(new Error('Asset movement service does not have pair defined'));
+					}
+
+					const pair0Fn = pair[0];
+					const pair1Fn = pair[1];
+
+					if (pair0Fn === undefined || pair1Fn === undefined) {
+						throw(new Error('Asset movement service does not have pair defined'));
+					}
+
+					const pair0Entry = await pair0Fn('object');
+					const parsed0Pair = await this.parseAssetMovementAssetWithRails(pair0Entry);
+					const pair1Entry = await pair1Fn('object');
+					const parsed1Pair = await this.parseAssetMovementAssetWithRails(pair1Entry);
+
+					if (parsed0Pair === undefined || parsed1Pair === undefined) {
+						throw(new Error('Asset movement service does not have pair defined'));
+					}
+					if (fromCanonical) {
+						const locationMatch = await Promise.all([parsed0Pair, parsed1Pair].map(async (pair) => {
+							const match = await this.locationMatch(pair, fromCanonical, 'inbound');
+							return(match);
+						}));
+
+						let locationFoundMatch = false;
+						for (const match of locationMatch) {
+							if (match === undefined) {
+								continue;
+							}
+							locationFoundMatch = true;
+						}
+
+						if (!locationFoundMatch) {
+							continue;
+						}
+					}
+
+					if (toCanonical) {
+						const locationMatch = await Promise.all([parsed0Pair, parsed1Pair].map(async (pair) => {
+							const match = await this.locationMatch(pair, toCanonical, 'inbound');
+							return(match);
+						}));
+
+						let locationFoundMatch = false;
+						for (const match of locationMatch) {
+							if (match === undefined) {
+								continue;
+							}
+							locationFoundMatch = true;
+						}
+
+						if (!locationFoundMatch) {
+							continue;
+						}
+					}
+
+					supportedAssetPaths.push({
+						pair: [parsed0Pair, parsed1Pair]
+					});
+				}
+				const token = KeetaNetClient.lib.Account.toAccount(asset);
+				if (!token.isToken()) {
+					continue;
+				}
+				supportedAssets.push({
+					asset: token.publicKeyString.get(),
+					paths: supportedAssetPaths
+				});
+			}
+			return(supportedAssets);
+		} else {
+			throw(new Error('Asset movement service does not have supportedAssets field'));
+		}
+	}
+
 	private async lookupAssetMovementServices(assetServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'assetMovement'>) {
 		if (assetServices === undefined) {
 			return(undefined);
 		}
 
-		// const assetCanonical = convertAssetSearchInputToCanonical(criteria.asset);
-		// const fromCanonical = convertAssetLocationInputToCanonical(criteria.from);
-		// const toCanonical = convertAssetLocationInputToCanonical(criteria.to);
-
 		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
 		for (const checkAssetMovementServiceID in assetServices) {
+			const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
+
+			if (checkAssetMovementService === undefined) {
+				return(undefined);
+			}
+
+			if (!('operations' in checkAssetMovementService)) {
+				return(undefined);
+			}
+
 			try {
-				const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
-				if (checkAssetMovementService === undefined) {
-					continue;
+				const supportedAssets = await this.parseSupportedAssets(checkAssetMovementService, criteria);
+				if (supportedAssets.length === 0) {
+					return(undefined);
 				}
-
-				if (!('operations' in checkAssetMovementService)) {
-					continue;
-				}
-
-				if (criteria.rail !== undefined) {
-					throw(new Error('Asset movement service does not support rail search criteria'));
-				}
-
-				let acceptable = true;
-				if ('supportedAssets' in checkAssetMovementService) {
-					const supportedAssets = await checkAssetMovementService.supportedAssets?.('array') ?? [];
-
-					const supportedAssetsList = await Promise.all(supportedAssets.map(async function(item) {
-						const supportedAssetObject = await item?.('object');
-
-						if (supportedAssetObject === undefined) {
-							return(undefined);
-						}
-
-						if (!('asset' in supportedAssetObject)) {
-							throw(new Error('Asset movement service does not have asset field'));
-						}
-
-						const asset = await supportedAssetObject.asset?.('string');
-
-						const supportedAssetPaths = await supportedAssetObject?.paths?.('array') ?? [];
-
-						return({
-							asset: asset,
-							paths: await Promise.all(supportedAssetPaths.map(async function(pathItem) {
-								const pathObject = await pathItem?.('object');
-
-								if (pathObject === undefined) {
-									return(undefined);
-								}
-
-								if (!('from' in pathObject) || !('to' in pathObject)) {
-									throw(new Error('Asset movement service does not have from/to fields'));
-								}
-
-								if ('rails' in pathObject) {
-									throw(new Error('Asset movement service does not support rails'));
-								}
-
-								return({
-									from: await pathObject.from?.('string'),
-									to: await pathObject.to?.('string')
-								});
-							}))
-						})
-					}));
-
-					for (const item of supportedAssetsList) {
-						if (item === undefined) {
-							continue;
-						}
-
-						// if (item.asset !== assetCanonical) {
-						// 	continue;
-						// }
-
-						const hasPath = item.paths.some(function(path) {
-							if (path === undefined) {
-								return(false);
-							}
-							throw(new Error('Match not found'));
-							// return(path.from === fromCanonical && path.to === toCanonical);
-						});
-
-						if (hasPath) {
-							acceptable = true;
-							break;
-						}
-					}
-				} else {
-					throw(new Error('Asset movement service does not have supportedAssets field'));
-				}
-
-				if (!acceptable) {
-					continue;
-				}
-
 				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
-			} catch (checkAssetMovementServiceError) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking assetMovement service', checkAssetMovementServiceID, ':', checkAssetMovementServiceError, ' -- ignoring');
+			} catch (parseError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, ' -- ignoring');
 			}
 		}
 
 		if (Object.keys(retval).length === 0) {
 			/*
-			 * If we didn't find any banking services, then we return
+			 * If we didn't find any asset movement services, then we return
 			 * undefined to indicate that no services were found.
 			 */
 			return(undefined);
@@ -1546,6 +1704,49 @@ class Resolver {
 		}
 
 		return(rootMetadata);
+	}
+
+	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
+		const rootMetadata = await this.#getRootMetadata();
+		const servicesFn = rootMetadata.services;
+		if (servicesFn === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const services = await servicesFn('object');
+		if (!('assetMovement' in services) || services.assetMovement === undefined) {
+			throw(new Error('Root metadata is missing "assetMovement" property'));
+		}
+		const assetMovementServices = await services.assetMovement('object');
+		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
+		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+			if (service === undefined) {
+				throw(new Error('assetMovement has undefined service entry'));
+			}
+			const serviceEntry = await service('object');
+			if (!('supportedAssets' in serviceEntry) || serviceEntry.supportedAssets === undefined) {
+				throw(new Error('service entry is missing "supportedAssets"'));
+			}
+
+			const supportedAssets = await serviceEntry.supportedAssets('array');
+			await Promise.all(supportedAssets.map(async function(supportedAsset) {
+				if (supportedAsset === undefined) {
+					throw(new Error('supportedAsset entry is undefined'));
+				}
+				const assetEntry = await supportedAsset('object');
+				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
+					throw(new Error('asset is missing from supportedAsset entry'));
+				}
+				const asset = await assetEntry.asset('string');
+
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+				allAssets.add(checkTokenObject.publicKeyString.get());
+			}));
+		}));
+
+		return([...allAssets]);
 	}
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
