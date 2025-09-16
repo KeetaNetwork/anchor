@@ -166,8 +166,14 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-	const baseTokenProvider = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
-	expect(baseTokenProvider?.length).toBe(1);
+	const baseTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
+	if (baseTokenProviderList === null) {
+		throw(new Error('Did not find any matching asset movement providers'));
+	}
+	const baseTokenProvider = baseTokenProviderList[0];
+	if (baseTokenProvider === undefined) {
+		throw(new Error('Base token provider is undefined'));
+	}
 
 	const conversionTests = [
 		{
@@ -179,8 +185,7 @@ test('FX Anchor Client Test', async function() {
 			result: 1
 		},
 		{
-			// @ts-expect-error
-			test: async function() { return(await assetTransferClient.createPersistentForwardingAddress(TODO_PROVIDER, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
+			test: async function() { return(await assetTransferClient.createPersistentForwardingAddress(baseTokenProvider, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: false
 		}
 	];
