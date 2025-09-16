@@ -86,18 +86,22 @@ test('FX Anchor Client Test', async function() {
 						supportedAssets: [
 							{
 								asset: baseToken.publicKeyString.get(),
-								paths: {
-									pair: [
-										{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
-									]
-								}
+								paths: [
+									{
+										pair: [
+											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+										]
+									}
+								]
 							},
 							{
 								asset: testCurrencyUSDC.publicKeyString.get(),
-								paths: {
-									pair: [
-									]
-								}
+								paths: [
+									{
+										pair: [
+										]
+									}
+								]
 							}
 						]
 					},
@@ -111,21 +115,25 @@ test('FX Anchor Client Test', async function() {
 						supportedAssets: [
 							{
 								asset: baseToken.publicKeyString.get(),
-								paths: {
-									pair: [
-										{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
-										{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
-									]
-								}
+								paths: [
+									{
+										pair: [
+											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+										]
+									}
+								]
 							},
 							{
 								asset: testCurrencyUSDC.publicKeyString.get(),
-								paths: {
-									pair: [
-										{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
-										{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
-									]
-								}
+								paths: [
+									{
+										pair: [
+											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+										]
+									}
+								]
 							}
 						]
 					}
@@ -158,7 +166,7 @@ test('FX Anchor Client Test', async function() {
 		...(logger ? { logger: logger } : {})
 	});
 
-	const baseTokenProvider = await assetTransferClient.getProvidersForTransfer({ asset: baseToken })
+	const baseTokenProvider = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
 
 	const conversionTests = [
 		{

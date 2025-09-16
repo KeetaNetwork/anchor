@@ -92,6 +92,7 @@ export interface AssetWithRailsMetadata {
 	});
 }
 
+
 // Example Asset Paths
 // paths: [
 // 	{
