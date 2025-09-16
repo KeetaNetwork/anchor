@@ -15,7 +15,7 @@ type TokenSearchCanonical = TokenPublicKeyString;
 
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical;
-export type MovableAsset = TokenAddress | CurrencyInfo.Currency;
+export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencyInfo.Currency;
 
 export function assertMovableAsset(input: unknown): asserts input is MovableAsset {
 
@@ -67,6 +67,9 @@ export interface AssetWithRails extends Asset {
 	} | {
 		inbound?: Rail[];
 		outbound: Rail[];
+	} | {
+		inbound: never;
+		outbound: never;
 	}) & {
 		common?: Rail[];
 	});
@@ -78,6 +81,11 @@ export interface AssetPath {
 	kycProviders?: string[];
 };
 
+export interface SupportedAssets {
+	asset: MovableAsset,
+	paths: AssetPath[]
+}
+
 export interface AssetWithRailsMetadata {
 	location: string;
 	id: string;
@@ -87,9 +95,12 @@ export interface AssetWithRailsMetadata {
 	} | {
 		inbound?: string[];
 		outbound: string[];
+	} | {
+		inbound: never;
+		outbound: never;
 	}) & {
 		common?: string[];
-	});
+	})
 }
 
 

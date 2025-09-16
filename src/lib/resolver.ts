@@ -1520,7 +1520,7 @@ class Resolver {
 		return(assetWithRails);
 	}
 
-	private async parseSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'>): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets']> {
+	async parseSupportedAssets(assetService: ValuizableObject | ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets']> {
 		if (criteria.rail !== undefined) {
 			throw(new Error('Asset movement service does not support rail search criteria'));
 		}
@@ -1543,7 +1543,7 @@ class Resolver {
 				}
 				const asset = await supportedAssetObject.asset('string');
 				if (assetCanonical && asset !== assetCanonical) {
-					throw(new Error('Asset does not match search'));
+					continue;
 				}
 
 				if (!('paths' in supportedAssetObject) || supportedAssetObject.paths === undefined) {

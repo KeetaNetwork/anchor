@@ -1,5 +1,5 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import { createIs } from 'typia';
+import { createAssert, createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
 
@@ -13,14 +13,14 @@ import type {
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
-	AssetPath,
 	AssetWithRails,
 	Rail,
 	AssetLocationString,
 	MovableAsset,
-	AssetTransferInstructions
+	AssetTransferInstructions,
+	SupportedAssets
 } from './common.js';
-import { assertMovableAsset,
+import {
 	convertAssetLocationToString,
 	convertAssetSearchInputToCanonical
 } from './common.js';
@@ -99,11 +99,7 @@ type KeetaAssetMovementServiceInfo = {
 		[operation in keyof KeetaAssetMovementAnchorOperations]: Promise<KeetaAssetMovementAnchorOperations[operation]>;
 	};
 
-	supportedAssets: {
-		asset: MovableAsset;
-		paths: AssetPath[];
-	}[];
-
+	supportedAssets: SupportedAssets[];
 };
 
 /**
@@ -115,9 +111,7 @@ type GetEndpointsResult = {
 };
 
 // const isKeetaAssetPath = createIs<AssetPath>();
-const isKeetaAssetWithRails = createIs<AssetWithRails>();
-const isKeetaAssetRail = createIs<Rail>();
-const isKeetaLocationString = createIs<AssetLocationString>();
+const asserKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 function validateURL(url: string | undefined): URL {
 	if (url === undefined || url === null) {
@@ -151,127 +145,8 @@ async function getEndpoints(resolver: Resolver, request: Partial<KeetaAssetMovem
 	}
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
-		const supportedAssetPromises = (await serviceInfo.supportedAssets?.('array'))?.map(async function(supportedAssetObject): Promise<KeetaAssetMovementServiceInfo['supportedAssets'][number]> {
-
-			const resolvedAssetObject = await supportedAssetObject('object');
-
-			if (!resolvedAssetObject) {
-				throw(new Error('Asset object resolved to undefined'));
-			}
-
-			const asset = await resolvedAssetObject.asset('string');
-
-			assertMovableAsset(asset);
-
-			const paths: AssetPath[] = await Promise.all((await resolvedAssetObject.paths('array')).map(async function(pathObject) {
-				const resolvedPathObject = await pathObject('object');
-
-				if (!resolvedPathObject) {
-					throw(new Error('Path object resolved to undefined'));
-				}
-
-				const pair = await resolvedPathObject.pair('array');
-				if (pair.length !== 2) {
-					throw(new Error(`Asset Movement pair should have 2 entries, found: ${pair.length}`));
-				}
-
-				const assetPair: Partial<AssetWithRails>[] = await Promise.all(pair.map(async function(assetPath) {
-					const path = await assetPath('object');
-					const location = await path.location('string');
-					if (!isKeetaLocationString(location)) {
-						throw(new Error('Location is not a valid location format'));
-					}
-
-					const id = await path.id('string');
-					const railsValuizable = await path.rails('object');
-
-					const { inbound: inboundFn, outbound: outboundFn, common: commonFn } = railsValuizable;
-
-					if ((inboundFn && outboundFn)) {
-						throw(new Error('Cannot define inbound and outbound simultaneously in asset with rails'));
-					}
-					if ((commonFn && (inboundFn || outboundFn))) {
-						throw(new Error('Cannot use inbound or outbound with common in asset with rails'));
-					}
-
-					// let rails: { inbound?: Rail[]; outbound?: Rail[], common?: Rail[] } = {};
-					// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-					let inbound: { rails: { inbound: Rail[] }} | {} = {};
-					// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-					let outbound: { rails: { inbound: Rail[] }} | {} = {};
-					// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-					let common: { rails: { inbound: Rail[] }} | {} = {};
-					if (inboundFn) {
-						const rails = [];
-						const inboundList = await inboundFn('array');
-						for (const inboundEntry of inboundList) {
-							const rail = await inboundEntry('string');
-							if (isKeetaAssetRail(rail)) {
-								rails.push(rail);
-							}
-						}
-						inbound = { rails: { inbound: rails }};
-					} else if (outboundFn) {
-						const rails = [];
-						const outboundList = await outboundFn('array');
-						for (const outboundEntry of outboundList) {
-							const rail = await outboundEntry('string');
-							if (isKeetaAssetRail(rail)) {
-								rails.push(rail);
-							}
-						}
-						outbound = { rails: { outbound: rails }};
-					} else if (commonFn) {
-						const rails = [];
-						const commonList = await commonFn('array');
-						for (const commonEntry of commonList) {
-							const rail = await commonEntry('string');
-							if (isKeetaAssetRail(rail)) {
-								rails.push(rail);
-							}
-						}
-						common = { rails: { common: rails }};
-					}
-
-					return({
-						location,
-						id,
-						...inbound,
-						...outbound,
-						...common
-					})
-				}));
-
-				if (assetPair.length !== 2) {
-					throw(new Error(`Asset Movement pair should have 2 entries, found: ${pair.length}`));
-				}
-
-				const [ pair0, pair1 ] = assetPair;
-
-
-				if (!pair0 || !pair1) {
-					throw(new Error('Asset pair is undefined'));
-				}
-
-				if (!isKeetaAssetWithRails(pair0)) {
-					throw(new Error('pair is not a valid asset with rails'));
-				}
-				if (!isKeetaAssetWithRails(pair1)) {
-					throw(new Error('pair is not a valid asset with rails'));
-				}
-
-				return({
-					pair: [pair0, pair1]
-				});
-			}));
-
-			return({
-				asset,
-				paths
-			})
-		});
-
-		const supportedAssets: KeetaAssetMovementServiceInfo['supportedAssets'] = await Promise.all(supportedAssetPromises);
+		const supportedAssetsMetadata = await resolver.parseSupportedAssets(serviceInfo);
+		const supportedAssets = asserKeetaSupportedAssets(supportedAssetsMetadata);
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};

@@ -167,6 +167,7 @@ test('FX Anchor Client Test', async function() {
 	});
 
 	const baseTokenProvider = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
+	expect(baseTokenProvider?.length).toBe(1);
 
 	const conversionTests = [
 		{
@@ -174,9 +175,8 @@ test('FX Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
-			// no provider offers this pair
-			test: async function() { return(await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n })) },
-			result: null
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
+			result: 1
 		},
 		{
 			// @ts-expect-error
