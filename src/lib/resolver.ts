@@ -565,26 +565,32 @@ type ValuizableArray = (ValuizableMethod | undefined)[];
 type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
 type ValuizableKind = 'any' | 'object' | 'array' | 'primitive' | 'string' | 'number' | 'boolean';
-interface ValuizableMethod {
+
+interface ValuizableMethodBase {
+	(expect?: ValuizableKind): Promise<ValuizeInput>;
+	(expect: 'any'): Promise<ValuizeInput>;
+}
+
+interface ValuizableMethod extends ValuizableMethodBase {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
-	(expect: 'any'): Promise<ValuizeInput>;
-	(expect?: ValuizableKind): Promise<ValuizeInput>;
 };
 
-interface ToValuizableExpectString {
+interface ToValuizableExpectString extends ValuizableMethodBase {
 	(expect: 'string'): Promise<string>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectNumber {
+
+interface ToValuizableExpectNumber extends ValuizableMethodBase {
 	(expect: 'number'): Promise<number>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectBoolean {
+
+interface ToValuizableExpectBoolean extends ValuizableMethodBase {
 	(expect: 'boolean'): Promise<boolean>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
@@ -616,6 +622,8 @@ type ToJSONValuizableObject<T extends object> = {
 	) | ExternalURL;
 };
 type ToJSONValuizable<T> = ToJSONValuizableObject<{ tmp: T }>['tmp'];
+
+type ValuizeResolvable = JSONSerializablePrimitive | ValuizableObject | ValuizableArray | ValuizableMethod;
 
 /*
  * Access token to share with the Metadata object to allow it to
@@ -732,8 +740,16 @@ class Metadata implements ValuizableInstance {
 		assertServiceMetadata(value);
 	}
 
+	/**
+	 * Check if the supplied value is a Valuizable method which can
+	 * be called to resolve a Valuizable value.
+	 */
 	static isValuizable(value: unknown): value is ValuizableMethod {
 		if (typeof value === 'object' && value !== null) {
+			return(false);
+		}
+
+		if (typeof value !== 'function') {
 			return(false);
 		}
 
@@ -751,6 +767,87 @@ class Metadata implements ValuizableInstance {
 		}
 
 		return(false);
+	}
+
+	/**
+	 * Recursively resolve a Valuizable value into a fully
+	 * realized JSONSerializable value.  This will walk the
+	 * entire structure, calling each Valuizable method
+	 * and replacing it with the returned value.
+	 *
+	 * This should only be used in cases where the entire
+	 * structure needs to be fully realized, as it
+	 * can be quite expensive.
+	 */
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	// eslint-disable-next-line @typescript-eslint/unified-signatures,@typescript-eslint/no-explicit-any
+	static async fullyResolveValuizable(value: any, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement: JSONSerializable = null): Promise<JSONSerializable> {
+		if (typeof value === 'object' && value !== null) {
+			if (Array.isArray(value)) {
+				const newArray: JSONSerializable[] = [];
+				for (let i = 0; i < value.length; i++) {
+					const entry = value[i];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newArray.push(newEntry);
+					} else if (entry === undefined) {
+						throw(new Error(`Array entry ${i} is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newArray);
+			} else {
+				const newObject: { [key: string]: JSONSerializable; } = {};
+				for (const key in value) {
+					/*
+					 * Since `key` is the index of the array or
+					 * object, it is safe to use it to index
+					 * into the array or object.
+					 */
+					// @ts-ignore
+					const entry = value[key];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newObject[key] = newEntry;
+					} else if (entry === undefined) {
+						throw(new Error(`Object key "${key}" is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newObject);
+			}
+		}
+
+		if (Metadata.isValuizable(value)) {
+			try {
+				const retval = await value('any');
+				return(await Metadata.fullyResolveValuizable(retval));
+			} catch {
+				return(invalidReplacement);
+			}
+		}
+
+		switch (typeof value) {
+			case 'string':
+			case 'number':
+			case 'boolean':
+				return(value);
+			case 'object':
+				if (value === null) {
+					return(value);
+				}
+				assertNever(value);
+				break;
+			default:
+				assertNever(value);
+		}
+
+		throw(new Error('invalid input'));
 	}
 
 	constructor(url: string | URL, config: MetadataConfig) {
@@ -887,7 +984,7 @@ class Metadata implements ValuizableInstance {
 		 * URL twice, then we have a circular reference.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
-			return('');
+			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
@@ -1031,6 +1128,10 @@ class Metadata implements ValuizableInstance {
 				const keyValue: JSONSerializable = value[key];
 
 				if (isExternalURL(keyValue)) {
+					if (Array.isArray(newValue)) {
+						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
+					}
+
 					const newMetadataObject = new Metadata(keyValue.url, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
@@ -1042,9 +1143,11 @@ class Metadata implements ValuizableInstance {
 
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
-					if (Array.isArray(newValue)) {
-						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can  only be an object'));
-					}
+					Object.defineProperty(newValuizableObject, 'instanceTypeID', {
+						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						enumerable: false
+					});
+
 					newValue[key] = newValuizableObject;
 				} else {
 					/*
@@ -1704,6 +1807,13 @@ class Resolver {
 		}
 
 		return(rootMetadata);
+	}
+
+	async getRootMetadata(): Promise<ToValuizable<ServiceMetadata>> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(rootMetadata as unknown as ToValuizable<ServiceMetadata>);
 	}
 
 	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {

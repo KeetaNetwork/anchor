@@ -58,6 +58,11 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 	});
 
 	{
+		const baseTokenInfo = {
+			name: 'KeetaNet Test Token',
+			currencyCode: 'KTA',
+			decimalPlaces: 9
+		};
 		/*
 		 * Because "createInitialVoteStaple" is broken, we need to
 		 * manually initialize the chain
@@ -75,7 +80,8 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			addSupplyAmount: 1000n,
 			delegateTo: TestRepAccountClient,
 			/* XXX: This is broken too, so we need to set it to a high number */
-			voteSerial: BigInt('999999999999999999')
+			voteSerial: BigInt('999999999999999999'),
+			baseTokenInfo
 		}, {
 			account: TestRepAccountClient,
 			usePublishAid: false
