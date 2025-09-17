@@ -130,7 +130,7 @@ test('Asset Movement Anchor Client Test', async function() {
 									{
 										pair: [
 											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
 										]
 									}
 								]
@@ -207,7 +207,19 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: 1
 		},
 		{
-			test: async function() { return(await assetTransferClient.createPersistentForwardingAddress(baseTokenProvider, { asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: { location: 'chain:keeta:123' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
+			result: 1
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: { location: 'chain:evm:100' }, to: { location: 'chain:keeta:123', recipient: '123' }, value: 100n }))?.length) },
+			result: 2
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC }))?.length) },
+			result: 2
+		},
+		{
+			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: false
 		}
 	];

@@ -199,6 +199,33 @@ class KeetaAssetMovementAnchorBase {
 	}
 }
 
+/**
+ * Represents an in-progress Asset Movement request.
+ */
+class KeetaAssetMovementTransfer {
+	private readonly provider: KeetaAssetMovementAnchorProvider;
+	private transferID: string;
+	private transferInstructions: AssetTransferInstructions[];
+
+	constructor(provider: KeetaAssetMovementAnchorProvider, transfer: { id: string; instructionChoices: AssetTransferInstructions[]; }) {
+		this.provider = provider;
+		this.transferID = transfer.id;
+		this.transferInstructions = transfer.instructionChoices
+	}
+
+	async getTransferStatus(): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
+		return(await this.provider.getTransferStatus({ id: this.transferID }));
+	}
+
+	get transferId(): typeof this.transferID {
+		return(this.transferID);
+	}
+
+	get instructions(): typeof this.transferInstructions {
+		return(this.transferInstructions);
+	}
+}
+
 const isKeetaAssetMovementAnchorInitiateTransferRequest = createIs<KeetaAssetMovementAnchorInitiateTransferRequest>();
 const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
 const isKeetaAssetMovementAnchorGetExchangeStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
@@ -220,7 +247,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		this.parent = parent;
 	}
 
-	async initiateTransfer(): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
+	async initiateTransfer(): Promise<KeetaAssetMovementTransfer> {
 		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(this.transfer)}`);
 
 		if (!isKeetaAssetMovementAnchorInitiateTransferRequest(this.transfer)) {
@@ -255,15 +282,15 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
-		return(requestInformationJSON);
-
+		const anchorTransfer = new KeetaAssetMovementTransfer(this, { id: requestInformationJSON.id, instructionChoices: requestInformationJSON.instructionChoices });
+		return(anchorTransfer);
 	}
 
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
 		const endpoints = this.serviceInfo.operations;
 		const getTransferStatus = await endpoints.getTransferStatus;
 		if (getTransferStatus === undefined) {
-			throw(new Error('Asset Movement service does not support initiateTransfer operation'));
+			throw(new Error('Asset Movement service does not support getTransferStatus operation'));
 		}
 		const getTransferURL = getTransferStatus({ id: request.id });
 		const requestInformation = await fetch(getTransferURL, {
@@ -288,7 +315,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
+	async createPersistentForwardingAddress(request: Omit<KeetaAssetMovementAnchorCreatePersistentForwardingRequest, 'asset'>): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(this.transfer)}`);
 
 		const endpoints = this.serviceInfo.operations;
@@ -304,7 +331,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				request
+				asset: this.transfer.asset,
+				...request
 			})
 		});
 
@@ -320,44 +348,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
 
 		return(requestInformationJSON);
-	}
-}
-
-/**
- * Represents an in-progress Asset Movement request.
- */
-class KeetaAssetMovementTransfer {
-	private readonly provider: KeetaAssetMovementAnchorProvider;
-	private transferID: string | undefined;
-	private transferInstructions: AssetTransferInstructions[] | undefined;
-
-	constructor(provider: KeetaAssetMovementAnchorProvider) {
-		this.provider = provider;
-	}
-
-	async startTransfer(): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
-		const transfer = await this.provider.initiateTransfer();
-		if (transfer.ok) {
-			this.transferID = transfer.id;
-			this.transferInstructions = transfer.instructionChoices;
-		}
-		return(transfer);
-	}
-
-	async getTransferStatus(): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
-		if (this.transferID === undefined) {
-			throw(new Error('Transfer not started'));
-		}
-
-		return(await this.provider.getTransferStatus({ id: this.transferID }));
-	}
-
-	get transferId(): typeof this.transferID {
-		return(this.transferID);
-	}
-
-	get instructions(): typeof this.transferInstructions {
-		return(this.transferInstructions);
 	}
 }
 
@@ -397,23 +387,11 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 			return(null);
 		}
 
-		this.logger?.debug('got endpoints', endpoints);
-
 		const providers = typedAssetMovementServiceEntries(endpoints).map(([id, serviceInfo]) => {
 			return(new KeetaAssetMovementAnchorProvider(serviceInfo, id, request, this));
 		});
 
 		return(providers);
-	}
-
-	async createPersistentForwardingAddress(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
-		return(await provider.createPersistentForwardingAddress(request));
-	}
-
-	async startTransfer(provider: KeetaAssetMovementAnchorProvider): Promise<KeetaAssetMovementAnchorInitiateTransferResponse> {
-		const assetTransfer = new KeetaAssetMovementTransfer(provider);
-		const initTransfer = await assetTransfer.startTransfer();
-		return(initTransfer);
 	}
 
 	/** @internal */
