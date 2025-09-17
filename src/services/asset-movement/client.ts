@@ -354,7 +354,9 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 	readonly resolver: Resolver;
 	readonly id: string;
+	// eslint-disable-next-line no-unused-private-class-members
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
+	// eslint-disable-next-line no-unused-private-class-members
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
 
 	constructor(client: KeetaNetUserClient, config: KeetaAssetMovementClientConfig = {}) {
