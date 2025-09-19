@@ -23,7 +23,7 @@
 	"sideEffects": false,
 	"devDependencies": {
 		"@keetanetwork/eslint-config-typescript": "1.4.7",
-		"@keetanetwork/keetanet-node": "0.14.2",
+		"@keetanetwork/keetanet-node": "0.14.5",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "20.16.10",
