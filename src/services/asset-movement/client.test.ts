@@ -136,7 +136,7 @@ test('Asset Movement Anchor Client Test', async function() {
 							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
 							listTransactions: `${serverURL}/api/listTransactions`
 						},
-						supportAssets: [
+						supportedAssets: [
 							{
 								asset: baseToken.publicKeyString.get(),
 								paths: [
