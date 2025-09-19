@@ -17,15 +17,16 @@ export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical;
 export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencyInfo.Currency;
 
-export function assertMovableAsset(input: unknown): asserts input is MovableAsset {
-
-}
-
 export type AssetLocationInput = AssetLocation | AssetLocationString;
 export type AssetLocationCanonical = AssetLocationString;
 
 export type AssetMovementRail = unknown;
 
+export type ProviderSearchInput = {
+	asset: MovableAsset,
+	from?: AssetLocationInput,
+	to?: AssetLocationInput
+}
 /**
  * Defines the chain and id for a supported asset location
  */
@@ -68,8 +69,8 @@ export interface AssetWithRails extends Asset {
 		inbound?: Rail[];
 		outbound: Rail[];
 	} | {
-		inbound: never;
-		outbound: never;
+		inbound?: never;
+		outbound?: never;
 	}) & {
 		common?: Rail[];
 	});
@@ -82,7 +83,7 @@ export interface AssetPath {
 };
 
 export interface SupportedAssets {
-	asset: MovableAsset,
+	asset: TokenPublicKeyString,
 	paths: AssetPath[]
 }
 
@@ -96,8 +97,8 @@ export interface AssetWithRailsMetadata {
 		inbound?: string[];
 		outbound: string[];
 	} | {
-		inbound: never;
-		outbound: never;
+		inbound?: never;
+		outbound?: never;
 	}) & {
 		common?: string[];
 	})

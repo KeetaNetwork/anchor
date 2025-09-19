@@ -13,9 +13,9 @@ import type {
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
-	MovableAsset,
 	AssetTransferInstructions,
-	SupportedAssets
+	SupportedAssets,
+	ProviderSearchInput
 } from './common.js';
 import {
 	convertAssetLocationToString,
@@ -120,21 +120,17 @@ function validateURL(url: string | undefined): URL {
 	return(parsedURL);
 }
 
-async function getEndpoints(resolver: Resolver, request: Partial<KeetaAssetMovementAnchorInitiateTransferRequest>): Promise<GetEndpointsResult | null> {
-	if (request.allowedRails) {
-		throw(new Error('rail not currently supported'));
-	}
+async function getEndpoints(resolver: Resolver, request: ProviderSearchInput): Promise<GetEndpointsResult | null> {
 	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
 	if (asset === undefined) {
 		throw(new Error('asset it required to lookup provider'));
 	}
-	const from = request.from?.location ? { from: convertAssetLocationToString(request.from.location) } : {};
-	const to = request.to?.location ? { to: convertAssetLocationToString(request.to.location) } : {};
+	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
+	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
 	const response = await resolver.lookup('assetMovement', {
 		asset,
 		...from,
 		...to
-		// rail: request.allowedRails
 	});
 
 	if (response === undefined) {
@@ -204,11 +200,13 @@ class KeetaAssetMovementAnchorBase {
  */
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
+	private request: KeetaAssetMovementAnchorInitiateTransferRequest;
 	private transferID: string;
 	private transferInstructions: AssetTransferInstructions[];
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, transfer: { id: string; instructionChoices: AssetTransferInstructions[]; }) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: { id: string; instructionChoices: AssetTransferInstructions[]; }) {
 		this.provider = provider;
+		this.request = request;
 		this.transferID = transfer.id;
 		this.transferInstructions = transfer.instructionChoices
 	}
@@ -226,7 +224,6 @@ class KeetaAssetMovementTransfer {
 	}
 }
 
-const isKeetaAssetMovementAnchorInitiateTransferRequest = createIs<KeetaAssetMovementAnchorInitiateTransferRequest>();
 const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
 const isKeetaAssetMovementAnchorGetExchangeStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
@@ -234,25 +231,19 @@ const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<Ke
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
-	readonly transfer: KeetaAssetMovementAnchorInitiateTransferRequest | { asset: MovableAsset };
 	private readonly parent: KeetaAssetMovementAnchorClient;
 
-	constructor(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID, transfer: KeetaAssetMovementAnchorInitiateTransferRequest | { asset: MovableAsset }, parent: KeetaAssetMovementAnchorClient) {
+	constructor(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID, parent: KeetaAssetMovementAnchorClient) {
 		const parentPrivate = parent._internals(KeetaAssetMovementAnchorClientAccessToken);
 		super(parentPrivate);
 
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
-		this.transfer = transfer;
 		this.parent = parent;
 	}
 
-	async initiateTransfer(): Promise<KeetaAssetMovementTransfer> {
-		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(this.transfer)}`);
-
-		if (!isKeetaAssetMovementAnchorInitiateTransferRequest(this.transfer)) {
-			throw(new Error('initiateTransfer not supported for this request'));
-		}
+	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementTransfer> {
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
 		const endpoints = this.serviceInfo.operations;
 		const initiateTransfer = await endpoints.initiateTransfer;
@@ -267,7 +258,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				request: this.transfer
+				...request
 			})
 		});
 
@@ -282,7 +273,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
-		const anchorTransfer = new KeetaAssetMovementTransfer(this, { id: requestInformationJSON.id, instructionChoices: requestInformationJSON.instructionChoices });
+		const anchorTransfer = new KeetaAssetMovementTransfer(this, request, { id: requestInformationJSON.id, instructionChoices: requestInformationJSON.instructionChoices });
 		return(anchorTransfer);
 	}
 
@@ -315,8 +306,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async createPersistentForwardingAddress(request: Omit<KeetaAssetMovementAnchorCreatePersistentForwardingRequest, 'asset'>): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
-		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(this.transfer)}`);
+	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
+		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
 		const endpoints = this.serviceInfo.operations;
 		const createPersistentForwarding = await endpoints.createPersistentForwarding;
@@ -331,7 +322,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				asset: this.transfer.asset,
 				...request
 			})
 		});
@@ -383,14 +373,14 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
-	async getProvidersForTransfer(request: KeetaAssetMovementAnchorInitiateTransferRequest | { asset: MovableAsset }): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
 		const endpoints = await getEndpoints(this.resolver, request);
 		if (endpoints === null) {
 			return(null);
 		}
 
 		const providers = typedAssetMovementServiceEntries(endpoints).map(([id, serviceInfo]) => {
-			return(new KeetaAssetMovementAnchorProvider(serviceInfo, id, request, this));
+			return(new KeetaAssetMovementAnchorProvider(serviceInfo, id, this));
 		});
 
 		return(providers);

@@ -3,6 +3,7 @@ import { KeetaNet } from '../../client/index.js';
 import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
+import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -28,46 +29,69 @@ test('Asset Movement Anchor Client Test', async function() {
 	const initialAccountBalances = await client.allBalances();
 	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSDC, balance: initialAccountUSDCBalance }]));
 
-	// await using invalidServer = new KeetaNetFXAnchorHTTPServer({
-	// 	account: liquidityProvider,
-	// 	client: client,
-	// 	quoteSigner: quoteSigner,
-	// 	fx: {
-	// 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	// 		getConversionRateAndFee: async function() { return({} as Omit<KeetaFXAnchorQuote, 'request' | 'signed' >) }
-	// 	}
-	// });
-	// await using server = new KeetaNetFXAnchorHTTPServer({
-	// 	...(logger ? { logger: logger } : {}),
-	// 	account: liquidityProvider,
-	// 	quoteSigner: quoteSigner,
-	// 	client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
-	// 	fx: {
-	// 		getConversionRateAndFee: async function(request) {
-	// 			let rate = 0.88;
-	// 			if (request.affinity === 'to') {
-	// 				rate = 1 / rate;
-	// 			}
-	// 			return({
-	// 				account: liquidityProvider.publicKeyString.get(),
-	// 				convertedAmount: (parseInt(request.amount) * rate).toFixed(0),
-	// 				cost: {
-	// 					amount: '5',
-	// 					token: testCurrencyUSD.publicKeyString.get()
-	// 				}
-	// 			});
-	// 		}
-	// 	}
-	// });
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+		...(logger ? { logger: logger } : {}),
+		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+		assetMovement: {
+			/**
+			 * Supported assets and their configurations
+			 */
+			supportedAssets: [
+				{
+					asset: baseToken.publicKeyString.get(),
+					paths: [
+						{
+							pair: [
+								{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+							]
+						}
+					]
+				},
+				{
+					asset: testCurrencyUSDC.publicKeyString.get(),
+					paths: [
+						{
+							pair: [
+								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+								{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+							]
+						}
+					]
+				}
+			]
+
+			// /**
+			//  * Method to create a persistent forwarding address
+			//  */
+			// createPersistentForwarding?: async function(request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorCreatePersistentForwardingResponse, { ok: true }>, 'ok'>> {
+
+			// },
+
+			// /**
+			//  * Method to initiate a transfer
+			//  */
+			// initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest) => Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>>;
+
+			// /**
+			//  * Method to get the status of a transfer
+			//  */
+			// getTransferStatus?: (id: string) => Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>>;
+
+			// /**
+			//  * Method to list transactions
+			//  */
+			// listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<Omit<Extract<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, { ok: true }>, 'ok'>>;
+		}
+	});
 
 	/*
 	 * Start the FX Anchor Server and get the URL
 	 */
 	// await invalidServer.start();
 	// const invalidServerURL = invalidServer.url;
-	// await server.start();
-	// const serverURL = server.url;
-	const serverURL = 'http://localhost';
+	await server.start();
+	const serverURL = server.url;
 
 	const results = await client.setInfo({
 		description: 'Asset Movement Anchor Test Root',
@@ -112,7 +136,7 @@ test('Asset Movement Anchor Client Test', async function() {
 							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
 							listTransactions: `${serverURL}/api/listTransactions`
 						},
-						supportedAssets: [
+						supportAssets: [
 							{
 								asset: baseToken.publicKeyString.get(),
 								paths: [
@@ -203,15 +227,15 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: { location: 'chain:keeta:123' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: 'chain:keeta:123', to: 'chain:evm:100' }))?.length) },
 			result: 1
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: { location: 'chain:keeta:123' }, to: { location: 'chain:evm:100', recipient: '123' }, value: 100n }))?.length) },
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100' }))?.length) },
 			result: 1
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: { location: 'chain:evm:100' }, to: { location: 'chain:keeta:123', recipient: '123' }, value: 100n }))?.length) },
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123' }))?.length) },
 			result: 2
 		},
 		{
@@ -219,7 +243,7 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: 2
 		},
 		{
-			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
+			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: false
 		}
 	];
