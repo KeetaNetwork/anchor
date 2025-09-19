@@ -186,7 +186,7 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = {
 	asset: MovableAsset;
 	from: { location: AssetLocationLike };
 	to: { location: AssetLocationLike; recipient: string; };
-	value: bigint;
+	value: string;
 	allowedRails?: AssetMovementRail[];
 }
 
@@ -195,7 +195,7 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	sendToAddress: string;
-	value: bigint;
+	value: string;
 	tokenAddress: string;
 
 	external?: string;
@@ -204,7 +204,7 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	sendToAddress: string;
-	value: bigint;
+	value: string;
 	tokenAddress: HexString;
 } | {
 	type: 'EVM_CALL';
@@ -214,7 +214,7 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 }) & ({
-	assetFee: bigint;
+	assetFee: string;
 });
 
 export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
@@ -230,12 +230,10 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
 }
 
-type TransactionStatus = 'A' | 'B' | 'C';
-
 export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
 
-	status: TransactionStatus;
+	status: string;
 	// additional
 } | {
 	ok: false;

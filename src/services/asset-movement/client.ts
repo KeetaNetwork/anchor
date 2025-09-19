@@ -15,7 +15,9 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 	AssetTransferInstructions,
 	SupportedAssets,
-	ProviderSearchInput
+	ProviderSearchInput,
+	KeetaAssetMovementAnchorlistTransactionsRequest,
+	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
 } from './common.js';
 import {
 	convertAssetLocationToString,
@@ -227,6 +229,7 @@ class KeetaAssetMovementTransfer {
 const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
 const isKeetaAssetMovementAnchorGetExchangeStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
+const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
@@ -336,6 +339,40 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
+
+		return(requestInformationJSON);
+	}
+
+	async listTransactions(request: KeetaAssetMovementAnchorlistTransactionsRequest): Promise<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse | null> {
+		this.logger?.debug(`List persistent forwarding transactions provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+
+		const endpoints = this.serviceInfo.operations;
+		const listTransactions = await endpoints.listTransactions;
+		if (listTransactions === undefined) {
+			throw(new Error('Asset Movement service does not support listTransactions operation'));
+		}
+		const listTransactionsURL = listTransactions();
+		const requestInformation = await fetch(listTransactionsURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				...request
+			})
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from list persistent transactions request: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`list persistent transactions request failed: ${requestInformationJSON.error}`));
+		}
+
+		this.logger?.debug(`list persistent transactions request successful, ${requestInformationJSON.transactions}`);
 
 		return(requestInformationJSON);
 	}
