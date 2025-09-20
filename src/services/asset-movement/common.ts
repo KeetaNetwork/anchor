@@ -144,8 +144,38 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 	throw(new Error(`Invalid AssetLocation type: ${JSON.stringify(input)}`));
 }
 
-export function toAssetLocationFromString(_ignore_input: string): AssetLocation {
-	throw(new Error('Not Implemented'));
+export function toAssetLocationFromString(input: string): AssetLocation {
+	const parts = input.split(':');
+
+	if (parts.length === 3 && parts[0] === 'chain') {
+		const chainType = parts[1];
+		if (!parts[2] || typeof parts[2] !== 'string') {
+			throw(new Error('Invalid chain id in AssetLocation string'));
+		}
+
+		const chainId = BigInt(parts[2]);
+
+		return({
+			type: 'chain',
+			chain: (() => {
+				if (chainType === 'keeta') {
+					return({
+						type: 'keeta',
+						networkId: chainId
+					});
+				} else if (chainType === 'evm') {
+					return({
+						type: 'evm',
+						chainId: chainId
+					});
+				} else {
+					throw(new Error(`Invalid chain type in AssetLocation string: ${chainType}`));
+				}
+			})()
+		});
+	}
+
+	throw(new Error('unsupported AssetLocation string format'));
 }
 
 export function convertAssetLocationInputToCanonical(input: AssetLocationInput): AssetLocationCanonical {
@@ -156,6 +186,15 @@ export function convertAssetLocationInputToCanonical(input: AssetLocationInput):
 	}
 
 	throw(new Error(`Invalid AssetLocationInput type: ${typeof input}`));
+}
+
+
+export function toAssetLocation(input: AssetLocationInput): AssetLocation {
+	if (typeof input === 'string') {
+		return(toAssetLocationFromString(input));
+	} else {
+		return(input);
+	}
 }
 
 
@@ -194,7 +233,7 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	sendToAddress: string;
-	value: bigint;
+	value: string;
 	tokenAddress: string;
 
 	external?: string;
@@ -203,7 +242,7 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	sendToAddress: string;
-	value: bigint;
+	value: string;
 	tokenAddress: HexString;
 } | {
 	type: 'EVM_CALL';
@@ -213,7 +252,7 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 }) & ({
-	assetFee: bigint;
+	assetFee: string;
 });
 
 export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
@@ -229,13 +268,46 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
 }
 
-type TransactionStatus = 'A' | 'B' | 'C';
+type TransactionStatus = string;
+
+export type TransactionId = {
+	id: string;
+	nonce: string;
+};
+
+type TransactionIds<T extends string> = {
+	[type in T]: TransactionId | null;
+};
+
+export type KeetaAssetMovementTransaction = {
+	id: string;
+	status: TransactionStatus;
+	asset: MovableAsset;
+
+	from: {
+		location: AssetLocationString;
+		value: string;
+		transactions: TransactionIds<'persistentForwarding' | 'deposit' | 'finalization'>;
+	};
+
+	to: {
+		location: AssetLocationString;
+		value: string;
+		transactions: TransactionIds<'withdraw'>;
+	};
+
+	fee: {
+		asset: MovableAsset;
+		value: string;
+	} | null;
+
+	createdAt: string;
+	updatedAt: string;
+}
 
 export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
-
-	status: TransactionStatus;
-	// additional
+	transaction: KeetaAssetMovementTransaction;
 } | {
 	ok: false;
 	error: string;
@@ -256,17 +328,26 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
 	error: string;
 });
 
-export type KeetaAssetMovementAnchorlistTransactionsRequest = {
-	persistentAddress: string;
-	fromAddress: string;
-	asset?: MovableAsset;
-	location?: AssetLocationLike;
+type PaginationQuery = {
+	limit?: number;
+	offset?: number;
 }
 
-export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = ({
+type PaginationResponseInformation = {
+	total: string;
+}
+
+export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+	persistentAddresses?: { location: AssetLocationLike; persistentAddress: string; }[];
+	from?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
+	to?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
+	pagination?: PaginationQuery;
+}
+
+export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = (({
 	ok: true;
-	transactions: string[] // TODO What format should this be?
-} | {
+	transactions: KeetaAssetMovementTransaction[] ;
+} & PaginationResponseInformation) | {
 	ok: false;
 	error: string;
 });
