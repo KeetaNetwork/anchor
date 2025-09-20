@@ -21,7 +21,8 @@ test('Asset Movement Anchor Client Test', async function() {
 	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSDC } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	if (!testCurrencyUSDC.isToken()) {
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSDC.isToken() || !testCurrencyEUR.isToken()) {
 		throw(new Error('USDC is not a token'));
 	}
 	const initialAccountUSDCBalance = 500000n;
@@ -187,10 +188,8 @@ test('Asset Movement Anchor Client Test', async function() {
 					},
 					Test2: {
 						operations: {
-							initiateTransfer: `${serverURL}/api/initiateTransfer`,
 							getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
-							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
-							listTransactions: `${serverURL}/api/listTransactions`
+							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`
 						},
 						supportedAssets: [
 							{
@@ -245,6 +244,17 @@ test('Asset Movement Anchor Client Test', async function() {
 		throw(new Error('Base token provider is undefined'));
 	}
 
+	const usdcTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyUSDC });
+	if (usdcTokenProviderList === null) {
+		throw(new Error('Did not find any matching asset movement providers'));
+	}
+	expect(usdcTokenProviderList.length).toBe(2);
+	const usdcTokenProvider = usdcTokenProviderList[1];
+	if (usdcTokenProvider === undefined) {
+		throw(new Error('USDC token provider is undefined'));
+	}
+	expect(Object.keys(usdcTokenProvider.serviceInfo.operations).length).toBe(2);
+
 	const conversionTests = [
 		{
 			test: async function() { return((await assetTransferClient.resolver.listTransferableAssets()).sort()) },
@@ -254,6 +264,10 @@ test('Asset Movement Anchor Client Test', async function() {
 			// @ts-expect-error
 			test: async function() { return((await assetTransferClient.getProvidersForTransfer({}))?.length) },
 			result: false
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyEUR }))) },
+			result: null
 		},
 		{
 			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: baseToken, from: 'chain:keeta:123', to: 'chain:evm:100' }))?.length) },
@@ -279,18 +293,33 @@ test('Asset Movement Anchor Client Test', async function() {
 			}
 		},
 		{
-			test: async function() { return((await baseTokenProvider.initiateTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() }, value: '100' })).instructions) },
-			result: [{
-				type: 'KEETA_SEND',
-				location: 'chain:keeta:100',
+			test: async function() {
+				const transfer = await baseTokenProvider.initiateTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() }, value: '100' });
+				const transferStatus = await transfer.getTransferStatus();
+				return({
+					id: transfer.transferId,
+					instructions: transfer.instructions,
+					status: transferStatus
+				})
+			},
+			result: {
+				id: '123',
+				instructions: [{
+					type: 'KEETA_SEND',
+					location: 'chain:keeta:100',
 
-				sendToAddress: account.publicKeyString.get(),
-				value: '100',
-				tokenAddress: baseToken.publicKeyString.get(),
+					sendToAddress: account.publicKeyString.get(),
+					value: '100',
+					tokenAddress: baseToken.publicKeyString.get(),
 
-				external: `123:${account.publicKeyString.get()}`,  // encodeAssetMovementForward
-				assetFee: '10'
-			}]
+					external: `123:${account.publicKeyString.get()}`,  // encodeAssetMovementForward
+					assetFee: '10'
+				}],
+				status: {
+					ok: true,
+					status: 'COMPLETED'
+				}
+			}
 		},
 		{
 			test: async function() { return((await baseTokenProvider.getTransferStatus({ id: crypto.randomUUID() }))) },
@@ -305,6 +334,11 @@ test('Asset Movement Anchor Client Test', async function() {
 				ok: true,
 				transactions: ['123']
 			}
+		},
+		{
+			// InitiateTransfer endpoint is missing from USDCProvider
+			test: async function() { return((await usdcTokenProvider.initiateTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() }, value: '100' }))) },
+			result: false
 		}
 	];
 
