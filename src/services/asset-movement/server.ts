@@ -1,6 +1,5 @@
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
 import type KeetaNet from '@keetanetwork/keetanet-client';
-import { createAssert, createAssertEquals } from 'typia';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -14,16 +13,17 @@ import type {
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
 } from './common.ts';
+import {
+	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
+	assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+	assertKeetaAssetMovementAnchorInitiateTransferRequest,
+	assertKeetaAssetMovementAnchorInitiateTransferResponse,
+	assertKeetaAssetMovementAnchorGetTransferStatusRequest,
+	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
+	assertKeetaAssetMovementAnchorlistTransactionsRequest,
+	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+} from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-
-const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
-const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
-const assertKeetaAssetMovementAnchorInitiateTransferRequest = createAssert<KeetaAssetMovementAnchorInitiateTransferRequest>();
-const assertKeetaAssetMovementAnchorInitiateTransferResponse = createAssertEquals<KeetaAssetMovementAnchorInitiateTransferResponse>();
-const assertKeetaAssetMovementAnchorGetTransferStatusRequest = createAssert<KeetaAssetMovementAnchorGetTransferStatusRequest>();
-const assertKeetaAssetMovementAnchorGetTransferStatusResponse = createAssertEquals<KeetaAssetMovementAnchorGetTransferStatusResponse>();
-const assertKeetaAssetMovementAnchorlistTransactionsRequest = createAssert<KeetaAssetMovementAnchorlistTransactionsRequest>();
-const assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createAssertEquals<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**

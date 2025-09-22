@@ -2,6 +2,7 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import { createAssert, createAssertEquals, createIs } from 'typia';
 
 type HexString = `0x${string}`;
 
@@ -109,20 +110,20 @@ export interface AssetWithRailsMetadata {
 // paths: [
 // 	{
 // 		pair: [
-// 			{ location: 'keeta:123', id: 'keeta_KT1EXmXoG7fV8b2c5rYkUu4j3t6b3v6v5X8m', rails: { common: [ 'KEETA_SEND' ] } },
-// 			{ location: 'evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] } }
+// 			{ location: 'chain:keeta:123', id: 'keeta_KT1EXmXoG7fV8b2c5rYkUu4j3t6b3v6v5X8m', rails: { common: [ 'KEETA_SEND' ] } },
+// 			{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] } }
 // 		]
 // 	},
 // 	{
 // 		pair: [
-// 			{ location: 'keeta:123', id: 'keeta_USDCPUB', rails: ['KEETA_SEND'] },
+// 			{ location: 'chain:keeta:123', id: 'keeta_USDCPUB', rails: ['KEETA_SEND'] },
 // 			{ location: 'bank-account:US', id: 'USD', rails: { common: ['ACH_SEND'], inbound: ['ACH_DEBIT'] } }
 // 		]
 // 	},
 // 	{
 // 		pair: [
 // 			{ location: 'bank-account:EU', id: 'EUR', rails: { inbound: [ 'WIRE_SEND' }] },
-// 			{ location: 'keeta:123', id: 'keeta_EURCPUB', rails: { outbound: [ 'KEETA_SEND' ]} }
+// 			{ location: 'chain:keeta:123', id: 'keeta_EURCPUB', rails: { outbound: [ 'KEETA_SEND' ]} }
 // 		]
 // 	}
 // ];
@@ -145,8 +146,38 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 	throw(new Error(`Invalid AssetLocation type: ${JSON.stringify(input)}`));
 }
 
-export function toAssetLocationFromString(_ignore_input: string): AssetLocation {
-	throw(new Error('Not Implemented'));
+export function toAssetLocationFromString(input: string): AssetLocation {
+	const parts = input.split(':');
+
+	if (parts.length === 3 && parts[0] === 'chain') {
+		const chainType = parts[1];
+		if (!parts[2] || typeof parts[2] !== 'string') {
+			throw(new Error('Invalid chain id in AssetLocation string'));
+		}
+
+		const chainId = BigInt(parts[2]);
+
+		return({
+			type: 'chain',
+			chain: (() => {
+				if (chainType === 'keeta') {
+					return({
+						type: 'keeta',
+						networkId: chainId
+					});
+				} else if (chainType === 'evm') {
+					return({
+						type: 'evm',
+						chainId: chainId
+					});
+				} else {
+					throw(new Error(`Invalid chain type in AssetLocation string: ${chainType}`));
+				}
+			})()
+		});
+	}
+
+	throw(new Error('unsupported AssetLocation string format'));
 }
 
 export function convertAssetLocationInputToCanonical(input: AssetLocationInput): AssetLocationCanonical {
@@ -157,6 +188,15 @@ export function convertAssetLocationInputToCanonical(input: AssetLocationInput):
 	}
 
 	throw(new Error(`Invalid AssetLocationInput type: ${typeof input}`));
+}
+
+
+export function toAssetLocation(input: AssetLocationInput): AssetLocation {
+	if (typeof input === 'string') {
+		return(toAssetLocationFromString(input));
+	} else {
+		return(input);
+	}
 }
 
 
@@ -230,11 +270,46 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
 }
 
+type TransactionStatus = string;
+
+export type TransactionId = {
+	id: string;
+	nonce: string;
+};
+
+type TransactionIds<T extends string> = {
+	[type in T]: TransactionId | null;
+};
+
+export type KeetaAssetMovementTransaction = {
+	id: string;
+	status: TransactionStatus;
+	asset: MovableAsset;
+
+	from: {
+		location: AssetLocationString;
+		value: string;
+		transactions: TransactionIds<'persistentForwarding' | 'deposit' | 'finalization'>;
+	};
+
+	to: {
+		location: AssetLocationString;
+		value: string;
+		transactions: TransactionIds<'withdraw'>;
+	};
+
+	fee: {
+		asset: MovableAsset;
+		value: string;
+	} | null;
+
+	createdAt: string;
+	updatedAt: string;
+}
+
 export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: true;
-
-	status: string;
-	// additional
+	transaction: KeetaAssetMovementTransaction;
 } | {
 	ok: false;
 	error: string;
@@ -255,17 +330,41 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = ({
 	error: string;
 });
 
-export type KeetaAssetMovementAnchorlistTransactionsRequest = {
-	persistentAddress: string;
-	fromAddress: string;
-	asset?: MovableAsset;
-	location?: AssetLocationLike;
+type PaginationQuery = {
+	limit?: number;
+	offset?: number;
 }
 
-export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = ({
+type PaginationResponseInformation = {
+	total: string;
+}
+
+export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+	persistentAddresses?: { location: AssetLocationLike; persistentAddress: string; }[];
+	from?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
+	to?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
+	pagination?: PaginationQuery;
+}
+
+export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = (({
 	ok: true;
-	transactions: string[] // TODO What format should this be?
-} | {
+	transactions: KeetaAssetMovementTransaction[] ;
+} & PaginationResponseInformation) | {
 	ok: false;
 	error: string;
 });
+
+export const assertKeetaSupportedAssets: (input: unknown) => SupportedAssets[] = createAssert<SupportedAssets[]>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
+export const assertKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => KeetaAssetMovementAnchorInitiateTransferRequest = createAssert<KeetaAssetMovementAnchorInitiateTransferRequest>();
+export const assertKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => KeetaAssetMovementAnchorInitiateTransferResponse = createAssertEquals<KeetaAssetMovementAnchorInitiateTransferResponse>();
+export const assertKeetaAssetMovementAnchorGetTransferStatusRequest: (input: unknown) => KeetaAssetMovementAnchorGetTransferStatusRequest = createAssert<KeetaAssetMovementAnchorGetTransferStatusRequest>();
+export const assertKeetaAssetMovementAnchorGetTransferStatusResponse: (input: unknown) => KeetaAssetMovementAnchorGetTransferStatusResponse = createAssertEquals<KeetaAssetMovementAnchorGetTransferStatusResponse>();
+export const assertKeetaAssetMovementAnchorlistTransactionsRequest: (input: unknown) => KeetaAssetMovementAnchorlistTransactionsRequest = createAssert<KeetaAssetMovementAnchorlistTransactionsRequest>();
+export const assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createAssertEquals<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
+
+export const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => input is KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
+export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => input is KeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
+export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
+export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();

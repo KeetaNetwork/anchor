@@ -1,5 +1,4 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import { createAssert, createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
 
@@ -8,20 +7,24 @@ import type {
 } from '@keetanetwork/keetanet-client';
 import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
-	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
-	AssetTransferInstructions,
 	SupportedAssets,
 	ProviderSearchInput,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
-	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	AssetTransferInstructions
 } from './common.js';
 import {
+	assertKeetaSupportedAssets,
 	convertAssetLocationToString,
-	convertAssetSearchInputToCanonical
+	convertAssetSearchInputToCanonical,
+	isKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+	isKeetaAssetMovementAnchorGetExchangeStatusResponse,
+	isKeetaAssetMovementAnchorInitiateTransferResponse,
+	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
@@ -109,9 +112,6 @@ type GetEndpointsResult = {
 	[id: ProviderID]: KeetaAssetMovementServiceInfo;
 };
 
-// const isKeetaAssetPath = createIs<AssetPath>();
-const asserKeetaSupportedAssets = createAssert<SupportedAssets[]>();
-
 function validateURL(url: string | undefined): URL {
 	if (url === undefined || url === null) {
 		throw(new Error('Invalid URL: null or undefined'));
@@ -141,7 +141,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput): P
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
 		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
-		const supportedAssets = asserKeetaSupportedAssets(supportedAssetsMetadata);
+		const supportedAssets = assertKeetaSupportedAssets(supportedAssetsMetadata);
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
@@ -203,33 +203,26 @@ class KeetaAssetMovementAnchorBase {
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
 	private request: KeetaAssetMovementAnchorInitiateTransferRequest;
-	private transferID: string;
-	private transferInstructions: AssetTransferInstructions[];
+	private transfer:  { id: string, instructionChoices: AssetTransferInstructions[] }
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: { id: string; instructionChoices: AssetTransferInstructions[]; }) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
 		this.provider = provider;
 		this.request = request;
-		this.transferID = transfer.id;
-		this.transferInstructions = transfer.instructionChoices
+		this.transfer = transfer;
 	}
 
 	async getTransferStatus(): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
-		return(await this.provider.getTransferStatus({ id: this.transferID }));
+		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
 	}
 
-	get transferId(): typeof this.transferID {
-		return(this.transferID);
+	get transferId(): string {
+		return(this.transfer.id);
 	}
 
-	get instructions(): typeof this.transferInstructions {
-		return(this.transferInstructions);
+	get instructions(): AssetTransferInstructions[] {
+		return(this.transfer.instructionChoices);
 	}
 }
-
-const isKeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
-const isKeetaAssetMovementAnchorGetExchangeStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
-const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
-const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;

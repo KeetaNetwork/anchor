@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest } from './common.js';
+import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction } from './common.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -18,6 +18,8 @@ test('Asset Movement Anchor Client Test', async function() {
 	// const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const { userClient: client } = await createNodeAndClient(account);
 
+	const currentDateString = (new Date()).toISOString();
+
 	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSDC } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -30,6 +32,33 @@ test('Asset Movement Anchor Client Test', async function() {
 
 	const initialAccountBalances = await client.allBalances();
 	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSDC, balance: initialAccountUSDCBalance }]));
+
+	const testTransaction: KeetaAssetMovementTransaction = {
+		id: '123',
+		status: 'COMPLETED',
+		asset: baseToken.publicKeyString.get(),
+
+		from: {
+			location: 'chain:evm:100',
+			value: '100',
+			transactions: {
+				persistentForwarding: null,
+				deposit: null,
+				finalization: null
+			}
+		},
+
+		to: {
+			location: 'chain:keeta:100',
+			value: '100',
+			transactions: {
+				withdraw: null
+			}
+		},
+		fee: null,
+		createdAt: currentDateString,
+		updatedAt: currentDateString
+	};
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
@@ -97,7 +126,7 @@ test('Asset Movement Anchor Client Test', async function() {
 			 */
 			getTransferStatus: async function(_ignored_id: string): Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>> {
 				return({
-					status: 'COMPLETED'
+					transaction: testTransaction
 				})
 			},
 
@@ -106,7 +135,8 @@ test('Asset Movement Anchor Client Test', async function() {
 			 */
 			listTransactions: async function(_ignored_request: KeetaAssetMovementAnchorlistTransactionsRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, { ok: true }>, 'ok'>> {
 				return({
-					transactions: ['123']
+					transactions: [testTransaction],
+					total: '1'
 				})
 			}
 		}
@@ -317,7 +347,7 @@ test('Asset Movement Anchor Client Test', async function() {
 				}],
 				status: {
 					ok: true,
-					status: 'COMPLETED'
+					transaction: testTransaction
 				}
 			}
 		},
@@ -325,14 +355,15 @@ test('Asset Movement Anchor Client Test', async function() {
 			test: async function() { return((await baseTokenProvider.getTransferStatus({ id: crypto.randomUUID() }))) },
 			result: {
 				ok: true,
-				status: 'COMPLETED'
+				transaction: testTransaction
 			}
 		},
 		{
-			test: async function() { return((await baseTokenProvider.listTransactions({ persistentAddress: account.publicKeyString.get(), fromAddress: account.publicKeyString.get() }))) },
+			test: async function() { return((await baseTokenProvider.listTransactions({ persistentAddresses: [{ location: 'chain:evm:100', persistentAddress: account.publicKeyString.get() }] }))) },
 			result: {
 				ok: true,
-				transactions: ['123']
+				transactions: [testTransaction],
+				total: '1'
 			}
 		},
 		{
