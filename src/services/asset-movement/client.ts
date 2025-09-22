@@ -7,7 +7,6 @@ import type {
 } from '@keetanetwork/keetanet-client';
 import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
-	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -15,7 +14,8 @@ import type {
 	SupportedAssets,
 	ProviderSearchInput,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
-	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	AssetTransferInstructions
 } from './common.js';
 import {
 	assertKeetaSupportedAssets,
@@ -203,9 +203,9 @@ class KeetaAssetMovementAnchorBase {
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
 	private request: KeetaAssetMovementAnchorInitiateTransferRequest;
-	private transfer: Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>;
+	private transfer:  { id: string, instructionChoices: AssetTransferInstructions[] }
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
@@ -215,11 +215,11 @@ class KeetaAssetMovementTransfer {
 		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
 	}
 
-	get transferId(): typeof this.transfer.id {
+	get transferId(): string {
 		return(this.transfer.id);
 	}
 
-	get instructions(): typeof this.transfer.instructionChoices {
+	get instructions(): AssetTransferInstructions[] {
 		return(this.transfer.instructionChoices);
 	}
 }
