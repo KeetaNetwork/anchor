@@ -270,7 +270,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const expectedAmount = quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount;
 			// eslint-disable-next-line @typescript-eslint/no-deprecated
 			const swapBlocks = await acceptSwapRequest(userClient, block, { token: expectedToken, amount: BigInt(expectedAmount) });
-			const publishResult = await userClient.client.transmit(swapBlocks);
+			const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
+			if (userClient.config.generateFeeBlock !== undefined) {
+				publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
+			}
+			const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
 			if (!publishResult.publish) {
 				throw(new Error('Exchange Publish Failed'));
 			}
