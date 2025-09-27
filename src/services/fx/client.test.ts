@@ -26,8 +26,8 @@ test('FX Anchor Client Test', async function() {
 	const initialAccountUSDBalance = 500000n;
 	await client.modTokenSupplyAndBalance(initialAccountUSDBalance, testCurrencyUSD);
 
-	const initialAccountBalances = await client.allBalances();
-	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: initialAccountUSDBalance }]));
+	const initialAccountBalanceUSD = await client.balance(testCurrencyUSD);
+	expect(initialAccountBalanceUSD).toBe(initialAccountUSDBalance);
 
 	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!testCurrencyEUR.isToken()) {
@@ -40,6 +40,11 @@ test('FX Anchor Client Test', async function() {
 
 	const initialLiquidityProviderBalances = await client.allBalances({ account: liquidityProvider });
 	expect(toJSONSerializable(initialLiquidityProviderBalances)).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: initialLiquidityProviderEURBalance }]));
+
+	/**
+	 * Give the liquidity provider some KTA to pay fees
+	 */
+	await client.send(liquidityProvider, 50n, client.baseToken);
 
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
@@ -383,9 +388,15 @@ test('FX Anchor Client Test', async function() {
 		cumulativeUSDChange += BigInt(sendAmount) * 2n;
 
 		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
-		const newAccountBalances = await client.allBalances({ account });
+		const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
+			/* Remove the KTA token balance since it may have changed due to fees */
+			return(!balanceEntry.token.comparePublicKey(client.baseToken));
+		}
+		const newAccountBalances = (await client.allBalances({ account })).filter(removeBaseTokenBalanceEntry);
+
 		expect(toJSONSerializable([...newAccountBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: cumulativeEURChange }, { token: testCurrencyUSD, balance: (initialAccountUSDBalance - cumulativeUSDChange) }].sort(sortBalances)));
-		const newLiquidityBalances = await client.allBalances({ account: liquidityProvider });
+
+		const newLiquidityBalances = (await client.allBalances({ account: liquidityProvider })).filter(removeBaseTokenBalanceEntry);
 		expect(toJSONSerializable([...newLiquidityBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: cumulativeUSDChange }, { token: testCurrencyEUR, balance: (initialLiquidityProviderEURBalance - cumulativeEURChange) }].sort(sortBalances)));
 	}
 });
@@ -393,7 +404,12 @@ test('FX Anchor Client Test', async function() {
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const account2 = KeetaNet.lib.Account.fromSeed(seed, 1);
-	const { userClient: client } = await createNodeAndClient(account);
+	const { userClient: client, fees } = await createNodeAndClient(account);
+
+	/**
+	 * Disable fees to avoid tests failing due to fee issues
+	 */
+	fees.disable();
 
 	const { account: newToken } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!newToken.isToken()) {
@@ -432,9 +448,9 @@ test('Swap Function Negative Tests', async function() {
 		async function() { await acceptSwapRequest(client, swapMissingReceive, {}) }
 	]
 
-	for (const test of testFails) {
+	for (const testFail of testFails) {
 		await expect(async function() {
-			await test()
+			await testFail()
 		}).rejects.toThrow();
 	}
 });
