@@ -12,9 +12,14 @@ afterEach(async function() {
 });
 
 type CreateNodeAndClientResponse = {
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-	userClient?: InstanceType<typeof KeetaNetClient.UserClient>
+	node: InstanceType<typeof KeetaNetNode.lib.Node>;
+	client: InstanceType<typeof KeetaNetClient.Client>;
+	userClient?: InstanceType<typeof KeetaNetClient.UserClient>;
+	fees: {
+		disable: () => void;
+		enable: () => void;
+		addFeeFreeAccount: (account: KeetaNetClientGenericAccount) => void;
+	}
 };
 
 type KeetaNetClientGenericAccount = NonNullable<ConstructorParameters<typeof KeetaNetClient.UserClient>[0]['signer']>;
@@ -34,6 +39,12 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 	const TestRepAccountNode = KeetaNetNode.lib.Account.fromSeed(repAccountSeed, 0);
 	const TestRepAccountClient = KeetaNetClient.lib.Account.fromSeed(repAccountSeed, 0);
 
+	const feeFreeAccounts = new Set();
+	/**
+	 * Start out with fees disabled so we can initialize the network
+	 */
+	let feesEnabled = false;
+
 	const testNode = await createTestNode(TestRepAccountNode, {
 		/*
 		 * This does not work because it generates a Serial Number
@@ -43,6 +54,23 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		createInitialVoteStaple: false,
 		nodeConfig: {
 			nodeAlias: 'TEST'
+		},
+		ledger: {
+			computeFeeFromBlocks: function(_ignore_ledger, blocks, _ignore_effects) {
+				if (!feesEnabled) {
+					return(null);
+				}
+				for (const block of blocks) {
+					const pubKey = block.account.publicKeyString.get();
+					if (feeFreeAccounts.has(pubKey)) {
+						return(null);
+					}
+				}
+
+				return({
+					amount: 1n
+				});
+			}
 		}
 	});
 
@@ -94,6 +122,15 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			metadata: '',
 			defaultPermission: new KeetaNetClient.lib.Permissions(['TOKEN_ADMIN_CREATE','STORAGE_CREATE','ACCESS'])
 		}, { account: networkAddress });
+
+		/*
+		 * Give the user account some KTA to start with, to pay fees
+		 */
+		if (userAccount) {
+			await itaUserClient.send(userAccount, 100n, itaUserClient.baseToken, undefined, {
+				account: TestRepAccountClient
+			});
+		}
 	}
 
 	let userClient;
@@ -109,7 +146,18 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 
 	const retval: CreateNodeAndClientResponse = {
 		node: testNode,
-		client: testClient
+		client: testClient,
+		fees: {
+			disable: function() {
+				feesEnabled = false;
+			},
+			enable: function() {
+				feesEnabled = true;
+			},
+			addFeeFreeAccount: function(account) {
+				feeFreeAccounts.add(account.publicKeyString.get());
+			}
+		}
 	};
 
 	if (userClient) {
