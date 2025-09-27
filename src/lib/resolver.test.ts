@@ -33,7 +33,12 @@ async function setupForResolverTests() {
 	const testCurrencyMXN = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyBTC = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 
-	const { userClient } = await createNodeAndClient(testAccount);
+	const { userClient, fees } = await createNodeAndClient(testAccount);
+
+	/**
+	 * Disable fees for the setup
+	 */
+	fees.disable();
 
 	/*
 	 * An account whose metadata is set at the top-level,
@@ -166,6 +171,11 @@ async function setupForResolverTests() {
 		client: userClient,
 		trustedCAs: []
 	});
+
+	/**
+	 * Re-enable fees after setup
+	 */
+	fees.enable();
 
 	return({
 		resolver: resolver,

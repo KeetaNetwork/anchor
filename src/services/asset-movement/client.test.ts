@@ -30,8 +30,8 @@ test('Asset Movement Anchor Client Test', async function() {
 	const initialAccountUSDCBalance = 500000n;
 	await client.modTokenSupplyAndBalance(initialAccountUSDCBalance, testCurrencyUSDC);
 
-	const initialAccountBalances = await client.allBalances();
-	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSDC, balance: initialAccountUSDCBalance }]));
+	const initialAccountBalanceUSDC = await client.balance(testCurrencyUSDC);
+	expect(initialAccountBalanceUSDC).toEqual(initialAccountUSDCBalance);
 
 	const testTransaction: KeetaAssetMovementTransaction = {
 		id: '123',
