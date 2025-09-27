@@ -8,7 +8,6 @@ import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAs
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
-const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
