@@ -164,6 +164,11 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		retval.userClient = userClient;
 	}
 
+	/**
+	 * Re-enable fees
+	 */
+	feesEnabled = true;
+
 	return(retval);
 }
 
