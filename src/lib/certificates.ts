@@ -1,8 +1,10 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import { AES_256_CBC, AES_256_GCM, SHA2_256, SHA3_256 } from '../generated/oids.js';
 import * as ASN1 from './utils/asn1.js';
-import { Buffer } from './utils/buffer.js';
+import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema, SensitiveAttributeType, CertificateAttributeValue, SENSITIVE_CERTIFICATE_ATTRIBUTES } from '../generated/iso20022.js';
 
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -15,6 +17,7 @@ type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<Acc
 /* -----MOVE TO NODE AND ASN1NAPIRS----- */
 function getOID(name: string, oidDB: { [name: string]: string }) {
 	if (name in oidDB) {
+		// XXX:TODO Fix type assertion
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const oid = oidDB[name as keyof typeof oidDB];
 		if (oid === undefined) {
@@ -44,6 +47,7 @@ function lookupByOID(oid: string, oidDB: { [name: string]: string }) {
 
 function toJSON(data: unknown): unknown {
 	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue: unknown) {
+		// XXX:TODO Fix no-unsafe-member-access
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 		const value: unknown = this[key];
 
@@ -55,6 +59,7 @@ function toJSON(data: unknown): unknown {
 					 * object with a get method, we assume it is a KeetaNetAccount
 					 * or similar object and we return the public key string
 					 */
+					// XXX:TODO Fix no-unsafe-call
 					// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 					const publicKeyString: unknown = value.publicKeyString.get();
 					if (typeof publicKeyString === 'string') {
@@ -76,12 +81,6 @@ function toJSON(data: unknown): unknown {
 
 	return(retval);
 }
-
-/*
- * Because our public interfaces are ArrayBuffers we often need to convert
- * Buffers to ArrayBuffers -- an alias to the Node function to do that
- */
-const bufferToArrayBuffer = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer.bind(KeetaNetClient.lib.Utils.Helper);
 
 /**
  * Sensitive Attribute Schema
@@ -147,17 +146,17 @@ type SensitiveAttributeSchema = ASN1.SchemaMap<typeof SensitiveAttributeSchemaIn
  * Database of permitted algorithms and their OIDs
  */
 const sensitiveAttributeOIDDB = {
-	'aes-256-gcm': '2.16.840.1.101.3.4.1.46',
-	'aes-256-cbc': '2.16.840.1.101.3.4.1.42',
-	'sha2-256': '2.16.840.1.101.3.4.2.1',
-	'sha3-256': '2.16.840.1.101.3.4.2.8'
+	'aes-256-gcm': AES_256_GCM,
+	'aes-256-cbc': AES_256_CBC,
+	'sha2-256': SHA2_256,
+	'sha3-256': SHA3_256
 };
 
 class SensitiveAttributeBuilder {
 	readonly #account: KeetaNetAccount;
 	#value: Buffer | undefined;
 
-	constructor(account: KeetaNetAccount, value?: Buffer | ArrayBuffer | string) {
+	constructor(account: KeetaNetAccount, value?: SensitiveAttributeType | Buffer | ArrayBuffer) {
 		this.#account = account;
 
 		if (value) {
@@ -165,13 +164,19 @@ class SensitiveAttributeBuilder {
 		}
 	}
 
-	set(value: Buffer | ArrayBuffer | string) {
+	set(value: SensitiveAttributeType | Buffer | ArrayBuffer) {
 		if (Buffer.isBuffer(value)) {
 			this.#value = value;
+		} else if (value instanceof ArrayBuffer) {
+			this.#value = arrayBufferToBuffer(value);
 		} else if (typeof value === 'string') {
 			this.#value = Buffer.from(value, 'utf-8');
+		} else if (value instanceof Date) {
+			this.#value = Buffer.from(value.toISOString(), 'utf-8');
+		} else if (typeof value === 'object' && value !== null) {
+			this.#value = Buffer.from(JSON.stringify(value), 'utf-8');
 		} else {
-			this.#value = Buffer.from(value);
+			this.#value = Buffer.from(String(value), 'utf-8');
 		}
 
 		return(this);
@@ -190,7 +195,7 @@ class SensitiveAttributeBuilder {
 		const cipher = 'aes-256-gcm';
 		const key = crypto.randomBytes(32);
 		const nonce = crypto.randomBytes(12);
-		const encryptedKey = await this.#account.encrypt(key);
+		const encryptedKey = await this.#account.encrypt(bufferToArrayBuffer(key));
 
 		function encrypt(value: Buffer) {
 			const cipherObject = crypto.createCipheriv(cipher, key, nonce);
@@ -200,7 +205,7 @@ class SensitiveAttributeBuilder {
 		}
 
 		const encryptedValue = encrypt(this.#value);
-		const encryptedSalt = encrypt(salt);
+		const encryptedSalt = encrypt(arrayBufferLikeToBuffer(salt));
 
 		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, this.#value]);
 		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(saltedValue);
@@ -232,7 +237,6 @@ class SensitiveAttributeBuilder {
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
 
 		const retval = encodedAttributeObject.toBER();
-
 		return(retval);
 	}
 }
@@ -279,7 +283,7 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	}
 
 	async #decryptValue(value: Buffer) {
-		const decryptedKey = await this.#account.decrypt(this.#info.cipher.key);
+		const decryptedKey = await this.#account.decrypt(bufferToArrayBuffer(this.#info.cipher.key));
 		const algorithm = this.#info.cipher.algorithm;
 		const iv = this.#info.cipher.iv;
 
@@ -299,7 +303,7 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	 * ArrayBuffer
 	 */
 	async get(): Promise<ArrayBuffer> {
-		const decryptedValue = await this.#decryptValue(this.#info.encryptedValue);
+		const decryptedValue = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.encryptedValue));
 
 		return(bufferToArrayBuffer(decryptedValue));
 	}
@@ -329,9 +333,9 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	 * which can be validated by a third party using the certificate
 	 * and the `validateProof` method
 	 */
-	async proove(): Promise<{ value: string; hash: { salt: string }}> {
+	async prove(): Promise<{ value: string; hash: { salt: string }}> {
 		const value = await this.get();
-		const salt = await this.#decryptValue(this.#info.hashedValue.encryptedSalt);
+		const salt = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.hashedValue.encryptedSalt));
 
 		return({
 			value: Buffer.from(value).toString('base64'),
@@ -344,7 +348,7 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	/**
 	 * Validate the proof that a sensitive attribute is a given value
 	 */
-	async validateProof(proof: Awaited<ReturnType<this['proove']>>): Promise<boolean> {
+	async validateProof(proof: Awaited<ReturnType<this['prove']>>): Promise<boolean> {
 		const plaintextValue = Buffer.from(proof.value, 'base64');
 		const proofSaltBuffer = Buffer.from(proof.hash.salt, 'base64');
 
@@ -363,24 +367,9 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 }
 
 /**
- * Database of attributes
+ * Type for certificate attribute names (derived from generated OID database)
  */
-const CertificateAttributeOIDDB = {
-	'fullName': '1.3.6.1.4.1.62675.1.0',
-	'dateOfBirth': '1.3.6.1.4.1.62675.1.1',
-	'address': '1.3.6.1.4.1.62675.1.2',
-	'email': '1.3.6.1.4.1.62675.1.3',
-	'phoneNumber': '1.3.6.1.4.1.62675.1.4'
-};
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
-const CertificateAttributeSchema = {
-	'fullName': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString,
-	'dateOfBirth': ASN1.ValidateASN1.IsDate as typeof ASN1.ValidateASN1.IsDate,
-	'address': { sequenceOf: ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString },
-	'email': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString,
-	'phoneNumber': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString
-} as const;
-CertificateAttributeSchema satisfies { [attribute in CertificateAttributeNames]: ASN1.Schema };
 
 type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>[0]>;
 type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & {
@@ -391,16 +380,49 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
 	subject: BaseCertificateBuilderParams['subjectPublicKey'];
 }>;
 
+function assertCertificateAttributeNames(name: string): asserts name is CertificateAttributeNames {
+	if (!(name in CertificateAttributeOIDDB)) {
+		throw(new Error(`Unknown attribute name: ${name}`));
+	}
+}
+
+function asCertificateAttributeNames(name: string): CertificateAttributeNames {
+	assertCertificateAttributeNames(name);
+	return(name);
+}
+
+function convertObjectToSequence(name: CertificateAttributeNames, value: any): any {
+	// Convert objects to sequences using Object.values()
+	if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof ArrayBuffer) && !(value instanceof Date)) {
+		return Object.values(value);
+	}
+	return value;
+}
+
 function encodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer | ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>): ArrayBuffer {
 	if (value instanceof ArrayBuffer) {
 		return(value);
 	}
 
 	const schema = CertificateAttributeSchema[name];
-	const buffer = new ASN1.BufferStorageASN1(value, schema);
-	return(buffer.getDER());
+	
+	// For simple string types, encode directly without JStoASN1 conversion
+	if (schema === ASN1.ValidateASN1.IsString && typeof value === 'string') {
+		// Create UTF-8 string bytes directly
+		return new TextEncoder().encode(value).buffer;
+	}
+	
+	// For complex types, convert object format to sequence format
+	const sequenceValue = convertObjectToSequence(name, value);
+	
+	// Use schema validation to convert JS object to proper ASN.1 structure
+	const validatedValue = ASN1.ValidateASN1.againstSchema(sequenceValue, schema);
+	const asn1Object = ASN1.JStoASN1(validatedValue);
+	return(asn1Object.toBER());
 }
 
+// XXX:TODO Fix depth issue
+// @ts-ignore
 function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]> | ArrayBuffer;
 function decodeAttribute<NAME extends CertificateAttributeNames>(name: string, value: ArrayBuffer): ArrayBuffer;
 function decodeAttribute<NAME extends CertificateAttributeNames>(name: ASN1.Schema, value: ArrayBuffer): ASN1.SchemaMap<typeof name> | ArrayBuffer;
@@ -419,10 +441,20 @@ function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME | st
 	} else {
 		schema = name;
 	}
-	const buffer = new ASN1.BufferStorageASN1(value, schema);
+	
+	// For simple string types, decode directly without ASN1toJS conversion
+	if (schema === ASN1.ValidateASN1.IsString) {
+		// Decode UTF-8 string bytes directly
+		// @ts-ignore - string is valid return type for IsString schema
+		return new TextDecoder().decode(value);
+	}
+	
+	// Use ASN1toJS for proper round-trip conversion of complex types
+	const asn1Value = ASN1.ASN1toJS(value);
+	const validatedValue = ASN1.ValidateASN1.againstSchema(asn1Value, schema);
 
 	// @ts-ignore
-	return(buffer.getASN1());
+	return(validatedValue);
 }
 
 /**
@@ -458,8 +490,14 @@ const CertificateKYCAttributeSchemaValidation = {
 /** @internal */
 type CertificateKYCAttributeSchema = ASN1.SchemaMap<typeof CertificateKYCAttributeSchemaValidation>;
 
+// Attribute input type sourced from generated definitions
+type CertificateAttributeInput<NAME extends CertificateAttributeNames> = CertificateAttributeValue<NAME>;
+
 export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.CertificateBuilder {
-	readonly #attributes: { [name: string]: { sensitive: boolean; value: ArrayBuffer | string }} = {};
+	readonly #attributes: { [name: string]: (
+		{ sensitive: true; value: SensitiveAttributeType } |
+		{ sensitive: false; value: ArrayBuffer }
+	)} = {};
 
 	/**
 	 * Map the parameters from the public interface to the internal
@@ -484,11 +522,42 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	}
 
 	/**
-	 * Set a KYC Attribute to a given value
+	 * Set a KYC Attribute to a given value.
+	 * The sensitive flag is required. If an attribute is expected to be
+	 * sensitive (e.g., fullName), it must be marked as such.
 	 */
-	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: ArrayBuffer | ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>): void {
-		value = encodeAttribute(name, value);
-		this.#attributes[name] = { sensitive, value };
+	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
+		const mustBeSensitive = (SENSITIVE_CERTIFICATE_ATTRIBUTES as readonly string[]).includes(name);
+		if (mustBeSensitive && !sensitive) {
+			throw new Error(`Attribute '${name}' must be marked sensitive`);
+		}
+
+		if (sensitive) {
+			this.#attributes[name] = { sensitive, value };
+			return;
+		}
+		
+		// Non-sensitive path: only primitive schema (string/date) allowed
+		const schemaValidator = CertificateAttributeSchema[name];
+		let encoded: ArrayBuffer;
+		if (value instanceof ArrayBuffer) {
+			encoded = value;
+		} else if (schemaValidator === ASN1.ValidateASN1.IsDate) {
+			if (!(value instanceof Date)) {
+				throw new Error('Expected Date value');
+			}
+			// XXX:TODO Fix depth issue
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			encoded = encodeAttribute(name, value as any);
+		} else if (schemaValidator === ASN1.ValidateASN1.IsString && typeof value === 'string') {
+			// XXX:TODO Fix depth issue
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			encoded = encodeAttribute(name, value as any);
+		} else {
+			throw new Error('Unsupported non-sensitive value type');
+		}
+
+		this.#attributes[name] = { sensitive: false, value: encoded };
 	}
 
 	protected async addExtensions(...args: Parameters<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']>): ReturnType<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']> {
@@ -508,18 +577,23 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			 * can assume that the attribute is always present in
 			 * the object
 			 */
+			// XXX:TODO Fix type assertion
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const nameOID = CertificateAttributeOIDDB[name as keyof typeof CertificateAttributeOIDDB];
 
 			let value: Buffer;
 			if (attribute.sensitive) {
-				const sensitiveAttribute = new SensitiveAttributeBuilder(subject, attribute.value);
-				value = Buffer.from(await sensitiveAttribute.build());
+				// Use schema-based DER encoding for sensitive attributes
+				// XXX:TODO Fix depth issue
+				// @ts-ignore
+				const encodedValue = encodeAttribute(name as CertificateAttributeNames, attribute.value);
+				const sensitiveAttribute = new SensitiveAttributeBuilder(subject, encodedValue);
+				value = arrayBufferToBuffer(await sensitiveAttribute.build());
 			} else {
 				if (typeof attribute.value === 'string') {
 					value = Buffer.from(attribute.value, 'utf-8');
 				} else {
-					value = Buffer.from(attribute.value);
+					value = arrayBufferToBuffer(attribute.value as ArrayBuffer);
 				}
 			}
 
@@ -553,6 +627,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		const paramsCopy = CertificateBuilder.mapParams(params);
 		const certificate = await super.buildDER(paramsCopy);
 
+		// XXX:TODO Fix use before define
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const certificateObject = new Certificate(certificate, {
 			/**
@@ -578,7 +653,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	readonly attributes: {
 		[name in CertificateAttributeNames]?: {
 			sensitive: true;
-			value: SensitiveAttribute;
+			value: SensitiveAttribute<typeof CertificateAttributeSchema[name]>;
 		} | {
 			sensitive: false;
 			value: ReturnType<typeof decodeAttribute<name>> | ArrayBuffer;
@@ -597,6 +672,18 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		/* Do nothing, we call the super method in the constructor */
 	}
 
+	private setPlainAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
+		this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) } as typeof this.attributes[NAME];
+	}
+
+	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
+		const schema = CertificateAttributeSchema[name];
+		this.attributes[name] = {
+			sensitive: true,
+			value: new SensitiveAttribute(this.subjectKey, value, schema)
+		} as typeof this.attributes[NAME];
+	}
+
 	protected processExtension(id: string, value: ArrayBuffer): boolean {
 		if (super.processExtension(id, value)) {
 			return(true);
@@ -606,22 +693,19 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 			const attributesRaw = new ASN1.BufferStorageASN1(value, CertificateKYCAttributeSchemaValidation).getASN1();
 
 			for (const attribute of attributesRaw) {
-				const name = lookupByOID(attribute[0].oid, CertificateAttributeOIDDB);
+				const nameString = lookupByOID(attribute[0].oid, CertificateAttributeOIDDB);
+				const name = asCertificateAttributeNames(nameString);
 				const valueKind = attribute[1].value;
 				const value = bufferToArrayBuffer(attribute[1].contains);
 
 				switch (valueKind) {
 					case 0:
 						/* Plain Value */
-						this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) };
+						this.setPlainAttribute(name, value);
 						break;
 					case 1:
 						/* Sensitive Value */
-						const schema = CertificateAttributeSchema[name];
-						this.attributes[name] = {
-							sensitive: true,
-							value: new SensitiveAttribute(this.subjectKey, value, schema)
-						};
+						this.setSensitiveAttribute(name, value);
 						break;
 					default:
 						assertNever(valueKind);

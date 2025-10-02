@@ -1,6 +1,8 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import { arrayBufferToBuffer } from './utils/buffer.js';
+import { ContactDetails } from '../generated/iso20022.js';
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
 const testAccount1 = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
@@ -12,7 +14,14 @@ test('Sensitive Attributes', async function() {
 	 */
 	const testAccount1NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount1.publicKeyString.get());
 	const builder1 = new Certificates._Testing.SensitiveAttributeBuilder(testAccount1NoPrivate);
-	builder1.set('Test Value');
+	const contactDetails: ContactDetails = {
+		fullName: 'Test User',
+		emailAddress: 'test@example.com',
+		phoneNumber: '+1 555 911 3808'
+	};
+	
+	builder1.set(contactDetails);
+
 	const attribute = await builder1.build();
 
 	/*
@@ -22,7 +31,7 @@ test('Sensitive Attributes', async function() {
 	const sensitiveAttribute1Value = await sensitiveAttribute1.get();
 	const sensitiveAttribute1ValueString = await sensitiveAttribute1.getString();
 	expect(sensitiveAttribute1Value).toEqual((new Uint8Array([0x54, 0x65, 0x73, 0x74, 0x20, 0x56, 0x61, 0x6c, 0x75, 0x65])).buffer);
-	expect(sensitiveAttribute1ValueString).toEqual('Test Value');
+	expect(sensitiveAttribute1ValueString).toEqual(JSON.stringify(contactDetails));
 
 	/**
 	 * Process the attribute as JSON
@@ -42,7 +51,7 @@ test('Sensitive Attributes', async function() {
 	/*
 	 * Validate it with the public key and value
 	 */
-	const sensitiveAttribute1Proof = await sensitiveAttribute1.proove();
+	const sensitiveAttribute1Proof = await sensitiveAttribute1.prove();
 
 	const sensitiveAttribute2 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, attribute);
 	const sensitiveAttribute2Valid = await sensitiveAttribute2.validateProof(sensitiveAttribute1Proof);
@@ -53,7 +62,7 @@ test('Sensitive Attributes', async function() {
 	 */
 	const sensitiveAttribute3 = new Certificates._Testing.SensitiveAttribute(testAccount2, attribute);
 	await expect(async function() {
-		return(await sensitiveAttribute3.proove());
+		return(await sensitiveAttribute3.prove());
 	}).rejects.toThrow();
 
 	/*
@@ -74,7 +83,7 @@ test('Sensitive Attributes', async function() {
 	/*
 	 * Attempt to validate a tampered attribute
 	 */
-	const attributeBuffer = Buffer.from(attribute);
+	const attributeBuffer = arrayBufferToBuffer(attribute);
 	attributeBuffer.set([0x00], attributeBuffer.length - 3);
 	const tamperedAttribute = attributeBuffer.buffer;
 	const sensitiveAttribute4 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, tamperedAttribute);
@@ -118,7 +127,7 @@ test('Certificates', async function() {
 		builder1.setAttribute('fullName', true, 'Test User');
 		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, ['100 Belgrave Street', 'Oldsmar', 'FL', '34677']);
+		builder1.setAttribute('address', true, { streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' } as any);
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
 
 		/**
@@ -175,10 +184,10 @@ test('Certificates', async function() {
 		/*
 		 * Generate the proof of a plain-text value and validate it
 		 */
-		const toProove = await fullNameAttrWithPrivate.proove();
-		expect(Buffer.from(toProove.value, 'base64').toString('utf-8')).toEqual('Test User');
+		const toprove = await fullNameAttrWithPrivate.prove();
+		expect(Buffer.from(toprove.value, 'base64').toString('utf-8')).toEqual('Test User');
 
-		const valid = await fullNameAttr.validateProof(toProove);
+		const valid = await fullNameAttr.validateProof(toprove);
 		expect(valid).toBe(true);
 
 		/*
@@ -192,7 +201,7 @@ test('Certificates', async function() {
 		 * Attempt to generate a proof without the private key (should fail)
 		 */
 		await expect(async function() {
-			return(await fullNameAttr.proove());
+			return(await fullNameAttr.prove());
 		}).rejects.toThrow();
 	}
 });

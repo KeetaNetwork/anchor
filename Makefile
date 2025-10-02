@@ -25,6 +25,7 @@ help:
 	@echo "  distclean     - Removes all build artifacts and dependencies"
 	@echo "  do-deploy     - Deploys the package to the Development (or QA) environment"
 	@echo "  do-npm-pack   - Creates a distributable package for this project"
+	@echo "  schema        - Generates KYC schema files from oids.json"
 
 # Create a ".nvmrc" file if it does not exist
 .nvmrc: package.json Makefile
@@ -44,8 +45,16 @@ node_modules/.done: package.json package-lock.json Makefile
 node_modules: node_modules/.done
 	@touch node_modules
 
+# Generate KYC schema files from oids.json
+src/generated/.done: oids.json scripts/generate-kyc-schema.mjs Makefile
+	./scripts/generate-kyc-schema.mjs
+	@touch src/generated/.done
+
+# This target generates the KYC schema files
+schema: src/generated/.done
+
 # This target creates the distribution directory.
-dist/.done: $(shell find src -type f) node_modules Makefile
+dist/.done: $(shell find src -type f) src/generated/.done node_modules Makefile
 	npm run tsc
 	cp package.json dist/
 	cp package-lock.json dist/npm-shrinkwrap.json
@@ -89,6 +98,8 @@ clean:
 	rm -rf .coverage
 	rm -f .tsbuildinfo
 	rm -f keetanetwork-anchor-*.tgz
+	rm -rf src/generated
+	rm -f src/generated/.done
 
 # Files created during the "install" process are cleaned up
 # by the "distclean" target.
@@ -98,4 +109,4 @@ distclean: clean
 	rm -rf node_modules
 	rm -f .nvmrc
 
-.PHONY: all help test clean distclean do-npm-pack do-deploy
+.PHONY: all help test clean distclean do-npm-pack do-deploy schema

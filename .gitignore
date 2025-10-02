@@ -4,3 +4,4 @@
 /keetanetwork-*.tgz
 /.coverage
 /.nvmrc
+/src/generated
