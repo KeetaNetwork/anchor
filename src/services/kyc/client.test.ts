@@ -178,12 +178,13 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 			if ('fullName' in trustedCertificate.attributes) {
 				if (trustedCertificate.attributes['fullName'].sensitive) {
 					try {
-						fullName = 'SENSITIVE: ' + await trustedCertificate.attributes['fullName'].value.getString();
+						fullName = 'SENSITIVE: ' + await trustedCertificate.attributes['fullName'].value.getValue('fullName');
 					} catch {
 						fullName = 'SENSITIVE (unable to retrieve)';
 					}
 				} else {
-					fullName = Buffer.from(trustedCertificate.attributes['fullName'].value).toString('utf-8');
+					const value = await trustedCertificate.attributes['fullName'].value;
+					fullName = Buffer.from(value).toString('utf-8');
 				}
 			} else {
 				fullName = 'Not provided';

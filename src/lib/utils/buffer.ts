@@ -21,7 +21,7 @@ export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
 /*
  * Converts a Buffer backed by ArrayBufferLike storage into one backed by an ArrayBuffer.
  */
-export function arrayBufferLikeToBuffer(buffer: globalThis.Buffer<ArrayBufferLike>): Buffer {
+export function arrayBufferLikeToBuffer(buffer: globalThis.Buffer): Buffer {
 	if (buffer instanceof ArrayBuffer) {
 		return arrayBufferToBuffer(buffer);
 	}

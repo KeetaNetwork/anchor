@@ -385,7 +385,14 @@ function generateIso20022Types() {
 			const typeName = toPascalCase(name);
 			lines.push(`/** ASN.1 schema for ${typeName} (sequence) */`);
 			lines.push(`export const ${typeName}Schema = [`);
-			for (const [fieldName, fieldConfig] of Object.entries(config.fields)) {
+			let fieldIndex = 0;
+			
+			// Use field_order if specified, otherwise use Object.entries order
+			const fieldEntries = config.field_order 
+				? config.field_order.map(fieldName => [fieldName, config.fields[fieldName]])
+				: Object.entries(config.fields);
+			
+			for (const [fieldName, fieldConfig] of fieldEntries) {
 				let validator;
 				const ft = fieldConfig.type.trim();
 				if (/^GeneralizedTime$/i.test(ft)) {
@@ -396,11 +403,31 @@ function generateIso20022Types() {
 					// For now treat non-primitive / referenced types as string placeholder
 					validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
 				}
+				
+				// Determine tagging mode: CHOICE types and SEQUENCE OF types use EXPLICIT tagging (automatic_tags behavior)
+				// Check if the field type is a CHOICE type or SEQUENCE OF
+				const isChoiceType = oidSchema.iso20022_types?.choices?.[ft] !== undefined;
+				const isSequenceOf = /^SEQUENCE\s+OF\s+/.test(fieldConfig.type) || ft === 'AddressLines';
+				const tagKind = (isChoiceType || isSequenceOf) ? 'explicit' : 'implicit';
+				
+				// Wrap in context tag (matching Rust's automatic_tags behavior)
+				const contextWrapped = `{ type: 'context' as const, kind: '${tagKind}' as const, value: ${fieldIndex}, contains: ${validator} }`;
 				if (fieldConfig.optional) {
-					lines.push(`\t{ optional: ${validator} }, // ${fieldName}`);
+					lines.push(`\t{ optional: ${contextWrapped} }, // ${fieldName}`);
 				} else {
-					lines.push(`\t${validator}, // ${fieldName}`);
+					lines.push(`\t${contextWrapped}, // ${fieldName}`);
 				}
+				fieldIndex++;
+			}
+			lines.push('] as const;');
+			lines.push('');
+			
+			// Generate field names array for runtime mapping
+			lines.push(`/** Field names for ${typeName} in schema order */`);
+			lines.push(`export const ${typeName}Fields = [`);
+			const fieldNames = config.field_order || Object.keys(config.fields);
+			for (const fieldName of fieldNames) {
+				lines.push(`\t'${fieldName}',`);
 			}
 			lines.push('] as const;');
 			lines.push('');
@@ -430,6 +457,19 @@ function generateIso20022Types() {
 	lines.push('] as const;');
 	lines.push('');
 	lines.push('export type SensitiveCertificateAttributeNames = typeof SENSITIVE_CERTIFICATE_ATTRIBUTES[number];');
+	lines.push('');
+
+	// Generate CertificateAttributeFieldNames mapping
+	lines.push('// Certificate attribute field name mapping');
+	lines.push('/** Maps attribute names to their field name arrays */');
+	lines.push('export const CertificateAttributeFieldNames: { readonly [K in keyof typeof CertificateAttributeOIDDB]?: readonly string[] } = {');
+	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
+		if (config.fields) {
+			const typeName = toPascalCase(name);
+			lines.push(`\t'${name}': ${typeName}Fields,`);
+		}
+	}
+	lines.push('} as const;');
 	lines.push('');
 
 	// Generate CertificateAttributeSchema constant
