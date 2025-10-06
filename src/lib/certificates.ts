@@ -543,7 +543,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 			} else {
 				const buffer = Buffer.from(item.valueBeforeDecode);
 				const dataStart = 2;
-				const dataStr = buffer.slice(dataStart).toString('utf-8');
+				const dataStr = buffer.subarray(dataStart).toString('utf-8');
 				return { type: 'context', kind, value: tagNumber, contains: dataStr };
 			}
 		}
