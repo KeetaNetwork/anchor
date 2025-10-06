@@ -11,7 +11,6 @@ import type {
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteResponse
 } from './common.ts';
-import { acceptSwapRequest } from './common.js';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 
@@ -268,8 +267,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			const expectedToken = KeetaNet.lib.Account.fromPublicKeyString(quote.request.from);
 			const expectedAmount = quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount;
-			// eslint-disable-next-line @typescript-eslint/no-deprecated
-			const swapBlocks = await acceptSwapRequest(userClient, block, { token: expectedToken, amount: BigInt(expectedAmount) });
+			const swapBlocks = await userClient.acceptSwapRequest({ block, expected: { token: expectedToken, amount: BigInt(expectedAmount) }});
 			const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
 			if (userClient.config.generateFeeBlock !== undefined) {
 				publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;

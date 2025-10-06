@@ -25,7 +25,6 @@ import type {
 	KeetaFXAnchorQuoteResponse,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
-import { createSwapRequest } from './common.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
 /**
@@ -327,8 +326,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 			const from = { account: this.client.account, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.from), amount: sendAmount };
 			const to = { account: liquidityProvider, token: KeetaNetLib.Account.fromPublicKeyString(quote.request.to), amount: receiveAmount };
-			// eslint-disable-next-line @typescript-eslint/no-deprecated
-			swapBlock = await createSwapRequest(this.client, from, to);
+			swapBlock = await this.client.createSwapRequest({ from, to });
 		}
 
 		if (swapBlock == undefined) {

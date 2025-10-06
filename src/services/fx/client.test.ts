@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
-import { acceptSwapRequest, createSwapRequest, type ConversionInput, type KeetaFXAnchorQuote, type KeetaNetToken } from './common.js';
+import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -417,8 +417,7 @@ test('Swap Function Negative Tests', async function() {
 	}
 	const from = { account, token: testCurrencyBTC, amount: 10n }
 	const to = { account: account2, token: newToken, amount: 15n }
-	// eslint-disable-next-line @typescript-eslint/no-deprecated
-	const swapBlockNewToken = await createSwapRequest(client, from, to);
+	const swapBlockNewToken = await client.createSwapRequest({ from, to });
 
 	const swapMissingReceive = await (new KeetaNet.lib.Block.Builder({
 		account,
@@ -436,16 +435,11 @@ test('Swap Function Negative Tests', async function() {
 
 	const testFails = [
 		// @ts-expect-error
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, undefined, undefined) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, {}) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, { token: testCurrencyBTC }) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, { amount: 5n }) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapMissingReceive, {}) }
+		async function() { await client.acceptSwapRequest(undefined, undefined) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: {}}) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: { token: testCurrencyBTC }}) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: { amount: 5n }}) },
+		async function() { await client.acceptSwapRequest({ block: swapMissingReceive, expected: {}}) }
 	]
 
 	for (const testFail of testFails) {
