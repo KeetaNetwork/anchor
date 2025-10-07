@@ -49,6 +49,35 @@ function toPascalCase(str) {
 }
 
 /**
+ * Resolve a type to its underlying ASN.1 type, following aliases
+ */
+function resolveToBaseType(typeName) {
+    typeName = typeName.trim();
+    
+    // Check if it's a primitive type first
+    if (/^(UTF8String|Utf8String|GeneralizedTime)$/i.test(typeName)) {
+        return typeName;
+    }
+    
+    // Check if it's defined as a sensitive attribute
+    const sensitiveAttr = oidSchema.sensitive_attributes[typeName] || 
+                          Object.values(oidSchema.sensitive_attributes).find(attr => 
+                              attr.token === typeName);
+    if (sensitiveAttr && !sensitiveAttr.fields && !sensitiveAttr.choices) {
+        return resolveToBaseType(sensitiveAttr.type);
+    }
+    
+    // Check if it's an ISO20022 primitive
+    const primitive = oidSchema.iso20022_types.primitives[typeName];
+    if (primitive) {
+        return resolveToBaseType(primitive.type);
+    }
+    
+    // Otherwise return as-is
+    return typeName;
+}
+
+/**
  * Generate OID constants file (similar to oids.rs)
  */
 function generateOidConstants() {
@@ -255,17 +284,28 @@ function generateIso20022Types() {
 	lines.push('// ISO20022 Choice Types');
 	for (const [name, config] of Object.entries(oidSchema.iso20022_types.choices)) {
 		const typeName = toPascalCase(name);
-		lines.push(`/** ${config.description} */`);
-		lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
-		lines.push(`export type ${typeName} = `);
+		const choices = Object.entries(config.choices || {});
 		
-		const choiceTypes = Object.entries(config.choices).map(([choiceName, choiceConfig]) => {
-			const resolvedType = resolveTypeReference(choiceConfig.type);
-			return `	| { type: '${choiceName}'; value: ${resolvedType} }`;
+		// Check if this is a complex choice (with different types) or simple choice (all strings)
+		const hasComplexTypes = choices.some(([_, choice]) => {
+			const choiceType = choice.type.trim();
+			return choiceType !== 'UTF8String' && choiceType !== 'string';
 		});
 		
-		lines.push(choiceTypes.join('\n'));
-		lines.push(';');
+		if (hasComplexTypes) {
+			// For complex choices like EntityType, use a union of the actual types
+			const unionTypes = choices.map(([_, choice]) => {
+				return toPascalCase(choice.type.trim());
+			});
+			lines.push(`/** ${config.description} */`);
+			lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
+			lines.push(`export type ${typeName} = ${unionTypes.join(' | ')};`);
+		} else {
+			// For simple string choices, just use string
+			lines.push(`/** ${config.description} */`);
+			lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
+			lines.push(`export type ${typeName} = string;`);
+		}
 		lines.push('');
 	}
 
@@ -314,21 +354,29 @@ function generateIso20022Types() {
 			lines.push('}');
 			lines.push('');
 		} else if (config.choices) {
-			// Choice type
-			const typeName = toPascalCase(name);
-			lines.push(`/** ${config.description} */`);
-			lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
-			lines.push(`export type ${typeName} = `);
-			
-			const choiceTypes = Object.entries(config.choices).map(([choiceName, choiceConfig]) => {
-				const resolvedType = resolveTypeReference(choiceConfig.type);
-				return `	| { type: '${choiceName}'; value: ${resolvedType} }`;
-			});
-			
-			lines.push(choiceTypes.join('\n'));
-			lines.push(';');
-			lines.push('');
-		}
+            // Choice type - generate as simple union
+            const typeName = toPascalCase(name);
+            lines.push(`/** ${config.description} */`);
+            lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
+            
+            // Check if it has complex types
+            const hasComplexTypes = Object.values(config.choices).some(choice => {
+                const choiceType = choice.type.trim();
+                return choiceType !== 'UTF8String' && choiceType !== 'string';
+            });
+            
+            if (hasComplexTypes) {
+                // Complex choice - use union of types
+                const unionTypes = Object.values(config.choices).map(choice => {
+                    return toPascalCase(choice.type.trim());
+                });
+                lines.push(`export type ${typeName} = ${unionTypes.join(' | ')};`);
+            } else {
+                // Simple choice - just string
+                lines.push(`export type ${typeName} = string;`);
+            }
+            lines.push('');
+        }
 	}
 
 	// Generate token aliases for sensitive attributes
@@ -378,48 +426,128 @@ function generateIso20022Types() {
 	lines.push('export type CertificateAttributeValue<Name extends keyof CertificateAttributeValueMap> = CertificateAttributeValueMap[Name];');
 	lines.push('');
 
+    // Generate ASN.1 schemas for ISO 20022 choice types
+    lines.push('// Generated ASN.1 schemas for ISO 20022 choice types');
+    for (const [name, config] of Object.entries(oidSchema.iso20022_types.choices)) {
+        const typeName = toPascalCase(name);
+        
+        // For simple string choices, just use IsString
+        const choices = Object.entries(config.choices || {});
+        const hasComplexTypes = choices.some(([_, choice]) => {
+            const choiceType = choice.type.trim();
+            return choiceType !== 'UTF8String' && choiceType !== 'string';
+        });
+        
+        if (hasComplexTypes) {
+            // Complex choice - use choice array
+            lines.push(`/** ASN.1 schema for ${typeName} */`);
+            lines.push(`export const ${typeName}Schema: ASN1.Schema = {`);
+            lines.push(`\tchoice: [`);
+            
+            const choiceSchemas = choices.map(([_, choice]) => {
+                const choiceType = toPascalCase(choice.type.trim());
+                return `\t\t${choiceType}Schema`;
+            });
+            
+            lines.push(choiceSchemas.join(',\n'));
+            lines.push(`\t]`);
+            lines.push(`} as const satisfies ASN1.Schema;`);
+        } else {
+            // Simple string choice
+            lines.push(`/** ASN.1 schema for ${typeName} */`);
+            lines.push(`export const ${typeName}Schema: ASN1.Schema = ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString;`);
+        }
+        lines.push('');
+    }
+
 	// Generate ASN.1 sequence schemas for sensitive attributes that are sequences
 	lines.push('// Generated ASN.1 sequence schemas for sensitive attributes');
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
 		if (config.fields) {
 			const typeName = toPascalCase(name);
+
 			lines.push(`/** ASN.1 schema for ${typeName} (sequence) */`);
-			lines.push(`export const ${typeName}Schema = [`);
-			let fieldIndex = 0;
-			
+			lines.push(`export const ${typeName}Schema: ASN1.Schema = [`);
+
 			// Use field_order if specified, otherwise use Object.entries order
-			const fieldEntries = config.field_order 
-				? config.field_order.map(fieldName => [fieldName, config.fields[fieldName]])
-				: Object.entries(config.fields);
+			const fieldOrder = config.field_order || Object.keys(config.fields);
+			const fieldEntries = fieldOrder.map(fieldName => [fieldName, config.fields[fieldName]]);
 			
 			for (const [fieldName, fieldConfig] of fieldEntries) {
-				let validator;
-				const ft = fieldConfig.type.trim();
-				if (/^GeneralizedTime$/i.test(ft)) {
-					validator = 'ASN1.ValidateASN1.IsDate as typeof ASN1.ValidateASN1.IsDate';
-				} else if (/^UTF8String$/i.test(ft) || /^Utf8String$/i.test(ft)) {
-					validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
-				} else {
-					// For now treat non-primitive / referenced types as string placeholder
-					validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+                let validator;
+                const ft = fieldConfig.type.trim();
+                // Resolve type aliases to base types
+                const baseType = resolveToBaseType(ft);
+                
+                // Check if the type is inline "SEQUENCE OF SomeType"
+				if (ft.startsWith('SEQUENCE OF ')) {
+					const elementType = ft.substring('SEQUENCE OF '.length).trim();
+					const isSequenceType = Object.keys(oidSchema.iso20022_types.sequences).some(key => 
+						toPascalCase(key) === toPascalCase(elementType));
+					
+					if (/^UTF8String$/i.test(elementType)) {
+						validator = `ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString`;
+					} else if (isSequenceType) {
+						const referencedType = toPascalCase(elementType);
+						validator = `${referencedType}Schema`;
+					} else {
+						validator = `ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString`;
+					}
 				}
+                // Check if this references a choice type
+                else if (Object.keys(oidSchema.iso20022_types.choices).some(key => 
+                    toPascalCase(key) === toPascalCase(ft))) {
+                    const referencedType = toPascalCase(ft);
+                    validator = `${referencedType}Schema`;
+                }
+                // Check if this references another sequence type (non-array)
+                else if (Object.keys(oidSchema.iso20022_types.sequences).some(key => 
+                    toPascalCase(key) === toPascalCase(ft)) ||
+                         Object.keys(oidSchema.sensitive_attributes).some(key => 
+                    toPascalCase(key) === toPascalCase(ft) && oidSchema.sensitive_attributes[key].fields)) {
+                    const referencedType = toPascalCase(ft);
+                    validator = `${referencedType}Schema`;
+                }
+                // Check if this references a primitive type
+                else if (oidSchema.iso20022_types.primitives[ft]) {
+                    const primitiveConfig = oidSchema.iso20022_types.primitives[ft];
+					if (primitiveConfig.type.startsWith('SEQUENCE OF ')) {
+						const elementType = primitiveConfig.type.substring('SEQUENCE OF '.length).trim();
+						// Don't wrap in { sequenceOf: ... }
+						if (elementType === 'UTF8String') {
+							validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+						} else {
+							validator = `${toPascalCase(elementType)}Schema`;
+						}
+					} else {
+						validator = mapAsnTypeToValidator(primitiveConfig.type, primitiveConfig) || 'ASN1.ValidateASN1.IsString';
+						if (!validator.startsWith('{')) {
+							validator = `${validator} as typeof ${validator}`;
+						}
+					}
+                }
+                // Primitive types - use resolved base type
+                else if (/^GeneralizedTime$/i.test(baseType)) {
+                    validator = 'ASN1.ValidateASN1.IsDate as typeof ASN1.ValidateASN1.IsDate';
+                } else if (/^UTF8String$/i.test(baseType) || /^Utf8String$/i.test(baseType)) {
+                    validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+                } else {
+                    validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+                }
+                    
+                // Add to schema
+				const fieldIndex = fieldOrder.indexOf(fieldName);
+				const contextTag = `{ type: 'context', kind: 'explicit', value: ${fieldIndex}, contains: ${validator} }`;
 				
-				// Determine tagging mode: CHOICE types and SEQUENCE OF types use EXPLICIT tagging (automatic_tags behavior)
-				// Check if the field type is a CHOICE type or SEQUENCE OF
-				const isChoiceType = oidSchema.iso20022_types?.choices?.[ft] !== undefined;
-				const isSequenceOf = /^SEQUENCE\s+OF\s+/.test(fieldConfig.type) || ft === 'AddressLines';
-				const tagKind = (isChoiceType || isSequenceOf) ? 'explicit' : 'implicit';
-				
-				// Wrap in context tag (matching Rust's automatic_tags behavior)
-				const contextWrapped = `{ type: 'context' as const, kind: '${tagKind}' as const, value: ${fieldIndex}, contains: ${validator} }`;
+				// Add to schema
 				if (fieldConfig.optional) {
-					lines.push(`\t{ optional: ${contextWrapped} }, // ${fieldName}`);
+					lines.push(`\t{ optional: ${contextTag} }, // ${fieldName}`);
 				} else {
-					lines.push(`\t${contextWrapped}, // ${fieldName}`);
+					lines.push(`\t${contextTag}, // ${fieldName}`);
 				}
-				fieldIndex++;
-			}
-			lines.push('] as const;');
+            }
+			
+			lines.push('] as const satisfies ASN1.Schema;');
 			lines.push('');
 			
 			// Generate field names array for runtime mapping
@@ -433,6 +561,116 @@ function generateIso20022Types() {
 			lines.push('');
 		}
 	}
+
+    // Generate ASN.1 schemas for ISO 20022 sequence types
+    lines.push('// Generated ASN.1 schemas for ISO 20022 sequence types');
+    for (const [name, config] of Object.entries(oidSchema.iso20022_types.sequences)) {
+        const typeName = toPascalCase(name);
+        lines.push(`/** ASN.1 schema for ${typeName} */`);
+        lines.push(`export const ${typeName}Schema: ASN1.Schema = [`);
+        
+        // Use field_order if available, otherwise Object.keys
+        const fieldOrder = config.field_order || Object.keys(config.fields);
+        const fieldEntries = fieldOrder.map(fieldName => [fieldName, config.fields[fieldName]]);
+        
+		for (const [fieldName, fieldConfig] of fieldEntries) {
+            let validator;
+            const ft = fieldConfig.type.trim();
+            // Resolve type aliases to base types
+            const baseType = resolveToBaseType(ft);
+            
+            // Check if the type is inline "SEQUENCE OF SomeType"
+			if (ft.startsWith('SEQUENCE OF ')) {
+				const elementType = ft.substring('SEQUENCE OF '.length).trim();
+				const isSequenceType = Object.keys(oidSchema.iso20022_types.sequences).some(key => 
+					toPascalCase(key) === toPascalCase(elementType));
+				
+				if (/^UTF8String$/i.test(elementType)) {
+					validator = `ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString`;
+				} else if (isSequenceType) {
+					const referencedType = toPascalCase(elementType);
+					validator = `${referencedType}Schema`;
+				} else {
+					validator = `ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString`;
+				}
+			}
+            // Check if this references a choice type
+            else if (Object.keys(oidSchema.iso20022_types.choices).some(key => 
+                toPascalCase(key) === toPascalCase(ft))) {
+                const referencedType = toPascalCase(ft);
+                validator = `${referencedType}Schema`;
+            }
+            // Check if this references another sequence type (non-array)
+            else if (Object.keys(oidSchema.iso20022_types.sequences).some(key => 
+                toPascalCase(key) === toPascalCase(ft)) ||
+                     Object.keys(oidSchema.sensitive_attributes).some(key => 
+                toPascalCase(key) === toPascalCase(ft) && oidSchema.sensitive_attributes[key].fields)) {
+                const referencedType = toPascalCase(ft);
+                validator = `${referencedType}Schema`;
+            }
+            // Check if this references a primitive type
+            else if (oidSchema.iso20022_types.primitives[ft]) {
+                const primitiveConfig = oidSchema.iso20022_types.primitives[ft];
+				if (primitiveConfig.type.startsWith('SEQUENCE OF ')) {
+					const elementType = primitiveConfig.type.substring('SEQUENCE OF '.length).trim();
+					// Don't wrap in { sequenceOf: ... }
+					if (elementType === 'UTF8String') {
+						validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+					} else {
+						validator = `${toPascalCase(elementType)}Schema`;
+					}
+				} else {
+					validator = mapAsnTypeToValidator(primitiveConfig.type, primitiveConfig) || 'ASN1.ValidateASN1.IsString';
+					if (!validator.startsWith('{')) {
+						validator = `${validator} as typeof ${validator}`;
+					}
+				}
+            }
+            // Primitive types - use resolved base type
+            else if (/^GeneralizedTime$/i.test(baseType)) {
+                validator = 'ASN1.ValidateASN1.IsDate as typeof ASN1.ValidateASN1.IsDate';
+            } else if (/^UTF8String$/i.test(baseType) || /^Utf8String$/i.test(baseType)) {
+                validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+            } else {
+                validator = 'ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString';
+            }
+            
+			// Add context tag for ALL fields in sequences with optional fields
+            const fieldIndex = fieldOrder.indexOf(fieldName);
+            const contextTag = `{ type: 'context', kind: 'explicit', value: ${fieldIndex}, contains: ${validator} }`;
+            
+            // Add to schema
+            if (fieldConfig.optional) {
+                lines.push(`\t{ optional: ${contextTag} }, // ${fieldName}`);
+            } else {
+                lines.push(`\t${contextTag}, // ${fieldName}`);
+            }
+        }
+
+        lines.push(`] as const satisfies ASN1.Schema;`);
+        lines.push('');
+    }
+
+    // Generate ASN.1 schemas for choice-type sensitive attributes
+    lines.push('// Generated ASN.1 schemas for choice-type sensitive attributes');
+    for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
+		if (config.choices) {
+            const typeName = toPascalCase(name);
+            lines.push(`/** ASN.1 schema for ${typeName} */`);
+            lines.push(`export const ${typeName}Schema: ASN1.Schema = {`);
+            lines.push(`\tchoice: [`);
+            
+            const choiceSchemas = Object.values(config.choices).map(choice => {
+                const choiceType = toPascalCase(choice.type.trim());
+                return `\t\t${choiceType}Schema`;
+            });
+            
+            lines.push(choiceSchemas.join(',\n'));
+            lines.push(`\t]`);
+            lines.push(`} as const satisfies ASN1.Schema;`);
+            lines.push('');
+        }
+    }
 
 	// Generate CertificateAttributeOIDDB constant
 	lines.push('// Certificate attribute OID database');
@@ -478,21 +716,26 @@ function generateIso20022Types() {
 	lines.push('export const CertificateAttributeSchema: { readonly [K in keyof typeof CertificateAttributeOIDDB]: ASN1.Schema } = {');
 	
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
-		if (config.fields) {
-			const typeName = toPascalCase(name);
-			lines.push(`\t'${name}': ${typeName}Schema,`);
-			continue;
-		}
-		let validator = mapAsnTypeToValidator(config.type, config);
-		if (validator) {
-			if (!validator.startsWith('{')) {
-				validator = `${validator} as typeof ${validator}`;
-			}
-			lines.push(`\t'${name}': ${validator},`);
-		} else {
-			lines.push(`\t'${name}': ASN1.ValidateASN1.IsSet as typeof ASN1.ValidateASN1.IsSet,`);
-		}
-	}
+        const typeName = toPascalCase(name);
+        
+        if (config.fields) {
+            // Sequence type - use generated schema
+            lines.push(`\t'${name}': ${typeName}Schema,`);
+        } else if (config.choices) {
+            // Choice type - use generated schema
+            lines.push(`\t'${name}': ${typeName}Schema,`);
+        } else {
+            // Primitive type - use validator
+            let validator = mapAsnTypeToValidator(config.type, config);
+            if (validator) {
+                validator = `${validator} as typeof ${validator}`;
+                lines.push(`\t'${name}': ${validator},`);
+            } else {
+                // Fallback for unknown types
+                lines.push(`\t'${name}': ASN1.ValidateASN1.IsString as typeof ASN1.ValidateASN1.IsString,`);
+            }
+        }
+    }
 	
 	lines.push('} as const;');
 	lines.push('');

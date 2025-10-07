@@ -271,7 +271,8 @@
 					"id": { "type": "Id", "optional": false },
 					"schemeName": { "type": "OrganizationIdentificationSchemeNameChoice", "optional": true },
 					"issuer": { "type": "Issuer", "optional": true }
-				}
+				},
+    			"field_order": ["id", "issuer", "schemeName"]
 			},
 			"OrganizationIdentification": {
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 0 ],
@@ -291,7 +292,8 @@
 					"id": { "type": "Id", "optional": false },
 					"schemeName": { "type": "PersonIdentificationSchemeNameChoice", "optional": true },
 					"issuer": { "type": "Issuer", "optional": true }
-				}
+				},
+    			"field_order": ["id", "issuer", "schemeName"]
 			},
 			"PersonIdentification": {
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 1 ],
@@ -309,7 +311,8 @@
 				"fields": {
 					"id": { "type": "Id", "optional": true },
 					"channelType": { "type": "UTF8String", "optional": false }
-				}
+				},
+    			"field_order": ["channelType", "id"]
 			}
 		}
 	},
