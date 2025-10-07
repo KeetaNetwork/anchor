@@ -2,7 +2,7 @@ import KeetaNet from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
-import * as Certificate from '../../lib/certificates.js';
+import type * as Certificate from '../../lib/certificates.js';
 import { createAssert } from 'typia';
 import {
 	KeetaAnchorUserError
@@ -12,7 +12,7 @@ import type {
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse
 } from './common.ts';
-import * as Signing from '../../lib/utils/signing.js';
+import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
 const assertCreateVerificationRequest = createAssert<KeetaKYCAnchorCreateVerificationRequest>();
@@ -116,7 +116,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 		 * the server configuration, replacing `{id}` with the
 		 * verification ID.
 		 */
-		verificationStarted?: (request: KeetaKYCAnchorCreateVerificationRequest) => Promise<Partial<KeetaKYCAnchorCreateVerificationResponse> | void>;
+		verificationStarted?: (request: KeetaKYCAnchorCreateVerificationRequest) => Promise<Partial<KeetaKYCAnchorCreateVerificationResponse> | undefined>;
 
 		/**
 		 * Retrieve the certificate for a verification
@@ -222,7 +222,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 */
 		routes['POST /api/createVerification'] = async function(_ignore_params, bodyInput) {
 			const body = assertCreateVerificationRequest(bodyInput);
-			let response: Partial<KeetaKYCAnchorCreateVerificationResponse> | void = {};
+			let response: Partial<KeetaKYCAnchorCreateVerificationResponse> | undefined = {};
 			if (config.kyc.verificationStarted) {
 				response = await config.kyc.verificationStarted(body);
 			}
@@ -236,7 +236,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 			}
 
 			response.ok = true;
-			if (response.ok !== true) {
+			if (!response.ok) {
 				throw(new Error('internal error: invalid response'));
 			}
 			response.id ??= crypto.randomUUID();
@@ -306,7 +306,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		/**
 		 * Notification that payment has been received for the KYC verification
 		 * XXX:TODO
-		 */	
+		 */
 		if (false) {
 			routes['POST /api/notifyPayment/:verificationID'] = async function(params, body) {
 				throw(new Error('not implemented'));
@@ -327,7 +327,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				// getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
 				// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
 				createVerification: (new URL('/api/createVerification', this.url)).toString(),
-				getCertificates: (new URL('/api/getCertificates/{id}', this.url)).toString(),
+				getCertificates: (new URL('/api/getCertificates/{id}', this.url)).toString()
 			}
 		});
 	}
