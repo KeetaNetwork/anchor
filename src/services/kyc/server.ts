@@ -13,10 +13,40 @@ import type {
 	KeetaKYCAnchorGetCertificateResponse
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
-import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
 const assertCreateVerificationRequest = createAssert<KeetaKYCAnchorCreateVerificationRequest>();
+const assertCreateVerificationResponse = createAssert<KeetaKYCAnchorCreateVerificationResponse>();
+
+class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
+	protected statusCode = 400;
+	constructor(message?: string) {
+		super(message ?? 'Verification ID not found');
+	}
+}
+
+class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
+	protected statusCode = 404;
+	constructor(message?: string) {
+		super(message ?? 'Certificate not found (pending)');
+	}
+}
+
+export const Errors: {
+	VerificationNotFound: typeof KeetaKYCAnchorVerificationNotFoundError;
+	CertificateNotFound: typeof KeetaKYCAnchorCertificateNotFoundError;
+} = {
+	/**
+	 * The verification ID was not found
+	 */
+	VerificationNotFound: KeetaKYCAnchorVerificationNotFoundError,
+
+	/**
+	 * The certificate for the verification ID was not found
+	 * (typically this means the verification is still pending)
+	 */
+	CertificateNotFound: KeetaKYCAnchorCertificateNotFoundError
+}
 
 export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -29,16 +59,78 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	 */
 	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
 
+	/**
+	 * Configuration for the KYC Anchor
+	 *
+	 * The flow for a KYC Anchor is as follows:
+	 *      1. Client requests a new verification with a country code and
+	 *           account from the KYC Anchor Server
+	 *      2. KYC Anchor Server responds with a verification ID and a URL
+	 *           to the KYC provider's web URL, including the verification ID
+	 *      3. Client visits the KYC provider's web URL to complete the
+	 *           verification
+	 *      4. KYC provider notifies the Anchor server that the
+	 *           verification is complete
+	 *      5. Client requests the certificate for the verification ID
+	 *           (polling) from the KYC Anchor Server
+	 *      6. KYC Anchor Server responds with the certificate(s) for the
+	 *           verification ID (if complete, pending if still in progress,
+	 *           an error if failed)
+	 *      7. Client installs the certificate(s) in their wallet using
+	 *           the KeetaNet Client library
+	 *
+	 *
+	 *   +-------------------+            +---------------------+             +------------------+
+	 *   |       Client      |            |   KYC Anchor Server |             |   KYC Provider   |
+	 *   +-------------------+            +---------------------+             +------------------+
+	 *         |                                   |                                  |
+	 * (1) Create Verification                     |                                  |
+	 * countryCode, account ---------------------->|                                  |
+	 *         |                                   |                                  |
+	 *         |                           (2) Create verification                    |
+	 *         |----------------------------------- verificationID, providerURL       |
+	 *         |                                   |                                  |
+	 * (3) Open providerURL (with verificationID)------------------------------------>|
+	 *         |                                   |                                  |
+	 *         |                                   |                           (4)  Notify
+	 *         |                                   |<-------- verificationID, verificationStatus, certificates?
+	 *         |                                   |
+	 * (5) Poll certificate for verificationID --->|
+	 *         |                                   |
+	 *         |<-------------------------- (6) Pending / Certificate(s) / Error
+	 *         |                    (repeat #5 until complete)
+	 *         |
+	 * (7) Install certificate(s) in wallet using KeetaNet Client library
+	 */
 	kyc: {
 		/**
-		 * Method to get the next serial number for a certificate 
+		 * Notification that a verification has been started (optional)
+		 *
+		 * This method can be used to notify the KYC provider that
+		 * a verification has been started.  It can return additional
+		 * information about the verification, such as the web URL
+		 * where the user can complete the verification.
+		 *
+		 * If this method is not provided, the server will generate
+		 * a random verification ID and use the `kycProviderURL` from
+		 * the server configuration, replacing `{id}` with the
+		 * verification ID.
 		 */
-		getNextSerialNumber: () => Promise<bigint>;
+		verificationStarted?: (request: KeetaKYCAnchorCreateVerificationRequest) => Promise<Partial<KeetaKYCAnchorCreateVerificationResponse> | void>;
 
 		/**
-		 * Method to call when a certificate is ready
+		 * Retrieve the certificate for a verification
+		 *
+		 * This should return the certificate(s) for the
+		 * verification ID.  If the verification is still
+		 * in progress, it should throw an `CertificateNotFound`
+		 * error.
+		 * If the verification has failed permanently, it should
+		 * throw a `KeetaAnchorUserError` with an appropriate
+		 * error message or `VerificationNotFound` if the
+		 * verification ID is not found.
 		 */
-		certificateReady?: (verificationId: string, certificate: Certificate.Certificate) => Promise<void>;
+		getCertificates: (verificationID: string) => Promise<Extract<KeetaKYCAnchorGetCertificateResponse, { ok: true; }>['results']>;
 
 		/**
 		 * Country codes that this KYC provider can service (default is all country codes)
@@ -55,6 +147,17 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	 * The account to use for signing certificates
 	 */
 	signer: Signing.SignableAccount;
+
+	/**
+	 * URL for the KYC Provider (optional)
+	 *
+	 * This is the URL that clients will be directed to in order to
+	 * complete the KYC verification process.  It is optional because
+	 * the `kyc.verificationStarted` method can also return a `webURL`.
+	 * If both are provided, the URL from `kyc.verificationStarted` takes
+	 * precedence.
+	 */
+	kycProviderURL?: string;
 };
 
 export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorKYCServerConfig> implements Required<KeetaAnchorKYCServerConfig> {
@@ -63,6 +166,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 	readonly signer: NonNullable<KeetaAnchorKYCServerConfig['signer']>;
 	readonly ca: KeetaAnchorKYCServerConfig['ca'];
 	readonly kyc: KeetaAnchorKYCServerConfig['kyc'];
+	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
@@ -73,6 +177,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		this.signer = config.signer;
 		this.ca = config.ca;
 		this.kyc = config.kyc;
+		this.kycProviderURL = config.kycProviderURL ?? new URL('/provider/{id}', this.url).toString();
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
@@ -115,8 +220,44 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 * Begin the KYC verification process
 		 * with this KYC provider
 		 */
-		routes['POST /api/createVerification'] = async function(params, body) {
-			throw(new Error('not implemented'));
+		routes['POST /api/createVerification'] = async function(_ignore_params, bodyInput) {
+			const body = assertCreateVerificationRequest(bodyInput);
+			let response: Partial<KeetaKYCAnchorCreateVerificationResponse> | void = {};
+			if (config.kyc.verificationStarted) {
+				response = await config.kyc.verificationStarted(body);
+			}
+
+			if (response === undefined) {
+				response = {};
+			}
+
+			if (response?.ok === false) {
+				throw(new KeetaAnchorUserError(response.error ?? 'Unknown error'));
+			}
+
+			response.ok = true;
+			if (response.ok !== true) {
+				throw(new Error('internal error: invalid response'));
+			}
+			response.id ??= crypto.randomUUID();
+			response.webURL ??= (config.kycProviderURL ?? '').replace('{id}', encodeURIComponent(response.id));
+
+			if (!response.webURL) {
+				throw(new KeetaAnchorUserError('No webURL provided -- cannot proceed with verification'));
+			}
+
+			response.expectedCost = {
+				min: '0',
+				max: '0',
+				token: KeetaNet.lib.Account.generateBaseAddresses(config.client.network).baseToken.publicKeyString.get(),
+				...response.expectedCost
+			};
+
+			const responseValidated = assertCreateVerificationResponse(response);
+
+			return({
+				output: JSON.stringify(responseValidated)
+			});
 		};
 
 		/**
@@ -133,8 +274,22 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 * Get the certificate for the
 		 * KYC verification
 		 */
-		routes['GET /api/getCertificateStatus/:verificationId'] = async function(params) {
-			throw(new Error('not implemented'));
+		routes['GET /api/getCertificates/:verificationID'] = async function(params) {
+			const verificationID = params.get('verificationID');
+			if (verificationID === undefined) {
+				throw(new KeetaAnchorUserError('No verification ID provided'));
+			}
+
+			const certificates = await config.kyc.getCertificates(verificationID);
+
+			const response: KeetaKYCAnchorGetCertificateResponse = {
+				ok: true,
+				results: certificates
+			};
+
+			return({
+				output: JSON.stringify(response)
+			});
 		};
 
 		/**
@@ -152,9 +307,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 * Notification that payment has been received for the KYC verification
 		 * XXX:TODO
 		 */	
-		routes['POST /api/paymentNotification/:verificationId'] = async function(params, body) {
-			throw(new Error('not implemented'));
-		};
+		if (false) {
+			routes['POST /api/notifyPayment/:verificationID'] = async function(params, body) {
+				throw(new Error('not implemented'));
+			};
+		}
 
 		return(routes);
 	}
@@ -166,10 +323,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				return(country.code);
 			}) ?? [],
 			operations: {
-				checkLocality: (new URL('/api/checkLocality', this.url)).toString(),
-				getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
+				// checkLocality: (new URL('/api/checkLocality', this.url)).toString(),
+				// getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
+				// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
 				createVerification: (new URL('/api/createVerification', this.url)).toString(),
-				getCertificates: (new URL('/api/getCertificateStatus/{id}', this.url)).toString(),
+				getCertificates: (new URL('/api/getCertificates/{id}', this.url)).toString(),
 			}
 		});
 	}
