@@ -67,11 +67,11 @@ test('FX Anchor Client Test', async function() {
 					rate = 1 / rate;
 				}
 				return({
-					account: liquidityProvider.publicKeyString.get(),
-					convertedAmount: (parseInt(request.amount) * rate).toFixed(0),
+					account: liquidityProvider,
+					convertedAmount: BigInt(request.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 					cost: {
-						amount: '5',
-						token: testCurrencyUSD.publicKeyString.get()
+						amount: 5n,
+						token: testCurrencyUSD
 					}
 				});
 			}
@@ -199,40 +199,40 @@ test('FX Anchor Client Test', async function() {
 		},
 		{
 			// no provider offers this pair
-			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: '$BTC', to: 'USD', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
 			// invalid currency codes
 			// @ts-expect-error
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// @ts-expect-error
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'FOO', to: 'BAR', amount: 10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// Cannot convert negative amount
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10n, affinity: 'from' })) },
 			result: false
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// invalid anchor server throws an error but SDK returns null
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'EUR', to: '$BTC', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'EUR', to: '$BTC', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
@@ -270,20 +270,20 @@ test('FX Anchor Client Test', async function() {
 	});
 
 	/* Get Estimate from Currency Codes */
-	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
+	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
 	/* Get Estimate from Tokens */
-	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from' };
+	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100n, affinity: 'from' };
 	/* Get Estimate from Currency Codes Affinity: to */
 	// TODO - provide more dynamic KeetaNetFXAnchorHTTPServer responses
-	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 88, affinity: 'to' };
+	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 88n, affinity: 'to' };
 
 	let cumulativeEURChange = 0n;
 	let cumulativeUSDChange = 0n;
 	for (const request of [requestCurrencyCodes, requestTokens, requestCurrencyCodesTo]) {
 		const requestCanonical = {
-			from: testCurrencyUSD.publicKeyString.get(),
-			to: testCurrencyEUR.publicKeyString.get(),
-			amount: request.amount.toString(),
+			from: testCurrencyUSD,
+			to: testCurrencyEUR,
+			amount: request.amount,
 			affinity: request.affinity
 		};
 
@@ -299,36 +299,36 @@ test('FX Anchor Client Test', async function() {
 		if (request.affinity === 'to') {
 			rate = 1 / rate;
 		}
-		expect(estimate.estimate).toEqual({
+		expect(toJSONSerializable(estimate.estimate)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			expectedCost: {
-				min: '5',
-				max: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				min: 5n,
+				max: 5n,
+				token: testCurrencyUSD
 			}
-		});
+		}));
 
 		const quotes = await fxClient.getQuotes(request);
 		if (quotes === null) {
-			throw(new Error('Estimates is NULL'));
+			throw(new Error('Quotes is NULL'));
 		}
 		const quote = quotes[0];
 		if (quote === undefined) {
-			throw(new Error('Estimate is undefined'));
+			throw(new Error('Quote is undefined'));
 		}
-		expect(quote.quote).toEqual({
+		expect(toJSONSerializable(quote.quote)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			account: liquidityProvider,
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
-				amount: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				amount: 5n,
+				token: testCurrencyUSD
 			},
 			signed: {
 				...quote.quote.signed
 			}
-		});
+		}));
 
 		// TODO - figure out a way to create a different estimate than quote on the http server
 		// await expect(async function(){
@@ -336,18 +336,18 @@ test('FX Anchor Client Test', async function() {
 		// }).rejects.toThrow();
 
 		const quoteFromEstimate = await estimate.getQuote();
-		expect(quoteFromEstimate.quote).toEqual({
+		expect(toJSONSerializable(quoteFromEstimate.quote)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			account: liquidityProvider,
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
-				amount: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				amount: 5n,
+				token: testCurrencyUSD
 			},
 			signed: {
 				...quoteFromEstimate.quote.signed
 			}
-		});
+		}));
 
 		const sendAmount = requestCanonical.affinity === 'from' ? requestCanonical.amount : quoteFromEstimate.quote.convertedAmount;
 		const receiveAmount = requestCanonical.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : requestCanonical.amount;
@@ -359,15 +359,15 @@ test('FX Anchor Client Test', async function() {
 			operations: [
 				{
 					type: KeetaNet.lib.Block.OperationType.SEND,
-					to: liquidityProvider.publicKeyString.get(),
+					to: liquidityProvider,
 					token: requestCanonical.from,
-					amount: sendAmount.toString()
+					amount: sendAmount
 				},
 				{
 					type: KeetaNet.lib.Block.OperationType.RECEIVE,
-					from: liquidityProvider.publicKeyString.get(),
+					from: liquidityProvider,
 					token: requestCanonical.to,
-					amount: receiveAmount.toString(),
+					amount: receiveAmount,
 					exact: true
 				}
 			]
