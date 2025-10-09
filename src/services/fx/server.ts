@@ -19,6 +19,7 @@ import type {
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
+import type { ServiceMetadata } from '../../lib/resolver.js';
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -50,6 +51,10 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	 * Configuration for FX handling
 	 */
 	fx: {
+		/**
+		 * Supported conversions
+		 */
+		from?: NonNullable<ServiceMetadata['services']['fx']>[string]['from'];
 		/**
 		 * Handle the conversion request of one token to another
 		 *
@@ -320,5 +325,22 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		}
 
 		return(routes);
+	}
+
+	/**
+	 * Return the servers endpoints and possible currency conversions metadata
+	 */
+	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
+		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
+			getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
+			getQuote: (new URL('/api/getQuote', this.url)).toString(),
+			createExchange: (new URL('/api/createExchange', this.url)).toString(),
+			getExchangeStatus: (new URL('/api/getExchangeStatus/:id', this.url)).toString()
+		};
+
+		return({
+			from: this.fx.from ?? [],
+			operations: operations
+		});
 	}
 }
