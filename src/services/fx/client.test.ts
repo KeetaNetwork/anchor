@@ -7,7 +7,7 @@ import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 import type { BlockJSONOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
 
-const DEBUG = true;
+const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -46,7 +46,7 @@ test('FX Anchor Client Test', async function() {
 	/**
 	 * Give the liquidity provider some KTA to pay fees
 	 */
-	await client.send(liquidityProvider, 50n, client.baseToken);
+	await client.send(liquidityProvider, 50n, baseToken);
 
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
@@ -307,7 +307,7 @@ test('FX Anchor Client Test', async function() {
 			expectedCost: {
 				min: 5n,
 				max: 5n,
-				token: client.baseToken
+				token: baseToken
 			}
 		}));
 
@@ -325,7 +325,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: client.baseToken
+				token: baseToken
 			},
 			signed: {
 				...quote.quote.signed
@@ -344,7 +344,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: client.baseToken
+				token: baseToken
 			},
 			signed: {
 				...quoteFromEstimate.quote.signed
@@ -410,12 +410,12 @@ test('FX Anchor Client Test', async function() {
 
 		/* Multiply by 2 since we createExchange twice for the same swap */
 		cumulativeEURChange += BigInt(receiveAmount) * 2n;
-		cumulativeUSDChange += (BigInt(sendAmount)) * 2n;
+		cumulativeUSDChange += BigInt(sendAmount) * 2n;
 
 		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
 		const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
 			/* Remove the KTA token balance since it may have changed due to fees */
-			return(!balanceEntry.token.comparePublicKey(client.baseToken));
+			return(!balanceEntry.token.comparePublicKey(baseToken));
 		}
 		const newAccountBalances = (await client.allBalances({ account })).filter(removeBaseTokenBalanceEntry);
 
