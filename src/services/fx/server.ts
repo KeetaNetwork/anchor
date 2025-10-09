@@ -276,8 +276,34 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				});
 			}
 
+			/* Get Expected Amount and Token to Verify Swap */
 			const expectedToken = KeetaNet.lib.Account.fromPublicKeyString(quote.request.from);
-			const expectedAmount = quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount;
+			let expectedAmount = quote.request.affinity === 'from' ? BigInt(quote.request.amount) : BigInt(quote.convertedAmount);
+			/* If cost is required verify the amounts and token. */
+			if (BigInt(quote.cost.amount) > 0) {
+				/* If swap token matches the cost token the add the amount since they should be combined in one block and will be checked in `acceptSwapRequest` */
+				if (expectedToken.comparePublicKey(quote.cost.token)) {
+					expectedAmount += BigInt(quote.cost.amount);
+				/* If token is different then check block operations for matching amount and token */
+				} else {
+					let requestIncludesCost = false;
+					for (const operation of block.operations) {
+						if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
+							const recipientMatches = operation.to.comparePublicKey(quote.account);
+							const tokenMatches = operation.token.comparePublicKey(quote.cost.token);
+							const amountMatches = operation.amount === BigInt(quote.cost.amount);
+							if (recipientMatches && tokenMatches && amountMatches) {
+								requestIncludesCost = true;
+							}
+						}
+					}
+					if (!requestIncludesCost) {
+						throw(new Error('Exchange missing required cost'));
+					}
+				}
+			}
+
+			/* Verify Request and Generate the Accept Swap Block */
 			const swapBlocks = await userClient.acceptSwapRequest({ block, expected: { token: expectedToken, amount: BigInt(expectedAmount) }});
 			const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
 			if (userClient.config.generateFeeBlock !== undefined) {

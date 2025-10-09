@@ -347,9 +347,21 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				receiveAmount = quote.request.amount;
 			}
 
-			const from = { account: this.client.account, token: quote.request.from, amount: sendAmount };
-			const to = { account: liquidityProvider, token: quote.request.to, amount: receiveAmount };
-			swapBlock = await this.client.createSwapRequest({ from, to });
+			/* Construct the required operations for the swap request */
+			const builder = this.client.initBuilder();
+			builder.send(liquidityProvider, sendAmount, quote.request.from);
+			builder.receive(liquidityProvider, receiveAmount, quote.request.to, true);
+
+			/* If cost is required then send the required amount as well */
+			if (quote.cost.amount > 0) {
+				builder.send(liquidityProvider, quote.cost.amount, quote.cost.token);
+			}
+
+			const blocks = await builder.computeBlocks();
+			if (blocks.blocks.length !== 1) {
+				throw(new Error('Creating Swap Generated more than 1 block'));
+			}
+			swapBlock = blocks.blocks[0];
 		}
 
 		if (swapBlock == undefined) {

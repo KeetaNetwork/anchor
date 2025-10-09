@@ -5,8 +5,9 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
+import type { BlockJSONOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
 
-const DEBUG = false;
+const DEBUG = true;
 const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -18,6 +19,7 @@ test('FX Anchor Client Test', async function() {
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const { userClient: client } = await createNodeAndClient(account);
+	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!testCurrencyUSD.isToken()) {
@@ -71,7 +73,7 @@ test('FX Anchor Client Test', async function() {
 					convertedAmount: BigInt(request.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 					cost: {
 						amount: 5n,
-						token: testCurrencyUSD
+						token: baseToken
 					}
 				});
 			}
@@ -305,7 +307,7 @@ test('FX Anchor Client Test', async function() {
 			expectedCost: {
 				min: 5n,
 				max: 5n,
-				token: testCurrencyUSD
+				token: client.baseToken
 			}
 		}));
 
@@ -323,7 +325,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: testCurrencyUSD
+				token: client.baseToken
 			},
 			signed: {
 				...quote.quote.signed
@@ -342,7 +344,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: testCurrencyUSD
+				token: client.baseToken
 			},
 			signed: {
 				...quoteFromEstimate.quote.signed
@@ -352,30 +354,53 @@ test('FX Anchor Client Test', async function() {
 		const sendAmount = requestCanonical.affinity === 'from' ? requestCanonical.amount : quoteFromEstimate.quote.convertedAmount;
 		const receiveAmount = requestCanonical.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : requestCanonical.amount;
 		const headBlock = await client.head();
-		const sendBlock = await (new KeetaNet.lib.Block.Builder({
+		const swapOperations: BlockJSONOperations[] = [
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: liquidityProvider,
+				token: requestCanonical.from,
+				amount: sendAmount
+			},
+			{
+				type: KeetaNet.lib.Block.OperationType.RECEIVE,
+				from: liquidityProvider,
+				token: requestCanonical.to,
+				amount: receiveAmount,
+				exact: true
+			}
+		]
+		const invalidSwapBlockBuilder = new KeetaNet.lib.Block.Builder({
 			account,
 			network: client.network,
 			previous: headBlock ?? KeetaNet.lib.Block.NO_PREVIOUS,
-			operations: [
-				{
-					type: KeetaNet.lib.Block.OperationType.SEND,
-					to: liquidityProvider,
-					token: requestCanonical.from,
-					amount: sendAmount
-				},
-				{
-					type: KeetaNet.lib.Block.OperationType.RECEIVE,
-					from: liquidityProvider,
-					token: requestCanonical.to,
-					amount: receiveAmount,
-					exact: true
-				}
-			]
-		}).seal());
+			operations: swapOperations
+		});
+		const invalidSwapBlock = await invalidSwapBlockBuilder.seal();
+		await expect((async function() {
+			// Missing cost operation so server should reject it
+			await quoteFromEstimate.createExchange(invalidSwapBlock);
+		})).rejects.toThrow();
 
-		const exchangeWithBlock = await quoteFromEstimate.createExchange(sendBlock);
+		const swapRequestBuilder = new KeetaNet.lib.Block.Builder({
+			account,
+			network: client.network,
+			previous: headBlock ?? KeetaNet.lib.Block.NO_PREVIOUS,
+			operations: swapOperations
+		});
+		// Add the cost to the operations
+		swapRequestBuilder.addOperation(
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: liquidityProvider,
+				token: quoteFromEstimate.quote.cost.token,
+				amount: quoteFromEstimate.quote.cost.amount
+			}
+		);
+		const swapRequestBlock = await swapRequestBuilder.seal();
+
+		const exchangeWithBlock = await quoteFromEstimate.createExchange(swapRequestBlock);
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
-		expect(exchangeWithBlock.exchange.exchangeID).toBe(sendBlock.hash.toString());
+		expect(exchangeWithBlock.exchange.exchangeID).toBe(swapRequestBlock.hash.toString());
 
 		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBeDefined();
@@ -385,7 +410,7 @@ test('FX Anchor Client Test', async function() {
 
 		/* Multiply by 2 since we createExchange twice for the same swap */
 		cumulativeEURChange += BigInt(receiveAmount) * 2n;
-		cumulativeUSDChange += BigInt(sendAmount) * 2n;
+		cumulativeUSDChange += (BigInt(sendAmount)) * 2n;
 
 		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
 		const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
