@@ -23,7 +23,7 @@ export type ConversionInput = {
 	 * amount in the currency specified by either `from` or `to`, as
 	 * specified by the `affinity` property.
 	 */
-	amount: string | bigint;
+	amount: bigint;
 	/**
 	 * Indicates whether the amount specified is in terms of the `from`
 	 * currency (i.e., the user has this much) or the `to` currency
