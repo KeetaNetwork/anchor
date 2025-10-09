@@ -2,8 +2,7 @@ import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer } from './utils/buffer.js';
-import { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB, AddressSchema } from '../generated/iso20022.js';
-import * as ASN1 from './utils/asn1.js';
+import { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB, AddressSchema, Address } from '../generated/iso20022.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -53,7 +52,7 @@ test('Sensitive Attributes', async function () {
 		phoneNumber: '+1 555 911 3808'
 	};
 
-	builder1.set(contactDetails);
+	builder1.set(contactDetails, 'contactDetails');
 
 	const attribute = await builder1.build();
 
@@ -61,10 +60,8 @@ test('Sensitive Attributes', async function () {
 	 * Access it with the private key
 	 */
 	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
-	const sensitiveAttribute1Value = await sensitiveAttribute1.get();
-	const sensitiveAttribute1ValueObject = JSON.parse(new TextDecoder().decode(sensitiveAttribute1Value));
-	expect(sensitiveAttribute1Value).toEqual((new Uint8Array([0x54, 0x65, 0x73, 0x74, 0x20, 0x56, 0x61, 0x6c, 0x75, 0x65])).buffer);
-	expect(sensitiveAttribute1ValueObject).toEqual(contactDetails);
+	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue<ContactDetails>('contactDetails');
+	expect(sensitiveAttribute1Value).toEqual(contactDetails);
 
 	/**
 	 * Process the attribute as JSON
@@ -276,8 +273,7 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Decrypt and verify the Address attribute
 	 */
-	const addressAttr = certificate.attributes['address']!.value as InstanceType<typeof Certificates._Testing.SensitiveAttribute>;
-	const address = await addressAttr.getValue('address');
+	const address = await certificate.getValue<Address>('address');
 
 	/*
 	 * Verify address structure and expected values from Rust test
@@ -301,8 +297,7 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Decrypt and verify the ContactDetails attribute
 	 */
-	const contactAttr = certificate.attributes['contactDetails']!.value as InstanceType<typeof Certificates._Testing.SensitiveAttribute>;
-	const contact = await contactAttr.getValue('contactDetails');
+	const contact = await certificate.getValue<ContactDetails>('contactDetails');
 
 	/*
 	 * Verify contact structure and expected values from Rust test
@@ -323,6 +318,7 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Verify proof generation and validation works with Rust-generated certificates
 	 */
+	const addressAttr = certificate.getSensitiveAttribute('address')!;
 	const addressProof = await addressAttr.prove();
 
 	/*
