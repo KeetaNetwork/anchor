@@ -342,7 +342,6 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	 */
 	async get(): Promise<ArrayBuffer> {
 		const decryptedValue = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.encryptedValue));
-
 		return (bufferToArrayBuffer(decryptedValue));
 	}
 
@@ -419,11 +418,17 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return (name);
 }
 
-function encodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: CertificateAttributeValue<NAME>): ArrayBuffer {
+function encodeAttribute<NAME extends CertificateAttributeNames>(
+	name: NAME,
+	value: CertificateAttributeValue<NAME>
+): ArrayBuffer {
+	const schema = CertificateAttributeSchema[name];
 	const fieldNames = CertificateAttributeFieldNames[name];
 
 	let asn1Value;
-	if (fieldNames && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+	if (schema === ASN1.ValidateASN1.IsDate) {
+		asn1Value = value; // value must be a JS Date
+	} else if (fieldNames && typeof value === 'object' && value !== null && !Array.isArray(value)) {
 		asn1Value = fieldNames.map((fieldName, idx) => {
 			const fieldValue = (value as { [key: string]: unknown })[fieldName];
 			if (fieldValue === undefined) return undefined;
@@ -453,7 +458,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
 	if (fieldNames && Array.isArray(decoded)) {
-		const result: Record<string, unknown> = {};
+		const result: { [key: string]: unknown } = {};
 		for (let i = 0; i < fieldNames.length; i++) {
 			const fieldName = fieldNames[i];
 			if (!fieldName) {
@@ -623,8 +628,9 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 				let valueToEncrypt;
 				if (Array.isArray(schema)) {
 					// Complex type - encode to DER
-					// XXX:TODO Fix depth issue
-					// @ts-ignore
+					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
+				} else if (schema === ASN1.ValidateASN1.IsDate) {
+					// Date type - encode to DER
 					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
 				} else {
 					// Simple type - pass raw value

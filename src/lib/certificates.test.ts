@@ -16,21 +16,16 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 	expect(certificate.attributes[attributeName]?.sensitive).toBe(true);
 
 	const attrWithPrivate = certificateWithPrivate.attributes[attributeName]!.value as InstanceType<typeof Certificates._Testing.SensitiveAttribute>;
-	const attr = certificate.attributes[attributeName]!.value as InstanceType<typeof Certificates._Testing.SensitiveAttribute>;
+	const attr = certificate.getSensitiveAttribute(attributeName)!;
 
-	const actualValue = await attrWithPrivate.getValue(attributeName);
+	const actualValue = await attrWithPrivate.getValue<NAME>(attributeName);
 	expect(actualValue).toEqual(expectedValue);
 
 	const proof = await attrWithPrivate.prove();
 	expect(await attr.validateProof(proof)).toBe(true);
 
-	const proofValue = expectedValue instanceof Date
-		? new Date(Buffer.from(proof.value, 'base64').toString('utf-8'))
-		: typeof expectedValue === 'string'
-			? Buffer.from(proof.value, 'base64').toString('utf-8')
-			: await attrWithPrivate.getValue(attributeName);
-
-	expect(proofValue).toEqual(expectedValue);
+	const decodedValue = await attrWithPrivate.getValue<NAME>(attributeName);
+	expect(decodedValue).toEqual(expectedValue);
 
 	await expect(async () => await attr.getValue(attributeName)).rejects.toThrow();
 	await expect(async () => await attr.prove()).rejects.toThrow();
@@ -320,6 +315,9 @@ test('Rust Certificate Interoperability', async function () {
 	 */
 	const addressAttr = certificate.getSensitiveAttribute('address')!;
 	const addressProof = await addressAttr.prove();
+
+	const contactAttr = certificate.getSensitiveAttribute('contactDetails')!;
+	const contactProof = await contactAttr.prove();
 
 	/*
 	 * Validate the proof using the same attribute instance
