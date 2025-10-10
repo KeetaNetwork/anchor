@@ -6,6 +6,8 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 test('FX Server Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const storage = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE, undefined, 0);
+	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
+	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	for (const fxAccount of [account, storage]) {
@@ -15,6 +17,10 @@ test('FX Server Tests', async function() {
 			client: client,
 			quoteSigner: account,
 			fx: {
+				from: [{
+					currencyCodes: [token1.publicKeyString.get()],
+					to: [token2.publicKeyString.get()]
+				}],
 				getConversionRateAndFee: async function() {
 					return({
 						account: fxAccount,
@@ -30,6 +36,20 @@ test('FX Server Tests', async function() {
 
 		await server.start();
 		const url = server.url;
+
+		const serviceMetadata = await server.serviceMetadata();
+		expect(serviceMetadata).toEqual({
+			from: [{
+				currencyCodes: [token1.publicKeyString.get()],
+				to: [token2.publicKeyString.get()]
+			}],
+			operations: {
+				getEstimate: `${url}/api/getEstimate`,
+				getQuote: `${url}/api/getQuote`,
+				createExchange: `${url}/api/createExchange`,
+				getExchangeStatus: `${url}/api/getExchangeStatus/:id`
+			}
+		});
 
 		const testData = [
 			null,
