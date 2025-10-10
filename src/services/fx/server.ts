@@ -1,21 +1,24 @@
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
 import KeetaNet from '@keetanetwork/keetanet-client';
-import { createAssert } from 'typia';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
+import {
+	assertConversionInputCanonicalJSON,
+	assertConversionQuoteJSON
+} from './common.js';
 import type {
-	ConversionInputCanonical,
+	ConversionInputCanonicalJSON,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
-	KeetaFXAnchorQuoteResponse
+	KeetaFXAnchorQuoteJSON,
+	KeetaFXAnchorQuoteResponse,
+	KeetaNetAccount,
+	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
-
-const assertConversionInputCanonical = createAssert<ConversionInputCanonical>();
-const assertConversionQuote = createAssert<KeetaFXAnchorQuote>();
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -28,7 +31,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	 *
 	 * This may be either a function or a KeetaNet Account instance.
 	 */
-	account: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonical) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
+	account: KeetaNetAccount | KeetaNetStorageAccount | ((request: ConversionInputCanonicalJSON) => Promise<KeetaNetAccount | KeetaNetStorageAccount> | KeetaNetAccount | KeetaNetStorageAccount);
 	/**
 	 * Account which can be used to sign transactions
 	 * for the account above (if not supplied the
@@ -36,7 +39,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	 *
 	 * This may be either a function or a KeetaNet Account instance.
 	 */
-	signer?: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonical) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
+	signer?: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonicalJSON) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
 
 	/**
 	 * Account which performs the signing and validation of quotes
@@ -52,7 +55,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 *
 		 * This is used to handle quotes and estimates
 		 */
-		getConversionRateAndFee: (request: ConversionInputCanonical) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
+		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
 	};
 
 	/**
@@ -61,7 +64,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
 };
 
-async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>): Promise<Signing.Signable> {
+async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>): Promise<Signing.Signable> {
 	const retval: Signing.Signable = [
 		unsignedQuote.request.from,
 		unsignedQuote.request.to,
@@ -91,7 +94,7 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuote, 'sign
 	>;
 }
 
-async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'>): Promise<KeetaFXAnchorQuote> {
+async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>): Promise<KeetaFXAnchorQuoteJSON> {
 	const signableQuote = await formatQuoteSignable(unsignedQuote);
 	const signed = await Signing.SignData(signer, signableQuote);
 
@@ -101,22 +104,30 @@ async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuot
 	});
 }
 
-async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuote): Promise<boolean> {
+async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<boolean> {
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
 }
 
-async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonical): Promise<{ signer: Signing.SignableAccount; account: Signing.SignableAccount; }> {
+async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount; }> {
 	const account = KeetaNet.lib.Account.isInstance(config.account) ? config.account : await config.account(request);
 	let signer: Signing.SignableAccount | null = null;
 	if (config.signer !== undefined) {
 		signer = (KeetaNet.lib.Account.isInstance(config.signer) ? config.signer : await config.signer(request)).assertAccount();
 	}
 
+	if (signer === null) {
+		signer = account.assertAccount();
+	}
+
+	if (!account.isAccount() && !account.isStorage()) {
+		throw(new Error('FX Account should be an Account or Storage Account'))
+	}
+
 	return({
-		signer: signer ?? account.assertAccount(),
-		account: account.assertAccount()
+		signer: signer,
+		account: account
 	});
 }
 
@@ -176,11 +187,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('POST data missing request'));
 			}
 
-			const conversion = assertConversionInputCanonical(postData.request);
+			const conversion = assertConversionInputCanonicalJSON(postData.request);
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
 			const estimateResponse: KeetaFXAnchorEstimateResponse = {
 				ok: true,
-				estimate: {
+				estimate: KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 					request: conversion,
 					convertedAmount: rateAndFee.convertedAmount,
 					expectedCost: {
@@ -188,7 +199,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 						max: rateAndFee.cost.amount,
 						token: rateAndFee.cost.token
 					}
-				}
+				})
 			};
 
 			return({
@@ -204,13 +215,13 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('POST data missing request'));
 			}
 
-			const conversion = assertConversionInputCanonical(postData.request);
+			const conversion = assertConversionInputCanonicalJSON(postData.request);
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
 
-			const unsignedQuote: Omit<KeetaFXAnchorQuote, 'signed'> = {
+			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 				request: conversion,
 				...rateAndFee
-			};
+			});
 
 			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote);
 			const quoteResponse: KeetaFXAnchorQuoteResponse = {
@@ -243,7 +254,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('Block was not provided in exchange request'));
 			}
 
-			const quote = assertConversionQuote(request.quote);
+			const quote = assertConversionQuoteJSON(request.quote);
 			const isValidQuote = await verifySignedData(config.quoteSigner, quote);
 			if (!isValidQuote) {
 				throw(new Error('Invalid quote signature'));
