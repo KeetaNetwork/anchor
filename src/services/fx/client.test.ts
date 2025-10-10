@@ -18,6 +18,7 @@ test('FX Anchor Client Test', async function() {
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const { userClient: client } = await createNodeAndClient(account);
+	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!testCurrencyUSD.isToken()) {
@@ -44,7 +45,7 @@ test('FX Anchor Client Test', async function() {
 	/**
 	 * Give the liquidity provider some KTA to pay fees
 	 */
-	await client.send(liquidityProvider, 50n, client.baseToken);
+	await client.send(liquidityProvider, 50n, baseToken);
 
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
@@ -71,7 +72,7 @@ test('FX Anchor Client Test', async function() {
 					convertedAmount: BigInt(request.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 					cost: {
 						amount: 5n,
-						token: testCurrencyUSD
+						token: baseToken
 					}
 				});
 			}
@@ -305,7 +306,7 @@ test('FX Anchor Client Test', async function() {
 			expectedCost: {
 				min: 5n,
 				max: 5n,
-				token: testCurrencyUSD
+				token: baseToken
 			}
 		}));
 
@@ -323,7 +324,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: testCurrencyUSD
+				token: baseToken
 			},
 			signed: {
 				...quote.quote.signed
@@ -342,7 +343,7 @@ test('FX Anchor Client Test', async function() {
 			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
 				amount: 5n,
-				token: testCurrencyUSD
+				token: baseToken
 			},
 			signed: {
 				...quoteFromEstimate.quote.signed
@@ -352,7 +353,7 @@ test('FX Anchor Client Test', async function() {
 		const sendAmount = requestCanonical.affinity === 'from' ? requestCanonical.amount : quoteFromEstimate.quote.convertedAmount;
 		const receiveAmount = requestCanonical.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : requestCanonical.amount;
 		const headBlock = await client.head();
-		const sendBlock = await (new KeetaNet.lib.Block.Builder({
+		const swapBlockBuilder = new KeetaNet.lib.Block.Builder({
 			account,
 			network: client.network,
 			previous: headBlock ?? KeetaNet.lib.Block.NO_PREVIOUS,
@@ -371,11 +372,29 @@ test('FX Anchor Client Test', async function() {
 					exact: true
 				}
 			]
-		}).seal());
+		});
 
-		const exchangeWithBlock = await quoteFromEstimate.createExchange(sendBlock);
+		const invalidSwapBlock = await swapBlockBuilder.seal();
+		await expect((async function() {
+			// Missing cost operation so server should reject it
+			await quoteFromEstimate.createExchange(invalidSwapBlock);
+		})).rejects.toThrow();
+
+		swapBlockBuilder.unseal();
+		// Add the cost to the operations
+		swapBlockBuilder.addOperation(
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: liquidityProvider,
+				token: quoteFromEstimate.quote.cost.token,
+				amount: quoteFromEstimate.quote.cost.amount
+			}
+		);
+		const swapRequestBlock = await swapBlockBuilder.seal();
+
+		const exchangeWithBlock = await quoteFromEstimate.createExchange(swapRequestBlock);
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
-		expect(exchangeWithBlock.exchange.exchangeID).toBe(sendBlock.hash.toString());
+		expect(exchangeWithBlock.exchange.exchangeID).toBe(swapRequestBlock.hash.toString());
 
 		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBeDefined();
@@ -390,7 +409,7 @@ test('FX Anchor Client Test', async function() {
 		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
 		const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
 			/* Remove the KTA token balance since it may have changed due to fees */
-			return(!balanceEntry.token.comparePublicKey(client.baseToken));
+			return(!balanceEntry.token.comparePublicKey(baseToken));
 		}
 		const newAccountBalances = (await client.allBalances({ account })).filter(removeBaseTokenBalanceEntry);
 
