@@ -186,7 +186,7 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 				} else {
 					// XXX:TODO Fix depth issue
 					// @ts-ignore
-					const value = await trustedCertificate.attributes['fullName'].value;
+					const value = await trustedCertificate.getValue('fullName');
 					fullName = Buffer.from(value).toString('utf-8');
 				}
 			} else {
