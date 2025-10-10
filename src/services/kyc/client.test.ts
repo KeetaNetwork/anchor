@@ -178,11 +178,14 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 			if ('fullName' in trustedCertificate.attributes) {
 				if (trustedCertificate.attributes['fullName'].sensitive) {
 					try {
-						fullName = 'SENSITIVE: ' + await trustedCertificate.attributes['fullName'].value.getValue('fullName');
+						const result = await trustedCertificate.attributes['fullName'].value.getValue('fullName');
+						fullName = 'SENSITIVE: ' + result;
 					} catch {
 						fullName = 'SENSITIVE (unable to retrieve)';
 					}
 				} else {
+					// XXX:TODO Fix depth issue
+					// @ts-ignore
 					const value = await trustedCertificate.attributes['fullName'].value;
 					fullName = Buffer.from(value).toString('utf-8');
 				}

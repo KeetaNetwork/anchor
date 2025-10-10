@@ -2,7 +2,7 @@ import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer } from './utils/buffer.js';
-import { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB, AddressSchema, Address } from '../generated/iso20022.js';
+import type { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB } from '../generated/iso20022.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -15,16 +15,27 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 	expect(certificateWithPrivate.attributes[attributeName]?.sensitive).toBe(true);
 	expect(certificate.attributes[attributeName]?.sensitive).toBe(true);
 
-	const attrWithPrivate = certificateWithPrivate.attributes[attributeName]!.value as InstanceType<typeof Certificates._Testing.SensitiveAttribute>;
-	const attr = certificate.getSensitiveAttribute(attributeName)!;
+	if (!certificateWithPrivate.attributes[attributeName]) {
+		throw(new Error(`Attribute ${attributeName} not found`));
+	}
 
-	const actualValue = await attrWithPrivate.getValue<NAME>(attributeName);
+	const attrWithPrivate = certificateWithPrivate.getSensitiveAttribute(attributeName);
+	if (!attrWithPrivate) {
+		throw(new Error(`Attribute ${attributeName} not found`));
+	}
+
+	const attr = certificate.getSensitiveAttribute(attributeName);
+	if (!attr) {
+		throw(new Error(`Attribute ${attributeName} not found`));
+	}
+
+	const actualValue = await attrWithPrivate.getValue(attributeName);
 	expect(actualValue).toEqual(expectedValue);
 
 	const proof = await attrWithPrivate.prove();
 	expect(await attr.validateProof(proof)).toBe(true);
 
-	const decodedValue = await attrWithPrivate.getValue<NAME>(attributeName);
+	const decodedValue = await attrWithPrivate.getValue(attributeName);
 	expect(decodedValue).toEqual(expectedValue);
 
 	await expect(async () => await attr.getValue(attributeName)).rejects.toThrow();
@@ -35,7 +46,7 @@ const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E
 const testAccount1 = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
 const testAccount2 = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
 
-test('Sensitive Attributes', async function () {
+test('Sensitive Attributes', async function() {
 	/*
 	 * Build a sensitive attribute with a test value from the users public key
 	 */
@@ -55,7 +66,7 @@ test('Sensitive Attributes', async function () {
 	 * Access it with the private key
 	 */
 	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
-	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue<ContactDetails>('contactDetails');
+	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue('contactDetails');
 	expect(sensitiveAttribute1Value).toEqual(contactDetails);
 
 	/**
@@ -64,7 +75,7 @@ test('Sensitive Attributes', async function () {
 	const attributeJSON = sensitiveAttribute1.toJSON();
 	expect(JSON.parse(JSON.stringify(attributeJSON))).toEqual(attributeJSON);
 	if (typeof attributeJSON !== 'object' || attributeJSON === null) {
-		throw (new Error('Expected JSON object'));
+		throw(new Error('Expected JSON object'));
 	}
 	expect(Object.keys(attributeJSON)).toContain('version');
 	expect(Object.keys(attributeJSON)).toContain('cipher');
@@ -86,8 +97,8 @@ test('Sensitive Attributes', async function () {
 	 * Attempt to access it with the wrong private key
 	 */
 	const sensitiveAttribute3 = new Certificates._Testing.SensitiveAttribute(testAccount2, attribute);
-	await expect(async function () {
-		return (await sensitiveAttribute3.prove());
+	await expect(async function() {
+		return(await sensitiveAttribute3.prove());
 	}).rejects.toThrow();
 
 	/*
@@ -115,7 +126,7 @@ test('Sensitive Attributes', async function () {
 	expect(await sensitiveAttribute4.validateProof(sensitiveAttribute1Proof)).toBe(false);
 });
 
-test('Certificates', async function () {
+test('Certificates', async function() {
 	/*
 	 * Build a certificate with a test value from the users public key
 	 */
@@ -187,11 +198,11 @@ test('Certificates', async function () {
 		expect(certificate.attributes['fullName']?.sensitive).toBe(true);
 		expect(certificateWithPrivate.attributes['fullName']?.sensitive).toBe(true);
 		if (!certificateWithPrivate.attributes['fullName']?.sensitive || !certificate.attributes['fullName']?.sensitive) {
-			throw (new Error('internal error: Expected sensitive attribute'));
+			throw(new Error('internal error: Expected sensitive attribute'));
 		}
 
 		/*
-		 * Verify all sensitive attributes using the helper function
+		 * Verify all sensitive attributes
 		 */
 		await verifyAttribute(
 			certificateWithPrivate,
@@ -230,7 +241,7 @@ test('Certificates', async function () {
 	}
 });
 
-test('Rust Certificate Interoperability', async function () {
+test('Rust Certificate Interoperability', async function() {
 	/*
 	 * Certificate DER from anchor-rs
 	 * This certificate contains encrypted Address and ContactDetails attributes
@@ -268,7 +279,7 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Decrypt and verify the Address attribute
 	 */
-	const address = await certificate.getValue<Address>('address');
+	const address = await certificate.getValue('address');
 
 	/*
 	 * Verify address structure and expected values from Rust test
@@ -292,7 +303,7 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Decrypt and verify the ContactDetails attribute
 	 */
-	const contact = await certificate.getValue<ContactDetails>('contactDetails');
+	const contact = await certificate.getValue('contactDetails');
 
 	/*
 	 * Verify contact structure and expected values from Rust test
@@ -313,16 +324,19 @@ test('Rust Certificate Interoperability', async function () {
 	/*
 	 * Verify proof generation and validation works with Rust-generated certificates
 	 */
-	const addressAttr = certificate.getSensitiveAttribute('address')!;
+	const addressAttr = certificate.getSensitiveAttribute('address');
+	if (!addressAttr) {
+		throw(new Error('Expected address attribute'));
+	}
+
 	const addressProof = await addressAttr.prove();
-
-	const contactAttr = certificate.getSensitiveAttribute('contactDetails')!;
-	const contactProof = await contactAttr.prove();
-
-	/*
-	 * Validate the proof using the same attribute instance
-	 * The validateProof method only uses the public key and hashed value,
-	 * so it works even if the validator does not have the private key
-	 */
 	expect(await addressAttr.validateProof(addressProof)).toBe(true);
+
+	const contactAttr = certificate.getSensitiveAttribute('contactDetails');
+	if (!contactAttr) {
+		throw(new Error('Expected contactDetails attribute'));
+	}
+
+	const contactProof = await contactAttr.prove();
+	expect(await contactAttr.validateProof(contactProof)).toBe(true);
 });

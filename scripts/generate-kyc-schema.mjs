@@ -25,13 +25,13 @@ const toSnakeCase = str => str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(
 // --- Type Resolution ---
 function resolveTypeReference(typeName) {
 	if (typeName.startsWith('SEQUENCE OF ')) {
-		return `${resolveTypeReference(typeName.substring('SEQUENCE OF '.length).trim())}[]`;
+		return`${resolveTypeReference(typeName.substring('SEQUENCE OF '.length).trim())}[]`;
 	}
 	switch (typeName.trim()) {
 		case 'UTF8String':
-		case 'Utf8String': return 'string';
-		case 'GeneralizedTime': return 'Date';
-		case 'ENUMERATED': return 'string';
+		case 'Utf8String': return'string';
+		case 'GeneralizedTime': return'Date';
+		case 'ENUMERATED': return'string';
 		default: return toPascalCase(typeName);
 	}
 }
@@ -67,14 +67,14 @@ function isSequenceOfChoice(config) {
 }
 
 function getPrimitiveType(type) {
-	if (type === 'UTF8String' || type === 'Utf8String') return 'string';
-	if (type === 'GeneralizedTime') return 'date';
-	return 'string';
+	if (type === 'UTF8String' || type === 'Utf8String') return'string';
+	if (type === 'GeneralizedTime') return'date';
+	return'string';
 }
 
 // --- Output Generators ---
 function genHeader(comment) {
-	return [
+	return[
 		'/**',
 		` * ${comment}`,
 		' * This file is auto-generated from oids.json.',
@@ -84,18 +84,18 @@ function genHeader(comment) {
 }
 
 function genTypeAlias(name, type, description, oid) {
-	return `/** ${description} */\n/** OID: ${oid} */\nexport type ${name} = ${type};\n`;
+	return`/** ${description} */\n/** OID: ${oid} */\nexport type ${name} = ${type};\n`;
 }
 
 function genEnumType(name, values, description, oid) {
-	return `/** ${description} */\n/** OID: ${oid} */\nexport type ${name} = ${values.map(v => `'${v}'`).join(' | ')};\n`;
+	return`/** ${description} */\n/** OID: ${oid} */\nexport type ${name} = ${values.map(v => `'${v}'`).join(' | ')};\n`;
 }
 
 function genInterface(name, fields, description, oid) {
 	const fieldLines = Object.entries(fields).map(([fname, fcfg]) =>
-		`    ${fname}${fcfg.optional ? '?' : ''}: ${resolveTypeReference(fcfg.type)};`
+		`	${fname}${fcfg.optional ? '?' : ''}: ${resolveTypeReference(fcfg.type)};`
 	);
-	return `/** ${description} */\n/** OID: ${oid} */\nexport interface ${name} {\n${fieldLines.join('\n')}\n}\n`;
+	return`/** ${description} */\n/** OID: ${oid} */\nexport interface ${name} {\n${fieldLines.join('\n')}\n}\n`;
 }
 
 function genSequenceOfChoice(name, config) {
@@ -105,7 +105,7 @@ function genSequenceOfChoice(name, config) {
 	const choiceTypes = choiceEntries.map(([fieldName, fieldConfig], idx) => {
 		const fieldType = resolveTypeReference(fieldConfig.type);
 		const choiceTypeName = `${typeName}${toPascalCase(fieldName)}Choice`;
-		return {
+		return{
 			code: `export interface ${choiceTypeName} {\n\ttag: ${idx};\n\tname: '${fieldName}';\n\tvalue: ${fieldType};\n}\n`,
 			name: choiceTypeName
 		};
@@ -121,8 +121,7 @@ function genSequenceOfChoice(name, config) {
 	// ASN.1 schema
 	out += `export const ${typeName}Schema: ASN1.Schema = {\n\tsequenceOf: {\n\t\tchoice: [\n`;
 	out += choiceEntries.map(([fieldName, fieldConfig], idx) => {
-		// You may want to improve validator resolution here
-		return `\t\t\t{ type: 'context', kind: 'explicit', value: ${idx}, contains: { type: 'string', kind: 'utf8' } }`;
+		return`\t\t\t{ type: 'context', kind: 'explicit', value: ${idx}, contains: { type: 'string', kind: 'utf8' }}`;
 	}).join(',\n');
 	out += `\n\t\t]\n\t}\n} as const satisfies ASN1.Schema;\n\n`;
 	// Field names array
@@ -154,14 +153,14 @@ function generateOidConstants() {
 	lines.push('// Keeta-specific OID constants');
 	lines.push('export namespace keeta {');
 	for (const [name, config] of Object.entries(oidSchema.extensions)) {
-		lines.push(`    /** ${config.description} */`);
-		lines.push(`    /** @see ${config.reference} */`);
-		lines.push(`    export const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		lines.push(`	/** ${config.description} */`);
+		lines.push(`	/** @see ${config.reference} */`);
+		lines.push(`	export const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
 	}
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
-		lines.push(`    /** ${config.description} */`);
-		lines.push(`    /** @see ${config.reference} */`);
-		lines.push(`    export const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		lines.push(`	/** ${config.description} */`);
+		lines.push(`	/** @see ${config.reference} */`);
+		lines.push(`	export const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
 	}
 	lines.push('}');
 	lines.push('');
@@ -170,19 +169,19 @@ function generateOidConstants() {
 	lines.push('// OID to name lookup maps');
 	lines.push('export const OID_TO_NAME: Record<string, string> = {');
 	for (const [name, config] of Object.entries(oidSchema.plain_attributes)) {
-		lines.push(`    '${oidArrayToString(config.oid)}': '${name}',`);
+		lines.push(`	'${oidArrayToString(config.oid)}': '${name}',`);
 	}
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${oidArrayToString(config.oid)}': '${name}',`);
+		lines.push(`	'${oidArrayToString(config.oid)}': '${name}',`);
 	}
 	lines.push('};');
 	lines.push('');
 	lines.push('export const NAME_TO_OID: Record<string, string> = {');
 	for (const [name, config] of Object.entries(oidSchema.plain_attributes)) {
-		lines.push(`    '${name}': '${oidArrayToString(config.oid)}',`);
+		lines.push(`	'${name}': '${oidArrayToString(config.oid)}',`);
 	}
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${name}': '${oidArrayToString(config.oid)}',`);
+		lines.push(`	'${name}': '${oidArrayToString(config.oid)}',`);
 	}
 	lines.push('};');
 	lines.push('');
@@ -198,13 +197,12 @@ function genSequenceSchema(typeName, fields, config) {
 
 		// Resolve to base type to handle aliases
 		const baseType = resolveToBaseType(fcfg.type);
-
 		// Check if field type is GeneralizedTime (date)
 		if (baseType === 'GeneralizedTime') {
 			if (fcfg.optional) {
-				return `{ optional: { type: 'context', kind: 'explicit', value: ${idx}, contains: ASN1.ValidateASN1.IsDate } }`;
+				return`{ optional: { type: 'context', kind: 'explicit', value: ${idx}, contains: ASN1.ValidateASN1.IsDate }}`;
 			} else {
-				return `{ type: 'context', kind: 'explicit', value: ${idx}, contains: ASN1.ValidateASN1.IsDate }`;
+				return`{ type: 'context', kind: 'explicit', value: ${idx}, contains: ASN1.ValidateASN1.IsDate }`;
 			}
 		}
 
@@ -213,6 +211,7 @@ function genSequenceSchema(typeName, fields, config) {
 		if (fieldType.startsWith('SEQUENCE OF ')) {
 			fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
 		}
+
 		fieldType = fieldType.replace(/\[\]$/, '');
 
 		const fieldTypePascal = toPascalCase(fieldType);
@@ -239,13 +238,13 @@ function genSequenceSchema(typeName, fields, config) {
 		}
 
 		if (fcfg.optional) {
-			return `{ optional: { type: 'context', kind: 'explicit', value: ${idx}, contains: ${contains} } }`;
+			return`{ optional: { type: 'context', kind: 'explicit', value: ${idx}, contains: ${contains}}}`;
 		} else {
-			return `{ type: 'context', kind: 'explicit', value: ${idx}, contains: ${contains} }`;
+			return`{ type: 'context', kind: 'explicit', value: ${idx}, contains: ${contains}}`;
 		}
 	}).filter(Boolean);
 
-	return `export const ${typeName}Schema: ASN1.Schema = [\n    ${schemaFields.join(',\n    ')}\n] as const satisfies ASN1.Schema;`;
+	return`export const ${typeName}Schema: ASN1.Schema = [\n	${schemaFields.join(',\n	')}\n] as const satisfies ASN1.Schema;`;
 }
 
 function generateIso20022Types() {
@@ -318,7 +317,7 @@ function generateIso20022Types() {
 		if (config.choices) {
 			const choiceSchemas = Object.values(config.choices).map(choice => {
 				const choiceTypeName = toPascalCase(choice.type.trim());
-				return `${choiceTypeName}Schema`;
+				return`${choiceTypeName}Schema`;
 			});
 			lines.push(`/** ASN.1 schema for ${typeName} */`);
 			lines.push(`export const ${typeName}Schema: ASN1.Schema = {`);
@@ -351,7 +350,7 @@ function generateIso20022Types() {
 			for (const [fieldName, fieldConfig] of Object.entries(config.fields)) {
 				const optional = fieldConfig.optional ? '?' : '';
 				const resolvedType = resolveTypeReference(fieldConfig.type);
-				lines.push(`    ${fieldName}${optional}: ${resolvedType};`);
+				lines.push(`	${fieldName}${optional}: ${resolvedType};`);
 			}
 			lines.push('}');
 			lines.push('');
@@ -388,12 +387,12 @@ function generateIso20022Types() {
 	// Union type, value map, helper generic
 	lines.push('/** Union type of all sensitive attribute types */');
 	lines.push('export type SensitiveAttributeType =');
-	lines.push(Object.keys(oidSchema.sensitive_attributes).map(name => `    | ${toPascalCase(name)}`).join('\n') + ';');
+	lines.push(Object.keys(oidSchema.sensitive_attributes).map(name => `	| ${toPascalCase(name)}`).join('\n') + ';');
 	lines.push('');
 	lines.push('/** Map of attribute name to acceptable input type for CertificateBuilder.setAttribute */');
 	lines.push('export interface CertificateAttributeValueMap {');
 	for (const [name] of Object.entries(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${name}': ${toPascalCase(name)};`);
+		lines.push(`	'${name}': ${toPascalCase(name)};`);
 	}
 	lines.push('}');
 	lines.push('');
@@ -414,7 +413,7 @@ function generateIso20022Types() {
 	// OID DB
 	lines.push('export const CertificateAttributeOIDDB = {');
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${name}': '${oidArrayToString(config.oid)}',`);
+		lines.push(`	'${name}': '${oidArrayToString(config.oid)}',`);
 	}
 	lines.push('} as const;');
 	lines.push('');
@@ -422,7 +421,7 @@ function generateIso20022Types() {
 	// Sensitive attribute list
 	lines.push('export const SENSITIVE_CERTIFICATE_ATTRIBUTES = [');
 	for (const name of Object.keys(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${name}',`);
+		lines.push(`	'${name}',`);
 	}
 	lines.push('] as const;');
 	lines.push('');
@@ -433,7 +432,7 @@ function generateIso20022Types() {
 	// PascalCase names
 	lines.push('export const SensitiveCertificateAttributeNames = [');
 	for (const name of Object.keys(oidSchema.sensitive_attributes)) {
-		lines.push(`    '${toPascalCase(name)}',`);
+		lines.push(`	'${toPascalCase(name)}',`);
 	}
 	lines.push('] as const;');
 	lines.push('');
@@ -443,7 +442,7 @@ function generateIso20022Types() {
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
 		if (config.fields) {
 			const typeName = toPascalCase(name);
-			lines.push(`    '${name}': ${typeName}Fields,`);
+			lines.push(`	'${name}': ${typeName}Fields,`);
 		}
 	}
 	lines.push('} as const;');
@@ -466,7 +465,7 @@ function generateIso20022Types() {
 				schemaRef = `{ type: 'string', kind: 'utf8' }`;
 			}
 		}
-		lines.push(`    '${name}': ${schemaRef},`);
+		lines.push(`	'${name}': ${schemaRef},`);
 	}
 	lines.push('} as const;');
 

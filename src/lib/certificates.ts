@@ -1,11 +1,12 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../generated/oids.js';
 import * as ASN1 from './utils/asn1.js';
-import { ASN1AnyJS } from './utils/asn1.js';
+import type { ASN1AnyJS } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, SensitiveAttributeType, CertificateAttributeValue, SENSITIVE_CERTIFICATE_ATTRIBUTES, CertificateAttributeFieldNames } from '../generated/iso20022.js';
+import type { SensitiveAttributeType, CertificateAttributeValue } from '../generated/iso20022.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema, SENSITIVE_CERTIFICATE_ATTRIBUTES, CertificateAttributeFieldNames } from '../generated/iso20022.js';
 
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -22,32 +23,32 @@ function getOID(name: string, oidDB: { [name: string]: string }) {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const oid = oidDB[name as keyof typeof oidDB];
 		if (oid === undefined) {
-			throw (new Error('internal error: OID was undefined'));
+			throw(new Error('internal error: OID was undefined'));
 		}
 
-		return (oid);
+		return(oid);
 	} else {
-		throw (new Error('Unknown algorithm'));
+		throw(new Error('Unknown algorithm'));
 	}
 }
 
 function lookupByOID(oid: string, oidDB: { [name: string]: string }) {
 	for (const [key, value] of Object.entries(oidDB)) {
 		if (key === oid) {
-			return (key);
+			return(key);
 		}
 
 		if (value === oid) {
-			return (key);
+			return(key);
 		}
 	}
 
-	throw (new Error(`Unknown OID: ${oid}`));
+	throw(new Error(`Unknown OID: ${oid}`));
 }
 /* -----END MOVE TO NODE AND ASN1NAPIRS----- */
 
 function toJSON(data: unknown): unknown {
-	const retval: unknown = JSON.parse(JSON.stringify(data, function (key, convertedValue: unknown) {
+	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue: unknown) {
 		// XXX:TODO Fix no-unsafe-member-access
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 		const value: unknown = this[key];
@@ -64,23 +65,23 @@ function toJSON(data: unknown): unknown {
 					// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 					const publicKeyString: unknown = value.publicKeyString.get();
 					if (typeof publicKeyString === 'string') {
-						return (publicKeyString);
+						return(publicKeyString);
 					}
 				}
 			}
 		}
 
 		if (Buffer.isBuffer(value)) {
-			return (value.toString('base64'));
+			return(value.toString('base64'));
 		}
 		if (typeof value === 'bigint') {
-			return (value.toString());
+			return(value.toString());
 		}
 
-		return (convertedValue);
+		return(convertedValue);
 	}));
 
-	return (retval);
+	return(retval);
 }
 
 /**
@@ -122,19 +123,19 @@ const SensitiveAttributeSchemaInternal: [
 	],
 	encryptedValue: typeof ASN1.ValidateASN1.IsOctetString
 ] = [
-		0n,
-		[
-			ASN1.ValidateASN1.IsOID,
-			ASN1.ValidateASN1.IsOctetString,
-			ASN1.ValidateASN1.IsOctetString
-		],
-		[
-			ASN1.ValidateASN1.IsOctetString,
-			ASN1.ValidateASN1.IsOID,
-			ASN1.ValidateASN1.IsOctetString
-		],
+	0n,
+	[
+		ASN1.ValidateASN1.IsOID,
+		ASN1.ValidateASN1.IsOctetString,
 		ASN1.ValidateASN1.IsOctetString
-	];
+	],
+	[
+		ASN1.ValidateASN1.IsOctetString,
+		ASN1.ValidateASN1.IsOID,
+		ASN1.ValidateASN1.IsOctetString
+	],
+	ASN1.ValidateASN1.IsOctetString
+];
 
 /**
  * The Sensitive Attribute Schema
@@ -156,6 +157,122 @@ const sensitiveAttributeOIDDB = {
 	'aes256-cbc': oids.AES_256_CBC
 };
 
+function assertCertificateAttributeNames(name: string): asserts name is CertificateAttributeNames {
+	if (!(name in CertificateAttributeOIDDB)) {
+		throw(new Error(`Unknown attribute name: ${name}`));
+	}
+}
+
+function asCertificateAttributeNames(name: string): CertificateAttributeNames {
+	assertCertificateAttributeNames(name);
+	return(name);
+}
+
+function encodeAttribute<NAME extends CertificateAttributeNames>(
+	name: NAME,
+	value: CertificateAttributeValue<NAME>
+): ArrayBuffer {
+	const schema = CertificateAttributeSchema[name];
+	const fieldNames = CertificateAttributeFieldNames[name];
+
+	let asn1Value: ASN1AnyJS;
+	if (schema === ASN1.ValidateASN1.IsDate) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		asn1Value = value as Date;
+	} else if (fieldNames && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+		// Convert structured object to ASN.1 sequence
+		const mappedFields = fieldNames.map((fieldName, idx) => {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const fieldValue = (value as { [key: string]: unknown })[fieldName];
+			if (fieldValue === undefined) {
+				return(undefined);
+			}
+			return({
+				type: 'context' as const,
+				kind: 'explicit' as const,
+				value: idx,
+				contains: fieldValue
+			});
+		}).filter((v): v is NonNullable<typeof v> => v !== undefined);
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		asn1Value = mappedFields as ASN1AnyJS;
+	} else {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		asn1Value = value as ASN1AnyJS;
+	}
+
+	const asn1 = ASN1.JStoASN1(asn1Value);
+	return(asn1.toBER(false));
+}
+
+// XXX:TODO Fix depth issue
+// @ts-ignore
+async function decodeAttribute<NAME extends CertificateAttributeNames>(
+	name: NAME,
+	value: ArrayBuffer
+): Promise<ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>> {
+	const schema = CertificateAttributeSchema[name];
+	const decoded = new ASN1.BufferStorageASN1(value, schema).getASN1();
+
+	const fieldNames = CertificateAttributeFieldNames[name];
+	// XXX:TODO Fix depth issue
+	// @ts-ignore
+	if (fieldNames && Array.isArray(decoded)) {
+		const result: { [key: string]: unknown } = {};
+		for (let i = 0; i < fieldNames.length; i++) {
+			const fieldName = fieldNames[i];
+			if (!fieldName || decoded[i] === undefined) {
+				continue;
+			}
+
+			// XXX:TODO Fix no-unsafe-assignment
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			const fieldValue = decoded[i];
+			if (fieldValue === undefined) {
+				continue;
+			}
+
+			// Type guard: skip if it's an Error
+			if (fieldValue instanceof Error) {
+				throw(new Error(`Field ${fieldName} contains an error: ${fieldValue.message}`));
+			}
+
+			if (fieldValue !== undefined) {
+				if (
+					typeof fieldValue === 'object' && fieldValue !== null &&
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					'type' in fieldValue && fieldValue.type === 'context' &&
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					'contains' in fieldValue && typeof fieldValue.contains === 'object' && fieldValue.contains !== null &&
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					'value' in fieldValue.contains
+				) {
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					result[fieldName] = fieldValue.contains.value;
+				} else if (typeof fieldValue === 'object' && 'value' in fieldValue) {
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+					result[fieldName] = fieldValue.value;
+				} else {
+					result[fieldName] = fieldValue;
+				}
+			}
+		}
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
+		return(result as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>);
+	}
+
+	// For simple types, extract value from ASN.1 wrapper
+	if (typeof decoded === 'object' && decoded !== null && 'value' in decoded) {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+		return(decoded.value);
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
+	return(decoded as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>);
+}
+
 class SensitiveAttributeBuilder {
 	readonly #account: KeetaNetAccount;
 	#value: Buffer | undefined;
@@ -176,18 +293,18 @@ class SensitiveAttributeBuilder {
 			const asn1 = ASN1.JStoASN1({ type: 'date', kind: 'general', date: value });
 			this.#value = arrayBufferToBuffer(asn1.toBER(false));
 		} else if (typeof value === 'object' && value !== null) {
-			if (!attributeName) throw new Error('attributeName required for complex types');
+			if (!attributeName) {throw(new Error('attributeName required for complex types'));}
 			const encoded = encodeAttribute(attributeName, value);
 			this.#value = arrayBufferToBuffer(encoded);
 		} else {
 			this.#value = Buffer.from(String(value), 'utf-8');
 		}
-		return this;
+		return(this);
 	}
 
 	async build() {
 		if (this.#value === undefined) {
-			throw (new Error('Value not set'));
+			throw(new Error('Value not set'));
 		}
 
 		const salt = crypto.randomBytes(32);
@@ -209,16 +326,17 @@ class SensitiveAttributeBuilder {
 			 * For AES-GCM, the last 16 bytes are the authentication tag
 			 */
 			if (cipher === 'aes-256-gcm') {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				const maybeGcm = cipherObject as unknown as { getAuthTag?: () => Buffer };
 				if (typeof maybeGcm.getAuthTag === 'function') {
 					const authTag = maybeGcm.getAuthTag();
 					retval = Buffer.concat([retval, authTag]);
 				} else {
-					throw new Error('getAuthTag is not available on cipherObject');
+					throw(new Error('getAuthTag is not available on cipherObject'));
 				}
 			}
 
-			return (retval);
+			return(retval);
 		}
 
 		const encryptedValue = encrypt(this.#value);
@@ -254,19 +372,17 @@ class SensitiveAttributeBuilder {
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
 
 		const retval = encodedAttributeObject.toBER();
-		return (retval);
+		return(retval);
 	}
 }
 
-class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
+class SensitiveAttribute {
 	readonly #account: KeetaNetAccount;
 	readonly #info: ReturnType<SensitiveAttribute['decode']>;
-	readonly #schema?: SCHEMA | undefined;
 
-	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer, schema?: SCHEMA) {
+	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer) {
 		this.#account = account;
 		this.#info = this.decode(data);
-		this.#schema = schema;
 	}
 
 	private decode(data: Buffer | ArrayBuffer) {
@@ -279,10 +395,10 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 
 		const decodedVersion = decodedAttribute[0] + 1n;
 		if (decodedVersion !== 1n) {
-			throw (new Error(`Unsupported Sensitive Attribute version (${decodedVersion})`));
+			throw(new Error(`Unsupported Sensitive Attribute version (${decodedVersion})`));
 		}
 
-		return ({
+		return({
 			version: decodedVersion,
 			publicKey: this.#account.publicKeyString.get(),
 			cipher: {
@@ -312,23 +428,24 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 			const ciphertext = value.subarray(0, value.length - 16);
 
 			// Type guard for setAuthTag
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const maybeGcm = cipher as unknown as { setAuthTag?: (tag: Buffer) => void };
 			if (typeof maybeGcm.setAuthTag === 'function') {
 				maybeGcm.setAuthTag(authTag);
 			} else {
-				throw new Error('setAuthTag is not available on cipher');
+				throw(new Error('setAuthTag is not available on cipher'));
 			}
 
 			const decrypted = cipher.update(ciphertext);
 
 			cipher.final(); // Verify auth tag
-			return decrypted;
+			return(decrypted);
 		}
 
 		// For other algorithms (like CBC), just decrypt normally
 		const decryptedValue = cipher.update(value);
 		cipher.final();
-		return (decryptedValue);
+		return(decryptedValue);
 	}
 
 	/**
@@ -342,16 +459,18 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	 */
 	async get(): Promise<ArrayBuffer> {
 		const decryptedValue = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.encryptedValue));
-		return (bufferToArrayBuffer(decryptedValue));
+		return(bufferToArrayBuffer(decryptedValue));
 	}
 
-	async getValue<T = any>(attributeName: CertificateAttributeNames): Promise<T> {
+	async getValue<NAME extends CertificateAttributeNames>(
+		attributeName: NAME
+	): Promise<CertificateAttributeValue<NAME>> {
 		const value = await this.get();
-		const schema = CertificateAttributeSchema[attributeName];
 
 		// XXX:TODO Fix depth issue
 		// @ts-ignore
-		return await decodeAttribute(attributeName, value) as T;
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
+		return(await decodeAttribute(attributeName, value) as T);
 	}
 
 	/**
@@ -359,11 +478,11 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 	 * which can be validated by a third party using the certificate
 	 * and the `validateProof` method
 	 */
-	async prove(): Promise<{ value: string; hash: { salt: string } }> {
+	async prove(): Promise<{ value: string; hash: { salt: string }}> {
 		const value = await this.get();
 		const salt = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.hashedValue.encryptedSalt));
 
-		return ({
+		return({
 			value: Buffer.from(value).toString('base64'),
 			hash: {
 				salt: salt.toString('base64')
@@ -385,11 +504,11 @@ class SensitiveAttribute<SCHEMA extends ASN1.Schema | undefined = undefined> {
 		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(hashInput);
 		const hashedAndSaltedValueBuffer = Buffer.from(hashedAndSaltedValue);
 
-		return (this.#info.hashedValue.value.equals(hashedAndSaltedValueBuffer));
+		return(this.#info.hashedValue.value.equals(hashedAndSaltedValueBuffer));
 	}
 
 	toJSON(): unknown/* XXX:TODO */ {
-		return (toJSON(this.#info));
+		return(toJSON(this.#info));
 	}
 }
 
@@ -406,96 +525,6 @@ type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'iss
 	 */
 	subject: BaseCertificateBuilderParams['subjectPublicKey'];
 }>;
-
-function assertCertificateAttributeNames(name: string): asserts name is CertificateAttributeNames {
-	if (!(name in CertificateAttributeOIDDB)) {
-		throw (new Error(`Unknown attribute name: ${name}`));
-	}
-}
-
-function asCertificateAttributeNames(name: string): CertificateAttributeNames {
-	assertCertificateAttributeNames(name);
-	return (name);
-}
-
-function encodeAttribute<NAME extends CertificateAttributeNames>(
-	name: NAME,
-	value: CertificateAttributeValue<NAME>
-): ArrayBuffer {
-	const schema = CertificateAttributeSchema[name];
-	const fieldNames = CertificateAttributeFieldNames[name];
-
-	let asn1Value;
-	if (schema === ASN1.ValidateASN1.IsDate) {
-		asn1Value = value; // value must be a JS Date
-	} else if (fieldNames && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-		asn1Value = fieldNames.map((fieldName, idx) => {
-			const fieldValue = (value as { [key: string]: unknown })[fieldName];
-			if (fieldValue === undefined) return undefined;
-			return {
-				type: 'context',
-				kind: 'explicit',
-				value: idx,
-				contains: fieldValue
-			};
-		});
-	} else {
-		asn1Value = value;
-	}
-
-	const asn1 = ASN1.JStoASN1(asn1Value as Readonly<ASN1AnyJS>);
-	return asn1.toBER(false);
-}
-
-async function decodeAttribute<NAME extends CertificateAttributeNames>(
-	name: NAME,
-	value: ArrayBuffer
-): Promise<ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>> {
-	const schema = CertificateAttributeSchema[name];
-	const decoded = new ASN1.BufferStorageASN1(value, schema).getASN1();
-
-	const fieldNames = CertificateAttributeFieldNames[name];
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
-	if (fieldNames && Array.isArray(decoded)) {
-		const result: { [key: string]: unknown } = {};
-		for (let i = 0; i < fieldNames.length; i++) {
-			const fieldName = fieldNames[i];
-			if (!fieldName) {
-				continue;
-			}
-
-			const fieldValue = decoded[i];
-			if (fieldValue !== undefined) {
-				// Unwrap context tag if present
-				if (
-					typeof fieldValue === 'object' &&
-					fieldValue !== null &&
-					'type' in fieldValue &&
-					fieldValue.type === 'context' &&
-					'contains' in fieldValue &&
-					typeof fieldValue.contains === 'object' &&
-					fieldValue.contains !== null &&
-					'value' in fieldValue.contains
-				) {
-					result[fieldName] = fieldValue.contains.value;
-				} else if (typeof fieldValue === 'object' && 'value' in fieldValue) {
-					result[fieldName] = fieldValue.value;
-				} else {
-					result[fieldName] = fieldValue;
-				}
-			}
-		}
-		return result as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>;
-	}
-
-	// For simple types, extract value from ASN.1 wrapper
-	if (typeof decoded === 'object' && decoded !== null && 'value' in decoded) {
-		return decoded.value;
-	}
-
-	return decoded as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>;
-}
 
 /**
  * ASN.1 Schema for Certificate KYC Attributes Extension
@@ -556,7 +585,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		if (subjectPublicKey) {
 			retval.subjectPublicKey = subjectPublicKey;
 		}
-		return (retval);
+		return(retval);
 	}
 
 	constructor(params?: Partial<CertificateBuilderParams>) {
@@ -569,9 +598,9 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	 * sensitive (e.g., fullName), it must be marked as such.
 	 */
 	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
-		const mustBeSensitive = (SENSITIVE_CERTIFICATE_ATTRIBUTES as readonly string[]).includes(name);
+		const mustBeSensitive = (SENSITIVE_CERTIFICATE_ATTRIBUTES satisfies readonly string[]).includes(name);
 		if (mustBeSensitive && !sensitive) {
-			throw new Error(`Attribute '${name}' must be marked sensitive`);
+			throw(new Error(`Attribute '${name}' must be marked sensitive`));
 		}
 
 		if (sensitive) {
@@ -586,14 +615,14 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			encoded = value;
 		} else if (schemaValidator === ASN1.ValidateASN1.IsDate) {
 			if (!(value instanceof Date)) {
-				throw new Error('Expected Date value');
+				throw(new Error('Expected Date value'));
 			}
 
 			encoded = encodeAttribute(name, value);
 		} else if (schemaValidator === ASN1.ValidateASN1.IsString && typeof value === 'string') {
 			encoded = encodeAttribute(name, value);
 		} else {
-			throw new Error('Unsupported non-sensitive value type');
+			throw(new Error('Unsupported non-sensitive value type'));
 		}
 
 		this.#attributes[name] = { sensitive: false, value: encoded };
@@ -608,7 +637,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		const certAttributes: CertificateKYCAttributeSchema = [];
 		for (const [name, attribute] of Object.entries(this.#attributes)) {
 			if (!(name in CertificateAttributeOIDDB)) {
-				throw (new Error(`Unknown attribute: ${name}`));
+				throw(new Error(`Unknown attribute: ${name}`));
 			}
 
 			/*
@@ -624,13 +653,16 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			if (attribute.sensitive) {
 				// For complex types (objects), DER-encode before encrypting
 				// For simple types (strings, dates), SensitiveAttributeBuilder handles them directly
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				const schema = CertificateAttributeSchema[name as CertificateAttributeNames];
 				let valueToEncrypt;
 				if (Array.isArray(schema)) {
 					// Complex type - encode to DER
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
 				} else if (schema === ASN1.ValidateASN1.IsDate) {
 					// Date type - encode to DER
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
 				} else {
 					// Simple type - pass raw value
@@ -638,6 +670,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 				}
 
 				const sensitiveAttribute = new SensitiveAttributeBuilder(subject);
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				sensitiveAttribute.set(valueToEncrypt, name as CertificateAttributeNames);
 
 				value = arrayBufferToBuffer(await sensitiveAttribute.build());
@@ -645,7 +678,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 				if (typeof attribute.value === 'string') {
 					value = Buffer.from(attribute.value, 'utf-8');
 				} else {
-					value = arrayBufferToBuffer(attribute.value as ArrayBuffer);
+					value = arrayBufferToBuffer(attribute.value);
 				}
 			} certAttributes.push([{
 				type: 'oid',
@@ -664,7 +697,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			);
 		}
 
-		return (retval);
+		return(retval);
 	}
 
 	/**
@@ -689,7 +722,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			moment: null
 		});
 
-		return (certificateObject);
+		return(certificateObject);
 	}
 }
 
@@ -703,7 +736,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	readonly attributes: {
 		[name in CertificateAttributeNames]?: {
 			sensitive: true;
-			value: SensitiveAttribute<typeof CertificateAttributeSchema[name]>;
+			value: SensitiveAttribute;
 		} | {
 			sensitive: false;
 			value: ReturnType<typeof decodeAttribute<name>> | ArrayBuffer;
@@ -723,50 +756,54 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	}
 
 	private setPlainAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
-		this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) } as typeof this.attributes[NAME];
+		this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) } satisfies typeof this.attributes[NAME];
 	}
 
 	getSensitiveAttribute<NAME extends CertificateAttributeNames>(
 		attributeName: NAME
-	): SensitiveAttribute<typeof CertificateAttributeSchema[NAME]> | undefined {
+	): SensitiveAttribute | undefined {
 		const attr = this.attributes[attributeName]?.value;
-		return attr instanceof SensitiveAttribute
-			? (attr as SensitiveAttribute<typeof CertificateAttributeSchema[NAME]>)
-			: undefined;
+		return(attr instanceof SensitiveAttribute
+			? (attr)
+			: undefined);
 	}
 
-	async getValue<T>(attributeName: CertificateAttributeNames): Promise<T> {
+	async getValue<NAME extends CertificateAttributeNames>(
+		attributeName: NAME
+	): Promise<CertificateAttributeValue<NAME>> {
 		// XXX:TODO Fix depth issue
 		// @ts-ignore
 		const attr = this.attributes[attributeName]?.value;
 		if (!attr) {
-			throw new Error(`Attribute ${attributeName} is not available`);
+			throw(new Error(`Attribute ${attributeName} is not available`));
 		}
 
 		// Sensitive attribute: instance of SensitiveAttribute
 		if (attr instanceof SensitiveAttribute) {
-			return await attr.getValue(attributeName);
+			return(await attr.getValue(attributeName));
 		}
 
 		// Non-sensitive: ArrayBuffer or Buffer
 		if (attr instanceof ArrayBuffer || Buffer.isBuffer(attr)) {
-			return await decodeAttribute(attributeName, attr as ArrayBuffer) as T;
+			// XXX:TODO Fix depth issue
+			// @ts-ignore
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			return(await decodeAttribute(attributeName, attr) as CertificateAttributeValue<NAME>);
 		}
 
-		throw new Error(`Attribute ${attributeName} is not a supported type`);
+		throw(new Error(`Attribute ${attributeName} is not a supported type`));
 	}
 
 	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
-		const schema = CertificateAttributeSchema[name];
 		this.attributes[name] = {
 			sensitive: true,
-			value: new SensitiveAttribute(this.subjectKey, value, schema)
-		} as typeof this.attributes[NAME];
+			value: new SensitiveAttribute(this.subjectKey, value)
+		} satisfies typeof this.attributes[NAME];
 	}
 
 	protected processExtension(id: string, value: ArrayBuffer): boolean {
 		if (super.processExtension(id, value)) {
-			return (true);
+			return(true);
 		}
 
 		if (id === oids.keeta.KYC_ATTRIBUTES) {
@@ -792,10 +829,10 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 				}
 			}
 
-			return (true);
+			return(true);
 		}
 
-		return (false);
+		return(false);
 	}
 }
 

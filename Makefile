@@ -48,6 +48,7 @@ node_modules: node_modules/.done
 # Generate KYC schema files from oids.json
 src/generated/.done: oids.json scripts/generate-kyc-schema.mjs Makefile
 	./scripts/generate-kyc-schema.mjs
+	npm run eslint -- --fix src/generated/iso20022.ts
 	@touch src/generated/.done
 
 # This target generates the KYC schema files
