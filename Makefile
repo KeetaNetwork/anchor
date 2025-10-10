@@ -76,6 +76,11 @@ do-npm-pack: dist node_modules
 	cd dist && npm pack
 	mv dist/keetanetwork-anchor-*.tgz .
 
+# Target for publishing to NPM
+do-npm-publish: .npmrc Makefile dist node_modules
+	./utils/npm-check-logged-in .
+	cd dist && npm publish
+
 # Deploy the package to the Development (or QA) environment.
 do-deploy: dist node_modules
 	@echo 'not implemented'
