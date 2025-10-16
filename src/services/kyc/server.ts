@@ -3,7 +3,6 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
 import type * as Certificate from '../../lib/certificates.js';
-import { createAssert } from 'typia';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -12,6 +11,10 @@ import type {
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse
 } from './common.ts';
+import {
+	assertCreateVerificationRequest,
+	assertCreateVerificationResponse
+} from './common.generated.js';
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
@@ -237,9 +240,12 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		/**
 		 * Request an estimate for a KYC
 		 * verification (optional)
+		 *
+		 * XXX:TODO
 		 */
+		// eslint-disable-next-line no-constant-condition
 		if (false) {
-			routes['POST /api/createEstimate'] = async function(params, body) {
+			routes['POST /api/createEstimate'] = async function(_ignore_params, _ignore_body) {
 				throw(new Error('not implemented'));
 			};
 		}
@@ -270,19 +276,24 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 * Check if the KYC provider can
 		 * service a more specific locality
 		 * (optional)
+		 *
+		 * XXX:TODO
 		 */
+		// eslint-disable-next-line no-constant-condition
 		if (false) {
-			routes['GET /api/checkLocality'] = async function(params, body) {
+			routes['GET /api/checkLocality'] = async function(_ignore_params, _ignore_body) {
 				throw(new Error('not implemented'));
 			};
 		}
 
 		/**
 		 * Notification that payment has been received for the KYC verification
+		 *
 		 * XXX:TODO
 		 */
+		// eslint-disable-next-line no-constant-condition
 		if (false) {
-			routes['POST /api/notifyPayment/:verificationID'] = async function(params, body) {
+			routes['POST /api/notifyPayment/:verificationID'] = async function(_ignore_params, _ignore_body) {
 				throw(new Error('not implemented'));
 			};
 		}
@@ -309,6 +320,3 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		});
 	}
 }
-
-const assertCreateVerificationRequest = createAssert<KeetaKYCAnchorCreateVerificationRequest>();
-const assertCreateVerificationResponse = createAssert<KeetaKYCAnchorCreateVerificationResponse>();
