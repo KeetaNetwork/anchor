@@ -183,12 +183,25 @@ export function convertToJSON(input: unknown, options?: Parameters<typeof conver
 }
 
 export function safeJSONStringify(v: unknown): string {
+	const seen = new WeakSet<object>();
 	const replacer = (_key: string, value: unknown) => {
 		if (typeof value === 'bigint') { return(value.toString()); }
 		if (Buffer.isBuffer(value)) { return(`<Buffer ${value.length} bytes>`); }
+		if (typeof value === 'object' && value !== null) {
+			if (seen.has(value)) { return('[Circular]'); }
+			seen.add(value);
+			if (value instanceof Error) {
+				return({ name: value.name, message: value.message, stack: value.stack });
+			}
+		}
 		return(value);
 	};
-	try { return(JSON.stringify(v, replacer)); } catch { return('[unserializable]'); }
+	try {
+		return(JSON.stringify(v, replacer));
+	} catch (err) {
+		if (err instanceof Error) { throw(err); }
+		throw(new Error('safeJSONStringify: failed to stringify value'));
+	}
 }
 
 /** @internal */

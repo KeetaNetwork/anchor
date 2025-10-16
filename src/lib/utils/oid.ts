@@ -4,6 +4,7 @@ export function getOID(name: string, oidDB: { [name: string]: string }): string 
 		if (oid === undefined) {
 			throw(new Error('internal error: OID was undefined'));
 		}
+
 		return(oid);
 	}
 	throw(new Error(`Unknown OID name: ${name}`));

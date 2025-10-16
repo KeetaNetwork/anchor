@@ -160,21 +160,16 @@ function encodeAttribute(
 		if (Array.isArray(v)) {
 			if (depth >= MAX_ASN1_VALUE_DEPTH) {
 				// Depth exceeded: serialize to a stable string to avoid deep structures
-				return({ type: 'string', kind: 'utf8', value: JSON.stringify(v) });
+				return({ type: 'string', kind: 'utf8', value: safeJSONStringify(v) });
 			}
+
 			return(v.map(item => toASN1Value(item, depth + 1)));
 		}
 
 		// XXX:TODO What should we do?
 		// For nested objects in complex attributes, delegate to JSON to avoid emitting
 		// arbitrary ASN.1 structures.
-		if (hasIndexSignature(v)) {
-			if (depth >= MAX_ASN1_VALUE_DEPTH) {
-				return({ type: 'string', kind: 'utf8', value: '[Object]' });
-			}
-			return({ type: 'string', kind: 'utf8', value: JSON.stringify(v) });
-		}
-		return({ type: 'string', kind: 'utf8', value: String(v) });
+		return({ type: 'string', kind: 'utf8', value: safeJSONStringify(v) });
 	};
 
 	// Complex object type
@@ -212,6 +207,31 @@ function encodeAttribute(
 	throw(new Error(`Unsupported attribute value for encoding: ${String(value)}`));
 }
 
+// Prepare a value for inclusion in a SensitiveAttribute: pre-encode complex and date types
+function encodeForSensitive(
+	name: CertificateAttributeNames | undefined,
+	value: SensitiveAttributeType | Buffer | ArrayBuffer
+): Buffer {
+	if (Buffer.isBuffer(value)) { return(value); }
+	if (value instanceof ArrayBuffer) { return(arrayBufferToBuffer(value)); }
+	if (typeof value === 'string') {
+		const asn1 = ASN1.JStoASN1({ type: 'string', kind: 'utf8', value });
+		return(arrayBufferToBuffer(asn1.toBER(false)));
+	}
+
+	if (value instanceof Date) {
+		const asn1 = ASN1.JStoASN1({ type: 'date', kind: 'general', date: value });
+		return(arrayBufferToBuffer(asn1.toBER(false)));
+	}
+
+	if (typeof value === 'object' && value !== null) {
+		if (!name) { throw(new Error('attributeName required for complex types')); }
+		const encoded = encodeAttribute(name, value);
+		return(arrayBufferToBuffer(encoded));
+	}
+
+	return(Buffer.from(String(value), 'utf-8'));
+}
 
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
@@ -262,23 +282,7 @@ class SensitiveAttributeBuilder {
 	}
 
 	set(value: SensitiveAttributeType | Buffer | ArrayBuffer, attributeName?: CertificateAttributeNames) {
-		if (Buffer.isBuffer(value)) {
-			this.#value = value;
-		} else if (value instanceof ArrayBuffer) {
-			this.#value = arrayBufferToBuffer(value);
-		} else if (typeof value === 'string') {
-			const asn1 = ASN1.JStoASN1({ type: 'string', kind: 'utf8', value });
-			this.#value = arrayBufferToBuffer(asn1.toBER(false));
-		} else if (value instanceof Date) {
-			const asn1 = ASN1.JStoASN1({ type: 'date', kind: 'general', date: value });
-			this.#value = arrayBufferToBuffer(asn1.toBER(false));
-		} else if (typeof value === 'object' && value !== null) {
-			if (!attributeName) {throw(new Error('attributeName required for complex types'));}
-			const encoded = encodeAttribute(attributeName, value);
-			this.#value = arrayBufferToBuffer(encoded);
-		} else {
-			this.#value = Buffer.from(String(value), 'utf-8');
-		}
+		this.#value = encodeForSensitive(attributeName, value);
 		return(this);
 	}
 
@@ -631,25 +635,8 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 			let value: Buffer;
 			if (attribute.sensitive) {
-				// Pre-encode complex/date types to DER before encryption to mirror working behavior
-				const schema = CertificateAttributeSchema[name];
-				let valueToEncrypt: ArrayBuffer | string;
-				if (Array.isArray(schema)) {
-					// Complex type
-					valueToEncrypt = encodeAttribute(name, attribute.value);
-				} else if (schema === ASN1.ValidateASN1.IsDate) {
-					valueToEncrypt = encodeAttribute(name, attribute.value);
-				} else if (typeof attribute.value === 'string') {
-					valueToEncrypt = attribute.value;
-				} else if (attribute.value instanceof ArrayBuffer) {
-					valueToEncrypt = attribute.value;
-				} else {
-					// Fallback: encode with schema
-					valueToEncrypt = encodeAttribute(name, attribute.value);
-				}
-
 				const sensitiveAttribute = new SensitiveAttributeBuilder(subject);
-				sensitiveAttribute.set(valueToEncrypt, name);
+				sensitiveAttribute.set(attribute.value, name);
 				value = arrayBufferToBuffer(await sensitiveAttribute.build());
 			} else {
 				if (typeof attribute.value === 'string') {
