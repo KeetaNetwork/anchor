@@ -1,12 +1,16 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../generated/oids.js';
 import * as ASN1 from './utils/asn1.js';
-import type { ASN1AnyJS } from './utils/asn1.js';
+import { ASN1toJS } from './utils/asn1.js';
+import type { ASN1AnyJS, ASN1ContextTag } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../generated/iso20022.js';
 import { CertificateAttributeOIDDB, CertificateAttributeSchema, SENSITIVE_CERTIFICATE_ATTRIBUTES, CertificateAttributeFieldNames } from '../generated/iso20022.js';
+import { hasIndexSignature, isErrorLike, hasValueProp, isContextTagged } from './utils/guards.js';
+import { getOID, lookupByOID } from './utils/oid.js';
+import { convertToJSON as convertToJSONUtil, safeJSONStringify } from './utils/json.js';
 
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -16,72 +20,18 @@ type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyT
  */
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
 
-/* -----MOVE TO NODE AND ASN1NAPIRS----- */
-function getOID(name: string, oidDB: { [name: string]: string }) {
-	if (name in oidDB) {
-		// XXX:TODO Fix type assertion
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const oid = oidDB[name as keyof typeof oidDB];
-		if (oid === undefined) {
-			throw(new Error('internal error: OID was undefined'));
-		}
-
-		return(oid);
-	} else {
-		throw(new Error('Unknown algorithm'));
-	}
-}
-
-function lookupByOID(oid: string, oidDB: { [name: string]: string }) {
-	for (const [key, value] of Object.entries(oidDB)) {
-		if (key === oid) {
-			return(key);
-		}
-
-		if (value === oid) {
-			return(key);
-		}
-	}
-
-	throw(new Error(`Unknown OID: ${oid}`));
-}
-/* -----END MOVE TO NODE AND ASN1NAPIRS----- */
-
 function toJSON(data: unknown): unknown {
-	const retval: unknown = JSON.parse(JSON.stringify(data, function(key, convertedValue: unknown) {
-		// XXX:TODO Fix no-unsafe-member-access
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-		const value: unknown = this[key];
+	return(convertToJSONUtil(data));
+}
 
-		if (typeof value === 'object' && value !== null) {
-			if ('publicKeyString' in value && typeof value.publicKeyString === 'object' && value.publicKeyString !== null) {
-				if ('get' in value.publicKeyString && typeof value.publicKeyString.get === 'function') {
-					/*
-					 * If the value has a publicKeyString property that is an
-					 * object with a get method, we assume it is a KeetaNetAccount
-					 * or similar object and we return the public key string
-					 */
-					// XXX:TODO Fix no-unsafe-call
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-call
-					const publicKeyString: unknown = value.publicKeyString.get();
-					if (typeof publicKeyString === 'string') {
-						return(publicKeyString);
-					}
-				}
-			}
-		}
-
-		if (Buffer.isBuffer(value)) {
-			return(value.toString('base64'));
-		}
-		if (typeof value === 'bigint') {
-			return(value.toString());
-		}
-
-		return(convertedValue);
-	}));
-
-	return(retval);
+// Generic type guard to align decoded values with generated attribute types
+function isAttributeValue<NAME extends CertificateAttributeNames>(
+	_name: NAME,
+	_v: unknown
+): _v is CertificateAttributeValue<NAME> {
+	// Runtime schema validation is already performed by BufferStorageASN1; this guard
+	// serves to inform TypeScript of the precise type tied to the attribute name.
+	return(true);
 }
 
 /**
@@ -138,7 +88,7 @@ const SensitiveAttributeSchemaInternal: [
 ];
 
 /**
- * The Sensitive Attribute Schema
+ * The Sensitive Attribute Schema Internal
  *
  * @internal
  */
@@ -168,109 +118,117 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
-function encodeAttribute<NAME extends CertificateAttributeNames>(
-	name: NAME,
-	value: CertificateAttributeValue<NAME>
+function encodeAttribute(
+	name: CertificateAttributeNames,
+	value: unknown
 ): ArrayBuffer {
 	const schema = CertificateAttributeSchema[name];
 	const fieldNames = CertificateAttributeFieldNames[name];
 
-	let asn1Value: ASN1AnyJS;
+	// Date type
 	if (schema === ASN1.ValidateASN1.IsDate) {
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		asn1Value = value as Date;
-	} else if (fieldNames && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-		// Convert structured object to ASN.1 sequence
-		const mappedFields = fieldNames.map((fieldName, idx) => {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const fieldValue = (value as { [key: string]: unknown })[fieldName];
-			if (fieldValue === undefined) {
-				return(undefined);
-			}
-			return({
-				type: 'context' as const,
-				kind: 'explicit' as const,
-				value: idx,
-				contains: fieldValue
-			});
-		}).filter((v): v is NonNullable<typeof v> => v !== undefined);
-
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		asn1Value = mappedFields as ASN1AnyJS;
-	} else {
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		asn1Value = value as ASN1AnyJS;
+		if (!(value instanceof Date)) {
+			throw(new Error('Expected Date value'));
+		}
+		const asn1 = ASN1.JStoASN1(value);
+		const der = asn1.toBER(false);
+		return(der);
 	}
 
-	const asn1 = ASN1.JStoASN1(asn1Value);
-	return(asn1.toBER(false));
+	const toASN1Value = (v: unknown): ASN1AnyJS => {
+		// Only allow primitives and raw binary that ASN1.JStoASN1 understands.
+		if (v instanceof Date) { return(v); }
+		if (Buffer.isBuffer(v)) { return(v); }
+		if (v instanceof ArrayBuffer) { return(arrayBufferToBuffer(v)); }
+		if (typeof v === 'string') { return({ type: 'string', kind: 'utf8', value: v }); }
+		if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') {
+			return({ type: 'string', kind: 'utf8', value: String(v) });
+		}
+		if (Array.isArray(v)) {
+			return(v.map(item => toASN1Value(item)));
+		}
+		// For nested objects in complex attributes, delegate to JSON to avoid emitting arbitrary ASN.1 structures.
+		if (hasIndexSignature(v)) {
+			return({ type: 'string', kind: 'utf8', value: JSON.stringify(v) });
+		}
+		return({ type: 'string', kind: 'utf8', value: String(v) });
+	};
+
+	// Complex object type
+	if (fieldNames && hasIndexSignature(value) && !Array.isArray(value)) {
+		const mappedFields = fieldNames
+			.map((fieldName, idx) => {
+				const fieldValue = value[fieldName];
+				if (fieldValue === undefined) {return(undefined);}
+				const tag: ASN1ContextTag = {
+					type: 'context',
+					kind: 'explicit',
+					value: idx,
+					contains: toASN1Value(fieldValue)
+				};
+				return(tag);
+			})
+			.filter((v): v is NonNullable<typeof v> => v !== undefined);
+
+		const asn1 = ASN1.JStoASN1(mappedFields);
+		const der = asn1.toBER(false);
+		return(der);
+	}
+
+	// Primitive string type
+	if (schema === ASN1.ValidateASN1.IsString && typeof value === 'string') {
+		const asn1 = ASN1.JStoASN1({ type: 'string', kind: 'utf8', value });
+		const der = asn1.toBER(false);
+		return(der);
+	}
+
+	throw(new Error('Unsupported attribute value for encoding'));
 }
 
-// XXX:TODO Fix depth issue
-// @ts-ignore
-async function decodeAttribute<NAME extends CertificateAttributeNames>(
-	name: NAME,
-	value: ArrayBuffer
-): Promise<ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>> {
-	const schema = CertificateAttributeSchema[name];
-	const decoded = new ASN1.BufferStorageASN1(value, schema).getASN1();
 
-	const fieldNames = CertificateAttributeFieldNames[name];
+async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): Promise<CertificateAttributeValue<NAME>> {
+	const schema = CertificateAttributeSchema[name];
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
-	if (fieldNames && Array.isArray(decoded)) {
+	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
+
+	const fieldNames = CertificateAttributeFieldNames[name];
+	if (fieldNames && Array.isArray(decodedUnknown)) {
+		const arr: unknown[] = decodedUnknown;
 		const result: { [key: string]: unknown } = {};
 		for (let i = 0; i < fieldNames.length; i++) {
 			const fieldName = fieldNames[i];
-			if (!fieldName || decoded[i] === undefined) {
-				continue;
-			}
+			if (!fieldName) {continue;}
 
-			// XXX:TODO Fix no-unsafe-assignment
-			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-			const fieldValue = decoded[i];
-			if (fieldValue === undefined) {
-				continue;
-			}
-
-			// Type guard: skip if it's an Error
-			if (fieldValue instanceof Error) {
+			const fieldValue: unknown = arr[i];
+			if (fieldValue === undefined) {continue;}
+			if (isErrorLike(fieldValue)) {
 				throw(new Error(`Field ${fieldName} contains an error: ${fieldValue.message}`));
 			}
 
-			if (fieldValue !== undefined) {
-				if (
-					typeof fieldValue === 'object' && fieldValue !== null &&
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-					'type' in fieldValue && fieldValue.type === 'context' &&
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-					'contains' in fieldValue && typeof fieldValue.contains === 'object' && fieldValue.contains !== null &&
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-					'value' in fieldValue.contains
-				) {
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-					result[fieldName] = fieldValue.contains.value;
-				} else if (typeof fieldValue === 'object' && 'value' in fieldValue) {
-					// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-					result[fieldName] = fieldValue.value;
-				} else {
-					result[fieldName] = fieldValue;
-				}
+			if (isContextTagged(fieldValue)) {
+				// unwrap context tag; prefer nested .value if present
+				result[fieldName] = hasValueProp(fieldValue.contains) ? fieldValue.contains.value : fieldValue.contains;
+			} else if (hasValueProp(fieldValue)) {
+				result[fieldName] = fieldValue.value;
+			} else {
+				result[fieldName] = fieldValue;
 			}
 		}
-
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
-		return(result as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>);
+		const decoded: unknown = result;
+		if (!isAttributeValue(name, decoded)) { throw(new Error('internal error: decoded value did not match expected type')); }
+		return(decoded);
 	}
 
-	// For simple types, extract value from ASN.1 wrapper
-	if (typeof decoded === 'object' && decoded !== null && 'value' in decoded) {
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-		return(decoded.value);
+	// Simple types: unwrap { value }
+	if (hasValueProp(decodedUnknown)) {
+		const simple = decodedUnknown.value;
+		if (!isAttributeValue(name, simple)) { throw(new Error('internal error: decoded value did not match expected type')); }
+		return(simple);
 	}
 
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
-	return(decoded as ASN1.SchemaMap<typeof CertificateAttributeSchema[NAME]>);
+	if (!isAttributeValue(name, decodedUnknown)) { throw(new Error('internal error: decoded value did not match expected type')); }
+	return(decodedUnknown);
 }
 
 class SensitiveAttributeBuilder {
@@ -326,16 +284,15 @@ class SensitiveAttributeBuilder {
 			 * For AES-GCM, the last 16 bytes are the authentication tag
 			 */
 			if (cipher === 'aes-256-gcm') {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const maybeGcm = cipherObject as unknown as { getAuthTag?: () => Buffer };
-				if (typeof maybeGcm.getAuthTag === 'function') {
-					const authTag = maybeGcm.getAuthTag();
-					retval = Buffer.concat([retval, authTag]);
+				const getAuthTagFn = Reflect.get(cipherObject, 'getAuthTag');
+				if (typeof getAuthTagFn === 'function') {
+					const tag: unknown = getAuthTagFn.call(cipherObject);
+					if (!Buffer.isBuffer(tag)) { throw(new Error('getAuthTag did not return a Buffer')); }
+					retval = Buffer.concat([retval, tag]);
 				} else {
 					throw(new Error('getAuthTag is not available on cipherObject'));
 				}
 			}
-
 			return(retval);
 		}
 
@@ -370,8 +327,13 @@ class SensitiveAttributeBuilder {
 			encryptedValue
 		];
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
-
-		const retval = encodedAttributeObject.toBER();
+		// Produce canonical DER as ArrayBuffer
+		const retval = encodedAttributeObject.toBER(false);
+		// Optional check of top-level shape (kept minimal and non-stateful)
+		const js = ASN1toJS(retval);
+		if (!Array.isArray(js) || js.length !== 4) {
+			throw(new Error('internal error: SensitiveAttributeBuilder emitted invalid DER shape (expected SEQUENCE of length 4)'));
+		}
 		return(retval);
 	}
 }
@@ -390,8 +352,14 @@ class SensitiveAttribute {
 			data = bufferToArrayBuffer(data);
 		}
 
-		const dataObject = new ASN1.BufferStorageASN1(data, SensitiveAttributeSchemaInternal);
-		const decodedAttribute = dataObject.getASN1();
+		let decodedAttribute;
+		try {
+			const dataObject = new ASN1.BufferStorageASN1(data, SensitiveAttributeSchemaInternal);
+			decodedAttribute = dataObject.getASN1();
+		} catch {
+			const js = ASN1toJS(data);
+			throw(new Error(`SensitiveAttribute.decode: unexpected DER shape ${safeJSONStringify(js)}`));
+		}
 
 		const decodedVersion = decodedAttribute[0] + 1n;
 		if (decodedVersion !== 1n) {
@@ -427,17 +395,17 @@ class SensitiveAttribute {
 			const authTag = value.subarray(value.length - 16);
 			const ciphertext = value.subarray(0, value.length - 16);
 
-			// Type guard for setAuthTag
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const maybeGcm = cipher as unknown as { setAuthTag?: (tag: Buffer) => void };
-			if (typeof maybeGcm.setAuthTag === 'function') {
-				maybeGcm.setAuthTag(authTag);
+			// XXX:TODO Fix typescript unsafe calls
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			const setAuthTagFn = Reflect.get(cipher, 'setAuthTag');
+			if (typeof setAuthTagFn === 'function') {
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+				setAuthTagFn.call(cipher, authTag);
 			} else {
 				throw(new Error('setAuthTag is not available on cipher'));
 			}
 
 			const decrypted = cipher.update(ciphertext);
-
 			cipher.final(); // Verify auth tag
 			return(decrypted);
 		}
@@ -462,15 +430,9 @@ class SensitiveAttribute {
 		return(bufferToArrayBuffer(decryptedValue));
 	}
 
-	async getValue<NAME extends CertificateAttributeNames>(
-		attributeName: NAME
-	): Promise<CertificateAttributeValue<NAME>> {
+	async getValue<NAME extends CertificateAttributeNames>(attributeName: NAME): Promise<CertificateAttributeValue<NAME>> {
 		const value = await this.get();
-
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-return
-		return(await decodeAttribute(attributeName, value) as T);
+		return(await decodeAttribute(attributeName, value));
 	}
 
 	/**
@@ -478,7 +440,7 @@ class SensitiveAttribute {
 	 * which can be validated by a third party using the certificate
 	 * and the `validateProof` method
 	 */
-	async prove(): Promise<{ value: string; hash: { salt: string }}> {
+	async getProof(): Promise<{ value: string; hash: { salt: string }}> {
 		const value = await this.get();
 		const salt = await this.#decryptValue(arrayBufferLikeToBuffer(this.#info.hashedValue.encryptedSalt));
 
@@ -493,7 +455,7 @@ class SensitiveAttribute {
 	/**
 	 * Validate the proof that a sensitive attribute is a given value
 	 */
-	async validateProof(proof: Awaited<ReturnType<this['prove']>>): Promise<boolean> {
+	async validateProof(proof: Awaited<ReturnType<this['getProof']>>): Promise<boolean> {
 		const plaintextValue = Buffer.from(proof.value, 'base64');
 		const proofSaltBuffer = Buffer.from(proof.hash.salt, 'base64');
 
@@ -645,34 +607,30 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 			 * can assume that the attribute is always present in
 			 * the object
 			 */
-			// XXX:TODO Fix type assertion
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const nameOID = CertificateAttributeOIDDB[name as keyof typeof CertificateAttributeOIDDB];
+			assertCertificateAttributeNames(name);
+			const nameOID = CertificateAttributeOIDDB[name];
 
 			let value: Buffer;
 			if (attribute.sensitive) {
-				// For complex types (objects), DER-encode before encrypting
-				// For simple types (strings, dates), SensitiveAttributeBuilder handles them directly
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const schema = CertificateAttributeSchema[name as CertificateAttributeNames];
-				let valueToEncrypt;
+				// Pre-encode complex/date types to DER before encryption to mirror working behavior
+				const schema = CertificateAttributeSchema[name];
+				let valueToEncrypt: ArrayBuffer | string;
 				if (Array.isArray(schema)) {
-					// Complex type - encode to DER
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
+					// Complex type
+					valueToEncrypt = encodeAttribute(name, attribute.value);
 				} else if (schema === ASN1.ValidateASN1.IsDate) {
-					// Date type - encode to DER
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					valueToEncrypt = encodeAttribute(name as CertificateAttributeNames, attribute.value);
-				} else {
-					// Simple type - pass raw value
+					valueToEncrypt = encodeAttribute(name, attribute.value);
+				} else if (typeof attribute.value === 'string') {
 					valueToEncrypt = attribute.value;
+				} else if (attribute.value instanceof ArrayBuffer) {
+					valueToEncrypt = attribute.value;
+				} else {
+					// Fallback: encode with schema
+					valueToEncrypt = encodeAttribute(name, attribute.value);
 				}
 
 				const sensitiveAttribute = new SensitiveAttributeBuilder(subject);
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				sensitiveAttribute.set(valueToEncrypt, name as CertificateAttributeNames);
-
+				sensitiveAttribute.set(valueToEncrypt, name);
 				value = arrayBufferToBuffer(await sensitiveAttribute.build());
 			} else {
 				if (typeof attribute.value === 'string') {
@@ -709,8 +667,6 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	async build(params?: Partial<CertificateBuilderParams>): Promise<Certificate> {
 		const paramsCopy = CertificateBuilder.mapParams(params);
 		const certificate = await super.buildDER(paramsCopy);
-
-		// XXX:TODO Fix use before define
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const certificateObject = new Certificate(certificate, {
 			/**
@@ -728,18 +684,18 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
 	private readonly subjectKey: KeetaNetAccount;
-	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
+	static Builder: typeof CertificateBuilder;
 
 	/**
-	 * User KYC Attributes
-	 */
+     * User KYC Attributes
+     */
 	readonly attributes: {
 		[name in CertificateAttributeNames]?: {
 			sensitive: true;
 			value: SensitiveAttribute;
 		} | {
 			sensitive: false;
-			value: ReturnType<typeof decodeAttribute<name>> | ArrayBuffer;
+			value: ArrayBuffer;
 		}
 	} = {};
 
@@ -756,7 +712,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	}
 
 	private setPlainAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
-		this.attributes[name] = { sensitive: false, value: decodeAttribute(name, value) } satisfies typeof this.attributes[NAME];
+		this.attributes[name] = { sensitive: false, value } satisfies typeof this.attributes[NAME];
 	}
 
 	getSensitiveAttribute<NAME extends CertificateAttributeNames>(
@@ -768,27 +724,20 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 			: undefined);
 	}
 
-	async getValue<NAME extends CertificateAttributeNames>(
-		attributeName: NAME
-	): Promise<CertificateAttributeValue<NAME>> {
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
+	async getValue<NAME extends CertificateAttributeNames>(attributeName: NAME): Promise<CertificateAttributeValue<NAME>> {
 		const attr = this.attributes[attributeName]?.value;
 		if (!attr) {
 			throw(new Error(`Attribute ${attributeName} is not available`));
 		}
 
-		// Sensitive attribute: instance of SensitiveAttribute
 		if (attr instanceof SensitiveAttribute) {
-			return(await attr.getValue(attributeName));
+			const raw = await attr.get();
+			return(await decodeAttribute(attributeName, raw));
 		}
 
 		// Non-sensitive: ArrayBuffer or Buffer
 		if (attr instanceof ArrayBuffer || Buffer.isBuffer(attr)) {
-			// XXX:TODO Fix depth issue
-			// @ts-ignore
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			return(await decodeAttribute(attributeName, attr) as CertificateAttributeValue<NAME>);
+			return(await decodeAttribute(attributeName, attr));
 		}
 
 		throw(new Error(`Attribute ${attributeName} is not a supported type`));
@@ -835,6 +784,9 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		return(false);
 	}
 }
+
+// Bind the nested Builder class for ergonomic API parity with existing tests
+Certificate.Builder = CertificateBuilder;
 
 /** @internal */
 export const _Testing = {

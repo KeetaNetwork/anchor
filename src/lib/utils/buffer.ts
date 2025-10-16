@@ -14,8 +14,7 @@ export const bufferToArrayBuffer: typeof KeetaNetLib.Utils.Helper.bufferToArrayB
  */
 export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
 	// Since ArrayBuffer is a subset of ArrayBufferLike, this conversion is safe
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	return Buffer.from(arrayBuffer) as Buffer;
+	return(Buffer.from(new Uint8Array(arrayBuffer)));
 }
 
 /*
@@ -23,12 +22,15 @@ export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
  */
 export function arrayBufferLikeToBuffer(buffer: globalThis.Buffer): Buffer {
 	if (buffer instanceof ArrayBuffer) {
-		return arrayBufferToBuffer(buffer);
+		return(arrayBufferToBuffer(buffer));
 	}
 
 	const cloned = new ArrayBuffer(buffer.byteLength);
 
-	new Uint8Array(cloned).set(new Uint8Array(buffer as any));
+	// If this is a Node.js Buffer (Uint8Array subclass), leverage its view over an underlying ArrayBuffer
+	// and copy the exact byte range into a fresh ArrayBuffer to ensure backing store is ArrayBuffer
+	const src = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+	new Uint8Array(cloned).set(src);
 
-	return arrayBufferToBuffer(cloned);
+	return(arrayBufferToBuffer(cloned));
 }

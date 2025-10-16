@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { arrayBufferToBuffer } from './utils/buffer.js';
+import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import type { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB } from '../generated/iso20022.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
@@ -32,14 +32,14 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 	const actualValue = await attrWithPrivate.getValue(attributeName);
 	expect(actualValue).toEqual(expectedValue);
 
-	const proof = await attrWithPrivate.prove();
+	const proof = await attrWithPrivate.getProof();
 	expect(await attr.validateProof(proof)).toBe(true);
 
 	const decodedValue = await attrWithPrivate.getValue(attributeName);
 	expect(decodedValue).toEqual(expectedValue);
 
 	await expect(async () => await attr.getValue(attributeName)).rejects.toThrow();
-	await expect(async () => await attr.prove()).rejects.toThrow();
+	await expect(async () => await attr.getProof()).rejects.toThrow();
 }
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
@@ -87,7 +87,7 @@ test('Sensitive Attributes', async function() {
 	/*
 	 * Validate it with the public key and value
 	 */
-	const sensitiveAttribute1Proof = await sensitiveAttribute1.prove();
+	const sensitiveAttribute1Proof = await sensitiveAttribute1.getProof();
 
 	const sensitiveAttribute2 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, attribute);
 	const sensitiveAttribute2Valid = await sensitiveAttribute2.validateProof(sensitiveAttribute1Proof);
@@ -98,7 +98,7 @@ test('Sensitive Attributes', async function() {
 	 */
 	const sensitiveAttribute3 = new Certificates._Testing.SensitiveAttribute(testAccount2, attribute);
 	await expect(async function() {
-		return(await sensitiveAttribute3.prove());
+		return(await sensitiveAttribute3.getProof());
 	}).rejects.toThrow();
 
 	/*
@@ -121,7 +121,7 @@ test('Sensitive Attributes', async function() {
 	 */
 	const attributeBuffer = arrayBufferToBuffer(attribute);
 	attributeBuffer.set([0x00], attributeBuffer.length - 3);
-	const tamperedAttribute = attributeBuffer.buffer;
+	const tamperedAttribute = bufferToArrayBuffer(attributeBuffer);
 	const sensitiveAttribute4 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, tamperedAttribute);
 	expect(await sensitiveAttribute4.validateProof(sensitiveAttribute1Proof)).toBe(false);
 });
@@ -329,7 +329,7 @@ test('Rust Certificate Interoperability', async function() {
 		throw(new Error('Expected address attribute'));
 	}
 
-	const addressProof = await addressAttr.prove();
+	const addressProof = await addressAttr.getProof();
 	expect(await addressAttr.validateProof(addressProof)).toBe(true);
 
 	const contactAttr = certificate.getSensitiveAttribute('contactDetails');
@@ -337,6 +337,6 @@ test('Rust Certificate Interoperability', async function() {
 		throw(new Error('Expected contactDetails attribute'));
 	}
 
-	const contactProof = await contactAttr.prove();
+	const contactProof = await contactAttr.getProof();
 	expect(await contactAttr.validateProof(contactProof)).toBe(true);
 });

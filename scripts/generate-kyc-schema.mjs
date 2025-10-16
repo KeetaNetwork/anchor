@@ -151,6 +151,7 @@ function generateOidConstants() {
 
 	// Keeta namespace for sensitive attributes
 	lines.push('// Keeta-specific OID constants');
+	lines.push('// eslint-disable-next-line @typescript-eslint/no-namespace');
 	lines.push('export namespace keeta {');
 	for (const [name, config] of Object.entries(oidSchema.extensions)) {
 		lines.push(`	/** ${config.description} */`);
@@ -167,7 +168,7 @@ function generateOidConstants() {
 
 	// Lookup maps
 	lines.push('// OID to name lookup maps');
-	lines.push('export const OID_TO_NAME: Record<string, string> = {');
+	lines.push('export const OID_TO_NAME: { [key: string]: string } = {');
 	for (const [name, config] of Object.entries(oidSchema.plain_attributes)) {
 		lines.push(`	'${oidArrayToString(config.oid)}': '${name}',`);
 	}
@@ -176,7 +177,7 @@ function generateOidConstants() {
 	}
 	lines.push('};');
 	lines.push('');
-	lines.push('export const NAME_TO_OID: Record<string, string> = {');
+	lines.push('export const NAME_TO_OID: { [key: string]: string } = {');
 	for (const [name, config] of Object.entries(oidSchema.plain_attributes)) {
 		lines.push(`	'${name}': '${oidArrayToString(config.oid)}',`);
 	}

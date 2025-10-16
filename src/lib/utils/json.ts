@@ -182,6 +182,15 @@ export function convertToJSON(input: unknown, options?: Parameters<typeof conver
 	})));
 }
 
+export function safeJSONStringify(v: unknown): string {
+	const replacer = (_key: string, value: unknown) => {
+		if (typeof value === 'bigint') { return(value.toString()); }
+		if (Buffer.isBuffer(value)) { return(`<Buffer ${value.length} bytes>`); }
+		return(value);
+	};
+	try { return(JSON.stringify(v, replacer)); } catch { return('[unserializable]'); }
+}
+
 /** @internal */
 export const _Testing = {
 	convertToJSONReplacer
