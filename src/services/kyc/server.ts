@@ -21,6 +21,8 @@ import {
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
+const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
+
 export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -157,7 +159,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		this.ca = config.ca;
 		this.kyc = config.kyc;
 		this.routes = config.routes ?? {};
-		this.kycProviderURL = config.kycProviderURL ?? new URL('/provider/{id}', this.url).toString();
+		this.kycProviderURL = config.kycProviderURL ?? kycProviderURLUndefined;
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
@@ -227,9 +229,9 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				throw(new Error('internal error: invalid response'));
 			}
 			response.id ??= crypto.randomUUID();
-			response.webURL ??= (config.kycProviderURL ?? '').replace('{id}', encodeURIComponent(response.id));
+			response.webURL ??= (config.kycProviderURL ?? kycProviderURLUndefined).replace('{id}', encodeURIComponent(response.id));
 
-			if (!response.webURL) {
+			if (!response.webURL || response.webURL === kycProviderURLUndefined) {
 				throw(new KeetaAnchorUserError('No webURL provided -- cannot proceed with verification'));
 			}
 
