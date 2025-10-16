@@ -220,7 +220,7 @@ function encodeForSensitive(
 	}
 
 	if (value instanceof Date) {
-		const asn1 = ASN1.JStoASN1({ type: 'date', kind: 'general', date: value });
+		const asn1 = ASN1.JStoASN1(value);
 		return(arrayBufferToBuffer(asn1.toBER(false)));
 	}
 
