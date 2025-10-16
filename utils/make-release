@@ -1,0 +1,87 @@
+#! /usr/bin/env bash
+previous_version="$1"
+version="$2"
+if [ -z "${version}" -o -z "${previous_version}" ]; then
+    echo 'Usage: make-release <previous_version> <version>' >&2
+    exit 1
+fi
+cd "$(dirname "$0")/.." || exit 1
+function confirm() {
+    local prompt
+    local confirm
+    prompt="$1"
+    read -p "${prompt} [y/N] " -n 1 -r confirm
+    echo
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+function getNPMPackageHash() (
+    package="$1"
+    packageHash="$(npm show "${package}" dist.integrity)" || exit 1
+    echo "${packageHash}" | sed 's@^sha512-@@' | base64 -d | xxd -c 120 -u -p | sed 's@^@SHA512: @'
+)
+workdir=''
+function clean() {
+    if [ -n "${workdir}" ]; then
+        rm -rf "${workdir}"
+        workdir=''
+    fi
+}
+trap clean EXIT
+echo "Publishing Anchor v${version}"
+echo ''
+echo 'Step 1: Publish'
+if confirm 'Perform publish?'; then
+    make do-npm-publish || exit 1
+    echo 'Published.'
+else
+    echo 'Skipped.'
+fi
+echo ''
+echo 'Step 2: Generate Change Log Template'
+workdir="$(mktemp -d)" || exit 1
+cat << _EOF_ > "${workdir}/changelog.md"
+## DRAFT ## <- REMOVE THIS LINE TO PROCEED
+This is Anchor v${version} which ...
+It has the following changes since v${previous_version}:
+_EOF_
+git log releases/v${previous_version}..HEAD | awk '/^commit /{ commit = $2 } /\(#/{ if (commit == "") { next; }; print commit, $0; commit = ""; }' | sed 's@^@- @' >> "${workdir}/changelog.md"
+echo ''
+echo 'Step 3: Generate Release Artifact Records'
+cat << _EOF_ >> "${workdir}/changelog.md"
+It includes the following release artifacts:
+NPM Packages:
+\`\`\`
+        @keetanetwork/anchore@${version}   $(getNPMPackageHash "@keetanetwork/anchor@${version}")
+\`\`\`
+_EOF_
+echo ''
+echo 'Step 4: Edit Change Log'
+cat << _EOF_ >> "${workdir}/changelog.md"
+**Full Changelog**:
+https://github.com/KeetaNetwork/anchor/compare/releases/v${previous_version}...releases/v${version}
+_EOF_
+"${EDITOR:-vi}" "${workdir}/changelog.md" || exit 1
+if grep '^## DRAFT' "${workdir}/changelog.md" >/dev/null; then
+    echo 'Aborted.'
+    exit 1
+fi
+echo ''
+echo 'Step 5: Tag'
+if confirm 'Perform tag?'; then
+    git tag -f -a -s releases/v${version} -m "$(cat "${workdir}/changelog.md")" || exit 1
+    echo 'Tagged.'
+else
+    echo 'Skipped.'
+fi
+
+echo 'Step 6: Make GitHub Release'
+if confirm 'Perform GitHub Release?'; then
+	git push --tags || exit 1
+	gh release create "releases/v${version}" --notes-from-tag --title "v${version}"
+else
+    echo 'Skipped.'
+fi

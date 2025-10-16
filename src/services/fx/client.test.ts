@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
-import { acceptSwapRequest, createSwapRequest, type ConversionInput, type KeetaFXAnchorQuote, type KeetaNetToken } from './common.js';
+import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -18,6 +18,7 @@ test('FX Anchor Client Test', async function() {
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const { userClient: client } = await createNodeAndClient(account);
+	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!testCurrencyUSD.isToken()) {
@@ -26,8 +27,8 @@ test('FX Anchor Client Test', async function() {
 	const initialAccountUSDBalance = 500000n;
 	await client.modTokenSupplyAndBalance(initialAccountUSDBalance, testCurrencyUSD);
 
-	const initialAccountBalances = await client.allBalances();
-	expect(toJSONSerializable(initialAccountBalances)).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: initialAccountUSDBalance }]));
+	const initialAccountBalanceUSD = await client.balance(testCurrencyUSD);
+	expect(initialAccountBalanceUSD).toBe(initialAccountUSDBalance);
 
 	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!testCurrencyEUR.isToken()) {
@@ -40,6 +41,11 @@ test('FX Anchor Client Test', async function() {
 
 	const initialLiquidityProviderBalances = await client.allBalances({ account: liquidityProvider });
 	expect(toJSONSerializable(initialLiquidityProviderBalances)).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: initialLiquidityProviderEURBalance }]));
+
+	/**
+	 * Give the liquidity provider some KTA to pay fees
+	 */
+	await client.send(liquidityProvider, 50n, baseToken);
 
 	await using invalidServer = new KeetaNetFXAnchorHTTPServer({
 		account: liquidityProvider,
@@ -62,11 +68,11 @@ test('FX Anchor Client Test', async function() {
 					rate = 1 / rate;
 				}
 				return({
-					account: liquidityProvider.publicKeyString.get(),
-					convertedAmount: (parseInt(request.amount) * rate).toFixed(0),
+					account: liquidityProvider,
+					convertedAmount: BigInt(request.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 					cost: {
-						amount: '5',
-						token: testCurrencyUSD.publicKeyString.get()
+						amount: 5n,
+						token: baseToken
 					}
 				});
 			}
@@ -194,40 +200,40 @@ test('FX Anchor Client Test', async function() {
 		},
 		{
 			// no provider offers this pair
-			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: '$BTC', to: 'USD', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: '$BTC', to: 'USD', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: '$BTC', to: 'USD', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
 			// invalid currency codes
 			// @ts-expect-error
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'FOO', to: 'BAR', amount: 10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// @ts-expect-error
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'FOO', to: 'BAR', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'FOO', to: 'BAR', amount: 10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// Cannot convert negative amount
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'USD', to: 'EUR', amount: -10n, affinity: 'from' })) },
 			result: false
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'USD', to: 'EUR', amount: -10n, affinity: 'from' })) },
 			result: false
 		},
 		{
 			// invalid anchor server throws an error but SDK returns null
-			test: async function() { return(await fxClientConversions.getEstimates({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getEstimates({ from: 'EUR', to: '$BTC', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
-			test: async function() { return(await fxClientConversions.getQuotes({ from: 'EUR', to: '$BTC', amount: 10, affinity: 'from' })) },
+			test: async function() { return(await fxClientConversions.getQuotes({ from: 'EUR', to: '$BTC', amount: 10n, affinity: 'from' })) },
 			result: null
 		},
 		{
@@ -265,20 +271,20 @@ test('FX Anchor Client Test', async function() {
 	});
 
 	/* Get Estimate from Currency Codes */
-	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100, affinity: 'from' };
+	const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
 	/* Get Estimate from Tokens */
-	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100, affinity: 'from' };
+	const requestTokens: ConversionInput = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 100n, affinity: 'from' };
 	/* Get Estimate from Currency Codes Affinity: to */
 	// TODO - provide more dynamic KeetaNetFXAnchorHTTPServer responses
-	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 88, affinity: 'to' };
+	const requestCurrencyCodesTo: ConversionInput = { from: 'USD', to: 'EUR', amount: 88n, affinity: 'to' };
 
 	let cumulativeEURChange = 0n;
 	let cumulativeUSDChange = 0n;
 	for (const request of [requestCurrencyCodes, requestTokens, requestCurrencyCodesTo]) {
 		const requestCanonical = {
-			from: testCurrencyUSD.publicKeyString.get(),
-			to: testCurrencyEUR.publicKeyString.get(),
-			amount: request.amount.toString(),
+			from: testCurrencyUSD,
+			to: testCurrencyEUR,
+			amount: request.amount,
 			affinity: request.affinity
 		};
 
@@ -294,36 +300,36 @@ test('FX Anchor Client Test', async function() {
 		if (request.affinity === 'to') {
 			rate = 1 / rate;
 		}
-		expect(estimate.estimate).toEqual({
+		expect(toJSONSerializable(estimate.estimate)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			expectedCost: {
-				min: '5',
-				max: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				min: 5n,
+				max: 5n,
+				token: baseToken
 			}
-		});
+		}));
 
 		const quotes = await fxClient.getQuotes(request);
 		if (quotes === null) {
-			throw(new Error('Estimates is NULL'));
+			throw(new Error('Quotes is NULL'));
 		}
 		const quote = quotes[0];
 		if (quote === undefined) {
-			throw(new Error('Estimate is undefined'));
+			throw(new Error('Quote is undefined'));
 		}
-		expect(quote.quote).toEqual({
+		expect(toJSONSerializable(quote.quote)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			account: liquidityProvider,
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
-				amount: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				amount: 5n,
+				token: baseToken
 			},
 			signed: {
 				...quote.quote.signed
 			}
-		});
+		}));
 
 		// TODO - figure out a way to create a different estimate than quote on the http server
 		// await expect(async function(){
@@ -331,46 +337,64 @@ test('FX Anchor Client Test', async function() {
 		// }).rejects.toThrow();
 
 		const quoteFromEstimate = await estimate.getQuote();
-		expect(quoteFromEstimate.quote).toEqual({
+		expect(toJSONSerializable(quoteFromEstimate.quote)).toEqual(toJSONSerializable({
 			request: requestCanonical,
-			account: liquidityProvider.publicKeyString.get(),
-			convertedAmount: (parseInt(requestCanonical.amount) * rate).toFixed(0),
+			account: liquidityProvider,
+			convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 			cost: {
-				amount: '5',
-				token: testCurrencyUSD.publicKeyString.get()
+				amount: 5n,
+				token: baseToken
 			},
 			signed: {
 				...quoteFromEstimate.quote.signed
 			}
-		});
+		}));
 
 		const sendAmount = requestCanonical.affinity === 'from' ? requestCanonical.amount : quoteFromEstimate.quote.convertedAmount;
 		const receiveAmount = requestCanonical.affinity === 'from' ? quoteFromEstimate.quote.convertedAmount : requestCanonical.amount;
 		const headBlock = await client.head();
-		const sendBlock = await (new KeetaNet.lib.Block.Builder({
+		const swapBlockBuilder = new KeetaNet.lib.Block.Builder({
 			account,
 			network: client.network,
 			previous: headBlock ?? KeetaNet.lib.Block.NO_PREVIOUS,
 			operations: [
 				{
 					type: KeetaNet.lib.Block.OperationType.SEND,
-					to: liquidityProvider.publicKeyString.get(),
+					to: liquidityProvider,
 					token: requestCanonical.from,
-					amount: sendAmount.toString()
+					amount: sendAmount
 				},
 				{
 					type: KeetaNet.lib.Block.OperationType.RECEIVE,
-					from: liquidityProvider.publicKeyString.get(),
+					from: liquidityProvider,
 					token: requestCanonical.to,
-					amount: receiveAmount.toString(),
+					amount: receiveAmount,
 					exact: true
 				}
 			]
-		}).seal());
+		});
 
-		const exchangeWithBlock = await quoteFromEstimate.createExchange(sendBlock);
+		const invalidSwapBlock = await swapBlockBuilder.seal();
+		await expect((async function() {
+			// Missing cost operation so server should reject it
+			await quoteFromEstimate.createExchange(invalidSwapBlock);
+		})).rejects.toThrow();
+
+		swapBlockBuilder.unseal();
+		// Add the cost to the operations
+		swapBlockBuilder.addOperation(
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: liquidityProvider,
+				token: quoteFromEstimate.quote.cost.token,
+				amount: quoteFromEstimate.quote.cost.amount
+			}
+		);
+		const swapRequestBlock = await swapBlockBuilder.seal();
+
+		const exchangeWithBlock = await quoteFromEstimate.createExchange(swapRequestBlock);
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
-		expect(exchangeWithBlock.exchange.exchangeID).toBe(sendBlock.hash.toString());
+		expect(exchangeWithBlock.exchange.exchangeID).toBe(swapRequestBlock.hash.toString());
 
 		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBeDefined();
@@ -383,9 +407,15 @@ test('FX Anchor Client Test', async function() {
 		cumulativeUSDChange += BigInt(sendAmount) * 2n;
 
 		const sortBalances = (a: { balance: bigint, token: KeetaNetToken; }, b: { balance: bigint, token: KeetaNetToken; }) => Number(a.balance - b.balance);
-		const newAccountBalances = await client.allBalances({ account });
+		const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
+			/* Remove the KTA token balance since it may have changed due to fees */
+			return(!balanceEntry.token.comparePublicKey(baseToken));
+		}
+		const newAccountBalances = (await client.allBalances({ account })).filter(removeBaseTokenBalanceEntry);
+
 		expect(toJSONSerializable([...newAccountBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: cumulativeEURChange }, { token: testCurrencyUSD, balance: (initialAccountUSDBalance - cumulativeUSDChange) }].sort(sortBalances)));
-		const newLiquidityBalances = await client.allBalances({ account: liquidityProvider });
+
+		const newLiquidityBalances = (await client.allBalances({ account: liquidityProvider })).filter(removeBaseTokenBalanceEntry);
 		expect(toJSONSerializable([...newLiquidityBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: cumulativeUSDChange }, { token: testCurrencyEUR, balance: (initialLiquidityProviderEURBalance - cumulativeEURChange) }].sort(sortBalances)));
 	}
 });
@@ -393,7 +423,12 @@ test('FX Anchor Client Test', async function() {
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const account2 = KeetaNet.lib.Account.fromSeed(seed, 1);
-	const { userClient: client } = await createNodeAndClient(account);
+	const { userClient: client, fees } = await createNodeAndClient(account);
+
+	/**
+	 * Disable fees to avoid tests failing due to fee issues
+	 */
+	fees.disable();
 
 	const { account: newToken } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	if (!newToken.isToken()) {
@@ -401,8 +436,7 @@ test('Swap Function Negative Tests', async function() {
 	}
 	const from = { account, token: testCurrencyBTC, amount: 10n }
 	const to = { account: account2, token: newToken, amount: 15n }
-	// eslint-disable-next-line @typescript-eslint/no-deprecated
-	const swapBlockNewToken = await createSwapRequest(client, from, to);
+	const swapBlockNewToken = await client.createSwapRequest({ from, to });
 
 	const swapMissingReceive = await (new KeetaNet.lib.Block.Builder({
 		account,
@@ -420,21 +454,16 @@ test('Swap Function Negative Tests', async function() {
 
 	const testFails = [
 		// @ts-expect-error
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, undefined, undefined) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, {}) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, { token: testCurrencyBTC }) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapBlockNewToken, { amount: 5n }) },
-		// eslint-disable-next-line @typescript-eslint/no-deprecated
-		async function() { await acceptSwapRequest(client, swapMissingReceive, {}) }
+		async function() { await client.acceptSwapRequest(undefined, undefined) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: {}}) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: { token: testCurrencyBTC }}) },
+		async function() { await client.acceptSwapRequest({ block: swapBlockNewToken, expected: { amount: 5n }}) },
+		async function() { await client.acceptSwapRequest({ block: swapMissingReceive, expected: {}}) }
 	]
 
-	for (const test of testFails) {
+	for (const testFail of testFails) {
 		await expect(async function() {
-			await test()
+			await testFail()
 		}).rejects.toThrow();
 	}
 });

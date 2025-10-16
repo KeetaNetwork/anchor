@@ -7,6 +7,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -154,17 +155,30 @@ type ServiceMetadata = {
 				}[];
 			}
 		};
-		inbound?: {
+		assetMovement?: {
 			[id: string]: {
-				/* XXX:TODO */
-				workInProgress?: true;
-			};
-		};
-		outbound?: {
-			[id: string]: {
-				/* XXX:TODO */
-				workInProgress?: true;
-			};
+				operations: {
+					initiateTransfer?: string;
+					getTransferStatus?: string;
+					createPersistentForwarding?: string;
+					listTransactions?: string
+				};
+
+				supportedAssets: {
+					asset: KeetaNetAccountTokenPublicKeyString;
+
+					paths: {
+						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
+
+						/**
+						 * KYC providers which this Asset Movement Provider
+						 * supports (DN) -- if not specified,
+						 * then it does not require KYC.
+						 */
+						kycProviders?: string[];
+					}[];
+				}[];
+			}
 		};
 		cards?: {
 			[id: string]: {
@@ -228,13 +242,16 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		countryCodes: CountrySearchInput[];
 	};
-	'inbound': {
-		/* XXX:TODO */
-		workInProgress: true;
-	};
-	'outbound': {
-		/* XXX:TODO */
-		workInProgress: true;
+	'assetMovement': {
+		asset?: MovableAssetSearchInput;
+		from?: AssetLocationString;
+		to?: AssetLocationString;
+		rail?: Rail;
+		/**
+		 * Search for a provider which supports ANY of the following
+		 * KYC providers
+		 */
+		kycProviders?: string[];
 	};
 	'cards': {
 		/* XXX:TODO */
@@ -343,6 +360,11 @@ function assertValidOperationsFX(input: unknown): asserts input is { operations:
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsAssetMovement(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
 function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
@@ -411,6 +433,29 @@ const assertResolverLookupFXResult = async function(input: unknown): Promise<Res
 	await fromUnrealized('array');
 
 	// XXX:TODO: Perform deeper validation of the "from" structure
+	// @ts-ignore
+	return(input);
+};
+
+const assertResolverLookupAssetMovementResults = async function(input: unknown): Promise<ResolverLookupServiceResults<'assetMovement'>[string]> {
+	assertValidOperationsAssetMovement(input);
+	// assertValidOperationsKYC(input);
+	// assertValidOptionalCountryCodes(input);
+	// assertValidCA(input);
+	if (!('supportedAssets' in input)) {
+		throw(new Error('Expected "supportedAssets" key in asset movement service, but it was not found'));
+	}
+
+	const fromUnrealized = input.supportedAssets;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(fromUnrealized)) {
+		throw(new Error(`Expected "supportedAssets" to be an Valuizable, got ${typeof fromUnrealized}`));
+	}
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
+	await fromUnrealized('array');
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
 	// @ts-ignore
 	return(input);
 };
@@ -520,26 +565,32 @@ type ValuizableArray = (ValuizableMethod | undefined)[];
 type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
 type ValuizableKind = 'any' | 'object' | 'array' | 'primitive' | 'string' | 'number' | 'boolean';
-interface ValuizableMethod {
+
+interface ValuizableMethodBase {
+	(expect?: ValuizableKind): Promise<ValuizeInput>;
+	(expect: 'any'): Promise<ValuizeInput>;
+}
+
+interface ValuizableMethod extends ValuizableMethodBase {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
-	(expect: 'any'): Promise<ValuizeInput>;
-	(expect?: ValuizableKind): Promise<ValuizeInput>;
 };
 
-interface ToValuizableExpectString {
+interface ToValuizableExpectString extends ValuizableMethodBase {
 	(expect: 'string'): Promise<string>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectNumber {
+
+interface ToValuizableExpectNumber extends ValuizableMethodBase {
 	(expect: 'number'): Promise<number>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectBoolean {
+
+interface ToValuizableExpectBoolean extends ValuizableMethodBase {
 	(expect: 'boolean'): Promise<boolean>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
@@ -571,6 +622,8 @@ type ToJSONValuizableObject<T extends object> = {
 	) | ExternalURL;
 };
 type ToJSONValuizable<T> = ToJSONValuizableObject<{ tmp: T }>['tmp'];
+
+type ValuizeResolvable = JSONSerializablePrimitive | ValuizableObject | ValuizableArray | ValuizableMethod;
 
 /*
  * Access token to share with the Metadata object to allow it to
@@ -639,6 +692,7 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
+const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -686,8 +740,16 @@ class Metadata implements ValuizableInstance {
 		assertServiceMetadata(value);
 	}
 
+	/**
+	 * Check if the supplied value is a Valuizable method which can
+	 * be called to resolve a Valuizable value.
+	 */
 	static isValuizable(value: unknown): value is ValuizableMethod {
 		if (typeof value === 'object' && value !== null) {
+			return(false);
+		}
+
+		if (typeof value !== 'function') {
 			return(false);
 		}
 
@@ -705,6 +767,87 @@ class Metadata implements ValuizableInstance {
 		}
 
 		return(false);
+	}
+
+	/**
+	 * Recursively resolve a Valuizable value into a fully
+	 * realized JSONSerializable value.  This will walk the
+	 * entire structure, calling each Valuizable method
+	 * and replacing it with the returned value.
+	 *
+	 * This should only be used in cases where the entire
+	 * structure needs to be fully realized, as it
+	 * can be quite expensive.
+	 */
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	// eslint-disable-next-line @typescript-eslint/unified-signatures,@typescript-eslint/no-explicit-any
+	static async fullyResolveValuizable(value: any, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement: JSONSerializable = null): Promise<JSONSerializable> {
+		if (typeof value === 'object' && value !== null) {
+			if (Array.isArray(value)) {
+				const newArray: JSONSerializable[] = [];
+				for (let i = 0; i < value.length; i++) {
+					const entry = value[i];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newArray.push(newEntry);
+					} else if (entry === undefined) {
+						throw(new Error(`Array entry ${i} is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newArray);
+			} else {
+				const newObject: { [key: string]: JSONSerializable; } = {};
+				for (const key in value) {
+					/*
+					 * Since `key` is the index of the array or
+					 * object, it is safe to use it to index
+					 * into the array or object.
+					 */
+					// @ts-ignore
+					const entry = value[key];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newObject[key] = newEntry;
+					} else if (entry === undefined) {
+						throw(new Error(`Object key "${key}" is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newObject);
+			}
+		}
+
+		if (Metadata.isValuizable(value)) {
+			try {
+				const retval = await value('any');
+				return(await Metadata.fullyResolveValuizable(retval));
+			} catch {
+				return(invalidReplacement);
+			}
+		}
+
+		switch (typeof value) {
+			case 'string':
+			case 'number':
+			case 'boolean':
+				return(value);
+			case 'object':
+				if (value === null) {
+					return(value);
+				}
+				assertNever(value);
+				break;
+			default:
+				assertNever(value);
+		}
+
+		throw(new Error('invalid input'));
 	}
 
 	constructor(url: string | URL, config: MetadataConfig) {
@@ -841,7 +984,7 @@ class Metadata implements ValuizableInstance {
 		 * URL twice, then we have a circular reference.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
-			return('');
+			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
@@ -985,6 +1128,10 @@ class Metadata implements ValuizableInstance {
 				const keyValue: JSONSerializable = value[key];
 
 				if (isExternalURL(keyValue)) {
+					if (Array.isArray(newValue)) {
+						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
+					}
+
 					const newMetadataObject = new Metadata(keyValue.url, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
@@ -996,9 +1143,11 @@ class Metadata implements ValuizableInstance {
 
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
-					if (Array.isArray(newValue)) {
-						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can  only be an object'));
-					}
+					Object.defineProperty(newValuizableObject, 'instanceTypeID', {
+						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						enumerable: false
+					});
+
 					newValue[key] = newValuizableObject;
 				} else {
 					/*
@@ -1050,7 +1199,6 @@ class Metadata implements ValuizableInstance {
 	}
 }
 
-
 type ResolverStats = {
 	keetanet: {
 		reads: number;
@@ -1094,15 +1242,8 @@ class Resolver {
 		'fx': {
 			search: this.lookupFXServices.bind(this)
 		},
-		'inbound': {
-			search: async (_ignored_input: ValuizableObject | undefined, _ignored_criteria: ServiceSearchCriteria<'inbound'>) => {
-				throw(new Error('not implemented'));
-			}
-		},
-		'outbound': {
-			search: async (_ignored_input: ValuizableObject | undefined, _ignored_criteria: ServiceSearchCriteria<'outbound'>) => {
-				throw(new Error('not implemented'));
-			}
+		'assetMovement': {
+			search: this.lookupAssetMovementServices.bind(this)
 		},
 		'cards': {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1371,6 +1512,100 @@ class Resolver {
 		return(retval);
 	}
 
+	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
+		if (criteria.rail !== undefined) {
+			throw(new Error('Asset movement service does not support rail search criteria'));
+		}
+		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
+		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
+		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
+
+		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
+		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
+
+		const filteredAssetMovement: SupportedAssets[] = [];
+		for (const supportedAsset of supportedAssets) {
+			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
+				continue;
+			}
+			if (fromCanonical) {
+				let fromMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === fromCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const outboundPairMatch = pair.rails.outbound && pair.rails.outbound.length > 0;
+							if (commonPairMatch || outboundPairMatch) {
+								fromMatch = true;
+							}
+						}
+					}
+				}
+				if (!fromMatch) {
+					continue;
+				}
+			}
+			if (toCanonical) {
+				let toMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === toCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const inboundPairMatch = pair.rails.inbound && pair.rails.inbound.length > 0;
+							if (commonPairMatch || inboundPairMatch) {
+								toMatch = true;
+							}
+						}
+					}
+				}
+				if (!toMatch) {
+					continue;
+				}
+			}
+			filteredAssetMovement.push(supportedAsset);
+		}
+		return(filteredAssetMovement);
+	}
+
+	private async lookupAssetMovementServices(assetServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'assetMovement'>) {
+		if (assetServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
+		for (const checkAssetMovementServiceID in assetServices) {
+			const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
+
+			if (checkAssetMovementService === undefined) {
+				return(undefined);
+			}
+
+			if (!('operations' in checkAssetMovementService)) {
+				return(undefined);
+			}
+
+			try {
+				const supportedAssets = await this.filterSupportedAssets(checkAssetMovementService, criteria);
+				if (supportedAssets.length === 0) {
+					continue;
+				}
+				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
+			} catch (parseError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any asset movement services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
 	async #getRootMetadata() {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
@@ -1393,6 +1628,56 @@ class Resolver {
 		}
 
 		return(rootMetadata);
+	}
+
+	async getRootMetadata(): Promise<ToValuizable<ServiceMetadata>> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(rootMetadata as unknown as ToValuizable<ServiceMetadata>);
+	}
+
+	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
+		const rootMetadata = await this.#getRootMetadata();
+		const servicesFn = rootMetadata.services;
+		if (servicesFn === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const services = await servicesFn('object');
+		if (!('assetMovement' in services) || services.assetMovement === undefined) {
+			throw(new Error('Root metadata is missing "assetMovement" property'));
+		}
+		const assetMovementServices = await services.assetMovement('object');
+		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
+		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+			if (service === undefined) {
+				throw(new Error('assetMovement has undefined service entry'));
+			}
+			const serviceEntry = await service('object');
+			if (!('supportedAssets' in serviceEntry) || serviceEntry.supportedAssets === undefined) {
+				throw(new Error('service entry is missing "supportedAssets"'));
+			}
+
+			const supportedAssets = await serviceEntry.supportedAssets('array');
+			await Promise.all(supportedAssets.map(async function(supportedAsset) {
+				if (supportedAsset === undefined) {
+					throw(new Error('supportedAsset entry is undefined'));
+				}
+				const assetEntry = await supportedAsset('object');
+				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
+					throw(new Error('asset is missing from supportedAsset entry'));
+				}
+				const asset = await assetEntry.asset('string');
+
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+				allAssets.add(checkTokenObject.publicKeyString.get());
+			}));
+		}));
+
+		return([...allAssets]);
 	}
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {

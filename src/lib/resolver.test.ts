@@ -1,9 +1,10 @@
 import { test, expect } from 'vitest';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import * as CurrencyInfo from '@keetanetwork/currency-info';
+import { createAssert } from 'typia';
 import Resolver from './resolver.js';
 import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
-import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from './utils/tests/node.js';
-import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
 	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
@@ -32,7 +33,12 @@ async function setupForResolverTests() {
 	const testCurrencyMXN = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyBTC = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 
-	const { userClient } = await createNodeAndClient(testAccount);
+	const { userClient, fees } = await createNodeAndClient(testAccount);
+
+	/**
+	 * Disable fees for the setup
+	 */
+	fees.disable();
 
 	/*
 	 * An account whose metadata is set at the top-level,
@@ -166,18 +172,32 @@ async function setupForResolverTests() {
 		trustedCAs: []
 	});
 
+	/**
+	 * Re-enable fees after setup
+	 */
+	fees.enable();
+
 	return({
-		resolver,
+		resolver: resolver,
 		tokens: {
 			USD: testCurrencyUSD,
 			MXN: testCurrencyMXN,
 			'$BTC': testCurrencyBTC
+		},
+		/**
+		 * The metadata entries which are expected to be broken and
+		 * thus cannot be used to validate the fully resolved metadata
+		 */
+		brokenServiceMetadata: {
+			services: {
+				banking: ['keeta_https', testAccountLoop.publicKeyString.get(), 'keeta_broken1', 'keeta_broken2', 'keeta_broken3', 'keeta_broken4', 'keeta_nomatch1', 'keeta_nomatch2']
+			}
 		}
 	});
 }
 
 test('Basic Tests', async function() {
-	const { resolver, tokens } = await setupForResolverTests();
+	const { resolver, tokens, brokenServiceMetadata } = await setupForResolverTests();
 	expect(resolver.stats.reads).toBe(0);
 
 	/*
@@ -389,6 +409,33 @@ test('Basic Tests', async function() {
 	expect(function() {
 		resolver._mutableStats(Symbol('statsAccessToken'));
 	}).toThrow();
+
+	/*
+	 * Verify that we can fully resolve objects
+	 */
+	resolver.clearCache();
+	const metadata = await resolver.getRootMetadata();
+	const fullyResolvedMetadata = await Resolver.Metadata.fullyResolveValuizable(metadata, null);
+	expect(fullyResolvedMetadata).toBeDefined();
+	const assertValidServiceMetadata = createAssert<ServiceMetadata>();
+
+	/*
+	 * Delete the inputs which cannot be resolved, as they become ""
+	 * which is not valid according to the schema
+	 */
+	for (const brokenService of brokenServiceMetadata.services.banking) {
+		// @ts-ignore
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+		if (fullyResolvedMetadata.services.banking[brokenService] === '') {
+			// @ts-ignore
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+			fullyResolvedMetadata.services.banking[brokenService] = null;
+		}
+		// @ts-ignore
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-dynamic-delete
+		delete fullyResolvedMetadata.services.banking[brokenService];
+	}
+	assertValidServiceMetadata(fullyResolvedMetadata);
 
 	/*
 	 * Verify that currency lookups work
