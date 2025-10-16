@@ -125,6 +125,11 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	 * precedence.
 	 */
 	kycProviderURL?: string;
+
+	/**
+	 * Additional routes to add to the server (optional)
+	 */
+	routes?: KeetaAnchorHTTPServer.Routes;
 };
 
 export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorKYCServerConfig> implements Required<KeetaAnchorKYCServerConfig> {
@@ -134,6 +139,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 	readonly ca: KeetaAnchorKYCServerConfig['ca'];
 	readonly kyc: KeetaAnchorKYCServerConfig['kyc'];
 	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
+	readonly routes: NonNullable<KeetaAnchorKYCServerConfig['routes']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
@@ -144,6 +150,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		this.signer = config.signer;
 		this.ca = config.ca;
 		this.kyc = config.kyc;
+		this.routes = config.routes ?? {};
 		this.kycProviderURL = config.kycProviderURL ?? new URL('/provider/{id}', this.url).toString();
 
 		if (config.kyc.countryCodes) {
@@ -280,7 +287,10 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 			};
 		}
 
-		return(routes);
+		return({
+			...config.routes,
+			...routes
+		});
 	}
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['kyc']>[string]> {
