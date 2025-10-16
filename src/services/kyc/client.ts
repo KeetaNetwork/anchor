@@ -14,7 +14,10 @@ import type {
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse
 } from './common.ts';
-import * as Signing from '../../lib/utils/signing.js';
+import {
+	verifySignedData,
+	generateSignedData
+} from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
@@ -322,14 +325,6 @@ class KeetaKYCProvider {
 	}
 }
 
-async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
-	return(await Signing.SignData(account, []));
-}
-
-async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
-	const account = KeetaNetLib.Account.fromPublicKeyString(request.account);
-	return(await Signing.VerifySignedData(account, [], request.signed));
-}
 
 class KeetaKYCAnchorClient {
 	readonly resolver: Resolver;

@@ -15,6 +15,9 @@ import {
 	assertCreateVerificationRequest,
 	assertCreateVerificationResponse
 } from './common.generated.js';
+import {
+	verifySignedData
+} from './common.js';
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
@@ -199,6 +202,13 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 */
 		routes['POST /api/createVerification'] = async function(_ignore_params, bodyInput) {
 			const body = assertCreateVerificationRequest(bodyInput);
+			const valid = await verifySignedData(body);
+			if (!valid) {
+				throw(new KeetaAnchorUserError('Invalid signature'));
+			}
+
+			/* XXX:TODO: Validate that the nonce is unique (within a reasonable time frame) */
+
 			let response: Partial<KeetaKYCAnchorCreateVerificationResponse> | undefined = {};
 			if (config.kyc.verificationStarted) {
 				response = await config.kyc.verificationStarted(body);

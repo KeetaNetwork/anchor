@@ -2,8 +2,8 @@ import type {
 	ServiceMetadata,
 	ServiceSearchCriteria
 } from '../../lib/resolver.ts';
-import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
+import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -17,7 +17,7 @@ export type OperationNames = keyof Operations;
 
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;
-	account: ReturnType<InstanceType<typeof KeetaNetLib.Account>['publicKeyString']['get']>;
+	account: ReturnType<InstanceType<typeof KeetaNet.lib.Account>['publicKeyString']['get']>;
 	signed: {
 		nonce: string;
 		/* Date and time of the request in ISO 8601 format */
@@ -27,7 +27,7 @@ export interface KeetaKYCAnchorCreateVerificationRequest {
 	};
 }
 
-type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 export type KeetaKYCAnchorCreateVerificationResponse = ({
 	ok: true;
 
@@ -148,4 +148,13 @@ export const Errors: {
 	 * Payment is required for the certificate
 	 */
 	PaymentRequired: KeetaKYCAnchorCertificatePaymentRequired
+}
+
+export async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
+	return(await Signing.SignData(account, []));
+}
+
+export async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
+	const account = KeetaNet.lib.Account.fromPublicKeyString(request.account);
+	return(await Signing.VerifySignedData(account, [], request.signed));
 }
