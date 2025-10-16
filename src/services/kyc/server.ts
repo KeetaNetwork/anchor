@@ -15,39 +15,6 @@ import type {
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
-const assertCreateVerificationRequest = createAssert<KeetaKYCAnchorCreateVerificationRequest>();
-const assertCreateVerificationResponse = createAssert<KeetaKYCAnchorCreateVerificationResponse>();
-
-class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
-	protected statusCode = 400;
-	constructor(message?: string) {
-		super(message ?? 'Verification ID not found');
-	}
-}
-
-class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
-	protected statusCode = 404;
-	constructor(message?: string) {
-		super(message ?? 'Certificate not found (pending)');
-	}
-}
-
-export const Errors: {
-	VerificationNotFound: typeof KeetaKYCAnchorVerificationNotFoundError;
-	CertificateNotFound: typeof KeetaKYCAnchorCertificateNotFoundError;
-} = {
-	/**
-	 * The verification ID was not found
-	 */
-	VerificationNotFound: KeetaKYCAnchorVerificationNotFoundError,
-
-	/**
-	 * The certificate for the verification ID was not found
-	 * (typically this means the verification is still pending)
-	 */
-	CertificateNotFound: KeetaKYCAnchorCertificateNotFoundError
-}
-
 export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -332,3 +299,6 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		});
 	}
 }
+
+const assertCreateVerificationRequest = createAssert<KeetaKYCAnchorCreateVerificationRequest>();
+const assertCreateVerificationResponse = createAssert<KeetaKYCAnchorCreateVerificationResponse>();
