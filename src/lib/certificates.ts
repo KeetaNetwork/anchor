@@ -34,6 +34,17 @@ function isAttributeValue<NAME extends CertificateAttributeNames>(
 	return(true);
 }
 
+// Helper to apply type guard once and return the properly typed value
+function asAttributeValue<NAME extends CertificateAttributeNames>(
+	name: NAME,
+	v: unknown
+): CertificateAttributeValue<NAME> {
+	if (!isAttributeValue(name, v)) {
+		throw(new Error('internal error: decoded value did not match expected type'));
+	}
+	return(v);
+}
+
 /**
  * Sensitive Attribute Schema
  *
@@ -135,7 +146,8 @@ function encodeAttribute(
 		return(der);
 	}
 
-	const toASN1Value = (v: unknown): ASN1AnyJS => {
+	const MAX_ASN1_VALUE_DEPTH = 8; // Prevent excessive nesting
+	const toASN1Value = (v: unknown, depth = 0): ASN1AnyJS => {
 		// Only allow primitives and raw binary that ASN1.JStoASN1 understands.
 		if (v instanceof Date) { return(v); }
 		if (Buffer.isBuffer(v)) { return(v); }
@@ -144,11 +156,22 @@ function encodeAttribute(
 		if (typeof v === 'number' || typeof v === 'bigint' || typeof v === 'boolean') {
 			return({ type: 'string', kind: 'utf8', value: String(v) });
 		}
+
 		if (Array.isArray(v)) {
-			return(v.map(item => toASN1Value(item)));
+			if (depth >= MAX_ASN1_VALUE_DEPTH) {
+				// Depth exceeded: serialize to a stable string to avoid deep structures
+				return({ type: 'string', kind: 'utf8', value: JSON.stringify(v) });
+			}
+			return(v.map(item => toASN1Value(item, depth + 1)));
 		}
-		// For nested objects in complex attributes, delegate to JSON to avoid emitting arbitrary ASN.1 structures.
+
+		// XXX:TODO What should we do?
+		// For nested objects in complex attributes, delegate to JSON to avoid emitting
+		// arbitrary ASN.1 structures.
 		if (hasIndexSignature(v)) {
+			if (depth >= MAX_ASN1_VALUE_DEPTH) {
+				return({ type: 'string', kind: 'utf8', value: '[Object]' });
+			}
 			return({ type: 'string', kind: 'utf8', value: JSON.stringify(v) });
 		}
 		return({ type: 'string', kind: 'utf8', value: String(v) });
@@ -176,13 +199,17 @@ function encodeAttribute(
 	}
 
 	// Primitive string type
-	if (schema === ASN1.ValidateASN1.IsString && typeof value === 'string') {
+	if (schema === ASN1.ValidateASN1.IsString) {
+		if (typeof value !== 'string') {
+			throw(new Error('Expected string value for string schema'));
+		}
+
 		const asn1 = ASN1.JStoASN1({ type: 'string', kind: 'utf8', value });
 		const der = asn1.toBER(false);
 		return(der);
 	}
 
-	throw(new Error('Unsupported attribute value for encoding'));
+	throw(new Error(`Unsupported attribute value for encoding: ${String(value)}`));
 }
 
 
@@ -191,8 +218,9 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
 	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
-
 	const fieldNames = CertificateAttributeFieldNames[name];
+
+	let candidate: unknown;
 	if (fieldNames && Array.isArray(decodedUnknown)) {
 		const arr: unknown[] = decodedUnknown;
 		const result: { [key: string]: unknown } = {};
@@ -215,20 +243,14 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 				result[fieldName] = fieldValue;
 			}
 		}
-		const decoded: unknown = result;
-		if (!isAttributeValue(name, decoded)) { throw(new Error('internal error: decoded value did not match expected type')); }
-		return(decoded);
+		candidate = result;
+	} else if (hasValueProp(decodedUnknown)) {
+		candidate = decodedUnknown.value;
+	} else {
+		candidate = decodedUnknown;
 	}
 
-	// Simple types: unwrap { value }
-	if (hasValueProp(decodedUnknown)) {
-		const simple = decodedUnknown.value;
-		if (!isAttributeValue(name, simple)) { throw(new Error('internal error: decoded value did not match expected type')); }
-		return(simple);
-	}
-
-	if (!isAttributeValue(name, decodedUnknown)) { throw(new Error('internal error: decoded value did not match expected type')); }
-	return(decodedUnknown);
+	return(asAttributeValue(name, candidate));
 }
 
 class SensitiveAttributeBuilder {
@@ -326,14 +348,11 @@ class SensitiveAttributeBuilder {
 			/* Encrypted Value, encrypted with the Cipher above */
 			encryptedValue
 		];
+
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
+
 		// Produce canonical DER as ArrayBuffer
 		const retval = encodedAttributeObject.toBER(false);
-		// Optional check of top-level shape (kept minimal and non-stateful)
-		const js = ASN1toJS(retval);
-		if (!Array.isArray(js) || js.length !== 4) {
-			throw(new Error('internal error: SensitiveAttributeBuilder emitted invalid DER shape (expected SEQUENCE of length 4)'));
-		}
 		return(retval);
 	}
 }
