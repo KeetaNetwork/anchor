@@ -32,8 +32,3 @@ export {
 	BufferStorageASN1,
 	ValidateASN1
 };
-
-// A permissive wrapper that accepts unknown inputs and delegates to the strict encoder.
-// This avoids pervasive type assertions at call sites while preserving runtime behavior.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions
-export function JStoASN1Loose(input: unknown): ReturnType<typeof JStoASN1> { return(JStoASN1(input as any)); }
