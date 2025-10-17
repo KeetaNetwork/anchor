@@ -110,7 +110,7 @@ test('KYC Anchor Client Test', async function() {
 						validFrom: new Date(Date.now() - 30_000),
 						validTo: new Date(Date.now() + 120_000)
 					});
-					certificateBuilder.setAttribute('fullName', true, Buffer.from('John Doe', 'utf-8'));
+					certificateBuilder.setAttribute('fullName', true, 'John Doe');
 					const builtCertificate = await certificateBuilder.build();
 					certificate = builtCertificate.toPEM();
 					certificates.set(verificationID, certificate);
