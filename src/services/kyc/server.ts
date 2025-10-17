@@ -2,7 +2,6 @@ import KeetaNet from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
-import type * as Certificate from '../../lib/certificates.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -22,6 +21,13 @@ import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
 const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
+
+/**
+ * The Base certificate type, from the KeetaNet Client
+ *
+ * The KYC Certificate type is a subclass of this, so it will also work
+ */
+type BaseCertificate = InstanceType<typeof KeetaNet.lib.Utils.Certificate.Certificate>;
 
 export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -116,7 +122,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	/**
 	 * The certificate to use for signing certificates
 	 */
-	ca: Certificate.Certificate;
+	ca: BaseCertificate;
 
 	/**
 	 * The account to use for signing certificates
@@ -132,7 +138,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	 * If both are provided, the URL from `kyc.verificationStarted` takes
 	 * precedence.
 	 */
-	kycProviderURL?: string;
+	kycProviderURL?: string | ((verificationID: string) => string);
 
 	/**
 	 * Additional routes to add to the server (optional)
@@ -203,7 +209,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 * with this KYC provider
 		 */
 		routes['POST /api/createVerification'] = async function(_ignore_params, bodyInput) {
-			const body = assertCreateVerificationRequest(bodyInput);
+			if (bodyInput === null || typeof bodyInput !== 'object' || !('request' in bodyInput)) {
+				throw(new KeetaAnchorUserError('Invalid request'));
+			}
+
+			const body = assertCreateVerificationRequest(bodyInput.request);
 			const valid = await verifySignedData(body);
 			if (!valid) {
 				throw(new KeetaAnchorUserError('Invalid signature'));
@@ -229,7 +239,16 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				throw(new Error('internal error: invalid response'));
 			}
 			response.id ??= crypto.randomUUID();
-			response.webURL ??= (config.kycProviderURL ?? kycProviderURLUndefined).replace('{id}', encodeURIComponent(response.id));
+
+			let defaultWebURL: string;
+			if (typeof config.kycProviderURL === 'string') {
+				defaultWebURL = config.kycProviderURL.replace('{id}', encodeURIComponent(response.id));
+			} else if (config.kycProviderURL !== undefined) {
+				defaultWebURL = config.kycProviderURL(response.id);
+			} else {
+				defaultWebURL = kycProviderURLUndefined;
+			}
+			response.webURL ??= defaultWebURL;
 
 			if (!response.webURL || response.webURL === kycProviderURLUndefined) {
 				throw(new KeetaAnchorUserError('No webURL provided -- cannot proceed with verification'));
@@ -327,7 +346,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				// getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
 				// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
 				createVerification: (new URL('/api/createVerification', this.url)).toString(),
-				getCertificates: (new URL('/api/getCertificates/{id}', this.url)).toString()
+				getCertificates: (new URL('/api/getCertificates', this.url)).toString() + '/{id}'
 			}
 		});
 	}
