@@ -274,11 +274,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 *
 		 * XXX:TODO
 		 */
-//		if (false) {
-//			routes['POST /api/createEstimate'] = async function(_ignore_params, _ignore_body) {
-//				throw(new Error('not implemented'));
-//			};
-//		}
+		// if (false) {
+		// 	routes['POST /api/createEstimate'] = async function(_ignore_params, _ignore_body) {
+		// 		throw(new Error('not implemented'));
+		// 	};
+		// }
 
 		/**
 		 * Get the certificate for the
@@ -309,22 +309,22 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		 *
 		 * XXX:TODO
 		 */
-//		if (false) {
-//			routes['GET /api/checkLocality'] = async function(_ignore_params, _ignore_body) {
-//				throw(new Error('not implemented'));
-//			};
-//		}
+		// if (false) {
+		// 	routes['GET /api/checkLocality'] = async function(_ignore_params, _ignore_body) {
+		// 		throw(new Error('not implemented'));
+		// 	};
+		// }
 
 		/**
 		 * Notification that payment has been received for the KYC verification
 		 *
 		 * XXX:TODO
 		 */
-//		if (false) {
-//			routes['POST /api/notifyPayment/:verificationID'] = async function(_ignore_params, _ignore_body) {
-//				throw(new Error('not implemented'));
-//			};
-//		}
+		// if (false) {
+		// 	routes['POST /api/notifyPayment/:verificationID'] = async function(_ignore_params, _ignore_body) {
+		// 		throw(new Error('not implemented'));
+		// 	};
+		// }
 
 		return({
 			...config.routes,
