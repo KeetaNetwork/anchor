@@ -1,0 +1,40 @@
+#! /usr/bin/env bash
+
+if [ "$#" != '1' ]; then
+	echo 'Usage: npm-check-logged-in <directory>' >&2
+	exit 1
+fi
+
+cd "$1" || exit 1
+
+packageName="$(jq -crM .name < package.json)"
+
+case "${packageName}" in
+	@*/*)
+		checkRegistry="${packageName/\/*/}"
+		;;
+	*)
+		checkRegistry=''
+		;;
+esac
+
+npmArgs=()
+case "${checkRegistry}" in
+	'')
+		;;
+	*)
+		registryInfo="$(grep "^${checkRegistry}:registry=" .npmrc 2>/dev/null)"
+		registryInfo="${registryInfo/*=/}"
+		if [ -n "${registryInfo}" ]; then
+			npmArgs+=(--registry "${registryInfo}")
+		fi
+		;;
+esac
+
+if ! npm whoami "${npmArgs[@]}" >/dev/null; then
+	echo 'ERROR: Unable to push to registry, are you logged in ?' >&2
+
+	exit 1
+fi
+
+exit 0

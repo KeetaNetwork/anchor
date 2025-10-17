@@ -1,7 +1,7 @@
 import { types as nodeUtilsTypes } from 'util';
 import { Buffer } from './buffer.js';
-import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-export type { JSONSerializable };
+import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+export type { JSONSerializable, ToJSONSerializable };
 
 type ConvertToJSONOptions = {
 	searchable?: boolean;

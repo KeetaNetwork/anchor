@@ -55,10 +55,20 @@ src/generated/.done: oids.json scripts/generate-kyc-schema.mjs Makefile
 schema: src/generated/.done
 
 # This target creates the distribution directory.
-dist/.done: $(shell find src -type f) src/generated/.done node_modules Makefile
+dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
+	mkdir -p dist
+	jq '. | del(.devDependencies)' < package.json > dist/package.json
+	cp package-lock.json dist/
+	test -e .npmrc && cp .npmrc dist/ || :
+	cd dist && npm shrinkwrap
+	cd dist && npm dedupe
+	rm -f dist/.npmrc
+	rm -f dist/package-lock.json
+	jq --tab 'del(.. | .resolved?)' < dist/npm-shrinkwrap.json > dist/npm-shrinkwrap.json.new
+	mv dist/npm-shrinkwrap.json.new dist/npm-shrinkwrap.json
+
+dist/.done: $(shell find src -type f) src/generated/.done dist/npm-shrinkwrap.json node_modules Makefile
 	npm run tsc
-	cp package.json dist/
-	cp package-lock.json dist/npm-shrinkwrap.json
 	find dist -type f -name '*.test.*' | xargs rm -f
 	rm -rf dist/lib/utils/tests
 	cp LICENSE dist/
@@ -76,6 +86,11 @@ do-npm-pack: dist node_modules
 	cd dist && npm pack
 	mv dist/keetanetwork-anchor-*.tgz .
 
+# Target for publishing to NPM
+do-npm-publish: .npmrc Makefile dist node_modules
+	./utils/npm-check-logged-in .
+	cd dist && npm publish
+
 # Deploy the package to the Development (or QA) environment.
 do-deploy: dist node_modules
 	@echo 'not implemented'
@@ -83,6 +98,7 @@ do-deploy: dist node_modules
 
 # This is a synthetic target that runs this test suite.
 test: node_modules
+	npm run tsc -- --noEmit
 	rm -rf .coverage
 	npm run vitest run -- --config ./.vitest.config.js $(ANCHOR_TEST_EXTRA_ARGS)
 

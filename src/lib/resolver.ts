@@ -1,4 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -7,34 +8,44 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
+const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
+type KeetaNetAccountTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account<typeof KeetaNetAccount.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
-type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
+/**
+ * Canonical form of a currency code for use in the ServiceMetadata
+ * Which is either the ISO currency code (e.g. "USD", "EUR", "JPY")
+ * or a cryptocurrency code prefixed with a dollar sign (e.g. "$BTC", "$ETH")
+ */
+type ServiceMetadataCurrencyCodeCanonical = CurrencyInfo.ISOCurrencyCode | `$${string}`;
+/**
+ * Input types which can be used to search for which token represents
+ * a given currency or cryptocurrency.
+ */
+type CurrencySearchInput = ServiceMetadataCurrencyCodeCanonical | CurrencyInfo.ISOCurrencyNumber | CurrencyInfo.Currency;
+type CurrencySearchCanonical = ServiceMetadataCurrencyCodeCanonical;
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
-/**
- * A cache object
- */
-type URLCacheObject = Map<string, {
-	pass: true;
-	value: JSONSerializable;
-	expires: Date;
-} | {
-	pass: false;
-	error: unknown;
-	expires: Date;
-}>;
+const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
+// #region Global Service Metadata
 /**
  * Service Metadata General Structure
  */
 type ServiceMetadata = {
 	version: number;
+	/**
+	 * Map of the currency code to the token public key which
+	 * represents that currency.
+	 */
+	currencyMap: {
+		[currencyCode in ServiceMetadataCurrencyCodeCanonical]?: KeetaNetAccountTokenPublicKeyString;
+	};
 	services: {
 		banking?: {
 			[id: string]: {
@@ -87,26 +98,99 @@ type ServiceMetadata = {
 				ca: string;
 			};
 		};
+		/**
+		 * Foreign Exchange (FX) services
+		 *
+		 * This is used to identify service providers which
+		 * can convert currency from one currency to another.
+		 */
 		fx?: {
-			inputCurrencyCodes: {
-				outputCurrencyCodes: string[];
-				kycProviders: string[];
-			}[];
+			/**
+			 * Provider ID which identifies the FX provider
+			 */
+			[id: string]: {
+				operations: {
+					/**
+					 * Get an estimate for a currency
+					 * conversion (optional)
+					 */
+					getEstimate?: string;
+					/**
+					 * Get a quote for a currency
+					 * conversion
+					 */
+					getQuote: string;
+					/**
+					 * Create an exchange to convert
+					 * currency
+					 */
+					createExchange: string;
+					/**
+					 * Get the status of an exchange
+					 * which was previously created
+					 */
+					getExchangeStatus: string;
+				};
+				/**
+				 * Path for which can be used to identify which
+				 * currencies this FX provider can convert
+				 * between.
+				 */
+				from: {
+					/**
+					 * Currency code which this FX provider can
+					 * convert from
+					 */
+					currencyCodes: KeetaNetAccountTokenPublicKeyString[];
+					/**
+					 * Currency codes which this FX provider can
+					 * convert to from the `from.currencyCode`
+					 */
+					to: KeetaNetAccountTokenPublicKeyString[];
+					/**
+					 * KYC providers which this FX provider
+					 * supports (DN) -- if not specified,
+					 * then it does not require KYC.
+					 */
+					kycProviders?: string[];
+				}[];
+			}
 		};
-		inbound?: {
-			/* XXX:TODO */
-			workInProgress?: true;
-		};
-		outbound?: {
-			/* XXX:TODO */
-			workInProgress?: true;
+		assetMovement?: {
+			[id: string]: {
+				operations: {
+					initiateTransfer?: string;
+					getTransferStatus?: string;
+					createPersistentForwarding?: string;
+					listTransactions?: string
+				};
+
+				supportedAssets: {
+					asset: KeetaNetAccountTokenPublicKeyString;
+
+					paths: {
+						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
+
+						/**
+						 * KYC providers which this Asset Movement Provider
+						 * supports (DN) -- if not specified,
+						 * then it does not require KYC.
+						 */
+						kycProviders?: string[];
+					}[];
+				}[];
+			}
 		};
 		cards?: {
-			/* XXX:TODO */
-			workInProgress?: true;
+			[id: string]: {
+				/* XXX:TODO */
+				workInProgress?: true;
+			};
 		};
 	};
 };
+
+type ServiceMetadataExternalizable = ToJSONValuizable<ServiceMetadata>;
 
 /**
  * Types of services which can be resolved
@@ -140,12 +224,17 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * Search for a provider which can convert from the following
 		 * input currency
 		 */
-		inputCurrencyCode: CurrencySearchInput;
+		inputCurrencyCode?: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
 		/**
 		 * Search for a provider which can convert to the following
 		 * output currency
 		 */
-		outputCurrencyCode: CurrencySearchInput;
+		outputCurrencyCode?: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString;
+		/**
+		 * Search for a provider which supports ANY of the following
+		 * KYC providers
+		 */
+		kycProviders?: string[];
 	};
 	'kyc': {
 		/**
@@ -154,13 +243,16 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		countryCodes: CountrySearchInput[];
 	};
-	'inbound': {
-		/* XXX:TODO */
-		workInProgress: true;
-	};
-	'outbound': {
-		/* XXX:TODO */
-		workInProgress: true;
+	'assetMovement': {
+		asset?: MovableAssetSearchInput;
+		from?: AssetLocationString;
+		to?: AssetLocationString;
+		rail?: Rail;
+		/**
+		 * Search for a provider which supports ANY of the following
+		 * KYC providers
+		 */
+		kycProviders?: string[];
 	};
 	'cards': {
 		/* XXX:TODO */
@@ -168,34 +260,230 @@ type ServiceSearchCriteria<T extends Services> = {
 	};
 }[T];
 
-type ResolverConfig = {
-	/**
-	 * The "root" account to use as the basis for all lookups.  It should
-	 * contain the authoritative information for resolving in its
-	 * Metadata.
-	 */
-	root: KeetaNetAccount;
-	/**
-	 * A KeetaNet Client to access the network using.
-	 */
-	client: KeetaNetClient.Client | KeetaNetClient.UserClient;
-	/**
-	 * A list of trusted Certificate Authorities to use when connecting to
-	 * external HTTPS services.
-	 */
-	trustedCAs: string[]; /* XXX:TODO */
-	/**
-	 * Logger to use for debugging
-	 */
-	logger?: Logger;
-	/**
-	 * ID for this instance of the resolver
-	 */
-	id?: string;
-	/**
-	 * Caching Parameters
-	 */
-	cache?: Omit<NonNullable<MetadataConfig['cache']>, 'instance'>;
+type ResolverLookupServiceResults<Service extends Services> = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services'][Service]>[string]> };
+
+type ServicesMetadataLookupMap = {
+	[Service in Services]: {
+		criteria: ServiceSearchCriteria<Service>;
+		results: ResolverLookupServiceResults<Service>;
+	};
+};
+
+function assertValidCountryCodes(input: unknown): asserts input is { countryCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('countryCodes' in input)) {
+		throw(new Error('Expected "countryCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
+		throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
+	}
+
+	if (Array.isArray(input.countryCodes)) {
+		for (const countryCode of input.countryCodes) {
+			if (typeof countryCode !== 'string') {
+				throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
+			}
+		}
+	}
+}
+
+function assertValidOptionalCountryCodes(input: unknown): asserts input is { countryCodes?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('countryCodes' in input)) {
+		return;
+	}
+
+	assertValidCountryCodes(input);
+}
+
+function assertValidCurrencyCodes(input: unknown): asserts input is { currencyCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['currencyCodes'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('currencyCodes' in input)) {
+		throw(new Error('Expected "currencyCodes" to be present, but it was not found'));
+	}
+
+	if (typeof input.currencyCodes !== 'function' && !Array.isArray(input.currencyCodes)) {
+		throw(new Error(`Expected "currencyCodes" to be an array | function, got ${typeof input.currencyCodes}`));
+	}
+
+	if (Array.isArray(input.currencyCodes)) {
+		for (const currencyCode of input.currencyCodes) {
+			if (typeof currencyCode !== 'string') {
+				throw(new Error(`Expected "currencyCodes" to be an array of strings, got ${typeof currencyCode}`));
+			}
+		}
+	}
+}
+
+function assertValidOperationsBanking(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['operations'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('operations' in input)) {
+		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
+	}
+
+	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
+		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
+	}
+
+	if (typeof input.operations !== 'function') {
+		for (const [operation, operationValue] of Object.entries(input.operations)) {
+			if (typeof operation !== 'string') {
+				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
+			}
+
+			if (typeof operationValue !== 'string') {
+				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
+			}
+		}
+	}
+}
+
+function assertValidOperationsKYC(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOperationsFX(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['fx']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOperationsAssetMovement(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('kycProviders' in input) {
+		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
+			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
+		}
+
+		if (Array.isArray(input.kycProviders)) {
+			for (const kycProvider of input.kycProviders) {
+				if (typeof kycProvider !== 'string') {
+					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
+				}
+			}
+		}
+	}
+}
+
+function assertValidCA(input: unknown): asserts input is { ca: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['ca'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if (!('ca' in input)) {
+		throw(new Error('Expected "ca" key in KYC service, but it was not found'));
+	}
+
+	if (typeof input.ca !== 'string' && typeof input.ca !== 'function') {
+		throw(new Error(`Expected "ca" to be a string | function, got ${typeof input.ca}`));
+	}
+}
+
+const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupServiceResults<'banking'>[string] {
+	assertValidOperationsBanking(input);
+	assertValidCountryCodes(input);
+	assertValidCurrencyCodes(input);
+	assertValidOptionalKYCProviders(input);
+
+	return(input);
+
+};
+const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupServiceResults<'kyc'>[string] {
+	assertValidOperationsKYC(input);
+	assertValidOptionalCountryCodes(input);
+	assertValidCA(input);
+
+	return(input);
+};
+
+const assertResolverLookupFXResult = async function(input: unknown): Promise<ResolverLookupServiceResults<'fx'>[string]> {
+	assertValidOperationsFX(input);
+
+	if (!('from' in input)) {
+		throw(new Error('Expected "from" key in FX service, but it was not found'));
+	}
+
+	const fromUnrealized = input.from;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(fromUnrealized)) {
+		throw(new Error(`Expected "from" to be an Valuizable, got ${typeof fromUnrealized}`));
+	}
+
+	// XXX:TODO: Perform deeper validation of the "from" structure
+	await fromUnrealized('array');
+
+	// XXX:TODO: Perform deeper validation of the "from" structure
+	// @ts-ignore
+	return(input);
+};
+
+const assertResolverLookupAssetMovementResults = async function(input: unknown): Promise<ResolverLookupServiceResults<'assetMovement'>[string]> {
+	assertValidOperationsAssetMovement(input);
+	// assertValidOperationsKYC(input);
+	// assertValidOptionalCountryCodes(input);
+	// assertValidCA(input);
+	if (!('supportedAssets' in input)) {
+		throw(new Error('Expected "supportedAssets" key in asset movement service, but it was not found'));
+	}
+
+	const fromUnrealized = input.supportedAssets;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(fromUnrealized)) {
+		throw(new Error(`Expected "supportedAssets" to be an Valuizable, got ${typeof fromUnrealized}`));
+	}
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
+	await fromUnrealized('array');
+
+	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
+	// @ts-ignore
+	return(input);
+};
+
+// #endregion
+
+// #region Validation
+
+async function isValidOperations(input: unknown): Promise<{ operations: ValuizableMethod } | false> {
+	if (typeof input !== 'object' || input === null) {
+		return(false);
+	}
+
+	if (!('operations' in input)) {
+		return(false);
+	}
+
+	const operations = input.operations;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(operations)) {
+		return(false);
+	}
+
+	return({
+		...input,
+		operations
+	});
 }
 
 function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencySearchCanonical {
@@ -203,10 +491,59 @@ function convertToCurrencySearchCanonical(input: CurrencySearchInput): CurrencyS
 		return(input);
 	} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
 		input = new CurrencyInfo.Currency(input);
+		return(input.code);
+	} else if (typeof input === 'string') {
+		return(input);
+	} else if (input === null) {
+		throw(new Error('Invalid currency input: null'));
+	} else if ('code' in input) {
+		return(input.code);
+	} else {
+		throw(new Error(`Invalid currency input: ${input}`));
+	}
+}
+
+async function hasAllCurrencyCodes(input: unknown, criteria: { currencyCodes: CurrencySearchCanonical[] }): Promise<boolean> {
+	// XXX:TODO: Avoid using exceptions for flow-control
+	assertValidCurrencyCodes(input);
+
+	const currencyCodes = await input.currencyCodes?.('array') ?? [];
+	const inputCurrencyCodes = await Promise.all(currencyCodes.map(async function(item) {
+		return(await item?.('primitive'));
+	}));
+
+	for (const checkCurrencyCode of criteria.currencyCodes) {
+		const checkCurrencyCodeCanonical = convertToCurrencySearchCanonical(checkCurrencyCode);
+		if (!inputCurrencyCodes.includes(checkCurrencyCodeCanonical)) {
+			return(false);
+		}
 	}
 
-	return(input.code);
+	return(true);
 }
+
+async function hasAnyCountryCodes(input: unknown, criteria: { countryCodes: CountrySearchCanonical[] }): Promise<boolean> {
+	// XXX:TODO: Avoid using exceptions for flow-control
+	assertValidCountryCodes(input);
+
+	const countryCodes = await input.countryCodes?.('array') ?? [];
+
+	for (const countryCode of countryCodes) {
+		const countryCodeValue = await countryCode?.('primitive');
+		if (countryCodeValue === undefined) {
+			continue;
+		}
+
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
+		if (criteria.countryCodes.includes(countryCodeValue as any)) {
+			return(true);
+		}
+	}
+
+	return(false);
+}
+
+// #endregion
 
 function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySearchCanonical {
 	if (CurrencyInfo.Country.isCountryCode(input)) {
@@ -229,26 +566,32 @@ type ValuizableArray = (ValuizableMethod | undefined)[];
 type ValuizableObject = { [key: string]: ValuizableMethod | undefined };
 
 type ValuizableKind = 'any' | 'object' | 'array' | 'primitive' | 'string' | 'number' | 'boolean';
-interface ValuizableMethod {
+
+interface ValuizableMethodBase {
+	(expect?: ValuizableKind): Promise<ValuizeInput>;
+	(expect: 'any'): Promise<ValuizeInput>;
+}
+
+interface ValuizableMethod extends ValuizableMethodBase {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
-	(expect: 'any'): Promise<ValuizeInput>;
-	(expect?: ValuizableKind): Promise<ValuizeInput>;
 };
 
-interface ToValuizableExpectString {
+interface ToValuizableExpectString extends ValuizableMethodBase {
 	(expect: 'string'): Promise<string>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectNumber {
+
+interface ToValuizableExpectNumber extends ValuizableMethodBase {
 	(expect: 'number'): Promise<number>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
-interface ToValuizableExpectBoolean {
+
+interface ToValuizableExpectBoolean extends ValuizableMethodBase {
 	(expect: 'boolean'): Promise<boolean>;
 	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
@@ -281,11 +624,58 @@ type ToJSONValuizableObject<T extends object> = {
 };
 type ToJSONValuizable<T> = ToJSONValuizableObject<{ tmp: T }>['tmp'];
 
+type ValuizeResolvable = JSONSerializablePrimitive | ValuizableObject | ValuizableArray | ValuizableMethod;
+
 /*
  * Access token to share with the Metadata object to allow it to
  * access the mutable stats object.
  */
 const statsAccessToken = Symbol('statsAccessToken');
+
+/**
+ * A cache object
+ */
+type URLCacheObject = Map<string, {
+	pass: true;
+	value: JSONSerializable;
+	expires: Date;
+} | {
+	pass: false;
+	error: unknown;
+	expires: Date;
+}>;
+
+
+type ResolverConfig = {
+	/**
+	 * The "root" account to use as the basis for all lookups.  It should
+	 * contain the authoritative information for resolving in its
+	 * Metadata.
+	 */
+	root: KeetaNetGenericAccount;
+	/**
+	 * A KeetaNet Client to access the network using.
+	 */
+	client: KeetaNetClient.Client | KeetaNetClient.UserClient;
+	/**
+	 * A list of trusted Certificate Authorities to use when connecting to
+	 * external HTTPS services.
+	 */
+	trustedCAs: string[]; /* XXX:TODO */
+	/**
+	 * Logger to use for debugging
+	 */
+	logger?: Logger;
+	/**
+	 * ID for this instance of the resolver
+	 */
+	id?: string;
+	/**
+	 * Caching Parameters
+	 */
+	cache?: Omit<NonNullable<MetadataConfig['cache']>, 'instance'>;
+}
+
 
 type MetadataConfig = {
 	trustedCAs: ResolverConfig['trustedCAs'];
@@ -303,6 +693,7 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
+const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -336,7 +727,11 @@ class Metadata implements ValuizableInstance {
 	// eslint-disable-next-line @typescript-eslint/unified-signatures
 	static formatMetadata(metadata: JSONSerializable): string;
 	static formatMetadata(metadata: JSONSerializable | ToJSONValuizable<ServiceMetadata>): string {
-		return(Buffer.from(JSON.stringify(metadata)).toString('base64'));
+		const metadataBytes = Buffer.from(JSON.stringify(metadata), 'utf-8');
+		const metadataCompressed = KeetaNetClient.lib.Utils.Buffer.ZlibDeflate(KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer(metadataBytes));
+		const metadataEncoded = Buffer.from(metadataCompressed).toString('base64');
+
+		return(metadataEncoded);
 	}
 
 	/**
@@ -344,6 +739,116 @@ class Metadata implements ValuizableInstance {
 	 */
 	static assertMetadata(value: unknown): asserts value is ToJSONValuizable<ServiceMetadata> {
 		assertServiceMetadata(value);
+	}
+
+	/**
+	 * Check if the supplied value is a Valuizable method which can
+	 * be called to resolve a Valuizable value.
+	 */
+	static isValuizable(value: unknown): value is ValuizableMethod {
+		if (typeof value === 'object' && value !== null) {
+			return(false);
+		}
+
+		if (typeof value !== 'function') {
+			return(false);
+		}
+
+		// @ts-ignore
+		if (!('instanceTypeID' in value)) {
+			return(false);
+		}
+
+		if (value.instanceTypeID === Metadata.instanceTypeID) {
+			return(true);
+		}
+
+		if (value.instanceTypeID === 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd') {
+			return(true);
+		}
+
+		return(false);
+	}
+
+	/**
+	 * Recursively resolve a Valuizable value into a fully
+	 * realized JSONSerializable value.  This will walk the
+	 * entire structure, calling each Valuizable method
+	 * and replacing it with the returned value.
+	 *
+	 * This should only be used in cases where the entire
+	 * structure needs to be fully realized, as it
+	 * can be quite expensive.
+	 */
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	// eslint-disable-next-line @typescript-eslint/unified-signatures,@typescript-eslint/no-explicit-any
+	static async fullyResolveValuizable(value: any, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement: JSONSerializable = null): Promise<JSONSerializable> {
+		if (typeof value === 'object' && value !== null) {
+			if (Array.isArray(value)) {
+				const newArray: JSONSerializable[] = [];
+				for (let i = 0; i < value.length; i++) {
+					const entry = value[i];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newArray.push(newEntry);
+					} else if (entry === undefined) {
+						throw(new Error(`Array entry ${i} is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newArray);
+			} else {
+				const newObject: { [key: string]: JSONSerializable; } = {};
+				for (const key in value) {
+					/*
+					 * Since `key` is the index of the array or
+					 * object, it is safe to use it to index
+					 * into the array or object.
+					 */
+					// @ts-ignore
+					const entry = value[key];
+					if (Metadata.isValuizable(entry)) {
+						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						newObject[key] = newEntry;
+					} else if (entry === undefined) {
+						throw(new Error(`Object key "${key}" is undefined, which is not valid in JSON`));
+					} else {
+						assertNever(entry);
+					}
+				}
+
+				return(newObject);
+			}
+		}
+
+		if (Metadata.isValuizable(value)) {
+			try {
+				const retval = await value('any');
+				return(await Metadata.fullyResolveValuizable(retval));
+			} catch {
+				return(invalidReplacement);
+			}
+		}
+
+		switch (typeof value) {
+			case 'string':
+			case 'number':
+			case 'boolean':
+				return(value);
+			case 'object':
+				if (value === null) {
+					return(value);
+				}
+				assertNever(value);
+				break;
+			default:
+				assertNever(value);
+		}
+
+		throw(new Error('invalid input'));
 	}
 
 	constructor(url: string | URL, config: MetadataConfig) {
@@ -375,13 +880,34 @@ class Metadata implements ValuizableInstance {
 		}
 	}
 
-	private async parseMetadata(metadata: string) {
+	/**
+	 * @param metadata Metadata to parse -- base64 encoded string or ArrayBuffer
+	 */
+	private async parseMetadata(metadata: string | ArrayBuffer): Promise<JSONSerializable> {
+		if (typeof metadata === 'string') {
+			metadata = KeetaNetClient.lib.Utils.Helper.bufferToArrayBuffer(Buffer.from(metadata, 'base64'));
+		}
+
+		/*
+		 * Attempt to decompress the metadata.  If it fails, then
+		 * assume it is not compressed.
+		 */
+		let metadataUncompressed: ArrayBuffer;
+		try {
+			metadataUncompressed = KeetaNetClient.lib.Utils.Buffer.ZlibInflate(metadata);
+		} catch {
+			metadataUncompressed = metadata;
+		}
+
+		const metadataBytes = Buffer.from(metadataUncompressed);
+		const metadataDecoded = metadataBytes.toString('utf-8');
+
 		/*
 		 * JSON.parse() will always return a JSONSerializable,
 		 * and not `unknown`, so we can safely cast it.
 		 */
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const retval = await this.resolveValue(JSON.parse(metadata) as JSONSerializable);
+		const retval = await this.resolveValue(JSON.parse(metadataDecoded) as JSONSerializable);
 
 		return(retval);
 	}
@@ -396,7 +922,7 @@ class Metadata implements ValuizableInstance {
 			throw(new Error(`Unsupported path: ${path}`));
 		}
 
-		let account: KeetaNetAccount | string;
+		let account: KeetaNetGenericAccount | string;
 		try {
 			account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
 		} catch {
@@ -404,7 +930,7 @@ class Metadata implements ValuizableInstance {
 		}
 
 		const accountInfo = await this.#client.getAccountInfo(account);
-		const metadata = Buffer.from(accountInfo.info.metadata, 'base64').toString('utf-8');
+		const metadata = accountInfo.info.metadata;
 		if (metadata === '') {
 			return('');
 		}
@@ -440,7 +966,7 @@ class Metadata implements ValuizableInstance {
 			throw(new Error(`Unexpected HTTP status ${results.status} for ${url.toString()}`));
 		}
 
-		const metadata = JSON.stringify(await results.json());
+		const metadata = await (await results.blob()).arrayBuffer();
 
 		this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', metadata);
 
@@ -459,7 +985,7 @@ class Metadata implements ValuizableInstance {
 		 * URL twice, then we have a circular reference.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
-			return('');
+			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
@@ -603,6 +1129,10 @@ class Metadata implements ValuizableInstance {
 				const keyValue: JSONSerializable = value[key];
 
 				if (isExternalURL(keyValue)) {
+					if (Array.isArray(newValue)) {
+						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
+					}
+
 					const newMetadataObject = new Metadata(keyValue.url, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
@@ -614,9 +1144,11 @@ class Metadata implements ValuizableInstance {
 
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
-					if (Array.isArray(newValue)) {
-						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can  only be an object'));
-					}
+					Object.defineProperty(newValuizableObject, 'instanceTypeID', {
+						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						enumerable: false
+					});
+
 					newValue[key] = newValuizableObject;
 				} else {
 					/*
@@ -628,6 +1160,11 @@ class Metadata implements ValuizableInstance {
 						const retval = this.assertValuizableKind(await this.valuize(keyValue), expect);
 						return(retval);
 					};
+
+					Object.defineProperty(newValueEntry, 'instanceTypeID', {
+						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						enumerable: false
+					});
 
 					/*
 					 * TypeScript doesn't track that `key`
@@ -663,7 +1200,6 @@ class Metadata implements ValuizableInstance {
 	}
 }
 
-
 type ResolverStats = {
 	keetanet: {
 		reads: number;
@@ -681,145 +1217,6 @@ type ResolverStats = {
 	}
 };
 
-function assertValidCountryCodes(input: unknown): asserts input is { countryCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('countryCodes' in input)) {
-		throw(new Error('Expected "countryCodes" to be present, but it was not found'));
-	}
-
-	if (typeof input.countryCodes !== 'function' && !Array.isArray(input.countryCodes)) {
-		throw(new Error(`Expected "countryCodes" to be an array | function, got ${typeof input.countryCodes}`));
-	}
-
-	if (Array.isArray(input.countryCodes)) {
-		for (const countryCode of input.countryCodes) {
-			if (typeof countryCode !== 'string') {
-				throw(new Error(`Expected "countryCodes" to be an array of strings, got ${typeof countryCode}`));
-			}
-		}
-	}
-}
-
-function assertValidOptionalCountryCodes(input: unknown): asserts input is { countryCodes?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['countryCodes'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('countryCodes' in input)) {
-		return;
-	}
-
-	assertValidCountryCodes(input);
-}
-
-function assertValidCurrencyCodes(input: unknown): asserts input is { currencyCodes: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['currencyCodes'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('currencyCodes' in input)) {
-		throw(new Error('Expected "currencyCodes" to be present, but it was not found'));
-	}
-
-	if (typeof input.currencyCodes !== 'function' && !Array.isArray(input.currencyCodes)) {
-		throw(new Error(`Expected "currencyCodes" to be an array | function, got ${typeof input.currencyCodes}`));
-	}
-
-	if (Array.isArray(input.currencyCodes)) {
-		for (const currencyCode of input.currencyCodes) {
-			if (typeof currencyCode !== 'string') {
-				throw(new Error(`Expected "currencyCodes" to be an array of strings, got ${typeof currencyCode}`));
-			}
-		}
-	}
-}
-
-function assertValidOperationsBanking(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['operations'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('operations' in input)) {
-		throw(new Error('Expected "operations" key in KYC service, but it was not found'));
-	}
-
-	if ((typeof input.operations !== 'object' || input.operations === null) && typeof input.operations !== 'function') {
-		throw(new Error(`Expected "operations" to be an object | function, got ${typeof input.operations}`));
-	}
-
-	if (typeof input.operations !== 'function') {
-		for (const [operation, operationValue] of Object.entries(input.operations)) {
-			if (typeof operation !== 'string') {
-				throw(new Error(`Expected "operations" to be an object with string keys, got ${typeof operation}`));
-			}
-
-			if (typeof operationValue !== 'string') {
-				throw(new Error(`Expected "operations.${operation}" to be a string, got ${typeof operationValue}`));
-			}
-		}
-	}
-}
-
-function assertValidOperationsKYC(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['operations'] } {
-	assertValidOperationsBanking(input);
-}
-
-function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if ('kycProviders' in input) {
-		if (typeof input.kycProviders !== 'function' && !Array.isArray(input.kycProviders)) {
-			throw(new Error(`Expected "kycProviders" to be an array | function, got ${typeof input.kycProviders}`));
-		}
-
-		if (Array.isArray(input.kycProviders)) {
-			for (const kycProvider of input.kycProviders) {
-				if (typeof kycProvider !== 'string') {
-					throw(new Error(`Expected "kycProviders" to be an array of strings, got ${typeof kycProvider}`));
-				}
-			}
-		}
-	}
-}
-
-function assertValidCA(input: unknown): asserts input is { ca: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]>['ca'] } {
-	if (typeof input !== 'object' || input === null) {
-		throw(new Error(`Expected an object, got ${typeof input}`));
-	}
-
-	if (!('ca' in input)) {
-		throw(new Error('Expected "ca" key in KYC service, but it was not found'));
-	}
-
-	if (typeof input.ca !== 'string' && typeof input.ca !== 'function') {
-		throw(new Error(`Expected "ca" to be a string | function, got ${typeof input.ca}`));
-	}
-}
-
-type ResolverLookupBankingResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]> };
-type ResolverLookupKYCResults = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyc']>[string]> };
-const assertResolverLookupBankingResult = function(input: unknown): ResolverLookupBankingResults[string] {
-	assertValidOperationsBanking(input);
-	assertValidCountryCodes(input);
-	assertValidCurrencyCodes(input);
-	assertValidOptionalKYCProviders(input);
-
-	return(input);
-
-};
-const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupKYCResults[string] {
-	assertValidOperationsKYC(input);
-	assertValidOptionalCountryCodes(input);
-	assertValidCA(input);
-
-	return(input);
-};
-
 class Resolver {
 	readonly #root: ResolverConfig['root'];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -831,6 +1228,32 @@ class Resolver {
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
+
+	private readonly lookupMap: {
+		[Service in Services]: {
+			search: (input: ValuizableObject | undefined, criteria: ServiceSearchCriteria<Service>) => Promise<ResolverLookupServiceResults<Service> | undefined>;
+		};
+	} = {
+		'banking': {
+			search: this.lookupBankingServices.bind(this)
+		},
+		'kyc': {
+			search: this.lookupKYCServices.bind(this)
+		},
+		'fx': {
+			search: this.lookupFXServices.bind(this)
+		},
+		'assetMovement': {
+			search: this.lookupAssetMovementServices.bind(this)
+		},
+		'cards': {
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'cards'>) => {
+				throw(new Error('not implemented'));
+			}
+		}
+	};
+
 
 	constructor(config: ResolverConfig) {
 		this.#root = config.root;
@@ -887,55 +1310,36 @@ class Resolver {
 			return(undefined);
 		}
 
-		const retval: ResolverLookupBankingResults = {};
+		let canonicalCurrencyCriteria;
+		if ('currencyCodes' in criteria) {
+			canonicalCurrencyCriteria = {
+				currencyCodes: criteria.currencyCodes.map(convertToCurrencySearchCanonical)
+			}
+		}
+
+		let canonicalCountryCriteria;
+		if ('countryCodes' in criteria) {
+			canonicalCountryCriteria = {
+				countryCodes: criteria.countryCodes.map(convertToCountrySearchCanonical)
+			}
+		}
+
+		const retval: ResolverLookupServiceResults<'banking'> = {};
 		for (const checkBankingServiceID in bankingServices) {
 			try {
-				const checkBankingService = await bankingServices[checkBankingServiceID]?.('object');
-				if (checkBankingService === undefined) {
+				const checkBankingService = await isValidOperations(await bankingServices[checkBankingServiceID]?.('object'));
+				if (!checkBankingService) {
 					continue;
 				}
 
-				if (!('operations' in checkBankingService)) {
-					continue;
-				}
-
-				if (criteria.currencyCodes !== undefined) {
-					const currencyCodes = await checkBankingService.currencyCodes?.('array') ?? [];
-					const checkBankingServiceCurrencyCodes = await Promise.all(currencyCodes.map(async function(item) {
-						return(await item?.('primitive'));
-					}));
-
-					let acceptable = true;
-					for (const checkCurrencyCode of criteria.currencyCodes) {
-						const checkCurrencyCodeCanonical = convertToCurrencySearchCanonical(checkCurrencyCode);
-						if (!checkBankingServiceCurrencyCodes.includes(checkCurrencyCodeCanonical)) {
-							acceptable = false;
-							break;
-						}
-					}
-
-					if (!acceptable) {
+				if (canonicalCurrencyCriteria !== undefined && 'currencyCodes' in checkBankingService) {
+					if (!(await hasAllCurrencyCodes(checkBankingService, canonicalCurrencyCriteria))) {
 						continue;
 					}
 				}
 
-				if (criteria.countryCodes !== undefined) {
-					const countryCodes = await checkBankingService.countryCodes?.('array') ?? [];
-					const checkBankingServiceCountryCodes = await Promise.all(countryCodes.map(async function(item) {
-						return(await item?.('primitive'));
-					}));
-					this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkBankingServiceCountryCodes, 'for', checkBankingServiceID);
-
-					let acceptable = true;
-					for (const checkCountryCode of criteria.countryCodes) {
-						const checkCountryCodeCanonical = convertToCountrySearchCanonical(checkCountryCode);
-						if (!checkBankingServiceCountryCodes.includes(checkCountryCodeCanonical)) {
-							acceptable = false;
-							break;
-						}
-					}
-
-					if (!acceptable) {
+				if (canonicalCountryCriteria !== undefined && 'countryCodes' in checkBankingService) {
+					if (!(await hasAnyCountryCodes(checkBankingService, canonicalCountryCriteria))) {
 						continue;
 					}
 				}
@@ -962,7 +1366,7 @@ class Resolver {
 			return(undefined);
 		}
 
-		const retval: ResolverLookupKYCResults = {};
+		const retval: ResolverLookupServiceResults<'kyc'> = {};
 		for (const checkKYCServiceID in kycServices) {
 			try {
 				const checkKYCService = await kycServices[checkKYCServiceID]?.('object');
@@ -1019,10 +1423,191 @@ class Resolver {
 		return(retval);
 	}
 
-	async lookup<T extends 'banking'>(service: T, criteria: ServiceSearchCriteria<'banking'>): Promise<ResolverLookupBankingResults | undefined>;
-	async lookup<T extends 'kyc'>(service: T, criteria: ServiceSearchCriteria<'kyc'>): Promise<ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined>;
-	async lookup<T extends Services>(service: T, criteria: ServiceSearchCriteria<T>): Promise<ResolverLookupBankingResults | ResolverLookupKYCResults | undefined> {
+	private async lookupFXServices(fxServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'fx'>): Promise<ResolverLookupServiceResults<'fx'> | undefined> {
+		if (fxServices === undefined) {
+			return(undefined);
+		}
+
+		const isCurrencySearchInput = createIs<CurrencySearchInput>();
+		// if currency code is provided then convert to canonical format otherwise token public key string was provided
+		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
+		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
+		// if search criteria is not provided then set token to undefined
+		const inputToken = canonicalInputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalInputCurrencyCriteria) : undefined;
+		const outputToken = canonicalOutputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalOutputCurrencyCriteria) : undefined;
+		if (criteria.inputCurrencyCode !== undefined && inputToken === null) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', canonicalInputCurrencyCriteria, 'could not be resolved to a token');
+			return(undefined);
+		}
+
+		if (criteria.outputCurrencyCode !== undefined && outputToken === null) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', canonicalOutputCurrencyCriteria, 'could not be resolved to a token');
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'fx'> = {};
+		for (const checkFXServiceID in fxServices) {
+			try {
+				const checkFXService = await assertResolverLookupFXResult(await fxServices[checkFXServiceID]?.('object'));
+				if (!checkFXService) {
+					continue;
+				}
+
+				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
+				const from = await fromUnrealized?.('array');
+				if (from === undefined) {
+					continue;
+				}
+
+				let acceptable = false;
+				for (const fromEntryUnrealized of from) {
+					const fromEntry = await fromEntryUnrealized?.('object');
+
+					if (inputToken) {
+						const fromCurrencyCodes = await fromEntry.currencyCodes?.('array') ?? [];
+						const fromCurrencyCodesValues = await Promise.all(fromCurrencyCodes.map(async function(item) {
+							try {
+								return(await item?.('string'));
+							} catch {
+								return(undefined);
+							}
+						}));
+
+						// If inputToken was provided, check if it matches providers supported input currencies
+						if (!fromCurrencyCodesValues.includes(inputToken.token)) {
+							continue;
+						}
+					}
+
+					if (outputToken) {
+						const toCurrencyCodes = await fromEntry.to?.('array') ?? [];
+						const toCurrencyCodesValues = await Promise.all(toCurrencyCodes.map(async function(item) {
+							try {
+								return(await item?.('string'));
+							} catch {
+								return(undefined);
+							}
+						}));
+
+						// If outputToken was provided, check if it matches providers supported output currencies
+						if (!toCurrencyCodesValues.includes(outputToken.token)) {
+							continue;
+						}
+					}
+
+					/* XXX:TODO: Check kycProviders */
+					acceptable = true;
+					break;
+				}
+
+				if (!acceptable) {
+					continue;
+				}
+
+				retval[checkFXServiceID] = await assertResolverLookupFXResult(checkFXService);
+			} catch (checkFXServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking FX service', checkFXServiceID, ':', checkFXServiceError, ' -- ignoring');
+			}
+		}
+
+		return(retval);
+	}
+
+	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
+		if (criteria.rail !== undefined) {
+			throw(new Error('Asset movement service does not support rail search criteria'));
+		}
+		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
+		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
+		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
+
+		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
+		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
+
+		const filteredAssetMovement: SupportedAssets[] = [];
+		for (const supportedAsset of supportedAssets) {
+			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
+				continue;
+			}
+			if (fromCanonical) {
+				let fromMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === fromCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const outboundPairMatch = pair.rails.outbound && pair.rails.outbound.length > 0;
+							if (commonPairMatch || outboundPairMatch) {
+								fromMatch = true;
+							}
+						}
+					}
+				}
+				if (!fromMatch) {
+					continue;
+				}
+			}
+			if (toCanonical) {
+				let toMatch = false;
+				for (const path of supportedAsset.paths) {
+					for (const pair of path.pair) {
+						if (pair.location === toCanonical) {
+							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
+							const inboundPairMatch = pair.rails.inbound && pair.rails.inbound.length > 0;
+							if (commonPairMatch || inboundPairMatch) {
+								toMatch = true;
+							}
+						}
+					}
+				}
+				if (!toMatch) {
+					continue;
+				}
+			}
+			filteredAssetMovement.push(supportedAsset);
+		}
+		return(filteredAssetMovement);
+	}
+
+	private async lookupAssetMovementServices(assetServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'assetMovement'>) {
+		if (assetServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
+		for (const checkAssetMovementServiceID in assetServices) {
+			const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
+
+			if (checkAssetMovementService === undefined) {
+				return(undefined);
+			}
+
+			if (!('operations' in checkAssetMovementService)) {
+				return(undefined);
+			}
+
+			try {
+				const supportedAssets = await this.filterSupportedAssets(checkAssetMovementService, criteria);
+				if (supportedAssets.length === 0) {
+					continue;
+				}
+				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
+			} catch (parseError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any asset movement services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	async #getRootMetadata() {
 		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
 		const metadata = new Metadata(rootURL, {
 			trustedCAs: this.#trustedCAs,
@@ -1043,6 +1628,196 @@ class Resolver {
 			throw(new Error(`Unsupported metadata version: ${rootMetadataVersion}`));
 		}
 
+		return(rootMetadata);
+	}
+
+	async getRootMetadata(): Promise<ToValuizable<ServiceMetadata>> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(rootMetadata as unknown as ToValuizable<ServiceMetadata>);
+	}
+
+	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
+		const rootMetadata = await this.#getRootMetadata();
+		const servicesFn = rootMetadata.services;
+		if (servicesFn === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const services = await servicesFn('object');
+		if (!('assetMovement' in services) || services.assetMovement === undefined) {
+			throw(new Error('Root metadata is missing "assetMovement" property'));
+		}
+		const assetMovementServices = await services.assetMovement('object');
+		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
+		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+			if (service === undefined) {
+				throw(new Error('assetMovement has undefined service entry'));
+			}
+			const serviceEntry = await service('object');
+			if (!('supportedAssets' in serviceEntry) || serviceEntry.supportedAssets === undefined) {
+				throw(new Error('service entry is missing "supportedAssets"'));
+			}
+
+			const supportedAssets = await serviceEntry.supportedAssets('array');
+			await Promise.all(supportedAssets.map(async function(supportedAsset) {
+				if (supportedAsset === undefined) {
+					throw(new Error('supportedAsset entry is undefined'));
+				}
+				const assetEntry = await supportedAsset('object');
+				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
+					throw(new Error('asset is missing from supportedAsset entry'));
+				}
+				const asset = await assetEntry.asset('string');
+
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+				allAssets.add(checkTokenObject.publicKeyString.get());
+			}));
+		}));
+
+		return([...allAssets]);
+	}
+
+	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedCurrenciesMapProperty = rootMetadata.currencyMap;
+		if (definedCurrenciesMapProperty === undefined) {
+			throw(new Error('Root metadata is missing "currencyMap" property'));
+		}
+		const definedCurrenciesMap = await definedCurrenciesMapProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Defined Currencies Map:', definedCurrenciesMap);
+
+		const retval: { token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[] = [];
+		for (const [checkCurrencyCode, checkTokenProperty] of Object.entries(definedCurrenciesMap)) {
+			const checkToken = await checkTokenProperty?.('string');
+			if (checkToken === undefined) {
+				continue;
+			}
+
+			if (!isCurrencySearchCanonical(checkCurrencyCode)) {
+				continue;
+			}
+
+			try {
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(checkToken);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+
+				retval.push({
+					token: checkTokenObject.publicKeyString.get(),
+					currency: checkCurrencyCode
+				});
+			} catch (validationError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Token public key for currency code', checkCurrencyCode, 'is invalid:', validationError);
+			}
+		}
+
+		return(retval);
+	}
+
+	async lookupToken(currencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null> {
+		let tokenPublicKey: KeetaNetAccountTokenPublicKeyString | undefined;
+		if (typeof currencyCode === 'string') {
+			try {
+				const token = KeetaNetAccount.fromPublicKeyString(currencyCode);
+				if (token.isToken()) {
+					tokenPublicKey = token.publicKeyString.get();
+				}
+			} catch {
+				/* Ignored */
+			}
+		}
+
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedCurrenciesMapProperty = rootMetadata.currencyMap;
+		if (definedCurrenciesMapProperty === undefined) {
+			throw(new Error('Root metadata is missing "currencyMap" property'));
+		}
+		const definedCurrenciesMap = await definedCurrenciesMapProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Defined Currencies Map:', definedCurrenciesMap);
+
+		let currencyCodeFound: CurrencySearchCanonical | undefined;
+		if (tokenPublicKey === undefined) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Performing forward lookup for currency code', currencyCode);
+
+			/*
+			 * Perform a forward lookup from the currency code
+			 * to the token public key
+			 */
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
+			const currencyCodeCanonical = convertToCurrencySearchCanonical(currencyCode as unknown as any);
+			if (currencyCodeCanonical === undefined) {
+				return(null);
+			}
+
+			const checkToken = await definedCurrenciesMap[currencyCodeCanonical]?.('string');
+			if (checkToken === undefined) {
+				return(null);
+			}
+
+			this.#logger?.debug(`Resolver:${this.id}`, 'Validating token public key for currency code', currencyCodeCanonical, ':', checkToken, typeof checkToken);
+			try {
+				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(checkToken);
+				if (!checkTokenObject.isToken()) {
+					throw(new Error('Not a token account'));
+				}
+
+				tokenPublicKey = checkTokenObject.publicKeyString.get();
+				currencyCodeFound = currencyCodeCanonical;
+			} catch (validationError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Token public key for currency code', currencyCodeCanonical, 'is invalid:', validationError);
+
+				return(null);
+			}
+		} else {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Performing reverse lookup for token public key', tokenPublicKey);
+
+			/*
+			 * Perform a reverse lookup from the token public key
+			 * to the currency code
+			 */
+			for (const [checkCurrencyCode, checkTokenProperty] of Object.entries(definedCurrenciesMap)) {
+				const checkToken = await checkTokenProperty?.('string');
+				if (checkToken === undefined) {
+					continue;
+				}
+
+				if (checkToken === tokenPublicKey) {
+					if (isCurrencySearchCanonical(checkCurrencyCode)) {
+						currencyCodeFound = checkCurrencyCode;
+						break;
+					}
+				}
+			}
+
+			if (currencyCodeFound === undefined) {
+				return(null);
+			}
+		}
+
+		return({
+			token: tokenPublicKey,
+			currency: currencyCodeFound
+		});
+	}
+
+	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
+		const rootMetadata = await this.#getRootMetadata();
+
 		/*
 		 * Get the services object
 		 */
@@ -1052,42 +1827,11 @@ class Resolver {
 		}
 		const definedServices = await definedServicesProperty('object');
 
-		/*
-		 * We need to create a link between the service type and the
-		 * search criteria type, so we can use the correct type
-		 * for the criteria -- to do that we create an object
-		 * that links them together.
-		 */
-		type LookupArgs = {
-			[S in Services]: { service: S; criteria: ServiceSearchCriteria<S> }
-		}[Services];
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const args = { service, criteria } as LookupArgs;
+		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
-		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', args.service, 'with criteria:', args.criteria, 'in', definedServices);
-		switch (args.service) {
-			case 'banking': {
-				const currentCriteria = args.criteria;
-				const bankingServices = await definedServices.banking?.('object');
-				this.#logger?.debug(`Resolver:${this.id}`, 'Banking Services:', bankingServices);
-
-				return(await this.lookupBankingServices(bankingServices, currentCriteria));
-			}
-			case 'kyc': {
-				const currentCriteria = args.criteria;
-				const kycServices = await definedServices.kyc?.('object');
-				this.#logger?.debug(`Resolver:${this.id}`, 'KYC Services:', kycServices);
-
-				return(await this.lookupKYCServices(kycServices, currentCriteria));
-			}
-			case 'fx':
-			case 'inbound':
-			case 'outbound':
-			case 'cards':
-				throw(new Error('not implemented'));
-			default:
-				assertNever(args);
-		}
+		const serviceLookup = this.lookupMap[service].search;
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
+		return(await serviceLookup(await definedServices[service]?.('object'), criteria as any));
 	}
 
 	clearCache(): void {
@@ -1104,6 +1848,7 @@ class Resolver {
 export default Resolver;
 export type {
 	ServiceMetadata,
+	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
 	Services
 };

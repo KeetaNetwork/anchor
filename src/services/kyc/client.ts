@@ -14,11 +14,15 @@ import type {
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse
 } from './common.ts';
+import {
+	verifySignedData,
+	generateSignedData
+} from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
+import { validateURL } from '../../lib/utils/url.js';
 
 const PARANOID = true;
 
@@ -112,16 +116,6 @@ type GetEndpointsResult = {
 
 const isKeetaKYCAnchorCreateVerificationResponse = createIs<KeetaKYCAnchorCreateVerificationResponse>();
 const isKeetaKYCAnchorGetCertificateResponse = createIs<KeetaKYCAnchorGetCertificateResponse>();
-
-function validateURL(url: string | undefined): URL {
-	if (url === undefined || url === null) {
-		throw(new Error('Invalid URL: null or undefined'));
-	}
-
-	const parsedURL = new URL(url);
-
-	return(parsedURL);
-}
 
 async function getEndpoints(resolver: Resolver, request: KeetaKYCAnchorCreateVerificationRequest): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
@@ -331,61 +325,6 @@ class KeetaKYCProvider {
 	}
 }
 
-function formatSignedData(account: InstanceType<typeof KeetaNetLib.Account>, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
-	nonce ??= crypto.randomUUID();
-	timestamp ??= new Date();
-
-	let timestampString: string;
-	if (typeof timestamp === 'string') {
-		timestampString = timestamp;
-	} else {
-		timestampString = timestamp.toISOString();
-	}
-
-	const signature = new KeetaNetLib.Utils.ASN1.BufferStorageASN1([
-		nonce,
-		timestampString,
-		account.publicKeyAndType
-	], [
-		{ type: 'string', kind: 'utf8' },
-		{ type: 'string', kind: 'utf8' },
-		KeetaNetLib.Utils.ASN1.ValidateASN1.IsOctetString
-	]);
-
-	return({
-		nonce: nonce,
-		timestamp: timestampString,
-		verificationData: signature.getDERBuffer()
-	});
-}
-
-async function generateSignedData(account: InstanceType<typeof KeetaNetLib.Account>): Promise<{ nonce: string; timestamp: string; signature: string; }> {
-	const { nonce, timestamp, verificationData } = formatSignedData(account);
-	const signature = await account.sign(verificationData);
-
-	return({
-		nonce: nonce,
-		timestamp: timestamp,
-		signature: signature.getBuffer().toString('base64')
-	});
-}
-
-// TODO
-async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
-	const account = KeetaNetLib.Account.toAccount(request.account);
-	const nonce = request.signed.nonce;
-	const timestamp = request.signed.timestamp;
-	const signatureBuffer = Buffer.from(request.signed.signature, 'base64');
-	if (Object.keys(request.signed).length !== 3 || !nonce || !signatureBuffer || !timestamp) {
-		throw(new Error('Invalid signed data: must contain only nonce, signature, and timestamp'));
-	}
-
-	/* XXX:TODO: Verify that the timestamp is a valid ISO 8601 date string within a reasonable range */
-
-	const { verificationData } = formatSignedData(account, nonce, timestamp);
-
-	return(account.verify(KeetaNetLib.Utils.Helper.bufferToArrayBuffer(verificationData), KeetaNetLib.Utils.Helper.bufferToArrayBuffer(signatureBuffer)));
-}
 
 class KeetaKYCAnchorClient {
 	readonly resolver: Resolver;
@@ -399,7 +338,7 @@ class KeetaKYCAnchorClient {
 	}
 
 	async createVerification(request: KeetaKYCAnchorClientCreateVerificationRequest): Promise<KeetaKYCProvider[]> {
-		const signedData = await generateSignedData(request.account);
+		const signedData = await generateSignedData(request.account.assertAccount());
 
 		if (PARANOID) {
 			const check = await verifySignedData({ account: request.account.publicKeyString.get(), signed: signedData });
