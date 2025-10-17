@@ -361,7 +361,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
 			getQuote: (new URL('/api/getQuote', this.url)).toString(),
 			createExchange: (new URL('/api/createExchange', this.url)).toString(),
-			getExchangeStatus: (new URL('/api/getExchangeStatus/:id', this.url)).toString()
+			getExchangeStatus: (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}'
 		};
 
 		return({
