@@ -2,39 +2,134 @@ import { test, expect } from 'vitest';
 import * as KeetaNetAnchor from '../../client/index.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
-import { Certificate as KYCCertificate } from '../../lib/certificates.js';
+import {
+	Certificate as KYCCertificate,
+	CertificateBuilder as KYCCertificateBuilder
+} from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
+import { KeetaNetKYCAnchorHTTPServer } from './server.js';
+import type { KeetaKYCAnchorCreateVerificationRequest } from './common.ts';
+import { Errors as KeetaAnchorKYCErrors } from './common.js';
 import * as util from 'util';
 
 const DEBUG = false;
 
-/*
- * XXX: This test is currently not isolated, it relies on an
- *      external dummy service to be running, but it should
- *      start its own KYC Anchor Provider when that is implemented
- *      in the future.
- */
-
-/* XXX: This is the Test Network CA -- should be replaced with a dummy CA */
-const rootCA = `-----BEGIN CERTIFICATE-----
-MIIBiDCCAS2gAwIBAgIGAZhi7awAMAsGCWCGSAFlAwQDCjApMScwJQYDVQQDEx5L
-ZWV0YSBUZXN0IE5ldHdvcmsgS1lDIFJvb3QgQ0EwHhcNMjUwODAxMDAwMDAwWhcN
-MjgwODAxMDAwMDAwWjApMScwJQYDVQQDEx5LZWV0YSBUZXN0IE5ldHdvcmsgS1lD
-IFJvb3QgQ0EwNjAQBgcqhkjOPQIBBgUrgQQACgMiAAKK1O9NiYvu2sBYNRPfjOpp
-sNSMZ1lOVn+psFdk3Ugq2qNjMGEwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8E
-BAMCAMYwHwYDVR0jBBgwFoAUap82oKFjJ2jhIj2CGABULiX4h3owHQYDVR0OBBYE
-FGqfNqChYydo4SI9ghgAVC4l+Id6MAsGCWCGSAFlAwQDCgNIADBFAiEAqnl85S6v
-bw8HLO+YXhnwqq6GmnY+7tCcnwYtoyDzYTMCIEw7ALqHJp0kO9AExm5sSoC7rPOd
-GlX42GsZQW3AJ7Jc
------END CERTIFICATE-----`;
-
 test('KYC Anchor Client Test', async function() {
+	/*
+	 * Enable Debug logging if requested
+	 */
+	const loggerBase = DEBUG ? console : undefined;
+	const logger = loggerBase ? { logger: loggerBase } : {};
+
+	/*
+	 * Create an account to  use for the node
+	 */
 	const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 
+	/*
+	 * Start a KeetaNet Node and get the UserClient for it
+	 */
 	const { userClient: client } = await createNodeAndClient(account);
 
-	const logger = DEBUG ? console : undefined;
+	/*
+	 * Create a dummy Root CA
+	 */
+	const rootCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const rootCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: rootCAAccount,
+		issuerDN: [{ name: 'commonName', value: 'Root CA' }],
+		subjectDN: [{ name: 'commonName', value: 'Root CA' }],
+		issuer: rootCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const rootCA = await rootCABuilder.build();
+
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuerDN: [{ name: 'commonName', value: 'Root CA' }],
+		subjectDN: [{ name: 'commonName', value: 'Intermediate/KYC CA' }],
+		issuer: rootCAAccount,
+		serial: 2,
+		isCA: true,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const kycCA = await kycCABuilder.build();
+
+	/*
+	 * Start a testing KYC Anchor HTTP Server
+	 */
+	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	const verifications = new Map<string, KeetaKYCAnchorCreateVerificationRequest>;
+	const certificates = new Map<string, string>();
+	// eslint-disable-next-line prefer-const
+	let serverURL: string;
+	await using server = new KeetaNetKYCAnchorHTTPServer({
+		signer: signer,
+		ca: kycCA,
+		client: client,
+		kyc: {
+			countryCodes: ['US'],
+			verificationStarted: async function(request) {
+				const id = crypto.randomUUID();
+				verifications.set(id, request);
+
+				return({
+					ok: true,
+					id: id,
+					expectedCost: {
+						min: '0',
+						max: '0',
+						token: client.baseToken.publicKeyString.get()
+					}
+				});
+			},
+			getCertificates: async function(verificationID) {
+				const request = verifications.get(verificationID);
+				if (request === undefined) {
+					throw(new KeetaAnchorKYCErrors.VerificationNotFound(`Verification ID ${verificationID} not found`));
+				}
+
+				let certificate = certificates.get(verificationID);
+				if (certificate === undefined) {
+					/*
+					 * Issue a new certificate for this verification
+					 */
+					const userAccount = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
+					const certificateBuilder = new KYCCertificateBuilder({
+						subject: userAccount,
+						subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
+						issuerDN: kycCA.subjectDN,
+						issuer: kycCAAccount,
+						serial: 3,
+						validFrom: new Date(Date.now() - 30_000),
+						validTo: new Date(Date.now() + 120_000)
+					});
+					certificateBuilder.setAttribute('fullName', true, Buffer.from('John Doe', 'utf-8'));
+					const builtCertificate = await certificateBuilder.build();
+					certificate = builtCertificate.toPEM();
+					certificates.set(verificationID, certificate);
+				}
+
+				return([{
+					certificate: certificate,
+					intermediates: [kycCA.toPEM()]
+				}]);
+			}
+		},
+		kycProviderURL: function(verificationID: string) {
+			return(new URL(`/provider/${verificationID}`, serverURL).toString());
+		},
+		...logger
+	});
+
+	await server.start();
+	serverURL = server.url;
 
 	const results = await client.setInfo({
 		description: 'KYC Anchor Test Root',
@@ -51,46 +146,16 @@ test('KYC Anchor Client Test', async function() {
 							getCertificates: 'https://example.com/getCertificates/{id}.json'
 						}
 					},
-					Test: {
-						countryCodes: ['US'],
-						/* XXX: This is the Test
-						 * Network Demo KYC CA --
-						 * should be replaced with
-						 * a dummy intermediate CA
-						 */
-						ca: `-----BEGIN CERTIFICATE-----
-MIIBhzCCASygAwIBAgIBATALBglghkgBZQMEAwowKTEnMCUGA1UEAxMeS2VldGEg
-VGVzdCBOZXR3b3JrIEtZQyBSb290IENBMB4XDTI1MDgwMTAwMDAwMFoXDTI4MDgw
-MTAwMDAwMFowLTErMCkGA1UEAxMiS2VldGEgVGVzdCBOZXR3b3JrIEtZQyBEZW1v
-IEFuY2hvcjA2MBAGByqGSM49AgEGBSuBBAAKAyIAAlqTHniWXaayjYCkVJBOvHJi
-dO4wF7t1f7NB65JQ85GRo2MwYTAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQE
-AwIAxjAfBgNVHSMEGDAWgBRqnzagoWMnaOEiPYIYAFQuJfiHejAdBgNVHQ4EFgQU
-IacME4jKWvFC6nSvr2SuObBeAb8wCwYJYIZIAWUDBAMKA0gAMEUCIQDxnt6atJWz
-D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
-0w2KBv059QeckO0=
------END CERTIFICATE-----`,
-						/*
-						 *  XXX: These are external
-						 * services, should be
-						 * replaced with URLs
-						 * for a KYC Anchor
-						 * Provider that is
-						 * created for testing
-						 */
-						operations: {
-							createVerification: 'https://rkeene.org/KEETA/createVerification.json',
-							getCertificates: 'https://rkeene.org/KEETA/getCertificates/{id}.json'
-						}
-					}
+					Test: await server.serviceMetadata()
 				}
 			}
 		})
 	});
-	logger?.log('Set info results:', results);
+	loggerBase?.log('Set info results:', results);
 
 	const kycClient = new KeetaNetAnchor.KYC.Client(client, {
 		root: account,
-		...(logger ? { logger: logger } : {})
+		...loggerBase
 	});
 
 	const providers = await kycClient.createVerification({
@@ -105,15 +170,15 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	/**
 	 * Print out information about the providers
 	 */
-	logger?.log('Providers:');
+	loggerBase?.log('Providers:');
 	for (const provider of providers) {
 		const providerCA = await provider.ca();
 		const providerName = providerCA.subject;
-		expect(providerName).toBe('commonName=Keeta Test Network KYC Demo Anchor');
+		expect(providerName).toBe('commonName=Intermediate/KYC CA');
 
-		logger?.log('  Provider:');
-		logger?.log('    ID:', provider.id);
-		logger?.log('    Name:', providerName);
+		loggerBase?.log('  Provider:');
+		loggerBase?.log('    ID:', provider.id);
+		loggerBase?.log('    Name:', providerName);
 	}
 	expect(providers.length).toBeGreaterThan(0);
 
@@ -130,10 +195,10 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	expect(providerCountryCodes?.[0]?.code).toBe('US');
 
 	const verification = await provider.startVerification();
-	logger?.log('Request ID:', verification.id, 'on provider', verification.providerID);
+	loggerBase?.log('Request ID:', verification.id, 'on provider', verification.providerID);
 
 	/* Direct the user to the WebURL */
-	logger?.log('Web URL:', verification.webURL);
+	loggerBase?.log('Web URL:', verification.webURL);
 
 	/**
 	 * Poll for the verification status
@@ -143,7 +208,7 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 	});
 
 	const checkIssuerCert = await verification.getProviderIssuerCertificate();
-	expect(checkIssuerCert.subject).toEqual('commonName=Keeta Test Network KYC Demo Anchor');
+	expect(checkIssuerCert.subject).toEqual('commonName=Intermediate/KYC CA');
 
 	while (true) {
 		const results = await verification.getCertificates();
@@ -152,7 +217,7 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 			continue;
 		}
 
-		logger?.log('Certificates:');
+		loggerBase?.log('Certificates:');
 		const output = (await Promise.all(results.results.map(async function(certificateGroup) {
 			let intermediates = certificateGroup.intermediates;
 			if (intermediates === undefined) {
@@ -195,7 +260,7 @@ D/llQ9YwyNVOWwLrqYNeXqnMVw/e4SV+9QIgZ+jy5nATxipnlyv0UH4W9uUfDBYl
 			}, { depth: null, colors: true }));
 		}))).join('\n\n');
 
-		logger?.log(output);
+		loggerBase?.log(output);
 		break;
 	}
 }, 30000);
