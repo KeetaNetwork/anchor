@@ -12,3 +12,8 @@ export function assertNever(value: never): never {
 
 	throw(new Error(`Unexpected value: ${value}`));
 }
+
+/**
+ * Asserts that the provided type is never.
+ */
+export type AssertNever<T extends never> = T;

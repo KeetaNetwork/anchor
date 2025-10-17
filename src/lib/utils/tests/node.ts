@@ -12,9 +12,14 @@ afterEach(async function() {
 });
 
 type CreateNodeAndClientResponse = {
-	node: InstanceType<typeof KeetaNetNode.lib.Node>,
-	client: InstanceType<typeof KeetaNetClient.Client>,
-	userClient?: InstanceType<typeof KeetaNetClient.UserClient>
+	node: InstanceType<typeof KeetaNetNode.lib.Node>;
+	client: InstanceType<typeof KeetaNetClient.Client>;
+	userClient?: InstanceType<typeof KeetaNetClient.UserClient>;
+	fees: {
+		disable: () => void;
+		enable: () => void;
+		addFeeFreeAccount: (account: KeetaNetClientGenericAccount) => void;
+	}
 };
 
 type KeetaNetClientGenericAccount = NonNullable<ConstructorParameters<typeof KeetaNetClient.UserClient>[0]['signer']>;
@@ -34,6 +39,12 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 	const TestRepAccountNode = KeetaNetNode.lib.Account.fromSeed(repAccountSeed, 0);
 	const TestRepAccountClient = KeetaNetClient.lib.Account.fromSeed(repAccountSeed, 0);
 
+	const feeFreeAccounts = new Set();
+	/**
+	 * Start out with fees disabled so we can initialize the network
+	 */
+	let feesEnabled = false;
+
 	const testNode = await createTestNode(TestRepAccountNode, {
 		/*
 		 * This does not work because it generates a Serial Number
@@ -43,6 +54,23 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 		createInitialVoteStaple: false,
 		nodeConfig: {
 			nodeAlias: 'TEST'
+		},
+		ledger: {
+			computeFeeFromBlocks: function(_ignore_ledger, blocks, _ignore_effects) {
+				if (!feesEnabled) {
+					return(null);
+				}
+				for (const block of blocks) {
+					const pubKey = block.account.publicKeyString.get();
+					if (feeFreeAccounts.has(pubKey)) {
+						return(null);
+					}
+				}
+
+				return({
+					amount: 1n
+				});
+			}
 		}
 	});
 
@@ -58,10 +86,17 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 	});
 
 	{
+		const baseTokenInfo = {
+			name: 'KeetaNet Test Token',
+			currencyCode: 'KTA',
+			decimalPlaces: 9
+		};
 		/*
 		 * Because "createInitialVoteStaple" is broken, we need to
 		 * manually initialize the chain
 		 */
+		const { networkAddress } = KeetaNetClient.lib.Account.generateBaseAddresses(testNode.config.network);
+
 		const itaUserClient = new KeetaNetClient.UserClient({
 			client: testClient,
 			network: testNode.config.network,
@@ -73,11 +108,29 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			addSupplyAmount: 1000n,
 			delegateTo: TestRepAccountClient,
 			/* XXX: This is broken too, so we need to set it to a high number */
-			voteSerial: BigInt('999999999999999999')
+			voteSerial: BigInt('999999999999999999'),
+			baseTokenInfo
 		}, {
 			account: TestRepAccountClient,
 			usePublishAid: false
 		});
+
+		// TODO - move this to generateInitialVoteStaple in Node
+		await itaUserClient.setInfo({
+			name: 'KEETANET',
+			description: 'Network Address For KeetaNet',
+			metadata: '',
+			defaultPermission: new KeetaNetClient.lib.Permissions(['TOKEN_ADMIN_CREATE','STORAGE_CREATE','ACCESS'])
+		}, { account: networkAddress });
+
+		/*
+		 * Give the user account some KTA to start with, to pay fees
+		 */
+		if (userAccount) {
+			await itaUserClient.send(userAccount, 100n, itaUserClient.baseToken, undefined, {
+				account: TestRepAccountClient
+			});
+		}
 	}
 
 	let userClient;
@@ -93,12 +146,28 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 
 	const retval: CreateNodeAndClientResponse = {
 		node: testNode,
-		client: testClient
+		client: testClient,
+		fees: {
+			disable: function() {
+				feesEnabled = false;
+			},
+			enable: function() {
+				feesEnabled = true;
+			},
+			addFeeFreeAccount: function(account) {
+				feeFreeAccounts.add(account.publicKeyString.get());
+			}
+		}
 	};
 
 	if (userClient) {
 		retval.userClient = userClient;
 	}
+
+	/**
+	 * Re-enable fees
+	 */
+	feesEnabled = true;
 
 	return(retval);
 }
