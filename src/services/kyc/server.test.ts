@@ -28,6 +28,7 @@ test('KYC Anchor HTTP Server', async function() {
 		signer: signer,
 		ca: kycCA,
 		client: userClient,
+		homepage: '<html><body>Hello World</body></html>',
 		kyc: {
 			countryCodes: ['US'],
 			verificationStarted: async function(_ignore_request) {
@@ -94,4 +95,12 @@ test('KYC Anchor HTTP Server', async function() {
 
 	const checkKYCCA = await foundValidMetadata.Test.ca('string');
 	expect(checkKYCCA).toEqual(kycCA.toPEM());
+
+	/*
+	 * Verify the home page
+	 */
+	const homeResponse = await fetch(server.url);
+	expect(homeResponse.status).toBe(200);
+	const homeText = await homeResponse.text();
+	expect(homeText).toBe('<html><body>Hello World</body></html>');
 });
