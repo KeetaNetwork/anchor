@@ -28,7 +28,7 @@ import {
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { ServiceMetadata, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 
@@ -122,18 +122,15 @@ function validateURL(url: string | undefined): URL {
 	return(parsedURL);
 }
 
-async function getEndpoints(resolver: Resolver, request: ProviderSearchInput): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
 	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
-	if (asset === undefined) {
-		throw(new Error('asset it required to lookup provider'));
-	}
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
 	const response = await resolver.lookup('assetMovement', {
 		asset,
 		...from,
 		...to
-	});
+	}, shared);
 
 	if (response === undefined) {
 		return(null);
@@ -414,6 +411,26 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		});
 
 		return(providers);
+	}
+
+	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {
+		const endpoints = await getEndpoints(this.resolver, {}, { providerIDs: [ providerID ] });
+		if (endpoints === null) {
+			return(null);
+		}
+
+		const typed = typedAssetMovementServiceEntries(endpoints);
+
+		const found = typed[0];
+		if (found) {
+			return(new KeetaAssetMovementAnchorProvider(found[1], found[0], this));
+		}
+
+		return(null);
+	}
+
+	_testing_GetCustomProvider(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID): KeetaAssetMovementAnchorProvider {
+		return(new KeetaAssetMovementAnchorProvider(serviceInfo, providerID, this));
 	}
 
 	/** @internal */

@@ -11,7 +11,13 @@ import type {
 	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
-	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	KeetaAssetMovementAnchorListPersistentForwardingRequest,
+	KeetaAssetMovementAnchorListPersistentForwardingResponse,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -24,6 +30,8 @@ import {
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+
+type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -46,24 +54,39 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'];
 
 		/**
+		 * Method to create a persistent forwarding address template
+		 */
+		createPersistentForwardingTemplate?: (request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>>;
+		
+		/**
+		 * Method to list persistent forwarding address templates
+		 */
+		listPersistentForwardingTemplate?: (request: KeetaAssetMovementAnchorListForwardingAddressTemplateRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>>;
+
+		/**
 		 * Method to create a persistent forwarding address
 		 */
-		createPersistentForwarding?: (request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest) => Promise<Omit<Extract<KeetaAssetMovementAnchorCreatePersistentForwardingResponse, { ok: true }>, 'ok'>>;
+		createPersistentForwarding?: (request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>>;
+
+		/**
+		 * Method to list persistent forwarding addresses
+		 */
+		listPersistentForwardingAddresses?: (request: KeetaAssetMovementAnchorListPersistentForwardingRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorListPersistentForwardingResponse>>;
 
 		/**
 		 * Method to initiate a transfer
 		 */
-		initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest) => Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>>;
+		initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
 
 		/**
 		 * Method to get the status of a transfer
 		 */
-		getTransferStatus?: (id: string) => Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>>;
+		getTransferStatus?: (id: string) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
 
 		/**
 		 * Method to list transactions
 		 */
-		listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<Omit<Extract<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, { ok: true }>, 'ok'>>;
+		listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>>;
 	}
 };
 

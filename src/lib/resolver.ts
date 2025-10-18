@@ -161,7 +161,7 @@ type ServiceMetadata = {
 					initiateTransfer?: string;
 					getTransferStatus?: string;
 					createPersistentForwarding?: string;
-					listTransactions?: string
+					listTransactions?: string;
 				};
 
 				supportedAssets: {
@@ -243,7 +243,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		countryCodes: CountrySearchInput[];
 	};
 	'assetMovement': {
-		asset?: MovableAssetSearchInput;
+		asset?: MovableAssetSearchInput | undefined;
 		from?: AssetLocationString;
 		to?: AssetLocationString;
 		rail?: Rail;
@@ -1216,6 +1216,8 @@ type ResolverStats = {
 	}
 };
 
+export type SharedLookupCriteria = { providerIDs?: string[]; };
+
 class Resolver {
 	readonly #root: ResolverConfig['root'];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -1814,7 +1816,7 @@ class Resolver {
 		});
 	}
 
-	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
+	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], filters?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -1829,8 +1831,23 @@ class Resolver {
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
 		const serviceLookup = this.lookupMap[service].search;
+
+		const definedServicesObject = await definedServices[service]?.('object');
+
+		let filteredDefinedServicesObject: ValuizableObject | undefined;
+		if (filters?.providerIDs !== undefined && definedServicesObject) {
+			filteredDefinedServicesObject = {};
+			for (const providerID of filters.providerIDs) {
+				if (providerID in definedServicesObject) {
+					filteredDefinedServicesObject[providerID] = definedServicesObject[providerID];
+				}
+			}
+		} else {
+			filteredDefinedServicesObject = definedServicesObject;
+		}
+
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
-		return(await serviceLookup(await definedServices[service]?.('object'), criteria as any));
+		return(await serviceLookup(filteredDefinedServicesObject, criteria as any));
 	}
 
 	clearCache(): void {

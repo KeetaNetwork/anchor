@@ -95,6 +95,10 @@ test('Asset Movement Anchor Client Test', async function() {
 			 * Method to create a persistent forwarding address
 			 */
 			createPersistentForwarding: async function(request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorCreatePersistentForwardingResponse, { ok: true }>, 'ok'>> {
+				if (!('destinationAddress' in request)) {
+					throw(new Error('Missing depositAddress in request'));
+				}
+
 				return({
 					address: request.destinationAddress
 				})
@@ -104,6 +108,10 @@ test('Asset Movement Anchor Client Test', async function() {
 			 * Method to initiate a transfer
 			 */
 			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
+				if (typeof request.to.recipient !== 'string') {
+					throw(new Error('Recipient is not a string'));
+				}
+
 				return({
 					id: '123',
 					instructionChoices: [{
@@ -288,11 +296,6 @@ test('Asset Movement Anchor Client Test', async function() {
 		{
 			test: async function() { return((await assetTransferClient.resolver.listTransferableAssets()).sort()) },
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
-		},
-		{
-			// @ts-expect-error
-			test: async function() { return((await assetTransferClient.getProvidersForTransfer({}))?.length) },
-			result: false
 		},
 		{
 			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyEUR }))) },
