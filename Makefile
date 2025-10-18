@@ -25,7 +25,6 @@ help:
 	@echo "  distclean     - Removes all build artifacts and dependencies"
 	@echo "  do-deploy     - Deploys the package to the Development (or QA) environment"
 	@echo "  do-npm-pack   - Creates a distributable package for this project"
-	@echo "  schema        - Generates KYC schema files from oids.json"
 
 # Create a ".nvmrc" file if it does not exist
 .nvmrc: package.json Makefile
@@ -45,14 +44,11 @@ node_modules/.done: package.json package-lock.json Makefile
 node_modules: node_modules/.done
 	@touch node_modules
 
-# Generate KYC schema files from oids.json
-src/generated/.done: oids.json scripts/generate-kyc-schema.mjs Makefile
-	./scripts/generate-kyc-schema.mjs
-	npm run eslint -- --fix src/generated/iso20022.ts
-	@touch src/generated/.done
-
-# This target generates the KYC schema files
-schema: src/generated/.done
+# Generated files for the KYC Service
+GENERATED_FILES := src/services/kyc/iso20022.generated.ts src/services/kyc/oids.generated.ts
+src/services/kyc/oids.generated.ts: src/services/kyc/iso20022.generated.ts
+src/services/kyc/iso20022.generated.ts: utils/run-ts src/services/kyc/utils/generate-kyc-schema.ts src/services/kyc/utils/oids.json node_modules
+	./utils/run-ts ./src/services/kyc/utils/generate-kyc-schema.ts --oids-json=./src/services/kyc/utils/oids.json --oids-output=./src/services/kyc/oids.generated.ts --iso20022-output=./src/services/kyc/iso20022.generated.ts
 
 # This target creates the distribution directory.
 dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
@@ -67,7 +63,7 @@ dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
 	jq --tab 'del(.. | .resolved?)' < dist/npm-shrinkwrap.json > dist/npm-shrinkwrap.json.new
 	mv dist/npm-shrinkwrap.json.new dist/npm-shrinkwrap.json
 
-dist/.done: $(shell find src -type f) src/generated/.done dist/npm-shrinkwrap.json node_modules Makefile
+dist/.done: $(shell find src -type f) $(GENERATED_FILES) dist/npm-shrinkwrap.json node_modules Makefile
 	npm run tsc
 	find dist -type f -name '*.test.*' | xargs rm -f
 	rm -rf dist/lib/utils/tests
@@ -97,13 +93,13 @@ do-deploy: dist node_modules
 	@exit 1
 
 # This is a synthetic target that runs this test suite.
-test: node_modules
+test: node_modules $(GENERATED_FILES)
 	npm run tsc -- --noEmit
 	rm -rf .coverage
 	npm run vitest run -- --config ./.vitest.config.js $(ANCHOR_TEST_EXTRA_ARGS)
 
 # Run linting
-do-lint: node_modules
+do-lint: node_modules $(GENERATED_FILES)
 	npm run eslint -- --config .eslint.config.mjs src ${KEETA_ANCHOR_LINT_ARGS}
 
 # Files created during the "build" or "prepare" processes
@@ -115,8 +111,7 @@ clean:
 	rm -rf .coverage
 	rm -f .tsbuildinfo
 	rm -f keetanetwork-anchor-*.tgz
-	rm -rf src/generated
-	rm -f src/generated/.done
+	rm -f src/services/kyc/oids.generated.ts src/services/kyc/iso20022.generated.ts
 
 # Files created during the "install" process are cleaned up
 # by the "distclean" target.

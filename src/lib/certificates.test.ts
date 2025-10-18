@@ -2,7 +2,7 @@ import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
-import type { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB } from '../generated/iso20022.js';
+import type { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 

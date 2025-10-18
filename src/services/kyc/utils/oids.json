@@ -34,16 +34,46 @@
 			"description": "Physical address",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2",
 			"fields": {
-				"addressType": { "type": "AddressType", "optional": true },
-				"department": { "type": "Department", "optional": true },
-				"subDepartment": { "type": "SubDepartment", "optional": true },
-				"streetName": { "type": "StreetName", "optional": true },
-				"buildingNumber": { "type": "BuildingNumber", "optional": true },
-				"postalCode": { "type": "PostalCode", "optional": true },
-				"townName": { "type": "TownName", "optional": true },
-				"countrySubDivision": { "type": "CountrySubDivision", "optional": true },
-				"country": { "type": "Country", "optional": true },
-				"addressLines": { "type": "AddressLines", "optional": true }
+				"addressType": {
+					"type": "AddressType",
+					"optional": true
+				},
+				"department": {
+					"type": "Department",
+					"optional": true
+				},
+				"subDepartment": {
+					"type": "SubDepartment",
+					"optional": true
+				},
+				"streetName": {
+					"type": "StreetName",
+					"optional": true
+				},
+				"buildingNumber": {
+					"type": "BuildingNumber",
+					"optional": true
+				},
+				"postalCode": {
+					"type": "PostalCode",
+					"optional": true
+				},
+				"townName": {
+					"type": "TownName",
+					"optional": true
+				},
+				"countrySubDivision": {
+					"type": "CountrySubDivision",
+					"optional": true
+				},
+				"country": {
+					"type": "Country",
+					"optional": true
+				},
+				"addressLines": {
+					"type": "AddressLines",
+					"optional": true
+				}
 			},
 			"field_order": [
 				"addressLines",
@@ -79,10 +109,22 @@
 			"description": "Date and place of birth information",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.5",
 			"fields": {
-				"birthDate": { "type": "BirthDate", "optional": false },
-				"provinceOfBirth": { "type": "CountrySubDivision", "optional": true },
-				"cityOfBirth": { "type": "TownName", "optional": false },
-				"countryOfBirth": { "type": "Country", "optional": false }
+				"birthDate": {
+					"type": "BirthDate",
+					"optional": false
+				},
+				"provinceOfBirth": {
+					"type": "CountrySubDivision",
+					"optional": true
+				},
+				"cityOfBirth": {
+					"type": "TownName",
+					"optional": false
+				},
+				"countryOfBirth": {
+					"type": "Country",
+					"optional": false
+				}
 			},
 			"field_order": [
 				"birthDate",
@@ -126,8 +168,12 @@
 			"description": "Entity type (organization or person)",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.8",
 			"choices": {
-				"organization": { "type": "OrganizationIdentification" },
-				"person": { "type": "PersonIdentification" }
+				"organization": {
+					"type": "OrganizationIdentification"
+				},
+				"person": {
+					"type": "PersonIdentification"
+				}
 			}
 		},
 		"contactDetails": {
@@ -137,18 +183,54 @@
 			"description": "Contact details",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.9",
 			"fields": {
-				"namePrefix": { "type": "NamePrefixCode", "optional": true },
-				"fullName": { "type": "FullName", "optional": true },
-				"phoneNumber": { "type": "PhoneNumber", "optional": true },
-				"mobileNumber": { "type": "PhoneNumber", "optional": true },
-				"faxNumber": { "type": "PhoneNumber", "optional": true },
-				"emailAddress": { "type": "EmailAddress", "optional": true },
-				"emailPurpose": { "type": "EmailAddressPurpose", "optional": true },
-				"jobTitle": { "type": "JobTitle", "optional": true },
-				"jobResponsibility": { "type": "JobResponsibility", "optional": true },
-				"department": { "type": "Department", "optional": true },
-				"other": { "type": "SEQUENCE OF OtherContact", "optional": true },
-				"preferredMethod": { "type": "PreferredContactMethodCode", "optional": true }
+				"namePrefix": {
+					"type": "NamePrefixCode",
+					"optional": true
+				},
+				"fullName": {
+					"type": "FullName",
+					"optional": true
+				},
+				"phoneNumber": {
+					"type": "PhoneNumber",
+					"optional": true
+				},
+				"mobileNumber": {
+					"type": "PhoneNumber",
+					"optional": true
+				},
+				"faxNumber": {
+					"type": "PhoneNumber",
+					"optional": true
+				},
+				"emailAddress": {
+					"type": "EmailAddress",
+					"optional": true
+				},
+				"emailPurpose": {
+					"type": "EmailAddressPurpose",
+					"optional": true
+				},
+				"jobTitle": {
+					"type": "JobTitle",
+					"optional": true
+				},
+				"jobResponsibility": {
+					"type": "JobResponsibility",
+					"optional": true
+				},
+				"department": {
+					"type": "Department",
+					"optional": true
+				},
+				"other": {
+					"type": "SEQUENCE OF OtherContact",
+					"optional": true
+				},
+				"preferredMethod": {
+					"type": "PreferredContactMethodCode",
+					"optional": true
+				}
 			},
 			"field_order": [
 				"department",
@@ -225,8 +307,12 @@
 				"type": "CHOICE",
 				"description": "Address type classification",
 				"choices": {
-					"code": { "type": "UTF8String" },
-					"proprietary": { "type": "UTF8String" }
+					"code": {
+						"type": "UTF8String"
+					},
+					"proprietary": {
+						"type": "UTF8String"
+					}
 				}
 			},
 			"OrganizationIdentificationSchemeNameChoice": {
@@ -234,8 +320,12 @@
 				"type": "CHOICE",
 				"description": "Organization identification scheme name",
 				"choices": {
-					"code": { "type": "UTF8String" },
-					"proprietary": { "type": "UTF8String" }
+					"code": {
+						"type": "UTF8String"
+					},
+					"proprietary": {
+						"type": "UTF8String"
+					}
 				}
 			},
 			"PersonIdentificationSchemeNameChoice": {
@@ -243,8 +333,12 @@
 				"type": "CHOICE",
 				"description": "Person identification scheme name",
 				"choices": {
-					"code": { "type": "UTF8String" },
-					"proprietary": { "type": "UTF8String" }
+					"code": {
+						"type": "UTF8String"
+					},
+					"proprietary": {
+						"type": "UTF8String"
+					}
 				}
 			}
 		},
@@ -253,13 +347,25 @@
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 0, 0 ],
 				"type": "ENUMERATED",
 				"description": "Name prefix code",
-				"values": [ "DOCT", "MIST", "MISS", "MIKS", "MME" ]
+				"values": [
+					"DOCT",
+					"MIST",
+					"MISS",
+					"MIKS",
+					"MME"
+				]
 			},
 			"PreferredContactMethodCode": {
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 9, 0 ],
 				"type": "ENUMERATED",
 				"description": "Preferred contact method",
-				"values": [ "LETT", "MAIL", "PHON", "FAXX", "CELL" ]
+				"values": [
+					"LETT",
+					"MAIL",
+					"PHON",
+					"FAXX",
+					"CELL"
+				]
 			}
 		},
 		"sequences": {
@@ -268,20 +374,42 @@
 				"type": "SEQUENCE",
 				"description": "Generic organization identification",
 				"fields": {
-					"id": { "type": "Id", "optional": false },
-					"schemeName": { "type": "OrganizationIdentificationSchemeNameChoice", "optional": true },
-					"issuer": { "type": "Issuer", "optional": true }
+					"id": {
+						"type": "Id",
+						"optional": false
+					},
+					"schemeName": {
+						"type": "OrganizationIdentificationSchemeNameChoice",
+						"optional": true
+					},
+					"issuer": {
+						"type": "Issuer",
+						"optional": true
+					}
 				},
-    			"field_order": ["id", "issuer", "schemeName"]
+				"field_order": [
+					"id",
+					"issuer",
+					"schemeName"
+				]
 			},
 			"OrganizationIdentification": {
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 0 ],
 				"type": "SEQUENCE",
 				"description": "Organization identification",
 				"fields": {
-					"bic": { "type": "UTF8String", "optional": true },
-					"lei": { "type": "UTF8String", "optional": true },
-					"other": { "type": "SEQUENCE OF GenericOrganizationIdentification", "optional": true }
+					"bic": {
+						"type": "UTF8String",
+						"optional": true
+					},
+					"lei": {
+						"type": "UTF8String",
+						"optional": true
+					},
+					"other": {
+						"type": "SEQUENCE OF GenericOrganizationIdentification",
+						"optional": true
+					}
 				}
 			},
 			"GenericPersonIdentification": {
@@ -289,19 +417,38 @@
 				"type": "SEQUENCE",
 				"description": "Generic person identification",
 				"fields": {
-					"id": { "type": "Id", "optional": false },
-					"schemeName": { "type": "PersonIdentificationSchemeNameChoice", "optional": true },
-					"issuer": { "type": "Issuer", "optional": true }
+					"id": {
+						"type": "Id",
+						"optional": false
+					},
+					"schemeName": {
+						"type": "PersonIdentificationSchemeNameChoice",
+						"optional": true
+					},
+					"issuer": {
+						"type": "Issuer",
+						"optional": true
+					}
 				},
-    			"field_order": ["id", "issuer", "schemeName"]
+				"field_order": [
+					"id",
+					"issuer",
+					"schemeName"
+				]
 			},
 			"PersonIdentification": {
 				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 1 ],
 				"type": "SEQUENCE",
 				"description": "Person identification",
 				"fields": {
-					"dateAndPlaceOfBirth": { "type": "DateAndPlaceOfBirth", "optional": true },
-					"other": { "type": "SEQUENCE OF GenericPersonIdentification", "optional": true }
+					"dateAndPlaceOfBirth": {
+						"type": "DateAndPlaceOfBirth",
+						"optional": true
+					},
+					"other": {
+						"type": "SEQUENCE OF GenericPersonIdentification",
+						"optional": true
+					}
 				}
 			},
 			"OtherContact": {
@@ -309,10 +456,19 @@
 				"type": "SEQUENCE",
 				"description": "Other contact method",
 				"fields": {
-					"id": { "type": "Id", "optional": true },
-					"channelType": { "type": "UTF8String", "optional": false }
+					"id": {
+						"type": "Id",
+						"optional": true
+					},
+					"channelType": {
+						"type": "UTF8String",
+						"optional": false
+					}
 				},
-    			"field_order": ["channelType", "id"]
+				"field_order": [
+					"channelType",
+					"id"
+				]
 			}
 		}
 	},

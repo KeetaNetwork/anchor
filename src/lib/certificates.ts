@@ -1,13 +1,13 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import * as oids from '../generated/oids.js';
+import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
 import { ASN1toJS } from './utils/asn1.js';
 import type { ASN1AnyJS, ASN1ContextTag } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
-import type { SensitiveAttributeType, CertificateAttributeValue } from '../generated/iso20022.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, SENSITIVE_CERTIFICATE_ATTRIBUTES, CertificateAttributeFieldNames } from '../generated/iso20022.js';
+import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema, SENSITIVE_CERTIFICATE_ATTRIBUTES, CertificateAttributeFieldNames } from '../services/kyc/iso20022.generated.js';
 import { hasIndexSignature, isErrorLike, hasValueProp, isContextTagged } from './utils/guards.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil, safeJSONStringify } from './utils/json.js';
