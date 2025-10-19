@@ -193,17 +193,6 @@ function encodeAttribute(
 		return(der);
 	}
 
-	// Primitive string type
-	if (schema === ASN1.ValidateASN1.IsString) {
-		if (typeof value !== 'string') {
-			throw(new Error('Expected string value for string schema'));
-		}
-
-		const asn1 = ASN1.JStoASN1({ type: 'string', kind: 'utf8', value });
-		const der = asn1.toBER(false);
-		return(der);
-	}
-
 	throw(new Error(`Unsupported attribute value for encoding: ${String(value)}`));
 }
 
