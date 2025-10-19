@@ -20,6 +20,27 @@
 			"description": "Person's full name",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.0"
 		},
+		"firstName": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 0, 1 ],
+			"token": "FirstName",
+			"type": "UTF8String",
+			"description": "Person's first name",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.0.1"
+		},
+		"lastName": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 0, 2 ],
+			"token": "LastName",
+			"type": "UTF8String",
+			"description": "Person's last name",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.0.2"
+		},
+		"middleName": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 0, 3 ],
+			"token": "MiddleName",
+			"type": "UTF8String",
+			"description": "Person's middle name",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.0.3"
+		},
 		"dateOfBirth": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 1 ],
 			"token": "BirthDate",
@@ -246,6 +267,59 @@
 				"phoneNumber",
 				"preferredMethod"
 			]
+		},
+		"nationality": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 10 ],
+			"token": "Nationality",
+			"type": "UTF8String",
+			"description": "Nationality",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.10"
+		},
+		"document": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11 ],
+			"token": "Document",
+			"type": "SEQUENCE",
+			"description": "Document information",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2",
+			"fields": {
+				"type": { "type": "UTF8String", "optional": false },
+				"number": { "type": "UTF8String", "optional": true },
+				"issuer": { "type": "Issuer", "optional": true },
+				"issueDate": { "type": "GeneralizedTime", "optional": true },
+				"expiryDate": { "type": "GeneralizedTime", "optional": true },
+				"issuingCountry": { "type": "Country", "optional": true },
+				"attachmentUrl": { "type": "UTF8String", "optional": true }
+			},
+			"field_order": [
+				"type",
+				"number",
+				"issuer",
+				"issueDate",
+				"expiryDate",
+				"issuingCountry",
+				"attachmentUrl"
+			]
+		},
+		"documentDriversLicenseFront": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 0 ],
+			"token": "DocumentDriversLicenseFront",
+			"type": "Document",
+			"description": "Driver's license front side document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.1"
+		},
+		"documentDriversLicenseBack": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
+			"token": "DocumentDriversLicenseBack",
+			"type": "Document",
+			"description": "Driver's license back side document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.2"
+		},
+		"documentPassport": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2 ],
+			"token": "DocumentPassport",
+			"type": "Document",
+			"description": "Passport document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.3"
 		}
 	},
 	"iso20022_types": {
