@@ -579,8 +579,11 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 	/**
 	 * Set a KYC Attribute to a given value.
-	 * The sensitive flag is required. If an attribute is expected to be
-	 * sensitive (e.g., fullName), it must be marked as such.
+	 * The sensitive flag is required.
+	 *
+	 * If an attribute is marked sensitive, the value is encoded
+	 * into the certificate using a commitment scheme so that the
+	 * value can be proven later without revealing it.
 	 */
 	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
 		const mustBeSensitive = (SENSITIVE_CERTIFICATE_ATTRIBUTES satisfies readonly string[]).includes(name);
