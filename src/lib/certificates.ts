@@ -129,6 +129,13 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
+
+function encodeAttributeNew<NAME extends CertificateAttributeNames>(name: NAME, value: CertificateAttributeInput<NAME>): ArrayBuffer {
+	throw(new Error('not implemented'));
+}
+
+const x = encodeAttributeNew('fullName', 'John Doe'); // Example usage
+
 function encodeAttribute(
 	name: CertificateAttributeNames,
 	value: unknown
@@ -583,11 +590,6 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	 * sensitive (e.g., fullName), it must be marked as such.
 	 */
 	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
-		const mustBeSensitive = (SENSITIVE_CERTIFICATE_ATTRIBUTES satisfies readonly string[]).includes(name);
-		if (mustBeSensitive && !sensitive) {
-			throw(new Error(`Attribute '${name}' must be marked sensitive`));
-		}
-
 		if (sensitive) {
 			this.#attributes[name] = { sensitive, value };
 			return;

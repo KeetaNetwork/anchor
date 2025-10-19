@@ -5,14 +5,7 @@
 		"sha2-256": [ 2, 16, 840, 1, 101, 3, 4, 2, 1 ],
 		"sha3-256": [ 2, 16, 840, 1, 101, 3, 4, 2, 8 ]
 	},
-	"plain_attributes": {
-		"postalCode": {
-			"oid": [ 2, 5, 5, 17 ],
-			"description": "Postal code OID",
-			"reference": "https://oidref.com/2.5.5.17"
-		}
-	},
-	"sensitive_attributes": {
+	"attributes": {
 		"fullName": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 0 ],
 			"token": "FullName",
