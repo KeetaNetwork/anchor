@@ -359,3 +359,44 @@ test('Rust Certificate Interoperability', async function() {
 	const contactProof = await contactAttr.value.getProof();
 	expect(await contactAttr.value.validateProof(contactProof)).toBe(true);
 });
+
+test('Cetificate ISO20022 Serialization', async function() {
+	/*
+	 * Create account for subject
+	 */
+	const subjectAccount = KeetaNetClient.lib.Account.fromSeed(
+		testSeed,
+		0,
+		KeetaNetClient.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256R1
+	);
+
+	/* Create a Certificate Builder */
+	const builder1 = new Certificates.Certificate.Builder({
+		issuer: subjectAccount,
+		subject: subjectAccount,
+		serial: 5,
+		validFrom: new Date(),
+		validTo: new Date(Date.now() + 1000 * 60 * 60 * 24)
+	});
+
+	/*
+	 * Create a User Certificate
+	 */
+	builder1.setAttribute('fullName', true, 'Test User');
+	builder1.setAttribute('email', true, 'user@example.com');
+	builder1.setAttribute('dateOfBirth', true, new Date('1990-05-15'));
+	builder1.setAttribute('dateAndPlaceOfBirth', true, {
+		birthDate: new Date('1990-05-15'),
+		cityOfBirth: 'Springfield',
+		provinceOfBirth: 'IL',
+		countryOfBirth: 'US'
+	});
+	builder1.setAttribute('contactDetails', true, {
+		phoneNumber: '+1-555-000-1111'
+	});
+	const certificate = new Certificates.Certificate(await builder1.buildDER(), {
+		subjectKey: subjectAccount
+	});
+
+	console.log(await certificate.toISO20022());
+});

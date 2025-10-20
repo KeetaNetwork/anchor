@@ -32,6 +32,9 @@
 		"typescript": "5.6.3",
 		"vitest": "3.2.4"
 	},
+	"optionalDependencies": {
+		"@xmldom/xmldom": "0.8.11"
+	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.2.5",
 		"@keetanetwork/keetanet-client": "0.14.8",

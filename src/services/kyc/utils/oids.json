@@ -48,6 +48,13 @@
 			"description": "Date of birth",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.1"
 		},
+		"countryOfResidence": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 2, 8 ],
+			"token": "CountryOfResidence",
+			"type": "UTF8String",
+			"description": "Country of residence (ISO 3166-1 alpha-2 or alpha-3)",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.8"
+		},
 		"address": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 2 ],
 			"token": "Address",
