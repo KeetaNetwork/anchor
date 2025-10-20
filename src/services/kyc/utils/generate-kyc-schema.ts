@@ -437,11 +437,16 @@ function generateIso20022Types() {
 		lines.push('');
 	}
 
-	// --- Sequence Type Schemas ---
+	// --- Sequence Type Schemas and Field Arrays ---
 	lines.push('// Generated ASN.1 schemas for ISO 20022 sequence types');
 	for (const [name, config] of Object.entries(oidSchema.iso20022_types.sequences)) {
 		const typeName = toPascalCase(name);
 		if (config.fields && !isSequenceOfChoice(config)) {
+			// Export field array for this sequence type
+			const fieldOrder = config.field_order ?? Object.keys(config.fields);
+			lines.push(`export const ${typeName}Fields = [${fieldOrder.map(function(field) {
+				return(`'${field}'`);
+			}).join(', ')}] as const;`);
 			lines.push(`/** ASN.1 schema for ${typeName} */`);
 			lines.push(genSequenceSchema(typeName, config.fields, config));
 			lines.push('');
@@ -454,7 +459,14 @@ function generateIso20022Types() {
 		const typeName = toPascalCase(name);
 		if (config.choices) {
 			const choiceSchemas = Object.values(config.choices).map(function(choice) {
-				const choiceTypeName = toPascalCase(choice.type.trim());
+				const choiceType = choice.type.trim();
+				// Handle SEQUENCE OF types
+				if (choiceType.startsWith('SEQUENCE OF ')) {
+					const elementType = choiceType.substring('SEQUENCE OF '.length).trim();
+					const elementTypeName = toPascalCase(elementType);
+					return(`{ sequenceOf: ${elementTypeName}Schema }`);
+				}
+				const choiceTypeName = toPascalCase(choiceType);
 				return(`${choiceTypeName}Schema`);
 			});
 			lines.push(`/** ASN.1 schema for ${typeName} */`);
@@ -509,7 +521,14 @@ function generateIso20022Types() {
 			});
 			if (hasComplexTypes) {
 				const unionTypes = Object.values(config.choices).map(function(choice) {
-					return(toPascalCase(choice.type.trim()));
+					const choiceType = choice.type.trim();
+					// Handle SEQUENCE OF types
+					if (choiceType.startsWith('SEQUENCE OF ')) {
+						const elementType = choiceType.substring('SEQUENCE OF '.length).trim();
+						const elementTypeName = toPascalCase(elementType);
+						return(`${elementTypeName}[]`);
+					}
+					return(toPascalCase(choiceType));
 				});
 				lines.push(`export type ${typeName} = ${unionTypes.join(' | ')};`);
 			} else {

@@ -178,6 +178,7 @@ test('Certificates', async function() {
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
 		builder1.setAttribute('address', true, { streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' });
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
+		builder1.setAttribute('partyId', true, [{ id: 'SSN123456789', schemeName: 'SSN', issuer: 'US-SSA' }]);
 
 		/**
 		 * A User Certificate
@@ -250,6 +251,13 @@ test('Certificates', async function() {
 			certificate,
 			'dateOfBirth',
 			new Date('1980-01-01')
+		);
+
+		await verifyAttribute(
+			certificateWithPrivate,
+			certificate,
+			'partyId',
+			[{ id: 'SSN123456789', schemeName: 'SSN', issuer: 'US-SSA' }]
 		);
 	}
 });

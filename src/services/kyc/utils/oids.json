@@ -275,6 +275,21 @@
 			"description": "Nationality",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.10"
 		},
+		"partyId": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 10, 1 ],
+			"token": "PartyId",
+			"type": "CHOICE",
+			"description": "Party identification (organization or person)",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.10.1",
+			"choices": {
+				"orgId": {
+					"type": "OrganizationIdentification"
+				},
+				"prvtId": {
+					"type": "SEQUENCE OF GenericPersonIdentification"
+				}
+			}
+		},
 		"document": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11 ],
 			"token": "Document",

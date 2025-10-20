@@ -8,7 +8,12 @@ import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuff
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, CertificateAttributeFieldNames } from '../services/kyc/iso20022.generated.js';
+import {
+	CertificateAttributeOIDDB,
+	CertificateAttributeSchema,
+	CertificateAttributeFieldNames,
+	GenericPersonIdentificationFields
+} from '../services/kyc/iso20022.generated.js';
 import { hasIndexSignature, isErrorLike, hasValueProp, isContextTagged } from './utils/guards.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
@@ -167,9 +172,11 @@ function encodeAttribute(name: CertificateAttributeNames, value: unknown): Array
 		if (typeof input === 'string') {
 			return({ type: 'string', kind: 'utf8', value: input });
 		}
-		/* XXX: Why are numbers and booleans encoded as strings? */
 		if (typeof input === 'number' || typeof input === 'bigint' || typeof input === 'boolean') {
-			return({ type: 'string', kind: 'utf8', value: String(input) });
+			/**
+			 * Numbers and booleans are encoded as-is, without any additional wrapping.
+			 */
+			return(input);
 		}
 
 		if (Array.isArray(input)) {
@@ -204,6 +211,37 @@ function encodeAttribute(name: CertificateAttributeNames, value: unknown): Array
 		return(der);
 	}
 
+	// SEQUENCE OF: encode array items using schema field order
+	if (Array.isArray(value)) {
+		const encodedItems = value.map(item => {
+			if (!hasIndexSignature(item)) {
+				return(toASN1Value(item));
+			}
+
+			const mappedFields: ASN1ContextTag[] = [];
+			for (let idx = 0; idx < GenericPersonIdentificationFields.length; idx++) {
+				const fieldName = GenericPersonIdentificationFields[idx];
+				if (!fieldName) {
+					continue;
+				}
+
+				const fieldValue = item[fieldName];
+				if (fieldValue !== undefined) {
+					mappedFields.push({
+						type: 'context',
+						kind: 'explicit',
+						value: idx,
+						contains: toASN1Value(fieldValue)
+					});
+				}
+			}
+			return(mappedFields);
+		});
+
+		const asn1 = ASN1.JStoASN1(encodedItems);
+		return(asn1.toBER(false));
+	}
+
 	throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
 }
 
@@ -233,7 +271,32 @@ function encodeForSensitive(
 	return(Buffer.from(String(value), 'utf-8'));
 }
 
-async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): Promise<CertificateAttributeValue<NAME>> {
+// Helper to convert an array of context tags to an object
+// Used when decoding SEQUENCE types where fields are encoded as context tags
+function contextTagArrayToObject(arr: unknown[], fieldNames?: readonly string[]): { [key: string]: unknown } {
+	const result: { [key: string]: unknown } = {};
+	for (let i = 0; i < arr.length; i++) {
+		const fieldValue: unknown = arr[i];
+		if (fieldValue === undefined) {continue;}
+		if (isErrorLike(fieldValue)) {
+			throw(new Error(`Field at index ${i} contains an error: ${fieldValue.message}`));
+		}
+
+		// Use provided field names if available, otherwise use index as field name
+		const fieldName: string = fieldNames && i < fieldNames.length ? String(fieldNames[i]) : String(i);
+		if (isContextTagged(fieldValue)) {
+			// unwrap context tag; prefer nested .value if present
+			result[fieldName] = hasValueProp(fieldValue.contains) ? fieldValue.contains.value : fieldValue.contains;
+		} else if (hasValueProp(fieldValue)) {
+			result[fieldName] = fieldValue.value;
+		} else {
+			result[fieldName] = fieldValue;
+		}
+	}
+	return(result);
+}
+
+async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer | Buffer): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
@@ -242,28 +305,17 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 
 	let candidate: unknown;
 	if (fieldNames && Array.isArray(decodedUnknown)) {
-		const arr: unknown[] = decodedUnknown;
-		const result: { [key: string]: unknown } = {};
-		for (let i = 0; i < fieldNames.length; i++) {
-			const fieldName = fieldNames[i];
-			if (!fieldName) {continue;}
-
-			const fieldValue: unknown = arr[i];
-			if (fieldValue === undefined) {continue;}
-			if (isErrorLike(fieldValue)) {
-				throw(new Error(`Field ${fieldName} contains an error: ${fieldValue.message}`));
+		candidate = contextTagArrayToObject(decodedUnknown, fieldNames);
+	} else if (Array.isArray(decodedUnknown) && Array.isArray(decodedUnknown[0])) {
+		// Typing as unknown is fine
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const decodedArray = decodedUnknown as unknown[];
+		candidate = decodedArray.map(item => {
+			if (Array.isArray(item)) {
+				return(contextTagArrayToObject(item, GenericPersonIdentificationFields));
 			}
-
-			if (isContextTagged(fieldValue)) {
-				// unwrap context tag; prefer nested .value if present
-				result[fieldName] = hasValueProp(fieldValue.contains) ? fieldValue.contains.value : fieldValue.contains;
-			} else if (hasValueProp(fieldValue)) {
-				result[fieldName] = fieldValue.value;
-			} else {
-				result[fieldName] = fieldValue;
-			}
-		}
-		candidate = result;
+			return(item);
+		});
 	} else if (hasValueProp(decodedUnknown)) {
 		candidate = decodedUnknown.value;
 	} else {
