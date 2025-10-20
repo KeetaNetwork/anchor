@@ -796,6 +796,167 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 
 		return(false);
 	}
+
+	private static _XMLDOM: Promise<typeof import('@xmldom/xmldom')> | undefined;
+	private static async getXMLDOM(): Promise<typeof import('@xmldom/xmldom')> {
+		if (!Certificate._XMLDOM) {
+			Certificate._XMLDOM = import('@xmldom/xmldom');
+		}
+		return(await Certificate._XMLDOM);
+	}
+
+	/**
+	 * Emit an XML fragment representing the certificate's attributes
+	 */
+	private static async iso200022PartyIdentification135(certificate: Certificate): Promise<string> {
+		const XMLDOM = await Certificate.getXMLDOM();
+		const get = certificate.getAttributeValue.bind(certificate);
+		const has = function(name: CertificateAttributeNames): name is CertificateAttributeNames {
+			return(name in certificate.attributes);
+		}
+
+		const doc = new XMLDOM.DOMImplementation().createDocument(null, 'Fragment', null);
+		const root = doc.documentElement;
+		if (has('fullName')) {
+			const fullName = await get('fullName');
+			const nameElement = doc.createElement('Nm');
+			nameElement.appendChild(doc.createTextNode(fullName));
+			root.appendChild(nameElement);
+		}
+
+		if (has('address')) {
+			const address = await get('address');
+			const addressElement = doc.createElement('PstlAdr');
+
+			if (address.country) {
+				const countryElement = doc.createElement('Ctry');
+				countryElement.appendChild(doc.createTextNode(address.country));
+				addressElement.appendChild(countryElement);
+			}
+			if (address.townName) {
+				const townElement = doc.createElement('TwnNm');
+				townElement.appendChild(doc.createTextNode(address.townName));
+				addressElement.appendChild(townElement);
+			}
+
+			root.appendChild(addressElement);
+		}
+
+		if (has('dateOfBirth') || has('dateAndPlaceOfBirth') || has('id')) {
+			const idElement = doc.createElement('Id');
+			const privateIdElement = doc.createElement('PrvtId');
+
+			if (has('dateOfBirth') || has('dateAndPlaceOfBirth')) {
+				const dob = has('dateOfBirth') ? await get('dateOfBirth') : undefined;
+				const pob = has('dateAndPlaceOfBirth') ? await get('dateAndPlaceOfBirth') : undefined;
+
+				const dobElement = doc.createElement('DtAndPlcOfBirth');
+				if (pob?.birthDate) {
+					const birthDateElement = doc.createElement('BirthDt');
+					birthDateElement.appendChild(doc.createTextNode(pob.birthDate.toISOString().split('T').at(0)!));
+					dobElement.appendChild(birthDateElement);
+				} else if (dob) {
+					const birthDateElement = doc.createElement('BirthDt');
+					birthDateElement.appendChild(doc.createTextNode(dob.toISOString().split('T').at(0)!));
+					dobElement.appendChild(birthDateElement);
+				}
+				if (pob?.provinceOfBirth) {
+					const provinceElement = doc.createElement('PrvcOfBirth');
+					provinceElement.appendChild(doc.createTextNode(pob.provinceOfBirth));
+					dobElement.appendChild(provinceElement);
+				}
+				if (pob?.cityOfBirth) {
+					const cityElement = doc.createElement('CityOfBirth');
+					cityElement.appendChild(doc.createTextNode(pob.cityOfBirth));
+					dobElement.appendChild(cityElement);
+				}
+				if (pob?.countryOfBirth) {
+					const countryElement = doc.createElement('CtryOfBirth');
+					countryElement.appendChild(doc.createTextNode(pob.countryOfBirth));
+					dobElement.appendChild(countryElement);
+				}
+
+				privateIdElement.appendChild(dobElement);
+			}
+
+			if (has('id')) {
+				/* XXX:TODO */
+			}
+
+			idElement.appendChild(privateIdElement);
+			root.appendChild(idElement);
+		}
+
+		if (has('countryOfResidence') || has('address')) {
+			let cor: string | undefined;
+			if (has('address')) {
+				const address = await get('address');
+				cor = address.country;
+			} else if (has('countryOfResidence')) {
+				cor = await get('countryOfResidence');
+			}
+
+			if (cor) {
+				const corElement = doc.createElement('CtryOfRes');
+				corElement.appendChild(doc.createTextNode(cor));
+				root.appendChild(corElement);
+			}
+		}
+
+		if (has('contactDetails') || has('phoneNumber') || has('email')) {
+			let contactDetails: Awaited<ReturnType<typeof get<'contactDetails'>>> | undefined;
+			if (has('contactDetails')) {
+				contactDetails = await get('contactDetails');
+			}
+			const contactElement = doc.createElement('CtctDtls');
+
+			if (contactDetails?.fullName) {
+				const nameElement = doc.createElement('Nm');
+				nameElement.appendChild(doc.createTextNode(contactDetails.fullName));
+				contactElement.appendChild(nameElement);
+			}
+
+			if (contactDetails?.phoneNumber) {
+				const phoneElement = doc.createElement('PhneNb');
+				phoneElement.appendChild(doc.createTextNode(contactDetails.phoneNumber));
+				contactElement.appendChild(phoneElement);
+			} else if (has('phoneNumber')) {
+				const phoneNumber = await get('phoneNumber');
+				const phoneElement = doc.createElement('PhneNb');
+				phoneElement.appendChild(doc.createTextNode(phoneNumber));
+				contactElement.appendChild(phoneElement);
+			}
+
+			if (contactDetails?.mobileNumber) {
+				const mobileElement = doc.createElement('MobNb');
+				mobileElement.appendChild(doc.createTextNode(contactDetails.mobileNumber));
+				contactElement.appendChild(mobileElement);
+			}
+			if (contactDetails?.emailAddress) {
+				const emailElement = doc.createElement('EmailAdr');
+				emailElement.appendChild(doc.createTextNode(contactDetails.emailAddress));
+				contactElement.appendChild(emailElement);
+			} else if (has('email')) {
+				const email = await get('email');
+				const emailElement = doc.createElement('EmailAdr');
+				emailElement.appendChild(doc.createTextNode(email));
+				contactElement.appendChild(emailElement);
+			}
+
+			root.appendChild(contactElement);
+		}
+
+		const output = new XMLDOM.XMLSerializer();
+		return('<?xml version="1.0"?>\n' + output.serializeToString(root));
+	}
+	/**
+	 * Emit an ISO20022 Party Report message (XXX: which one ?)
+	 * XXX: TODO
+	 */
+	async toISO20022(): Promise<string> {
+		return(Certificate.iso200022PartyIdentification135(this));
+	}
+
 }
 
 /** @internal */
