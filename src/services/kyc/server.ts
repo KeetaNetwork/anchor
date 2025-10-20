@@ -226,9 +226,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 				response = await config.kyc.verificationStarted(body);
 			}
 
-			if (response === undefined) {
-				response = {};
-			}
+			response ??= {};
 
 			if (response?.ok === false) {
 				throw(new KeetaAnchorUserError(response.error ?? 'Unknown error'));

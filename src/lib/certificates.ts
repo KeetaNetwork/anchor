@@ -201,7 +201,7 @@ function encodeAttribute(name: CertificateAttributeNames, value: unknown): Array
 		return(der);
 	}
 
-	throw(new Error(`Unsupported attribute value for encoding: ${DPO(value)}`));
+	throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
 }
 
 // Prepare a value for inclusion in a SensitiveAttribute: pre-encode complex and date types
@@ -382,7 +382,7 @@ class SensitiveAttribute<T = ArrayBuffer> {
 			decodedAttribute = dataObject.getASN1();
 		} catch {
 			const js = ASN1toJS(data);
-			throw(new Error(`SensitiveAttribute.decode: unexpected DER shape ${DPO(js)}`));
+			throw(new Error(`SensitiveAttribute.decode: unexpected DER shape ${JSON.stringify(DPO(js))}`));
 		}
 
 		const decodedVersion = decodedAttribute[0] + 1n;
@@ -699,7 +699,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
 	private readonly subjectKey: KeetaNetAccount;
-	static Builder: typeof CertificateBuilder;
+	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
 
 	/**
      * User KYC Attributes
@@ -797,9 +797,6 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		return(false);
 	}
 }
-
-// Bind the nested Builder class for ergonomic API parity with existing tests
-Certificate.Builder = CertificateBuilder;
 
 /** @internal */
 export const _Testing = {
