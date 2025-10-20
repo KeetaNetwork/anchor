@@ -574,7 +574,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		let subjectPublicKey;
 		if (paramsCopy.subject) {
 			subjectPublicKey = paramsCopy.subject;
-			delete (paramsCopy.subject);
+			delete(paramsCopy.subject);
 		}
 		const retval: Partial<BaseCertificateBuilderParams> = paramsCopy;
 		if (subjectPublicKey) {
