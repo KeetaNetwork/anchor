@@ -12,6 +12,8 @@ import { CertificateAttributeOIDDB, CertificateAttributeSchema, CertificateAttri
 import { hasIndexSignature, isErrorLike, hasValueProp, isContextTagged } from './utils/guards.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
+import { EncryptedContainer } from './encrypted-container.js';
+import { assertSharableCertificateAttributesContentsSchema } from './certificates.generated.js';
 
 /**
  * Short alias for printing a debug representation of an object
@@ -25,6 +27,7 @@ type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyT
  * An alias for the KeetaNetAccount type
  */
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
+const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
 
 function toJSON(data: unknown): unknown {
 	return(convertToJSONUtil(data));
@@ -700,6 +703,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
 	private readonly subjectKey: KeetaNetAccount;
 	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
+	static readonly SharableAttributes: typeof SharableCertificateAttributes;
 
 	/**
      * User KYC Attributes
@@ -797,6 +801,327 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		return(false);
 	}
 }
+
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace SharableCertificateAttributesTypes {
+	export type ExportOptions = { format?: 'string' | 'arraybuffer' };
+	export type ImportOptions = { principals?: Set<KeetaNetAccount> | KeetaNetAccount[] | KeetaNetAccount | null };
+	export type ContentsSchema = {
+		certificate: string;
+		attributes: {
+			[name: string]: {
+				sensitive: true;
+				value: Awaited<ReturnType<SensitiveAttribute['getProof']>>;
+			} | {
+				sensitive: false;
+				value: string;
+			}
+		};
+	};
+};
+type SharableCertificateAttributesExportOptions = SharableCertificateAttributesTypes.ExportOptions;
+type SharableCertificateAttributesImportOptions = SharableCertificateAttributesTypes.ImportOptions;
+type SharableCertificateAttributesContentsSchema = SharableCertificateAttributesTypes.ContentsSchema;
+
+export class SharableCertificateAttributes {
+	#certificate?: Certificate;
+	#attributes: {
+		[name: string]: {
+			sensitive: boolean;
+			value: ArrayBuffer;
+		}
+	} = {};
+
+	private container: EncryptedContainer;
+	private populatedFromInit = false;
+
+	static assertCertificateAttributeName: typeof assertCertificateAttributeNames = assertCertificateAttributeNames;
+
+	constructor(input: ArrayBuffer | string, options?: SharableCertificateAttributesImportOptions) {
+		let containerBuffer: Buffer;
+		if (typeof input === 'string') {
+			/*
+			 * Attempt to decode as PEM, but also if not PEM, then return
+			 * the lines as-is (base64) after removing whitespace
+			 */
+			const inputLines = input.split(/\r?\n/);
+			let base64Lines: string[] | undefined;
+			for (let beginOffset = 0; beginOffset < inputLines.length; beginOffset++) {
+				const line = inputLines[beginOffset]?.trim();
+				if (line?.startsWith('-----BEGIN ')) {
+					let endIndex = -1;
+					const matchingEndLine = line.replace('BEGIN', 'END');
+					for (let endOffset = beginOffset + 1; endOffset < inputLines.length; endOffset++) {
+						const checkEndLine = inputLines[endOffset]?.trim();
+						if (checkEndLine === matchingEndLine) {
+							endIndex = endOffset;
+							break;
+						}
+					}
+					if (endIndex === -1) {
+						throw(new Error('Invalid PEM format: missing END line'));
+					}
+
+					base64Lines = inputLines.slice(beginOffset + 1, endIndex);
+					break;
+				}
+			}
+			if (base64Lines === undefined) {
+				base64Lines = inputLines;
+			}
+
+			base64Lines = base64Lines.map(function(line) {
+				return(line.trim());
+			}).filter(function(line) {
+				return(line.length > 0);
+			});
+
+			const base64Content = base64Lines.join('');
+			containerBuffer = Buffer.from(base64Content, 'base64');
+		} else {
+			containerBuffer = arrayBufferToBuffer(input);
+		}
+
+		let principals = options?.principals;
+		if (KeetaNetAccount.isInstance(principals)) {
+			principals = [principals];
+		} else if (principals instanceof Set) {
+			principals = Array.from(principals);
+		} else if (principals === undefined) {
+			principals = null;
+		}
+
+		this.container = EncryptedContainer.fromEncodedBuffer(containerBuffer, principals);
+	}
+
+	/**
+	 * Create a SharableCertificateAttributes from a Certificate
+	 * and a list of attribute names to include -- if no list is
+	 * provided, all attributes are included.
+	 */
+	static async fromCertificate(certificate: Certificate, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes> {
+		if (attributeNames === undefined) {
+			/*
+			 * We know the keys are whatever the Certificate says they are, so
+			 * we can cast here safely
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			attributeNames = Object.keys(certificate.attributes) as (keyof typeof certificate.attributes)[];
+		}
+
+		const attributes: SharableCertificateAttributesContentsSchema['attributes'] = {};
+		for (const name of attributeNames) {
+			const attr = certificate.attributes[name];
+			/**
+			 * Skip missing attributes
+			 */
+			if (!attr) {
+				continue;
+			}
+
+			if (attr.sensitive) {
+				attributes[name] = {
+					sensitive: true,
+					value: await attr.value.getProof()
+				};
+			} else {
+				attributes[name] = {
+					sensitive: false,
+					value: arrayBufferToBuffer(attr.value).toString('base64')
+				};
+			}
+		}
+
+		const contentsString = JSON.stringify({
+			certificate: certificate.toPEM(),
+			attributes: attributes
+		} satisfies SharableCertificateAttributesContentsSchema);
+
+		const temporaryUser = KeetaNetAccount.fromSeed(KeetaNetAccount.generateRandomSeed(), 0);
+		const contentsBuffer = Buffer.from(contentsString, 'utf-8');
+		const contentsBufferCompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibDeflateAsync(bufferToArrayBuffer(contentsBuffer));
+		const container = EncryptedContainer.fromPlaintext(arrayBufferToBuffer(contentsBufferCompressed), [temporaryUser], true);
+		const containerBuffer = await container.getEncodedBuffer();
+		const retval = new SharableCertificateAttributes(bufferToArrayBuffer(containerBuffer), { principals: temporaryUser });
+		await retval.revokeAccess(temporaryUser);
+		return(retval);
+	}
+
+	async grantAccess(principal: KeetaNetAccount): Promise<this> {
+		await this.container.grantAccess(principal);
+		return(this);
+	}
+
+	async revokeAccess(principal: KeetaNetAccount): Promise<this> {
+		await this.container.revokeAccess(principal);
+		return(this);
+	}
+
+	get principals(): KeetaNetAccount[] {
+		return(this.container.principals);
+	}
+
+	async #populate(): Promise<void> {
+		if (this.populatedFromInit) {
+			return;
+		}
+		this.populatedFromInit = true;
+
+		const contentsBuffer = await this.container.getPlaintext();
+		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(bufferToArrayBuffer(contentsBuffer));
+		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
+		const contentsJSON: unknown = JSON.parse(contentsString);
+		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
+
+		this.#certificate = new Certificate(contents.certificate);
+		const attributePromises = Object.entries(contents.attributes).map(async ([name, attr]): Promise<[string, { sensitive: boolean; value: ArrayBuffer; }]> => {
+			/*
+			 * Get the corresponding attribute from the certificate
+			 *
+			 * We actually do not care if `name` is a known attribute
+			 * because we are not decoding it here, we are just
+			 * verifying it matches the certificate
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const certAttribute = this.#certificate?.attributes[name as CertificateAttributeNames];
+
+			if (!certAttribute) {
+				throw(new Error(`Attribute ${name} not found in certificate`));
+			}
+
+			if (certAttribute.sensitive !== attr.sensitive) {
+				throw(new Error(`Attribute ${name} sensitivity mismatch with certificate`));
+			}
+
+			if (!attr.sensitive) {
+				if (certAttribute.sensitive) {
+					throw(new Error(`Attribute ${name} sensitivity mismatch with certificate`));
+				}
+
+				const certValue = certAttribute.value;
+				const sharedValue = bufferToArrayBuffer(Buffer.from(attr.value, 'base64'));
+				if (sharedValue.byteLength !== certValue.byteLength || !Buffer.from(sharedValue).equals(Buffer.from(certValue))) {
+					throw(new Error(`Attribute ${name} value mismatch with certificate`));
+				}
+
+				return([name, {
+					sensitive: false,
+					value: sharedValue
+				}]);
+			}
+
+			if (!certAttribute.sensitive) {
+				throw(new Error(`Attribute ${name} sensitivity mismatch with certificate`));
+			}
+
+			if (!(await certAttribute.value.validateProof(attr.value))) {
+				throw(new Error(`Attribute ${name} proof validation failed`));
+			}
+
+			const attrValue = bufferToArrayBuffer(Buffer.from(attr.value.value, 'base64'));
+
+			return([name, {
+				sensitive: true,
+				value: attrValue
+			}]);
+		});
+		const resolvedAttributes = await Promise.all(attributePromises);
+		this.#attributes = Object.fromEntries(resolvedAttributes);
+	}
+
+	async getCertificate(): Promise<Certificate> {
+		await this.#populate();
+		if (!this.#certificate) {
+			throw(new Error('internal error: certificate not populated'));
+		}
+		return(this.#certificate);
+	}
+
+	async getAttributeBuffer(name: string): Promise<ArrayBuffer | undefined> {
+		await this.#populate();
+		const attr = this.#attributes[name];
+		return(attr?.value);
+	}
+
+	async getAttribute<NAME extends CertificateAttributeNames>(name: NAME): Promise<CertificateAttributeValue<NAME> | undefined> {
+		const buffer = await this.getAttributeBuffer(name);
+		if (buffer === undefined) {
+			return(undefined);
+		}
+
+		const retval = await decodeAttribute(name, buffer);
+
+		/* XXX:TODO: Here is where we would look at a reference value
+		 * (e.g., URL+hash) and fetch it, and verify it the hash matches
+		 * the fetched value
+		 *
+		 * The schema for references is not yet defined, so this is
+		 * left as a TODO for now.
+		 *
+		 * The return type would also need to be updated to reflect
+		 * that we would map referenced types to something like
+		 * { data: ArrayBuffer, contentType: string, source: <url>,
+		 * hash: <hash> } (where source and hash should be named
+		 * after whatever the actual schema is)
+		 */
+
+		return(retval);
+	}
+
+	async getAttributeNames(includeUnknown: true): Promise<string[]>;
+	async getAttributeNames(includeUnknown?: false): Promise<CertificateAttributeNames[]>;
+	async getAttributeNames(includeUnknown?: boolean): Promise<string[]> {
+		await this.#populate();
+		const names = Object.keys(this.#attributes);
+
+		if (includeUnknown) {
+			return(names);
+		}
+
+		const knownNames = names.filter(function(name): name is CertificateAttributeNames {
+			return(name in CertificateAttributeOIDDB);
+		});
+
+		return(knownNames);
+	}
+
+	export(options?: Omit<SharableCertificateAttributesExportOptions, 'format'> & { format?: never; }): Promise<ArrayBuffer>;
+	export(options: (Omit<SharableCertificateAttributesExportOptions, 'format'> & { format: 'arraybuffer' })): Promise<ArrayBuffer>;
+	export(options: Omit<SharableCertificateAttributesExportOptions, 'format'> & { format: 'string' }): Promise<string>;
+	export(options?: SharableCertificateAttributesExportOptions): Promise<ArrayBuffer | string>;
+	async export(options?: SharableCertificateAttributesExportOptions): Promise<ArrayBuffer | string> {
+		options = {
+			format: 'arraybuffer',
+			...options
+		};
+
+		let principals: KeetaNetAccount[];
+		try {
+			principals = this.container.principals;
+		} catch {
+			principals = [];
+		}
+		if (principals.length === 0) {
+			throw(new Error('This container has no authorized users (principals); cannot export'));
+		}
+
+		const retvalBuffer = await this.container.getEncodedBuffer();
+		if (options.format === 'string') {
+			const retvalBase64 = retvalBuffer.toString('base64');
+			const retvalLines = ['-----BEGIN KYC CERTIFICATE PROOF-----'];
+			retvalLines.push(...retvalBase64.match(/.{1,64}/g) ?? []);
+			retvalLines.push('-----END KYC CERTIFICATE PROOF-----');
+			return(retvalLines.join('\n'));
+		} else if (options.format === 'arraybuffer') {
+			return(bufferToArrayBuffer(retvalBuffer));
+		} else {
+			throw(new Error(`Unsupported export format: ${String(options.format)}`));
+		}
+	}
+}
+
+// @ts-ignore
+Certificate.SharableAttributes = SharableCertificateAttributes;
 
 /** @internal */
 export const _Testing = {

@@ -359,3 +359,97 @@ test('Rust Certificate Interoperability', async function() {
 	const contactProof = await contactAttr.value.getProof();
 	expect(await contactAttr.value.validateProof(contactProof)).toBe(true);
 });
+
+test('Certificate Sharable Attributes', async function() {
+	/*
+	 * Build a certificate with a test value from the users public key
+	 */
+	const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
+	const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
+	const viewerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 2);
+
+	/* Subject Account without a Private Key, for later use */
+	const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
+
+	/* Viewer Account without a Private Key, for later use */
+	const viewerAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(viewerAccount.publicKeyString.get());
+
+	/* Create a Certificate Builder */
+	const builder1 = new Certificates.Certificate.Builder({
+		issuer: issuerAccount,
+		subject: subjectAccountNoPrivate,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 1000 * 60 * 60 * 24)
+	});
+
+	/*
+	 * Create a User Certificate with sharable attributes
+	 */
+	builder1.setAttribute('fullName', false, 'Test User');
+	builder1.setAttribute('email', false, 'user@example.com');
+
+	const certificate = await builder1.build({
+		serial: 5
+	});
+
+	/*
+	 * Create a sharable object and grant a third user access
+	 */
+	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificate, ['fullName', 'email', 'phoneNumber' /* non-existent */]);
+	await sharable.grantAccess(viewerAccountNoPrivate);
+
+	expect(sharable.principals.length).toBe(1);
+	const sharedSerialized = await sharable.export();
+	const sharedSerializedString = await sharable.export({ format: 'string' });
+
+	/*
+	 * Attempt to view with the incorrect account
+	 */
+	await expect(async function() {
+		const imported = new Certificates.SharableCertificateAttributes(sharedSerialized, { principals: subjectAccount });
+		return(await imported.getAttributeBuffer('fullName'));
+	}).rejects.toThrow();
+
+	/*
+	 * Attempt to view with the correct account but without a private key
+	 */
+	await expect(async function() {
+		const imported = new Certificates.SharableCertificateAttributes(sharedSerialized, { principals: viewerAccountNoPrivate });
+		return(await imported.getAttributeBuffer('fullName'));
+	}).rejects.toThrow();
+
+	/*
+	 * Attempt to view with the correct account
+	 */
+	const imported = new Certificates.SharableCertificateAttributes(sharedSerialized, { principals: viewerAccount });
+	expect(imported.principals.length).toBe(1);
+	const importedFullName = await imported.getAttribute('fullName');
+	expect(importedFullName).toBeDefined();
+	if (!importedFullName) {
+		throw(new Error('Expected fullName attribute'));
+	}
+	expect(importedFullName).toBe('Test User');
+
+
+	/*
+	 * Also attempt to import from the alternative supported formats
+	 */
+	const importedAltFormat1 = new Certificates.SharableCertificateAttributes(sharedSerializedString, { principals: viewerAccount });
+	const importedAltFormat2 = new Certificates.SharableCertificateAttributes(Buffer.from(sharedSerialized).toString('base64'), { principals: viewerAccount });
+	expect(importedAltFormat1.principals.length).toBe(1);
+	expect(importedAltFormat2.principals.length).toBe(1);
+
+	/*
+	 * Attempt to view a non-existent attribute
+	 */
+	const importedPhoneNumber = await imported.getAttribute('phoneNumber');
+	expect(importedPhoneNumber).toBeUndefined();
+
+	/*
+	 * Attempt to enumerate all attributes
+	 */
+	const allAttributes = await imported.getAttributeNames();
+	expect(allAttributes).toContain('fullName');
+	expect(allAttributes).toContain('email');
+	expect(allAttributes.length).toBe(2);
+});
