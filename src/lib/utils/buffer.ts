@@ -9,28 +9,27 @@ export const Buffer: typeof KeetaNetLib.Utils.Buffer.Buffer = KeetaNetLib.Utils.
  */
 export const bufferToArrayBuffer: typeof KeetaNetLib.Utils.Helper.bufferToArrayBuffer = KeetaNetLib.Utils.Helper.bufferToArrayBuffer.bind(KeetaNetLib.Utils.Helper);
 
+function toBuffer(src: ArrayBufferView | ArrayBuffer): Buffer {
+	if (ArrayBuffer.isView(src)) {
+		// Zero-copy: Buffer will reference the same ArrayBuffer range.
+		return(Buffer.from(src.buffer, src.byteOffset, src.byteLength));
+	}
+
+	// src is ArrayBuffer
+	// Zero-copy: shares memory with the ArrayBuffer
+	return(Buffer.from(src));
+}
+
 /*
  * Helper to convert ArrayBuffer back to Buffer
  */
 export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
-	// Since ArrayBuffer is a subset of ArrayBufferLike, this conversion is safe
-	return(Buffer.from(new Uint8Array(arrayBuffer)));
+	return(toBuffer(arrayBuffer));
 }
 
 /*
  * Converts a Buffer backed by ArrayBufferLike storage into one backed by an ArrayBuffer.
  */
-export function arrayBufferLikeToBuffer(buffer: globalThis.Buffer): Buffer {
-	if (buffer instanceof ArrayBuffer) {
-		return(arrayBufferToBuffer(buffer));
-	}
-
-	const cloned = new ArrayBuffer(buffer.byteLength);
-
-	// If this is a Node.js Buffer (Uint8Array subclass), leverage its view over an underlying ArrayBuffer
-	// and copy the exact byte range into a fresh ArrayBuffer to ensure backing store is ArrayBuffer
-	const src = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-	new Uint8Array(cloned).set(src);
-
-	return(arrayBufferToBuffer(cloned));
+export function arrayBufferLikeToBuffer(buffer: ArrayBufferLike): Buffer {
+	return(toBuffer(buffer));
 }
