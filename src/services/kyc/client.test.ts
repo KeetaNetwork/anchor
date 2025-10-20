@@ -236,7 +236,7 @@ test('KYC Anchor Client Test', async function() {
 			if ('fullName' in trustedCertificate.attributes) {
 				if (trustedCertificate.attributes['fullName'].sensitive) {
 					try {
-						const result = await trustedCertificate.attributes['fullName'].value.getValue('fullName');
+						const result = await trustedCertificate.attributes['fullName'].value.getValue();
 						fullName = 'SENSITIVE: ' + result;
 					} catch {
 						fullName = 'SENSITIVE (unable to retrieve)';

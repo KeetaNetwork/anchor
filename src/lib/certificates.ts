@@ -350,13 +350,17 @@ class SensitiveAttributeBuilder {
 	}
 }
 
-class SensitiveAttribute {
+class SensitiveAttribute<T = ArrayBuffer> {
 	readonly #account: KeetaNetAccount;
-	readonly #info: ReturnType<SensitiveAttribute['decode']>;
+	readonly #info: ReturnType<SensitiveAttribute<T>['decode']>;
+	readonly #decoder?: (data: Buffer | ArrayBuffer) => T;
 
-	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer) {
+	constructor(account: KeetaNetAccount, data: Buffer | ArrayBuffer, decoder?: (data: Buffer | ArrayBuffer) => T) {
 		this.#account = account;
 		this.#info = this.decode(data);
+		if (decoder) {
+			this.#decoder = decoder;
+		}
 	}
 
 	private decode(data: Buffer | ArrayBuffer) {
@@ -442,9 +446,12 @@ class SensitiveAttribute {
 		return(bufferToArrayBuffer(decryptedValue));
 	}
 
-	async getValue<NAME extends CertificateAttributeNames>(attributeName: NAME): Promise<CertificateAttributeValue<NAME>> {
+	async getValue(): Promise<T> {
 		const value = await this.get();
-		return(await decodeAttribute(attributeName, value));
+		if (!this.#decoder) {
+			return(value as unknown as T);
+		}
+		return(await this.#decoder(value));
 	}
 
 	/**
@@ -690,7 +697,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	readonly attributes: {
 		[name in CertificateAttributeNames]?: {
 			sensitive: true;
-			value: SensitiveAttribute;
+			value: SensitiveAttribute<CertificateAttributeValue<name>>;
 		} | {
 			sensitive: false;
 			value: ArrayBuffer;
@@ -710,19 +717,24 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	}
 
 	private setPlainAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
+		// @ts-ignore
 		this.attributes[name] = { sensitive: false, value } satisfies typeof this.attributes[NAME];
 	}
 
-	getSensitiveAttribute<NAME extends CertificateAttributeNames>(
-		attributeName: NAME
-	): SensitiveAttribute | undefined {
-		const attr = this.attributes[attributeName]?.value;
-		return(attr instanceof SensitiveAttribute
-			? (attr)
-			: undefined);
+	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
+		this.attributes[name] = {
+			sensitive: true,
+			value: new SensitiveAttribute(this.subjectKey, value, decodeAttribute.bind(null, name))
+		} satisfies typeof this.attributes[NAME];
 	}
 
-	async getValue<NAME extends CertificateAttributeNames>(attributeName: NAME): Promise<CertificateAttributeValue<NAME>> {
+	/**
+	 * Get the underlying value for an attribute.
+	 *
+	 * If the attribute is sensitive, this will decrypt it using the
+	 * subject's private key, otherwise it will return the value.
+	 */
+	async getAttributeValue<NAME extends CertificateAttributeNames>(attributeName: NAME): Promise<CertificateAttributeValue<NAME>> {
 		const attr = this.attributes[attributeName]?.value;
 		if (!attr) {
 			throw(new Error(`Attribute ${attributeName} is not available`));
@@ -739,13 +751,6 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		}
 
 		throw(new Error(`Attribute ${attributeName} is not a supported type`));
-	}
-
-	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
-		this.attributes[name] = {
-			sensitive: true,
-			value: new SensitiveAttribute(this.subjectKey, value)
-		} satisfies typeof this.attributes[NAME];
 	}
 
 	protected processExtension(id: string, value: ArrayBuffer): boolean {

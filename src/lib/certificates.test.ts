@@ -19,27 +19,40 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 		throw(new Error(`Attribute ${attributeName} not found`));
 	}
 
-	const attrWithPrivate = certificateWithPrivate.getSensitiveAttribute(attributeName);
+	const attrWithPrivate = certificateWithPrivate.attributes[attributeName];
 	if (!attrWithPrivate) {
 		throw(new Error(`Attribute ${attributeName} not found`));
 	}
 
-	const attr = certificate.getSensitiveAttribute(attributeName);
+	const attr = certificate.attributes[attributeName];
 	if (!attr) {
 		throw(new Error(`Attribute ${attributeName} not found`));
 	}
 
-	const actualValue = await attrWithPrivate.getValue(attributeName);
+	expect(attrWithPrivate.sensitive).toBe(true);
+	if (!attrWithPrivate.sensitive) {
+		throw(new Error(`Attribute ${attributeName} is not sensitive`));
+	}
+	expect(attr.sensitive).toBe(true);
+	if (!attr.sensitive) {
+		throw(new Error(`Attribute ${attributeName} is not sensitive`));
+	}
+
+	const actualValue = await attrWithPrivate.value.getValue();
 	expect(actualValue).toEqual(expectedValue);
 
-	const proof = await attrWithPrivate.getProof();
-	expect(await attr.validateProof(proof)).toBe(true);
+	const proof = await attrWithPrivate.value.getProof();
+	expect(await attr.value.validateProof(proof)).toBe(true);
 
-	const decodedValue = await attrWithPrivate.getValue(attributeName);
+	const decodedValue = await attrWithPrivate.value.getValue();
 	expect(decodedValue).toEqual(expectedValue);
 
-	await expect(async () => await attr.getValue(attributeName)).rejects.toThrow();
-	await expect(async () => await attr.getProof()).rejects.toThrow();
+	await expect(async function() {
+		return(await attr.value.getValue());
+	}).rejects.toThrow();
+	await expect(async function() {
+		return(await attr.value.getProof());
+	}).rejects.toThrow();
 }
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
@@ -66,8 +79,8 @@ test('Sensitive Attributes', async function() {
 	 * Access it with the private key
 	 */
 	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
-	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue('contactDetails');
-	expect(sensitiveAttribute1Value).toEqual(contactDetails);
+	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue();
+	expect(Buffer.from(sensitiveAttribute1Value).toString('base64')).toEqual('MDShEgwQdGVzdEBleGFtcGxlLmNvbaQLDAlUZXN0IFVzZXKqEQwPKzEgNTU1IDkxMSAzODA4');
 
 	/**
 	 * Process the attribute as JSON
@@ -279,7 +292,7 @@ test('Rust Certificate Interoperability', async function() {
 	/*
 	 * Decrypt and verify the Address attribute
 	 */
-	const address = await certificate.getValue('address');
+	const address = await certificate.getAttributeValue('address');
 
 	/*
 	 * Verify address structure and expected values from Rust test
@@ -303,7 +316,7 @@ test('Rust Certificate Interoperability', async function() {
 	/*
 	 * Decrypt and verify the ContactDetails attribute
 	 */
-	const contact = await certificate.getValue('contactDetails');
+	const contact = await certificate.getAttributeValue('contactDetails');
 
 	/*
 	 * Verify contact structure and expected values from Rust test
@@ -324,19 +337,25 @@ test('Rust Certificate Interoperability', async function() {
 	/*
 	 * Verify proof generation and validation works with Rust-generated certificates
 	 */
-	const addressAttr = certificate.getSensitiveAttribute('address');
+	const addressAttr = certificate.attributes['address'];
 	if (!addressAttr) {
 		throw(new Error('Expected address attribute'));
 	}
+	if (!addressAttr.sensitive) {
+		throw(new Error('Expected address attribute to be sensitive'));
+	}
 
-	const addressProof = await addressAttr.getProof();
-	expect(await addressAttr.validateProof(addressProof)).toBe(true);
+	const addressProof = await addressAttr.value.getProof();
+	expect(await addressAttr.value.validateProof(addressProof)).toBe(true);
 
-	const contactAttr = certificate.getSensitiveAttribute('contactDetails');
+	const contactAttr = certificate.attributes['contactDetails'];
 	if (!contactAttr) {
 		throw(new Error('Expected contactDetails attribute'));
 	}
+	if (!contactAttr.sensitive) {
+		throw(new Error('Expected contactDetails attribute to be sensitive'));
+	}
 
-	const contactProof = await contactAttr.getProof();
-	expect(await contactAttr.validateProof(contactProof)).toBe(true);
+	const contactProof = await contactAttr.value.getProof();
+	expect(await contactAttr.value.validateProof(contactProof)).toBe(true);
 });
