@@ -244,8 +244,7 @@ test('KYC Anchor Client Test', async function() {
 				} else {
 					// XXX:TODO Fix depth issue
 					// @ts-ignore
-					const value = await trustedCertificate.getValue('fullName');
-					fullName = Buffer.from(value).toString('utf-8');
+					fullName = await trustedCertificate.getAttributeValue('fullName');
 				}
 			} else {
 				fullName = 'Not provided';

@@ -457,9 +457,18 @@ class SensitiveAttribute<T = ArrayBuffer> {
 	async getValue(): Promise<T> {
 		const value = await this.get();
 		if (!this.#decoder) {
+			/**
+			 * TypeScript complains that T may not be the correct
+			 * type here, but gives us no tools to enforce that it
+			 * is -- it should always be ArrayBuffer if no decoder
+			 * is provided, but someone could always specify a
+			 * type parameter in that case and we cannot check
+			 * that at runtime since T is only a compile-time type.
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			return(value as unknown as T);
 		}
-		return(await this.#decoder(value));
+		return(this.#decoder(value));
 	}
 
 	/**
