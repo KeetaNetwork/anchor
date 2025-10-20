@@ -110,7 +110,7 @@ test('KYC Anchor Client Test', async function() {
 						validFrom: new Date(Date.now() - 30_000),
 						validTo: new Date(Date.now() + 120_000)
 					});
-					certificateBuilder.setAttribute('fullName', true, Buffer.from('John Doe', 'utf-8'));
+					certificateBuilder.setAttribute('fullName', true, 'John Doe');
 					const builtCertificate = await certificateBuilder.build();
 					certificate = builtCertificate.toPEM();
 					certificates.set(verificationID, certificate);
@@ -236,12 +236,16 @@ test('KYC Anchor Client Test', async function() {
 			if ('fullName' in trustedCertificate.attributes) {
 				if (trustedCertificate.attributes['fullName'].sensitive) {
 					try {
-						fullName = 'SENSITIVE: ' + await trustedCertificate.attributes['fullName'].value.getString();
+						const result = await trustedCertificate.attributes['fullName'].value.getValue('fullName');
+						fullName = 'SENSITIVE: ' + result;
 					} catch {
 						fullName = 'SENSITIVE (unable to retrieve)';
 					}
 				} else {
-					fullName = Buffer.from(trustedCertificate.attributes['fullName'].value).toString('utf-8');
+					// XXX:TODO Fix depth issue
+					// @ts-ignore
+					const value = await trustedCertificate.getValue('fullName');
+					fullName = Buffer.from(value).toString('utf-8');
 				}
 			} else {
 				fullName = 'Not provided';
