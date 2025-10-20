@@ -2,7 +2,7 @@ import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
-import type { ContactDetails, CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
+import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -65,13 +65,13 @@ test('Sensitive Attributes', async function() {
 	 */
 	const testAccount1NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount1.publicKeyString.get());
 	const builder1 = new Certificates._Testing.SensitiveAttributeBuilder(testAccount1NoPrivate);
-	const contactDetails: ContactDetails = {
+	const contactDetails: ArrayBuffer = bufferToArrayBuffer(Buffer.from(JSON.stringify({
 		fullName: 'Test User',
 		emailAddress: 'test@example.com',
 		phoneNumber: '+1 555 911 3808'
-	};
+	}), 'utf-8'));
 
-	builder1.set(contactDetails, 'contactDetails');
+	builder1.set(contactDetails);
 
 	const attribute = await builder1.build();
 
@@ -80,7 +80,7 @@ test('Sensitive Attributes', async function() {
 	 */
 	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
 	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue();
-	expect(Buffer.from(sensitiveAttribute1Value).toString('base64')).toEqual('MDShEgwQdGVzdEBleGFtcGxlLmNvbaQLDAlUZXN0IFVzZXKqEQwPKzEgNTU1IDkxMSAzODA4');
+	expect(Buffer.from(sensitiveAttribute1Value).toString('base64')).toEqual(Buffer.from(contactDetails).toString('base64'));
 
 	/**
 	 * Process the attribute as JSON
