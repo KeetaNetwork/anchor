@@ -4,7 +4,7 @@
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
-		"eslint": "eslint --config .eslint.config.mjs",
+		"eslint": "eslint",
 		"tsc": "tsc",
 		"vitest": "vitest",
 		"make:all": "make all",
