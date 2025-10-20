@@ -1,0 +1,33 @@
+#! /usr/bin/env bash
+
+set -euo pipefail
+
+# Script to run (e.g., ./src/services/kyc/utils/generate-kyc-schema.ts)
+script="$1"
+shift
+if [ -z "${script}" ]; then
+	echo "Usage: $0 <script-to-run>"
+	exit 1
+fi
+
+workdir="$(pwd -P)"
+tmpdir=''
+function cleanup() {
+	if [ -n "${tmpdir}" ]; then
+		rm -rf "${tmpdir}"
+		tmpdir=''
+	fi
+}
+trap cleanup EXIT
+
+tmpdir="${workdir}/.__tmp_ts_run_${RANDOM}${RANDOM}${RANDOM}__"
+mkdir -p "${tmpdir}" || exit 1
+
+npm run --silent tsc -- --module NodeNext --moduleResolution NodeNext --isolatedModules false --outDir "${tmpdir}" "${script}"
+bin="$(find "${tmpdir}" -name '*.js')"
+if [ ! -f "${bin}" ]; then
+	echo "Compiled file not found"
+	exit 1
+fi
+
+node "${bin}" "${@}"

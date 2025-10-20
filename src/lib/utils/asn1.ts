@@ -15,11 +15,13 @@ const BufferStorageASN1: typeof ASN1.BufferStorageASN1 = ASN1.BufferStorageASN1
 const ValidateASN1: typeof ASN1.ValidateASN1 = ASN1.ValidateASN1;
 
 type ASN1AnyJS = ASN1Types.ASN1AnyJS;
+type ASN1ContextTag = ASN1Types.ASN1ContextTag;
 type Schema = ASN1Types.ValidateASN1.Schema;
 type SchemaMap<T extends Schema> = ASN1Types.ValidateASN1.SchemaMap<T>;
 
 export type {
 	ASN1AnyJS,
+	ASN1ContextTag,
 	Schema,
 	SchemaMap
 };
