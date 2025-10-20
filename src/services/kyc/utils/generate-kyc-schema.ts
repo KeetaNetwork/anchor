@@ -103,11 +103,22 @@ function toSnakeCase(str: string): string {
 	return(str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, ''));
 }
 
+function extractSequenceOfElement(typeStr: string): string | null {
+	const trimmed = typeStr.trim();
+	if (trimmed.startsWith('SEQUENCE OF ')) {
+		return(trimmed.substring('SEQUENCE OF '.length).trim());
+	}
+
+	return(null);
+}
+
 // --- Type Resolution ---
 function resolveTypeReference(typeName: string): string {
-	if (typeName.startsWith('SEQUENCE OF ')) {
-		return(`${resolveTypeReference(typeName.substring('SEQUENCE OF '.length).trim())}[]`);
+	const seqElement = extractSequenceOfElement(typeName);
+	if (seqElement) {
+		return(`${resolveTypeReference(seqElement)}[]`);
 	}
+
 	switch (typeName.trim()) {
 		case 'UTF8String':
 		case 'Utf8String':
@@ -346,8 +357,9 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 
 		// Strip SEQUENCE OF prefix and [] suffix to get the base type
 		let fieldType = fcfg.type.trim();
-		if (fieldType.startsWith('SEQUENCE OF ')) {
-			fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
+		const seqElement = extractSequenceOfElement(fieldType);
+		if (seqElement) {
+			fieldType = seqElement;
 		}
 
 		fieldType = fieldType.replace(/\[\]$/, '');
@@ -461,9 +473,9 @@ function generateIso20022Types() {
 			const choiceSchemas = Object.values(config.choices).map(function(choice) {
 				const choiceType = choice.type.trim();
 				// Handle SEQUENCE OF types
-				if (choiceType.startsWith('SEQUENCE OF ')) {
-					const elementType = choiceType.substring('SEQUENCE OF '.length).trim();
-					const elementTypeName = toPascalCase(elementType);
+				const seqElement = extractSequenceOfElement(choiceType);
+				if (seqElement) {
+					const elementTypeName = toPascalCase(seqElement);
 					return(`{ sequenceOf: ${elementTypeName}Schema }`);
 				}
 				const choiceTypeName = toPascalCase(choiceType);
@@ -523,9 +535,9 @@ function generateIso20022Types() {
 				const unionTypes = Object.values(config.choices).map(function(choice) {
 					const choiceType = choice.type.trim();
 					// Handle SEQUENCE OF types
-					if (choiceType.startsWith('SEQUENCE OF ')) {
-						const elementType = choiceType.substring('SEQUENCE OF '.length).trim();
-						const elementTypeName = toPascalCase(elementType);
+					const seqElement = extractSequenceOfElement(choiceType);
+					if (seqElement) {
+						const elementTypeName = toPascalCase(seqElement);
 						return(`${elementTypeName}[]`);
 					}
 					return(toPascalCase(choiceType));
