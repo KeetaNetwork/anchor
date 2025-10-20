@@ -121,4 +121,4 @@ distclean: clean
 	rm -rf node_modules
 	rm -f .nvmrc
 
-.PHONY: all help test clean distclean do-npm-pack do-deploy schema
+.PHONY: all help test clean distclean do-npm-pack do-deploy
