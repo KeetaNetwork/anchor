@@ -27,7 +27,9 @@ import {
 	assertKeetaAssetMovementAnchorGetTransferStatusRequest,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
-	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
+	assertKeetaAssetMovementAnchorListPersistentForwardingResponse
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 
@@ -71,7 +73,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		/**
 		 * Method to list persistent forwarding addresses
 		 */
-		listPersistentForwardingAddresses?: (request: KeetaAssetMovementAnchorListPersistentForwardingRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorListPersistentForwardingResponse>>;
+		listPersistentForwarding?: (request: KeetaAssetMovementAnchorListPersistentForwardingRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorListPersistentForwardingResponse>>;
 
 		/**
 		 * Method to initiate a transfer
@@ -150,6 +152,20 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				return({
 					output: JSON.stringify(output)
 				});
+			}
+		}
+
+		if (config.assetMovement.listPersistentForwarding !== undefined) {
+			routes['POST /api/listPersistentForwarding'] = async function(_ignore_params, postData) {
+				if (config.assetMovement.listPersistentForwarding === undefined) {
+					throw(new Error('internal error: listTransactions disappeared'));
+				}
+
+				const request = assertKeetaAssetMovementAnchorListPersistentForwardingRequest(postData);
+				const result = await config.assetMovement.listPersistentForwarding(request);
+				const output = assertKeetaAssetMovementAnchorListPersistentForwardingResponse({ ...result, ok: true });
+
+				return({ output: JSON.stringify(output) });
 			}
 		}
 
@@ -233,17 +249,24 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'] = {};
 
-		if (this.assetMovement.createPersistentForwarding !== undefined) {
-			operations.createPersistentForwarding = (new URL('/api/createPersistentForwarding', this.url)).toString();
+		for (const op of [
+			'initiateTransfer',
+			'listTransactions',
+			'listTransactions',
+			// XXX:TODO these two should be done later
+			// 'createPersistentForwardingTemplate',
+			// 'listPersistentForwardingTemplate',
+			'createPersistentForwarding',
+			'listPersistentForwarding'
+		] as const) {
+			if (this.assetMovement[op] !== undefined) {
+				operations[op] = (new URL(`/api/${op}`, this.url)).toString();
+			}
+
 		}
-		if (this.assetMovement.initiateTransfer !== undefined) {
-			operations.initiateTransfer = (new URL('/api/initiateTransfer', this.url)).toString();
-		}
+
 		if (this.assetMovement.getTransferStatus !== undefined) {
 			operations.getTransferStatus = (new URL('/api/getTransferStatus/{id}', this.url)).toString();
-		}
-		if (this.assetMovement.listTransactions !== undefined) {
-			operations.listTransactions = (new URL('/api/listTransactions', this.url)).toString();
 		}
 
 		if (Object.keys(operations).length === 0) {
