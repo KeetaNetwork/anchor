@@ -8,7 +8,7 @@ import { Buffer } from './buffer.js';
 type Account = InstanceType<typeof KeetaNetLib.Account>;
 
 /**
- * Builder for RFC 3447 Reference structures (Document references)
+ * Builder for Reference structures
  *
  * Creates a Reference containing:
  * - ExternalReference: URL and content type (encrypted)
@@ -59,7 +59,7 @@ export class ExternalReferenceBuilder {
 	 *
 	 * @param documentContent - The actual document content to hash
 	 * @param principals - Account(s) that can decrypt the URL
-	 * @returns The RFC 3447 Reference structure
+	 * @returns The Reference structure
 	 */
 	async build(documentContent: Buffer, principals: Account[] | Account): Promise<Reference> {
 		const principalArray = Array.isArray(principals) ? principals : [principals];
@@ -89,7 +89,7 @@ export class ExternalReferenceBuilder {
 		const digestAlgorithmOID = this.#algorithmToOID(this.#digestAlgorithm);
 		const encryptionAlgorithmOID = this.#algorithmToOID(this.#encryptionAlgorithm);
 
-		// Create the DigestInfo structure
+		// Create the RFC 3447 DigestInfo structure
 		const digestInfo: DigestInfo = {
 			digestAlgorithm: digestAlgorithmOID,
 			digest: digest
