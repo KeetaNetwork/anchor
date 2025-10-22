@@ -12,11 +12,13 @@ export const bufferToArrayBuffer: typeof KeetaNetLib.Utils.Helper.bufferToArrayB
 function toBuffer(src: ArrayBufferView | ArrayBuffer): Buffer {
 	if (ArrayBuffer.isView(src)) {
 		// Zero-copy: Buffer will reference the same ArrayBuffer range.
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(Buffer.from(src.buffer, src.byteOffset, src.byteLength) as unknown as Buffer);
 	}
 
 	// src is ArrayBuffer
 	// Zero-copy: shares memory with the ArrayBuffer
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Buffer.from(src) as unknown as Buffer);
 }
 
@@ -34,5 +36,6 @@ export function arrayBufferLikeToBuffer(buffer: ArrayBufferLike | ArrayBufferVie
 	if (ArrayBuffer.isView(buffer)) {
 		return(toBuffer(buffer));
 	}
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(toBuffer(buffer as ArrayBuffer));
 }

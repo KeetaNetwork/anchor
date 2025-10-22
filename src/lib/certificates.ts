@@ -1,4 +1,3 @@
-import * as util from 'util';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
@@ -9,7 +8,6 @@ import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
 import { CertificateAttributeOIDDB, CertificateAttributeSchema, DocumentSchema } from '../services/kyc/iso20022.generated.js';
-import { isErrorLike } from './utils/guards.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';

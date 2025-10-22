@@ -8,6 +8,8 @@ import util from 'util';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type * as _ignored_asn1js from 'asn1js';
 
+import { assert } from "typia";
+
 import { arrayBufferToBuffer, Buffer } from './buffer.js';
 import { hasIndexSignature, hasValueProp, isContextTagged } from './guards.js';
 
@@ -22,6 +24,7 @@ type ASN1AnyJS = ASN1Types.ASN1AnyJS;
 type ASN1ContextTag = ASN1Types.ASN1ContextTag;
 type Schema = ASN1Types.ValidateASN1.Schema;
 type SchemaMap<T extends Schema> = ASN1Types.ValidateASN1.SchemaMap<T>;
+type StructSchema = Extract<Schema, { type: 'struct' }>;
 
 type EncodeOptions = {
 	attributeName?: string;
@@ -42,6 +45,28 @@ const isOptionalSchema = (candidate: unknown): candidate is { optional: Schema }
 	return(typeof candidate === 'object' && candidate !== null && 'optional' in candidate);
 };
 
+const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
+
+const isStructSchema = (candidate: unknown): candidate is StructSchema => {
+	if (!hasIndexSignature(candidate)) {
+		return(false);
+	}
+	if (candidate.type !== 'struct') {
+		return(false);
+	}
+	const fieldNamesCandidate = candidate.fieldNames;
+	if (!isArray(fieldNamesCandidate)) {
+		return(false);
+	}
+	for (const fieldName of fieldNamesCandidate) {
+		if (typeof fieldName !== 'string') {
+			return(false);
+		}
+	}
+	const containsCandidate = candidate.contains;
+	return(hasIndexSignature(containsCandidate));
+};
+
 const toASN1Primitive = (input: unknown): ASN1AnyJS => {
 	if (util.types.isDate(input)) {
 		return(input);
@@ -59,7 +84,7 @@ const toASN1Primitive = (input: unknown): ASN1AnyJS => {
 		return(input);
 	}
 	if (Array.isArray(input)) {
-		const stack: Array<{ arr: unknown[], index: number, resolve: (result: unknown) => void }> = [];
+		const stack: { arr: unknown[], index: number, resolve: (result: unknown) => void }[] = [];
 		const result: unknown[] = new Array(input.length);
 		let completed = 0;
 		const collect = () => {
@@ -78,7 +103,10 @@ const toASN1Primitive = (input: unknown): ASN1AnyJS => {
 			});
 		}
 		while (stack.length > 0) {
-			const task = stack.pop()!;
+			const task = stack.pop();
+			if (!task) {
+				throw(new Error('Stack should not be empty'));
+			}
 			const item = task.arr[task.index];
 			if (util.types.isDate(item)) {
 				task.resolve(item);
@@ -112,7 +140,7 @@ const toASN1Primitive = (input: unknown): ASN1AnyJS => {
 				throw(new Error(`Unsupported ASN.1 value type: ${typeof item}`));
 			}
 		}
-		return(result as ASN1AnyJS);
+		return(assert<ASN1AnyJS>(result));
 	}
 	throw(new Error(`Unsupported ASN.1 value type: ${typeof input}`));
 };
@@ -138,12 +166,17 @@ export function contextualizeStructSchema(schema: Schema): Schema {
 	if (!('type' in schema) || schema.type !== 'struct') {
 		return(schema);
 	}
-	const cached = structSchemaCache.get(schema as object);
+	if (!isStructSchema(schema)) {
+		return(schema);
+	}
+	const cached = structSchemaCache.get(schema);
 	if (cached) {
 		return(cached);
 	}
-	const fieldNames = Array.isArray(schema.fieldNames) ? Array.from(schema.fieldNames) : [];
-	const contains: { [key: string]: Schema } = {};
+	const structSchema = schema;
+	const fieldNames = Array.from(structSchema.fieldNames);
+	const structContainsSchema = structSchema.contains;
+	const contains: { [key: string]: Schema | { optional: Schema }} = {};
 
 	const wrapSchemaWithContext = (index: number, fieldSchema: Schema): Schema => {
 		if (typeof fieldSchema === 'object' && fieldSchema !== null && 'type' in fieldSchema && fieldSchema.type === 'context') {
@@ -153,11 +186,11 @@ export function contextualizeStructSchema(schema: Schema): Schema {
 	};
 
 	fieldNames.forEach(function(fieldName, index) {
-		const fieldSchema = schema.contains[fieldName];
+		const fieldSchema = structContainsSchema[fieldName];
 		if (!fieldSchema) {
 			return;
 		}
-		if (typeof fieldSchema === 'object' && fieldSchema !== null && 'optional' in fieldSchema) {
+		if (isOptionalSchema(fieldSchema)) {
 			contains[fieldName] = {
 				optional: wrapSchemaWithContext(index, contextualizeStructSchema(fieldSchema.optional))
 			};
@@ -171,7 +204,7 @@ export function contextualizeStructSchema(schema: Schema): Schema {
 		fieldNames: fieldNames,
 		contains: contains
 	};
-	structSchemaCache.set(schema as object, contextualized);
+	structSchemaCache.set(structSchema, contextualized);
 	return(contextualized);
 }
 
@@ -191,7 +224,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		return(currentSchema);
 	};
 
-	const handleFunctionSchema = (schema: () => Schema, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>) => {
+	const handleFunctionSchema = (schema: () => Schema, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[]) => {
 		stack.push({ type: 'encode', schema: schema(), value, resolve });
 	};
 
@@ -199,11 +232,11 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		resolve(encodeBigInt(schema, value));
 	};
 
-	const handleTuple = (schema: Schema[], value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>, throwWithContext: (message: string) => never) => {
-		if (!Array.isArray(value)) {
+	const handleTuple = (schema: Schema[], value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[], throwWithContext: (message: string) => never) => {
+		if (!isArray(value)) {
 			throwWithContext('Expected tuple value');
 		}
-		const tupleValue = value as unknown[];
+		const tupleValue = value;
 		if (schema.length !== tupleValue.length) {
 			throwWithContext('Tuple length mismatch');
 		}
@@ -212,12 +245,12 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		for (let i = 0; i < schema.length; i++) {
 			stack.push({
 				type: 'encode',
-				schema: schema[i]!,
+				schema: assert<Schema>(schema[i]),
 				value: tupleValue[i],
 				resolve: (r) => {
-					results[i] = r as ASN1AnyJS;
+					results[i] = r;
 					if (++completed === schema.length) {
-						resolve(results as ASN1AnyJS);
+						resolve(results);
 					}
 				}
 			});
@@ -226,45 +259,27 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 
 	const handlePrimitive = (schema: symbol, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, throwWithContext: (message: string) => never) => {
 		const primitiveHandlers: { [key: symbol]: (value: unknown) => ASN1AnyJS } = {
-			[ValidateASN1.IsAny]: (value) => value as ASN1AnyJS,
-			[ValidateASN1.IsUnknown]: (value) => value as ASN1AnyJS,
-			[ValidateASN1.IsDate]: (value) => ensureDate(value),
-			[ValidateASN1.IsAnyDate]: (value) => value as ASN1Types.ASN1Date,
-			[ValidateASN1.IsString]: (value) => {
-				if (typeof value !== 'string') {
-					throwWithContext('Expected string value');
-				}
-				return(value as string);
-			},
-			[ValidateASN1.IsAnyString]: (value) => value as ASN1Types.ASN1String,
-			[ValidateASN1.IsOctetString]: (value) => {
-				if (Buffer.isBuffer(value)) {
-					return(value);
-				}
-				if (value instanceof ArrayBuffer) {
-					return(arrayBufferToBuffer(value));
-				}
-				throwWithContext('Expected binary value');
-			},
-			[ValidateASN1.IsBitString]: (value) => value as ASN1Types.ASN1BitString,
+			[ValidateASN1.IsAny]: (value) => assert<ASN1AnyJS>(value),
+			[ValidateASN1.IsUnknown]: (value) => assert<ASN1AnyJS>(value),
+			[ValidateASN1.IsDate]: (value) => assert<Date>(ensureDate(value)),
+			[ValidateASN1.IsAnyDate]: (value) => assert<ASN1Types.ASN1Date>(value),
+			[ValidateASN1.IsString]: (value) => assert<string>(value),
+			[ValidateASN1.IsAnyString]: (value) => assert<ASN1Types.ASN1String>(value),
+			[ValidateASN1.IsOctetString]: (value) => assert<Buffer>(value),
+			[ValidateASN1.IsBitString]: (value) => assert<ASN1Types.ASN1BitString>(value),
 			[ValidateASN1.IsInteger]: (value) => {
 				if (typeof value === 'number') {
-					return(BigInt(value));
+					return(assert<bigint>(BigInt(value)));
 				}
 				if (typeof value === 'bigint') {
-					return(value);
+					return(assert<bigint>(value));
 				}
 				throwWithContext('Expected integer value');
 			},
-			[ValidateASN1.IsBoolean]: (value) => {
-				if (typeof value !== 'boolean') {
-					throwWithContext('Expected boolean value');
-				}
-				return(value as boolean);
-			},
-			[ValidateASN1.IsOID]: (value) => value as ASN1Types.ASN1OID,
-			[ValidateASN1.IsSet]: (value) => value as ASN1Types.ASN1Set,
-			[ValidateASN1.IsNull]: (value) => value as null
+			[ValidateASN1.IsBoolean]: (value) => assert<boolean>(value),
+			[ValidateASN1.IsOID]: (value) => assert<ASN1Types.ASN1OID>(value),
+			[ValidateASN1.IsSet]: (value) => assert<ASN1Types.ASN1Set>(value),
+			[ValidateASN1.IsNull]: (value) => assert<null>(value)
 		};
 		const handler = primitiveHandlers[schema];
 		if (handler) {
@@ -274,7 +289,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		}
 	};
 
-	const handleOptional = (schema: { optional: Schema }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>) => {
+	const handleOptional = (schema: { optional: Schema }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[]) => {
 		if (value === undefined || value === null) {
 			resolve(undefined);
 		} else {
@@ -282,15 +297,15 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		}
 	};
 
-	const handleChoice = (schema: { choice: Schema[] | readonly Schema[] }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>) => {
+	const handleChoice = (schema: { choice: Schema[] | readonly Schema[] }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[]) => {
 		stack.push({ type: 'choice', schema, value, resolve, choiceIndex: 0 });
 	};
 
-	const handleSequenceOf = (schema: { sequenceOf: Schema }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>, throwWithContext: (message: string) => never) => {
-		if (!Array.isArray(value)) {
+	const handleSequenceOf = (schema: { sequenceOf: Schema }, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[], throwWithContext: (message: string) => never) => {
+		if (!isArray(value)) {
 			throwWithContext('Expected array value');
 		}
-		const sequenceValue = value as unknown[];
+		const sequenceValue = value;
 		const results: ASN1AnyJS[] = [];
 		let completed = 0;
 		for (let i = 0; i < sequenceValue.length; i++) {
@@ -299,23 +314,28 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 				schema: schema.sequenceOf,
 				value: sequenceValue[i],
 				resolve: (r) => {
-					results[i] = r as ASN1AnyJS;
+					results[i] = r;
 					if (++completed === sequenceValue.length) {
-						resolve(results as ASN1AnyJS);
+						resolve(results);
 					}
 				}
 			});
 		}
 	};
 
-	const handleTyped = (schema: Extract<Schema, { type: string }>, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: Array<{type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number}>, throwWithContext: (message: string) => never) => {
+	const handleTyped = (schema: Extract<Schema, { type: string }>, value: unknown, resolve: (r: ASN1AnyJS | undefined) => void, stack: { type: 'encode' | 'choice'; schema: Schema; value: unknown; resolve: (result: ASN1AnyJS | undefined) => void; choiceIndex?: number }[], throwWithContext: (message: string) => never) => {
 		const s = schema;
 		switch (s.type) {
 			case 'struct': {
 				if (!hasIndexSignature(value) || Array.isArray(value)) {
 					throwWithContext('Expected object value for struct');
 				}
-				const structFieldOrder = Array.from(s.fieldNames);
+				if (!isStructSchema(s)) {
+					throwWithContext('Invalid struct schema');
+				}
+				const structSchema = s;
+				const structFieldOrder = Array.from(structSchema.fieldNames);
+				const structContainsSchema = structSchema.contains;
 				const structContains: { [field: string]: ASN1AnyJS } = {};
 				let structCompleted = 0;
 				const structCollect = () => {
@@ -328,12 +348,13 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 					}
 				};
 				for (const fieldName of structFieldOrder) {
-					const fieldSchema = s.contains[fieldName];
+					const fieldSchema = structContainsSchema[fieldName];
 					if (!fieldSchema) {
 						structCollect();
 						continue;
 					}
-					const fieldValue = (value as { [key: string]: unknown })[fieldName];
+					const obj = assert<{ [key: string]: unknown }>(value);
+					const fieldValue = obj[fieldName];
 					if (fieldValue === undefined || fieldValue === null) {
 						if (isOptionalSchema(fieldSchema)) {
 							structCollect();
@@ -343,7 +364,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 					}
 					stack.push({
 						type: 'encode',
-						schema: fieldSchema,
+						schema: isOptionalSchema(fieldSchema) ? fieldSchema.optional : fieldSchema,
 						value: fieldValue,
 						resolve: (r) => {
 							if (r !== undefined) {
@@ -356,21 +377,21 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 				break;
 			}
 			case 'string': {
-				const ss = s as { type: 'string'; kind: 'printable' | 'ia5' | 'utf8' };
+				const ss = assert<{ type: 'string'; kind: 'printable' | 'ia5' | 'utf8' }>(s);
 				if (typeof value !== 'string') {
 					throwWithContext('Expected string value');
 				}
-				resolve({ type: 'string', kind: ss.kind, value: value as string });
+				resolve({ type: 'string', kind: ss.kind, value: assert<string>(value) });
 				break;
 			}
 			case 'date': {
-				const ds = s as { type: 'date'; kind: 'default' | 'utc' | 'general' };
+				const ds = assert<{ type: 'date'; kind: 'default' | 'utc' | 'general' }>(s);
 				const dateValue = ensureDate(value);
-				resolve({ type: 'date', kind: ds.kind, date: dateValue });
+				resolve({ type: 'date', kind: ds.kind, date: assert<Date>(dateValue) });
 				break;
 			}
 			case 'context': {
-				const cs = s as { type: 'context'; kind: 'implicit' | 'explicit'; contains: Schema; value: number };
+				const cs = assert<{ type: 'context'; kind: 'implicit' | 'explicit'; contains: Schema; value: number }>(s);
 				stack.push({
 					type: 'encode',
 					schema: cs.contains,
@@ -379,7 +400,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 						if (r === undefined) {
 							throwWithContext('Context value missing');
 						}
-						resolve({ type: 'context', kind: cs.kind, value: cs.value, contains: r });
+						resolve({ type: 'context', kind: cs.kind, value: cs.value, contains: assert<ASN1AnyJS>(r) });
 					}
 				});
 				break;
@@ -388,7 +409,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 				if (typeof value !== 'string') {
 					throwWithContext('Expected OID string value');
 				}
-				resolve({ type: 'oid', oid: value as string });
+				resolve({ type: 'oid', oid: assert<string>(value) });
 				break;
 			}
 			default:
@@ -397,13 +418,13 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 	};
 
 	function encode(currentSchema: Schema, inputValue: unknown): ASN1AnyJS | undefined {
-		const stack: Array<{
+		const stack: {
 			type: 'encode' | 'choice';
 			schema: Schema;
 			value: unknown;
 			resolve: (result: ASN1AnyJS | undefined) => void;
 			choiceIndex?: number;
-		}> = [];
+		}[] = [];
 
 		let finalResult: ASN1AnyJS | undefined;
 
@@ -414,12 +435,16 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 		stack.push({ type: 'encode', schema: currentSchema, value: inputValue, resolve: initialResolve });
 
 		while (stack.length > 0) {
-			const task = stack.pop()!;
+			const task = stack.pop();
+			if (!task) {
+				throw(new Error('Unexpected empty stack'));
+			}
 			const { type, schema, value, resolve, choiceIndex } = task;
 
 			if (type === 'choice') {
-				const choiceSchema = schema as { choice: Schema[] | readonly Schema[] };
-				const option = choiceSchema.choice[choiceIndex!]!;
+				const choiceSchema = assert<{ choice: Schema[] | readonly Schema[] }>(schema);
+				const choiceIndexNum = assert<number>(choiceIndex);
+				const option = assert<Schema>(choiceSchema.choice[choiceIndexNum]);
 				stack.push({
 					type: 'encode',
 					schema: option,
@@ -428,8 +453,8 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 						if (r !== undefined) {
 							resolve(r);
 						} else {
-							if (choiceIndex! + 1 < choiceSchema.choice.length) {
-								stack.push({ type: 'choice', schema, value, resolve, choiceIndex: choiceIndex! + 1 });
+							if (choiceIndexNum + 1 < choiceSchema.choice.length) {
+								stack.push({ type: 'choice', schema, value, resolve, choiceIndex: choiceIndexNum + 1 });
 							} else {
 								throwWithContext(`Value ${valuePrinter(value)} does not match any schema choice`);
 							}
@@ -461,19 +486,19 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 
 			if (typeof schema === 'object' && schema !== null) {
 				if ('optional' in schema) {
-					handleOptional(schema as { optional: Schema }, value, resolve, stack);
+					handleOptional(schema, value, resolve, stack);
 					continue;
 				}
 				if ('choice' in schema) {
-					handleChoice(schema as { choice: Schema[] | readonly Schema[] }, value, resolve, stack);
+					handleChoice(schema, value, resolve, stack);
 					continue;
 				}
 				if ('sequenceOf' in schema) {
-					handleSequenceOf(schema as { sequenceOf: Schema }, value, resolve, stack, throwWithContext);
+					handleSequenceOf(schema, value, resolve, stack, throwWithContext);
 					continue;
 				}
 				if ('type' in schema) {
-					handleTyped(schema as Extract<Schema, { type: string }>, value, resolve, stack, throwWithContext);
+					handleTyped(schema, value, resolve, stack, throwWithContext);
 					continue;
 				}
 			}
@@ -481,7 +506,7 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 			resolve(toASN1Primitive(value));
 		}
 
-		return finalResult;
+		return(finalResult);
 	};	const encoded = encode(schema, value);
 	if (encoded === undefined) {
 		throwWithContext(`Unable to encode value ${valuePrinter(value)}`);
@@ -491,14 +516,16 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 
 export function normalizeDecodedASN1(input: unknown): unknown {
 	const normalizeStruct = (candidate: { [key: string]: unknown; type?: string; fieldNames?: readonly string[]; contains?: unknown }): unknown => {
-		const containsRaw = hasIndexSignature(candidate.contains) ? candidate.contains as { [key: string]: unknown } : {};
-		const orderedNames = Array.isArray(candidate.fieldNames) ? candidate.fieldNames : Object.keys(containsRaw);
+		const containsRaw = hasIndexSignature(candidate.contains) ? assert<{ [key: string]: unknown }>(candidate.contains) : {};
+		const orderedNames = Array.isArray(candidate.fieldNames) ? Array.from(candidate.fieldNames) : Object.keys(containsRaw);
 		const structResult: { [key: string]: unknown } = {};
 		for (const fieldName of orderedNames) {
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 			const fieldValue = containsRaw[fieldName];
 			if (fieldValue === undefined) {
 				continue;
 			}
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 			structResult[fieldName] = normalizeDecodedASN1(fieldValue);
 		}
 		return(structResult);
@@ -553,7 +580,7 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 		return(normalizeDecodedASN1(input.value));
 	}
 	if (hasIndexSignature(input)) {
-		const candidate = input as { [key: string]: unknown; type?: string; fieldNames?: readonly string[]; contains?: unknown };
+		const candidate = assert<{ [key: string]: unknown; type?: string; fieldNames?: readonly string[]; contains?: unknown }>(input);
 		const normalizers: { [key: string]: (candidate: { [key: string]: unknown }) => unknown } = {
 			struct: normalizeStruct,
 			string: normalizeString,
