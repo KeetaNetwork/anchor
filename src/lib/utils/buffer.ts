@@ -12,12 +12,12 @@ export const bufferToArrayBuffer: typeof KeetaNetLib.Utils.Helper.bufferToArrayB
 function toBuffer(src: ArrayBufferView | ArrayBuffer): Buffer {
 	if (ArrayBuffer.isView(src)) {
 		// Zero-copy: Buffer will reference the same ArrayBuffer range.
-		return(Buffer.from(src.buffer, src.byteOffset, src.byteLength));
+		return(Buffer.from(src.buffer, src.byteOffset, src.byteLength) as unknown as Buffer);
 	}
 
 	// src is ArrayBuffer
 	// Zero-copy: shares memory with the ArrayBuffer
-	return(Buffer.from(src));
+	return(Buffer.from(src) as unknown as Buffer);
 }
 
 /*
@@ -30,6 +30,9 @@ export function arrayBufferToBuffer(arrayBuffer: ArrayBuffer): Buffer {
 /*
  * Converts a Buffer backed by ArrayBufferLike storage into one backed by an ArrayBuffer.
  */
-export function arrayBufferLikeToBuffer(buffer: ArrayBufferLike): Buffer {
-	return(toBuffer(buffer));
+export function arrayBufferLikeToBuffer(buffer: ArrayBufferLike | ArrayBufferView): Buffer {
+	if (ArrayBuffer.isView(buffer)) {
+		return(toBuffer(buffer));
+	}
+	return(toBuffer(buffer as ArrayBuffer));
 }
