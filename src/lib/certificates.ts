@@ -667,7 +667,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
 		const decodeForSensitive = async (data: Buffer | ArrayBuffer): Promise<CertificateAttributeValue<NAME>> => {
 			const bufferInput = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
-			return(decodeAttribute(name, bufferInput));
+			return(await decodeAttribute(name, bufferInput));
 		};
 		this.attributes[name] = {
 			sensitive: true,
