@@ -7,14 +7,31 @@ const URLProtocol = 'keeta:' as const;
 export type KeetaURIString = `${typeof URLProtocol}//${string}`;
 
 
+/**
+ * The actions that can be represented in a Keeta URI, currently only "send"
+ */
 export type KeetaURIActions = {
 	type: 'send';
+
+	// Optional "to" parameter representing the recipient account of the action
 	to?: GenericAccount;
+
+	// Optional "token" parameter representing the token address of the action
 	token?: TokenAddress;
+
+	// Optional "value" parameter representing the amount to send
 	value?: bigint;
+
+	// Optional "external" parameter representing external data
+	// When used the first item should be the external field of the SEND operation, and other fields can be used for chaining anchor actions
 	external?: string[];
 }
 
+/**
+ * Parse a Keeta URI string into a KeetaURIActions object
+ * @param uri The string to parse, must be a valid Keeta URI
+ * @returns The parsed Keeta URI action
+ */
 export function parseKeetaURI(uri: string): KeetaURIActions {
 	const url = new URL(uri);
 
@@ -73,6 +90,11 @@ export function parseKeetaURI(uri: string): KeetaURIActions {
 	}
 }
 
+/**
+ * Encode a KeetaURIActions object into a Keeta URI string
+ * @param action The action to encode into a Keeta URI
+ * @returns	The encoded Keeta URI string
+ */
 export function encodeKeetaURI(action: KeetaURIActions): KeetaURIString {
 	const url = new URL(`${URLProtocol}//actions`);
 	if (action.type === 'send') {
