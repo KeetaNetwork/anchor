@@ -3,6 +3,7 @@ import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
+import { ExternalReferenceBuilder } from './utils/external.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -178,13 +179,15 @@ test('Certificates', async function() {
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
 		builder1.setAttribute('address', true, { streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' });
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
-		builder1.setAttribute('documentDriversLicenseFront', true, {
-			type: 'DRLC',
-			number: 'Y12341234',
-			issuer: 'CA',
-			issuingCountry: 'US',
-			attachmentUrl: 'https://localhost/document/documentDriversLicenseFront/fp_id_test_MiancCyPWE0ww5URJrZxjs'
-		});
+
+		// Create a document reference using DocumentBuilder
+		const mockDocumentContent = Buffer.from('mock driver license image data', 'utf-8');
+		const documentBuilder = new ExternalReferenceBuilder(
+			'https://localhost/document/documentDriversLicenseFront/fp_id_test_MiancCyPWE0ww5URJrZxjs',
+			'image/jpeg'
+		);
+		const documentReference = await documentBuilder.build(mockDocumentContent, subjectAccountNoPrivate);
+		builder1.setAttribute('documentDriversLicenseFront', true, documentReference);
 
 		/**
 		 * A User Certificate

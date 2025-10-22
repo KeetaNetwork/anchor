@@ -73,10 +73,17 @@ type oidSchemaContents = {
 	};
 	extensions: {
 		[key: string]: {
-			oid: number[];
+			oid?: number[];
 			type?: string;
 			description: string;
-			reference: string;
+			reference?: string;
+			fields?: {
+				[key: string]: {
+					type: string;
+					optional?: boolean;
+				};
+			};
+			field_order?: string[];
 		};
 	};
 };
@@ -116,6 +123,10 @@ function resolveTypeReference(typeName: string): string {
 			return('Date');
 		case 'ENUMERATED':
 			return('string');
+		case 'OBJECT IDENTIFIER':
+			return('ASN1.ASN1OID');
+		case 'OCTET STRING':
+			return('Buffer');
 		default:
 			return(toPascalCase(typeName));
 	}
@@ -337,8 +348,12 @@ function generateOidConstants() {
 	lines.push('export namespace keeta {');
 	for (const [name, config] of Object.entries(oidSchema.extensions)) {
 		lines.push(`\t/** ${config.description} */`);
-		lines.push(`\t/** @see ${config.reference} */`);
-		lines.push(`\texport const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		if (config.reference) {
+			lines.push(`\t/** @see ${config.reference} */`);
+		}
+		if (config.oid) {
+			lines.push(`\texport const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		}
 	}
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
 		lines.push(`\t/** ${config.description} */`);
@@ -406,14 +421,21 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 			const isSequence = oidSchema.iso20022_types.sequences[fieldTypeSnake] ??  oidSchema.iso20022_types.sequences[fieldType];
 			const isSensitiveSequence = oidSchema.sensitive_attributes[fieldTypeSnake]?.fields;
 			const isSensitiveChoice = oidSchema.sensitive_attributes[fieldTypeSnake]?.choices;
+			const isExtension = oidSchema.extensions[fieldTypeSnake]?.fields ?? oidSchema.extensions[fieldType]?.fields;
 
-			const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice;
+			const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice ?? isExtension;
 
 			if (hasSchema) {
 				fieldSchema = `${fieldTypePascal}Schema`;
 			} else {
-				// Primitive type - use inline string schema
-				fieldSchema = `{ type: 'string', kind: 'utf8' }`;
+				// Primitive type - use inline schema
+				if (fieldType === 'OBJECT IDENTIFIER') {
+					fieldSchema = `ASN1.ValidateASN1.IsOID`;
+				} else if (fieldType === 'OCTET STRING') {
+					fieldSchema = `ASN1.ValidateASN1.IsOctetString`;
+				} else {
+					fieldSchema = `{ type: 'string', kind: 'utf8' }`;
+				}
 			}
 		}
 
@@ -606,6 +628,28 @@ function generateIso20022Types() {
 		}
 	}
 
+	// Extension Types with fields
+	for (const [name, config] of Object.entries(oidSchema.extensions)) {
+		if (config.fields) {
+			const typeName = toPascalCase(name);
+			lines.push(`/** ${config.description} */`);
+			if (config.oid) {
+				lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
+			}
+			lines.push(`export interface ${typeName} {`);
+			for (const [fieldName, fieldConfig] of Object.entries(config.fields)) {
+				const optional = fieldConfig.optional ? '?' : '';
+				const resolvedType = resolveTypeReference(fieldConfig.type);
+				lines.push(`\t${fieldName}${optional}: ${resolvedType};`);
+			}
+			lines.push('}');
+			lines.push('');
+			// Schema
+			lines.push(genSequenceSchema(typeName, config.fields, config));
+			lines.push('');
+		}
+	}
+
 	// Token aliases for sensitive attributes
 	lines.push('// Token aliases for sensitive attributes');
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
@@ -704,8 +748,17 @@ function generateIso20022Types() {
 				throw(new Error(`Sensitive attribute ${name} has no defined type.`));
 			}
 			const baseType = resolveToBaseType(config.type);
-			if (baseType === 'GeneralizedTime') {
+			const baseTypeSnake = toSnakeCase(baseType);
+			const isExtensionType = oidSchema.extensions[baseTypeSnake]?.fields ?? oidSchema.extensions[baseType]?.fields;
+
+			if (isExtensionType) {
+				schemaRef = `${baseType}Schema`;
+			} else if (baseType === 'GeneralizedTime') {
 				schemaRef = 'ASN1.ValidateASN1.IsDate';
+			} else if (baseType === 'OCTET STRING') {
+				schemaRef = 'ASN1.ValidateASN1.IsOctetString';
+			} else if (baseType === 'OBJECT IDENTIFIER') {
+				schemaRef = 'ASN1.ValidateASN1.IsOID';
 			} else {
 				schemaRef = `{ type: 'string', kind: 'utf8' }`;
 			}

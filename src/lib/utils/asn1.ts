@@ -21,6 +21,7 @@ const ASN1CheckUtilities: typeof ASN1.ASN1CheckUtilities = ASN1.ASN1CheckUtiliti
 const { isASN1ContextTag, isASN1Struct, isASN1String, isASN1Date, isASN1BitString, isASN1Set } = ASN1CheckUtilities;
 
 type ASN1AnyJS = ASN1Types.ASN1AnyJS;
+type ASN1OID = ASN1Types.ASN1OID;
 type ASN1ContextTag = ASN1Types.ASN1ContextTag;
 type Schema = ASN1Types.ValidateASN1.Schema;
 type SchemaMap<T extends Schema> = ASN1Types.ValidateASN1.SchemaMap<T>;
@@ -34,7 +35,6 @@ type EncodeOptions = {
 	valuePrinter?: (value: unknown) => string;
 };
 
-const assertASN1AnyJS = createAssert<ASN1AnyJS>();
 const assertStructFieldSchemaMap = createAssert<StructFieldSchemaMap>();
 const structSchemaGuard = createIs<StructSchema>();
 
@@ -268,11 +268,10 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 	const contextualized = contextualizeStructSchema(schema);
 	try {
 		const preparedUnknown = prepareValueForSchema(contextualized, value);
-		const prepared = assertASN1AnyJS(preparedUnknown);
 		// XXX:TODO Fix depth issue
 		// @ts-ignore
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-return
-		return(ValidateASN1.againstSchema(prepared, contextualized));
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/consistent-type-assertions
+		return(ValidateASN1.againstSchema(preparedUnknown as ASN1AnyJS, contextualized));
 	} catch (err) {
 		const printer = options?.valuePrinter ?? defaultPrintValue;
 		const prefix = options?.attributeName ? `Attribute ${options.attributeName}: ` : '';
@@ -342,6 +341,7 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 
 export type {
 	ASN1AnyJS,
+	ASN1OID,
 	ASN1ContextTag,
 	Schema,
 	SchemaMap
