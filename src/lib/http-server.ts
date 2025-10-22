@@ -40,7 +40,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	constructor(config: ConfigType) {
 		this.#config = { ...config };
 		this.port = config.port ?? 0;
-		this.logger = config.logger ?? new Log();
+		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 	}
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
