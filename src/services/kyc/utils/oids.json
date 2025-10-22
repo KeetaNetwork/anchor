@@ -290,14 +290,14 @@
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.1"
 		},
 		"documentDriversLicenseBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 0, 1 ],
 			"token": "DocumentDriversLicenseBack",
 			"type": "Document",
 			"description": "Driver's license back side document",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.2"
 		},
 		"documentPassport": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2 ],
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
 			"token": "DocumentPassport",
 			"type": "Document",
 			"description": "Passport document",
@@ -305,28 +305,28 @@
 		},
 		"documentResidentCardFront": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
-			"token": "DocumentResidentCard",
+			"token": "DocumentResidentCardFront",
 			"type": "Document",
 			"description": "Resident ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
 		"documentResidentCardBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
-			"token": "DocumentResidentCard",
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3, 0 ],
+			"token": "DocumentResidentCardBack",
 			"type": "Document",
 			"description": "Resident ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
 		"documentGovernmentIdFront": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
-			"token": "GovernmentId",
+			"token": "GovernmentIdFront",
 			"type": "Document",
 			"description": "Government ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
 		"documentGovernmentIdBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
-			"token": "GovernmentId",
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4, 0 ],
+			"token": "GovernmentIdBack",
 			"type": "Document",
 			"description": "Government ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
