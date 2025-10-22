@@ -303,14 +303,28 @@
 			"description": "Passport document",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.3"
 		},
-		"documentResidentCard": {
+		"documentResidentCardFront": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
 			"token": "DocumentResidentCard",
 			"type": "Document",
 			"description": "Resident ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
-		"documentGovernmentId": {
+		"documentResidentCardBack": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
+			"token": "DocumentResidentCard",
+			"type": "Document",
+			"description": "Resident ID",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
+		},
+		"documentGovernmentIdFront": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
+			"token": "GovernmentId",
+			"type": "Document",
+			"description": "Government ID",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
+		},
+		"documentGovernmentIdBack": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
 			"token": "GovernmentId",
 			"type": "Document",
