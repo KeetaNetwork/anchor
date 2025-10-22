@@ -405,9 +405,10 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 		if (baseType === 'GeneralizedTime') {
 			fieldSchema = 'ASN1.ValidateASN1.IsDate';
 		} else {
-			// Strip SEQUENCE OF prefix and [] suffix to get the base type
-			let fieldType = fcfg.type.trim();
-			if (fieldType.startsWith('SEQUENCE OF ')) {
+			// Check if this is a SEQUENCE OF type directly or via type reference
+			let fieldType = baseType.trim();
+			const isSequenceOf = fieldType.startsWith('SEQUENCE OF ');
+			if (isSequenceOf) {
 				fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
 			}
 
@@ -436,6 +437,11 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 				} else {
 					fieldSchema = `{ type: 'string', kind: 'utf8' }`;
 				}
+			}
+
+			// Wrap in sequenceOf if this was a SEQUENCE OF type
+			if (isSequenceOf) {
+				fieldSchema = `{ sequenceOf: ${fieldSchema} }`;
 			}
 		}
 

@@ -151,6 +151,13 @@ test('Certificates', async function() {
 	] as const) {
 		const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0, keyKind);
 		const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1, keyKind);
+		const testAddress = {
+			addressLines: ['100 Belgrave Street'],
+			streetName: '100 Belgrave Street',
+			townName: 'Oldsmar',
+			countrySubDivision: 'FL',
+			postalCode: '34677'
+		};
 
 		/* Subject Account without a Private Key, for later use */
 		const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
@@ -177,7 +184,7 @@ test('Certificates', async function() {
 		builder1.setAttribute('fullName', true, 'Test User');
 		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, { streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' });
+		builder1.setAttribute('address', true, testAddress);
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
 
 		// Create a document reference using DocumentBuilder
@@ -252,7 +259,7 @@ test('Certificates', async function() {
 			certificateWithPrivate,
 			certificate,
 			'address',
-			{ streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' }
+			testAddress
 		);
 
 		await verifyAttribute(
