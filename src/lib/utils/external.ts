@@ -1,17 +1,13 @@
 import * as crypto from 'crypto';
-import { EncryptedContainer } from '../encrypted-container.js';
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { Reference, ExternalReference, DigestInfo } from '../../services/kyc/iso20022.generated.js';
 import type { ASN1OID } from './asn1.js';
-import { Buffer } from './buffer.js';
-
-type Account = InstanceType<typeof KeetaNetLib.Account>;
+import type { Buffer } from './buffer.js';
 
 /**
  * Builder for Reference structures
  *
  * Creates a Reference containing:
- * - ExternalReference: URL and content type (encrypted)
+ * - ExternalReference: URL and content type
  * - DigestInfo: Hash algorithm OID and digest
  * - Encryption algorithm OID
  */
@@ -22,7 +18,7 @@ export class ExternalReferenceBuilder {
 	#encryptionAlgorithm = 'aes-256-gcm';
 
 	/**
-	 * Create a new DocumentBuilder
+	 * Create a new ExternalReferenceBuilder
 	 *
 	 * @param url - The URL where the document can be accessed
 	 * @param contentType - MIME type of the document (e.g., 'image/jpeg', 'application/pdf')
@@ -33,49 +29,37 @@ export class ExternalReferenceBuilder {
 	}
 
 	/**
-	 * Set the digest algorithm (default: 'sha256')
+	 * Set the digest algorithm (default: 'sha3-256')
 	 *
 	 * @param algorithm - Hash algorithm name (e.g., 'sha256', 'sha3-256')
 	 * @returns this builder for chaining
 	 */
-	setDigestAlgorithm(algorithm: string): this {
+	withDigestAlgorithm(algorithm: string): this {
 		this.#digestAlgorithm = algorithm;
 		return(this);
 	}
 
 	/**
-	 * Set the encryption algorithm (default: 'aes-256-cbc')
+	 * Set the encryption algorithm (default: 'aes-256-gcm')
 	 *
 	 * @param algorithm - Encryption algorithm name
 	 * @returns this builder for chaining
 	 */
-	setEncryptionAlgorithm(algorithm: string): this {
+	withEncryptionAlgorithm(algorithm: string): this {
 		this.#encryptionAlgorithm = algorithm;
 		return(this);
 	}
 
 	/**
-	 * Build the Reference structure with encrypted URL
+	 * Build the Reference structure
 	 *
 	 * @param documentContent - The actual document content to hash
-	 * @param principals - Account(s) that can decrypt the URL
 	 * @returns The Reference structure
 	 */
-	async build(documentContent: Buffer, principals: Account[] | Account): Promise<Reference> {
-		const principalArray = Array.isArray(principals) ? principals : [principals];
-
-		// Encrypt the URL
-		const urlBuffer = Buffer.from(this.#url, 'utf-8');
-		const encryptedContainer = EncryptedContainer.fromPlaintext(
-			urlBuffer,
-			principalArray,
-			true
-		);
-		const encryptedUrlBuffer = await encryptedContainer.getEncodedBuffer();
-
-		// Create the ExternalReference structure with encrypted URL
+	build(documentContent: Buffer): Reference {
+		// Create the ExternalReference structure
 		const externalReference: ExternalReference = {
-			url: encryptedUrlBuffer,
+			url: this.#url,
 			contentType: this.#contentType
 		};
 
@@ -106,6 +90,7 @@ export class ExternalReferenceBuilder {
 	}
 
 	/**
+	 * // XXX:TODO We can handle these better later
 	 * Map algorithm names to Node.js crypto algorithm names
 	 */
 	#digestAlgorithmToNodeAlgo(algorithm: string): string {
@@ -124,6 +109,7 @@ export class ExternalReferenceBuilder {
 	}
 
 	/**
+	 * // XXX:TODO We can handle these better later
 	 * Map algorithm names to OIDs
 	 */
 	#algorithmToOID(algorithm: string): ASN1OID {

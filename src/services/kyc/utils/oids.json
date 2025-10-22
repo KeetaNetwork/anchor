@@ -555,7 +555,7 @@
 			"description": "External reference pointer",
 			"fields": {
 				"url": {
-					"type": "OCTET STRING",
+					"type": "UTF8String",
 					"optional": false
 				},
 				"contentType": {

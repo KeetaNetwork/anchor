@@ -1,6 +1,5 @@
 import { test, expect } from 'vitest';
 import { ExternalReferenceBuilder } from './external.js';
-import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as crypto from 'crypto';
 import { Buffer } from './buffer.js';
 
@@ -25,17 +24,16 @@ const testCases = [
 	}
 ];
 
-test('ExternalReferenceBuilder creates valid Reference structures', async () => {
-	const account = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+test('ExternalReferenceBuilder creates valid Reference structures', () => {
 	for (const tc of testCases) {
 		const builder = new ExternalReferenceBuilder(tc.url, tc.contentType)
-			.setDigestAlgorithm(tc.digestAlgo)
-			.setEncryptionAlgorithm(tc.encryptAlgo);
+			.withDigestAlgorithm(tc.digestAlgo)
+			.withEncryptionAlgorithm(tc.encryptAlgo);
 
 		// Verify structure
-		const reference = await builder.build(tc.content, account);
+		const reference = builder.build(tc.content);
+		expect(reference.external.url).toBe(tc.url);
 		expect(reference.external.contentType).toBe(tc.contentType);
-		expect(Buffer.isBuffer(reference.external.url)).toBe(true);
 		expect(reference.digest.digestAlgorithm.oid).toBe(tc.expectedDigestOID);
 		expect(reference.encryptionAlgorithm.oid).toBe(tc.expectedEncryptOID);
 
@@ -46,13 +44,10 @@ test('ExternalReferenceBuilder creates valid Reference structures', async () => 
 	}
 });
 
-test('ExternalReferenceBuilder encrypts URL for principals', async () => {
-	const account = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
-	const url = 'https://example.com/secret.pdf';
-	const builder = new ExternalReferenceBuilder(url, 'application/pdf');
+test('ExternalReferenceBuilder computes different digests for different content', () => {
+	const builder = new ExternalReferenceBuilder('https://example.com/doc.pdf', 'application/pdf');
 
-	// URL should be encrypted (non-empty buffer)
-	const reference = await builder.build(Buffer.from('test'), account);
-	expect(Buffer.isBuffer(reference.external.url)).toBe(true);
-	expect(reference.external.url.length).toBeGreaterThan(0);
+	const ref1 = builder.build(Buffer.from('content v1'));
+	const ref2 = builder.build(Buffer.from('content v2'));
+	expect(ref1.digest.digest).not.toEqual(ref2.digest.digest);
 });

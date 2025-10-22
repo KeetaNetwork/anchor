@@ -186,7 +186,7 @@ test('Certificates', async function() {
 			'https://localhost/document/documentDriversLicenseFront/fp_id_test_MiancCyPWE0ww5URJrZxjs',
 			'image/jpeg'
 		);
-		const documentReference = await documentBuilder.build(mockDocumentContent, subjectAccountNoPrivate);
+		const documentReference = documentBuilder.build(mockDocumentContent);
 		builder1.setAttribute('documentDriversLicenseFront', true, documentReference);
 
 		/**
