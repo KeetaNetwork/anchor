@@ -330,7 +330,7 @@
 			"type": "Document",
 			"description": "Visa ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
-		},
+		}
 	},
 	"iso20022_types": {
 		"primitives": {
