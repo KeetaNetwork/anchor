@@ -1,3 +1,4 @@
+// XXX:TODO We need a webpack fallback for crypto in browser environments
 import * as crypto from 'crypto';
 import type { Reference, ExternalReference, DigestInfo } from '../../services/kyc/iso20022.generated.js';
 import type { ASN1OID } from './asn1.js';
