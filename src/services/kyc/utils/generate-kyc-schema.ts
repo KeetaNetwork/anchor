@@ -73,10 +73,17 @@ type oidSchemaContents = {
 	};
 	extensions: {
 		[key: string]: {
-			oid: number[];
+			oid?: number[];
 			type?: string;
 			description: string;
-			reference: string;
+			reference?: string;
+			fields?: {
+				[key: string]: {
+					type: string;
+					optional?: boolean;
+				};
+			};
+			field_order?: string[];
 		};
 	};
 };
@@ -116,6 +123,10 @@ function resolveTypeReference(typeName: string): string {
 			return('Date');
 		case 'ENUMERATED':
 			return('string');
+		case 'OBJECT IDENTIFIER':
+			return('ASN1.ASN1OID');
+		case 'OCTET STRING':
+			return('Buffer');
 		default:
 			return(toPascalCase(typeName));
 	}
@@ -149,6 +160,14 @@ function resolveToBaseType(typeName: string): string {
 
 	// Otherwise return as-is
 	return(typeName);
+}
+
+function isEnumerationType(typeName: string): boolean {
+	const normalized = toSnakeCase(typeName);
+	return(Boolean(
+		oidSchema.iso20022_types.enumerations[typeName] ??
+		oidSchema.iso20022_types.enumerations[normalized]
+	));
 }
 
 function isSequenceOfChoice(config: { fields: { [key: string]: { optional?: boolean }}}): boolean {
@@ -199,7 +218,8 @@ function genInterface(name: string, fields: { [key: string]: { type: string; opt
 	return(`/** ${description} */\n/** OID: ${oid} */\nexport interface ${name} {\n${fieldLines.join('\n')}\n}\n`);
 }
 
-function genSequenceOfChoice(name: string, config: { fields: { [key: string]: { type: string; optional?: boolean }}; field_order?: string[] }): string {
+// Generate TypeScript **types** for sequence-of-choice
+function genSequenceOfChoiceTypes(name: string, config: { fields: { [key: string]: { type: string; optional?: boolean }}; field_order?: string[] }): string {
 	const typeName = toPascalCase(name);
 	const fieldOrder = config.field_order ?? Object.keys(config.fields);
 	const choiceEntries = fieldOrder.map(function(fieldName): [string, { type: string; optional?: boolean }] {
@@ -234,12 +254,58 @@ function genSequenceOfChoice(name: string, config: { fields: { [key: string]: { 
 	// Main type is array of choices
 	out += `export type ${typeName} = ${typeName}Choice[];\n\n`;
 
+	return(out);
+}
+
+// Generate ASN.1 **schema** for sequence-of-choice
+function genSequenceOfChoiceSchema(name: string, config: { fields: { [key: string]: { type: string; optional?: boolean }}; field_order?: string[] }): string {
+	const typeName = toPascalCase(name);
+	const fieldOrder = config.field_order ?? Object.keys(config.fields);
+	const choiceEntries = fieldOrder.map(function(fieldName): [string, { type: string; optional?: boolean }] {
+		if (!(fieldName in config.fields) || config.fields[fieldName] === undefined) {
+			throw(new Error(`Field ${fieldName} not found in sequence of choice ${name}`));
+		}
+		return([fieldName, config.fields[fieldName]]);
+	});
+
+	let out = '';
+
 	// ASN.1 schema
+	out += `/** ASN.1 schema for ${typeName} */\n`;
 	out += `export const ${typeName}Schema: ASN1.Schema = {\n\tsequenceOf: {\n\t\tchoice: [\n`;
-	out += choiceEntries.map(function([_ignore_fieldName, _ignore_fieldConfig], index) {
-		return(`\t\t\t{ type: 'context', kind: 'explicit', value: ${index}, contains: { type: 'string', kind: 'utf8' }}`);
+	out += choiceEntries.map(function([fieldName, fieldConfig], index) {
+		if (fieldConfig === undefined) {
+			throw(new Error(`Field ${fieldName} not found in sequence of choice ${name}`));
+		}
+
+		// Determine the type for this choice
+		let fieldType = fieldConfig.type.trim();
+		if (fieldType.startsWith('SEQUENCE OF ')) {
+			fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
+		}
+		fieldType = fieldType.replace(/\[\]$/, '');
+
+		const fieldTypePascal = toPascalCase(fieldType);
+		const fieldTypeSnake = toSnakeCase(fieldType);
+
+		// Check if this is a complex type that has a schema
+		const isChoice = oidSchema.iso20022_types.choices[fieldTypeSnake] ?? oidSchema.iso20022_types.choices[fieldType];
+		const isSequence = oidSchema.iso20022_types.sequences[fieldTypeSnake] ?? oidSchema.iso20022_types.sequences[fieldType];
+		const isSensitiveSequence = oidSchema.sensitive_attributes[fieldTypeSnake]?.fields;
+		const isSensitiveChoice = oidSchema.sensitive_attributes[fieldTypeSnake]?.choices;
+		const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice;
+
+		let contains;
+		if (hasSchema) {
+			contains = `${fieldTypePascal}Schema`;
+		} else {
+			// Primitive type
+			contains = `{ type: 'string', kind: 'utf8' }`;
+		}
+
+		return(`\t\t\t{ type: 'context', kind: 'explicit', value: ${index}, contains: ${contains} }`);
 	}).join(',\n');
-	out += `\n\t\t]\n\t}\n} as const satisfies ASN1.Schema;\n\n`;
+	out += `\n\t\t]\n\t}\n};\n\n`;
 
 	// Field names array
 	out += `export const ${typeName}Fields = [\n${fieldOrder.map(function(fieldName){
@@ -290,8 +356,12 @@ function generateOidConstants() {
 	lines.push('export namespace keeta {');
 	for (const [name, config] of Object.entries(oidSchema.extensions)) {
 		lines.push(`\t/** ${config.description} */`);
-		lines.push(`\t/** @see ${config.reference} */`);
-		lines.push(`\texport const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		if (config.reference) {
+			lines.push(`\t/** @see ${config.reference} */`);
+		}
+		if (config.oid) {
+			lines.push(`\texport const ${toConstantCase(name)} = '${oidArrayToString(config.oid)}';`);
+		}
 	}
 	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
 		lines.push(`\t/** ${config.description} */`);
@@ -329,56 +399,72 @@ function generateOidConstants() {
 
 function genSequenceSchema(typeName: string, fields: { [key: string]: { type: string; optional?: boolean }}, config: { field_order?: string[] }) {
 	const fieldOrder = config?.field_order ?? Object.keys(fields);
-	const schemaFields = fieldOrder.map(function(fname, index) {
+	const structFields: { [key: string]: string } = {};
+
+	for (const fname of fieldOrder) {
 		const fcfg = fields[fname];
-		if (!fcfg) {return(null);}
+		if (!fcfg) {continue;}
 
 		// Resolve to base type to handle aliases
 		const baseType = resolveToBaseType(fcfg.type);
+
+		let fieldSchema;
 		// Check if field type is GeneralizedTime (date)
 		if (baseType === 'GeneralizedTime') {
-			if (fcfg.optional) {
-				return(`{ optional: { type: 'context', kind: 'explicit', value: ${index}, contains: ASN1.ValidateASN1.IsDate }}`);
+			fieldSchema = 'ASN1.ValidateASN1.IsDate';
+		} else {
+			// Check if this is a SEQUENCE OF type directly or via type reference
+			let fieldType = baseType.trim();
+			const isSequenceOf = fieldType.startsWith('SEQUENCE OF ');
+			if (isSequenceOf) {
+				fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
+			}
+
+			fieldType = fieldType.replace(/\[\]$/, '');
+
+			const fieldTypePascal = toPascalCase(fieldType);
+			const fieldTypeSnake = toSnakeCase(fieldType);
+
+			// Check if this is a COMPLEX type (not a primitive)
+			const isChoice = oidSchema.iso20022_types.choices[fieldTypeSnake] ??  oidSchema.iso20022_types.choices[fieldType];
+			const isSequence = oidSchema.iso20022_types.sequences[fieldTypeSnake] ??  oidSchema.iso20022_types.sequences[fieldType];
+			const isSensitiveSequence = oidSchema.sensitive_attributes[fieldTypeSnake]?.fields;
+			const isSensitiveChoice = oidSchema.sensitive_attributes[fieldTypeSnake]?.choices;
+			const isExtension = oidSchema.extensions[fieldTypeSnake]?.fields ?? oidSchema.extensions[fieldType]?.fields;
+
+			const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice ?? isExtension;
+
+			if (hasSchema) {
+				fieldSchema = `${fieldTypePascal}Schema`;
 			} else {
-				return(`{ type: 'context', kind: 'explicit', value: ${index}, contains: ASN1.ValidateASN1.IsDate }`);
+				// Primitive type - use inline schema
+				if (fieldType === 'OBJECT IDENTIFIER') {
+					fieldSchema = `ASN1.ValidateASN1.IsOID`;
+				} else if (fieldType === 'OCTET STRING') {
+					fieldSchema = `ASN1.ValidateASN1.IsOctetString`;
+				} else {
+					fieldSchema = `{ type: 'string', kind: 'utf8' }`;
+				}
+			}
+
+			// Wrap in sequenceOf if this was a SEQUENCE OF type
+			if (isSequenceOf) {
+				fieldSchema = `{ sequenceOf: ${fieldSchema} }`;
 			}
 		}
 
-		// Strip SEQUENCE OF prefix and [] suffix to get the base type
-		let fieldType = fcfg.type.trim();
-		if (fieldType.startsWith('SEQUENCE OF ')) {
-			fieldType = fieldType.substring('SEQUENCE OF '.length).trim();
-		}
-
-		fieldType = fieldType.replace(/\[\]$/, '');
-
-		const fieldTypePascal = toPascalCase(fieldType);
-		const fieldTypeSnake = toSnakeCase(fieldType);
-
-		// Check if this is a COMPLEX type (not a primitive)
-		const isChoice = oidSchema.iso20022_types.choices[fieldTypeSnake] ??  oidSchema.iso20022_types.choices[fieldType];
-		const isSequence = oidSchema.iso20022_types.sequences[fieldTypeSnake] ??  oidSchema.iso20022_types.sequences[fieldType];
-		const isSensitiveSequence = oidSchema.sensitive_attributes[fieldTypeSnake]?.fields;
-		const isSensitiveChoice = oidSchema.sensitive_attributes[fieldTypeSnake]?.choices;
-
-		const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice;
-
-		let contains;
-		if (hasSchema) {
-			contains = `${fieldTypePascal}Schema `;
-		} else {
-			// Primitive type - use inline string schema
-			contains = `{ type: 'string', kind: 'utf8' }`;
-		}
-
 		if (fcfg.optional) {
-			return(`{ optional: { type: 'context', kind: 'explicit', value: ${index}, contains: ${contains}}}`);
+			structFields[fname] = `{ optional: ${fieldSchema} }`;
 		} else {
-			return(`{ type: 'context', kind: 'explicit', value: ${index}, contains: ${contains}}`);
+			structFields[fname] = fieldSchema;
 		}
-	}).filter(Boolean);
+	}
 
-	return(`export const ${typeName}Schema: ASN1.Schema = [\n\t${schemaFields.join(',\n\t')}\n] as const satisfies ASN1.Schema;`);
+	const containsObject = fieldOrder.map(function(fname) {
+		return(`\t\t${fname}: ${structFields[fname]}`);
+	}).join(',\n');
+
+	return(`export const ${typeName}Schema: ASN1.Schema = {\n\ttype: 'struct',\n\tfieldNames: [${fieldOrder.map(f => `'${f}'`).join(', ')}],\n\tcontains: {\n${containsObject}\n\t}\n};`);
 }
 
 function generateIso20022Types() {
@@ -407,9 +493,9 @@ function generateIso20022Types() {
 			return(choiceType !== 'UTF8String' && choiceType !== 'string');
 		});
 		if (hasComplexTypes) {
-			const unionTypes = choices.map(function([_ignore_choiceName, choiceConfig]) {
-				return(toPascalCase(choiceConfig.type.trim()));
-			});
+			const unionTypes = Array.from(new Set(choices.map(function([_ignore_choiceName, choiceConfig]) {
+				return(resolveTypeReference(choiceConfig.type.trim()));
+			})));
 			lines.push(genTypeAlias(typeName, unionTypes.join(' | '), config.description, oidArrayToString(config.oid)));
 		} else {
 			lines.push(genTypeAlias(typeName, 'string', config.description, oidArrayToString(config.oid)));
@@ -420,7 +506,7 @@ function generateIso20022Types() {
 	lines.push('// ISO20022 Sequence Types');
 	for (const [name, config] of Object.entries(oidSchema.iso20022_types.sequences)) {
 		if (isSequenceOfChoice(config)) {
-			lines.push(genSequenceOfChoice(name, config));
+			lines.push(genSequenceOfChoiceTypes(name, config));
 		} else {
 			lines.push(genInterface(toPascalCase(name), config.fields, config.description, oidArrayToString(config.oid)));
 		}
@@ -429,22 +515,59 @@ function generateIso20022Types() {
 
 	// --- Choice Type Schemas ---
 	lines.push('// Generated ASN.1 schemas for ISO 20022 choice types');
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	for (const [name, _ignore_config] of Object.entries(oidSchema.iso20022_types.choices)) {
+	for (const [name, config] of Object.entries(oidSchema.iso20022_types.choices)) {
 		const typeName = toPascalCase(name);
+		const choices = Object.entries(config.choices ?? {});
+
 		lines.push(`/** ASN.1 schema for ${typeName} */`);
-		lines.push(`export const ${typeName}Schema: ASN1.Schema = { type: 'string', kind: 'utf8' };`);
+
+		if (choices.length === 0) {
+			// No choices defined - simple string schema
+			lines.push(`export const ${typeName}Schema: ASN1.Schema = { type: 'string', kind: 'utf8' };`);
+		} else {
+			// Generate choice schema with context tags to make them differentiable
+			const choiceSchemas = choices.map(function([_ignore_choiceName, choiceConfig], index) {
+				const choiceType = choiceConfig.type.trim();
+				let containsSchema;
+
+				// Check if it is a primitive type
+				if (choiceType === 'UTF8String' || choiceType === 'Utf8String' || choiceType === 'string' || isEnumerationType(choiceType)) {
+					containsSchema = `{ type: 'string', kind: 'utf8' }`;
+				} else {
+					// Complex type - reference its schema
+					const choiceTypeName = toPascalCase(choiceType);
+					containsSchema = `${choiceTypeName}Schema`;
+				}
+
+				// Wrap in context tag to make it differentiable
+				return(`{ type: 'context', kind: 'explicit', value: ${index}, contains: ${containsSchema} }`);
+			});
+
+			lines.push(`export const ${typeName}Schema: ASN1.Schema = {`);
+			lines.push(`\tchoice: [`);
+			lines.push(`\t\t${choiceSchemas.join(',\n\t\t')}`);
+			lines.push(`\t]`);
+			lines.push(`};`);
+		}
 		lines.push('');
 	}
 
-	// --- Sequence Type Schemas ---
-	lines.push('// Generated ASN.1 schemas for ISO 20022 sequence types');
+	// --- Regular Sequence Type Schemas (SECOND - may depend on choice schemas) ---
+	lines.push('// Generated ASN.1 schemas for ISO 20022 regular sequence types');
 	for (const [name, config] of Object.entries(oidSchema.iso20022_types.sequences)) {
 		const typeName = toPascalCase(name);
 		if (config.fields && !isSequenceOfChoice(config)) {
 			lines.push(`/** ASN.1 schema for ${typeName} */`);
 			lines.push(genSequenceSchema(typeName, config.fields, config));
 			lines.push('');
+		}
+	}
+
+	// --- Sequence-of-Choice Type Schemas (THIRD - depend on regular sequence schemas) ---
+	lines.push('// Generated ASN.1 schemas for ISO 20022 sequence-of-choice types');
+	for (const [name, config] of Object.entries(oidSchema.iso20022_types.sequences)) {
+		if (isSequenceOfChoice(config)) {
+			lines.push(genSequenceOfChoiceSchema(name, config));
 		}
 	}
 
@@ -462,7 +585,7 @@ function generateIso20022Types() {
 			lines.push(`\tchoice: [`);
 			lines.push(`\t\t${choiceSchemas.join(',\n\t\t')}`);
 			lines.push(`\t]`);
-			lines.push(`} as const satisfies ASN1.Schema;`);
+			lines.push(`};`);
 			lines.push('');
 		}
 	}
@@ -515,6 +638,28 @@ function generateIso20022Types() {
 			} else {
 				lines.push(`export type ${typeName} = string;`);
 			}
+			lines.push('');
+		}
+	}
+
+	// Extension Types with fields
+	for (const [name, config] of Object.entries(oidSchema.extensions)) {
+		if (config.fields) {
+			const typeName = toPascalCase(name);
+			lines.push(`/** ${config.description} */`);
+			if (config.oid) {
+				lines.push(`/** OID: ${oidArrayToString(config.oid)} */`);
+			}
+			lines.push(`export interface ${typeName} {`);
+			for (const [fieldName, fieldConfig] of Object.entries(config.fields)) {
+				const optional = fieldConfig.optional ? '?' : '';
+				const resolvedType = resolveTypeReference(fieldConfig.type);
+				lines.push(`\t${fieldName}${optional}: ${resolvedType};`);
+			}
+			lines.push('}');
+			lines.push('');
+			// Schema
+			lines.push(genSequenceSchema(typeName, config.fields, config));
 			lines.push('');
 		}
 	}
@@ -617,8 +762,17 @@ function generateIso20022Types() {
 				throw(new Error(`Sensitive attribute ${name} has no defined type.`));
 			}
 			const baseType = resolveToBaseType(config.type);
-			if (baseType === 'GeneralizedTime') {
+			const baseTypeSnake = toSnakeCase(baseType);
+			const isExtensionType = oidSchema.extensions[baseTypeSnake]?.fields ?? oidSchema.extensions[baseType]?.fields;
+
+			if (isExtensionType) {
+				schemaRef = `${baseType}Schema`;
+			} else if (baseType === 'GeneralizedTime') {
 				schemaRef = 'ASN1.ValidateASN1.IsDate';
+			} else if (baseType === 'OCTET STRING') {
+				schemaRef = 'ASN1.ValidateASN1.IsOctetString';
+			} else if (baseType === 'OBJECT IDENTIFIER') {
+				schemaRef = 'ASN1.ValidateASN1.IsOID';
 			} else {
 				schemaRef = `{ type: 'string', kind: 'utf8' }`;
 			}

@@ -3,6 +3,7 @@ import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
+import { ExternalReferenceBuilder } from './utils/external.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -150,6 +151,14 @@ test('Certificates', async function() {
 	] as const) {
 		const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0, keyKind);
 		const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1, keyKind);
+		const testEntityType = { person: [{ id: '123-45-6789', schemeName: 'SSN' }] };
+		const testAddress = {
+			addressLines: ['100 Belgrave Street'],
+			streetName: '100 Belgrave Street',
+			townName: 'Oldsmar',
+			countrySubDivision: 'FL',
+			postalCode: '34677'
+		};
 
 		/* Subject Account without a Private Key, for later use */
 		const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
@@ -171,13 +180,23 @@ test('Certificates', async function() {
 		});
 
 		/*
-		 * Use the same builder to create a User Certificate
-		 */
+		* Use the same builder to create a User Certificate
+		*/
 		builder1.setAttribute('fullName', true, 'Test User');
 		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, { streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' });
+		builder1.setAttribute('address', true, testAddress);
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
+		builder1.setAttribute('entityType', true, testEntityType);
+
+		// Create a document reference using DocumentBuilder
+		const mockDocumentContent = Buffer.from('mock driver license image data', 'utf-8');
+		const documentBuilder = new ExternalReferenceBuilder(
+			'https://localhost/document/documentDriversLicenseFront/fp_id_test_MiancCyPWE0ww5URJrZxjs',
+			'image/jpeg'
+		);
+		const documentReference = documentBuilder.build(mockDocumentContent);
+		builder1.setAttribute('documentDriversLicenseFront', true, documentReference);
 
 		/**
 		 * A User Certificate
@@ -242,7 +261,7 @@ test('Certificates', async function() {
 			certificateWithPrivate,
 			certificate,
 			'address',
-			{ streetName: '100 Belgrave Street', townName: 'Oldsmar', countrySubDivision: 'FL', postalCode: '34677' }
+			testAddress
 		);
 
 		await verifyAttribute(
@@ -250,6 +269,13 @@ test('Certificates', async function() {
 			certificate,
 			'dateOfBirth',
 			new Date('1980-01-01')
+		);
+
+		await verifyAttribute(
+			certificateWithPrivate,
+			certificate,
+			'entityType',
+			testEntityType
 		);
 	}
 });
