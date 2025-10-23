@@ -304,33 +304,33 @@
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.3"
 		},
 		"documentResidentCardFront": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2 ],
 			"token": "DocumentResidentCardFront",
 			"type": "Document",
 			"description": "Resident ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
 		"documentResidentCardBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3, 0 ],
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2, 0 ],
 			"token": "DocumentResidentCardBack",
 			"type": "Document",
 			"description": "Resident ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
-		"documentGovernmentIdFront": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
-			"token": "GovernmentIdFront",
+		"documentVisaFront": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
+			"token": "documentVisaFront",
 			"type": "Document",
-			"description": "Government ID",
+			"description": "Visa ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
 		},
-		"documentGovernmentIdBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4, 0 ],
-			"token": "GovernmentIdBack",
+		"documentVisaBack": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3, 0 ],
+			"token": "documentVisaBack",
 			"type": "Document",
-			"description": "Government ID",
+			"description": "Visa ID",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.4"
-		}
+		},
 	},
 	"iso20022_types": {
 		"primitives": {
