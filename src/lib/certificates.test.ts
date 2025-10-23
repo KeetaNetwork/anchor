@@ -151,6 +151,7 @@ test('Certificates', async function() {
 	] as const) {
 		const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0, keyKind);
 		const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1, keyKind);
+		const testEntityType = { person: [{ id: '123-45-6789', schemeName: 'SSN' }] };
 		const testAddress = {
 			addressLines: ['100 Belgrave Street'],
 			streetName: '100 Belgrave Street',
@@ -179,13 +180,14 @@ test('Certificates', async function() {
 		});
 
 		/*
-		 * Use the same builder to create a User Certificate
-		 */
+		* Use the same builder to create a User Certificate
+		*/
 		builder1.setAttribute('fullName', true, 'Test User');
 		builder1.setAttribute('email', true, 'user@example.com');
 		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
 		builder1.setAttribute('address', true, testAddress);
 		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
+		builder1.setAttribute('entityType', true, testEntityType);
 
 		// Create a document reference using DocumentBuilder
 		const mockDocumentContent = Buffer.from('mock driver license image data', 'utf-8');
@@ -267,6 +269,13 @@ test('Certificates', async function() {
 			certificate,
 			'dateOfBirth',
 			new Date('1980-01-01')
+		);
+
+		await verifyAttribute(
+			certificateWithPrivate,
+			certificate,
+			'entityType',
+			testEntityType
 		);
 	}
 });

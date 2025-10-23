@@ -162,6 +162,14 @@ function resolveToBaseType(typeName: string): string {
 	return(typeName);
 }
 
+function isEnumerationType(typeName: string): boolean {
+	const normalized = toSnakeCase(typeName);
+	return(Boolean(
+		oidSchema.iso20022_types.enumerations[typeName] ??
+		oidSchema.iso20022_types.enumerations[normalized]
+	));
+}
+
 function isSequenceOfChoice(config: { fields: { [key: string]: { optional?: boolean }}}): boolean {
 	const hasFields = config.fields && Object.keys(config.fields).length > 0;
 	const allOptional = hasFields && Object.values(config.fields).every(function(field) {
@@ -485,9 +493,9 @@ function generateIso20022Types() {
 			return(choiceType !== 'UTF8String' && choiceType !== 'string');
 		});
 		if (hasComplexTypes) {
-			const unionTypes = choices.map(function([_ignore_choiceName, choiceConfig]) {
-				return(toPascalCase(choiceConfig.type.trim()));
-			});
+			const unionTypes = Array.from(new Set(choices.map(function([_ignore_choiceName, choiceConfig]) {
+				return(resolveTypeReference(choiceConfig.type.trim()));
+			})));
 			lines.push(genTypeAlias(typeName, unionTypes.join(' | '), config.description, oidArrayToString(config.oid)));
 		} else {
 			lines.push(genTypeAlias(typeName, 'string', config.description, oidArrayToString(config.oid)));
@@ -523,7 +531,7 @@ function generateIso20022Types() {
 				let containsSchema;
 
 				// Check if it is a primitive type
-				if (choiceType === 'UTF8String' || choiceType === 'Utf8String' || choiceType === 'string') {
+				if (choiceType === 'UTF8String' || choiceType === 'Utf8String' || choiceType === 'string' || isEnumerationType(choiceType)) {
 					containsSchema = `{ type: 'string', kind: 'utf8' }`;
 				} else {
 					// Complex type - reference its schema

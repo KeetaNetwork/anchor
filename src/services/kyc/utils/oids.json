@@ -185,17 +185,23 @@
 		"entityType": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8 ],
 			"token": "EntityType",
-			"type": "CHOICE",
+			"type": "SEQUENCE",
 			"description": "Entity type (organization or person)",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.8",
-			"choices": {
+			"fields": {
 				"organization": {
-					"type": "OrganizationIdentification"
+					"type": "SEQUENCE OF GenericOrganizationIdentification",
+					"optional": true
 				},
 				"person": {
-					"type": "PersonIdentification"
+					"type": "SEQUENCE OF GenericPersonIdentification",
+					"optional": true
 				}
-			}
+			},
+			"field_order": [
+				"organization",
+				"person"
+			]
 		},
 		"contactDetails": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 9 ],
@@ -435,7 +441,7 @@
 						"type": "UTF8String"
 					},
 					"proprietary": {
-						"type": "UTF8String"
+						"type": "PersonIdentificationSchemeNameProprietary"
 					}
 				}
 			}
@@ -463,6 +469,20 @@
 					"PHON",
 					"FAXX",
 					"CELL"
+				]
+			},
+			"PersonIdentificationSchemeNameProprietary": {
+				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 1, 1, 0 ],
+				"type": "ENUMERATED",
+				"description": "Person identification scheme name proprietary values",
+				"values": [
+					"DRLC",
+					"CPPT",
+					"ARNU",
+					"SSN",
+					"TXID",
+					"VISA",
+					"WPPT"
 				]
 			}
 		},
