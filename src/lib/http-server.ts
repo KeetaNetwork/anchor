@@ -15,7 +15,7 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
 const MAX_REQUEST_SIZE = 1024 * 128;
 
 export type Routes = {
-	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined) => Promise<{ output: string; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined, requestHeaders: http.IncomingHttpHeaders) => Promise<{ output: string; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 };
 
 export interface KeetaAnchorHTTPServerConfig {
@@ -40,7 +40,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	constructor(config: ConfigType) {
 		this.#config = { ...config };
 		this.port = config.port ?? 0;
-		this.logger = config.logger ?? new Log();
+		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 	}
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
@@ -281,9 +281,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					/**
 					 * Call the route handler
 					 */
-					result = await route(params, postData);
+					result = await route(params, postData, request.headers);
 				} else {
-					result = await route(params, undefined);
+					result = await route(params, undefined, request.headers);
 				}
 
 				generatedResult = true;
@@ -299,14 +299,14 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				const errorHandlerRoute = routes['ERROR'];
 				if (errorHandlerRoute !== undefined) {
 					if (KeetaAnchorUserError.isInstance(err)) {
-						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'));
+						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'), request.headers);
 						generatedResult = true;
 					} else {
 						result = await errorHandlerRoute(new Map(), {
 							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
 							statusCode: 500,
 							contentType: 'application/json'
-						});
+						}, request.headers);
 						generatedResult = true;
 					}
 				}

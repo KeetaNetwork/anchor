@@ -1,4 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -654,7 +655,7 @@ type ResolverConfig = {
 	 * contain the authoritative information for resolving in its
 	 * Metadata.
 	 */
-	root: KeetaNetAccount;
+	root: KeetaNetGenericAccount;
 	/**
 	 * A KeetaNet Client to access the network using.
 	 */
@@ -924,7 +925,7 @@ class Metadata implements ValuizableInstance {
 			throw(new Error(`Unsupported path: ${path}`));
 		}
 
-		let account: KeetaNetAccount | string;
+		let account: KeetaNetGenericAccount | string;
 		try {
 			account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
 		} catch {

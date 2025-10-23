@@ -4,3 +4,6 @@
 /keetanetwork-*.tgz
 /.coverage
 /.nvmrc
+/.__tmp_ts_run_*
+/src/services/kyc/iso20022.generated.ts
+/src/services/kyc/oids.generated.ts
