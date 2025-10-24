@@ -136,20 +136,7 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
-const DOCUMENT_SCHEMA_ATTRIBUTES: ReadonlySet<CertificateAttributeNames> = new Set([
-	'documentDriversLicense',
-	'documentIdCard',
-	'documentResidenceDocument',
-	'documentPassport',
-	'documentPassportCard',
-	'documentPermit',
-	'documentVisa'
-]);
-
 function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
-	if (DOCUMENT_SCHEMA_ATTRIBUTES.has(name)) {
-		return(contextualizeStructSchema(ReferenceSchema));
-	}
 	return(contextualizeStructSchema(schema));
 }
 
