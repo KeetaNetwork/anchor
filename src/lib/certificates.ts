@@ -7,7 +7,7 @@ import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuff
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, ReferenceSchema } from '../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';
@@ -136,17 +136,7 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
-const DOCUMENT_SCHEMA_ATTRIBUTES: ReadonlySet<CertificateAttributeNames> = new Set([
-	'document',
-	'documentDriversLicenseFront',
-	'documentDriversLicenseBack',
-	'documentPassport'
-]);
-
 function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
-	if (DOCUMENT_SCHEMA_ATTRIBUTES.has(name)) {
-		return(contextualizeStructSchema(ReferenceSchema));
-	}
 	return(contextualizeStructSchema(schema));
 }
 

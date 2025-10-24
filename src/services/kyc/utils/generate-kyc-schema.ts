@@ -695,7 +695,44 @@ function generateIso20022Types() {
 	lines.push('');
 
 	// Field arrays and schemas for sequence types
-	for (const [name, config] of Object.entries(oidSchema.sensitive_attributes)) {
+	// Sort to ensure dependencies are defined before they're used
+	const sensitiveAttrEntries = Object.entries(oidSchema.sensitive_attributes);
+	const sortedEntries: [string, typeof sensitiveAttrEntries[0][1]][] = [];
+	const processed = new Set<string>();
+
+	function hasDependency(config: typeof sensitiveAttrEntries[0][1], depName: string): boolean {
+		if (!config.fields) {return(false);}
+		return(Object.values(config.fields).some(field => {
+			const fieldType = field.type.trim();
+			return(fieldType === toPascalCase(depName) || fieldType === depName);
+		}));
+	}
+
+	// Process entries, dependencies first
+	while (sortedEntries.length < sensitiveAttrEntries.length) {
+		for (const [name, config] of sensitiveAttrEntries) {
+			if (processed.has(name)) {continue;}
+
+			// Check if all dependencies are processed
+			let allDepsProcessed = true;
+			if (config.fields) {
+				for (const [otherName] of sensitiveAttrEntries) {
+					if (otherName === name || processed.has(otherName)) {continue;}
+					if (hasDependency(config, otherName)) {
+						allDepsProcessed = false;
+						break;
+					}
+				}
+			}
+
+			if (allDepsProcessed) {
+				sortedEntries.push([name, config]);
+				processed.add(name);
+			}
+		}
+	}
+
+	for (const [name, config] of sortedEntries) {
 		const typeName = toPascalCase(name);
 		if (config.fields) {
 			const fieldOrder = config.field_order ?? Object.keys(config.fields);
@@ -764,8 +801,11 @@ function generateIso20022Types() {
 			const baseType = resolveToBaseType(config.type);
 			const baseTypeSnake = toSnakeCase(baseType);
 			const isExtensionType = oidSchema.extensions[baseTypeSnake]?.fields ?? oidSchema.extensions[baseType]?.fields;
+			const isSensitiveType = oidSchema.sensitive_attributes[toSnakeCase(baseType)]?.fields ?? oidSchema.sensitive_attributes[baseType]?.fields;
 
-			if (isExtensionType) {
+			if (isSensitiveType) {
+				schemaRef = `${baseType}Schema`;
+			} else if (isExtensionType) {
 				schemaRef = `${baseType}Schema`;
 			} else if (baseType === 'GeneralizedTime') {
 				schemaRef = 'ASN1.ValidateASN1.IsDate';

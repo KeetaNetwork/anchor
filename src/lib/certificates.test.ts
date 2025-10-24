@@ -196,7 +196,10 @@ test('Certificates', async function() {
 			'image/jpeg'
 		);
 		const documentReference = documentBuilder.build(mockDocumentContent);
-		builder1.setAttribute('documentDriversLicenseFront', true, documentReference);
+		builder1.setAttribute('documentDriversLicense', true, {
+			documentNumber: 'DL1234567890',
+			front: documentReference
+		});
 
 		/**
 		 * A User Certificate
