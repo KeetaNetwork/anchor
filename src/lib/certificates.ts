@@ -143,7 +143,7 @@ const DOCUMENT_SCHEMA_ATTRIBUTES: ReadonlySet<CertificateAttributeNames> = new S
 	'documentPassport',
 	'documentPassportCard',
 	'documentPermit',
-	'documentVisa',
+	'documentVisa'
 ]);
 
 function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
