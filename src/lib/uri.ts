@@ -116,7 +116,7 @@ export function encodeKeetaURI(action: KeetaURIActions): KeetaURIString {
 			url.searchParams.append('external', ext);
 		}
 	} else {
-		throw(new KeetaAnchorUserError(`Invalid action type: ${(action as KeetaURIActions).type}`));
+		throw(new KeetaAnchorUserError(`Invalid action type provided`));
 	}
 
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
