@@ -137,10 +137,13 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 }
 
 const DOCUMENT_SCHEMA_ATTRIBUTES: ReadonlySet<CertificateAttributeNames> = new Set([
-	'document',
-	'documentDriversLicenseFront',
-	'documentDriversLicenseBack',
-	'documentPassport'
+	'documentDriversLicense',
+	'documentIdCard',
+	'documentResidenceDocument',
+	'documentPassport',
+	'documentPassportCard',
+	'documentPermit',
+	'documentVisa',
 ]);
 
 function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {

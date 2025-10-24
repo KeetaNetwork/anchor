@@ -281,75 +281,817 @@
 			"description": "Nationality",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.10"
 		},
-		"document": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11 ],
-			"token": "Document",
-			"type": "Reference",
-			"description": "Document information",
-			"reference": "Sensitive Document"
-		},
-		"documentDriversLicenseFront": {
+		"documentDriversLicense": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 0 ],
-			"token": "DocumentDriversLicenseFront",
-			"type": "Document",
-			"description": "Driver's license front side document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.0"
+			"token": "DocumentDriversLicense",
+			"type": "SEQUENCE",
+			"description": "Driver's license document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.0",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		},
-		"documentDriversLicenseBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 0, 1 ],
-			"token": "DocumentDriversLicenseBack",
-			"type": "Document",
-			"description": "Driver's license back side document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.0.1"
+		"documentIdCard": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
+			"token": "DocumentIdCard",
+			"type": "SEQUENCE",
+			"description": "ID card document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.1",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		},
 		"documentPassport": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
-			"token": "DocumentPassport",
-			"type": "Document",
-			"description": "Passport document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.1"
-		},
-		"documentResidentCardFront": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2 ],
-			"token": "DocumentResidentCardFront",
-			"type": "Document",
-			"description": "Resident ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.2"
+			"token": "DocumentPassport",
+			"type": "SEQUENCE",
+			"description": "Passport document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.2",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		},
-		"documentResidentCardBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2, 0 ],
-			"token": "DocumentResidentCardBack",
-			"type": "Document",
-			"description": "Resident ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.2.0"
-		},
-		"documentVisaFront": {
+		"documentPassportCard": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
-			"token": "documentVisaFront",
-			"type": "Document",
-			"description": "Visa ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.3"
+			"token": "DocumentPassportCard",
+			"type": "SEQUENCE",
+			"description": "Passport card document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.3",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		},
-		"documentVisaBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3, 0 ],
-			"token": "documentVisaBack",
-			"type": "Document",
-			"description": "Visa ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.3.0"
-		},
-		"documentWorkPermitFront": {
+		"documentPermit": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
-			"token": "DocumentWorkPermitFront",
-			"type": "Document",
-			"description": "Work permit ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.4"
+			"token": "DocumentPermit",
+			"type": "SEQUENCE",
+			"description": "Permit document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.4",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		},
-		"documentWorkPermitBack": {
-			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4, 0 ],
-			"token": "DocumentWorkPermitBack",
-			"type": "Document",
-			"description": "Work permit ID",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.4.0"
+		"documentVisa": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 5 ],
+			"token": "DocumentVisa",
+			"type": "SEQUENCE",
+			"description": "Visa document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.5",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
+		},
+		"documentResidenceDocument": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 6 ],
+			"token": "DocumentResidenceDocument",
+			"type": "SEQUENCE",
+			"description": "Residence document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.6",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
+				"issuingCountry",
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
+			]
 		}
 	},
 	"iso20022_types": {
