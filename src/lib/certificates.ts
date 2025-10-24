@@ -7,7 +7,7 @@ import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuff
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, ReferenceSchema } from '../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';
