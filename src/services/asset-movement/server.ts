@@ -1,5 +1,5 @@
 import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
-import type KeetaNet from '@keetanetwork/keetanet-client';
+import KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -17,7 +17,13 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
-	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse
+	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
+	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
+	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
+	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
+	KeetaAssetMovementAnchorInitiateTransferClientRequest,
+	KeetaAssetMovementAnchorlistTransactionsClientRequest
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -32,6 +38,8 @@ import {
 	assertKeetaAssetMovementAnchorListPersistentForwardingResponse
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { assert } from 'console';
+import { Signable, VerifySignedData } from '../../lib/utils/signing.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 
@@ -54,6 +62,8 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		 * Supported assets and their configurations
 		 */
 		supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'];
+
+		authenticationRequired?: boolean;
 
 		/**
 		 * Method to create a persistent forwarding address template
@@ -131,64 +141,156 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			};
 		}
 
-		/**
-		 * Setup the various operation endpoints
-		 */
-		if (config.assetMovement.createPersistentForwarding !== undefined) {
-			routes['POST /api/createPersistentForwarding'] = async function(_ignore_params, postData) {
-				if (config.assetMovement.createPersistentForwarding === undefined) {
-					throw(new Error('internal error: createPersistentForwarding disappeared'));
+		function addRoute<
+			HandlerName extends keyof KeetaAnchorAssetMovementServerConfig['assetMovement'],
+			SerializedRequest extends { [key: string]: unknown },
+			Response
+		>(input: {
+			method: 'GET' | 'POST';
+			handlerName: HandlerName;
+			assertRequest: (data: unknown) => SerializedRequest;
+			parseRequest?: (data: SerializedRequest) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (arg: infer R) => any ? R : never;
+			serializeResponse?: (data: ExtractOk<Response>) => unknown;
+			assertResponse: (data: Response) => void;
+			getSigningData?: (data: SerializedRequest) => Signable;
+		}) {
+			const handler = config.assetMovement[input.handlerName];
+			if (handler === undefined) {
+				return;
+			}
+
+			if (typeof handler !== 'function') {
+				throw(new Error(`internal error: handler for ${String(input.handlerName)} is not a function`));
+			}
+
+			const authenticationRequired = config.assetMovement.authenticationRequired === true;
+
+			routes[`${input.method} /api/${input.handlerName}`] = async function(_ignore_params, postData) {
+				const request = input.assertRequest(postData);
+
+				if (authenticationRequired || 'signed' in request) {
+					if (!('account' in request) || !('signed' in request)) {
+						throw(new KeetaAnchorUserError('Missing authentication information'));
+					}
+
+					if (typeof request.account !== 'string') {
+						throw(new KeetaAnchorUserError('Invalid account public key'));
+					}
+
+					const signable = input.getSigningData ? input.getSigningData(request) : [];
+
+					await VerifySignedData(
+						KeetaNet.lib.Account.fromPublicKeyString(request.account),
+						signable,
+						request.signed as any
+					);
 				}
 
-				const request = assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest(postData);
-				const result = await config.assetMovement.createPersistentForwarding(request);
-				const output: KeetaAssetMovementAnchorCreatePersistentForwardingResponse = {
-					...result,
-					ok: true
-				};
+				let parsedRequest;
+				if (input.parseRequest) {
+					parsedRequest = input.parseRequest(request);
+				} else {
+					parsedRequest = request as any;
+				}
 
-				assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse(output);
+				const result = await handler(parsedRequest as any);
+
+				const resp = input.assertResponse(result as any);
+
+				let serialized;
+				if (input.serializeResponse) {
+					serialized = input.serializeResponse(resp as any);
+				} else {
+					serialized = resp;
+				}
 
 				return({
-					output: JSON.stringify(output)
+					output: JSON.stringify({
+						...serialized as any,
+						ok: true
+					})
 				});
 			}
 		}
 
-		if (config.assetMovement.listPersistentForwarding !== undefined) {
-			routes['POST /api/listPersistentForwarding'] = async function(_ignore_params, postData) {
-				if (config.assetMovement.listPersistentForwarding === undefined) {
-					throw(new Error('internal error: listTransactions disappeared'));
-				}
+		// /**
+		//  * Setup the various operation endpoints
+		//  */
+		// if (config.assetMovement.createPersistentForwarding !== undefined) {
+		// 	routes['POST /api/createPersistentForwarding'] = async function(_ignore_params, postData) {
+		// 		if (config.assetMovement.createPersistentForwarding === undefined) {
+		// 			throw(new Error('internal error: createPersistentForwarding disappeared'));
+		// 		}
 
-				const request = assertKeetaAssetMovementAnchorListPersistentForwardingRequest(postData);
-				const result = await config.assetMovement.listPersistentForwarding(request);
-				const output = assertKeetaAssetMovementAnchorListPersistentForwardingResponse({ ...result, ok: true });
+		// 		const request = assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest(postData);
+		// 		const result = await config.assetMovement.createPersistentForwarding(request);
+		// 		const output: KeetaAssetMovementAnchorCreatePersistentForwardingResponse = {
+		// 			...result,
+		// 			ok: true
+		// 		};
 
-				return({ output: JSON.stringify(output) });
-			}
-		}
+		// 		assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse(output);
 
-		if (config.assetMovement.initiateTransfer !== undefined) {
-			routes['POST /api/initiateTransfer'] = async function(_ignore_params, postData) {
-				if (config.assetMovement.initiateTransfer === undefined) {
-					throw(new Error('internal error: initiateTransfer disappeared'));
-				}
+		// 		return({
+		// 			output: JSON.stringify(output)
+		// 		});
+		// 	}
+		// }
 
-				const request = assertKeetaAssetMovementAnchorInitiateTransferRequest(postData);
-				const result = await config.assetMovement.initiateTransfer(request);
-				const output: KeetaAssetMovementAnchorInitiateTransferResponse = {
-					...result,
-					ok: true
-				};
+		addRoute({
+			method: 'POST',
+			handlerName: 'createPersistentForwarding',
+			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
+			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse
+		});
 
-				assertKeetaAssetMovementAnchorInitiateTransferResponse(output);
+		// if (config.assetMovement.listPersistentForwarding !== undefined) {
+		// 	routes['POST /api/listPersistentForwarding'] = async function(_ignore_params, postData) {
+		// 		if (config.assetMovement.listPersistentForwarding === undefined) {
+		// 			throw(new Error('internal error: listTransactions disappeared'));
+		// 		}
 
-				return({
-					output: JSON.stringify(output)
-				});
-			}
-		}
+		// 		const request = assertKeetaAssetMovementAnchorListPersistentForwardingRequest(postData);
+		// 		const result = await config.assetMovement.listPersistentForwarding(request);
+		// 		const output = assertKeetaAssetMovementAnchorListPersistentForwardingResponse({ ...result, ok: true });
+
+		// 		return({ output: JSON.stringify(output) });
+		// 	}
+		// }
+		addRoute({
+			method: 'POST',
+			handlerName: 'listPersistentForwarding',
+			assertRequest: assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
+			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse
+		});
+
+		// if (config.assetMovement.initiateTransfer !== undefined) {
+		// 	routes['POST /api/initiateTransfer'] = async function(_ignore_params, postData) {
+		// 		if (config.assetMovement.initiateTransfer === undefined) {
+		// 			throw(new Error('internal error: initiateTransfer disappeared'));
+		// 		}
+
+		// 		const request = assertKeetaAssetMovementAnchorInitiateTransferRequest(postData);
+		// 		const result = await config.assetMovement.initiateTransfer(request);
+		// 		const output: KeetaAssetMovementAnchorInitiateTransferResponse = {
+		// 			...result,
+		// 			ok: true
+		// 		};
+
+		// 		assertKeetaAssetMovementAnchorInitiateTransferResponse(output);
+
+		// 		return({
+		// 			output: JSON.stringify(output)
+		// 		});
+		// 	}
+		// }
+
+		addRoute({
+			method: 'POST',
+			handlerName: 'initiateTransfer',
+			assertRequest: assertKeetaAssetMovementAnchorInitiateTransferRequest,
+			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse
+		});
 
 		if (config.assetMovement.getTransferStatus !== undefined) {
 			routes['GET /api/getTransferStatus/:id'] = async function(params) {

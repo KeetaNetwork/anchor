@@ -7,6 +7,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
+import type { HTTPSignedField } from '../../lib/http-server-shared.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -18,13 +19,7 @@ export type OperationNames = keyof Operations;
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;
 	account: ReturnType<InstanceType<typeof KeetaNet.lib.Account>['publicKeyString']['get']>;
-	signed: {
-		nonce: string;
-		/* Date and time of the request in ISO 8601 format */
-		timestamp: string;
-		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
-		signature: string;
-	};
+	signed: HTTPSignedField;
 }
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;

@@ -3,9 +3,14 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
+import { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import { HTTPSignedField } from '../../lib/http-server-shared.js';
+import { Signable } from '../../lib/utils/signing.js';
+
 
 type HexString = `0x${string}`;
 
+export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
@@ -290,17 +295,68 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 	}
 }
 
+export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
+export type AssetOrPair = MovableAsset | AssetPair;
+
+export type AssetPairCanonical<From extends MovableAssetSearchCanonical = MovableAssetSearchCanonical, To extends MovableAssetSearchCanonical = MovableAssetSearchCanonical> = { from: From; to: To; };
+export type AssetOrPairCanonical = MovableAssetSearchCanonical | AssetPairCanonical;
+
+function isAssetPairLike(input: unknown): input is AssetPair {
+	return(typeof input === 'object' && input !== null && 'from' in input && 'to' in input);
+}
+
+export function toAssetPair(input: AssetOrPair): AssetPair {
+	if (isAssetPairLike(input)) {
+		return(input);
+	}
+
+	return({ from: input, to: input });
+}
+
+
+export function convertAssetOrPairSearchInputToCanonical(input: AssetOrPair): AssetOrPairCanonical {
+	if (isAssetPairLike(input)) {
+		return({
+			from: convertAssetSearchInputToCanonical(input.from),
+			to: convertAssetSearchInputToCanonical(input.to)
+		});
+	} else {
+		return(convertAssetSearchInputToCanonical(input));
+	}
+}
+
+
 export type Operations = NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
 export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
 
-export type KeetaAssetMovementAnchorInitiateTransferRequest = {
+export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+	account?: KeetaNetAccount | undefined;
 	asset: AssetOrPair;
 	from: { location: AssetLocationLike; };
 	to: { location: AssetLocationLike; recipient: RecipientResolved; };
-	value: string;
+	value: string | bigint;
 	allowedRails?: Rail[];
+}
+
+export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable<Omit<KeetaAssetMovementAnchorInitiateTransferClientRequest, 'asset' | 'from' | 'to'>> & {
+	asset: AssetOrPairCanonical;
+	from: { location: AssetLocationCanonical; };
+	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
+	signed?: HTTPSignedField;
+};
+
+export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
+	// const pair = toAssetPair(input.asset as AssetOrPair);
+	// XXX:TODO probably want to complete this
+	return([
+		// convertAssetSearchInputToCanonical(pair.from),
+		// convertAssetSearchInputToCanonical(pair.to),
+		// convertAssetLocationInputToCanonical(input.from.location),
+		// convertAssetLocationInputToCanonical(input.to.location),
+		// input.value
+	]);
 }
 
 export type AssetTransferInstructions = ({
@@ -500,11 +556,32 @@ export type PersistentAddressTemplateData = {
 	address: AddressObfuscated;
 }
 
-export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = {
+export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest = {
+	account?: KeetaNetAccount;
 	asset: MovableAsset;
 	location: AssetLocationLike;
 	address: AddressResolved;
 }
+
+
+export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = ToJSONSerializable<Omit<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest, 'asset' | 'location' | 'address'>> & {
+	asset: AssetOrPairCanonical;
+	location: AssetLocationCanonical;
+	address: AddressResolved;
+}
+
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
+	// const pair = toAssetPair(input.asset as AssetOrPair);
+	// XXX:TODO probably want to complete this
+	return([
+		// convertAssetSearchInputToCanonical(pair.from),
+		// convertAssetSearchInputToCanonical(pair.to),
+		// convertAssetLocationInputToCanonical(input.from.location),
+		// convertAssetLocationInputToCanonical(input.to.location),
+		// input.value
+	]);
+}
+
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = (({
 	ok: true;
@@ -513,11 +590,24 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRes
 	error: string;
 });
 
-export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = {
+export type KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest = {
+	account?: KeetaNetAccount;
 	asset?: MovableAsset[];
-	locations?: AssetLocationLike[];
+	location?: AssetLocationLike[];
 	pagination?: PaginationQuery;
 }
+
+export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = {
+	account?: ToJSONSerializable<KeetaNetAccount> | undefined;
+	asset?: MovableAssetSearchCanonical[] | undefined;
+	location?: AssetLocationCanonical[] | undefined;
+	pagination?: PaginationQuery | undefined;
+}
+
+export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
+	return([]);
+}
+
 
 export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 	ok: true;
@@ -526,18 +616,6 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 	ok: false;
 	error: string;
 });
-
-export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
-export type AssetOrPair = MovableAsset | AssetPair;
-
-export function toAssetPair(input: AssetOrPair): AssetPair {
-	if (typeof input === 'object' && 'from' in input && 'to' in input) {
-		return(input);
-	}
-
-	return({ from: input, to: input });
-}
-
 
 
 export type KeetaPersistentForwardingAddressDetails = {
@@ -551,7 +629,8 @@ export type KeetaPersistentForwardingAddressDetails = {
 	incomingRail?: Rail[];
 }
 
-export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
+export type KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest = {
+	account?: KeetaNetAccount;
 	sourceLocation: AssetLocationLike;
 	asset: AssetOrPair;
 	outgoingRail?: Rail;
@@ -562,6 +641,23 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	persistentAddressTemplateId: string;
 });
 
+export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
+	account?: ToJSONSerializable<KeetaNetAccount> | undefined;
+	signed?: HTTPSignedField;
+	sourceLocation: AssetLocationCanonical;
+	asset: AssetOrPairCanonical;
+	outgoingRail?: Rail | undefined;
+} & ({
+	destinationLocation: AssetLocationCanonical;
+	destinationAddress: AddressResolved;
+} | {
+	persistentAddressTemplateId: string;
+});
+
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
+	return([]);
+}
+
 export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = (({
 	ok: true;
 } & KeetaPersistentForwardingAddressDetails) | {
@@ -569,7 +665,9 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = (({
 	error: string;
 });
 
-export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
+export type KeetaAssetMovementAnchorListPersistentForwardingClientRequest = {
+	account?: KeetaNetAccount;
+	signed?: HTTPSignedField | undefined;
 	search?: {
 		sourceLocation?: AssetLocationLike;
 		destinationLocation?: AssetLocationLike;
@@ -578,6 +676,19 @@ export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
 		persistentAddressTemplateId?: string;
 	}[];
 	pagination?: PaginationQuery;
+}
+
+export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
+	account?: ToJSONSerializable<KeetaNetAccount> | undefined;
+	signed?: HTTPSignedField | undefined;
+	search?: {
+		sourceLocation?: AssetLocationCanonical | undefined;
+		destinationLocation?: AssetLocationCanonical | undefined;
+		asset?: MovableAssetSearchCanonical | undefined;
+		destinationAddress?: string | undefined;
+		persistentAddressTemplateId?: string | undefined;
+	}[] | undefined;
+	pagination?: PaginationQuery | undefined;
 }
 
 export type KeetaAssetMovementAnchorListPersistentForwardingResponse = (({
@@ -597,11 +708,25 @@ type PaginationResponseInformation = {
 	total: string;
 }
 
-export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+export type KeetaAssetMovementAnchorlistTransactionsClientRequest = {
+	account?: KeetaNetAccount;
 	persistentAddresses?: ({ location: AssetLocationLike; } & ({ persistentAddress?: string; persistentAddressTemplate: string; } | { persistentAddress: string; persistentAddressTemplate?: string; }))[];
 	from?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
 	to?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
 	pagination?: PaginationQuery;
+}
+
+export type KeetaAssetMovementAnchorlistTransactionsRequest = {
+	account: ToJSONSerializable<KeetaNetAccount> | undefined;
+	signed?: HTTPSignedField | undefined;
+	persistentAddresses?: ({ location: AssetLocationCanonical; } & ({ persistentAddress?: string | undefined; persistentAddressTemplate: string; } | { persistentAddress: string; persistentAddressTemplate?: string | undefined; }))[] | undefined;
+	from?: { location: AssetLocationCanonical; userAddress?: string | undefined; asset?: MovableAsset | undefined; } | undefined;
+	to?: { location: AssetLocationCanonical; userAddress?: string | undefined; asset?: MovableAsset | undefined; } | undefined;
+	pagination?: PaginationQuery | undefined;
+}
+
+export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
+	return([]);
 }
 
 export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = (({
@@ -632,6 +757,7 @@ export const assertBankAccountAddressResolved: (input: unknown) => BankAccountAd
 
 export const isKeetaAssetMovementAnchorListForwardingAddressTemplateRequest: (input: unknown) => input is KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = createIs<KeetaAssetMovementAnchorListForwardingAddressTemplateRequest>();
 export const isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse: (input: unknown) => input is KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = createIs<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>();
+export const isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse: (input: unknown) => input is KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>();
 export const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => input is KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
 export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => input is KeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
 export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();

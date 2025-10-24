@@ -33,6 +33,11 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
+type ServiceMetadataAuthenticationType = {
+	method: 'keeta-account';
+	type: 'required' | 'optional' | 'none';
+};
+type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; } }
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure
@@ -159,13 +164,13 @@ type ServiceMetadata = {
 		assetMovement?: {
 			[id: string]: {
 				operations: {
-					initiateTransfer?: string;
-					getTransferStatus?: string;
-					createPersistentForwardingTemplate?: string;
-					listPersistentForwardingTemplate?: string;
-					createPersistentForwarding?: string;
-					listPersistentForwarding?: string;
-					listTransactions?: string;
+					initiateTransfer?: ServiceMetadataEndpoint;
+					getTransferStatus?: ServiceMetadataEndpoint;
+					createPersistentForwardingTemplate?: ServiceMetadataEndpoint;
+					listPersistentForwardingTemplate?: ServiceMetadataEndpoint;
+					createPersistentForwarding?: ServiceMetadataEndpoint;
+					listPersistentForwarding?: ServiceMetadataEndpoint;
+					listTransactions?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: {
@@ -575,46 +580,53 @@ interface ValuizableMethodBase {
 	(expect: 'any'): Promise<ValuizeInput>;
 }
 
-interface ValuizableMethod extends ValuizableMethodBase {
+interface ToValuizableExpectPrimitive extends ValuizableMethodBase {
+	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+}
+
+interface ValuizableMethod extends ValuizableMethodBase, ToValuizableExpectPrimitive {
 	(expect: 'object'): Promise<ValuizableObject>;
 	(expect: 'array'): Promise<ValuizableArray>;
-	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 	(expect: 'string'): Promise<string>;
 	(expect: 'number'): Promise<number>;
 	(expect: 'boolean'): Promise<boolean>;
 };
 
-interface ToValuizableExpectString extends ValuizableMethodBase {
+interface ToValuizableExpectString extends ValuizableMethodBase, ToValuizableExpectPrimitive {
 	(expect: 'string'): Promise<string>;
-	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
 
-interface ToValuizableExpectNumber extends ValuizableMethodBase {
+interface ToValuizableExpectNumber extends ValuizableMethodBase, ToValuizableExpectPrimitive {
 	(expect: 'number'): Promise<number>;
-	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
 
-interface ToValuizableExpectBoolean extends ValuizableMethodBase {
+interface ToValuizableExpectBoolean extends ValuizableMethodBase, ToValuizableExpectPrimitive {
 	(expect: 'boolean'): Promise<boolean>;
-	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
 };
+
+interface ToValuizableExpectObject<T> extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+	(expect: 'object'): Promise<T>;
+}
+
+interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+	(expect: 'array'): Promise<T>;
+}
+
 /* eslint-disable @stylistic/indent */
+type ToValuizable<T> = 
+	T extends string ? ToValuizableExpectString :
+	T extends number ? ToValuizableExpectNumber :
+	T extends boolean ? ToValuizableExpectBoolean :
+	T extends JSONSerializablePrimitive ? ToValuizableExpectPrimitive :
+	T extends unknown[] ? ToValuizableExpectArray<ToValuizable<T[number]>[]> :
+	T extends object ? ToValuizableExpectObject<ToValuizableObject<T>> :
+	T extends undefined ?
+		undefined :
+	never;
+
 type ToValuizableObject<T extends object> = {
-	[K in keyof T]:
-		T[K] extends string ? ToValuizableExpectString :
-		T[K] extends number ? ToValuizableExpectNumber :
-		T[K] extends boolean ? ToValuizableExpectBoolean :
-		T[K] extends JSONSerializablePrimitive ?
-			(expect: 'primitive') => Promise<JSONSerializablePrimitive> :
-		T[K] extends unknown[] ?
-			(expect: 'array') => Promise<ToValuizableObject<T[K]>> :
-		T[K] extends object ?
-			(expect: 'object') => Promise<ToValuizableObject<T[K]>> :
-		T[K] extends (infer U | undefined) ?
-			ToValuizable<U> | undefined :
-		never;
+	[K in keyof T]: ToValuizable<T[K]>;
 };
-type ToValuizable<T> = ToValuizableObject<{ tmp: T }>['tmp'];
 
 type ToJSONValuizableObject<T extends object> = {
 	[K in keyof T]: (
@@ -1870,5 +1882,7 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
+	ServiceMetadataEndpoint,
+	ServiceMetadataAuthenticationType,
 	Services
 };
