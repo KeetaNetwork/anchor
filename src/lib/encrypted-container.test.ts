@@ -212,7 +212,7 @@ describe('Encrypted Container Tests', function() {
 		 * Verify that it can be encrypted successfully
 		 */
 		const basicCipherText_v1 = await container.getEncodedBuffer();
-		expect(basicCipherText_v1.length).toBeGreaterThan(32);
+		expect(basicCipherText_v1.byteLength).toBeGreaterThan(32);
 
 		/*
 		 * Verify that it can be decrypted successfully
@@ -225,7 +225,8 @@ describe('Encrypted Container Tests', function() {
 		 * Verify that if we mutate the results that it does not
 		 * mutate the internal state of the object
 		 */
-		basicCipherTextPlain_v1Text[0] = 0;
+		const basicCipherTextPlain_v1TextCopy = new Uint8Array(basicCipherTextPlain_v1Text);
+		basicCipherTextPlain_v1TextCopy[0] = 0x00;
 		const basicCipherTextPlain_v1TextCheck = await basicCipherTextPlain_v1.getPlaintext();
 		expect(basicCipherTextPlain_v1TextCheck).toEqual(testData);
 		expect(basicCipherTextPlain_v1TextCheck).toEqual(testDataDuplicate);
@@ -244,7 +245,7 @@ describe('Encrypted Container Tests', function() {
 		container.grantAccessSync(testAccount2);
 
 		const basicCipherText_v2 = await container.getEncodedBuffer();
-		expect(basicCipherText_v2.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
+		expect(Buffer.from(basicCipherText_v2).toString('hex')).not.toEqual(Buffer.from(basicCipherText_v1).toString('hex'));
 
 		/*
 		 * Verify that either user can decrypt that blob
@@ -272,8 +273,8 @@ describe('Encrypted Container Tests', function() {
 		 */
 		container.revokeAccessSync(testAccount1);
 		const basicCipherText_v3 = await container.getEncodedBuffer();
-		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v1.toString('hex'));
-		expect(basicCipherText_v3.toString('hex')).not.toEqual(basicCipherText_v2.toString('hex'));
+		expect(Buffer.from(basicCipherText_v3).toString('hex')).not.toEqual(Buffer.from(basicCipherText_v1).toString('hex'));
+		expect(Buffer.from(basicCipherText_v3).toString('hex')).not.toEqual(Buffer.from(basicCipherText_v2).toString('hex'));
 
 		/*
 		 * Ensure that the authorized user can access the encrypted
@@ -347,7 +348,7 @@ describe('Encrypted Container Tests', function() {
 		expect(fromBufferContainer.encrypted).toBe(false);
 
 		const fromBufferContainerEncoded = await fromBufferContainer.getEncodedBuffer();
-		expect(fromBufferContainerEncoded.length).toBe(32);
+		expect(fromBufferContainerEncoded.byteLength).toBe(32);
 
 		// Sync functions that should fail for a plaintext container
 		const testCases = [

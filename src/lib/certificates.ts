@@ -863,7 +863,7 @@ export class SharableCertificateAttributes {
 		const contentsBufferCompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibDeflateAsync(bufferToArrayBuffer(contentsBuffer));
 		const container = EncryptedContainer.fromPlaintext(arrayBufferToBuffer(contentsBufferCompressed), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
-		const retval = new SharableCertificateAttributes(bufferToArrayBuffer(containerBuffer), { principals: temporaryUser });
+		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
 		await retval.revokeAccess(temporaryUser);
 		return(retval);
 	}
@@ -889,7 +889,7 @@ export class SharableCertificateAttributes {
 		this.populatedFromInit = true;
 
 		const contentsBuffer = await this.container.getPlaintext();
-		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(bufferToArrayBuffer(contentsBuffer));
+		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(contentsBuffer);
 		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
 		const contentsJSON: unknown = JSON.parse(contentsString);
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
@@ -1028,13 +1028,13 @@ export class SharableCertificateAttributes {
 
 		const retvalBuffer = await this.container.getEncodedBuffer();
 		if (options.format === 'string') {
-			const retvalBase64 = retvalBuffer.toString('base64');
+			const retvalBase64 = Buffer.from(retvalBuffer).toString('base64');
 			const retvalLines = ['-----BEGIN KYC CERTIFICATE PROOF-----'];
 			retvalLines.push(...retvalBase64.match(/.{1,64}/g) ?? []);
 			retvalLines.push('-----END KYC CERTIFICATE PROOF-----');
 			return(retvalLines.join('\n'));
 		} else if (options.format === 'arraybuffer') {
-			return(bufferToArrayBuffer(retvalBuffer));
+			return(retvalBuffer);
 		} else {
 			throw(new Error(`Unsupported export format: ${String(options.format)}`));
 		}
