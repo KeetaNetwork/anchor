@@ -12,6 +12,7 @@ import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';
 import { assertSharableCertificateAttributesContentsSchema } from './certificates.generated.js';
+import { checkHashWithOID } from './utils/external.js';
 
 /**
  * Short alias for printing a debug representation of an object
@@ -26,6 +27,57 @@ type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyT
  */
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
+
+function isBlob(input: unknown): input is Blob {
+	if (typeof input !== 'object' || input === null) {
+		return(false);
+	}
+
+	if (!('arrayBuffer' in input)) {
+		return(false);
+	}
+
+	if (typeof input.arrayBuffer !== 'function') {
+		return(false);
+	}
+
+	return(true);
+}
+
+async function walkObject(input: unknown, keyTransformer?: (key: string, input: unknown, keyParentObject: object) => Promise<unknown>): Promise<unknown> {
+	if (keyTransformer === undefined) {
+		keyTransformer = async function(input: unknown): Promise<unknown> {
+			return(input);
+		};
+	}
+	if (typeof input !== 'object' || input === null) {
+		return(input);
+	}
+
+	if (Buffer.isBuffer(input)) {
+		return(input);
+	}
+
+	if (typeof input === 'function') {
+		return(input);
+	}
+
+	if (Array.isArray(input)) {
+		const newArray = [];
+		let key = -1;
+		for (const item of input) {
+			key++;
+			newArray.push(await walkObject(await keyTransformer(String(key), item, input), keyTransformer));
+		}
+		return(newArray);
+	}
+
+	const newObj: { [key: string]: unknown } = {};
+	for (const [key, value] of Object.entries(input)) {
+		newObj[key] = await walkObject(await keyTransformer(key, value, input), keyTransformer);
+	}
+	return(newObj);
+}
 
 function toJSON(data: unknown): unknown {
 	return(convertToJSONUtil(data));
@@ -181,12 +233,12 @@ function encodeForSensitive(
 	return(Buffer.from(String(value), 'utf-8'));
 }
 
-async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): Promise<CertificateAttributeValue<NAME>> {
+async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
 	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
 	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	const candidate = normalizeDecodedASN1(decodedUnknown);
+	const candidate = normalizeDecodedASN1(decodedUnknown, principals);
 	return(asAttributeValue(name, candidate));
 }
 
@@ -655,7 +707,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
 		const decodeForSensitive = async (data: Buffer | ArrayBuffer): Promise<CertificateAttributeValue<NAME>> => {
 			const bufferInput = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
-			return(await decodeAttribute(name, bufferInput));
+			return(await decodeAttribute(name, bufferInput, [this.subjectKey]));
 		};
 		this.attributes[name] = {
 			sensitive: true,
@@ -677,12 +729,12 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 
 		if (attr instanceof SensitiveAttribute) {
 			const raw = await attr.get();
-			return(await decodeAttribute(attributeName, raw));
+			return(await decodeAttribute(attributeName, raw, [this.subjectKey]));
 		}
 
 		// Non-sensitive: ArrayBuffer or Buffer
 		if (attr instanceof ArrayBuffer || Buffer.isBuffer(attr)) {
-			return(await decodeAttribute(attributeName, attr));
+			return(await decodeAttribute(attributeName, attr, [this.subjectKey]));
 		}
 
 		throw(new Error(`Attribute ${attributeName} is not a supported type`));
@@ -746,9 +798,11 @@ export namespace SharableCertificateAttributesTypes {
 			[name: string]: {
 				sensitive: true;
 				value: Awaited<ReturnType<SensitiveAttribute['getProof']>>;
+				references?: { [id: string]: string };
 			} | {
 				sensitive: false;
 				value: string;
+				references?: { [id: string]: string };
 			}
 		};
 	};
@@ -763,6 +817,7 @@ export class SharableCertificateAttributes {
 		[name: string]: {
 			sensitive: boolean;
 			value: ArrayBuffer;
+			references?: { [id: string]: string } | undefined;
 		}
 	} = {};
 
@@ -855,15 +910,72 @@ export class SharableCertificateAttributes {
 				continue;
 			}
 
+			const references: { [id: string]: string } = {};
+			const walkResultAndReplaceReferences = async function(obj: unknown): Promise<unknown> {
+				return(await walkObject(obj, async function(key, value, parent) {
+					if (key === '$blob') {
+						try {
+							if (typeof parent !== 'object' || parent === null) {
+								throw(new Error('$blob->parent is not an object'));
+							}
+							if (!('digest' in parent) || typeof parent.digest !== 'object' || parent.digest === null) {
+								throw(new Error('$blob->parent->digest is not an object'));
+							}
+							if (!('digest' in parent.digest)) {
+								throw(new Error('$blob->parent->digest->digest is missing'));
+							}
+
+							const digest = parent.digest.digest;
+							if (!Buffer.isBuffer(digest)) {
+								throw(new Error('$blob digest is not a Buffer'));
+							}
+							if (typeof value !== 'function') {
+								throw(new Error('$blob value is not a function'));
+							}
+
+							/*
+							 * We already validated that this is a function, so try to call
+							 * it -- if it fails the catch block will handle it (by
+							 * replacing this key with undefined)
+							 */
+							// eslint-disable-next-line @typescript-eslint/no-unsafe-call,@typescript-eslint/no-unsafe-assignment
+							const reference = await value([certificate.subjectPublicKey]);
+							/* Verify that the reference is a Blob */
+							if (!isBlob(reference)) {
+								throw(new Error('$blob reference did not return a Blob'));
+							}
+
+							const referenceData = Buffer.from(await reference.arrayBuffer());
+							const referenceID = digest.toString('hex').toUpperCase();
+							references[referenceID] = referenceData.toString('base64');
+
+							return(async function() {
+								return(reference);
+							});
+						} catch {
+							/* Ignore errors */
+							return(undefined);
+						}
+					} else {
+						return(value);
+					}
+				}));
+			}
+
+			const attrValue = await certificate.getAttributeValue(name);
+			await walkResultAndReplaceReferences(attrValue);
+
 			if (attr.sensitive) {
 				attributes[name] = {
 					sensitive: true,
-					value: await attr.value.getProof()
+					value: await attr.value.getProof(),
+					references: references
 				};
 			} else {
 				attributes[name] = {
 					sensitive: false,
-					value: arrayBufferToBuffer(attr.value).toString('base64')
+					value: arrayBufferToBuffer(attr.value).toString('base64'),
+					references: references
 				};
 			}
 		}
@@ -878,6 +990,7 @@ export class SharableCertificateAttributes {
 		const contentsBufferCompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibDeflateAsync(bufferToArrayBuffer(contentsBuffer));
 		const container = EncryptedContainer.fromPlaintext(arrayBufferToBuffer(contentsBufferCompressed), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
+
 		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
 		await retval.revokeAccess(temporaryUser);
 		return(retval);
@@ -910,7 +1023,7 @@ export class SharableCertificateAttributes {
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
 
 		this.#certificate = new Certificate(contents.certificate);
-		const attributePromises = Object.entries(contents.attributes).map(async ([name, attr]): Promise<[string, { sensitive: boolean; value: ArrayBuffer; }]> => {
+		const attributePromises = Object.entries(contents.attributes).map(async ([name, attr]): Promise<[string, { sensitive: boolean; value: ArrayBuffer; references?: { [id: string]: string; } | undefined; }]> => {
 			/*
 			 * Get the corresponding attribute from the certificate
 			 *
@@ -942,7 +1055,8 @@ export class SharableCertificateAttributes {
 
 				return([name, {
 					sensitive: false,
-					value: sharedValue
+					value: sharedValue,
+					references: attr.references
 				}]);
 			}
 
@@ -958,7 +1072,8 @@ export class SharableCertificateAttributes {
 
 			return([name, {
 				sensitive: true,
-				value: attrValue
+				value: attrValue,
+				references: attr.references
 			}]);
 		});
 		const resolvedAttributes = await Promise.all(attributePromises);
@@ -985,23 +1100,63 @@ export class SharableCertificateAttributes {
 			return(undefined);
 		}
 
-		const retval = await decodeAttribute(name, buffer);
+		const retvalWithReferences = await decodeAttribute(name, buffer, this.principals);
 
-		/* XXX:TODO: Here is where we would look at a reference value
-		 * (e.g., URL+hash) and fetch it, and verify it the hash matches
-		 * the fetched value
-		 *
-		 * The schema for references is not yet defined, so this is
-		 * left as a TODO for now.
-		 *
-		 * The return type would also need to be updated to reflect
-		 * that we would map referenced types to something like
-		 * { data: ArrayBuffer, contentType: string, source: <url>,
-		 * hash: <hash> } (where source and hash should be named
-		 * after whatever the actual schema is)
+		/*
+		 * For all remote references, replace them with their referenced values
+		 * which we encoded into "references"
 		 */
+		const retval = await walkObject(retvalWithReferences, async (key, value, parent) => {
+			if (key === '$blob') {
+				if (typeof parent !== 'object' || parent === null) {
+					throw(new Error('$blob->parent is not an object'));
+				}
+				if (!('digest' in parent) || typeof parent.digest !== 'object' || parent.digest === null) {
+					throw(new Error('$blob->parent->digest is not an object'));
+				}
+				const digestInfo = parent.digest;
+				if (!('digest' in digestInfo)) {
+					throw(new Error('$blob->parent->digest->digest is missing'));
+				}
+				if (!Buffer.isBuffer(digestInfo.digest)) {
+					throw(new Error('$blob digest is not a Buffer'));
+				}
 
-		return(retval);
+				if (!('external' in parent) || typeof parent.external !== 'object' || parent.external === null) {
+					throw(new Error('$blob->parent->external is not an object'));
+				}
+				if (!('contentType' in parent.external) || typeof parent.external.contentType !== 'string') {
+					throw(new Error('$blob->parent->external->contentType is not a string'));
+				}
+
+				const referenceID = digestInfo.digest.toString('hex').toUpperCase();
+				const referenceValue = this.#attributes[name]?.references?.[referenceID];
+				const contentType = parent.external.contentType;
+				return(async function() {
+					if (!referenceValue) {
+						throw(new Error(`Missing reference value for ID ${referenceID}`));
+					}
+					const referenceData = Buffer.from(referenceValue, 'base64');
+					const referenceDataAB = arrayBufferToBuffer(referenceData);
+
+					/* Verify the hash matches what was certified */
+					const checkHash = await checkHashWithOID(referenceData, parent.digest);
+					if (checkHash !== true) {
+						throw(checkHash);
+					}
+
+					return(new Blob([referenceDataAB], { type: contentType }));
+				});
+			}
+
+			return(value);
+		});
+
+		/*
+		 * We didn't change the type, so we can safely cast here
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(retval as CertificateAttributeValue<NAME>);
 	}
 
 	async getAttributeNames(includeUnknown: true): Promise<string[]>;

@@ -5,6 +5,7 @@ import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';
 import { EncryptedContainer } from './encrypted-container.js';
+import * as typia from 'typia';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -437,16 +438,38 @@ test('Certificate Sharable Attributes', async function() {
 	 * Create a User Certificate with sharable attributes
 	 */
 	builder1.setAttribute('fullName', false, 'Test User');
-	builder1.setAttribute('email', false, 'user@example.com');
+	builder1.setAttribute('email', true, 'user@example.com');
+
+	/*
+	 * Add a document to be shared
+	 */
+	const mockDocumentContent = Buffer.from('Tk9UIFJFQUxMWSBBIFBORwo=', 'base64');
+	{
+		const mockDocumentContentEncrypted = EncryptedContainer.fromPlaintext(mockDocumentContent, [subjectAccount]);
+		const mockDocumentContentEncryptedBuffer = Buffer.from(await mockDocumentContentEncrypted.getEncodedBuffer());
+		const documentBuilder = new ExternalReferenceBuilder(
+			`data:application/octet-string;base64,${mockDocumentContentEncryptedBuffer.toString('base64')}`,
+			'image/png'
+		);
+		const documentReference = documentBuilder.build(mockDocumentContent);
+		builder1.setAttribute('documentDriversLicense', true, {
+			documentNumber: 'DL1234567890',
+			front: documentReference
+		});
+	}
 
 	const certificate = await builder1.build({
 		serial: 5
 	});
 
+	const certificateWithPrivate = new Certificates.Certificate(certificate, {
+		subjectKey: subjectAccount
+	});
+
 	/*
 	 * Create a sharable object and grant a third user access
 	 */
-	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificate, ['fullName', 'email', 'phoneNumber' /* non-existent */]);
+	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'phoneNumber' /* non-existent */]);
 	await sharable.grantAccess(viewerAccountNoPrivate);
 
 	expect(sharable.principals.length).toBe(1);
@@ -481,6 +504,83 @@ test('Certificate Sharable Attributes', async function() {
 	}
 	expect(importedFullName).toBe('Test User');
 
+	/*
+	 * Verify that the document is accessible
+	 */
+	const importedDocument = await imported.getAttribute('documentDriversLicense');
+	expect(importedDocument).toBeDefined();
+	if (!importedDocument) {
+		throw(new Error('Expected documentDriversLicense attribute'));
+	}
+	expect(importedDocument.documentNumber).toBe('DL1234567890');
+	expect(importedDocument.front).toBeDefined();
+	if (!importedDocument.front) {
+		throw(new Error('Expected document front reference'));
+	}
+	const documentBlob = await importedDocument.front.$blob();
+	expect(documentBlob).toBeDefined();
+	const documentValue = Buffer.from(await documentBlob.arrayBuffer());
+	expect(documentValue.toString('base64')).toBe(mockDocumentContent.toString('base64'));
+
+	/*
+	 * Create a corrupted document and attempt to have it validated
+	 */
+	{
+		/*
+		 * 1. Decode the container
+		 */
+		const container = EncryptedContainer.fromEncodedBuffer(sharedSerialized, [viewerAccount]);
+		const valueCompressed = await container.getPlaintext();
+		const value = KeetaNetClient.lib.Utils.Buffer.ZlibInflate(valueCompressed);
+		const valueBuffer = Buffer.from(value);
+		const valueString = valueBuffer.toString('utf-8');
+		const valueObject: unknown = JSON.parse(valueString);
+
+		/*
+		 * 2. Find the reference and replace its value
+		 */
+		const valueTyped = typia.assert<{
+			attributes: {
+				documentDriversLicense: {
+					sensitive: true;
+					value: object;
+					references: {
+						[id: string]: string;
+					};
+				}
+			}
+		}>(valueObject);
+		const docDL = valueTyped.attributes.documentDriversLicense;
+		const refIDs = Object.keys(docDL.references);
+		expect(refIDs.length).toBe(1);
+
+		const refID = refIDs[0];
+		if (refID === undefined) {
+			throw(new Error('internal error: Expected reference ID'));
+		}
+
+		docDL.references[refID] = 'Q09SUlVQVAo=';
+
+		/*
+		 * 3. Recreate the container
+		 */
+		const modifiedValueString = JSON.stringify(valueTyped);
+		const modifiedValueBuffer = Buffer.from(modifiedValueString, 'utf-8');
+		const modifiedValueCompressed = KeetaNetClient.lib.Utils.Buffer.ZlibDeflate(modifiedValueBuffer);
+		const modifiedContainer = EncryptedContainer.fromPlaintext(modifiedValueCompressed, [viewerAccount]);
+		const modifiedSerialized = await modifiedContainer.getEncodedBuffer();
+
+		/*
+		 * 4. Import it as a SharableCertificateAttributes
+		 */
+		const importedCorrupted = new Certificates.SharableCertificateAttributes(modifiedSerialized, { principals: viewerAccount });
+		const importedCorruptedDocument = await importedCorrupted.getAttribute('documentDriversLicense');
+		expect(importedCorruptedDocument).toBeDefined();
+
+		await expect(async function() {
+			return(await importedCorruptedDocument?.front?.$blob());
+		}).rejects.toThrow(/Hash/);
+	}
 
 	/*
 	 * Also attempt to import from the alternative supported formats
@@ -502,5 +602,6 @@ test('Certificate Sharable Attributes', async function() {
 	const allAttributes = await imported.getAttributeNames();
 	expect(allAttributes).toContain('fullName');
 	expect(allAttributes).toContain('email');
-	expect(allAttributes.length).toBe(2);
+	expect(allAttributes).toContain('documentDriversLicense');
+	expect(allAttributes.length).toBe(3);
 });
