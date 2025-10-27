@@ -671,7 +671,7 @@ function generateIso20022Types() {
 				lines.push('\t/**');
 				lines.push('\t * TODOC');
 				lines.push('\t */');
-				lines.push('\t$blob: (principals: KeetaNetAccount[]) => Promise<Blob>;');
+				lines.push('\t$blob: (principals?: KeetaNetAccount[]) => Promise<Blob>;');
 			}
 			lines.push('}');
 			lines.push('');
