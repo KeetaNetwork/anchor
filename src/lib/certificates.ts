@@ -725,8 +725,21 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 
 // eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace SharableCertificateAttributesTypes {
-	export type ExportOptions = { format?: 'string' | 'arraybuffer' };
-	export type ImportOptions = { principals?: Set<KeetaNetAccount> | KeetaNetAccount[] | KeetaNetAccount | null };
+	export type ExportOptions = {
+		/**
+		 * Format of the exported data
+		 * - 'string': PEM-encoded string
+		 * - 'arraybuffer': raw ArrayBuffer
+		 */
+		format?: 'string' | 'arraybuffer';
+	};
+	export type ImportOptions = {
+		/**
+		 * Principals that will be used to try to access the
+		 * encrypted contents of the sharable certificate
+		 */
+		principals?: Set<KeetaNetAccount> | KeetaNetAccount[] | KeetaNetAccount | null;
+	};
 	export type ContentsSchema = {
 		certificate: string;
 		attributes: {
@@ -758,7 +771,7 @@ export class SharableCertificateAttributes {
 
 	static assertCertificateAttributeName: typeof assertCertificateAttributeNames = assertCertificateAttributeNames;
 
-	constructor(input: ArrayBuffer | string, options?: SharableCertificateAttributesImportOptions) {
+	constructor(input: ArrayBuffer | Buffer | string, options?: SharableCertificateAttributesImportOptions) {
 		let containerBuffer: Buffer;
 		if (typeof input === 'string') {
 			/*
@@ -799,6 +812,8 @@ export class SharableCertificateAttributes {
 
 			const base64Content = base64Lines.join('');
 			containerBuffer = Buffer.from(base64Content, 'base64');
+		} else if (Buffer.isBuffer(input)) {
+			containerBuffer = input;
 		} else {
 			containerBuffer = arrayBufferToBuffer(input);
 		}
