@@ -552,10 +552,6 @@ export class EncryptedContainer {
 	 * Set the plaintext buffer to the specified value
 	 */
 	setPlaintext(data: string | ArrayBuffer | Buffer): void {
-		if (typeof data === 'string') {
-			data = Buffer.from(data, 'utf-8');
-		}
-
 		this.#data = { plaintext: inputToBuffer(data) };
 	}
 
@@ -838,7 +834,7 @@ export class EncryptedContainer {
 		 * to either our internal buffer or by our caller do not
 		 * interfere
 		 */
-		return(Buffer.from(plaintext));
+		return(bufferToArrayBuffer(plaintext));
 	}
 
 	/**
@@ -856,7 +852,7 @@ export class EncryptedContainer {
 		 * to either our internal buffer or by our caller do not
 		 * interfere
 		 */
-		return(Buffer.from(serialized));
+		return(bufferToArrayBuffer(serialized));
 	}
 
 	/**
