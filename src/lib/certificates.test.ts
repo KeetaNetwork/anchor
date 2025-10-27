@@ -4,6 +4,7 @@ import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';
+import { EncryptedContainer } from './encrypted-container.js';
 
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
@@ -190,10 +191,12 @@ test('Certificates', async function() {
 		builder1.setAttribute('entityType', true, testEntityType);
 
 		// Create a document reference using DocumentBuilder
-		const mockDocumentContent = Buffer.from('mock driver license image data', 'utf-8');
+		const mockDocumentContent = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAA8AAAAKCAIAAADkeZOuAAAAAXNSR0IB2cksfwAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAAAlwSFlzAAAuIwAALiMBeKU/dgAAAaNJREFUGBkFwTtv00AcAPD738v22c6DVEUgIEqXKh0QgoWNBYkJCcTI12DlUzEwAOIxgAQS3SoeLSWJS+s4SR2/7s6PO34/WF38llIWhfT8nbzGvdCDro1TiSlmjHJKxld7ejvj/qjSALPFj5M4BaO1ocry6a7b9wTBFJjjMMdag7vN+beXw71nFb8LR9Gf14ty9uYVcfzJoycPSCqKHCHUOmETXKmk2u3VAQLrkWSdYwCIP79/cX//+TiYf//q9kdKa8KwNXrgd4GwpWwMDwAFQBwMYK7nF7o1zPG8NF7GydblGXYtd4mFYegOhgPGGDIdNR2WRdHn4AANuAPRLzCmyfIkOdOyUFKXqewzLvOUoQYZi9Vm9enjl+1yOTs+/vDurS/CWzcn04M7N8Z7WZ5vs21tQHU2Scu2Q5g2aHLvdnV4VK3Kh4+fivTSul6ltEL052kULeYGgSeC0WjQNjWsz06llGHordY5iNDxhWwRqpVUSvjhavF3Ot2fR9G1HZEVJfw7n8vNJfUEdK1GzGIgBDdNQwlr2pZRyglCqOvqopTtfxPN5DQANIAzAAAAAElFTkSuQmCC', 'base64');
+		const mockDocumentContentEncrypted = EncryptedContainer.fromPlaintext(mockDocumentContent, [subjectAccount]);
+		const mockDocumentContentEncryptedBuffer = Buffer.from(await mockDocumentContentEncrypted.getEncodedBuffer());
 		const documentBuilder = new ExternalReferenceBuilder(
-			'https://localhost/document/documentDriversLicenseFront/fp_id_test_MiancCyPWE0ww5URJrZxjs',
-			'image/jpeg'
+			`data:application/octet-string;base64,${mockDocumentContentEncryptedBuffer.toString('base64')}`,
+			'image/png'
 		);
 		const documentReference = documentBuilder.build(mockDocumentContent);
 		builder1.setAttribute('documentDriversLicense', true, {
@@ -280,6 +283,23 @@ test('Certificates', async function() {
 			'entityType',
 			testEntityType
 		);
+
+		/*
+		 * Verify a reference attribute has a $blob function
+		 */
+		expect(certificate.attributes['documentDriversLicense']).toBeDefined();
+		expect(certificateWithPrivate.attributes['documentDriversLicense']).toBeDefined();
+		{
+			const checkDocDriversLicense = await certificateWithPrivate.getAttributeValue('documentDriversLicense');
+			expect(checkDocDriversLicense).toBeDefined();
+// @ts-ignore
+			expect(checkDocDriversLicense.front.$blob).toBeDefined();
+
+			// @ts-ignore
+			const blob: Blob = await checkDocDriversLicense.front.$blob([subjectAccount]);
+			expect(blob.type).toBe('image/png');
+			expect(Buffer.from(await blob.arrayBuffer()).toString('base64')).toBe(mockDocumentContent.toString('base64'));
+		}
 	}
 });
 

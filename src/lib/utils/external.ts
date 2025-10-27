@@ -1,5 +1,5 @@
 // XXX:TODO We need a webpack fallback for crypto in browser environments
-import * as crypto from 'crypto';
+import crypto from './crypto.js';
 import type { Reference, ExternalReference, DigestInfo } from '../../services/kyc/iso20022.generated.js';
 import type { ASN1OID } from './asn1.js';
 import type { Buffer } from './buffer.js';
@@ -16,7 +16,7 @@ export class ExternalReferenceBuilder {
 	#url: string;
 	#contentType: string;
 	#digestAlgorithm = 'sha3-256';
-	#encryptionAlgorithm = 'aes-256-gcm';
+	#encryptionAlgorithm = 'KeetaEncryptedContainerV1';
 
 	/**
 	 * Create a new ExternalReferenceBuilder
@@ -41,7 +41,7 @@ export class ExternalReferenceBuilder {
 	}
 
 	/**
-	 * Set the encryption algorithm (default: 'aes-256-gcm')
+	 * Set the encryption algorithm (default: 'KeetaEncryptedContainerV1')
 	 *
 	 * @param algorithm - Encryption algorithm name
 	 * @returns this builder for chaining
@@ -119,7 +119,8 @@ export class ExternalReferenceBuilder {
 			'sha2-256': '2.16.840.1.101.3.4.2.1',
 			'sha3-256': '2.16.840.1.101.3.4.2.8',
 			'aes-256-cbc': '2.16.840.1.101.3.4.1.42',
-			'aes-256-gcm': '2.16.840.1.101.3.4.1.46'
+			'aes-256-gcm': '2.16.840.1.101.3.4.1.46',
+			'keetaencryptedcontainerv1': '1.3.6.1.4.1.62675.2'
 		};
 
 		const oid = oidMap[algorithm.toLowerCase()];

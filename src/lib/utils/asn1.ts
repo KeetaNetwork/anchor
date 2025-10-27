@@ -1,5 +1,10 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts';
+import { isReferenceSchema } from './asn1.generated.js';
+import { EncryptedContainer } from '../encrypted-container.js';
+import { Buffer } from './buffer.js';
+import crypto from './crypto.js';
+
 /*
  * We import this file to make sure that the `asn1js` types are
  * defined, since they are required by the `ASN1toJS` and `JStoASN1`
@@ -7,7 +12,6 @@ import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type * as _ignored_asn1js from 'asn1js';
 
-import { Buffer } from './buffer.js';
 import { assert, createAssert, createIs } from 'typia';
 
 const ASN1: typeof KeetaNetLib.Utils.ASN1 = KeetaNetLib.Utils.ASN1;
@@ -321,6 +325,77 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 				result[fieldName] = normalizeDecodedASN1(fieldValue);
 			}
 		}
+
+		if (isReferenceSchema(input)) {
+			const url = input.contains.external.contains.url.value;
+			const mimeType = input.contains.external.contains.contentType.value;
+			const hashAlgoOID = input.contains.digest.contains.digestAlgorithm.oid;
+			const hashValue = input.contains.digest.contains.digest;
+			const encryptionAlgoOID = input.contains.encryptionAlgorithm?.oid;
+			let cachedValue: Blob | null = null;
+			result['$blob'] = async function(principals?: ConstructorParameters<typeof EncryptedContainer>[0]): Promise<Blob> {
+				/*
+				 * If we already have the cached value, return it
+				 */
+				if (cachedValue) {
+					return(cachedValue);
+				}
+				/*
+				 * Fetch the remote data
+				 */
+				const result = await fetch(url);
+				let data = await result.arrayBuffer();
+
+				/*
+				 * Decrypt the data, if encrypted
+				 */
+				if (encryptionAlgoOID) {
+					switch (encryptionAlgoOID) {
+						case '1.3.6.1.4.1.62675.2':
+						case 'KeetaEncryptedContainerV1': {
+							const container = EncryptedContainer.fromEncryptedBuffer(data, principals ?? []);
+							data = await container.getPlaintext();
+							break;
+						}
+						default:
+							throw(new Error(`Unsupported encryption algorithm OID: ${encryptionAlgoOID}`));
+					}
+				}
+
+				/*
+				 * Compute and verify the hash (of the plain text)
+				 */
+				{
+					let hashAlgo: string;
+					switch (hashAlgoOID) {
+						case '2.16.840.1.101.3.4.2.8':
+						case 'sha3-256':
+							hashAlgo = 'sha3-256';
+							break;
+						case '2.16.840.1.101.3.4.2.1':
+						case 'sha256':
+						case 'sha2-256':
+							hashAlgo = 'sha256';
+							break;
+						default:
+							throw(new Error(`Unsupported digest algorithm OID: ${hashAlgoOID}`));
+					}
+
+					const checkHashBuilder = crypto.createHash(hashAlgo);
+					checkHashBuilder.update(Buffer.from(data));
+					const checkHash = checkHashBuilder.digest();
+					if (!Buffer.isBuffer(hashValue)) {
+						throw(new Error('internal error: Expected digest to be a Buffer'));
+					}
+					if (!checkHash.equals(hashValue)) {
+						throw(new Error('Data integrity check failed: Hash mismatch'));
+					}
+				}
+
+				const blob = new Blob([data], { type: mimeType });
+				return(blob);
+			}
+		}
 		return(result);
 	}
 	if (isASN1Set(input)) {
@@ -336,6 +411,7 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 		}
 		return(result);
 	}
+
 	return(input);
 }
 
