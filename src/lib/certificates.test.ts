@@ -292,11 +292,13 @@ test('Certificates', async function() {
 		{
 			const checkDocDriversLicense = await certificateWithPrivate.getAttributeValue('documentDriversLicense');
 			expect(checkDocDriversLicense).toBeDefined();
-// @ts-ignore
-			expect(checkDocDriversLicense.front.$blob).toBeDefined();
+			expect(checkDocDriversLicense.front?.$blob).toBeDefined();
 
-			// @ts-ignore
-			const blob: Blob = await checkDocDriversLicense.front.$blob([subjectAccount]);
+			const blob = await checkDocDriversLicense.front?.$blob([subjectAccount]);
+			expect(blob).toBeDefined();
+			if (blob === undefined) {
+				throw(new Error('internal error: Expected blob'));
+			}
 			expect(blob.type).toBe('image/png');
 			expect(Buffer.from(await blob.arrayBuffer()).toString('base64')).toBe(mockDocumentContent.toString('base64'));
 		}

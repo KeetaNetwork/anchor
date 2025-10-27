@@ -393,6 +393,7 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 				}
 
 				const blob = new Blob([data], { type: mimeType });
+				cachedValue = blob;
 				return(blob);
 			}
 		}

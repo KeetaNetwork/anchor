@@ -84,7 +84,10 @@ export class ExternalReferenceBuilder {
 		const reference: Reference = {
 			external: externalReference,
 			digest: digestInfo,
-			encryptionAlgorithm: encryptionAlgorithmOID
+			encryptionAlgorithm: encryptionAlgorithmOID,
+			$blob: async function() {
+				return(new Blob([documentContent], { type: this.external.contentType }));
+			}
 		};
 
 		return(reference);

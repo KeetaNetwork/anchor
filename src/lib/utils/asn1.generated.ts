@@ -1,5 +1,4 @@
 import * as typia from 'typia';
-import type { ReferenceSchema } from '../../services/kyc/iso20022.generated.js';
 
 type ReferenceX = {
 	type: 'struct';

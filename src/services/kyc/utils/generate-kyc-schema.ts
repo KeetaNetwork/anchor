@@ -468,7 +468,13 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 }
 
 function generateIso20022Types() {
-	const lines = [genHeader('Generated ISO20022 Type Definitions'), "import * as ASN1 from '../../lib/utils/asn1.js';", ''];
+	const lines = [
+		genHeader('Generated ISO20022 Type Definitions'),
+		"import * as ASN1 from '../../lib/utils/asn1.js';",
+		"import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';",
+		'type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;',
+		''
+	];
 	const deleteLastCommaIfFound = deleteLastCommaIfFoundGenerator(lines);
 
 	// Primitives
@@ -655,6 +661,17 @@ function generateIso20022Types() {
 				const optional = fieldConfig.optional ? '?' : '';
 				const resolvedType = resolveTypeReference(fieldConfig.type);
 				lines.push(`\t${fieldName}${optional}: ${resolvedType};`);
+			}
+
+			/*
+			 * The "Reference" type is a special case where we inject
+			 * some additional attributes when decoding.
+			 */
+			if (typeName === 'Reference') {
+				lines.push('\t/**');
+				lines.push('\t * TODOC');
+				lines.push('\t */');
+				lines.push('\t$blob: (principals: KeetaNetAccount[]) => Promise<Blob>;');
 			}
 			lines.push('}');
 			lines.push('');
