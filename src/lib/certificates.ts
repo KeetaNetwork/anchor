@@ -45,11 +45,10 @@ function isBlob(input: unknown): input is Blob {
 }
 
 async function walkObject(input: unknown, keyTransformer?: (key: string, input: unknown, keyParentObject: object) => Promise<unknown>): Promise<unknown> {
-	if (keyTransformer === undefined) {
-		keyTransformer = async function(input: unknown): Promise<unknown> {
-			return(input);
-		};
-	}
+	keyTransformer ??= async function(input: unknown): Promise<unknown> {
+		return(input);
+	};
+
 	if (typeof input !== 'object' || input === null) {
 		return(input);
 	}
@@ -927,10 +926,10 @@ export class SharableCertificateAttributes {
 
 							const digest = parent.digest.digest;
 							if (!Buffer.isBuffer(digest)) {
-								throw(new Error('$blob digest is not a Buffer'));
+								throw(new TypeError('$blob digest is not a Buffer'));
 							}
 							if (typeof value !== 'function') {
-								throw(new Error('$blob value is not a function'));
+								throw(new TypeError('$blob value is not a function'));
 							}
 
 							/*
@@ -1119,7 +1118,7 @@ export class SharableCertificateAttributes {
 					throw(new Error('$blob->parent->digest->digest is missing'));
 				}
 				if (!Buffer.isBuffer(digestInfo.digest)) {
-					throw(new Error('$blob digest is not a Buffer'));
+					throw(new TypeError('$blob digest is not a Buffer'));
 				}
 
 				if (!('external' in parent) || typeof parent.external !== 'object' || parent.external === null) {

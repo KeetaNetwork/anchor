@@ -1,8 +1,7 @@
 import crypto from './crypto.js';
 import type { Reference, ExternalReference, DigestInfo } from '../../services/kyc/iso20022.generated.js';
 import type { ASN1OID } from './asn1.js';
-import { Buffer } from './buffer.js';
-import { arrayBufferToBuffer } from './buffer.js';
+import { Buffer, arrayBufferToBuffer } from './buffer.js';
 
 /**
  * Builder for Reference structures
