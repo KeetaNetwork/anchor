@@ -379,7 +379,7 @@ export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount
 				 * Compute and verify the hash (of the plain text)
 				 */
 				if (!Buffer.isBuffer(digestInfo.digest)) {
-					throw(new Error('Digest value is not a buffer'));
+					throw(new TypeError('Digest value is not a buffer'));
 				}
 				const validHash = await checkHashWithOID(data, {
 					digest: digestInfo.digest,
