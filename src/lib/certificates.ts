@@ -1,15 +1,13 @@
-import * as util from 'util';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
-import { ASN1toJS } from './utils/asn1.js';
-import type { ASN1AnyJS, ASN1ContextTag } from './utils/asn1.js';
+import { ASN1toJS, contextualizeStructSchema, encodeValueBySchema, normalizeDecodedASN1 } from './utils/asn1.js';
+import type { Schema as ASN1Schema } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
-import { CertificateAttributeOIDDB, CertificateAttributeSchema, CertificateAttributeFieldNames } from '../services/kyc/iso20022.generated.js';
-import { hasIndexSignature, isErrorLike, hasValueProp, isContextTagged } from './utils/guards.js';
+import { CertificateAttributeOIDDB, CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { getOID, lookupByOID } from './utils/oid.js';
 import { convertToJSON as convertToJSONUtil } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';
@@ -138,73 +136,23 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
+function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
+	return(contextualizeStructSchema(schema));
+}
+
 function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
-	const schema = CertificateAttributeSchema[name];
-	const fieldNames = CertificateAttributeFieldNames[name];
-
-	// Date type
-	if (schema === ASN1.ValidateASN1.IsDate) {
-		if (!(util.types.isDate(value))) {
-			throw(new Error('Expected Date value'));
-		}
-		const asn1 = ASN1.JStoASN1(value);
-		const der = asn1.toBER(false);
-		return(der);
+	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
+	const encodedJS = encodeValueBySchema(schema, value, { attributeName: name });
+	if (encodedJS === undefined) {
+		throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
 	}
 
-	const MAX_ASN1_VALUE_DEPTH = 8; // Prevent excessive nesting
-	const toASN1Value = (input: unknown, depth = 0): ASN1AnyJS => {
-		// Only allow primitives and raw binary that ASN1.JStoASN1 understands.
-		if (util.types.isDate(input)) {
-			return(input);
-		}
-		if (Buffer.isBuffer(input)) {
-			return(input);
-		}
-		if (input instanceof ArrayBuffer) {
-			return(arrayBufferToBuffer(input));
-		}
-		if (typeof input === 'string') {
-			return({ type: 'string', kind: 'utf8', value: input });
-		}
-		/* XXX: Why are numbers and booleans encoded as strings? */
-		if (typeof input === 'number' || typeof input === 'bigint' || typeof input === 'boolean') {
-			return({ type: 'string', kind: 'utf8', value: String(input) });
-		}
-
-		if (Array.isArray(input)) {
-			if (depth >= MAX_ASN1_VALUE_DEPTH) {
-				throw(new Error('Exceeded maximum ASN.1 value depth'));
-			}
-
-			return(input.map(item => toASN1Value(item, depth + 1)));
-		}
-
-		throw(new Error(`Unsupported ASN.1 value type: ${typeof input}`));
-	};
-
-	// Complex object type
-	if (fieldNames && hasIndexSignature(value) && !Array.isArray(value)) {
-		const mappedFields = fieldNames.map((fieldName, idx) => {
-			const fieldValue = value[fieldName];
-			if (fieldValue === undefined) {return(undefined);}
-			const tag: ASN1ContextTag = {
-				type: 'context',
-				kind: 'explicit',
-				value: idx,
-				contains: toASN1Value(fieldValue)
-			};
-			return(tag);
-		}).filter(function(computedValue): computedValue is NonNullable<typeof computedValue> {
-			return(computedValue !== undefined);
-		});
-
-		const asn1 = ASN1.JStoASN1(mappedFields);
-		const der = asn1.toBER(false);
-		return(der);
+	const asn1Object = ASN1.JStoASN1(encodedJS);
+	if (!asn1Object) {
+		throw(new Error(`Failed to encode value for attribute ${name}`));
 	}
 
-	throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
+	return(asn1Object.toBER(false));
 }
 
 // Prepare a value for inclusion in a SensitiveAttribute: pre-encode complex and date types
@@ -234,42 +182,11 @@ function encodeForSensitive(
 }
 
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): Promise<CertificateAttributeValue<NAME>> {
-	const schema = CertificateAttributeSchema[name];
+	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
 	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	const fieldNames = CertificateAttributeFieldNames[name];
-
-	let candidate: unknown;
-	if (fieldNames && Array.isArray(decodedUnknown)) {
-		const arr: unknown[] = decodedUnknown;
-		const result: { [key: string]: unknown } = {};
-		for (let i = 0; i < fieldNames.length; i++) {
-			const fieldName = fieldNames[i];
-			if (!fieldName) {continue;}
-
-			const fieldValue: unknown = arr[i];
-			if (fieldValue === undefined) {continue;}
-			if (isErrorLike(fieldValue)) {
-				throw(new Error(`Field ${fieldName} contains an error: ${fieldValue.message}`));
-			}
-
-			if (isContextTagged(fieldValue)) {
-				// unwrap context tag; prefer nested .value if present
-				result[fieldName] = hasValueProp(fieldValue.contains) ? fieldValue.contains.value : fieldValue.contains;
-			} else if (hasValueProp(fieldValue)) {
-				result[fieldName] = fieldValue.value;
-			} else {
-				result[fieldName] = fieldValue;
-			}
-		}
-		candidate = result;
-	} else if (hasValueProp(decodedUnknown)) {
-		candidate = decodedUnknown.value;
-	} else {
-		candidate = decodedUnknown;
-	}
-
+	const candidate = normalizeDecodedASN1(decodedUnknown);
 	return(asAttributeValue(name, candidate));
 }
 
@@ -736,9 +653,13 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	}
 
 	private setSensitiveAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
+		const decodeForSensitive = async (data: Buffer | ArrayBuffer): Promise<CertificateAttributeValue<NAME>> => {
+			const bufferInput = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
+			return(await decodeAttribute(name, bufferInput));
+		};
 		this.attributes[name] = {
 			sensitive: true,
-			value: new SensitiveAttribute(this.subjectKey, value, decodeAttribute.bind(null, name))
+			value: new SensitiveAttribute(this.subjectKey, value, decodeForSensitive)
 		} satisfies typeof this.attributes[NAME];
 	}
 

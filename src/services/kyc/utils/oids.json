@@ -185,17 +185,23 @@
 		"entityType": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8 ],
 			"token": "EntityType",
-			"type": "CHOICE",
+			"type": "SEQUENCE",
 			"description": "Entity type (organization or person)",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.8",
-			"choices": {
+			"fields": {
 				"organization": {
-					"type": "OrganizationIdentification"
+					"type": "SEQUENCE OF GenericOrganizationIdentification",
+					"optional": true
 				},
 				"person": {
-					"type": "PersonIdentification"
+					"type": "SEQUENCE OF GenericPersonIdentification",
+					"optional": true
 				}
-			}
+			},
+			"field_order": [
+				"organization",
+				"person"
+			]
 		},
 		"contactDetails": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 9 ],
@@ -277,49 +283,168 @@
 		},
 		"document": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11 ],
-			"token": "Document",
 			"type": "SEQUENCE",
-			"description": "Document information",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2",
+			"token": "Document",
+			"description": "Generic document structure with metadata",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11",
 			"fields": {
-				"type": { "type": "UTF8String", "optional": false },
-				"number": { "type": "UTF8String", "optional": true },
-				"issuer": { "type": "Issuer", "optional": true },
-				"issueDate": { "type": "GeneralizedTime", "optional": true },
-				"expiryDate": { "type": "GeneralizedTime", "optional": true },
-				"issuingCountry": { "type": "Country", "optional": true },
-				"attachmentUrl": { "type": "UTF8String", "optional": true }
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"front": {
+					"type": "Reference",
+					"optional": true
+				},
+				"back": {
+					"type": "Reference",
+					"optional": true
+				},
+				"selfie": {
+					"type": "Reference",
+					"optional": true
+				},
+				"fullName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"firstName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"lastName": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"dob": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"gender": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"address": {
+					"type": "Address",
+					"optional": true
+				},
+				"expiresAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuedAt": {
+					"type": "GeneralizedTime",
+					"optional": true
+				},
+				"issuingState": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"issuingCountry": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"refNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"nationality": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curp": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"claveDeElector": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"classifiedDocumentType": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"curpValidationResponse": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"sambaActivityHistoryResponse": {
+					"type": "UTF8String",
+					"optional": true
+				}
 			},
 			"field_order": [
-				"type",
-				"number",
-				"issuer",
-				"issueDate",
-				"expiryDate",
+				"documentNumber",
+				"front",
+				"back",
+				"selfie",
+				"fullName",
+				"firstName",
+				"lastName",
+				"dob",
+				"gender",
+				"address",
+				"expiresAt",
+				"issuedAt",
+				"issuingState",
 				"issuingCountry",
-				"attachmentUrl"
+				"refNumber",
+				"nationality",
+				"curp",
+				"claveDeElector",
+				"classifiedDocumentType",
+				"curpValidationResponse",
+				"sambaActivityHistoryResponse"
 			]
 		},
-		"documentDriversLicenseFront": {
+		"documentDriversLicense": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 0 ],
-			"token": "DocumentDriversLicenseFront",
+			"token": "DocumentDriversLicense",
 			"type": "Document",
-			"description": "Driver's license front side document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.1"
+			"description": "Driver's license document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.0"
 		},
-		"documentDriversLicenseBack": {
+		"documentIdCard": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 1 ],
-			"token": "DocumentDriversLicenseBack",
+			"token": "DocumentIdCard",
 			"type": "Document",
-			"description": "Driver's license back side document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.2"
+			"description": "ID card document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.1"
 		},
 		"documentPassport": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 2 ],
 			"token": "DocumentPassport",
 			"type": "Document",
 			"description": "Passport document",
-			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.2.3"
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.2"
+		},
+		"documentPassportCard": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 3 ],
+			"token": "DocumentPassportCard",
+			"type": "Document",
+			"description": "Passport card document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.3"
+		},
+		"documentPermit": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 4 ],
+			"token": "DocumentPermit",
+			"type": "Document",
+			"description": "Permit document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.4"
+		},
+		"documentVisa": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 5 ],
+			"token": "DocumentVisa",
+			"type": "Document",
+			"description": "Visa document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.5"
+		},
+		"documentResidenceDocument": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 6 ],
+			"token": "DocumentResidenceDocument",
+			"type": "Document",
+			"description": "Residence document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.6"
 		}
 	},
 	"iso20022_types": {
@@ -411,7 +536,7 @@
 						"type": "UTF8String"
 					},
 					"proprietary": {
-						"type": "UTF8String"
+						"type": "PersonIdentificationSchemeNameProprietary"
 					}
 				}
 			}
@@ -439,6 +564,20 @@
 					"PHON",
 					"FAXX",
 					"CELL"
+				]
+			},
+			"PersonIdentificationSchemeNameProprietary": {
+				"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 8, 1, 1, 0 ],
+				"type": "ENUMERATED",
+				"description": "Person identification scheme name proprietary values",
+				"values": [
+					"DRLC",
+					"CPPT",
+					"ARNU",
+					"SSN",
+					"TXID",
+					"VISA",
+					"WPPT"
 				]
 			}
 		},
@@ -551,6 +690,62 @@
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 0, 0 ],
 			"description": "KYC attributes extension for X.509 certificates",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.0.0"
+		},
+		"DigestInfo": {
+			"description": "DigestInfo from RFC 3447",
+			"fields": {
+				"digestAlgorithm": {
+					"type": "OBJECT IDENTIFIER",
+					"optional": false
+				},
+				"digest": {
+					"type": "OCTET STRING",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"digestAlgorithm",
+				"digest"
+			]
+		},
+		"ExternalReference": {
+			"description": "External reference pointer",
+			"fields": {
+				"url": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"contentType": {
+					"type": "UTF8String",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"url",
+				"contentType"
+			]
+		},
+		"Reference": {
+			"description": "Reference",
+			"fields": {
+				"external": {
+					"type": "ExternalReference",
+					"optional": false
+				},
+				"digest": {
+					"type": "DigestInfo",
+					"optional": false
+				},
+				"encryptionAlgorithm": {
+					"type": "OBJECT IDENTIFIER",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"external",
+				"digest",
+				"encryptionAlgorithm"
+			]
 		}
 	}
 }

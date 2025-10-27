@@ -78,14 +78,18 @@ dist: dist/.done
 
 # This is a synthetic target that creates a distributable
 # package for this project.
-do-npm-pack: dist node_modules
+do-npm-pack: dist node_modules Makefile
 	cd dist && npm pack
 	mv dist/keetanetwork-anchor-*.tgz .
 
 # Target for publishing to NPM
-do-npm-publish: .npmrc Makefile dist node_modules
+do-npm-publish: .npmrc do-npm-pack
 	./utils/npm-check-logged-in .
-	cd dist && npm publish
+	@if [ ! -e "$$(echo keetanetwork-anchor-*.tgz)" ] ; then \
+		echo 'Package keetanetwork-anchor-*.tgz not found (maybe there is more than one?)' >&2 ; \
+		exit 1; \
+	fi
+	npm publish ./keetanetwork-anchor-*.tgz
 
 # Deploy the package to the Development (or QA) environment.
 do-deploy: dist node_modules
