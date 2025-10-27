@@ -1,6 +1,10 @@
 import * as typia from 'typia';
 
-type ReferenceX = {
+/*
+ * We can't statically check that ReferenceSchemaNormalized is a subset of ReferenceSchema
+ * because it is generated as ASN1.Schema instead of a more specific type
+ */
+type ReferenceSchemaNormalized = {
 	type: 'struct';
 	fieldNames: string[];
 	contains: {
@@ -27,5 +31,6 @@ type ReferenceX = {
 		encryptionAlgorithm: { type: 'oid'; oid: string; } | undefined;
 	};
 };
-export const isReferenceSchema: (input: unknown) => input is ReferenceX = typia.createIs<ReferenceX>();
-export const assertReference: (input: unknown) => ReferenceX = typia.createAssert<ReferenceX>();
+
+export const isReferenceSchema: (input: unknown) => input is ReferenceSchemaNormalized = typia.createIs<ReferenceSchemaNormalized>();
+export const assertReference: (input: unknown) => ReferenceSchemaNormalized = typia.createAssert<ReferenceSchemaNormalized>();
