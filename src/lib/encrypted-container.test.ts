@@ -219,13 +219,13 @@ describe('Encrypted Container Tests', function() {
 		 */
 		const basicCipherTextPlain_v1 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(basicCipherText_v1, [testAccount1]);
 		const basicCipherTextPlain_v1Text = new Uint8Array(await basicCipherTextPlain_v1.getPlaintext());
-		expect(new Uint8Array(basicCipherTextPlain_v1Text)).toEqual(testData);
+		expect(basicCipherTextPlain_v1Text).toEqual(testData);
 
 		/**
 		 * Verify that if we mutate the results that it does not
 		 * mutate the internal state of the object
 		 */
-		const basicCipherTextPlain_v1TextCopy = basicCipherTextPlain_v1Text;
+		const basicCipherTextPlain_v1TextCopy = new Uint8Array(basicCipherTextPlain_v1Text);
 		basicCipherTextPlain_v1TextCopy[0] = 0x00;
 		const basicCipherTextPlain_v1TextCheck = new Uint8Array(await basicCipherTextPlain_v1.getPlaintext());
 		expect(basicCipherTextPlain_v1TextCheck).toEqual(testData);
