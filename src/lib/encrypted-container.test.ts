@@ -200,8 +200,8 @@ describe('Encrypted Container Internal Tests', function() {
 describe('Encrypted Container Tests', function() {
 	test('Basic Tests', async function() {
 		const testString = 'Test';
-		const testData = Buffer.from(testString, 'utf-8');
-		const testDataDuplicate = Buffer.from(testString, 'utf-8');
+		const testData = new Uint8Array(Buffer.from(testString, 'utf-8'));
+		const testDataDuplicate = new Uint8Array(Buffer.from(testString, 'utf-8'));
 
 		/*
 		 * Basic container with a single account
@@ -218,16 +218,16 @@ describe('Encrypted Container Tests', function() {
 		 * Verify that it can be decrypted successfully
 		 */
 		const basicCipherTextPlain_v1 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(basicCipherText_v1, [testAccount1]);
-		const basicCipherTextPlain_v1Text = await basicCipherTextPlain_v1.getPlaintext();
-		expect(basicCipherTextPlain_v1Text).toEqual(testData);
+		const basicCipherTextPlain_v1Text = new Uint8Array(await basicCipherTextPlain_v1.getPlaintext());
+		expect(new Uint8Array(basicCipherTextPlain_v1Text)).toEqual(testData);
 
 		/**
 		 * Verify that if we mutate the results that it does not
 		 * mutate the internal state of the object
 		 */
-		const basicCipherTextPlain_v1TextCopy = new Uint8Array(basicCipherTextPlain_v1Text);
+		const basicCipherTextPlain_v1TextCopy = basicCipherTextPlain_v1Text;
 		basicCipherTextPlain_v1TextCopy[0] = 0x00;
-		const basicCipherTextPlain_v1TextCheck = await basicCipherTextPlain_v1.getPlaintext();
+		const basicCipherTextPlain_v1TextCheck = new Uint8Array(await basicCipherTextPlain_v1.getPlaintext());
 		expect(basicCipherTextPlain_v1TextCheck).toEqual(testData);
 		expect(basicCipherTextPlain_v1TextCheck).toEqual(testDataDuplicate);
 
@@ -252,7 +252,7 @@ describe('Encrypted Container Tests', function() {
 		 */
 		for (const checkAccount of [testAccount1, testAccount2]) {
 			const basicCipherTextPlain_v2 = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(basicCipherText_v2, [checkAccount]);
-			expect(await basicCipherTextPlain_v2.getPlaintext()).toEqual(testData);
+			expect(new Uint8Array(await basicCipherTextPlain_v2.getPlaintext())).toEqual(testData);
 
 			/*
 			 * Verify that regardless of only one user being
@@ -281,14 +281,14 @@ describe('Encrypted Container Tests', function() {
 		 * data (given both acceptable and unacceptable keys)
 		 */
 		const basicCipherTextPlain_v3_a = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(basicCipherText_v3, [testAccount1, testAccount2]);
-		expect(await basicCipherTextPlain_v3_a.getPlaintext()).toEqual(testData);
+		expect(new Uint8Array(await basicCipherTextPlain_v3_a.getPlaintext())).toEqual(testData);
 
 		/*
 		 * Ensure that the authorized user can access the encrypted
 		 * data (given only acceptable keys)
 		 */
 		const basicCipherTextPlain_v3_b = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(basicCipherText_v3, [testAccount2]);
-		expect(await basicCipherTextPlain_v3_b.getPlaintext()).toEqual(testData);
+		expect(new Uint8Array(await basicCipherTextPlain_v3_b.getPlaintext())).toEqual(testData);
 
 		/*
 		 * Ensure that the revoked user cannot access the encrypted data
@@ -305,8 +305,8 @@ describe('Encrypted Container Tests', function() {
 		 * process, mutating the data and only instantiating with
 		 * subsets of the accounts along the way
 		 */
-		const testData1 = Buffer.from('Test', 'utf-8');
-		const testData2 = Buffer.from('More Test', 'utf-8');
+		const testData1 = new Uint8Array(Buffer.from('Test', 'utf-8'));
+		const testData2 = new Uint8Array(Buffer.from('More Test', 'utf-8'));
 		const container_v1 = EncryptedContainer.EncryptedContainer.fromPlaintext(testData1, [testAccount1, testAccount2]);
 		const encryptedTestData_v1 = await container_v1.getEncodedBuffer();
 		expect(container_v1.encrypted).toBe(true);
@@ -321,14 +321,14 @@ describe('Encrypted Container Tests', function() {
 		expect(container_v4.encrypted).toBe(true);
 
 		const plaintextTestData_v5 = await container_v4.getPlaintext();
-		expect(plaintextTestData_v5).toEqual(testData2);
+		expect(new Uint8Array(plaintextTestData_v5)).toEqual(testData2);
 	});
 
 	test('Plaintext', async function() {
 		/*
 		 * Create a container with plaintext data as a buffer
 		 */
-		const testData = Buffer.from('Test', 'utf-8');
+		const testData = new Uint8Array(Buffer.from('Test', 'utf-8'));
 		const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null, false);
 
 		/*
@@ -336,7 +336,7 @@ describe('Encrypted Container Tests', function() {
 		 */
 		const plaintextData = await container.getPlaintext();
 		expect(container.encrypted).toBe(false);
-		expect(plaintextData).toEqual(testData);
+		expect(new Uint8Array(plaintextData)).toEqual(testData);
 
 		/*
 		 * Verify that the plaintext can be set from a string
@@ -387,13 +387,13 @@ describe('Encrypted Container Tests', function() {
 			}
 		}
 
-		expect(await fromBufferContainer.getPlaintext()).toEqual(Buffer.from(newTestData, 'utf-8'));
+		expect(Buffer.from(await fromBufferContainer.getPlaintext())).toEqual(Buffer.from(newTestData, 'utf-8'));
 
 		/*
 		 * Verify that the plaintext defaults to unlocked when container is constructed without specifying locked
 		 */
 		const unlockedContainer = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, null);
-		expect(await unlockedContainer.getPlaintext()).toEqual(testData);
+		expect(new Uint8Array(await unlockedContainer.getPlaintext())).toEqual(testData);
 
 		/*
 		 * Verify that the plaintext container is locked when container is constructed with principals and locked is not defined
