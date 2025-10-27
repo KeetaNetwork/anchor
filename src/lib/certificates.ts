@@ -725,8 +725,21 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 
 // eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace SharableCertificateAttributesTypes {
-	export type ExportOptions = { format?: 'string' | 'arraybuffer' };
-	export type ImportOptions = { principals?: Set<KeetaNetAccount> | KeetaNetAccount[] | KeetaNetAccount | null };
+	export type ExportOptions = {
+		/**
+		 * Format of the exported data
+		 * - 'string': PEM-encoded string
+		 * - 'arraybuffer': raw ArrayBuffer
+		 */
+		format?: 'string' | 'arraybuffer';
+	};
+	export type ImportOptions = {
+		/**
+		 * Principals that will be used to try to access the
+		 * encrypted contents of the sharable certificate
+		 */
+		principals?: Set<KeetaNetAccount> | KeetaNetAccount[] | KeetaNetAccount | null;
+	};
 	export type ContentsSchema = {
 		certificate: string;
 		attributes: {
@@ -758,7 +771,7 @@ export class SharableCertificateAttributes {
 
 	static assertCertificateAttributeName: typeof assertCertificateAttributeNames = assertCertificateAttributeNames;
 
-	constructor(input: ArrayBuffer | string, options?: SharableCertificateAttributesImportOptions) {
+	constructor(input: ArrayBuffer | Buffer | string, options?: SharableCertificateAttributesImportOptions) {
 		let containerBuffer: Buffer;
 		if (typeof input === 'string') {
 			/*
@@ -799,6 +812,8 @@ export class SharableCertificateAttributes {
 
 			const base64Content = base64Lines.join('');
 			containerBuffer = Buffer.from(base64Content, 'base64');
+		} else if (Buffer.isBuffer(input)) {
+			containerBuffer = input;
 		} else {
 			containerBuffer = arrayBufferToBuffer(input);
 		}
@@ -863,7 +878,7 @@ export class SharableCertificateAttributes {
 		const contentsBufferCompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibDeflateAsync(bufferToArrayBuffer(contentsBuffer));
 		const container = EncryptedContainer.fromPlaintext(arrayBufferToBuffer(contentsBufferCompressed), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
-		const retval = new SharableCertificateAttributes(bufferToArrayBuffer(containerBuffer), { principals: temporaryUser });
+		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
 		await retval.revokeAccess(temporaryUser);
 		return(retval);
 	}
@@ -889,7 +904,7 @@ export class SharableCertificateAttributes {
 		this.populatedFromInit = true;
 
 		const contentsBuffer = await this.container.getPlaintext();
-		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(bufferToArrayBuffer(contentsBuffer));
+		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(contentsBuffer);
 		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
 		const contentsJSON: unknown = JSON.parse(contentsString);
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
@@ -1028,13 +1043,13 @@ export class SharableCertificateAttributes {
 
 		const retvalBuffer = await this.container.getEncodedBuffer();
 		if (options.format === 'string') {
-			const retvalBase64 = retvalBuffer.toString('base64');
+			const retvalBase64 = Buffer.from(retvalBuffer).toString('base64');
 			const retvalLines = ['-----BEGIN KYC CERTIFICATE PROOF-----'];
 			retvalLines.push(...retvalBase64.match(/.{1,64}/g) ?? []);
 			retvalLines.push('-----END KYC CERTIFICATE PROOF-----');
 			return(retvalLines.join('\n'));
 		} else if (options.format === 'arraybuffer') {
-			return(bufferToArrayBuffer(retvalBuffer));
+			return(retvalBuffer);
 		} else {
 			throw(new Error(`Unsupported export format: ${String(options.format)}`));
 		}

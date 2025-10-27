@@ -4,7 +4,7 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type {
 	ASN1OID
 } from '@keetanetwork/keetanet-client/lib/utils/asn1.js';
-import { Buffer } from './utils/buffer.js';
+import { Buffer, arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import { isArray } from './utils/array.js';
 
 const zlibDeflate = KeetaNetLib.Utils.Buffer.ZlibDeflate; /* XXX:TODO: Change this to ZlibDeflateAsync when merged in */
@@ -13,7 +13,6 @@ const ASN1toJS = KeetaNetLib.Utils.ASN1.ASN1toJS;
 const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
 const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;
 type Account = InstanceType<typeof KeetaNetLib.Account>;
-const bufferToArrayBuffer = KeetaNetLib.Utils.Helper.bufferToArrayBuffer;
 
 /*
  * ASN.1 Schema
@@ -427,7 +426,15 @@ async function parseASN1(input: Buffer, keys?: Account[]) {
 	return(retval);
 }
 
-
+function inputToBuffer(data: string | ArrayBuffer | Buffer): Buffer {
+	if (typeof data === 'string') {
+		return(Buffer.from(data, 'utf-8'));
+	} else if (Buffer.isBuffer(data)) {
+		return(data);
+	} else {
+		return(arrayBufferToBuffer(data));
+	}
+}
 
 type EncryptedContainerInfo = Pick<CipherOptions, 'cipherAlgo'> & {
 	/**
@@ -494,7 +501,7 @@ export class EncryptedContainer {
 	 * resource will be reset to what is contained within the encrypted
 	 * container
 	 */
-	static fromEncryptedBuffer(data: Buffer, principals: Account[]): EncryptedContainer {
+	static fromEncryptedBuffer(data: ArrayBuffer | Buffer, principals: Account[]): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
 		retval.#setEncodedBuffer(data);
@@ -503,7 +510,7 @@ export class EncryptedContainer {
 		return(retval);
 	}
 
-	static fromEncodedBuffer(data: Buffer, principals: Account[] | null): EncryptedContainer {
+	static fromEncodedBuffer(data: ArrayBuffer | Buffer, principals: Account[] | null): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
 		retval.#setEncodedBuffer(data);
@@ -522,7 +529,7 @@ export class EncryptedContainer {
 	 * @param locked If true, the plaintext data will not be accessible from this instance; otherwise it will be -- default depends on principals
 	 * @returns The EncryptedContainer instance with the plaintext data and principals set
 	 */
-	static fromPlaintext(data: string | Buffer, principals: Account[] | null, locked?: boolean): EncryptedContainer {
+	static fromPlaintext(data: string | ArrayBuffer | Buffer, principals: Account[] | null, locked?: boolean): EncryptedContainer {
 		const retval = new EncryptedContainer(principals);
 
 		if (locked === undefined) {
@@ -544,19 +551,15 @@ export class EncryptedContainer {
 	/**
 	 * Set the plaintext buffer to the specified value
 	 */
-	setPlaintext(data: string | Buffer): void {
-		if (typeof data === 'string') {
-			data = Buffer.from(data, 'utf-8');
-		}
-
-		this.#data = { plaintext: data };
+	setPlaintext(data: string | ArrayBuffer | Buffer): void {
+		this.#data = { plaintext: inputToBuffer(data) };
 	}
 
 	/**
 	 * Set the encoded blob to the specified value
 	 */
-	#setEncodedBuffer(data: Buffer): void {
-		this.#data = { encoded: data };
+	#setEncodedBuffer(data: ArrayBuffer | Buffer): void {
+		this.#data = { encoded: inputToBuffer(data) };
 	}
 
 	private get _encoded(): Buffer | undefined {
@@ -736,7 +739,7 @@ export class EncryptedContainer {
 	 * assumes the plaintext has already been computed and will fail
 	 * if it is not
 	 */
-	grantAccessSync(accounts: Account[] | Account): void {
+	grantAccessSync(accounts: Account[] | Account): this {
 		if (this._plaintext === undefined) {
 			throw(new Error('Unable to grant access, plaintext not available'));
 		}
@@ -753,15 +756,19 @@ export class EncryptedContainer {
 		this.setPlaintext(this._plaintext);
 
 		this._internalState.principals.push(...accounts);
+
+		return(this);
 	}
 
 	/**
 	 * Grant access to the secret for account(s).
 	 */
-	async grantAccess(accounts: Account[] | Account): Promise<void> {
+	async grantAccess(accounts: Account[] | Account): Promise<this> {
 		await this.#computePlaintext();
 
 		this.grantAccessSync(accounts);
+
+		return(this);
 	}
 
 	/**
@@ -769,7 +776,7 @@ export class EncryptedContainer {
 	 * assumes the plaintext has already been computed and will fail
 	 * if it is not
 	 */
-	revokeAccessSync(account: Account): void {
+	revokeAccessSync(account: Account): this {
 		if (this._plaintext === undefined) {
 			throw(new Error('Unable to revoke access, plaintext not available'));
 		}
@@ -784,28 +791,34 @@ export class EncryptedContainer {
 		this._internalState.principals = this._internalState.principals.filter(function(checkAccount) {
 			return(!checkAccount.comparePublicKey(account));
 		});
+
+		return(this);
 	}
 
 	/**
 	 * Revoke access to the secret for an account
 	 */
-	async revokeAccess(account: Account): Promise<void> {
+	async revokeAccess(account: Account): Promise<this> {
 		await this.#computePlaintext();
 
 		this.revokeAccessSync(account);
+
+		return(this);
 	}
 
 	/**
 	 * Disable access to the plaintext from this instance
 	 */
-	disablePlaintext(): void {
+	disablePlaintext(): this {
 		this.#mayAccessPlaintext = false;
+
+		return(this);
 	}
 
 	/**
 	 * Get the plaintext for this instance
 	 */
-	async getPlaintext(): Promise<Buffer> {
+	async getPlaintext(): Promise<ArrayBuffer> {
 		if (!this.#mayAccessPlaintext) {
 			throw(new Error('May not access plaintext'));
 		}
@@ -821,13 +834,13 @@ export class EncryptedContainer {
 		 * to either our internal buffer or by our caller do not
 		 * interfere
 		 */
-		return(Buffer.from(plaintext));
+		return(bufferToArrayBuffer(plaintext));
 	}
 
 	/**
 	 * Get the serializable buffer which can be stored and reconstructed
 	 */
-	async getEncodedBuffer(): Promise<Buffer> {
+	async getEncodedBuffer(): Promise<ArrayBuffer> {
 		const serialized = await this.#computeEncoded();
 
 		if (serialized === undefined) {
@@ -839,7 +852,7 @@ export class EncryptedContainer {
 		 * to either our internal buffer or by our caller do not
 		 * interfere
 		 */
-		return(Buffer.from(serialized));
+		return(bufferToArrayBuffer(serialized));
 	}
 
 	/**
