@@ -1,8 +1,7 @@
-// XXX:TODO We need a webpack fallback for crypto in browser environments
-import * as crypto from 'crypto';
+import crypto from './crypto.js';
 import type { Reference, ExternalReference, DigestInfo } from '../../services/kyc/iso20022.generated.js';
 import type { ASN1OID } from './asn1.js';
-import type { Buffer } from './buffer.js';
+import { Buffer, arrayBufferToBuffer } from './buffer.js';
 
 /**
  * Builder for Reference structures
@@ -16,7 +15,7 @@ export class ExternalReferenceBuilder {
 	#url: string;
 	#contentType: string;
 	#digestAlgorithm = 'sha3-256';
-	#encryptionAlgorithm = 'aes-256-gcm';
+	#encryptionAlgorithm = 'KeetaEncryptedContainerV1';
 
 	/**
 	 * Create a new ExternalReferenceBuilder
@@ -41,7 +40,7 @@ export class ExternalReferenceBuilder {
 	}
 
 	/**
-	 * Set the encryption algorithm (default: 'aes-256-gcm')
+	 * Set the encryption algorithm (default: 'KeetaEncryptedContainerV1')
 	 *
 	 * @param algorithm - Encryption algorithm name
 	 * @returns this builder for chaining
@@ -84,7 +83,10 @@ export class ExternalReferenceBuilder {
 		const reference: Reference = {
 			external: externalReference,
 			digest: digestInfo,
-			encryptionAlgorithm: encryptionAlgorithmOID
+			encryptionAlgorithm: encryptionAlgorithmOID,
+			$blob: async function() {
+				return(new Blob([documentContent], { type: this.external.contentType }));
+			}
 		};
 
 		return(reference);
@@ -119,7 +121,8 @@ export class ExternalReferenceBuilder {
 			'sha2-256': '2.16.840.1.101.3.4.2.1',
 			'sha3-256': '2.16.840.1.101.3.4.2.8',
 			'aes-256-cbc': '2.16.840.1.101.3.4.1.42',
-			'aes-256-gcm': '2.16.840.1.101.3.4.1.46'
+			'aes-256-gcm': '2.16.840.1.101.3.4.1.46',
+			'keetaencryptedcontainerv1': '1.3.6.1.4.1.62675.2'
 		};
 
 		const oid = oidMap[algorithm.toLowerCase()];
@@ -129,6 +132,51 @@ export class ExternalReferenceBuilder {
 
 		return({ type: 'oid', oid });
 	}
+}
+
+export async function checkHashWithOID(input: Buffer | ArrayBuffer, expected: DigestInfo): Promise<true | Error>;
+// eslint-disable-next-line @typescript-eslint/unified-signatures
+export async function checkHashWithOID(input: Buffer | ArrayBuffer, expected: unknown): Promise<true | Error>;
+export async function checkHashWithOID(input: Buffer | ArrayBuffer, expected: unknown): Promise<true | Error> {
+	let hashAlgo: string;
+	if (typeof expected !== 'object' || expected === null || !('digestAlgorithm' in expected) || !('digest' in expected)) {
+		return(new Error('Invalid expected DigestInfo structure'));
+	}
+	if (typeof expected.digestAlgorithm !== 'object' || expected.digestAlgorithm === null || !('oid' in expected.digestAlgorithm)) {
+		return(new Error('Invalid digestAlgorithm in expected DigestInfo'));
+	}
+
+	const hashAlgoOID = expected.digestAlgorithm.oid;
+	const hashValue = expected.digest;
+	switch (hashAlgoOID) {
+		case '2.16.840.1.101.3.4.2.8':
+		case 'sha3-256':
+			hashAlgo = 'sha3-256';
+			break;
+		case '2.16.840.1.101.3.4.2.1':
+		case 'sha256':
+		case 'sha2-256':
+			hashAlgo = 'sha256';
+			break;
+		default:
+			return(new Error(`Unsupported digest algorithm OID: ${hashAlgoOID}`));
+	}
+
+	const checkHashBuilder = crypto.createHash(hashAlgo);
+	if (Buffer.isBuffer(input)) {
+		checkHashBuilder.update(input);
+	} else {
+		checkHashBuilder.update(arrayBufferToBuffer(input));
+	}
+	const checkHash = checkHashBuilder.digest();
+	if (!Buffer.isBuffer(hashValue)) {
+		return(new Error('internal error: Expected digest to be a Buffer'));
+	}
+	if (!checkHash.equals(hashValue)) {
+		return(new Error('Data integrity check failed: Hash mismatch'));
+	}
+
+	return(true);
 }
 
 export default ExternalReferenceBuilder;
