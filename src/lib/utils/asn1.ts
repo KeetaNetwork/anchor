@@ -1,5 +1,19 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts';
+import { isReferenceSchema } from './asn1.generated.js';
+import { EncryptedContainer } from '../encrypted-container.js';
+import { Buffer } from './buffer.js';
+import { checkHashWithOID } from './external.js';
+
+/* ENUM */
+type AccountKeyAlgorithm = InstanceType<typeof KeetaNetLib.Account>['keyType'];
+
+/**
+ * An alias for the KeetaNetAccount type
+ */
+type KeetaNetAccount = ReturnType<typeof KeetaNetLib.Account.fromSeed<AccountKeyAlgorithm>>;
+const KeetaNetAccount: typeof KeetaNetLib.Account = KeetaNetLib.Account;
+
 /*
  * We import this file to make sure that the `asn1js` types are
  * defined, since they are required by the `ASN1toJS` and `JStoASN1`
@@ -7,7 +21,6 @@ import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import type * as _ignored_asn1js from 'asn1js';
 
-import { Buffer } from './buffer.js';
 import { assert, createAssert, createIs } from 'typia';
 
 const ASN1: typeof KeetaNetLib.Utils.ASN1 = KeetaNetLib.Utils.ASN1;
@@ -281,12 +294,14 @@ export function encodeValueBySchema(schema: Schema, value: unknown, options?: En
 	}
 }
 
-export function normalizeDecodedASN1(input: unknown): unknown {
+export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount[]): unknown {
 	if (input === undefined || input === null) {
 		return(input);
 	}
 	if (Array.isArray(input)) {
-		return(input.map(normalizeDecodedASN1));
+		return(input.map(function(childInput) {
+			return(normalizeDecodedASN1(childInput, principals));
+		}));
 	}
 	if (input instanceof Date) {
 		return(input);
@@ -295,10 +310,10 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 		return(input);
 	}
 	if (isASN1ContextTag(input)) {
-		return(normalizeDecodedASN1(input.contains));
+		return(normalizeDecodedASN1(input.contains, principals));
 	}
 	if (isASN1String(input)) {
-		return(normalizeDecodedASN1(input.value));
+		return(normalizeDecodedASN1(input.value, principals));
 	}
 	if (isASN1Date(input)) {
 		return(input.date);
@@ -318,24 +333,83 @@ export function normalizeDecodedASN1(input: unknown): unknown {
 			}
 			const fieldValue = contains[fieldName];
 			if (fieldValue !== undefined) {
-				result[fieldName] = normalizeDecodedASN1(fieldValue);
+				result[fieldName] = normalizeDecodedASN1(fieldValue, principals);
+			}
+		}
+
+		if (isReferenceSchema(input)) {
+			const url = input.contains.external.contains.url.value;
+			const mimeType = input.contains.external.contains.contentType.value;
+			const encryptionAlgoOID = input.contains.encryptionAlgorithm?.oid;
+			const digestInfo = input.contains.digest.contains;
+			let cachedValue: Blob | null = null;
+			result['$blob'] = async function(additionalPrincipals?: ConstructorParameters<typeof EncryptedContainer>[0]): Promise<Blob> {
+				/*
+				 * If we already have the cached value, return it
+				 */
+				if (cachedValue) {
+					return(cachedValue);
+				}
+				/*
+				 * Fetch the remote data
+				 */
+				const result = await fetch(url);
+				let data = await result.arrayBuffer();
+
+				/*
+				 * Decrypt the data, if encrypted
+				 */
+				if (encryptionAlgoOID) {
+					switch (encryptionAlgoOID) {
+						case '1.3.6.1.4.1.62675.2':
+						case 'KeetaEncryptedContainerV1': {
+							const container = EncryptedContainer.fromEncryptedBuffer(data, [
+								...principals,
+								...(additionalPrincipals ?? [])
+							]);
+							data = await container.getPlaintext();
+							break;
+						}
+						default:
+							throw(new Error(`Unsupported encryption algorithm OID: ${encryptionAlgoOID}`));
+					}
+				}
+
+				/*
+				 * Compute and verify the hash (of the plain text)
+				 */
+				if (!Buffer.isBuffer(digestInfo.digest)) {
+					throw(new TypeError('Digest value is not a buffer'));
+				}
+				const validHash = await checkHashWithOID(data, {
+					digest: digestInfo.digest,
+					digestAlgorithm: digestInfo.digestAlgorithm
+				});
+				if (validHash !== true) {
+					throw(validHash);
+				}
+
+				const blob = new Blob([data], { type: mimeType });
+				cachedValue = blob;
+				return(blob);
 			}
 		}
 		return(result);
 	}
 	if (isASN1Set(input)) {
 		return({
-			name: normalizeDecodedASN1(input.name),
-			value: normalizeDecodedASN1(input.value)
+			name: normalizeDecodedASN1(input.name, principals),
+			value: normalizeDecodedASN1(input.value, principals)
 		});
 	}
 	if (isPlainObject(input)) {
 		const result: { [key: string]: unknown } = {};
 		for (const [key, value] of Object.entries(input)) {
-			result[key] = normalizeDecodedASN1(value);
+			result[key] = normalizeDecodedASN1(value, principals);
 		}
 		return(result);
 	}
+
 	return(input);
 }
 
