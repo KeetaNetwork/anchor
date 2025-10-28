@@ -1762,9 +1762,12 @@ class Resolver {
 				/*
 				 * If the KYC service does not have a countryCodes
 				 * property, then it can validate accounts in any
-				 * country, so we skip it (we can't enumerate all countries).
+				 * country, so we add all countries.
 				 */
 				if (!('countryCodes' in kycService)) {
+					for (const countryCode of CurrencyInfo.Country.allCountryCodes) {
+						allCountryCodes.add(countryCode);
+					}
 					continue;
 				}
 
