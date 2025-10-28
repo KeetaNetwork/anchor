@@ -2,7 +2,7 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type * as ASN1Types from '@keetanetwork/keetanet-client/lib/utils/asn1.ts';
 import { isReferenceSchema } from './asn1.generated.js';
 import { EncryptedContainer } from '../encrypted-container.js';
-import { Buffer } from './buffer.js';
+import { Buffer, bufferToArrayBuffer } from './buffer.js';
 import { checkHashWithOID } from './external.js';
 
 /* ENUM */
@@ -354,7 +354,33 @@ export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount
 				 * Fetch the remote data
 				 */
 				const result = await fetch(url);
-				let data = await result.arrayBuffer();
+				if (!result.ok) {
+					throw(new Error(`Failed to fetch remote data from ${url}: ${result.status} ${result.statusText}`));
+				}
+
+				let dataBlob = await result.blob();
+				let data = await dataBlob.arrayBuffer();
+
+				/*
+				 * Sometimes people like to encode the data
+				 * in a JSON base64 string, check to see if
+				 * that's the case -- hopefully this doesn't
+				 * conflict with any legitimate use case
+				 */
+				if (dataBlob.type === 'application/json') {
+					try {
+						const asJSON: unknown = JSON.parse(Buffer.from(data).toString('utf-8'));
+						if (isPlainObject(asJSON)) {
+							if (Object.keys(asJSON).length === 2) {
+								if ('data' in asJSON && typeof asJSON.data === 'string' && 'mimeType' in asJSON && typeof asJSON.mimeType === 'string') {
+									data = bufferToArrayBuffer(Buffer.from(asJSON.data, 'base64'));
+								}
+							}
+						}
+					} catch {
+						/* Ignored */
+					}
+				}
 
 				/*
 				 * Decrypt the data, if encrypted
