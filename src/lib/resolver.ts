@@ -580,8 +580,8 @@ interface ValuizableMethodBase {
 	(expect: 'any'): Promise<ValuizeInput>;
 }
 
-interface ToValuizableExpectPrimitive extends ValuizableMethodBase {
-	(expect: 'primitive'): Promise<JSONSerializablePrimitive>;
+interface ToValuizableExpectPrimitive<Primitive extends JSONSerializablePrimitive = JSONSerializablePrimitive> extends ValuizableMethodBase {
+	(expect: 'primitive'): Promise<Primitive>;
 }
 
 interface ValuizableMethod extends ValuizableMethodBase, ToValuizableExpectPrimitive {
@@ -592,36 +592,35 @@ interface ValuizableMethod extends ValuizableMethodBase, ToValuizableExpectPrimi
 	(expect: 'boolean'): Promise<boolean>;
 };
 
-interface ToValuizableExpectString extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+interface ToValuizableExpectString extends ValuizableMethodBase, ToValuizableExpectPrimitive<string> {
 	(expect: 'string'): Promise<string>;
 };
 
-interface ToValuizableExpectNumber extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+interface ToValuizableExpectNumber extends ValuizableMethodBase, ToValuizableExpectPrimitive<number> {
 	(expect: 'number'): Promise<number>;
 };
 
-interface ToValuizableExpectBoolean extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+interface ToValuizableExpectBoolean extends ValuizableMethodBase, ToValuizableExpectPrimitive<boolean> {
 	(expect: 'boolean'): Promise<boolean>;
 };
 
-interface ToValuizableExpectObject<T> extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+interface ToValuizableExpectObject<T> extends ValuizableMethodBase {
 	(expect: 'object'): Promise<T>;
 }
 
-interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodBase, ToValuizableExpectPrimitive {
+interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodBase {
 	(expect: 'array'): Promise<T>;
 }
 
 /* eslint-disable @stylistic/indent */
-type ToValuizable<T> = 
+type ToValuizable<T> =
 	T extends string ? ToValuizableExpectString :
 	T extends number ? ToValuizableExpectNumber :
 	T extends boolean ? ToValuizableExpectBoolean :
-	T extends JSONSerializablePrimitive ? ToValuizableExpectPrimitive :
-	T extends unknown[] ? ToValuizableExpectArray<ToValuizable<T[number]>[]> :
+	T extends JSONSerializablePrimitive ? ToValuizableExpectPrimitive<T> :
+	T extends unknown[] ? ToValuizableExpectArray<{ [K in keyof T]: ToValuizable<T[K]> }> :
 	T extends object ? ToValuizableExpectObject<ToValuizableObject<T>> :
-	T extends undefined ?
-		undefined :
+	T extends undefined ? undefined :
 	never;
 
 type ToValuizableObject<T extends object> = {

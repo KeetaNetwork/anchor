@@ -25,6 +25,8 @@ async function testHTTPRequest(serverURL: string, path: string, method: 'GET' | 
 	let responseBody: unknown;
 	if (response.headers.get('Content-Type')?.includes('application/json')) {
 		responseBody = await response.json();
+	} else if (response.headers.get('Content-Type')?.includes('application/octet-stream')) {
+		responseBody = await response.arrayBuffer();
 	} else {
 		responseBody = await response.text();
 	}
@@ -72,6 +74,14 @@ test('Basic Functionality', async function() {
 							params: [...params.entries()]
 						}),
 						statusCode: 200
+					});
+				};
+
+				routes['GET /binary-data'] = async function() {
+					return({
+						output: Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05]),
+						statusCode: 200,
+						contentType: 'application/octet-stream'
 					});
 				};
 
@@ -161,6 +171,11 @@ test('Basic Functionality', async function() {
 				ok: false,
 				error: 'This is a user error'
 			}
+		}, {
+			method: 'GET',
+			path: '/binary-data',
+			statusCode: 200,
+			responseMatchBinary: Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
 		}] as const;
 
 		for (const check of checks) {
@@ -177,7 +192,14 @@ test('Basic Functionality', async function() {
 				expect(response.code).toBe(200);
 			}
 
-			if ('responseMatch' in check) {
+			if ('responseMatchBinary' in check) {
+				expect(response.body).toBeInstanceOf(ArrayBuffer);
+				if (!(response.body instanceof ArrayBuffer)) {
+					throw(new Error('Unexpected non-ArrayBuffer response body'));
+				}
+				const responseBuffer = Buffer.from(response.body);
+				expect(responseBuffer.toString('base64')).toEqual(check.responseMatchBinary.toString('base64'));
+			} else if ('responseMatch' in check) {
 				expect(response.body).toMatchObject(check.responseMatch);
 			}
 		}
