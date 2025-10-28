@@ -1730,6 +1730,74 @@ class Resolver {
 		return(retval);
 	}
 
+	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedServicesProperty = rootMetadata.services;
+		if (definedServicesProperty === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const definedServices = await definedServicesProperty('object');
+
+		const kycServicesProperty = definedServices.kyc;
+		if (kycServicesProperty === undefined) {
+			return([]);
+		}
+
+		const kycServices = await kycServicesProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Listing supported KYC countries from', Object.keys(kycServices));
+
+		const allCountryCodes = new Set<CurrencyInfo.ISOCountryCode>();
+		for (const kycServiceID in kycServices) {
+			try {
+				const kycService = await kycServices[kycServiceID]?.('object');
+				if (kycService === undefined) {
+					continue;
+				}
+
+				/*
+				 * If the KYC service does not have a countryCodes
+				 * property, then it can validate accounts in any
+				 * country, so we skip it (we can't enumerate all countries).
+				 */
+				if (!('countryCodes' in kycService)) {
+					continue;
+				}
+
+				const countryCodes = await kycService.countryCodes?.('array') ?? [];
+				const countryCodesValues = await Promise.all(countryCodes.map(async function(item) {
+					return(await item?.('string'));
+				}));
+
+				for (const countryCode of countryCodesValues) {
+					if (countryCode === undefined) {
+						continue;
+					}
+
+					try {
+						// Validate that it's a valid country code
+						const validatedCountryCode = CurrencyInfo.Country.assertCountryCode(countryCode);
+						allCountryCodes.add(validatedCountryCode);
+					} catch (validationError) {
+						this.#logger?.debug(`Resolver:${this.id}`, 'Invalid country code', countryCode, 'in service', kycServiceID, ':', validationError);
+					}
+				}
+			} catch (kycServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error processing KYC service', kycServiceID, ':', kycServiceError, ' -- ignoring');
+			}
+		}
+
+		const retval = Array.from(allCountryCodes).map(function(countryCode) {
+			return(new CurrencyInfo.Country(countryCode));
+		});
+
+		return(retval);
+	}
+
 	async lookupToken(currencyCode: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null> {
 		let tokenPublicKey: KeetaNetAccountTokenPublicKeyString | undefined;
 		if (typeof currencyCode === 'string') {

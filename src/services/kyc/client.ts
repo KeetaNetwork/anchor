@@ -486,6 +486,10 @@ class KeetaKYCAnchorClient {
 		});
 	}
 
+	async getSupportedCountries(): Promise<CurrencyInfo.Country[]> {
+		return(await this.resolver.listSupportedKYCCountries());
+	}
+
 	async getEstimate(..._ignore_args: unknown[]): Promise<never> {
 		throw(new Error('not implemented'));
 	}

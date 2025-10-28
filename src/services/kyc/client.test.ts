@@ -158,6 +158,19 @@ test('KYC Anchor Client Test', async function() {
 		...loggerBase
 	});
 
+	/*
+	 * Test getSupportedCountries method
+	 */
+	const supportedCountries = await kycClient.getSupportedCountries();
+	loggerBase?.log('Supported Countries:', supportedCountries.map(c => c.code));
+	expect(supportedCountries).toBeDefined();
+	expect(Array.isArray(supportedCountries)).toBe(true);
+	expect(supportedCountries.length).toBeGreaterThan(0);
+	// The test service is configured with 'US' country code
+	const usCountry = supportedCountries.find(c => c.code === 'US');
+	expect(usCountry).toBeDefined();
+	expect(usCountry?.code).toBe('US');
+
 	const providers = await kycClient.createVerification({
 		countryCodes: ['US'],
 		account: account
