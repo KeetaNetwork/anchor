@@ -15,7 +15,7 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
 const MAX_REQUEST_SIZE = 1024 * 128;
 
 export type Routes = {
-	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined, requestHeaders: http.IncomingHttpHeaders) => Promise<{ output: string; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined, requestHeaders: http.IncomingHttpHeaders) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 };
 
 export interface KeetaAnchorHTTPServerConfig {
