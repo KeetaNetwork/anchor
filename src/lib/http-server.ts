@@ -240,7 +240,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				}
 
 				response.end();
-			}
+			};
 
 			/*
 			 * Lookup the route based on the request
