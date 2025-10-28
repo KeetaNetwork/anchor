@@ -597,6 +597,19 @@ test('Basic Tests', async function() {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		expect(token).toBe(tokens[currency as keyof typeof tokens].publicKeyString.get());
 	}
+
+	/**
+	 * List all supported KYC countries
+	 */
+	const supportedCountries = await resolver.listSupportedKYCCountries();
+	expect(supportedCountries.length).toBeGreaterThan(0);
+	// The test data includes a KYC service with 'US' country code
+	const usCountry = supportedCountries.find(c => c.code === 'US');
+	expect(usCountry).toBeDefined();
+	expect(usCountry?.code).toBe('US');
+	// Test negative case: verify a country that isn't in test data
+	const absentCountry = supportedCountries.find(c => c.code === 'CA');
+	expect(absentCountry).toBeUndefined();
 });
 
 test('Concurrent Lookups', async function() {
