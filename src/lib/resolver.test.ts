@@ -607,9 +607,9 @@ test('Basic Tests', async function() {
 	const usCountry = supportedCountries.find(c => c.code === 'US');
 	expect(usCountry).toBeDefined();
 	expect(usCountry?.code).toBe('US');
-	// Test negative case: verify a country that shouldn't exist doesn't
-	const invalidCountry = supportedCountries.find(c => c.code === 'XX');
-	expect(invalidCountry).toBeUndefined();
+	// Test negative case: verify a country that isn't in test data
+	const absentCountry = supportedCountries.find(c => c.code === 'CA');
+	expect(absentCountry).toBeUndefined();
 });
 
 test('Concurrent Lookups', async function() {
