@@ -568,6 +568,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 	asset: AssetOrPairCanonical;
 	location: AssetLocationCanonical;
 	address: AddressResolved;
+	signed?: HTTPSignedField;
 }
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
@@ -597,11 +598,10 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest =
 	pagination?: PaginationQuery;
 }
 
-export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = {
-	account?: ToJSONSerializable<KeetaNetAccount> | undefined;
+export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = ToJSONSerializable<Pick<KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest, 'account' | 'pagination'>> & {
 	asset?: MovableAssetSearchCanonical[] | undefined;
 	location?: AssetLocationCanonical[] | undefined;
-	pagination?: PaginationQuery | undefined;
+	signed?: HTTPSignedField;
 }
 
 export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {

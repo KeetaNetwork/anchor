@@ -6,7 +6,6 @@ import type {
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
 import type {
-	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -19,7 +18,6 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
 	KeetaAssetMovementAnchorInitiateTransferClientRequest,
 	KeetaNetAccount,
-	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
@@ -50,7 +48,7 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
-import { HTTPSignedField } from '../../lib/http-server-shared.js';
+import { addSignatureToURL, HTTPSignedField } from '../../lib/http-server-shared.js';
 import { Signable, SignData } from '../../lib/utils/signing.js';
 
 // const PARANOID = true;
@@ -286,7 +284,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	async #getOperationData(operationName: keyof KeetaAssetMovementAnchorOperations, params?: { [key: string]: string; }) {
 		const endpoint = await this.serviceInfo.operations[operationName];
 		if (endpoint === undefined) {
-			throw(new Error('Asset Movement service does not support initiateTransfer operation'));
+			throw(new Error(`Asset Movement service does not support ${operationName} operation`));
 		}
 
 		if (endpoint.options.authentication.method !== 'keeta-account') {
@@ -340,6 +338,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		console.log('Signed data', signed);
 
+		let usingUrl = url;
 		const headers: { [key: string]: string } = {
 			'Accept': 'application/json'
 		};
@@ -349,7 +348,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body = JSON.stringify({ ...input.body, signed });
 		} else {
 			if (signed) {
-				throw(new Error('Signed data cannot be sent with GET requests'));
+				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account as any ?? null });
 			}
 
 			if (input.body) {
@@ -386,35 +385,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
 		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
-		// const { url, auth } = await this.#getOperationData('initiateTransfer');
-
-		// let signed: HTTPSignedField | undefined;
-		// if (auth.type === 'required' || (auth.type === 'optional' && request.account)) {
-		// 	if (!request.account) {
-		// 		throw(new Error('Account information is required for this operation'));
-		// 	}
-
-		// 	signed = await SignData(request.account.assertAccount(), getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(request));
-		// }
-
-		// const requestInformation = await fetch(url, {
-		// 	method: 'POST',
-		// 	headers: {
-		// 		'Content-Type': 'application/json',
-		// 		'Accept': 'application/json'
-		// 	},
-		// 	body: JSON.stringify({ ...request, signed })
-		// });
-
-		// const requestInformationJSON: unknown = await requestInformation.json();
-		// if (!isKeetaAssetMovementAnchorInitiateTransferResponse(requestInformationJSON)) {
-		// 	throw(new Error(`Invalid response from asset movement service: ${JSON.stringify(requestInformationJSON)}`));
-		// }
-
-		// if (!requestInformationJSON.ok) {
-		// 	throw(new Error(`asset movement request failed: ${requestInformationJSON.error}`));
-		// }
-
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
 			endpoint: 'initiateTransfer',
@@ -446,29 +416,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	}
 
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
-		// const endpoints = this.serviceInfo.operations;
-		// const getTransferStatus = await endpoints.getTransferStatus;
-		// if (getTransferStatus === undefined) {
-		// 	throw(new Error('Asset Movement service does not support getTransferStatus operation'));
-		// }
-		// const getTransferURL = getTransferStatus({ id: request.id });
-		// const requestInformation = await fetch(getTransferURL, {
-		// 	method: 'GET',
-		// 	headers: {
-		// 		'Content-Type': 'application/json',
-		// 		'Accept': 'application/json'
-		// 	}
-		// });
-
-		// const requestInformationJSON: unknown = await requestInformation.json();
-		// if (!isKeetaAssetMovementAnchorGetExchangeStatusResponse(requestInformationJSON)) {
-		// 	throw(new Error(`Invalid response from asset movement service: ${JSON.stringify(requestInformationJSON)}`));
-		// }
-
-		// if (!requestInformationJSON.ok) {
-		// 	throw(new Error(`asset movement request failed: ${requestInformationJSON.error}`));
-		// }
-
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'GET',
 			endpoint: 'getTransferStatus',
@@ -522,33 +469,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse
 		});
 
-
-		// const endpoints = this.serviceInfo.operations;
-		// const createPersistentForwarding = await endpoints.createPersistentForwarding;
-		// if (createPersistentForwarding === undefined) {
-		// 	throw(new Error('Asset Movement service does not support createPersistentForwarding operation'));
-		// }
-		// const createPersistentForwardingURL = createPersistentForwarding.url();
-		// const requestInformation = await fetch(createPersistentForwardingURL, {
-		// 	method: 'POST',
-		// 	headers: {
-		// 		'Content-Type': 'application/json',
-		// 		'Accept': 'application/json'
-		// 	},
-		// 	body: JSON.stringify({
-		// 		...request
-		// 	})
-		// });
-
-		// const requestInformationJSON: unknown = await requestInformation.json();
-		// if (!isKeetaAssetMovementAnchorCreatePersistentForwardingResponse(requestInformationJSON)) {
-		// 	throw(new Error(`Invalid response from create persistent forwarding request: ${JSON.stringify(requestInformationJSON)}`));
-		// }
-
-		// if (!requestInformationJSON.ok) {
-		// 	throw(new Error(`create persistent forwarding request failed: ${requestInformationJSON.error}`));
-		// }
-
 		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
 
 		return(requestInformationJSON);
@@ -589,33 +509,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingResponse
 		});
-
-
-		// const endpoints = this.serviceInfo.operations;
-		// const createPersistentForwarding = await endpoints.createPersistentForwarding;
-		// if (createPersistentForwarding === undefined) {
-		// 	throw(new Error('Asset Movement service does not support createPersistentForwarding operation'));
-		// }
-		// const createPersistentForwardingURL = createPersistentForwarding.url();
-		// const requestInformation = await fetch(createPersistentForwardingURL, {
-		// 	method: 'POST',
-		// 	headers: {
-		// 		'Content-Type': 'application/json',
-		// 		'Accept': 'application/json'
-		// 	},
-		// 	body: JSON.stringify({
-		// 		...request
-		// 	})
-		// });
-
-		// const requestInformationJSON: unknown = await requestInformation.json();
-		// if (!isKeetaAssetMovementAnchorCreatePersistentForwardingResponse(requestInformationJSON)) {
-		// 	throw(new Error(`Invalid response from create persistent forwarding request: ${JSON.stringify(requestInformationJSON)}`));
-		// }
-
-		// if (!requestInformationJSON.ok) {
-		// 	throw(new Error(`create persistent forwarding request failed: ${requestInformationJSON.error}`));
-		// }
 
 		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
 

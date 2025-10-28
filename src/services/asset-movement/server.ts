@@ -35,11 +35,20 @@ import {
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
-	assertKeetaAssetMovementAnchorListPersistentForwardingResponse
+	assertKeetaAssetMovementAnchorListPersistentForwardingResponse,
+	assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
+	assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
+	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
+	assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
+	assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
+	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { assert } from 'console';
 import { Signable, VerifySignedData } from '../../lib/utils/signing.js';
+import Account from '@keetanetwork/keetanet-client/lib/account.js';
+import { HTTPSignedFieldURLParameters, parseSignatureFromURL } from '../../lib/http-server-shared.js';
+import { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 
@@ -93,7 +102,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		/**
 		 * Method to get the status of a transfer
 		 */
-		getTransferStatus?: (id: string) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
+		getTransferStatus?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
 
 		/**
 		 * Method to list transactions
@@ -143,16 +152,23 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 		function addRoute<
 			HandlerName extends keyof KeetaAnchorAssetMovementServerConfig['assetMovement'],
-			SerializedRequest extends { [key: string]: unknown },
+			SerializedRequest extends { [key: string]: unknown } | undefined,
 			Response
 		>(input: {
 			method: 'GET' | 'POST';
 			handlerName: HandlerName;
-			assertRequest: (data: unknown) => SerializedRequest;
-			parseRequest?: (data: SerializedRequest) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (arg: infer R) => any ? R : never;
+			pathName?: string;
+			assertRequest?: (data: unknown) => SerializedRequest;
 			serializeResponse?: (data: ExtractOk<Response>) => unknown;
 			assertResponse: (data: Response) => void;
-			getSigningData?: (data: SerializedRequest) => Signable;
+			getSigningData?: (data: SerializedRequest, params: Map<string, string>) => Signable;
+			parseRequestToArgs?: (params: {
+				params: Map<string, string>;
+				body: JSONSerializable | undefined,
+				url: URL,
+				account: Account.Account | null
+			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends any[]) => any ? R : never;
+			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => HTTPSignedFieldURLParameters;
 		}) {
 			const handler = config.assetMovement[input.handlerName];
 			if (handler === undefined) {
@@ -165,35 +181,63 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 			const authenticationRequired = config.assetMovement.authenticationRequired === true;
 
-			routes[`${input.method} /api/${input.handlerName}`] = async function(_ignore_params, postData) {
-				const request = input.assertRequest(postData);
-
-				if (authenticationRequired || 'signed' in request) {
-					if (!('account' in request) || !('signed' in request)) {
-						throw(new KeetaAnchorUserError('Missing authentication information'));
+			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
+				let request: SerializedRequest;
+				if (input.method === 'GET') {
+					request = undefined as SerializedRequest;
+				} else {
+					if (!input.assertRequest) {
+						throw(new Error('input.assertRequest is required when method = POST'));
 					}
+					request = input.assertRequest(postData);
+				}
 
-					if (typeof request.account !== 'string') {
-						throw(new KeetaAnchorUserError('Invalid account public key'));
+				let account: Account.Account | null = null;
+				if (authenticationRequired || (request && 'signed' in request)) {
+					let signed;
+					if (input.getSignatureFieldAccountFromRequest !== undefined) {
+						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url })
+					
+						if (!parsed.account || !parsed.signedField) {
+							throw(new KeetaAnchorUserError('Missing authentication information'));
+						}
+						
+						account = parsed.account;
+						signed = parsed.signedField;
+					} else if (request) {
+						if (!('account' in request) || !('signed' in request)) {
+							throw(new KeetaAnchorUserError('Missing authentication information'));
+						}
+
+						if (typeof request.account !== 'string') {
+							throw(new KeetaAnchorUserError('Invalid account public key'));
+						}
+
+						account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
+						signed = request.signed as any;
+					} else {
+						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
 					}
+					
 
-					const signable = input.getSigningData ? input.getSigningData(request) : [];
+					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
-					await VerifySignedData(
-						KeetaNet.lib.Account.fromPublicKeyString(request.account),
-						signable,
-						request.signed as any
-					);
+					const valid = await VerifySignedData(account, signable, signed);
+				
+					if (!valid) {
+						throw(new KeetaAnchorUserError('Invalid signature'));
+					}
 				}
 
 				let parsedRequest;
-				if (input.parseRequest) {
-					parsedRequest = input.parseRequest(request);
+				if (input.parseRequestToArgs) {
+					parsedRequest = input.parseRequestToArgs({ body: request as any, params, url, account: account ?? null });
 				} else {
-					parsedRequest = request as any;
+					parsedRequest = [request as any];
 				}
 
-				const result = await handler(parsedRequest as any);
+				// @ts-ignore
+				const result = await handler(...parsedRequest as any[]);
 
 				const resp = input.assertResponse(result as any);
 
@@ -213,30 +257,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			}
 		}
 
-		// /**
-		//  * Setup the various operation endpoints
-		//  */
-		// if (config.assetMovement.createPersistentForwarding !== undefined) {
-		// 	routes['POST /api/createPersistentForwarding'] = async function(_ignore_params, postData) {
-		// 		if (config.assetMovement.createPersistentForwarding === undefined) {
-		// 			throw(new Error('internal error: createPersistentForwarding disappeared'));
-		// 		}
-
-		// 		const request = assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest(postData);
-		// 		const result = await config.assetMovement.createPersistentForwarding(request);
-		// 		const output: KeetaAssetMovementAnchorCreatePersistentForwardingResponse = {
-		// 			...result,
-		// 			ok: true
-		// 		};
-
-		// 		assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse(output);
-
-		// 		return({
-		// 			output: JSON.stringify(output)
-		// 		});
-		// 	}
-		// }
-
 		addRoute({
 			method: 'POST',
 			handlerName: 'createPersistentForwarding',
@@ -244,46 +264,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse
 		});
 
-		// if (config.assetMovement.listPersistentForwarding !== undefined) {
-		// 	routes['POST /api/listPersistentForwarding'] = async function(_ignore_params, postData) {
-		// 		if (config.assetMovement.listPersistentForwarding === undefined) {
-		// 			throw(new Error('internal error: listTransactions disappeared'));
-		// 		}
-
-		// 		const request = assertKeetaAssetMovementAnchorListPersistentForwardingRequest(postData);
-		// 		const result = await config.assetMovement.listPersistentForwarding(request);
-		// 		const output = assertKeetaAssetMovementAnchorListPersistentForwardingResponse({ ...result, ok: true });
-
-		// 		return({ output: JSON.stringify(output) });
-		// 	}
-		// }
 		addRoute({
 			method: 'POST',
 			handlerName: 'listPersistentForwarding',
 			assertRequest: assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
 			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse
 		});
-
-		// if (config.assetMovement.initiateTransfer !== undefined) {
-		// 	routes['POST /api/initiateTransfer'] = async function(_ignore_params, postData) {
-		// 		if (config.assetMovement.initiateTransfer === undefined) {
-		// 			throw(new Error('internal error: initiateTransfer disappeared'));
-		// 		}
-
-		// 		const request = assertKeetaAssetMovementAnchorInitiateTransferRequest(postData);
-		// 		const result = await config.assetMovement.initiateTransfer(request);
-		// 		const output: KeetaAssetMovementAnchorInitiateTransferResponse = {
-		// 			...result,
-		// 			ok: true
-		// 		};
-
-		// 		assertKeetaAssetMovementAnchorInitiateTransferResponse(output);
-
-		// 		return({
-		// 			output: JSON.stringify(output)
-		// 		});
-		// 	}
-		// }
 
 		addRoute({
 			method: 'POST',
@@ -292,58 +278,51 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse
 		});
 
-		if (config.assetMovement.getTransferStatus !== undefined) {
-			routes['GET /api/getTransferStatus/:id'] = async function(params) {
-				if (config.assetMovement.getTransferStatus === undefined) {
-					throw(new Error('internal error: getTransferStatus disappeared'));
+		addRoute({
+			method: 'GET',
+			handlerName: 'getTransferStatus',
+			pathName: 'getTransferStatus/:id',
+			assertRequest: (input) => {
+				if(input !== undefined) {
+					throw(new KeetaAnchorUserError('No body expected for getTransferStatus'));
 				}
 
+				return(undefined);
+			},
+			assertResponse: assertKeetaAssetMovementAnchorGetTransferStatusResponse,
+			getSignatureFieldAccountFromRequest: ({ url }) => parseSignatureFromURL(url),
+			parseRequestToArgs: ({ params, account }) => {
 				const id = params.get('id');
 				if (typeof id !== 'string' || id.length === 0) {
 					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
 				}
 
-				/*
-				 * Validate the request against the defined schema
-				 */
-				const request = assertKeetaAssetMovementAnchorGetTransferStatusRequest({
-					id: id
-				} satisfies KeetaAssetMovementAnchorGetTransferStatusRequest);
-
-				const result = await config.assetMovement.getTransferStatus(request.id);
-				const output: KeetaAssetMovementAnchorGetTransferStatusResponse = {
-					...result,
-					ok: true
-				};
-
-				assertKeetaAssetMovementAnchorGetTransferStatusResponse(output);
-
-				return({
-					output: JSON.stringify(output)
-				});
+				return([ id, account ] as const);
 			}
-		}
+		});
 
-		if (config.assetMovement.listTransactions !== undefined) {
-			routes['POST /api/listTransactions'] = async function(_ignore_params, postData) {
-				if (config.assetMovement.listTransactions === undefined) {
-					throw(new Error('internal error: listTransactions disappeared'));
-				}
+		addRoute({
+			method: 'POST',
+			handlerName: 'listTransactions',
+			assertRequest: assertKeetaAssetMovementAnchorlistTransactionsRequest,
+			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+		});
 
-				const request = assertKeetaAssetMovementAnchorlistTransactionsRequest(postData);
-				const result = await config.assetMovement.listTransactions(request);
-				const output: KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = {
-					...result,
-					ok: true
-				};
+		addRoute({
+			method: 'POST',
+			handlerName: 'createPersistentForwardingTemplate',
+			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
+			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
+			getSigningData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData
+		});
 
-				assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse(output);
-
-				return({
-					output: JSON.stringify(output)
-				});
-			}
-		}
+		addRoute({
+			method: 'POST',
+			handlerName: 'listPersistentForwardingTemplate',
+			assertRequest: assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
+			assertResponse: assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
+			getSigningData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
+		});
 
 		return(routes);
 	}
@@ -351,29 +330,38 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['assetMovement']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'] = {};
 
-		for (const op of [
+		const routes = [
 			'initiateTransfer',
 			'listTransactions',
 			'listTransactions',
 			// XXX:TODO these two should be done later
-			// 'createPersistentForwardingTemplate',
-			// 'listPersistentForwardingTemplate',
+			'createPersistentForwardingTemplate',
+			'listPersistentForwardingTemplate',
 			'createPersistentForwarding',
-			'listPersistentForwarding'
-		] as const) {
+			'listPersistentForwarding',
+			[ 'getTransferStatus', 'getTransferStatus/{id}' ]
+		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
+
+		for (const inp of routes) {
+			let op;
+			let url;
+			if (Array.isArray(inp)) {
+				op = inp[0];
+				url = inp[1];
+			} else {
+				op = inp;
+				url = inp;
+			}
+
 			if (this.assetMovement[op] !== undefined) {
 				operations[op] = (new URL(`/api/${op}`, this.url)).toString();
 			}
-
-		}
-
-		if (this.assetMovement.getTransferStatus !== undefined) {
-			operations.getTransferStatus = (new URL('/api/getTransferStatus/{id}', this.url)).toString();
 		}
 
 		if (Object.keys(operations).length === 0) {
 			throw(new KeetaAnchorUserError('No operations are supported on this server'));
 		}
+
 		return({
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets
