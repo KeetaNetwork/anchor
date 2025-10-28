@@ -170,6 +170,9 @@ test('KYC Anchor Client Test', async function() {
 	const usCountry = supportedCountries.find(c => c.code === 'US');
 	expect(usCountry).toBeDefined();
 	expect(usCountry?.code).toBe('US');
+	// Test negative case: verify a country that shouldn't exist doesn't
+	const invalidCountry = supportedCountries.find(c => c.code === 'XX');
+	expect(invalidCountry).toBeUndefined();
 
 	const providers = await kycClient.createVerification({
 		countryCodes: ['US'],
