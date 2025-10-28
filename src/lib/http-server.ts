@@ -226,6 +226,23 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const method = request.method ?? 'GET';
 
 			/*
+			 * Finalize the response by syncing the logger and ending
+			 * the response.
+			 */
+			const responseFinalize = async () => {
+				if ('sync' in this.logger && typeof this.logger.sync === 'function') {
+					try {
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-call
+						await this.logger.sync();
+					} catch {
+						/* ignore errors */
+					}
+				}
+
+				response.end();
+			}
+
+			/*
 			 * Lookup the route based on the request
 			 */
 			const requestedRouteAndParams = KeetaNetAnchorHTTPServer.routeFind(method, url, routes);
@@ -233,7 +250,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				response.statusCode = 404;
 				response.setHeader('Content-Type', 'text/plain');
 				response.write('Not Found');
-				response.end();
+				await responseFinalize();
 				return;
 			}
 
@@ -318,7 +335,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					response.statusCode = 500;
 					response.setHeader('Content-Type', 'text/plain');
 					response.write('Internal Server Error');
-					response.end();
+					await responseFinalize();
 					return;
 				}
 			}
@@ -341,7 +358,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 			response.setHeader('Content-Type', result.contentType ?? 'application/json');
 			response.write(result.output);
-			response.end();
+			await responseFinalize();
 		});
 		this.#server = server;
 
