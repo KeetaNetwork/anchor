@@ -195,7 +195,7 @@ test('Basic Functionality', async function() {
 			if ('responseMatchBinary' in check) {
 				expect(response.body).toBeInstanceOf(ArrayBuffer);
 				if (!(response.body instanceof ArrayBuffer)) {
-					throw new Error('Unexpected non-ArrayBuffer response body');
+					throw(new Error('Unexpected non-ArrayBuffer response body'));
 				}
 				const responseBuffer = Buffer.from(response.body);
 				expect(responseBuffer.toString('base64')).toEqual(check.responseMatchBinary.toString('base64'));
