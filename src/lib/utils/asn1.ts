@@ -358,7 +358,7 @@ export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount
 					throw(new Error(`Failed to fetch remote data from ${url}: ${result.status} ${result.statusText}`));
 				}
 
-				let dataBlob = await result.blob();
+				const dataBlob = await result.blob();
 				let data = await dataBlob.arrayBuffer();
 
 				/*
