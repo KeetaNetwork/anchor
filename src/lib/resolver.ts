@@ -605,7 +605,7 @@ interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodB
 }
 
 /* eslint-disable @stylistic/indent */
-type ToValuizable<T> = 
+type ToValuizable<T> =
 	T extends string ? ToValuizableExpectString :
 	T extends number ? ToValuizableExpectNumber :
 	T extends boolean ? ToValuizableExpectBoolean :
