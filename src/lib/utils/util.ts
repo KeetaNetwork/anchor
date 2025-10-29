@@ -1,9 +1,9 @@
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
-const util = KeetaNetLib.Utils.Helper.util;
+const util: typeof KeetaNetLib.Utils.Helper.util = KeetaNetLib.Utils.Helper.util;
 
-const types = util.types;
-const inspect = util.inspect;
+const types: typeof util.types = util.types;
+const inspect: typeof util.inspect = util.inspect;
 
 export {
 	types,
