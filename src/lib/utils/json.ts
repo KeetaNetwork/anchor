@@ -1,4 +1,4 @@
-import { types as nodeUtilsTypes } from 'util';
+import { types as nodeUtilsTypes } from './util.js';
 import { Buffer } from './buffer.js';
 import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 export type { JSONSerializable, ToJSONSerializable };
