@@ -717,7 +717,7 @@ export type KeetaAssetMovementAnchorlistTransactionsClientRequest = {
 }
 
 export type KeetaAssetMovementAnchorlistTransactionsRequest = {
-	account: ToJSONSerializable<KeetaNetAccount> | undefined;
+	account?: ToJSONSerializable<KeetaNetAccount> | undefined;
 	signed?: HTTPSignedField | undefined;
 	persistentAddresses?: ({ location: AssetLocationCanonical; } & ({ persistentAddress?: string | undefined; persistentAddressTemplate: string; } | { persistentAddress: string; persistentAddressTemplate?: string | undefined; }))[] | undefined;
 	from?: { location: AssetLocationCanonical; userAddress?: string | undefined; asset?: MovableAsset | undefined; } | undefined;
