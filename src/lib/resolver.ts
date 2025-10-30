@@ -1540,9 +1540,6 @@ class Resolver {
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
 		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
 
-		console.log('Supported Assets:', supportedAssets, supportedAssets[0]);
-		console.log({ assetCanonical, fromCanonical, toCanonical }, criteria);
-
 		const filteredAssetMovement: SupportedAssets[] = [];
 		for (const supportedAsset of supportedAssets) {
 			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
@@ -1614,7 +1611,6 @@ class Resolver {
 			}
 		}
 
-		console.log('Filtered Asset Movement:', filteredAssetMovement);
 		return(filteredAssetMovement);
 	}
 

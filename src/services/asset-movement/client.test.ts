@@ -5,7 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput } from './common.js';
+import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput } from './common.js';
 
 const DEBUG = true;
 const logger = DEBUG ? console : undefined;
@@ -528,19 +528,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			version: 1,
 			currencyMap: {},
 			services: {
-				assetMovement: {
-					Test: {
-						operations: {
-							initiateTransfer: { url: `${server.url}/api/initiateTransfer`, options: { authentication: { method: 'keeta-account', type: 'required' }}},
-							getTransferStatus: { url: `${server.url}/api/getTransferStatus/{id}`, options: { authentication: { method: 'keeta-account', type: 'required' }}},
-							createPersistentForwarding: { url: `${server.url}/api/createPersistentForwarding`, options: { authentication: { method: 'keeta-account', type: 'required' }}},
-							listTransactions: { url: `${server.url}/api/listTransactions`, options: { authentication: { method: 'keeta-account', type: 'required' }}},
-							listPersistentForwardingTemplate: { url: `${server.url}/api/listPersistentForwardingTemplate`, options: { authentication: { method: 'keeta-account', type: 'required' }}},
-							createPersistentForwardingTemplate: { url: `${server.url}/api/createPersistentForwardingTemplate`, options: { authentication: { method: 'keeta-account', type: 'required' }}}
-						},
-						supportedAssets: server.assetMovement.supportedAssets
-					}
-				}
+				assetMovement: { Test: await server.serviceMetadata() }
 			}
 		} satisfies ServiceMetadataExternalizable)
 	});
@@ -569,4 +557,13 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		ok: true,
 		transaction: testTransaction
 	});
+
+	const initiateTransferRequest: KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+		asset: testCurrencyUSDC,
+		from: { location: `chain:keeta:${client.network}` },
+		to: { location: 'bank-account:us', recipient: 'account-123' },
+		value: '100'
+	}
+	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
+	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
 });

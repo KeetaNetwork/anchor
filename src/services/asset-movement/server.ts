@@ -34,7 +34,8 @@ import {
 	assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
 	assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
-	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData
+	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
+	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -217,10 +218,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
 					}
 
-					console.log('account', account.publicKeyString.get());
-					console.log('signed', signed);
-
-
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
 					const valid = await VerifySignedData(account, signable, signed);
@@ -277,6 +274,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		addRoute({
 			method: 'POST',
 			handlerName: 'initiateTransfer',
+			getSigningData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 			assertRequest: assertKeetaAssetMovementAnchorInitiateTransferRequest,
 			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse
 		});
@@ -365,7 +363,15 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			}
 
 			if (this.assetMovement[op] !== undefined) {
-				operations[op] = (new URL(`/api/${url}`, this.url)).toString();
+				const computedURL = (new URL(`/api/${url}`, this.url)).toString();
+				if (this.assetMovement.authenticationRequired) {
+					operations[op] = {
+						url: computedURL,
+						options: { authentication: { method: 'keeta-account', type: 'required' }}
+					}
+				} else {
+					operations[op] = computedURL;
+				}
 			}
 		}
 

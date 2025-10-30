@@ -152,7 +152,6 @@ function validateURL(url: string | undefined): URL {
 }
 
 async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
-	console.log('getEndpoints request:', request);
 	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
@@ -174,7 +173,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
-		for (const [key, operation] of Object.entries(operations)) {
+		for (const [ key, operation ] of Object.entries(operations)) {
 			if (operation === undefined) {
 				continue;
 			}
@@ -201,7 +200,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 					return({
 						url: function(params?: { [key: string]: string; }): URL {
-							let substitutedURL = url;
+							let substitutedURL = decodeURI(url);
 							for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
 								substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
 							}
@@ -341,7 +340,9 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 			// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct in the arguments.
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			signed = await SignData(input.account.assertAccount(), input.getSignedData(serializedRequest as SerializedRequest));
+			const signable = input.getSignedData(serializedRequest as SerializedRequest);
+
+			signed = await SignData(input.account.assertAccount(), signable);
 		}
 
 		let usingUrl = url;
@@ -634,10 +635,6 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		}
 
 		return(null);
-	}
-
-	_testing_GetCustomProvider(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID): KeetaAssetMovementAnchorProvider {
-		return(new KeetaAssetMovementAnchorProvider(serviceInfo, providerID, this));
 	}
 
 	/** @internal */
