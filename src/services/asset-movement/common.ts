@@ -61,9 +61,10 @@ export type AssetLocationInput = AssetLocation | AssetLocationString;
 export type AssetLocationCanonical = AssetLocationString;
 
 export type ProviderSearchInput = {
-	asset?: MovableAsset,
-	from?: AssetLocationInput,
-	to?: AssetLocationInput
+	asset?: MovableAsset;
+	from?: AssetLocationInput;
+	to?: AssetLocationInput;
+	rail?: Rail | Rail[];
 }
 /**
  * Defines the chain and id for a supported asset location

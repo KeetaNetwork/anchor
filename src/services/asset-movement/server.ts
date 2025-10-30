@@ -33,7 +33,8 @@ import {
 	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
 	assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
 	assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
-	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
+	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
+	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -162,7 +163,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				account: Account.Account | null
 				// Typescript needs any here, but eslint does not like it
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends any[]) => any ? R : never;
+			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends [ any, Account.Account | null ]) => any ? R : never;
 			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => HTTPSignedFieldURLParameters;
 		}) {
 			const handler = config.assetMovement[input.handlerName];
@@ -216,6 +217,9 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
 					}
 
+					console.log('account', account.publicKeyString.get());
+					console.log('signed', signed);
+
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
@@ -226,17 +230,22 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					}
 				}
 
-				let parsedRequest;
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				let parsedRequest: [ any, Account.Account | null ];
 				if (input.parseRequestToArgs) {
 					parsedRequest = input.parseRequestToArgs({ body: request, params, url, account: account ?? null });
 				} else {
-					parsedRequest = request;
+					parsedRequest = [ request, account ];
 				}
 
-				// @ts-ignore
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 				const result = await handler(...parsedRequest);
 
-				const resp = input.assertResponse(result);
+				if ('ok' in result && (result.ok !== undefined || result.ok !== true)) {
+					throw(new Error('internal error: response serialization must not have ok field'));
+				}
+
+				const resp = input.assertResponse({ ...result, ok: true });
 
 				let serialized;
 				if (input.serializeResponse) {
@@ -245,16 +254,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					serialized = resp;
 				}
 
-				if (typeof serialized !== 'object' || serialized === null) {
-					throw(new Error('internal error: response serialization must be an object'));
-				}
-
-				if ('ok' in serialized && (serialized.ok !== undefined || serialized.ok !== true)) {
-					throw(new Error('internal error: response serialization must not have ok field'));
-				}
-
 				return({
-					output: JSON.stringify({ ...serialized, ok: true })
+					output: JSON.stringify(serialized)
 				});
 			}
 		}
@@ -300,6 +301,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				}
 
 				return([ id, account ] as const);
+			},
+			getSigningData(_ignore_request, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return(getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData({ id }));
 			}
 		});
 

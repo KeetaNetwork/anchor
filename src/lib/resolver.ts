@@ -255,7 +255,10 @@ type ServiceSearchCriteria<T extends Services> = {
 		asset?: MovableAssetSearchInput | undefined;
 		from?: AssetLocationString;
 		to?: AssetLocationString;
-		rail?: Rail;
+		/**
+		 * Search for a provider which supports ANY of the following rail(s)
+		 */
+		rail?: Rail | Rail[] | undefined;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
@@ -1530,9 +1533,6 @@ class Resolver {
 	}
 
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
-		if (criteria.rail !== undefined) {
-			throw(new Error('Asset movement service does not support rail search criteria'));
-		}
 		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
@@ -1540,47 +1540,81 @@ class Resolver {
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
 		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
 
+		console.log('Supported Assets:', supportedAssets, supportedAssets[0]);
+		console.log({ assetCanonical, fromCanonical, toCanonical }, criteria);
+
 		const filteredAssetMovement: SupportedAssets[] = [];
 		for (const supportedAsset of supportedAssets) {
 			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
 				continue;
 			}
-			if (fromCanonical) {
-				let fromMatch = false;
+
+			let matchFound = false;
+
+			if (!fromCanonical && !toCanonical) {
+				matchFound = true;
+			} else {
 				for (const path of supportedAsset.paths) {
-					for (const pair of path.pair) {
-						if (pair.location === fromCanonical) {
-							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
-							const outboundPairMatch = pair.rails.outbound && pair.rails.outbound.length > 0;
-							if (commonPairMatch || outboundPairMatch) {
-								fromMatch = true;
+					const pairSorted: typeof path.pair = [ ...path.pair ];
+
+					if (fromCanonical) {
+						if (pairSorted[0]?.location !== fromCanonical) {
+							pairSorted.reverse();
+						}
+					} else if (toCanonical) {
+						if (pairSorted[1]?.location !== toCanonical) {
+							pairSorted.reverse();
+						}
+					}
+
+					if (fromCanonical && pairSorted[0].location !== fromCanonical) {
+						continue;
+					}
+
+					if (toCanonical && pairSorted[1].location !== toCanonical) {
+						continue;
+					}
+
+					const [ from /* , to */ ] = pairSorted;
+
+					// XXX:TODO what rails do we want to check here? This is just inbound
+					const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
+
+					if (supportedRails.length === 0) {
+						continue;
+					}
+
+					if (criteria.rail !== undefined) {
+						if (typeof criteria.rail === 'string') {
+							if (!supportedRails.includes(criteria.rail)) {
+								continue;
+							}
+						} else {
+							let railMatchFound = false;
+							for (const checkRail of criteria.rail) {
+								if (supportedRails.includes(checkRail)) {
+									railMatchFound = true;
+									break;
+								}
+							}
+
+							if (!railMatchFound) {
+								continue;
 							}
 						}
 					}
-				}
-				if (!fromMatch) {
-					continue;
-				}
-			}
-			if (toCanonical) {
-				let toMatch = false;
-				for (const path of supportedAsset.paths) {
-					for (const pair of path.pair) {
-						if (pair.location === toCanonical) {
-							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
-							const inboundPairMatch = pair.rails.inbound && pair.rails.inbound.length > 0;
-							if (commonPairMatch || inboundPairMatch) {
-								toMatch = true;
-							}
-						}
-					}
-				}
-				if (!toMatch) {
-					continue;
+
+					matchFound = true;
+					break;
 				}
 			}
-			filteredAssetMovement.push(supportedAsset);
+
+			if (matchFound) {
+				filteredAssetMovement.push(supportedAsset);
+			}
 		}
+
+		console.log('Filtered Asset Movement:', filteredAssetMovement);
 		return(filteredAssetMovement);
 	}
 

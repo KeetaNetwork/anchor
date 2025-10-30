@@ -152,13 +152,16 @@ function validateURL(url: string | undefined): URL {
 }
 
 async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+	console.log('getEndpoints request:', request);
 	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
+	const rail = request.rail ? { rail: request.rail } : {};
 	const response = await resolver.lookup('assetMovement', {
 		asset,
 		...from,
-		...to
+		...to,
+		...rail
 	}, shared);
 
 	if (response === undefined) {
@@ -179,7 +182,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 			Object.defineProperty(operationsFunctions, key, {
 				get: async function() {
-					const endpointInfo = assertServiceMetadataEndpoint(await operation('primitive'));
+					const endpointInfo = assertServiceMetadataEndpoint(await Resolver.Metadata.fullyResolveValuizable(operation));
 
 					let url;
 					let authentication: ServiceMetadataAuthenticationType = {
