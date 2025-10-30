@@ -530,8 +530,7 @@ test('Certificate Sharable Attributes', async function() {
 		 * 1. Decode the container
 		 */
 		const container = EncryptedContainer.fromEncodedBuffer(sharedSerialized, [viewerAccount]);
-		const valueCompressed = await container.getPlaintext();
-		const value = KeetaNetClient.lib.Utils.Buffer.ZlibInflate(valueCompressed);
+		const value = await container.getPlaintext();
 		const valueBuffer = Buffer.from(value);
 		const valueString = valueBuffer.toString('utf-8');
 		const valueObject: unknown = JSON.parse(valueString);
