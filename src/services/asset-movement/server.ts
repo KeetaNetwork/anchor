@@ -8,7 +8,6 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
-	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
@@ -17,20 +16,13 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
-	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
-	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
-	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
-	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
-	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
-	KeetaAssetMovementAnchorInitiateTransferClientRequest,
-	KeetaAssetMovementAnchorlistTransactionsClientRequest
+	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 	assertKeetaAssetMovementAnchorInitiateTransferRequest,
 	assertKeetaAssetMovementAnchorInitiateTransferResponse,
-	assertKeetaAssetMovementAnchorGetTransferStatusRequest,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
@@ -44,11 +36,12 @@ import {
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import { assert } from 'console';
-import { Signable, VerifySignedData } from '../../lib/utils/signing.js';
-import Account from '@keetanetwork/keetanet-client/lib/account.js';
-import { HTTPSignedFieldURLParameters, parseSignatureFromURL } from '../../lib/http-server-shared.js';
-import { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { Signable } from '../../lib/utils/signing.js';
+import { VerifySignedData } from '../../lib/utils/signing.js';
+import type Account from '@keetanetwork/keetanet-client/lib/account.js';
+import type { HTTPSignedFieldURLParameters } from '../../lib/http-server-shared.js';
+import { parseSignatureFromURL } from '../../lib/http-server-shared.js';
+import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 
@@ -78,7 +71,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		 * Method to create a persistent forwarding address template
 		 */
 		createPersistentForwardingTemplate?: (request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>>;
-		
+
 		/**
 		 * Method to list persistent forwarding address templates
 		 */
@@ -197,11 +190,11 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					let signed;
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
 						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url })
-					
+
 						if (!parsed.account || !parsed.signedField) {
 							throw(new KeetaAnchorUserError('Missing authentication information'));
 						}
-						
+
 						account = parsed.account;
 						signed = parsed.signedField;
 					} else if (request) {
@@ -218,12 +211,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					} else {
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
 					}
-					
+
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
 					const valid = await VerifySignedData(account, signable, signed);
-				
+
 					if (!valid) {
 						throw(new KeetaAnchorUserError('Invalid signature'));
 					}
@@ -283,7 +276,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'getTransferStatus',
 			pathName: 'getTransferStatus/:id',
 			assertRequest: (input) => {
-				if(input !== undefined) {
+				if (input !== undefined) {
 					throw(new KeetaAnchorUserError('No body expected for getTransferStatus'));
 				}
 
@@ -354,7 +347,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			}
 
 			if (this.assetMovement[op] !== undefined) {
-				operations[op] = (new URL(`/api/${op}`, this.url)).toString();
+				operations[op] = (new URL(`/api/${url}`, this.url)).toString();
 			}
 		}
 

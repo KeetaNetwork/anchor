@@ -189,8 +189,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 
 			newRoutes[routeKey] = {
-				bodyType: newRoute.bodyType as any,
-				async handler(...args: Parameters<RouteHandlerMethod>) {
+				bodyType: newRoute.bodyType,
+				async handler(...args: Parameters<RouteHandlerMethod<unknown>>) {
 					// @ts-ignore
 					const retval = await newRoute.handler(...args);
 
@@ -340,7 +340,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						throw(new KeetaAnchorUserError('Unsupported content type'));
 					}
 				}
-				
+
 				/**
 				 * Call the route handler
 				 */
@@ -369,7 +369,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 							contentType: 'application/json'
 						};
 					}
-					
+
 					// @ts-ignore
 					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url);
 					generatedResult = true;

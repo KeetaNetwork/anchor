@@ -3,9 +3,9 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
-import { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import { HTTPSignedField } from '../../lib/http-server-shared.js';
-import { Signable } from '../../lib/utils/signing.js';
+import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { Signable } from '../../lib/utils/signing.js';
 
 
 type HexString = `0x${string}`;
@@ -14,7 +14,7 @@ export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
-type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; 
+type CountrySearchCanonical = CurrencyInfo.ISOCountryCode;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.Currency;
 type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
@@ -401,8 +401,17 @@ export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	error: string;
 })
 
+export interface KeetaAssetMovementAnchorGetTransferStatusClientRequest {
+	account?: KeetaNetAccount;
+	id: string;
+}
+
 export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 	id: string;
+}
+
+export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(input: KeetaAssetMovementAnchorGetTransferStatusRequest): Signable {
+	return([input.id]);
 }
 
 type TransactionStatus = string;

@@ -37,7 +37,7 @@ type ServiceMetadataAuthenticationType = {
 	method: 'keeta-account';
 	type: 'required' | 'optional' | 'none';
 };
-type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; } }
+type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }}
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure

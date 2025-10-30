@@ -23,7 +23,8 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorlistTransactionsClientRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
-	PersistentAddressTemplateData
+	PersistentAddressTemplateData,
+	KeetaAssetMovementAnchorGetTransferStatusClientRequest
 } from './common.js';
 import {
 	assertKeetaSupportedAssets,
@@ -32,6 +33,7 @@ import {
 	convertAssetSearchInputToCanonical,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
@@ -48,8 +50,10 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
-import { addSignatureToURL, HTTPSignedField } from '../../lib/http-server-shared.js';
-import { Signable, SignData } from '../../lib/utils/signing.js';
+import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import { addSignatureToURL } from '../../lib/http-server-shared.js';
+import type { Signable } from '../../lib/utils/signing.js';
+import { SignData } from '../../lib/utils/signing.js';
 
 // const PARANOID = true;
 
@@ -173,7 +177,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 				continue;
 			}
 
-			
+
 			Object.defineProperty(operationsFunctions, key, {
 				get: async function() {
 					const endpointInfo = assertServiceMetadataEndpoint(await operation('primitive'));
@@ -323,7 +327,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		let signed: HTTPSignedField | undefined;
-		console.log('Making signed request', { auth, inputAccount: input.account, serializedRequest });
+
 		if (auth.type === 'required' || (auth.type === 'optional' && input.account)) {
 			if (!input.account) {
 				throw(new Error('Account information is required for this operation'));
@@ -335,8 +339,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 			signed = await SignData(input.account.assertAccount(), input.getSignedData(serializedRequest as SerializedRequest));
 		}
-
-		console.log('Signed data', signed);
 
 		let usingUrl = url;
 		const headers: { [key: string]: string } = {
@@ -356,9 +358,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			}
 		}
 
-		console.log('Making request to', url.toString(), { method: input.method, headers, body });
-
-		const requestInformation = await fetch(url, {
+		const requestInformation = await fetch(usingUrl, {
 			method: input.method, headers, body
 		});
 
@@ -367,7 +367,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			throw(new Error(`Invalid response from asset movement service: ${JSON.stringify(requestInformationJSON)}`));
 		}
 
-		if (requestInformationJSON.ok !== true) {
+		if (!requestInformationJSON.ok) {
 			let errorStr;
 
 			if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
@@ -415,28 +415,13 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(anchorTransfer);
 	}
 
-	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
+	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'GET',
 			endpoint: 'getTransferStatus',
-			// account: request.account,
-			// serializeRequest(body) {
-			// 	return({
-			// 		...body,
-			// 		value: String(body.value),
-			// 		from: {
-			// 			location: convertAssetLocationToString(body.from.location)
-			// 		},
-			// 		to: {
-			// 			location: convertAssetLocationToString(body.to.location),
-			// 			recipient: body.to.recipient
-			// 		},
-			// 		asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-			// 		account: body.account?.assertAccount().publicKeyString.get()
-			// 	})
-			// },
-			// body: request,
-			// getSignedData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+			account: request.account,
+			params: { id: request.id },
+			getSignedData: () => getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(request),
 			isResponse: isKeetaAssetMovementAnchorGetExchangeStatusResponse
 		});
 
@@ -517,7 +502,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 	async listForwardingAddressTemplates(request: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest): Promise<PersistentAddressTemplateData[]> {
 		this.logger?.debug(`Listing persistent forwarding address templates for provider ID: ${String(this.providerID)}`);
-		
+
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
 			endpoint: 'listPersistentForwardingTemplate',
@@ -556,7 +541,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					pagination: body.pagination,
 					persistentAddresses: body.persistentAddresses?.map(pa => ({
 						location: convertAssetLocationToString(pa.location),
-						...( 'persistentAddressTemplate' in pa ?
+						...('persistentAddressTemplate' in pa ?
 							{ persistentAddressTemplate: pa.persistentAddressTemplate } :
 							{ persistentAddress: pa.persistentAddress }
 						)
