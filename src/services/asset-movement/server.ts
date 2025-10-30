@@ -40,7 +40,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { HTTPSignedFieldURLParameters } from '../../lib/http-server-shared.js';
-import { parseSignatureFromURL } from '../../lib/http-server-shared.js';
+import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server-shared.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
@@ -152,14 +152,16 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: HandlerName;
 			pathName?: string;
 			assertRequest?: (data: unknown) => SerializedRequest;
-			serializeResponse?: (data: ExtractOk<Response>) => unknown;
-			assertResponse: (data: Response) => void;
+			serializeResponse?: (data: Response) => unknown;
+			assertResponse: (data: unknown) => Response;
 			getSigningData?: (data: SerializedRequest, params: Map<string, string>) => Signable;
 			parseRequestToArgs?: (params: {
 				params: Map<string, string>;
-				body: JSONSerializable | undefined,
+				body: JSONSerializable | SerializedRequest | undefined,
 				url: URL,
 				account: Account.Account | null
+				// Typescript needs any here, but eslint does not like it
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends any[]) => any ? R : never;
 			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => HTTPSignedFieldURLParameters;
 		}) {
@@ -177,6 +179,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
+					// For GET requests, we do not expect a body
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					request = undefined as SerializedRequest;
 				} else {
 					if (!input.assertRequest) {
@@ -207,7 +211,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 						}
 
 						account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
-						signed = request.signed as any;
+						signed = assertHTTPSignedField(request.signed);
 					} else {
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
 					}
@@ -224,28 +228,33 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 				let parsedRequest;
 				if (input.parseRequestToArgs) {
-					parsedRequest = input.parseRequestToArgs({ body: request as any, params, url, account: account ?? null });
+					parsedRequest = input.parseRequestToArgs({ body: request, params, url, account: account ?? null });
 				} else {
-					parsedRequest = [request as any];
+					parsedRequest = request;
 				}
 
 				// @ts-ignore
-				const result = await handler(...parsedRequest as any[]);
+				const result = await handler(...parsedRequest);
 
-				const resp = input.assertResponse(result as any);
+				const resp = input.assertResponse(result);
 
 				let serialized;
 				if (input.serializeResponse) {
-					serialized = input.serializeResponse(resp as any);
+					serialized = input.serializeResponse(resp);
 				} else {
 					serialized = resp;
 				}
 
+				if (typeof serialized !== 'object' || serialized === null) {
+					throw(new Error('internal error: response serialization must be an object'));
+				}
+
+				if ('ok' in serialized && (serialized.ok !== undefined || serialized.ok !== true)) {
+					throw(new Error('internal error: response serialization must not have ok field'));
+				}
+
 				return({
-					output: JSON.stringify({
-						...serialized as any,
-						ok: true
-					})
+					output: JSON.stringify({ ...serialized, ok: true })
 				});
 			}
 		}

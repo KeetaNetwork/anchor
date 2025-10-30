@@ -1,6 +1,7 @@
 import type { Account } from "@keetanetwork/keetanet-client/lib/account.js";
 import { KeetaAnchorUserError } from "./error.js";
 import { KeetaNet } from "../client/index.js";
+import { createAssertEquals } from "typia";
 
 export interface HTTPSignedField {
 	nonce: string;
@@ -9,6 +10,8 @@ export interface HTTPSignedField {
 	/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
 	signature: string;
 }
+
+export const assertHTTPSignedField: (input: unknown) => HTTPSignedField = createAssertEquals<HTTPSignedField>();
 
 export interface HTTPSignedFieldURLParameters {
 	signedField: HTTPSignedField | null;

@@ -6,7 +6,6 @@ import type {
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
 import type {
-	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
@@ -337,6 +336,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				throw(new Error('getSignedData function is required for signing the request'));
 			}
 
+			// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct in the arguments.
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			signed = await SignData(input.account.assertAccount(), input.getSignedData(serializedRequest as SerializedRequest));
 		}
 
@@ -350,7 +351,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body = JSON.stringify({ ...input.body, signed });
 		} else {
 			if (signed) {
-				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account as any ?? null });
+				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account?.assertAccount() ?? null });
 			}
 
 			if (input.body) {
@@ -379,6 +380,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			throw(new Error(`asset movement request failed: ${errorStr}`));
 		}
 
+		// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct because we checked it above.
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(requestInformationJSON as Extract<Response, { ok: true }>);
 	}
 
@@ -454,7 +457,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse
 		});
 
-		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
+		this.logger?.debug(`create persistent forwarding request successful`, requestInformationJSON.address);
 
 		return(requestInformationJSON);
 	}
@@ -495,7 +498,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingResponse
 		});
 
-		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
+		this.logger?.debug(`create persistent forwarding request successful`, requestInformationJSON.address);
 
 		return(requestInformationJSON);
 	}

@@ -13,7 +13,7 @@ type HexString = `0x${string}`;
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
+// type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.Currency;
@@ -31,12 +31,26 @@ export function toEVMAsset(input: HexString): EVMAsset {
 	return(`evm:${input}`);
 }
 
+function isHexString(input: unknown): input is HexString {
+	if (typeof input === 'string' && input.startsWith('0x')) {
+		return(true);
+	}
+
+	return(false);
+}
+
 export function parseEVMAsset(input: EVMAsset): HexString {
 	const parts = input.split(':');
 	if (parts.length !== 2 || parts[0] !== 'evm') {
 		throw(new Error('Invalid EVMAsset string'));
 	}
-	return(parts[1] as HexString);
+
+	const value = parts[1];
+	if (!isHexString(value)) {
+		throw(new Error('Invalid hex string in EVMAsset'));
+	}
+
+	return(value);
 }
 
 export function isEVMAsset(input: unknown): input is EVMAsset {
@@ -196,6 +210,8 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 		} else if (input.chain.type === 'evm') {
 			return(`chain:evm:${input.chain.chainId}`);
 		} else {
+			// We can ignore this any as we have already checked the type above, and the type here is only for error reporting
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/consistent-type-assertions
 			throw(new Error(`Invalid chain type in AssetLocation ${(input.chain as any).type}`));
 		}
 	} else if (input.type === 'bank-account') {
@@ -347,7 +363,7 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable
 	signed?: HTTPSignedField;
 };
 
-export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
+export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(_ignore_input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
 	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
 	return([
@@ -580,14 +596,13 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 	signed?: HTTPSignedField;
 }
 
-export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
 	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
 	return([
 		// convertAssetSearchInputToCanonical(pair.from),
 		// convertAssetSearchInputToCanonical(pair.to),
-		// convertAssetLocationInputToCanonical(input.from.location),
-		// convertAssetLocationInputToCanonical(input.to.location),
+		// convertAssetLocationInputToCanonical(input.location),
 		// input.value
 	]);
 }
@@ -613,7 +628,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = ToJSO
 	signed?: HTTPSignedField;
 }
 
-export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
+export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
 	return([]);
 }
 
@@ -663,7 +678,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	persistentAddressTemplateId: string;
 });
 
-export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
 	return([]);
 }
 
@@ -734,7 +749,7 @@ export type KeetaAssetMovementAnchorlistTransactionsRequest = {
 	pagination?: PaginationQuery | undefined;
 }
 
-export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
+export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(_ignore_input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
 	return([]);
 }
 
