@@ -3,6 +3,7 @@ import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/kee
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
+import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
@@ -1637,11 +1638,23 @@ class Resolver {
 		return(rootMetadata);
 	}
 
-	async getRootMetadata(): Promise<ToValuizable<ServiceMetadata>> {
+	async getRootMetadata(): Promise<ToValuizableObject<Pick<ServiceMetadata, 'version'> & DeepPartial<Omit<ServiceMetadata, 'version'>>>> {
 		const rootMetadata = await this.#getRootMetadata();
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(rootMetadata as unknown as ToValuizable<ServiceMetadata>);
+		/*
+		 * #getRootMetadata validates that the version type exists
+		 * and the return type for this function is complicated
+		 * but everything is a partial or a function (which is
+		 * correct because we processed it through the Metadata
+		 * class).
+		 *
+		 * To avoid repeating the complicated type, we just
+		 * cast as `any` here since it does not affect runtime
+		 * behavior or the types (because the type is already
+		 * asserted in the function signature).
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions,@typescript-eslint/no-unsafe-return,@typescript-eslint/no-explicit-any
+		return(rootMetadata as any);
 	}
 
 	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
