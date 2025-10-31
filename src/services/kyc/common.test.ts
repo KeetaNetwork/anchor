@@ -43,9 +43,10 @@ test('KYC Error Serialization and Deserialization - CertificateNotFound', async 
 
 test('KYC Error Serialization and Deserialization - PaymentRequired', async function() {
 	// Create a token account for testing
-	const tokenAccount = KeetaNet.lib.Account.create<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>(
-		KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN,
-		Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
+	const tokenAccount = KeetaNet.lib.Account.fromSeed(
+		Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'),
+		0,
+		KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN
 	);
 	
 	const error = new Errors.PaymentRequired(
@@ -100,9 +101,10 @@ test('KYC Error Round-trip Serialization', async function() {
 	expect(certificateReconstructed).toBeInstanceOf(Errors.CertificateNotFound);
 
 	// Test PaymentRequired
-	const tokenAccount = KeetaNet.lib.Account.create<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>(
-		KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN,
-		Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')
+	const tokenAccount = KeetaNet.lib.Account.fromSeed(
+		Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'),
+		0,
+		KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN
 	);
 	const paymentError = new Errors.PaymentRequired(
 		{
