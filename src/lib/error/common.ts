@@ -2,20 +2,68 @@ import { KeetaAnchorError, KeetaAnchorUserError } from './index.js';
 import { Errors as KYCErrors } from '../../services/kyc/common.js';
 
 /**
- * Static mapping of error class names to their fromJSON deserialization functions.
- * This mapping is defined at module load time and does not rely on global state
- * or side effects during module initialization.
- * 
- * The mapping is explicit to handle special cases like PaymentRequired which
- * has a non-standard constructor signature.
+ * Type for error classes that can be deserialized
  */
-const ERROR_CLASS_MAPPING: Record<string, (input: unknown) => KeetaAnchorError> = {
-	'KeetaAnchorError': KeetaAnchorError.fromJSON.bind(KeetaAnchorError),
-	'KeetaAnchorUserError': KeetaAnchorUserError.fromJSON.bind(KeetaAnchorUserError),
-	'KeetaKYCAnchorVerificationNotFoundError': KYCErrors.VerificationNotFound.fromJSON.bind(KYCErrors.VerificationNotFound),
-	'KeetaKYCAnchorCertificateNotFoundError': KYCErrors.CertificateNotFound.fromJSON.bind(KYCErrors.CertificateNotFound),
-	'KeetaKYCAnchorCertificatePaymentRequired': KYCErrors.PaymentRequired.fromJSON.bind(KYCErrors.PaymentRequired),
-};
+interface DeserializableErrorClass {
+	fromJSON: (input: unknown) => KeetaAnchorError;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	new (...args: any[]): KeetaAnchorError;
+}
+
+/**
+ * Array of all error classes that should be deserializable
+ * Add new error classes here to make them deserializable
+ */
+const ERROR_CLASSES: DeserializableErrorClass[] = [
+	KeetaAnchorError,
+	KeetaAnchorUserError,
+	KYCErrors.VerificationNotFound,
+	KYCErrors.CertificateNotFound,
+	KYCErrors.PaymentRequired,
+];
+
+/**
+ * Generate mapping from error class names to their fromJSON methods
+ * This mapping is generated at module load time from the ERROR_CLASSES array
+ */
+function generateErrorClassMapping(): Record<string, (input: unknown) => KeetaAnchorError> {
+	const mapping: Record<string, (input: unknown) => KeetaAnchorError> = {};
+	
+	for (const ErrorClass of ERROR_CLASSES) {
+		// To get the class name, we need to create a temporary instance
+		// Some classes have non-standard constructors, so we try multiple approaches
+		let className: string | null = null;
+		
+		// Try standard constructor
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const tempInstance = new (ErrorClass as any)('') as KeetaAnchorError;
+			className = tempInstance.name;
+		} catch {
+			// Ignore
+		}
+		
+		// Try with additional parameters for special constructors
+		if (!className) {
+			try {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const tempInstance = new (ErrorClass as any)({ amount: 0n, token: { publicKeyString: { get: () => '' } } }, '') as KeetaAnchorError;
+				className = tempInstance.name;
+			} catch {
+				// Ignore
+			}
+		}
+		
+		// If we got a class name, add to mapping
+		if (className) {
+			mapping[className] = ErrorClass.fromJSON.bind(ErrorClass);
+		}
+	}
+	
+	return mapping;
+}
+
+const ERROR_CLASS_MAPPING = generateErrorClassMapping();
 
 /**
  * Deserialize a JSON object to the appropriate KeetaAnchorError subclass.
