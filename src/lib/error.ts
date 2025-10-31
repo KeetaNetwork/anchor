@@ -101,6 +101,29 @@ export class KeetaAnchorError extends Error {
 
 		return error;
 	}
+
+	static registerSubclass(name: string, fromJSON: (input: unknown) => KeetaAnchorError): void {
+		KeetaAnchorError.subclassRegistry.set(name, fromJSON);
+	}
+
+	private static subclassRegistry = new Map<string, (input: unknown) => KeetaAnchorError>();
+
+	static fromJSONWithSubclasses(input: unknown): KeetaAnchorError {
+		if (!hasPropWithValue(input, 'ok', false)) {
+			throw(new Error('Invalid KeetaAnchorError JSON object'));
+		}
+
+		// Check if there's a registered subclass handler
+		if (typeof input === 'object' && input !== null && 'name' in input && typeof input.name === 'string') {
+			const handler = KeetaAnchorError.subclassRegistry.get(input.name);
+			if (handler) {
+				return handler(input);
+			}
+		}
+
+		// Fall back to the standard fromJSON
+		return KeetaAnchorError.fromJSON(input);
+	}
 }
 
 export class KeetaAnchorUserError extends KeetaAnchorError {
