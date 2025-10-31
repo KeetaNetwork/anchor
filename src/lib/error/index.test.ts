@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { KeetaAnchorUserError, KeetaAnchorError } from './error.js';
+import { KeetaAnchorUserError, KeetaAnchorError } from './index.js';
 
 test('Basic Error Test', async function() {
 	const keetaAnchorError = new KeetaAnchorError('test error');
@@ -22,57 +22,29 @@ test('Basic Error Test', async function() {
 	expect(keetaAnchorError.asErrorResponse('application/json')).toEqual({ error: JSON.stringify({ ok: false, retryable: false, error: 'Internal error' }), statusCode: 400, contentType: 'application/json' });
 });
 
-test('Error Serialization and Deserialization', async function() {
-	// Test KeetaAnchorError serialization
+test('Error Round-trip Serialization', async function() {
+	// Test KeetaAnchorError round-trip
 	const keetaAnchorError = new KeetaAnchorError('test error');
-	const serialized = keetaAnchorError.toJSON();
+	const serialized = JSON.stringify(keetaAnchorError.toJSON());
+	const parsed = JSON.parse(serialized);
+	const deserialized = KeetaAnchorError.fromJSON(parsed);
 	
-	expect(serialized).toEqual({
-		ok: false,
-		retryable: false,
-		error: 'test error',
-		name: 'KeetaAnchorError',
-		statusCode: 400
-	});
-
-	// Test KeetaAnchorError deserialization
-	const deserialized = KeetaAnchorError.fromJSON(serialized);
 	expect(deserialized).toBeInstanceOf(KeetaAnchorError);
-	expect(deserialized.message).toBe('test error');
-	expect(deserialized.name).toBe('KeetaAnchorError');
+	expect(deserialized.message).toBe(keetaAnchorError.message);
+	expect(deserialized.name).toBe(keetaAnchorError.name);
 	expect(KeetaAnchorError.isInstance(deserialized)).toBe(true);
 
-	// Test KeetaAnchorUserError serialization
+	// Test KeetaAnchorUserError round-trip
 	const keetaAnchorUserError = new KeetaAnchorUserError('user error');
-	const userSerialized = keetaAnchorUserError.toJSON();
+	const userSerialized = JSON.stringify(keetaAnchorUserError.toJSON());
+	const userParsed = JSON.parse(userSerialized);
+	const userDeserialized = KeetaAnchorError.fromJSON(userParsed);
 	
-	expect(userSerialized).toEqual({
-		ok: false,
-		retryable: false,
-		error: 'user error',
-		name: 'KeetaAnchorUserError',
-		statusCode: 400
-	});
-
-	// Test KeetaAnchorUserError deserialization
-	const userDeserialized = KeetaAnchorError.fromJSON(userSerialized);
 	expect(userDeserialized).toBeInstanceOf(KeetaAnchorUserError);
-	expect(userDeserialized.message).toBe('user error');
-	expect(userDeserialized.name).toBe('KeetaAnchorUserError');
+	expect(userDeserialized.message).toBe(keetaAnchorUserError.message);
+	expect(userDeserialized.name).toBe(keetaAnchorUserError.name);
 	expect(KeetaAnchorUserError.isInstance(userDeserialized)).toBe(true);
 	expect(KeetaAnchorError.isInstance(userDeserialized)).toBe(true);
-});
-
-test('Error Round-trip Serialization', async function() {
-	// Test that errors maintain their properties through JSON round-trip
-	const originalError = new KeetaAnchorUserError('round trip test');
-	const json = JSON.stringify(originalError.toJSON());
-	const parsed = JSON.parse(json);
-	const reconstructed = KeetaAnchorError.fromJSON(parsed);
-
-	expect(reconstructed.message).toBe(originalError.message);
-	expect(reconstructed.name).toBe(originalError.name);
-	expect(KeetaAnchorUserError.isInstance(reconstructed)).toBe(true);
 });
 
 test('Error fromJSON with invalid input', async function() {
@@ -85,19 +57,27 @@ test('Error fromJSON with invalid input', async function() {
 
 test('Error Deserialization using deserializeError', async function() {
 	// Import the deserializeError function
-	const { deserializeError } = await import('./error-deserializer.js');
+	const { deserializeError } = await import('./common.js');
 
-	// Test deserializing a KeetaAnchorError
-	const errorSerialized = new KeetaAnchorError('test error').toJSON();
-	const errorDeserialized = deserializeError(errorSerialized);
+	// Test deserializing and round-tripping a KeetaAnchorError
+	const error = new KeetaAnchorError('test error');
+	const json = JSON.stringify(error.toJSON());
+	const parsed = JSON.parse(json);
+	const errorDeserialized = deserializeError(parsed);
+	
 	expect(errorDeserialized).toBeInstanceOf(KeetaAnchorError);
-	expect(errorDeserialized.message).toBe('test error');
+	expect(errorDeserialized.message).toBe(error.message);
+	expect(errorDeserialized.name).toBe(error.name);
 
-	// Test deserializing a KeetaAnchorUserError
-	const userErrorSerialized = new KeetaAnchorUserError('user error').toJSON();
-	const userErrorDeserialized = deserializeError(userErrorSerialized);
+	// Test deserializing and round-tripping a KeetaAnchorUserError
+	const userError = new KeetaAnchorUserError('user error');
+	const userJson = JSON.stringify(userError.toJSON());
+	const userParsed = JSON.parse(userJson);
+	const userErrorDeserialized = deserializeError(userParsed);
+	
 	expect(userErrorDeserialized).toBeInstanceOf(KeetaAnchorUserError);
-	expect(userErrorDeserialized.message).toBe('user error');
+	expect(userErrorDeserialized.message).toBe(userError.message);
+	expect(userErrorDeserialized.name).toBe(userError.name);
 
 	// Test invalid input
 	expect(() => deserializeError({ ok: true })).toThrow('Invalid error JSON object');

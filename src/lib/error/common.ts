@@ -1,17 +1,20 @@
-import { KeetaAnchorError, KeetaAnchorUserError } from './error.js';
-import { Errors as KYCErrors } from '../services/kyc/common.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from './index.js';
+import { Errors as KYCErrors } from '../../services/kyc/common.js';
 
 /**
  * Static mapping of error class names to their fromJSON deserialization functions.
  * This mapping is defined at module load time and does not rely on global state
  * or side effects during module initialization.
+ * 
+ * The mapping is explicit to handle special cases like PaymentRequired which
+ * has a non-standard constructor signature.
  */
 const ERROR_CLASS_MAPPING: Record<string, (input: unknown) => KeetaAnchorError> = {
-	'KeetaAnchorError': KeetaAnchorError.fromJSON,
-	'KeetaAnchorUserError': KeetaAnchorUserError.fromJSON,
-	'KeetaKYCAnchorVerificationNotFoundError': KYCErrors.VerificationNotFound.fromJSON,
-	'KeetaKYCAnchorCertificateNotFoundError': KYCErrors.CertificateNotFound.fromJSON,
-	'KeetaKYCAnchorCertificatePaymentRequired': KYCErrors.PaymentRequired.fromJSON,
+	'KeetaAnchorError': KeetaAnchorError.fromJSON.bind(KeetaAnchorError),
+	'KeetaAnchorUserError': KeetaAnchorUserError.fromJSON.bind(KeetaAnchorUserError),
+	'KeetaKYCAnchorVerificationNotFoundError': KYCErrors.VerificationNotFound.fromJSON.bind(KYCErrors.VerificationNotFound),
+	'KeetaKYCAnchorCertificateNotFoundError': KYCErrors.CertificateNotFound.fromJSON.bind(KYCErrors.CertificateNotFound),
+	'KeetaKYCAnchorCertificatePaymentRequired': KYCErrors.PaymentRequired.fromJSON.bind(KYCErrors.PaymentRequired),
 };
 
 /**
