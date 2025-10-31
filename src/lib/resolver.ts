@@ -3,6 +3,7 @@ import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/kee
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
+import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
@@ -1677,11 +1678,23 @@ class Resolver {
 		return(rootMetadata);
 	}
 
-	async getRootMetadata(): Promise<ToValuizable<ServiceMetadata>> {
+	async getRootMetadata(): Promise<ToValuizableObject<Pick<ServiceMetadata, 'version'> & DeepPartial<Omit<ServiceMetadata, 'version'>>>> {
 		const rootMetadata = await this.#getRootMetadata();
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(rootMetadata as unknown as ToValuizable<ServiceMetadata>);
+		/*
+		 * #getRootMetadata validates that the version type exists
+		 * and the return type for this function is complicated
+		 * but everything is a partial or a function (which is
+		 * correct because we processed it through the Metadata
+		 * class).
+		 *
+		 * To avoid repeating the complicated type, we just
+		 * cast as `any` here since it does not affect runtime
+		 * behavior or the types (because the type is already
+		 * asserted in the function signature).
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions,@typescript-eslint/no-unsafe-return,@typescript-eslint/no-explicit-any
+		return(rootMetadata as any);
 	}
 
 	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
@@ -1766,6 +1779,78 @@ class Resolver {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Token public key for currency code', checkCurrencyCode, 'is invalid:', validationError);
 			}
 		}
+
+		return(retval);
+	}
+
+	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedServicesProperty = rootMetadata.services;
+		if (definedServicesProperty === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const definedServices = await definedServicesProperty('object');
+
+		const kycServicesProperty = definedServices.kyc;
+		if (kycServicesProperty === undefined) {
+			return([]);
+		}
+
+		const kycServices = await kycServicesProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Listing supported KYC countries from', Object.keys(kycServices));
+
+		const allCountryCodes = new Set<CurrencyInfo.ISOCountryCode>();
+		for (const kycServiceID in kycServices) {
+			try {
+				const kycService = await kycServices[kycServiceID]?.('object');
+				if (kycService === undefined) {
+					continue;
+				}
+
+				/*
+				 * If the KYC service does not have a countryCodes
+				 * property, then it can validate accounts in any
+				 * country, so we add all countries and stop processing
+				 * other services since we already have all possible countries.
+				 */
+				if (!('countryCodes' in kycService)) {
+					for (const countryCode of CurrencyInfo.Country.allCountryCodes) {
+						allCountryCodes.add(countryCode);
+					}
+					break;
+				}
+
+				const countryCodes = await kycService.countryCodes?.('array') ?? [];
+				const countryCodesValues = await Promise.all(countryCodes.map(async function(item) {
+					return(await item?.('string'));
+				}));
+
+				for (const countryCode of countryCodesValues) {
+					if (countryCode === undefined) {
+						continue;
+					}
+
+					try {
+						// Validate that it's a valid country code
+						const validatedCountryCode = CurrencyInfo.Country.assertCountryCode(countryCode);
+						allCountryCodes.add(validatedCountryCode);
+					} catch (validationError) {
+						this.#logger?.debug(`Resolver:${this.id}`, 'Invalid country code', countryCode, 'in service', kycServiceID, ':', validationError);
+					}
+				}
+			} catch (kycServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error processing KYC service', kycServiceID, ':', kycServiceError, ' -- ignoring');
+			}
+		}
+
+		const retval = Array.from(allCountryCodes).map(function(countryCode) {
+			return(new CurrencyInfo.Country(countryCode));
+		});
 
 		return(retval);
 	}

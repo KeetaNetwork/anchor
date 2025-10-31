@@ -437,8 +437,11 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a User Certificate with sharable attributes
 	 */
+	// XXX:TODO The certificates cannot store ms precision dates yet, should we allow this or throw?
+	const testDOB = new Date(Math.floor(((Date.now() - (35 * 365 * 24 * 60 * 60 * 1000)) / 1000)) * 1000); // Approx 35 years ago
 	builder1.setAttribute('fullName', false, 'Test User');
 	builder1.setAttribute('email', true, 'user@example.com');
+	builder1.setAttribute('dateOfBirth', true, testDOB);
 
 	/*
 	 * Add a document to be shared
@@ -469,7 +472,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a sharable object and grant a third user access
 	 */
-	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'phoneNumber' /* non-existent */]);
+	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'phoneNumber', 'dateOfBirth' /* non-existent */]);
 	await sharable.grantAccess(viewerAccountNoPrivate);
 
 	expect(sharable.principals.length).toBe(1);
@@ -504,6 +507,10 @@ test('Certificate Sharable Attributes', async function() {
 	}
 	expect(importedFullName).toBe('Test User');
 
+	const importedDOB = await imported.getAttribute('dateOfBirth');
+	expect(importedDOB instanceof Date).toEqual(true);
+	expect(importedDOB?.valueOf()).toEqual(testDOB.valueOf());
+
 	/*
 	 * Verify that the document is accessible
 	 */
@@ -530,8 +537,7 @@ test('Certificate Sharable Attributes', async function() {
 		 * 1. Decode the container
 		 */
 		const container = EncryptedContainer.fromEncodedBuffer(sharedSerialized, [viewerAccount]);
-		const valueCompressed = await container.getPlaintext();
-		const value = KeetaNetClient.lib.Utils.Buffer.ZlibInflate(valueCompressed);
+		const value = await container.getPlaintext();
 		const valueBuffer = Buffer.from(value);
 		const valueString = valueBuffer.toString('utf-8');
 		const valueObject: unknown = JSON.parse(valueString);
@@ -603,5 +609,6 @@ test('Certificate Sharable Attributes', async function() {
 	expect(allAttributes).toContain('fullName');
 	expect(allAttributes).toContain('email');
 	expect(allAttributes).toContain('documentDriversLicense');
-	expect(allAttributes.length).toBe(3);
+	expect(allAttributes).toContain('dateOfBirth');
+	expect(allAttributes.length).toBe(4);
 });
