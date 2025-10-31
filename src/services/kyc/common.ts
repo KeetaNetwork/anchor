@@ -5,6 +5,7 @@ import type {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as Signing from '../../lib/utils/signing.js';
 import {
+	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 
@@ -83,6 +84,32 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 	protected statusCode = 400;
 	constructor(message?: string) {
 		super(message ?? 'Verification ID not found');
+		this._name = 'KeetaKYCAnchorVerificationNotFoundError';
+	}
+
+	static fromJSON(input: unknown): KeetaKYCAnchorVerificationNotFoundError {
+		if (typeof input !== 'object' || input === null) {
+			throw new Error('Invalid KeetaKYCAnchorVerificationNotFoundError JSON object');
+		}
+
+		let message: string | undefined;
+		if ('error' in input && typeof input.error === 'string') {
+			message = input.error;
+		}
+
+		const error = new KeetaKYCAnchorVerificationNotFoundError(message);
+
+		// Restore statusCode if present
+		if ('statusCode' in input && typeof input.statusCode === 'number') {
+			error.statusCode = input.statusCode;
+		}
+
+		// Restore retryable if present
+		if ('retryable' in input && typeof input.retryable === 'boolean') {
+			error.retryable = input.retryable;
+		}
+
+		return error;
 	}
 }
 
@@ -90,6 +117,32 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 	protected statusCode = 404;
 	constructor(message?: string) {
 		super(message ?? 'Certificate not found (pending)');
+		this._name = 'KeetaKYCAnchorCertificateNotFoundError';
+	}
+
+	static fromJSON(input: unknown): KeetaKYCAnchorCertificateNotFoundError {
+		if (typeof input !== 'object' || input === null) {
+			throw new Error('Invalid KeetaKYCAnchorCertificateNotFoundError JSON object');
+		}
+
+		let message: string | undefined;
+		if ('error' in input && typeof input.error === 'string') {
+			message = input.error;
+		}
+
+		const error = new KeetaKYCAnchorCertificateNotFoundError(message);
+
+		// Restore statusCode if present
+		if ('statusCode' in input && typeof input.statusCode === 'number') {
+			error.statusCode = input.statusCode;
+		}
+
+		// Restore retryable if present
+		if ('retryable' in input && typeof input.retryable === 'boolean') {
+			error.retryable = input.retryable;
+		}
+
+		return error;
 	}
 }
 
@@ -99,6 +152,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 	readonly token: KeetaNetToken;
 	constructor(cost: { amount: bigint | string; token: KeetaNetToken | string; }, message?: string) {
 		super(message ?? 'Payment required for certificate');
+		this._name = 'KeetaKYCAnchorCertificatePaymentRequired';
 
 		this.amount = BigInt(cost.amount);
 		this.token = KeetaNet.lib.Account.toAccount<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>(cost.token);
@@ -126,6 +180,58 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 			contentType: contentType
 		});
 	}
+
+	toJSON(): { ok: false; retryable: boolean; error: string; name: string; statusCode: number; amount: string; token: string } {
+		return {
+			ok: false,
+			retryable: this.retryable,
+			error: this.message,
+			name: this._name,
+			statusCode: this.statusCode,
+			amount: `0x${this.amount.toString(16)}`,
+			token: this.token.publicKeyString.get()
+		};
+	}
+
+	static fromJSON(input: unknown): KeetaKYCAnchorCertificatePaymentRequired {
+		if (typeof input !== 'object' || input === null) {
+			throw new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object');
+		}
+
+		// Extract required properties
+		if (!('amount' in input) || typeof input.amount !== 'string') {
+			throw new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid amount');
+		}
+
+		if (!('token' in input) || typeof input.token !== 'string') {
+			throw new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid token');
+		}
+
+		let message: string | undefined;
+		if ('error' in input && typeof input.error === 'string') {
+			message = input.error;
+		}
+
+		const error = new KeetaKYCAnchorCertificatePaymentRequired(
+			{
+				amount: input.amount,
+				token: input.token
+			},
+			message
+		);
+
+		// Restore statusCode if present
+		if ('statusCode' in input && typeof input.statusCode === 'number') {
+			error.statusCode = input.statusCode;
+		}
+
+		// Restore retryable if present
+		if ('retryable' in input && typeof input.retryable === 'boolean') {
+			error.retryable = input.retryable;
+		}
+
+		return error;
+	}
 }
 
 export const Errors: {
@@ -149,6 +255,11 @@ export const Errors: {
 	 */
 	PaymentRequired: KeetaKYCAnchorCertificatePaymentRequired
 }
+
+// Register KYC error subclasses for deserialization
+KeetaAnchorError.registerSubclass('KeetaKYCAnchorVerificationNotFoundError', KeetaKYCAnchorVerificationNotFoundError.fromJSON);
+KeetaAnchorError.registerSubclass('KeetaKYCAnchorCertificateNotFoundError', KeetaKYCAnchorCertificateNotFoundError.fromJSON);
+KeetaAnchorError.registerSubclass('KeetaKYCAnchorCertificatePaymentRequired', KeetaKYCAnchorCertificatePaymentRequired.fromJSON);
 
 export async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
 	return(await Signing.SignData(account, []));
