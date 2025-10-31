@@ -5,7 +5,8 @@ import type {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as Signing from '../../lib/utils/signing.js';
 import {
-	KeetaAnchorUserError
+	KeetaAnchorUserError,
+	restoreErrorProperties
 } from '../../lib/error.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
@@ -97,18 +98,7 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 		}
 
 		const error = new KeetaKYCAnchorVerificationNotFoundError(message);
-
-		// Restore statusCode if present
-		if ('statusCode' in input && typeof input.statusCode === 'number') {
-			error.statusCode = input.statusCode;
-		}
-
-		// Restore retryable if present
-		if ('retryable' in input && typeof input.retryable === 'boolean') {
-			error.retryable = input.retryable;
-		}
-
-		return error;
+		return restoreErrorProperties(error, input);
 	}
 }
 
@@ -130,18 +120,7 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 		}
 
 		const error = new KeetaKYCAnchorCertificateNotFoundError(message);
-
-		// Restore statusCode if present
-		if ('statusCode' in input && typeof input.statusCode === 'number') {
-			error.statusCode = input.statusCode;
-		}
-
-		// Restore retryable if present
-		if ('retryable' in input && typeof input.retryable === 'boolean') {
-			error.retryable = input.retryable;
-		}
-
-		return error;
+		return restoreErrorProperties(error, input);
 	}
 }
 
@@ -219,17 +198,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 			message
 		);
 
-		// Restore statusCode if present
-		if ('statusCode' in input && typeof input.statusCode === 'number') {
-			error.statusCode = input.statusCode;
-		}
-
-		// Restore retryable if present
-		if ('retryable' in input && typeof input.retryable === 'boolean') {
-			error.retryable = input.retryable;
-		}
-
-		return error;
+		return restoreErrorProperties(error, input);
 	}
 }
 
