@@ -49,10 +49,10 @@ test('Error Round-trip Serialization', async function() {
 
 test('Error fromJSON with invalid input', async function() {
 	// Test that fromJSON throws on invalid input
-	expect(() => KeetaAnchorError.fromJSON({ ok: true })).toThrow('Invalid KeetaAnchorError JSON object');
-	expect(() => KeetaAnchorError.fromJSON(null)).toThrow('Invalid KeetaAnchorError JSON object');
-	expect(() => KeetaAnchorError.fromJSON('invalid')).toThrow('Invalid KeetaAnchorError JSON object');
-	expect(() => KeetaAnchorUserError.fromJSON({ ok: true })).toThrow('Invalid KeetaAnchorUserError JSON object');
+	expect(() => KeetaAnchorError.fromJSON({ ok: true })).toThrow('Invalid error JSON object');
+	expect(() => KeetaAnchorError.fromJSON(null)).toThrow('Invalid error JSON object');
+	expect(() => KeetaAnchorError.fromJSON('invalid')).toThrow('Invalid error JSON object');
+	expect(() => KeetaAnchorUserError.fromJSON({ ok: true })).toThrow('Invalid error JSON object');
 });
 
 test('Error Deserialization using deserializeError', async function() {
