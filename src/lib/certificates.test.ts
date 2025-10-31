@@ -412,7 +412,7 @@ test('Rust Certificate Interoperability', async function() {
 	expect(await contactAttr.value.validateProof(contactProof)).toBe(true);
 });
 
-test.only('Certificate Sharable Attributes', async function() {
+test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Build a certificate with a test value from the users public key
 	 */
