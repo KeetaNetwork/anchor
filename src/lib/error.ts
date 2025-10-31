@@ -58,10 +58,48 @@ export class KeetaAnchorError extends Error {
 		});
 	}
 
+	toJSON(): { ok: false; retryable: boolean; error: string; name: string; statusCode: number } {
+		return {
+			ok: false,
+			retryable: this.retryable,
+			error: this.message,
+			name: this._name,
+			statusCode: this.statusCode
+		};
+	}
+
 	static fromJSON(input: unknown): KeetaAnchorError {
 		if (!hasPropWithValue(input, 'ok', false)) {
 			throw(new Error('Invalid KeetaAnchorError JSON object'));
 		}
+
+		// Extract error properties
+		let message = 'Internal error';
+		if (typeof input === 'object' && input !== null && 'error' in input && typeof input.error === 'string') {
+			message = input.error;
+		}
+
+		// Check if this is a KeetaAnchorUserError based on the name
+		if (typeof input === 'object' && input !== null && 'name' in input) {
+			if (input.name === 'KeetaAnchorUserError') {
+				return KeetaAnchorUserError.fromJSON(input);
+			}
+		}
+
+		// Create a new KeetaAnchorError
+		const error = new KeetaAnchorError(message);
+
+		// Restore statusCode if present
+		if (typeof input === 'object' && input !== null && 'statusCode' in input && typeof input.statusCode === 'number') {
+			error.statusCode = input.statusCode;
+		}
+
+		// Restore retryable if present
+		if (typeof input === 'object' && input !== null && 'retryable' in input && typeof input.retryable === 'boolean') {
+			error.retryable = input.retryable;
+		}
+
+		return error;
 	}
 }
 
@@ -85,5 +123,32 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 
 	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
 		return(super.asErrorResponse(contentType, this.message));
+	}
+
+	static fromJSON(input: unknown): KeetaAnchorUserError {
+		if (!hasPropWithValue(input, 'ok', false)) {
+			throw(new Error('Invalid KeetaAnchorUserError JSON object'));
+		}
+
+		// Extract error properties
+		let message = 'Internal error';
+		if (typeof input === 'object' && input !== null && 'error' in input && typeof input.error === 'string') {
+			message = input.error;
+		}
+
+		// Create a new KeetaAnchorUserError
+		const error = new KeetaAnchorUserError(message);
+
+		// Restore statusCode if present
+		if (typeof input === 'object' && input !== null && 'statusCode' in input && typeof input.statusCode === 'number') {
+			error.statusCode = input.statusCode;
+		}
+
+		// Restore retryable if present
+		if (typeof input === 'object' && input !== null && 'retryable' in input && typeof input.retryable === 'boolean') {
+			error.retryable = input.retryable;
+		}
+
+		return error;
 	}
 }
