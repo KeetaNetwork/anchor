@@ -40,3 +40,5 @@ jobs:
 
       - name: Setup dependencies
         run: make node_modules
+          # Needed to fetch packages from GitHub Package Registry
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
