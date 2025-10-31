@@ -20,32 +20,54 @@ function hasPropWithValue<PROP extends string, VALUE extends string | number | b
  * Extract common error properties from JSON input
  * This validates the structure and extracts properties needed for construction
  */
-function extractErrorProperties(input: unknown): { message: string; validated: true } {
+function extractErrorProperties(input: unknown, expectedClass?: { name: string }): { message: string; other: { [key: string]: unknown } } {
 	if (!hasPropWithValue(input, 'ok', false)) {
 		throw new Error('Invalid error JSON object');
 	}
 
+	if (typeof input !== 'object' || input === null) {
+		throw new Error('Invalid error JSON object');
+	}
+
+	// Verify the name matches if an expected class is provided
+	if (expectedClass && 'name' in input && input.name !== expectedClass.name) {
+		throw new Error(`Error name mismatch: expected ${expectedClass.name}, got ${input.name}`);
+	}
+
 	// Extract error message
 	let message = 'Internal error';
-	if (typeof input === 'object' && input !== null && 'error' in input && typeof input.error === 'string') {
+	if ('error' in input && typeof input.error === 'string') {
 		message = input.error;
 	}
 
-	return { message, validated: true };
+	// Extract other properties
+	const other: { [key: string]: unknown } = {};
+	for (const key in input) {
+		if (key !== 'error' && key !== 'ok') {
+			other[key] = (input as Record<string, unknown>)[key];
+		}
+	}
+
+	return { message, other };
 }
 
 /**
  * Base error class for all Keeta Anchor errors
  */
 export class KeetaAnchorError extends Error {
-	protected _name: string;
+	static readonly name: string = 'KeetaAnchorError';
+	#name: string;
 	#statusCode = 400;
 	#retryable = false;
 	protected keetaAnchorErrorObjectTypeID!: string;
 	private static readonly keetaAnchorErrorObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
 
 	get name(): string {
-		return(this._name);
+		return(this.#name);
+	}
+
+	protected set name(value: string) {
+		this.#name = value;
 	}
 
 	get statusCode(): number {
@@ -66,7 +88,7 @@ export class KeetaAnchorError extends Error {
 
 	constructor(message: string) {
 		super(message);
-		this._name = 'KeetaAnchorError';
+		this.#name = (this.constructor as typeof KeetaAnchorError).name;
 
 		Object.defineProperty(this, 'keetaAnchorErrorObjectTypeID', {
 			value: KeetaAnchorError.keetaAnchorErrorObjectTypeID,
@@ -78,19 +100,15 @@ export class KeetaAnchorError extends Error {
 	 * Protected method to restore error properties from JSON
 	 * This allows subclasses to properly restore properties without using any
 	 */
-	protected restoreFromJSON(input: unknown): void {
-		if (typeof input !== 'object' || input === null) {
-			return;
-		}
-
+	protected restoreFromJSON(other: { [key: string]: unknown }): void {
 		// Restore statusCode if present
-		if ('statusCode' in input && typeof input.statusCode === 'number') {
-			this.statusCode = input.statusCode;
+		if ('statusCode' in other && typeof other.statusCode === 'number') {
+			this.statusCode = other.statusCode;
 		}
 
 		// Restore retryable if present
-		if ('retryable' in input && typeof input.retryable === 'boolean') {
-			this.retryable = input.retryable;
+		if ('retryable' in other && typeof other.retryable === 'boolean') {
+			this.retryable = other.retryable;
 		}
 	}
 
@@ -120,18 +138,15 @@ export class KeetaAnchorError extends Error {
 			ok: false,
 			retryable: this.retryable,
 			error: this.message,
-			name: this._name,
+			name: this.#name,
 			statusCode: this.statusCode
 		};
 	}
 
 	static fromJSON(input: unknown): KeetaAnchorError {
-		const { message } = extractErrorProperties(input);
-
-		// Try to use the deserializer mapping if available
+		// Try to use the deserializer mapping if available for subclasses
 		if (typeof input === 'object' && input !== null && 'name' in input && typeof input.name === 'string') {
-			// Import and use the deserializer if the name doesn't match this class
-			if (input.name !== 'KeetaAnchorError') {
+			if (input.name !== this.name) {
 				// Check if this is a KeetaAnchorUserError based on the name
 				if (input.name === 'KeetaAnchorUserError') {
 					return KeetaAnchorUserError.fromJSON(input);
@@ -146,9 +161,9 @@ export class KeetaAnchorError extends Error {
 			}
 		}
 
-		// Create a new KeetaAnchorError and restore properties
-		const error = new KeetaAnchorError(message);
-		error.restoreFromJSON(input);
+		const { message, other } = extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
 		return error;
 	}
 }
@@ -157,6 +172,7 @@ export class KeetaAnchorError extends Error {
  * User-facing error class that extends KeetaAnchorError
  */
 export class KeetaAnchorUserError extends KeetaAnchorError {
+	static readonly name: string = 'KeetaAnchorUserError';
 	protected keetaAnchorUserErrorObjectTypeID!: string;
 	private static readonly keetaAnchorUserErrorObjectTypeID = 'a1e64819-14b6-45ac-a1ec-b9c0bdd51e7b';
 
@@ -166,7 +182,6 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 
 	constructor(message: string) {
 		super(message);
-		this._name = 'KeetaAnchorUserError';
 
 		Object.defineProperty(this, 'keetaAnchorUserErrorObjectTypeID', {
 			value: KeetaAnchorUserError.keetaAnchorUserErrorObjectTypeID,
@@ -179,11 +194,9 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 	}
 
 	static fromJSON(input: unknown): KeetaAnchorUserError {
-		const { message } = extractErrorProperties(input);
-
-		// Create a new KeetaAnchorUserError and restore properties
-		const error = new KeetaAnchorUserError(message);
-		error.restoreFromJSON(input);
+		const { message, other } = extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
 		return error;
 	}
 }
