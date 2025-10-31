@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 import { Errors } from './common.js';
-import { KeetaAnchorError } from '../../lib/error.js';
+import { deserializeError } from '../../lib/error-deserializer.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 
 test('KYC Error Serialization and Deserialization - VerificationNotFound', async function() {
@@ -16,7 +16,7 @@ test('KYC Error Serialization and Deserialization - VerificationNotFound', async
 	});
 
 	// Test deserialization
-	const deserialized = KeetaAnchorError.fromJSONWithSubclasses(serialized);
+	const deserialized = deserializeError(serialized);
 	expect(deserialized).toBeInstanceOf(Errors.VerificationNotFound);
 	expect(deserialized.message).toBe('Custom verification error');
 	expect(deserialized.name).toBe('KeetaKYCAnchorVerificationNotFoundError');
@@ -35,7 +35,7 @@ test('KYC Error Serialization and Deserialization - CertificateNotFound', async 
 	});
 
 	// Test deserialization
-	const deserialized = KeetaAnchorError.fromJSONWithSubclasses(serialized);
+	const deserialized = deserializeError(serialized);
 	expect(deserialized).toBeInstanceOf(Errors.CertificateNotFound);
 	expect(deserialized.message).toBe('Custom certificate error');
 	expect(deserialized.name).toBe('KeetaKYCAnchorCertificateNotFoundError');
@@ -66,7 +66,7 @@ test('KYC Error Serialization and Deserialization - PaymentRequired', async func
 	expect(serialized.token).toBe(tokenAccount.publicKeyString.get());
 
 	// Test deserialization
-	const deserialized = KeetaAnchorError.fromJSONWithSubclasses(serialized);
+	const deserialized = deserializeError(serialized);
 	expect(deserialized).toBeInstanceOf(Errors.PaymentRequired);
 	expect(deserialized.message).toBe('Custom payment message');
 	expect(deserialized.name).toBe('KeetaKYCAnchorCertificatePaymentRequired');
@@ -83,7 +83,7 @@ test('KYC Error Round-trip Serialization', async function() {
 	const verificationError = new Errors.VerificationNotFound('Test verification');
 	const verificationJson = JSON.stringify(verificationError.toJSON());
 	const verificationParsed = JSON.parse(verificationJson);
-	const verificationReconstructed = KeetaAnchorError.fromJSONWithSubclasses(verificationParsed);
+	const verificationReconstructed = deserializeError(verificationParsed);
 	
 	expect(verificationReconstructed.message).toBe(verificationError.message);
 	expect(verificationReconstructed.name).toBe(verificationError.name);
@@ -93,7 +93,7 @@ test('KYC Error Round-trip Serialization', async function() {
 	const certificateError = new Errors.CertificateNotFound('Test certificate');
 	const certificateJson = JSON.stringify(certificateError.toJSON());
 	const certificateParsed = JSON.parse(certificateJson);
-	const certificateReconstructed = KeetaAnchorError.fromJSONWithSubclasses(certificateParsed);
+	const certificateReconstructed = deserializeError(certificateParsed);
 	
 	expect(certificateReconstructed.message).toBe(certificateError.message);
 	expect(certificateReconstructed.name).toBe(certificateError.name);
@@ -113,7 +113,7 @@ test('KYC Error Round-trip Serialization', async function() {
 	);
 	const paymentJson = JSON.stringify(paymentError.toJSON());
 	const paymentParsed = JSON.parse(paymentJson);
-	const paymentReconstructed = KeetaAnchorError.fromJSONWithSubclasses(paymentParsed);
+	const paymentReconstructed = deserializeError(paymentParsed);
 	
 	expect(paymentReconstructed.message).toBe(paymentError.message);
 	expect(paymentReconstructed.name).toBe(paymentError.name);

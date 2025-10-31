@@ -5,7 +5,6 @@ import type {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as Signing from '../../lib/utils/signing.js';
 import {
-	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 
@@ -255,11 +254,6 @@ export const Errors: {
 	 */
 	PaymentRequired: KeetaKYCAnchorCertificatePaymentRequired
 }
-
-// Register KYC error subclasses for deserialization
-KeetaAnchorError.registerSubclass('KeetaKYCAnchorVerificationNotFoundError', KeetaKYCAnchorVerificationNotFoundError.fromJSON);
-KeetaAnchorError.registerSubclass('KeetaKYCAnchorCertificateNotFoundError', KeetaKYCAnchorCertificateNotFoundError.fromJSON);
-KeetaAnchorError.registerSubclass('KeetaKYCAnchorCertificatePaymentRequired', KeetaKYCAnchorCertificatePaymentRequired.fromJSON);
 
 export async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
 	return(await Signing.SignData(account, []));
