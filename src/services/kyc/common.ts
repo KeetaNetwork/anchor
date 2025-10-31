@@ -5,9 +5,9 @@ import type {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as Signing from '../../lib/utils/signing.js';
 import {
-	KeetaAnchorUserError,
-	extractErrorProperties
+	KeetaAnchorUserError
 } from '../../lib/error.js';
+import { extractErrorProperties } from '../../lib/error/common.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -88,7 +88,7 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 		this.statusCode = 400;
 	}
 
-	static fromJSON(input: unknown): KeetaKYCAnchorVerificationNotFoundError {
+	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorVerificationNotFoundError> {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -104,7 +104,7 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 		this.statusCode = 404;
 	}
 
-	static fromJSON(input: unknown): KeetaKYCAnchorCertificateNotFoundError {
+	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorCertificateNotFoundError> {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -159,7 +159,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 		};
 	}
 
-	static fromJSON(input: unknown): KeetaKYCAnchorCertificatePaymentRequired {
+	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorCertificatePaymentRequired> {
 		const { message, other } = extractErrorProperties(input, this);
 
 		// Extract required properties specific to PaymentRequired

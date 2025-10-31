@@ -1,3 +1,5 @@
+// Internal helper - not exported to avoid namespace pollution
+// The public version is exported from common.ts
 function hasPropWithValue<PROP extends string, VALUE extends string | number | boolean>(input: unknown, prop: PROP, value: VALUE): input is { [key in PROP]: VALUE } {
 	if (typeof input !== 'object' || input === null) {
 		return(false);
@@ -17,8 +19,10 @@ function hasPropWithValue<PROP extends string, VALUE extends string | number | b
 }
 
 /**
- * Extract common error properties from JSON input
+ * Internal helper to extract common error properties from JSON input
  * This validates the structure and extracts properties needed for construction
+ * Note: This is kept internal to avoid circular dependencies. The public version
+ * is exported from common.ts
  */
 function extractErrorProperties(input: unknown, expectedClass?: { name: string }): { message: string; other: { [key: string]: unknown } } {
 	if (!hasPropWithValue(input, 'ok', false)) {
@@ -44,7 +48,8 @@ function extractErrorProperties(input: unknown, expectedClass?: { name: string }
 	const other: { [key: string]: unknown } = {};
 	for (const key in input) {
 		if (key !== 'error' && key !== 'ok') {
-			other[key] = (input as Record<string, unknown>)[key];
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			other[key] = input[key as keyof typeof input];
 		}
 	}
 
@@ -88,6 +93,8 @@ export class KeetaAnchorError extends Error {
 
 	constructor(message: string) {
 		super(message);
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		// Need to cast to access the static name property from the constructor
 		this.#name = (this.constructor as typeof KeetaAnchorError).name;
 
 		Object.defineProperty(this, 'keetaAnchorErrorObjectTypeID', {
@@ -102,12 +109,18 @@ export class KeetaAnchorError extends Error {
 	 */
 	protected restoreFromJSON(other: { [key: string]: unknown }): void {
 		// Restore statusCode if present
-		if ('statusCode' in other && typeof other.statusCode === 'number') {
+		if ('statusCode' in other) {
+			if (typeof other.statusCode !== 'number') {
+				throw new Error('Invalid statusCode: expected number');
+			}
 			this.statusCode = other.statusCode;
 		}
 
 		// Restore retryable if present
-		if ('retryable' in other && typeof other.retryable === 'boolean') {
+		if ('retryable' in other) {
+			if (typeof other.retryable !== 'boolean') {
+				throw new Error('Invalid retryable: expected boolean');
+			}
 			this.retryable = other.retryable;
 		}
 	}
@@ -143,7 +156,17 @@ export class KeetaAnchorError extends Error {
 		};
 	}
 
-	static fromJSON(input: unknown): KeetaAnchorError {
+	// Memoized promise for loading the deserializer module
+	private static deserializerModulePromise: Promise<{ deserializeError: (input: unknown) => Promise<KeetaAnchorError> }> | null = null;
+
+	private static async loadDeserializer(): Promise<{ deserializeError: (input: unknown) => Promise<KeetaAnchorError> }> {
+		if (!this.deserializerModulePromise) {
+			this.deserializerModulePromise = import('./common.js') as Promise<{ deserializeError: (input: unknown) => Promise<KeetaAnchorError> }>;
+		}
+		return this.deserializerModulePromise;
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAnchorError> {
 		// Try to use the deserializer mapping if available for subclasses
 		if (typeof input === 'object' && input !== null && 'name' in input && typeof input.name === 'string') {
 			if (input.name !== this.name) {
@@ -153,8 +176,8 @@ export class KeetaAnchorError extends Error {
 				}
 				// For other types, try to use the common deserializer if available
 				try {
-					const { deserializeError } = require('./common.js');
-					return deserializeError(input);
+					const { deserializeError } = await this.loadDeserializer();
+					return await deserializeError(input);
 				} catch {
 					// If common.js is not available, fall through to default behavior
 				}
@@ -193,12 +216,10 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 		return(super.asErrorResponse(contentType, this.message));
 	}
 
-	static fromJSON(input: unknown): KeetaAnchorUserError {
+	static async fromJSON(input: unknown): Promise<KeetaAnchorUserError> {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
 		return error;
 	}
 }
-
-export { extractErrorProperties };
