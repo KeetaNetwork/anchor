@@ -92,7 +92,7 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
-		return error;
+		return(error);
 	}
 }
 
@@ -108,7 +108,7 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
-		return error;
+		return(error);
 	}
 }
 
@@ -148,7 +148,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 	}
 
 	toJSON(): { ok: false; retryable: boolean; error: string; name: string; statusCode: number; amount: string; token: string } {
-		return {
+		return({
 			ok: false,
 			retryable: this.retryable,
 			error: this.message,
@@ -156,7 +156,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 			statusCode: this.statusCode,
 			amount: `0x${this.amount.toString(16)}`,
 			token: this.token.publicKeyString.get()
-		};
+		});
 	}
 
 	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorCertificatePaymentRequired> {
@@ -164,11 +164,11 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 
 		// Extract required properties specific to PaymentRequired
 		if (!('amount' in other) || typeof other.amount !== 'string') {
-			throw new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid amount');
+			throw(new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid amount'));
 		}
 
 		if (!('token' in other) || typeof other.token !== 'string') {
-			throw new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid token');
+			throw(new Error('Invalid KeetaKYCAnchorCertificatePaymentRequired JSON object: missing or invalid token'));
 		}
 
 		const error = new this(
@@ -180,7 +180,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 		);
 
 		error.restoreFromJSON(other);
-		return error;
+		return(error);
 	}
 }
 

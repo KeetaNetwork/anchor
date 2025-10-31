@@ -24,18 +24,18 @@ function hasPropWithValue<PROP extends string, VALUE extends string | number | b
  * Note: This is kept internal to avoid circular dependencies. The public version
  * is exported from common.ts
  */
-function extractErrorProperties(input: unknown, expectedClass?: { name: string }): { message: string; other: { [key: string]: unknown } } {
+function extractErrorProperties(input: unknown, expectedClass?: { name: string }): { message: string; other: { [key: string]: unknown }} {
 	if (!hasPropWithValue(input, 'ok', false)) {
-		throw new Error('Invalid error JSON object');
+		throw(new Error('Invalid error JSON object'));
 	}
 
 	if (typeof input !== 'object' || input === null) {
-		throw new Error('Invalid error JSON object');
+		throw(new Error('Invalid error JSON object'));
 	}
 
 	// Verify the name matches if an expected class is provided
 	if (expectedClass && 'name' in input && input.name !== expectedClass.name) {
-		throw new Error(`Error name mismatch: expected ${expectedClass.name}, got ${input.name}`);
+		throw(new Error(`Error name mismatch: expected ${expectedClass.name}, got ${input.name}`));
 	}
 
 	// Extract error message
@@ -53,7 +53,7 @@ function extractErrorProperties(input: unknown, expectedClass?: { name: string }
 		}
 	}
 
-	return { message, other };
+	return({ message, other });
 }
 
 /**
@@ -76,7 +76,7 @@ export class KeetaAnchorError extends Error {
 	}
 
 	get statusCode(): number {
-		return this.#statusCode;
+		return(this.#statusCode);
 	}
 
 	protected set statusCode(value: number) {
@@ -84,7 +84,7 @@ export class KeetaAnchorError extends Error {
 	}
 
 	get retryable(): boolean {
-		return this.#retryable;
+		return(this.#retryable);
 	}
 
 	protected set retryable(value: boolean) {
@@ -93,8 +93,9 @@ export class KeetaAnchorError extends Error {
 
 	constructor(message: string) {
 		super(message);
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+
 		// Need to cast to access the static name property from the constructor
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		this.#name = (this.constructor as typeof KeetaAnchorError).name;
 
 		Object.defineProperty(this, 'keetaAnchorErrorObjectTypeID', {
@@ -111,7 +112,7 @@ export class KeetaAnchorError extends Error {
 		// Restore statusCode if present
 		if ('statusCode' in other) {
 			if (typeof other.statusCode !== 'number') {
-				throw new Error('Invalid statusCode: expected number');
+				throw(new Error('Invalid statusCode: expected number'));
 			}
 			this.statusCode = other.statusCode;
 		}
@@ -119,7 +120,7 @@ export class KeetaAnchorError extends Error {
 		// Restore retryable if present
 		if ('retryable' in other) {
 			if (typeof other.retryable !== 'boolean') {
-				throw new Error('Invalid retryable: expected boolean');
+				throw(new Error('Invalid retryable: expected boolean'));
 			}
 			this.retryable = other.retryable;
 		}
@@ -147,13 +148,13 @@ export class KeetaAnchorError extends Error {
 	}
 
 	toJSON(): { ok: false; retryable: boolean; error: string; name: string; statusCode: number } {
-		return {
+		return({
 			ok: false,
 			retryable: this.retryable,
 			error: this.message,
 			name: this.#name,
 			statusCode: this.statusCode
-		};
+		});
 	}
 
 	// Memoized promise for loading the deserializer module
@@ -161,23 +162,21 @@ export class KeetaAnchorError extends Error {
 
 	private static async loadDeserializer(): Promise<{ deserializeError: (input: unknown) => Promise<KeetaAnchorError> }> {
 		if (!this.deserializerModulePromise) {
+			// Need to cast the import result to the expected type
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			this.deserializerModulePromise = import('./common.js') as Promise<{ deserializeError: (input: unknown) => Promise<KeetaAnchorError> }>;
 		}
-		return this.deserializerModulePromise;
+		return(await this.deserializerModulePromise);
 	}
 
 	static async fromJSON(input: unknown): Promise<KeetaAnchorError> {
 		// Try to use the deserializer mapping if available for subclasses
 		if (typeof input === 'object' && input !== null && 'name' in input && typeof input.name === 'string') {
 			if (input.name !== this.name) {
-				// Check if this is a KeetaAnchorUserError based on the name
-				if (input.name === 'KeetaAnchorUserError') {
-					return KeetaAnchorUserError.fromJSON(input);
-				}
-				// For other types, try to use the common deserializer if available
+				// For subclasses, use the common deserializer to get the right type
 				try {
 					const { deserializeError } = await this.loadDeserializer();
-					return await deserializeError(input);
+					return(await deserializeError(input));
 				} catch {
 					// If common.js is not available, fall through to default behavior
 				}
@@ -187,7 +186,7 @@ export class KeetaAnchorError extends Error {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
-		return error;
+		return(error);
 	}
 }
 
@@ -220,6 +219,6 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 		const { message, other } = extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
-		return error;
+		return(error);
 	}
 }

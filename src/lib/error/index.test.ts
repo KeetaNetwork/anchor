@@ -26,9 +26,9 @@ test('Error Round-trip Serialization', async function() {
 	// Test KeetaAnchorError round-trip
 	const keetaAnchorError = new KeetaAnchorError('test error');
 	const serialized = JSON.stringify(keetaAnchorError.toJSON());
-	const parsed = JSON.parse(serialized);
+	const parsed: unknown = JSON.parse(serialized);
 	const deserialized = await KeetaAnchorError.fromJSON(parsed);
-	
+
 	expect(deserialized).toBeInstanceOf(KeetaAnchorError);
 	expect(deserialized.message).toBe(keetaAnchorError.message);
 	expect(deserialized.name).toBe(keetaAnchorError.name);
@@ -37,9 +37,9 @@ test('Error Round-trip Serialization', async function() {
 	// Test KeetaAnchorUserError round-trip
 	const keetaAnchorUserError = new KeetaAnchorUserError('user error');
 	const userSerialized = JSON.stringify(keetaAnchorUserError.toJSON());
-	const userParsed = JSON.parse(userSerialized);
+	const userParsed: unknown = JSON.parse(userSerialized);
 	const userDeserialized = await KeetaAnchorError.fromJSON(userParsed);
-	
+
 	expect(userDeserialized).toBeInstanceOf(KeetaAnchorUserError);
 	expect(userDeserialized.message).toBe(keetaAnchorUserError.message);
 	expect(userDeserialized.name).toBe(keetaAnchorUserError.name);
@@ -62,9 +62,9 @@ test('Error Deserialization using deserializeError', async function() {
 	// Test deserializing and round-tripping a KeetaAnchorError
 	const error = new KeetaAnchorError('test error');
 	const json = JSON.stringify(error.toJSON());
-	const parsed = JSON.parse(json);
+	const parsed: unknown = JSON.parse(json);
 	const errorDeserialized = await deserializeError(parsed);
-	
+
 	expect(errorDeserialized).toBeInstanceOf(KeetaAnchorError);
 	expect(errorDeserialized.message).toBe(error.message);
 	expect(errorDeserialized.name).toBe(error.name);
@@ -72,9 +72,9 @@ test('Error Deserialization using deserializeError', async function() {
 	// Test deserializing and round-tripping a KeetaAnchorUserError
 	const userError = new KeetaAnchorUserError('user error');
 	const userJson = JSON.stringify(userError.toJSON());
-	const userParsed = JSON.parse(userJson);
+	const userParsed: unknown = JSON.parse(userJson);
 	const userErrorDeserialized = await deserializeError(userParsed);
-	
+
 	expect(userErrorDeserialized).toBeInstanceOf(KeetaAnchorUserError);
 	expect(userErrorDeserialized.message).toBe(userError.message);
 	expect(userErrorDeserialized.name).toBe(userError.name);
