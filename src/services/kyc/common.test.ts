@@ -7,7 +7,7 @@ test('KYC Error Round-trip Serialization - VerificationNotFound', async function
 	const error = new Errors.VerificationNotFound('Custom verification error');
 	const json = JSON.stringify(error.toJSON());
 	const parsed = JSON.parse(json);
-	const deserialized = deserializeError(parsed);
+	const deserialized = await deserializeError(parsed);
 	
 	expect(deserialized).toBeInstanceOf(Errors.VerificationNotFound);
 	expect(deserialized.message).toBe(error.message);
@@ -18,7 +18,7 @@ test('KYC Error Round-trip Serialization - CertificateNotFound', async function(
 	const error = new Errors.CertificateNotFound('Custom certificate error');
 	const json = JSON.stringify(error.toJSON());
 	const parsed = JSON.parse(json);
-	const deserialized = deserializeError(parsed);
+	const deserialized = await deserializeError(parsed);
 	
 	expect(deserialized).toBeInstanceOf(Errors.CertificateNotFound);
 	expect(deserialized.message).toBe(error.message);
@@ -43,7 +43,7 @@ test('KYC Error Round-trip Serialization - PaymentRequired', async function() {
 	
 	const json = JSON.stringify(error.toJSON());
 	const parsed = JSON.parse(json);
-	const deserialized = deserializeError(parsed);
+	const deserialized = await deserializeError(parsed);
 	
 	expect(deserialized).toBeInstanceOf(Errors.PaymentRequired);
 	expect(deserialized.message).toBe(error.message);

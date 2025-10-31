@@ -27,7 +27,7 @@ test('Error Round-trip Serialization', async function() {
 	const keetaAnchorError = new KeetaAnchorError('test error');
 	const serialized = JSON.stringify(keetaAnchorError.toJSON());
 	const parsed = JSON.parse(serialized);
-	const deserialized = KeetaAnchorError.fromJSON(parsed);
+	const deserialized = await KeetaAnchorError.fromJSON(parsed);
 	
 	expect(deserialized).toBeInstanceOf(KeetaAnchorError);
 	expect(deserialized.message).toBe(keetaAnchorError.message);
@@ -38,7 +38,7 @@ test('Error Round-trip Serialization', async function() {
 	const keetaAnchorUserError = new KeetaAnchorUserError('user error');
 	const userSerialized = JSON.stringify(keetaAnchorUserError.toJSON());
 	const userParsed = JSON.parse(userSerialized);
-	const userDeserialized = KeetaAnchorError.fromJSON(userParsed);
+	const userDeserialized = await KeetaAnchorError.fromJSON(userParsed);
 	
 	expect(userDeserialized).toBeInstanceOf(KeetaAnchorUserError);
 	expect(userDeserialized.message).toBe(keetaAnchorUserError.message);
@@ -49,10 +49,10 @@ test('Error Round-trip Serialization', async function() {
 
 test('Error fromJSON with invalid input', async function() {
 	// Test that fromJSON throws on invalid input
-	expect(() => KeetaAnchorError.fromJSON({ ok: true })).toThrow('Invalid error JSON object');
-	expect(() => KeetaAnchorError.fromJSON(null)).toThrow('Invalid error JSON object');
-	expect(() => KeetaAnchorError.fromJSON('invalid')).toThrow('Invalid error JSON object');
-	expect(() => KeetaAnchorUserError.fromJSON({ ok: true })).toThrow('Invalid error JSON object');
+	await expect(async () => await KeetaAnchorError.fromJSON({ ok: true })).rejects.toThrow('Invalid error JSON object');
+	await expect(async () => await KeetaAnchorError.fromJSON(null)).rejects.toThrow('Invalid error JSON object');
+	await expect(async () => await KeetaAnchorError.fromJSON('invalid')).rejects.toThrow('Invalid error JSON object');
+	await expect(async () => await KeetaAnchorUserError.fromJSON({ ok: true })).rejects.toThrow('Invalid error JSON object');
 });
 
 test('Error Deserialization using deserializeError', async function() {
@@ -63,7 +63,7 @@ test('Error Deserialization using deserializeError', async function() {
 	const error = new KeetaAnchorError('test error');
 	const json = JSON.stringify(error.toJSON());
 	const parsed = JSON.parse(json);
-	const errorDeserialized = deserializeError(parsed);
+	const errorDeserialized = await deserializeError(parsed);
 	
 	expect(errorDeserialized).toBeInstanceOf(KeetaAnchorError);
 	expect(errorDeserialized.message).toBe(error.message);
@@ -73,14 +73,14 @@ test('Error Deserialization using deserializeError', async function() {
 	const userError = new KeetaAnchorUserError('user error');
 	const userJson = JSON.stringify(userError.toJSON());
 	const userParsed = JSON.parse(userJson);
-	const userErrorDeserialized = deserializeError(userParsed);
+	const userErrorDeserialized = await deserializeError(userParsed);
 	
 	expect(userErrorDeserialized).toBeInstanceOf(KeetaAnchorUserError);
 	expect(userErrorDeserialized.message).toBe(userError.message);
 	expect(userErrorDeserialized.name).toBe(userError.name);
 
 	// Test invalid input
-	expect(() => deserializeError({ ok: true })).toThrow('Invalid error JSON object');
-	expect(() => deserializeError(null)).toThrow('Invalid error JSON object');
-	expect(() => deserializeError('invalid')).toThrow('Invalid error JSON object');
+	await expect(async () => await deserializeError({ ok: true })).rejects.toThrow('Invalid error JSON object');
+	await expect(async () => await deserializeError(null)).rejects.toThrow('Invalid error JSON object');
+	await expect(async () => await deserializeError('invalid')).rejects.toThrow('Invalid error JSON object');
 });
