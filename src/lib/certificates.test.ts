@@ -472,7 +472,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a sharable object and grant a third user access
 	 */
-	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'phoneNumber', 'dateOfBirth' /* non-existent */]);
+	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'dateOfBirth', 'phoneNumber' /* non-existent */]);
 	await sharable.grantAccess(viewerAccountNoPrivate);
 
 	expect(sharable.principals.length).toBe(1);
