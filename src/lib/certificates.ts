@@ -986,8 +986,7 @@ export class SharableCertificateAttributes {
 
 		const temporaryUser = KeetaNetAccount.fromSeed(KeetaNetAccount.generateRandomSeed(), 0);
 		const contentsBuffer = Buffer.from(contentsString, 'utf-8');
-		const contentsBufferCompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibDeflateAsync(bufferToArrayBuffer(contentsBuffer));
-		const container = EncryptedContainer.fromPlaintext(arrayBufferToBuffer(contentsBufferCompressed), [temporaryUser], true);
+		const container = EncryptedContainer.fromPlaintext(bufferToArrayBuffer(contentsBuffer), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
 
 		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
@@ -1016,7 +1015,19 @@ export class SharableCertificateAttributes {
 		this.populatedFromInit = true;
 
 		const contentsBuffer = await this.container.getPlaintext();
-		const contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(contentsBuffer);
+
+		/*
+		 * Previously the content was Zlib compressed, but this was
+		 * redundant because the Encrypted Container already Zlib
+		 * compresses the contents, so handle both cases (compressed
+		 * and JSON) here
+		 */
+		let contentsBufferDecompressed: ArrayBuffer = contentsBuffer;
+		const contentsBufferUint8 = new Uint8Array(contentsBuffer);
+		const isCompressed = contentsBufferUint8[0] === 0x78;
+		if (isCompressed) {
+			contentsBufferDecompressed = await KeetaNetClient.lib.Utils.Buffer.ZlibInflateAsync(contentsBuffer);
+		}
 		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
 		const contentsJSON: unknown = JSON.parse(contentsString);
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);

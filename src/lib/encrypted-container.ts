@@ -7,8 +7,8 @@ import type {
 import { Buffer, arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import { isArray } from './utils/array.js';
 
-const zlibDeflate = KeetaNetLib.Utils.Buffer.ZlibDeflate; /* XXX:TODO: Change this to ZlibDeflateAsync when merged in */
-const zlibInflate = KeetaNetLib.Utils.Buffer.ZlibInflate; /* XXX:TODO: Change this to ZlibInflateAsync when merged in */
+const zlibDeflateAsync = KeetaNetLib.Utils.Buffer.ZlibDeflateAsync;
+const zlibInflateAsync = KeetaNetLib.Utils.Buffer.ZlibInflateAsync;
 const ASN1toJS = KeetaNetLib.Utils.ASN1.ASN1toJS;
 const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
 const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;
@@ -133,7 +133,7 @@ const oidDB = {
 * @returns The ASN.1 DER data
 */
 async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Promise<Buffer> {
-	const compressedPlaintext = Buffer.from(zlibDeflate(plaintext));
+	const compressedPlaintext = Buffer.from(await zlibDeflateAsync(plaintext));
 
 	const sequence: Partial<ContainerPackage> = [];
 
@@ -409,7 +409,7 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 		};
 	}
 
-	const plaintext = Buffer.from(zlibInflate(containedCompressed));
+	const plaintext = Buffer.from(await zlibInflateAsync(containedCompressed));
 
 	return({
 		version: inputInfo.version,
