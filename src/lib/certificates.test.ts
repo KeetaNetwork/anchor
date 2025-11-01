@@ -437,7 +437,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a User Certificate with sharable attributes
 	 */
-	// XXX:TODO The certificates cannot store ms precision dates yet, should we allow this or throw?
+	// The certificates cannot store ms precision times, so we round it down
 	const testDOB = new Date(Math.floor(((Date.now() - (35 * 365 * 24 * 60 * 60 * 1000)) / 1000)) * 1000); // Approx 35 years ago
 	builder1.setAttribute('fullName', false, 'Test User');
 	builder1.setAttribute('email', true, 'user@example.com');
@@ -472,7 +472,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a sharable object and grant a third user access
 	 */
-	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'phoneNumber', 'dateOfBirth' /* non-existent */]);
+	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'dateOfBirth', 'phoneNumber' /* non-existent */]);
 	await sharable.grantAccess(viewerAccountNoPrivate);
 
 	expect(sharable.principals.length).toBe(1);
