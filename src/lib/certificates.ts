@@ -61,6 +61,10 @@ async function walkObject(input: unknown, keyTransformer?: (key: string, input: 
 		return(input);
 	}
 
+	if (input instanceof Date) {
+		return(input);
+	}
+
 	if (Array.isArray(input)) {
 		const newArray = [];
 		let key = -1;
