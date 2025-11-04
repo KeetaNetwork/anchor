@@ -4,6 +4,7 @@ import { createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
 import { Certificate as KYCCertificate } from '../../lib/certificates.js';
+import { KeetaAnchorError } from '../../lib/error.js';
 
 import type {
 	Client as KeetaNetClient,
@@ -23,6 +24,7 @@ import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
+import { asleep } from '../../lib/utils/asleep.js';
 
 const PARANOID = true;
 
@@ -292,11 +294,6 @@ class KeetaKYCVerification {
 	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000, signal?: AbortSignal): Promise<KeetaKYCAnchorClientGetCertificateSuccessResponse> {
 		const startTime = Date.now();
 
-		// Check if already aborted
-		if (signal?.aborted) {
-			throw(new Error('Certificate wait aborted'));
-		}
-
 		while (Date.now() - startTime < timeout) {
 			// Check abort signal before each attempt
 			if (signal?.aborted) {
@@ -317,33 +314,25 @@ class KeetaKYCVerification {
 				// Use the server-provided retry delay, but respect the poll interval as a minimum
 				const waitTime = Math.max(result.retryAfter, pollInterval);
 
-				// Check if waiting would exceed the timeout
-				if (Date.now() - startTime + waitTime >= timeout) {
-					throw(new Error(`Timeout waiting for KYC certificates (${timeout}ms elapsed)`));
-				}
-
 				// Wait before retrying, checking abort signal periodically
-				await this.sleepWithAbort(waitTime, signal);
+				await asleep(waitTime, signal);
 
 			} catch (getCertificatesError) {
-				// Deserialize and handle different error types
-
-				// If it's already a known error type, check if it's retryable
-				if (getCertificatesError instanceof Error) {
-					const errorMessage = getCertificatesError.message;
-
-					// Check if this is a permanent error that should not be retried
-					const isPermanentError = this.isPermanentError(errorMessage);
-
-					if (isPermanentError) {
-						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${errorMessage}`);
+				// Check if this is a KeetaAnchorError with retryable property
+				if (getCertificatesError instanceof KeetaAnchorError) {
+					if (!getCertificatesError.retryable) {
+						// Non-retryable error, rethrow immediately
+						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${getCertificatesError.message}`);
 						throw(getCertificatesError);
 					}
+					// Retryable error, continue to next iteration after a delay
+					this.logger?.debug(`Retryable error fetching certificates for request ${this.id}, will retry after ${pollInterval}ms: ${getCertificatesError.message}`);
+					await asleep(pollInterval, signal);
+				} else {
+					// Unknown error type, rethrow as it might be fatal
+					this.logger?.error(`Unexpected error fetching certificates for request ${this.id}:`, getCertificatesError);
+					throw(getCertificatesError);
 				}
-
-				// For unknown errors, rethrow as they might be fatal
-				this.logger?.error(`Unexpected error fetching certificates for request ${this.id}:`, getCertificatesError);
-				throw(getCertificatesError);
 			}
 		}
 
@@ -351,51 +340,6 @@ class KeetaKYCVerification {
 		throw(new Error(`Timeout waiting for KYC certificates (${timeout}ms elapsed)`));
 	}
 
-	/**
-	 * Helper method to sleep for a given duration while respecting abort signals
-	 */
-	private async sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
-		return(await new Promise<void>((resolve, reject) => {
-			let abortHandler: (() => void) | undefined;
-
-			// Check if already aborted
-			if (signal?.aborted) {
-				reject(new Error('Sleep aborted'));
-				return;
-			}
-
-			const timeout = setTimeout(() => {
-				if (abortHandler) {
-					signal?.removeEventListener('abort', abortHandler);
-				}
-				resolve();
-			}, ms);
-
-			if (signal) {
-				abortHandler = () => {
-					clearTimeout(timeout);
-					reject(new Error('Sleep aborted'));
-				};
-				signal.addEventListener('abort', abortHandler, { once: true });
-			}
-		}));
-	}
-
-	/**
-	 * Determine if an error message indicates a permanent (non-retryable) error
-	 */
-	private isPermanentError(errorMessage: string): boolean {
-		// Patterns that indicate permanent failures
-		const permanentErrorPatterns = [
-			'Invalid response from KYC certificate service',
-			'internal error:',
-			'does not support',
-			'No KYC endpoints found',
-			'Failed to get certificate:' // HTTP errors (except 404 which is handled separately)
-		];
-
-		return(permanentErrorPatterns.some(pattern => errorMessage.includes(pattern)));
-	}
 }
 
 /**
@@ -562,18 +506,6 @@ class KeetaKYCAnchorClient {
 		});
 
 		/*
-		 * Handle retryable errors by passing them up to the caller to
-		 * retry.
-		 */
-		if (response.status === 404) {
-			return({
-				ok: false,
-				retryAfter: 500,
-				reason: 'Certificate not found'
-			});
-		}
-
-		/*
 		 * Handle other errors as fatal errors that should not be retried.
 		 */
 		if (!response.ok) {
@@ -586,7 +518,9 @@ class KeetaKYCAnchorClient {
 		}
 
 		if (!responseJSON.ok) {
-			throw(new Error(`KYC certificate request failed: ${responseJSON.error}`));
+			// Deserialize error using KeetaAnchorError.fromJSON if possible
+			const error = await KeetaAnchorError.fromJSON(responseJSON);
+			throw(error);
 		}
 
 		return({
