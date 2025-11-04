@@ -6,6 +6,7 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput } from './common.js';
+import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 
 const DEBUG = true;
 const logger = DEBUG ? console : undefined;
@@ -430,6 +431,8 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		updatedAt: currentDateString
 	};
 
+	const kycSharePrincipal = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
@@ -511,7 +514,20 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					transactions: [testTransaction],
 					total: '1'
 				})
-			}
+			},
+
+			shareKYC: async function(request) {
+				console.log('request.attributes', request.attributes);
+				const attributes = new SharableCertificateAttributes(request.attributes, { principals: [ kycSharePrincipal ]});
+
+				const firstName = await attributes.getAttribute('firstName');
+
+				if (firstName !== 'Alice') {
+					throw(new Error(`Invalid first name, got ${firstName}`));
+				}
+
+				return({});
+			},
 		}
 	});
 
@@ -566,4 +582,38 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	}
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
 	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
+
+	async function makeCertificate(name: string) {
+		const issuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const certificateBuilder = new CertificateBuilder({
+			subject: account,
+			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
+			issuer: issuer,
+			serial: 3,
+			validFrom: new Date(Date.now() - 30_000),
+			validTo: new Date(Date.now() + 120_000)
+		});
+		certificateBuilder.setAttribute('firstName', true, name);
+		const certificate = await certificateBuilder.build();
+		const certificateWithPrivate = new Certificate(await certificate.toDER(), { subjectKey: account });
+		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
+		await sharable.grantAccess(kycSharePrincipal);
+
+		return({ name: name, sharable, certificate });
+	}
+
+	const invalidNameCert = await makeCertificate('Invalid Name');
+
+	await expect(async function() {
+		await usdcProvider.shareKYCAttributes({
+			account: account,
+			attributes: invalidNameCert.sharable
+		});
+	}).rejects.toThrow();
+
+	const validNameCert = await makeCertificate('Alice');
+	await usdcProvider.shareKYCAttributes({
+		account: account,
+		attributes: validNameCert.sharable
+	});
 });

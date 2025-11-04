@@ -172,6 +172,7 @@ type ServiceMetadata = {
 					createPersistentForwarding?: ServiceMetadataEndpoint;
 					listPersistentForwarding?: ServiceMetadataEndpoint;
 					listTransactions?: ServiceMetadataEndpoint;
+					shareKYC?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: {

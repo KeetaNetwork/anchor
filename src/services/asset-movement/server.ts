@@ -16,7 +16,9 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
-	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse
+	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
+	KeetaAssetMovementAnchorShareKYCRequest,
+	KeetaAssetMovementAnchorShareKYCResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -35,7 +37,10 @@ import {
 	assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
-	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData
+	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+	assertKeetaAssetMovementAnchorShareKYCResponse,
+	assertKeetaAssetMovementAnchorShareKYCRequest,
+	getKeetaAssetMovementAnchorShareKYCRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -103,6 +108,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		 * Method to list transactions
 		 */
 		listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>>;
+
+		/**
+		 * Method to initiate a transfer
+		 */
+		shareKYC?: (request: KeetaAssetMovementAnchorShareKYCRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>>;
 	}
 };
 
@@ -333,6 +343,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			getSigningData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
 		});
 
+		addRoute({
+			method: 'POST',
+			handlerName: 'shareKYC',
+			assertRequest: assertKeetaAssetMovementAnchorShareKYCRequest,
+			assertResponse: assertKeetaAssetMovementAnchorShareKYCResponse,
+			getSigningData: getKeetaAssetMovementAnchorShareKYCRequestSigningData
+		});
+
 		return(routes);
 	}
 
@@ -342,12 +360,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		const routes = [
 			'initiateTransfer',
 			'listTransactions',
-			'listTransactions',
 			// XXX:TODO these two should be done later
 			'createPersistentForwardingTemplate',
 			'listPersistentForwardingTemplate',
 			'createPersistentForwarding',
 			'listPersistentForwarding',
+			'shareKYC',
 			[ 'getTransferStatus', 'getTransferStatus/{id}' ]
 		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
 

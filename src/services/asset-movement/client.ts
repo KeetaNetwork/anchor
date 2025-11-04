@@ -23,7 +23,10 @@ import type {
 	KeetaAssetMovementAnchorlistTransactionsClientRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
 	PersistentAddressTemplateData,
-	KeetaAssetMovementAnchorGetTransferStatusClientRequest
+	KeetaAssetMovementAnchorGetTransferStatusClientRequest,
+	KeetaAssetMovementAnchorShareKYCClientRequest,
+	KeetaAssetMovementAnchorShareKYCRequest,
+	KeetaAssetMovementAnchorShareKYCResponse
 } from './common.js';
 import {
 	assertKeetaSupportedAssets,
@@ -36,12 +39,14 @@ import {
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
+	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 	isKeetaAssetMovementAnchorGetExchangeStatusResponse,
 	isKeetaAssetMovementAnchorInitiateTransferResponse,
 	isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
-	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	isKeetaAssetMovementAnchorShareKYCResponse
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
@@ -312,7 +317,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		account?: KeetaNetAccount | undefined;
 		params?: { [key: string]: string; } | undefined;
 		body?: Request | undefined;
-		serializeRequest?: (body: Request) => SerializedRequest;
+		serializeRequest?: (body: Request) => (SerializedRequest | Promise<Omit<SerializedRequest, 'signed'>>);
 
 		getSignedData?: (request: SerializedRequest) => Signable;
 		isResponse: (data: unknown) => data is Response;
@@ -322,7 +327,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		let serializedRequest;
 
 		if (input.body && input.serializeRequest) {
-			serializedRequest = input.serializeRequest(input.body);
+			serializedRequest = await input.serializeRequest(input.body);
 		} else {
 			serializedRequest = input.body;
 		}
@@ -352,7 +357,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		let body: BodyInit | null = null;
 		if (input.method === 'POST') {
 			headers['Content-Type'] = 'application/json';
-			body = JSON.stringify({ ...input.body, signed });
+			body = JSON.stringify({ ...serializedRequest, signed });
 		} else {
 			if (signed) {
 				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account?.assertAccount() ?? null });
@@ -573,6 +578,41 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		this.logger?.debug(`list persistent transactions request successful, ${requestInformationJSON.transactions}`);
 
 		return(requestInformationJSON);
+	}
+
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest): Promise<void> {
+		this.logger?.debug('Sharing KYC attributes');
+
+		await this.#makeRequest<
+			KeetaAssetMovementAnchorShareKYCResponse,
+			KeetaAssetMovementAnchorShareKYCClientRequest,
+			KeetaAssetMovementAnchorShareKYCRequest
+		>({
+			method: 'POST',
+			endpoint: 'shareKYC',
+			account: request.account,
+			async serializeRequest(body) {
+				let attributes;
+				if (typeof body.attributes === 'string') {
+					attributes = body.attributes;
+				} else {
+					attributes = await body.attributes.export({ format: 'string' });
+				}
+
+				console.log('sending attributes', attributes);
+	
+				return({
+					account: body.account.assertAccount().publicKeyString.get(),
+					attributes: attributes
+				});
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorShareKYCRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
+		});
+
+		this.logger?.debug(`done sharing KYC attributes`);
+
 	}
 }
 
