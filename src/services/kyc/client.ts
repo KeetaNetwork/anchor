@@ -277,17 +277,113 @@ class KeetaKYCVerification {
 	/**
 	 * Wait for the certificates to be available, polling at the given interval
 	 * and timing out after the given timeout period.
+	 *
+	 * @param pollInterval - The interval in milliseconds between polling attempts (default: 500ms)
+	 * @param timeout - The maximum time in milliseconds to wait for certificates (default: 600000ms = 10 minutes)
+	 * @param signal - Optional AbortSignal to cancel the waiting operation
+	 * @returns A promise that resolves with the certificate response
+	 * @throws Error if timeout is reached or operation is aborted
 	 */
-	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
-		for (const startTime = Date.now(); Date.now() - startTime < timeout; ) {
+	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000, signal?: AbortSignal): Promise<Extract<KeetaKYCAnchorClientGetCertificateResponse, { ok: true }>> {
+		const startTime = Date.now();
+
+		// Check if already aborted
+		if (signal?.aborted) {
+			throw(new Error('Certificate wait aborted'));
+		}
+
+		while (Date.now() - startTime < timeout) {
+			// Check abort signal before each attempt
+			if (signal?.aborted) {
+				throw(new Error('Certificate wait aborted'));
+			}
+
 			try {
-				return(await this.getCertificates());
+				const result = await this.getCertificates();
+
+				if (result.ok) {
+					// Successfully retrieved certificates
+					return(result);
+				}
+
+				// Handle retryable response (e.g., certificate not ready yet)
+				this.logger?.debug(`Certificate not ready for request ${this.id}, will retry after ${result.retryAfter}ms. Reason: ${result.reason}`);
+
+				// Use the server-provided retry delay, but respect the poll interval as a minimum
+				const waitTime = Math.max(result.retryAfter, pollInterval);
+
+				// Check if waiting would exceed the timeout
+				if (Date.now() - startTime + waitTime >= timeout) {
+					throw(new Error(`Timeout waiting for KYC certificates (${timeout}ms elapsed)`));
+				}
+
+				// Wait before retrying, checking abort signal periodically
+				await this.sleepWithAbort(waitTime, signal);
+
 			} catch (getCertificatesError) {
-				/* XXX:TODO */
+				// Deserialize and handle different error types
+
+				// If it's already a known error type, check if it's retryable
+				if (getCertificatesError instanceof Error) {
+					// Check for specific error messages that indicate permanent failures
+					const errorMessage = getCertificatesError.message;
+
+					// Fatal errors that should not be retried
+					if (
+						errorMessage.includes('Invalid response from KYC certificate service') ||
+						errorMessage.includes('internal error:') ||
+						errorMessage.includes('does not support') ||
+						errorMessage.includes('No KYC endpoints found')
+					) {
+						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${errorMessage}`);
+						throw(getCertificatesError);
+					}
+
+					// HTTP errors that are fatal (except 404 which is handled in getCertificates)
+					if (errorMessage.includes('Failed to get certificate:')) {
+						this.logger?.error(`HTTP error fetching certificates for request ${this.id}: ${errorMessage}`);
+						throw(getCertificatesError);
+					}
+				}
+
+				// For unknown errors, rethrow as they might be fatal
+				this.logger?.error(`Unexpected error fetching certificates for request ${this.id}:`, getCertificatesError);
 				throw(getCertificatesError);
 			}
 		}
-		throw(new Error('Timeout waiting for KYC certificates'));
+
+		// Timeout reached
+		throw(new Error(`Timeout waiting for KYC certificates (${timeout}ms elapsed)`));
+	}
+
+	/**
+	 * Helper method to sleep for a given duration while respecting abort signals
+	 */
+	private async sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+		return(await new Promise<void>((resolve, reject) => {
+			let abortHandler: (() => void) | undefined;
+
+			// Check if already aborted
+			if (signal?.aborted) {
+				reject(new Error('Sleep aborted'));
+				return;
+			}
+
+			const timeout = setTimeout(() => {
+				if (abortHandler) {
+					signal?.removeEventListener('abort', abortHandler);
+				}
+				resolve();
+			}, ms);
+
+			if (signal) {
+				abortHandler = () => {
+					clearTimeout(timeout);
+					reject(new Error('Sleep aborted'));
+				};
+				signal.addEventListener('abort', abortHandler, { once: true });
+			}
+		}));
 	}
 }
 
