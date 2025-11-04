@@ -1666,6 +1666,8 @@ class Resolver {
 			throw(new Error('No valid root metadata found'));
 		}
 
+		this.#logger?.debug(`Resolver:${this.id}`, 'Total valid root metadata count:', allRootMetadata.length);
+
 		// If there's only one root, return it directly
 		if (allRootMetadata.length === 1) {
 			return(allRootMetadata[0]);

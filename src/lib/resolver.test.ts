@@ -715,13 +715,16 @@ test('Multi-Root Resolver Tests', async function() {
 		} satisfies ServiceMetadataExternalizable)
 	});
 
-	fees1.enable();
+	// Setup second root with overlapping and different services - use same client
+	const testAccountRoot2UserClient = new KeetaNetClient.UserClient({
+		client: userClient1.client,
+		signer: testAccountRoot2,
+		usePublishAid: false,
+		network: userClient1.network,
+		networkAlias: 'test'
+	});
 
-	// Setup second root with overlapping and different services
-	const { userClient: userClient2, fees: fees2 } = await createNodeAndClient(testAccountRoot2);
-	fees2.disable();
-
-	await userClient2.setInfo({
+	await testAccountRoot2UserClient.setInfo({
 		name: '',
 		description: '',
 		metadata: Resolver.Metadata.formatMetadata({
@@ -762,7 +765,7 @@ test('Multi-Root Resolver Tests', async function() {
 		} satisfies ServiceMetadataExternalizable)
 	});
 
-	fees2.enable();
+	fees1.enable();
 
 	// Test 1: Single root resolver (backward compatibility)
 	const resolverSingle = new Resolver({
@@ -827,7 +830,7 @@ test('Multi-Root Resolver Tests', async function() {
 	// Test 3: Reverse priority (root2 first, then root1)
 	const resolverMultiReverse = new Resolver({
 		root: [testAccountRoot2, testAccountRoot1],
-		client: userClient2,
+		client: userClient1,
 		trustedCAs: []
 	});
 
