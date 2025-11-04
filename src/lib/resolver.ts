@@ -709,6 +709,11 @@ type ValuizableInstance = { value: ValuizableMethod };
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
 const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
+/**
+ * Instance type ID for anonymous Valuizable methods created dynamically
+ */
+const ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID = 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd';
+
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -777,7 +782,7 @@ class Metadata implements ValuizableInstance {
 			return(true);
 		}
 
-		if (value.instanceTypeID === 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd') {
+		if (value.instanceTypeID === ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID) {
 			return(true);
 		}
 
@@ -1159,7 +1164,7 @@ class Metadata implements ValuizableInstance {
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
 					Object.defineProperty(newValuizableObject, 'instanceTypeID', {
-						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 						enumerable: false
 					});
 
@@ -1176,7 +1181,7 @@ class Metadata implements ValuizableInstance {
 					};
 
 					Object.defineProperty(newValueEntry, 'instanceTypeID', {
-						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 						enumerable: false
 					});
 
@@ -1725,7 +1730,9 @@ class Resolver {
 
 						const mergedServiceType: ValuizableObject = { ...existingServiceType };
 						for (const [serviceId, serviceConfig] of Object.entries(serviceTypeObj)) {
-							// Higher priority (later in iteration) overwrites
+							// Overwrite with current entry. Since we iterate in reverse order
+							// (low priority to high priority), higher priority entries (lower index)
+							// will be written last and thus take precedence.
 							mergedServiceType[serviceId] = serviceConfig;
 						}
 
@@ -1738,7 +1745,7 @@ class Resolver {
 							throw(new Error(`Expected object type for merged service type, got ${expect}`));
 						};
 						Object.defineProperty(mergedServiceTypeValuizable, 'instanceTypeID', {
-							value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+							value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 							enumerable: false
 						});
 						mergedServices[serviceType] = mergedServiceTypeValuizable;
@@ -1756,7 +1763,7 @@ class Resolver {
 			throw(new Error(`Expected object type for merged currency map, got ${expect}`));
 		};
 		Object.defineProperty(mergedCurrencyMapValuizable, 'instanceTypeID', {
-			value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 			enumerable: false
 		});
 
@@ -1768,7 +1775,7 @@ class Resolver {
 			throw(new Error(`Expected object type for merged services, got ${expect}`));
 		};
 		Object.defineProperty(mergedServicesValuizable, 'instanceTypeID', {
-			value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 			enumerable: false
 		});
 
