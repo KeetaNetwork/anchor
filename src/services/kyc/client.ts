@@ -319,7 +319,7 @@ class KeetaKYCVerification {
 
 			} catch (getCertificatesError) {
 				// Check if this is a KeetaAnchorError with retryable property
-				if (getCertificatesError instanceof KeetaAnchorError) {
+				if (KeetaAnchorError.isInstance(getCertificatesError)) {
 					if (!getCertificatesError.retryable) {
 						// Non-retryable error, rethrow immediately
 						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${getCertificatesError.message}`);
