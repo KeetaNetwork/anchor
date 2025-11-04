@@ -10,8 +10,8 @@
  * This function should be replaced when the `@keetanetwork/keetanet-client`
  * `KeetaNet.lib.Utils.Helper.asleep` method is updated to support `AbortSignal`.
  */
-export async function asleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return(await new Promise<void>((resolve, reject) => {
+export function asleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return(new Promise<void>((resolve, reject) => {
 		let abortHandler: (() => void) | undefined;
 
 		// Check if already aborted
