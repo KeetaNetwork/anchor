@@ -70,6 +70,11 @@ type KeetaKYCAnchorClientGetCertificateResponse = ({
 	reason: string;
 });
 
+/**
+ * The successful response type for certificate retrieval operations
+ */
+type KeetaKYCAnchorClientGetCertificateSuccessResponse = Extract<KeetaKYCAnchorClientGetCertificateResponse, { ok: true }>;
+
 type KeetaKYCAnchorClientCreateVerificationRequest = Omit<KeetaKYCAnchorCreateVerificationRequest, 'signed' | 'account'> & {
 	account: InstanceType<typeof KeetaNetLib.Account>;
 };
@@ -284,7 +289,7 @@ class KeetaKYCVerification {
 	 * @returns A promise that resolves with the certificate response
 	 * @throws Error if timeout is reached or operation is aborted
 	 */
-	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000, signal?: AbortSignal): Promise<Extract<KeetaKYCAnchorClientGetCertificateResponse, { ok: true }>> {
+	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000, signal?: AbortSignal): Promise<KeetaKYCAnchorClientGetCertificateSuccessResponse> {
 		const startTime = Date.now();
 
 		// Check if already aborted
@@ -325,23 +330,13 @@ class KeetaKYCVerification {
 
 				// If it's already a known error type, check if it's retryable
 				if (getCertificatesError instanceof Error) {
-					// Check for specific error messages that indicate permanent failures
 					const errorMessage = getCertificatesError.message;
 
-					// Fatal errors that should not be retried
-					if (
-						errorMessage.includes('Invalid response from KYC certificate service') ||
-						errorMessage.includes('internal error:') ||
-						errorMessage.includes('does not support') ||
-						errorMessage.includes('No KYC endpoints found')
-					) {
-						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${errorMessage}`);
-						throw(getCertificatesError);
-					}
+					// Check if this is a permanent error that should not be retried
+					const isPermanentError = this.isPermanentError(errorMessage);
 
-					// HTTP errors that are fatal (except 404 which is handled in getCertificates)
-					if (errorMessage.includes('Failed to get certificate:')) {
-						this.logger?.error(`HTTP error fetching certificates for request ${this.id}: ${errorMessage}`);
+					if (isPermanentError) {
+						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${errorMessage}`);
 						throw(getCertificatesError);
 					}
 				}
@@ -384,6 +379,22 @@ class KeetaKYCVerification {
 				signal.addEventListener('abort', abortHandler, { once: true });
 			}
 		}));
+	}
+
+	/**
+	 * Determine if an error message indicates a permanent (non-retryable) error
+	 */
+	private isPermanentError(errorMessage: string): boolean {
+		// Patterns that indicate permanent failures
+		const permanentErrorPatterns = [
+			'Invalid response from KYC certificate service',
+			'internal error:',
+			'does not support',
+			'No KYC endpoints found',
+			'Failed to get certificate:' // HTTP errors (except 404 which is handled separately)
+		];
+
+		return(permanentErrorPatterns.some(pattern => errorMessage.includes(pattern)));
 	}
 }
 

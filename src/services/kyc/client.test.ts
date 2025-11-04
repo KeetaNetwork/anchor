@@ -315,6 +315,7 @@ test('KYC Anchor Client - waitForCertificates with immediate success', async fun
 		validFrom: new Date(Date.now() - 30_000),
 		validTo: new Date(Date.now() + 120_000)
 	});
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const rootCA = await rootCABuilder.build();
 
 	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -400,6 +401,7 @@ test('KYC Anchor Client - waitForCertificates with immediate success', async fun
 	await server.start();
 	serverURL = server.url;
 
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const results = await client.setInfo({
 		description: 'KYC Anchor Test Root',
 		name: 'TEST',
@@ -471,6 +473,7 @@ test('KYC Anchor Client - waitForCertificates with delayed success', async funct
 		validFrom: new Date(Date.now() - 30_000),
 		validTo: new Date(Date.now() + 120_000)
 	});
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const rootCA = await rootCABuilder.build();
 
 	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -564,6 +567,7 @@ test('KYC Anchor Client - waitForCertificates with delayed success', async funct
 	await server.start();
 	serverURL = server.url;
 
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const results = await client.setInfo({
 		description: 'KYC Anchor Test Root',
 		name: 'TEST',
@@ -639,6 +643,7 @@ test('KYC Anchor Client - waitForCertificates timeout', async function() {
 		validFrom: new Date(Date.now() - 30_000),
 		validTo: new Date(Date.now() + 120_000)
 	});
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const rootCA = await rootCABuilder.build();
 
 	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -701,6 +706,7 @@ test('KYC Anchor Client - waitForCertificates timeout', async function() {
 	await server.start();
 	serverURL = server.url;
 
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const results = await client.setInfo({
 		description: 'KYC Anchor Test Root',
 		name: 'TEST',
@@ -772,6 +778,7 @@ test('KYC Anchor Client - waitForCertificates abort signal', async function() {
 		validFrom: new Date(Date.now() - 30_000),
 		validTo: new Date(Date.now() + 120_000)
 	});
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const rootCA = await rootCABuilder.build();
 
 	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -834,6 +841,7 @@ test('KYC Anchor Client - waitForCertificates abort signal', async function() {
 	await server.start();
 	serverURL = server.url;
 
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	const results = await client.setInfo({
 		description: 'KYC Anchor Test Root',
 		name: 'TEST',
