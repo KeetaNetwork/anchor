@@ -7,7 +7,6 @@ import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
-import { extractErrorProperties } from '../../lib/error/common.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -81,47 +80,67 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 });
 
 class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
-	static readonly name: string = 'KeetaKYCAnchorVerificationNotFoundError';
+	static override readonly name: string = 'KeetaKYCAnchorVerificationNotFoundError';
+	private KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID!: string;
+	private static readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID = '79d7036f-58ad-4eec-b64c-26bdf98cd3c1';
 
 	constructor(message?: string) {
 		super(message ?? 'Verification ID not found');
 		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID', {
+			value: KeetaKYCAnchorVerificationNotFoundError.KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID,
+			enumerable: false
+		});
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorVerificationNotFoundError> {
-		const { message, other } = extractErrorProperties(input, this);
-		const error = new this(message);
-		error.restoreFromJSON(other);
-		return(error);
+	static isInstance(input: unknown): input is KeetaKYCAnchorVerificationNotFoundError {
+		return(this.hasPropWithValue(input, 'KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID', KeetaKYCAnchorVerificationNotFoundError.KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID));
 	}
 }
 
 class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
-	static readonly name: string = 'KeetaKYCAnchorCertificateNotFoundError';
+	static override readonly name: string = 'KeetaKYCAnchorCertificateNotFoundError';
+	private KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID!: string;
+	private static readonly KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID = '6f4d9620-df33-468e-ae03-898d4fa67aeb';
 
 	constructor(message?: string) {
 		super(message ?? 'Certificate not found (pending)');
 		this.statusCode = 404;
+
+		Object.defineProperty(this, 'KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID', {
+			value: KeetaKYCAnchorCertificateNotFoundError.KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID,
+			enumerable: false
+		});
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorCertificateNotFoundError> {
-		const { message, other } = extractErrorProperties(input, this);
-		const error = new this(message);
-		error.restoreFromJSON(other);
-		return(error);
+	static isInstance(input: unknown): input is KeetaKYCAnchorCertificateNotFoundError {
+		return(this.hasPropWithValue(input, 'KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID', KeetaKYCAnchorCertificateNotFoundError.KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID));
 	}
 }
 
 class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
-	static readonly name: string = 'KeetaKYCAnchorCertificatePaymentRequired';
+	static override readonly name: string = 'KeetaKYCAnchorCertificatePaymentRequired';
+	private KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID!: string;
+	private static readonly KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID = '92b2481d-b29b-4fa2-a295-3a47d99c0869';
 	readonly amount: bigint;
 	readonly token: KeetaNetToken;
+
 	constructor(cost: { amount: bigint | string; token: KeetaNetToken | string; }, message?: string) {
 		super(message ?? 'Payment required for certificate');
 		this.statusCode = 402;
 
 		this.amount = BigInt(cost.amount);
 		this.token = KeetaNet.lib.Account.toAccount<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>(cost.token);
+
+		Object.defineProperty(this, 'KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID', {
+			value: KeetaKYCAnchorCertificatePaymentRequired.KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaKYCAnchorCertificatePaymentRequired {
+		return(this.hasPropWithValue(input, 'KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID', KeetaKYCAnchorCertificatePaymentRequired.KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID));
 	}
 
 	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
@@ -160,7 +179,7 @@ class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 	}
 
 	static async fromJSON(input: unknown): Promise<KeetaKYCAnchorCertificatePaymentRequired> {
-		const { message, other } = extractErrorProperties(input, this);
+		const { message, other } = this.extractErrorProperties(input, this);
 
 		// Extract required properties specific to PaymentRequired
 		if (!('amount' in other) || typeof other.amount !== 'string') {
