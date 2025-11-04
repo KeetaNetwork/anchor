@@ -50,7 +50,7 @@ export class KeetaAnchorError extends Error {
 	#name: string;
 	#statusCode = 400;
 	#retryable = false;
-	private keetaAnchorErrorObjectTypeID!: string;
+	private readonly keetaAnchorErrorObjectTypeID!: string;
 	private static readonly keetaAnchorErrorObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
 	protected userError = false;
 
@@ -99,7 +99,7 @@ export class KeetaAnchorError extends Error {
 		// Restore statusCode if present
 		if ('statusCode' in other) {
 			if (typeof other.statusCode !== 'number') {
-				throw(new Error('Invalid statusCode: expected number'));
+				throw(new TypeError('Invalid statusCode: expected number'));
 			}
 			this.statusCode = other.statusCode;
 		}
@@ -107,7 +107,7 @@ export class KeetaAnchorError extends Error {
 		// Restore retryable if present
 		if ('retryable' in other) {
 			if (typeof other.retryable !== 'boolean') {
-				throw(new Error('Invalid retryable: expected boolean'));
+				throw(new TypeError('Invalid retryable: expected boolean'));
 			}
 			this.retryable = other.retryable;
 		}
@@ -236,7 +236,7 @@ export class KeetaAnchorError extends Error {
  */
 export class KeetaAnchorUserError extends KeetaAnchorError {
 	static readonly name: string = 'KeetaAnchorUserError';
-	private keetaAnchorUserErrorObjectTypeID!: string;
+	private readonly keetaAnchorUserErrorObjectTypeID!: string;
 	private static readonly keetaAnchorUserErrorObjectTypeID = 'a1e64819-14b6-45ac-a1ec-b9c0bdd51e7b';
 	protected override userError = true;
 

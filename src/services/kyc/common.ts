@@ -81,7 +81,7 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 
 class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaKYCAnchorVerificationNotFoundError';
-	private KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID!: string;
+	private readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID!: string;
 	private static readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID = '79d7036f-58ad-4eec-b64c-26bdf98cd3c1';
 
 	constructor(message?: string) {
@@ -101,7 +101,7 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 
 class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaKYCAnchorCertificateNotFoundError';
-	private KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID!: string;
+	private readonly KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID!: string;
 	private static readonly KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID = '6f4d9620-df33-468e-ae03-898d4fa67aeb';
 
 	constructor(message?: string) {
@@ -121,7 +121,7 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 
 class KeetaKYCAnchorCertificatePaymentRequired extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaKYCAnchorCertificatePaymentRequired';
-	private KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID!: string;
+	private readonly KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID!: string;
 	private static readonly KeetaKYCAnchorCertificatePaymentRequiredObjectTypeID = '92b2481d-b29b-4fa2-a295-3a47d99c0869';
 	readonly amount: bigint;
 	readonly token: KeetaNetToken;
