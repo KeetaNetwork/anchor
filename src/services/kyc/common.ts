@@ -107,6 +107,7 @@ class KeetaKYCAnchorCertificateNotFoundError extends KeetaAnchorUserError {
 	constructor(message?: string) {
 		super(message ?? 'Certificate not found (pending)');
 		this.statusCode = 404;
+		this.retryable = true;
 
 		Object.defineProperty(this, 'KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID', {
 			value: KeetaKYCAnchorCertificateNotFoundError.KeetaKYCAnchorCertificateNotFoundErrorObjectTypeID,

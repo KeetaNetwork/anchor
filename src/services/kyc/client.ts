@@ -4,6 +4,7 @@ import { createIs } from 'typia';
 
 import { getDefaultResolver } from '../../config.js';
 import { Certificate as KYCCertificate } from '../../lib/certificates.js';
+import { KeetaAnchorError } from '../../lib/error.js';
 
 import type {
 	Client as KeetaNetClient,
@@ -23,6 +24,7 @@ import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
+import { asleep } from '../../lib/utils/asleep.js';
 
 const PARANOID = true;
 
@@ -69,6 +71,11 @@ type KeetaKYCAnchorClientGetCertificateResponse = ({
 	retryAfter: number;
 	reason: string;
 });
+
+/**
+ * The successful response type for certificate retrieval operations
+ */
+type KeetaKYCAnchorClientGetCertificateSuccessResponse = Extract<KeetaKYCAnchorClientGetCertificateResponse, { ok: true }>;
 
 type KeetaKYCAnchorClientCreateVerificationRequest = Omit<KeetaKYCAnchorCreateVerificationRequest, 'signed' | 'account'> & {
 	account: InstanceType<typeof KeetaNetLib.Account>;
@@ -277,18 +284,62 @@ class KeetaKYCVerification {
 	/**
 	 * Wait for the certificates to be available, polling at the given interval
 	 * and timing out after the given timeout period.
+	 *
+	 * @param pollInterval - The interval in milliseconds between polling attempts (default: 500ms)
+	 * @param timeout - The maximum time in milliseconds to wait for certificates (default: 600000ms = 10 minutes)
+	 * @param signal - Optional AbortSignal to cancel the waiting operation
+	 * @returns A promise that resolves with the certificate response
+	 * @throws Error if timeout is reached or operation is aborted
 	 */
-	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
-		for (const startTime = Date.now(); Date.now() - startTime < timeout; ) {
+	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000, signal?: AbortSignal): Promise<KeetaKYCAnchorClientGetCertificateSuccessResponse> {
+		const startTime = Date.now();
+
+		while (Date.now() - startTime < timeout) {
+			// Check abort signal before each attempt
+			if (signal?.aborted) {
+				throw(new Error('Certificate wait aborted'));
+			}
+
 			try {
-				return(await this.getCertificates());
+				const result = await this.getCertificates();
+
+				if (result.ok) {
+					// Successfully retrieved certificates
+					return(result);
+				}
+
+				// Handle retryable response (e.g., certificate not ready yet)
+				this.logger?.debug(`Certificate not ready for request ${this.id}, will retry after ${result.retryAfter}ms. Reason: ${result.reason}`);
+
+				// Use the server-provided retry delay, but respect the poll interval as a minimum
+				const waitTime = Math.max(result.retryAfter, pollInterval);
+
+				// Wait before retrying, checking abort signal periodically
+				await asleep(waitTime, signal);
+
 			} catch (getCertificatesError) {
-				/* XXX:TODO */
-				throw(getCertificatesError);
+				// Check if this is a KeetaAnchorError with retryable property
+				if (KeetaAnchorError.isInstance(getCertificatesError)) {
+					if (!getCertificatesError.retryable) {
+						// Non-retryable error, rethrow immediately
+						this.logger?.error(`Permanent error fetching certificates for request ${this.id}: ${getCertificatesError.message}`);
+						throw(getCertificatesError);
+					}
+					// Retryable error, continue to next iteration after a delay
+					this.logger?.debug(`Retryable error fetching certificates for request ${this.id}, will retry after ${pollInterval}ms: ${getCertificatesError.message}`);
+					await asleep(pollInterval, signal);
+				} else {
+					// Unknown error type, rethrow as it might be fatal
+					this.logger?.error(`Unexpected error fetching certificates for request ${this.id}:`, getCertificatesError);
+					throw(getCertificatesError);
+				}
 			}
 		}
-		throw(new Error('Timeout waiting for KYC certificates'));
+
+		// Timeout reached
+		throw(new Error(`Timeout waiting for KYC certificates (${timeout}ms elapsed)`));
 	}
+
 }
 
 /**
@@ -455,18 +506,6 @@ class KeetaKYCAnchorClient {
 		});
 
 		/*
-		 * Handle retryable errors by passing them up to the caller to
-		 * retry.
-		 */
-		if (response.status === 404) {
-			return({
-				ok: false,
-				retryAfter: 500,
-				reason: 'Certificate not found'
-			});
-		}
-
-		/*
 		 * Handle other errors as fatal errors that should not be retried.
 		 */
 		if (!response.ok) {
@@ -479,7 +518,9 @@ class KeetaKYCAnchorClient {
 		}
 
 		if (!responseJSON.ok) {
-			throw(new Error(`KYC certificate request failed: ${responseJSON.error}`));
+			// Deserialize error using KeetaAnchorError.fromJSON if possible
+			const error = await KeetaAnchorError.fromJSON(responseJSON);
+			throw(error);
 		}
 
 		return({
