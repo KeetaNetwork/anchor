@@ -657,3 +657,195 @@ test('Concurrent Lookups', async function() {
 	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
+
+test('Multi-Root Resolver Tests', async function() {
+	// Create two separate root accounts with different metadata
+	const testAccountRoot1Seed = KeetaNetClient.lib.Account.generateRandomSeed();
+	const testAccountRoot1 = KeetaNetClient.lib.Account.fromSeed(testAccountRoot1Seed, 0);
+	const testAccountRoot2Seed = KeetaNetClient.lib.Account.generateRandomSeed();
+	const testAccountRoot2 = KeetaNetClient.lib.Account.fromSeed(testAccountRoot2Seed, 0);
+
+	// Create test currency tokens
+	const testCurrencyUSD = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyEUR = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyGBP = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	// Setup first root
+	const { userClient: userClient1, fees: fees1 } = await createNodeAndClient(testAccountRoot1);
+	fees1.disable();
+
+	await userClient1.setInfo({
+		name: '',
+		description: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				banking: {
+					bank_root1: {
+						operations: {
+							createAccount: 'https://bank1.com/api/v1/createAccount'
+						},
+						countryCodes: ['US'],
+						currencyCodes: ['USD'],
+						kycProviders: []
+					},
+					bank_shared: {
+						operations: {
+							createAccount: 'https://bank1.com/shared/createAccount'
+						},
+						countryCodes: ['US'],
+						currencyCodes: ['USD'],
+						kycProviders: []
+					}
+				},
+				kyc: {
+					kyc_root1: {
+						operations: {
+							createVerification: 'https://kyc1.com/api/v1/createVerification'
+						},
+						countryCodes: ['US'],
+						ca: 'TEST_ROOT1'
+					}
+				}
+			}
+		} satisfies ServiceMetadataExternalizable)
+	});
+
+	fees1.enable();
+
+	// Setup second root with overlapping and different services
+	const { userClient: userClient2, fees: fees2 } = await createNodeAndClient(testAccountRoot2);
+	fees2.disable();
+
+	await userClient2.setInfo({
+		name: '',
+		description: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				EUR: testCurrencyEUR.publicKeyString.get(), // Same EUR token
+				GBP: testCurrencyGBP.publicKeyString.get()  // New currency
+			},
+			services: {
+				banking: {
+					bank_root2: {
+						operations: {
+							createAccount: 'https://bank2.com/api/v1/createAccount'
+						},
+						countryCodes: ['GB'],
+						currencyCodes: ['GBP'],
+						kycProviders: []
+					},
+					bank_shared: {
+						operations: {
+							createAccount: 'https://bank2.com/shared/createAccount' // Different URL for same service ID
+						},
+						countryCodes: ['GB'],
+						currencyCodes: ['GBP'],
+						kycProviders: []
+					}
+				},
+				kyc: {
+					kyc_root2: {
+						operations: {
+							createVerification: 'https://kyc2.com/api/v1/createVerification'
+						},
+						countryCodes: ['GB'],
+						ca: 'TEST_ROOT2'
+					}
+				}
+			}
+		} satisfies ServiceMetadataExternalizable)
+	});
+
+	fees2.enable();
+
+	// Test 1: Single root resolver (backward compatibility)
+	const resolverSingle = new Resolver({
+		root: testAccountRoot1,
+		client: userClient1,
+		trustedCAs: []
+	});
+
+	const tokensFromSingle = await resolverSingle.listTokens();
+	expect(tokensFromSingle.length).toBe(2); // USD and EUR from root1
+	expect(tokensFromSingle.map(t => t.currency).sort()).toEqual(['EUR', 'USD']);
+
+	// Test 2: Multi-root resolver with priority (root1 first, then root2)
+	const resolverMulti = new Resolver({
+		root: [testAccountRoot1, testAccountRoot2],
+		client: userClient1,
+		trustedCAs: []
+	});
+
+	// Test currency map merging
+	const tokensFromMulti = await resolverMulti.listTokens();
+	expect(tokensFromMulti.length).toBe(3); // USD, EUR, GBP
+	expect(tokensFromMulti.map(t => t.currency).sort()).toEqual(['EUR', 'GBP', 'USD']);
+
+	// Verify EUR token comes from root1 (higher priority)
+	const eurToken = tokensFromMulti.find(t => t.currency === 'EUR');
+	expect(eurToken?.token).toBe(testCurrencyEUR.publicKeyString.get());
+
+	// Test service merging - both roots' services should be available
+	const bankingServicesUS = await resolverMulti.lookup('banking', {
+		countryCodes: ['US']
+	});
+	expect(bankingServicesUS).toBeDefined();
+	expect(Object.keys(bankingServicesUS ?? {})).toContain('bank_root1');
+
+	const bankingServicesGB = await resolverMulti.lookup('banking', {
+		countryCodes: ['GB']
+	});
+	expect(bankingServicesGB).toBeDefined();
+	expect(Object.keys(bankingServicesGB ?? {})).toContain('bank_root2');
+
+	// Test service ID priority - bank_shared should come from root1 (higher priority)
+	if (bankingServicesUS && 'bank_shared' in bankingServicesUS) {
+		const sharedBankOperations = await bankingServicesUS.bank_shared.operations('object');
+		const createAccountUrl = await sharedBankOperations.createAccount?.('string');
+		expect(createAccountUrl).toBe('https://bank1.com/shared/createAccount'); // From root1, not root2
+	}
+
+	// Test KYC services from both roots
+	const kycServicesUS = await resolverMulti.lookup('kyc', {
+		countryCodes: ['US']
+	});
+	expect(kycServicesUS).toBeDefined();
+	expect(Object.keys(kycServicesUS ?? {})).toContain('kyc_root1');
+
+	const kycServicesGB = await resolverMulti.lookup('kyc', {
+		countryCodes: ['GB']
+	});
+	expect(kycServicesGB).toBeDefined();
+	expect(Object.keys(kycServicesGB ?? {})).toContain('kyc_root2');
+
+	// Test 3: Reverse priority (root2 first, then root1)
+	const resolverMultiReverse = new Resolver({
+		root: [testAccountRoot2, testAccountRoot1],
+		client: userClient2,
+		trustedCAs: []
+	});
+
+	// Test that bank_shared now comes from root2 (higher priority in reverse order)
+	const bankingServicesGBReverse = await resolverMultiReverse.lookup('banking', {
+		countryCodes: ['GB']
+	});
+	expect(bankingServicesGBReverse).toBeDefined();
+	if (bankingServicesGBReverse && 'bank_shared' in bankingServicesGBReverse) {
+		const sharedBankOperationsReverse = await bankingServicesGBReverse.bank_shared.operations('object');
+		const createAccountUrlReverse = await sharedBankOperationsReverse.createAccount?.('string');
+		expect(createAccountUrlReverse).toBe('https://bank2.com/shared/createAccount'); // From root2, not root1
+	}
+
+	// Verify both banking services are available with reverse priority
+	const bankingServicesUSReverse = await resolverMultiReverse.lookup('banking', {
+		countryCodes: ['US']
+	});
+	expect(bankingServicesUSReverse).toBeDefined();
+	expect(Object.keys(bankingServicesUSReverse ?? {})).toContain('bank_root1');
+});

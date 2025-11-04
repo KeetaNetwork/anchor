@@ -655,11 +655,18 @@ type URLCacheObject = Map<string, {
 
 type ResolverConfig = {
 	/**
-	 * The "root" account to use as the basis for all lookups.  It should
+	 * The "root" account(s) to use as the basis for all lookups.  It should
 	 * contain the authoritative information for resolving in its
 	 * Metadata.
+	 *
+	 * Can be either:
+	 * - A single KeetaNetGenericAccount
+	 * - An array of KeetaNetGenericAccount in priority order (highest priority first)
+	 *
+	 * When an array is provided, the resolver will merge results from all roots,
+	 * with entries from higher priority roots taking precedence over lower priority ones.
 	 */
-	root: KeetaNetGenericAccount;
+	root: KeetaNetGenericAccount | KeetaNetGenericAccount[];
 	/**
 	 * A KeetaNet Client to access the network using.
 	 */
@@ -1225,7 +1232,7 @@ type ResolverStats = {
 };
 
 class Resolver {
-	readonly #root: ResolverConfig['root'];
+	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
 	readonly #client: KeetaNetClient.Client;
 	readonly #logger: Logger | undefined;
@@ -1263,7 +1270,7 @@ class Resolver {
 
 
 	constructor(config: ResolverConfig) {
-		this.#root = config.root;
+		this.#roots = Array.isArray(config.root) ? config.root : [config.root];
 		this.#trustedCAs = config.trustedCAs;
 		this.#logger = config.logger;
 		this.#metadataCache = {
@@ -1273,7 +1280,8 @@ class Resolver {
 
 		this.id = config.id ?? crypto.randomUUID();
 
-		this.#logger?.debug(`Resolver:${this.id}`, 'Creating resolver with root account', this.#root.publicKeyString.get());
+		const rootAccountStrings = this.#roots.map(root => root.publicKeyString.get()).join(', ');
+		this.#logger?.debug(`Resolver:${this.id}`, 'Creating resolver with root account(s)', rootAccountStrings);
 
 		if (KeetaNetClient.Client.isInstance(config.client)) {
 			this.#client = config.client;
@@ -1615,27 +1623,159 @@ class Resolver {
 	}
 
 	async #getRootMetadata() {
-		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
-		const metadata = new Metadata(rootURL, {
-			trustedCAs: this.#trustedCAs,
-			client: this.#client,
-			logger: this.#logger,
-			resolver: this,
-			cache: this.#metadataCache
+		// Fetch metadata from all roots
+		const allRootMetadata: ValuizableObject[] = [];
+
+		for (const root of this.#roots) {
+			const rootURL = new URL(`keetanet://${root.publicKeyString.get()}/metadata`);
+			const metadata = new Metadata(rootURL, {
+				trustedCAs: this.#trustedCAs,
+				client: this.#client,
+				logger: this.#logger,
+				resolver: this,
+				cache: this.#metadataCache
+			});
+
+			try {
+				const rootMetadata = await metadata.value('object');
+				this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata for', root.publicKeyString.get(), ':', rootMetadata);
+
+				if (!('version' in rootMetadata)) {
+					this.#logger?.debug(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property, skipping');
+					continue;
+				}
+
+				const rootMetadataVersion = await rootMetadata.version?.('primitive');
+				if (rootMetadataVersion !== 1) {
+					this.#logger?.debug(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), ', skipping');
+					continue;
+				}
+
+				allRootMetadata.push(rootMetadata);
+			} catch (error) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, ' -- skipping');
+			}
+		}
+
+		if (allRootMetadata.length === 0) {
+			throw(new Error('No valid root metadata found'));
+		}
+
+		// If there's only one root, return it directly
+		if (allRootMetadata.length === 1) {
+			return(allRootMetadata[0]);
+		}
+
+		// Merge metadata from multiple roots (highest priority first)
+		return(await this.#mergeRootMetadata(allRootMetadata));
+	}
+
+	/**
+	 * Merge metadata from multiple roots with priority ordering.
+	 * The first entry in the array has the highest priority.
+	 */
+	async #mergeRootMetadata(metadataArray: ValuizableObject[]): Promise<ValuizableObject> {
+		// Start with the first (highest priority) metadata as the base
+		const mergedMetadata: ValuizableObject = { ...metadataArray[0] };
+
+		// Merge currencyMap: higher priority currencies override lower priority ones
+		const mergedCurrencyMap: ValuizableObject = {};
+		// Iterate in reverse order so higher priority ones overwrite
+		for (let i = metadataArray.length - 1; i >= 0; i--) {
+			const metadata = metadataArray[i];
+			if (metadata === undefined) {
+				continue;
+			}
+			if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
+				const currencyMap = await metadata.currencyMap('object');
+				for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
+					mergedCurrencyMap[currencyCode] = tokenValue;
+				}
+			}
+		}
+
+		// Merge services: higher priority service entries override lower priority ones
+		const mergedServices: ValuizableObject = {};
+		// Iterate in reverse order so higher priority ones overwrite
+		for (let i = metadataArray.length - 1; i >= 0; i--) {
+			const metadata = metadataArray[i];
+			if (metadata === undefined) {
+				continue;
+			}
+			if ('services' in metadata && metadata.services !== undefined) {
+				const services = await metadata.services('object');
+				for (const [serviceType, serviceValue] of Object.entries(services)) {
+					if (serviceValue === undefined) {
+						continue;
+					}
+
+					// Get the service type object
+					const serviceTypeObj = await serviceValue('object');
+
+					// If this service type doesn't exist in merged yet, create it
+					if (!(serviceType in mergedServices)) {
+						mergedServices[serviceType] = serviceValue;
+					} else {
+						// Merge individual service IDs within this service type
+						const existingServiceType = await mergedServices[serviceType]?.('object');
+						if (existingServiceType === undefined) {
+							mergedServices[serviceType] = serviceValue;
+							continue;
+						}
+
+						const mergedServiceType: ValuizableObject = { ...existingServiceType };
+						for (const [serviceId, serviceConfig] of Object.entries(serviceTypeObj)) {
+							// Higher priority (later in iteration) overwrites
+							mergedServiceType[serviceId] = serviceConfig;
+						}
+
+						// Create a new Valuizable for the merged service type
+						// @ts-ignore - Complex ValuizableMethod type compatibility
+						const mergedServiceTypeValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+							if (expect === 'object' || expect === 'any') {
+								return(mergedServiceType);
+							}
+							throw(new Error(`Expected object type for merged service type, got ${expect}`));
+						};
+						Object.defineProperty(mergedServiceTypeValuizable, 'instanceTypeID', {
+							value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+							enumerable: false
+						});
+						mergedServices[serviceType] = mergedServiceTypeValuizable;
+					}
+				}
+			}
+		}
+
+		// Create Valuizable wrappers for merged data
+		// @ts-ignore - Complex ValuizableMethod type compatibility
+		const mergedCurrencyMapValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+			if (expect === 'object' || expect === 'any') {
+				return(mergedCurrencyMap);
+			}
+			throw(new Error(`Expected object type for merged currency map, got ${expect}`));
+		};
+		Object.defineProperty(mergedCurrencyMapValuizable, 'instanceTypeID', {
+			value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+			enumerable: false
 		});
-		const rootMetadata = await metadata.value('object');
-		this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata:', rootMetadata);
 
-		if (!('version' in rootMetadata)) {
-			throw(new Error('Root metadata is missing "version" property'));
-		}
+		// @ts-ignore - Complex ValuizableMethod type compatibility
+		const mergedServicesValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+			if (expect === 'object' || expect === 'any') {
+				return(mergedServices);
+			}
+			throw(new Error(`Expected object type for merged services, got ${expect}`));
+		};
+		Object.defineProperty(mergedServicesValuizable, 'instanceTypeID', {
+			value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+			enumerable: false
+		});
 
-		const rootMetadataVersion = await rootMetadata.version?.('primitive');
-		if (rootMetadataVersion !== 1) {
-			throw(new Error(`Unsupported metadata version: ${rootMetadataVersion}`));
-		}
+		mergedMetadata.currencyMap = mergedCurrencyMapValuizable;
+		mergedMetadata.services = mergedServicesValuizable;
 
-		return(rootMetadata);
+		return(mergedMetadata);
 	}
 
 	async getRootMetadata(): Promise<ToValuizableObject<Pick<ServiceMetadata, 'version'> & DeepPartial<Omit<ServiceMetadata, 'version'>>>> {
@@ -1659,6 +1799,9 @@ class Resolver {
 
 	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
 		const rootMetadata = await this.#getRootMetadata();
+		if (!rootMetadata) {
+			throw(new Error('Root metadata is undefined'));
+		}
 		const servicesFn = rootMetadata.services;
 		if (servicesFn === undefined) {
 			throw(new Error('Root metadata is missing "services" property'));
@@ -1702,6 +1845,9 @@ class Resolver {
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
 		const rootMetadata = await this.#getRootMetadata();
+		if (!rootMetadata) {
+			throw(new Error('Root metadata is undefined'));
+		}
 
 		/*
 		 * Get the services object
@@ -1745,6 +1891,9 @@ class Resolver {
 
 	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
 		const rootMetadata = await this.#getRootMetadata();
+		if (!rootMetadata) {
+			throw(new Error('Root metadata is undefined'));
+		}
 
 		/*
 		 * Get the services object
@@ -1829,6 +1978,9 @@ class Resolver {
 		}
 
 		const rootMetadata = await this.#getRootMetadata();
+		if (!rootMetadata) {
+			throw(new Error('Root metadata is undefined'));
+		}
 
 		/*
 		 * Get the services object
@@ -1908,6 +2060,9 @@ class Resolver {
 
 	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
+		if (!rootMetadata) {
+			throw(new Error('Root metadata is undefined'));
+		}
 
 		/*
 		 * Get the services object
