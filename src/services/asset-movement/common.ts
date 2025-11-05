@@ -7,6 +7,7 @@ import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils
 import type { HTTPSignedField } from '../../lib/http-server-shared.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SharableCertificateAttributes } from '../../lib/certificates.js';
+import { KeetaNet } from '../../client/index.js';
 
 
 type HexString = `0x${string}`;
@@ -179,27 +180,17 @@ export interface AssetWithRailsMetadata {
 }
 
 
-// Example Asset Paths
-// paths: [
-// 	{
-// 		pair: [
-// 			{ location: 'chain:keeta:123', id: 'keeta_KT1EXmXoG7fV8b2c5rYkUu4j3t6b3v6v5X8m', rails: { common: [ 'KEETA_SEND' ] } },
-// 			{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] } }
-// 		]
-// 	},
-// 	{
-// 		pair: [
-// 			{ location: 'chain:keeta:123', id: 'keeta_USDCPUB', rails: ['KEETA_SEND'] },
-// 			{ location: 'bank-account:US', id: 'USD', rails: { common: ['ACH_SEND'], inbound: ['ACH_DEBIT'] } }
-// 		]
-// 	},
-// 	{
-// 		pair: [
-// 			{ location: 'bank-account:EU', id: 'EUR', rails: { inbound: [ 'WIRE_SEND' }] },
-// 			{ location: 'chain:keeta:123', id: 'keeta_EURCPUB', rails: { outbound: [ 'KEETA_SEND' ]} }
-// 		]
-// 	}
-// ];
+export function commonJSONStringify(input: unknown): string {
+	return JSON.stringify(input, function(_, value) {
+		if (typeof value === 'bigint') {
+			return(String(value));
+		} else if (KeetaNet.lib.Account.isInstance(value)) {
+			return(value.publicKeyString.get());
+		} else {
+			return(value);
+		}
+	});
+}
 
 export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
 	if (typeof input === 'string') {

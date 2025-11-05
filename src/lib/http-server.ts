@@ -9,10 +9,6 @@ import { createAssert } from 'typia';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
-// /**
-//  * The maximum size of a request (128KiB)
-//  */
-// const MAX_REQUEST_SIZE = 1024 * 128;
 /**
  * The maximum size of a request (1MiB)
  */

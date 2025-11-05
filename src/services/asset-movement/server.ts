@@ -41,12 +41,13 @@ import {
 	assertKeetaAssetMovementAnchorShareKYCResponse,
 	assertKeetaAssetMovementAnchorShareKYCRequest,
 	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
-	convertAssetLocationToString
+	convertAssetLocationToString,
+	commonJSONStringify
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
-import type Account from '@keetanetwork/keetanet-client/lib/account.js';
+import Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { HTTPSignedFieldURLParameters } from '../../lib/http-server-shared.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server-shared.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
@@ -284,7 +285,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				}
 
 				return({
-					output: JSON.stringify(serialized)
+					output: commonJSONStringify(serialized)
 				});
 			}
 		}
