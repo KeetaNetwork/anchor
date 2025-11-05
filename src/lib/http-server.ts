@@ -9,10 +9,14 @@ import { createAssert } from 'typia';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
+// /**
+//  * The maximum size of a request (128KiB)
+//  */
+// const MAX_REQUEST_SIZE = 1024 * 128;
 /**
- * The maximum size of a request (128KiB)
+ * The maximum size of a request (1MiB)
  */
-const MAX_REQUEST_SIZE = 1024 * 128;
+const MAX_REQUEST_SIZE = 1024 ** 2;
 
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {

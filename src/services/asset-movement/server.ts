@@ -40,7 +40,8 @@ import {
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	assertKeetaAssetMovementAnchorShareKYCResponse,
 	assertKeetaAssetMovementAnchorShareKYCRequest,
-	getKeetaAssetMovementAnchorShareKYCRequestSigningData
+	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
+	convertAssetLocationToString
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -115,6 +116,27 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		shareKYC?: (request: KeetaAssetMovementAnchorShareKYCRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>>;
 	}
 };
+
+function serializeTransactionResponse(transaction: ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>['transaction']): ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>['transaction'] {
+	return {
+		...transaction,
+		from: {
+			...transaction.from,
+			location: convertAssetLocationToString(transaction.from.location)
+		},
+		to: {
+			...transaction.to,
+			location: convertAssetLocationToString(transaction.to.location)
+		}
+	};
+}
+
+function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>['templates'][number]): ExtractOk<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>['templates'][number] {
+	return {
+		...template,
+		location: convertAssetLocationToString(template.location),
+	};
+}
 
 export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Required<KeetaAnchorAssetMovementServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
@@ -248,7 +270,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 				const result = await handler(...parsedRequest);
 
-				if ('ok' in result && (result.ok !== undefined || result.ok !== true)) {
+				if ('ok' in result && (result.ok !== undefined && result.ok !== true)) {
 					throw(new Error('internal error: response serialization must not have ok field'));
 				}
 
@@ -271,14 +293,39 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			method: 'POST',
 			handlerName: 'createPersistentForwarding',
 			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
-			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse
+			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(false);
+				}
+
+				return({
+					...data,
+					sourceLocation: data.sourceLocation ? convertAssetLocationToString(data.sourceLocation) : undefined,
+					destinationLocation: data.destinationLocation ? convertAssetLocationToString(data.destinationLocation) : undefined,
+				})
+			}
 		});
 
 		addRoute({
 			method: 'POST',
 			handlerName: 'listPersistentForwarding',
 			assertRequest: assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
-			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse
+			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse,
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(data);
+				}
+
+				return({
+					...data,
+					addresses: data.addresses.map(addr => ({
+						...addr,
+						sourceLocation: addr.sourceLocation ? convertAssetLocationToString(addr.sourceLocation) : undefined,
+						destinationLocation: addr.destinationLocation ? convertAssetLocationToString(addr.destinationLocation) : undefined,
+					})),
+				})
+			}
 		});
 
 		addRoute({
@@ -317,6 +364,16 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				}
 
 				return(getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData({ id }));
+			},
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(data);
+				}
+
+				return({
+					...data,
+					transaction: serializeTransactionResponse(data.transaction)
+				});
 			}
 		});
 
@@ -324,7 +381,17 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			method: 'POST',
 			handlerName: 'listTransactions',
 			assertRequest: assertKeetaAssetMovementAnchorlistTransactionsRequest,
-			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(data);
+				}
+				
+				return({
+					...data,
+					transactions: data.transactions.map(tx => serializeTransactionResponse(tx))
+				});
+			}
 		});
 
 		addRoute({
@@ -332,7 +399,17 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'createPersistentForwardingTemplate',
 			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
-			getSigningData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData
+			getSigningData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(data);
+				}
+
+				return({
+					...data,
+					...(serializePersistentAddressTemplateResponse(data))
+				})
+			}
 		});
 
 		addRoute({
@@ -340,7 +417,17 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'listPersistentForwardingTemplate',
 			assertRequest: assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
 			assertResponse: assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
-			getSigningData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData
+			getSigningData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
+			serializeResponse(data) {
+				if (!data.ok) {
+					return(data);
+				}
+
+				return({
+					...data,
+					templates: data.templates.map(template => serializePersistentAddressTemplateResponse(template)),
+				})
+			}
 		});
 
 		addRoute({

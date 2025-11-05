@@ -395,7 +395,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	}
 
 	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
-		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`,);
 
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
@@ -599,8 +599,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					attributes = await body.attributes.export({ format: 'string' });
 				}
 
-				console.log('sending attributes', attributes);
-	
 				return({
 					account: body.account.assertAccount().publicKeyString.get(),
 					attributes: attributes
