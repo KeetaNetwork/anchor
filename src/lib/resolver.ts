@@ -1627,7 +1627,7 @@ class Resolver {
 		return(retval);
 	}
 
-	async #getRootMetadata() {
+	async #getRootMetadata(): Promise<ValuizableObject> {
 		// Fetch metadata from all roots
 		const allRootMetadata: ValuizableObject[] = [];
 
@@ -1670,7 +1670,8 @@ class Resolver {
 
 		// If there's only one root, return it directly
 		if (allRootMetadata.length === 1) {
-			return(allRootMetadata[0]);
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			return(allRootMetadata[0]!);
 		}
 
 		// Merge metadata from multiple roots (highest priority first)
@@ -1814,9 +1815,6 @@ class Resolver {
 
 	async listTransferableAssets(): Promise<KeetaNetAccountTokenPublicKeyString[]> {
 		const rootMetadata = await this.#getRootMetadata();
-		if (!rootMetadata) {
-			throw(new Error('Root metadata is undefined'));
-		}
 		const servicesFn = rootMetadata.services;
 		if (servicesFn === undefined) {
 			throw(new Error('Root metadata is missing "services" property'));
@@ -1860,9 +1858,6 @@ class Resolver {
 
 	async listTokens(): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; }[]> {
 		const rootMetadata = await this.#getRootMetadata();
-		if (!rootMetadata) {
-			throw(new Error('Root metadata is undefined'));
-		}
 
 		/*
 		 * Get the services object
@@ -1906,9 +1901,6 @@ class Resolver {
 
 	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
 		const rootMetadata = await this.#getRootMetadata();
-		if (!rootMetadata) {
-			throw(new Error('Root metadata is undefined'));
-		}
 
 		/*
 		 * Get the services object
@@ -1993,9 +1985,6 @@ class Resolver {
 		}
 
 		const rootMetadata = await this.#getRootMetadata();
-		if (!rootMetadata) {
-			throw(new Error('Root metadata is undefined'));
-		}
 
 		/*
 		 * Get the services object
@@ -2075,9 +2064,6 @@ class Resolver {
 
 	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
-		if (!rootMetadata) {
-			throw(new Error('Root metadata is undefined'));
-		}
 
 		/*
 		 * Get the services object
