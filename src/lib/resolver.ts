@@ -1680,101 +1680,107 @@ class Resolver {
 	/**
 	 * Merge metadata from multiple roots with priority ordering.
 	 * The first entry in the array has the highest priority.
+	 *
+	 * This method creates lazy Valuizable wrappers that defer the actual
+	 * merging work until the values are accessed.
 	 */
 	async #mergeRootMetadata(metadataArray: ValuizableObject[]): Promise<ValuizableObject> {
 		// Start with the first (highest priority) metadata as the base
 		const mergedMetadata: ValuizableObject = { ...metadataArray[0] };
 
-		// Merge currencyMap: higher priority currencies override lower priority ones
-		const mergedCurrencyMap: ValuizableObject = {};
-		// Iterate in reverse order so higher priority ones overwrite
-		for (let i = metadataArray.length - 1; i >= 0; i--) {
-			const metadata = metadataArray[i];
-			if (metadata === undefined) {
-				continue;
-			}
-			if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
-				const currencyMap = await metadata.currencyMap('object');
-				for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
-					mergedCurrencyMap[currencyCode] = tokenValue;
-				}
-			}
-		}
-
-		// Merge services: higher priority service entries override lower priority ones
-		const mergedServices: ValuizableObject = {};
-		// Iterate in reverse order so higher priority ones overwrite
-		for (let i = metadataArray.length - 1; i >= 0; i--) {
-			const metadata = metadataArray[i];
-			if (metadata === undefined) {
-				continue;
-			}
-			if ('services' in metadata && metadata.services !== undefined) {
-				const services = await metadata.services('object');
-				for (const [serviceType, serviceValue] of Object.entries(services)) {
-					if (serviceValue === undefined) {
-						continue;
-					}
-
-					// Get the service type object
-					const serviceTypeObj = await serviceValue('object');
-
-					// If this service type doesn't exist in merged yet, create it
-					if (!(serviceType in mergedServices)) {
-						mergedServices[serviceType] = serviceValue;
-					} else {
-						// Merge individual service IDs within this service type
-						const existingServiceType = await mergedServices[serviceType]?.('object');
-						if (existingServiceType === undefined) {
-							mergedServices[serviceType] = serviceValue;
-							continue;
-						}
-
-						const mergedServiceType: ValuizableObject = { ...existingServiceType };
-						for (const [serviceId, serviceConfig] of Object.entries(serviceTypeObj)) {
-							// Overwrite with current entry. Since we iterate in reverse order
-							// (low priority to high priority), higher priority entries (lower index)
-							// will be written last and thus take precedence.
-							mergedServiceType[serviceId] = serviceConfig;
-						}
-
-						// Create a new Valuizable for the merged service type
-						// @ts-ignore - Complex ValuizableMethod type compatibility
-						const mergedServiceTypeValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
-							if (expect === 'object' || expect === 'any') {
-								return(mergedServiceType);
-							}
-							throw(new Error(`Expected object type for merged service type, got ${expect}`));
-						};
-						Object.defineProperty(mergedServiceTypeValuizable, 'instanceTypeID', {
-							value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
-							enumerable: false
-						});
-						mergedServices[serviceType] = mergedServiceTypeValuizable;
-					}
-				}
-			}
-		}
-
-		// Create Valuizable wrappers for merged data
+		// Create lazy Valuizable wrapper for currencyMap that merges on demand
 		// @ts-ignore - Complex ValuizableMethod type compatibility
 		const mergedCurrencyMapValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
-			if (expect === 'object' || expect === 'any') {
-				return(mergedCurrencyMap);
+			if (expect !== 'object' && expect !== 'any') {
+				throw(new Error(`Expected object type for merged currency map, got ${expect}`));
 			}
-			throw(new Error(`Expected object type for merged currency map, got ${expect}`));
+
+			// Merge currencyMap: higher priority currencies override lower priority ones
+			const mergedCurrencyMap: ValuizableObject = {};
+			// Iterate in reverse order so higher priority ones overwrite
+			for (let i = metadataArray.length - 1; i >= 0; i--) {
+				const metadata = metadataArray[i];
+				if (metadata === undefined) {
+					continue;
+				}
+				if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
+					const currencyMap = await metadata.currencyMap('object');
+					for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
+						mergedCurrencyMap[currencyCode] = tokenValue;
+					}
+				}
+			}
+
+			return(mergedCurrencyMap);
 		};
 		Object.defineProperty(mergedCurrencyMapValuizable, 'instanceTypeID', {
 			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 			enumerable: false
 		});
 
+		// Create lazy Valuizable wrapper for services that merges on demand
 		// @ts-ignore - Complex ValuizableMethod type compatibility
 		const mergedServicesValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
-			if (expect === 'object' || expect === 'any') {
-				return(mergedServices);
+			if (expect !== 'object' && expect !== 'any') {
+				throw(new Error(`Expected object type for merged services, got ${expect}`));
 			}
-			throw(new Error(`Expected object type for merged services, got ${expect}`));
+
+			// Merge services: higher priority service entries override lower priority ones
+			const mergedServices: ValuizableObject = {};
+			// Iterate in reverse order so higher priority ones overwrite
+			for (let i = metadataArray.length - 1; i >= 0; i--) {
+				const metadata = metadataArray[i];
+				if (metadata === undefined) {
+					continue;
+				}
+				if ('services' in metadata && metadata.services !== undefined) {
+					const services = await metadata.services('object');
+					for (const [serviceType, serviceValue] of Object.entries(services)) {
+						if (serviceValue === undefined) {
+							continue;
+						}
+
+						// Get the service type object
+						const serviceTypeObj = await serviceValue('object');
+
+						// If this service type doesn't exist in merged yet, create it
+						if (!(serviceType in mergedServices)) {
+							mergedServices[serviceType] = serviceValue;
+						} else {
+							// Merge individual service IDs within this service type
+							const existingServiceType = await mergedServices[serviceType]?.('object');
+							if (existingServiceType === undefined) {
+								mergedServices[serviceType] = serviceValue;
+								continue;
+							}
+
+							const mergedServiceType: ValuizableObject = { ...existingServiceType };
+							for (const [serviceId, serviceConfig] of Object.entries(serviceTypeObj)) {
+								// Overwrite with current entry. Since we iterate in reverse order
+								// (low priority to high priority), higher priority entries (lower index)
+								// will be written last and thus take precedence.
+								mergedServiceType[serviceId] = serviceConfig;
+							}
+
+							// Create a new Valuizable for the merged service type
+							// @ts-ignore - Complex ValuizableMethod type compatibility
+							const mergedServiceTypeValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+								if (expect === 'object' || expect === 'any') {
+									return(mergedServiceType);
+								}
+								throw(new Error(`Expected object type for merged service type, got ${expect}`));
+							};
+							Object.defineProperty(mergedServiceTypeValuizable, 'instanceTypeID', {
+								value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
+								enumerable: false
+							});
+							mergedServices[serviceType] = mergedServiceTypeValuizable;
+						}
+					}
+				}
+			}
+
+			return(mergedServices);
 		};
 		Object.defineProperty(mergedServicesValuizable, 'instanceTypeID', {
 			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
