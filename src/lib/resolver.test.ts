@@ -668,6 +668,7 @@ test('Multi-Root Resolver Tests', async function() {
 	// Create test currency tokens
 	const testCurrencyUSD = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyEUR = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyEUR_Alt = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyGBP = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 	// Setup first root
@@ -730,7 +731,7 @@ test('Multi-Root Resolver Tests', async function() {
 		metadata: Resolver.Metadata.formatMetadata({
 			version: 1,
 			currencyMap: {
-				EUR: testCurrencyEUR.publicKeyString.get(), // Same EUR token
+				EUR: testCurrencyEUR_Alt.publicKeyString.get(), // Different EUR token than root1
 				GBP: testCurrencyGBP.publicKeyString.get()  // New currency
 			},
 			services: {
@@ -790,9 +791,11 @@ test('Multi-Root Resolver Tests', async function() {
 	expect(tokensFromMulti.length).toBe(3); // USD, EUR, GBP
 	expect(tokensFromMulti.map(t => t.currency).sort()).toEqual(['EUR', 'GBP', 'USD']);
 
-	// Verify EUR token comes from root1 (higher priority)
+	// Verify EUR token comes from root1 (higher priority), not root2
+	// This tests the case where both roots define EUR but with different tokens
 	const eurToken = tokensFromMulti.find(t => t.currency === 'EUR');
 	expect(eurToken?.token).toBe(testCurrencyEUR.publicKeyString.get());
+	expect(eurToken?.token).not.toBe(testCurrencyEUR_Alt.publicKeyString.get());
 
 	// Test service merging - both roots' services should be available
 	const bankingServicesUS = await resolverMulti.lookup('banking', {
