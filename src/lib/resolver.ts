@@ -655,11 +655,18 @@ type URLCacheObject = Map<string, {
 
 type ResolverConfig = {
 	/**
-	 * The "root" account to use as the basis for all lookups.  It should
+	 * The "root" account(s) to use as the basis for all lookups.  It should
 	 * contain the authoritative information for resolving in its
 	 * Metadata.
+	 *
+	 * Can be either:
+	 * - A single KeetaNetGenericAccount
+	 * - An array of KeetaNetGenericAccount in priority order (highest priority first)
+	 *
+	 * When an array is provided, the resolver will merge results from all roots,
+	 * with entries from higher priority roots taking precedence over lower priority ones.
 	 */
-	root: KeetaNetGenericAccount;
+	root: KeetaNetGenericAccount | KeetaNetGenericAccount[];
 	/**
 	 * A KeetaNet Client to access the network using.
 	 */
@@ -701,6 +708,11 @@ type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
 const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
+
+/**
+ * Instance type ID for anonymous Valuizable methods created dynamically
+ */
+const ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID = 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd';
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -770,7 +782,7 @@ class Metadata implements ValuizableInstance {
 			return(true);
 		}
 
-		if (value.instanceTypeID === 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd') {
+		if (value.instanceTypeID === ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID) {
 			return(true);
 		}
 
@@ -1152,7 +1164,7 @@ class Metadata implements ValuizableInstance {
 					const newValuizableObject: ValuizableMethod = newMetadataObject.value.bind(newMetadataObject);
 
 					Object.defineProperty(newValuizableObject, 'instanceTypeID', {
-						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 						enumerable: false
 					});
 
@@ -1169,7 +1181,7 @@ class Metadata implements ValuizableInstance {
 					};
 
 					Object.defineProperty(newValueEntry, 'instanceTypeID', {
-						value: 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd',
+						value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
 						enumerable: false
 					});
 
@@ -1225,7 +1237,7 @@ type ResolverStats = {
 };
 
 class Resolver {
-	readonly #root: ResolverConfig['root'];
+	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
 	readonly #client: KeetaNetClient.Client;
 	readonly #logger: Logger | undefined;
@@ -1263,7 +1275,7 @@ class Resolver {
 
 
 	constructor(config: ResolverConfig) {
-		this.#root = config.root;
+		this.#roots = Array.isArray(config.root) ? config.root : [config.root];
 		this.#trustedCAs = config.trustedCAs;
 		this.#logger = config.logger;
 		this.#metadataCache = {
@@ -1273,7 +1285,8 @@ class Resolver {
 
 		this.id = config.id ?? crypto.randomUUID();
 
-		this.#logger?.debug(`Resolver:${this.id}`, 'Creating resolver with root account', this.#root.publicKeyString.get());
+		const rootAccountStrings = this.#roots.map(root => root.publicKeyString.get()).join(', ');
+		this.#logger?.debug(`Resolver:${this.id}`, 'Creating resolver with root account(s)', rootAccountStrings);
 
 		if (KeetaNetClient.Client.isInstance(config.client)) {
 			this.#client = config.client;
@@ -1614,28 +1627,171 @@ class Resolver {
 		return(retval);
 	}
 
-	async #getRootMetadata() {
-		const rootURL = new URL(`keetanet://${this.#root.publicKeyString.get()}/metadata`);
-		const metadata = new Metadata(rootURL, {
-			trustedCAs: this.#trustedCAs,
-			client: this.#client,
-			logger: this.#logger,
-			resolver: this,
-			cache: this.#metadataCache
+	async #getRootMetadata(): Promise<ValuizableObject> {
+		// Fetch metadata from all roots
+		const allRootMetadata: ValuizableObject[] = [];
+
+		for (const root of this.#roots) {
+			const rootURL = new URL(`keetanet://${root.publicKeyString.get()}/metadata`);
+			const metadata = new Metadata(rootURL, {
+				trustedCAs: this.#trustedCAs,
+				client: this.#client,
+				logger: this.#logger,
+				resolver: this,
+				cache: this.#metadataCache
+			});
+
+			try {
+				const rootMetadata = await metadata.value('object');
+				this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata for', root.publicKeyString.get(), ':', rootMetadata);
+
+				if (!('version' in rootMetadata)) {
+					this.#logger?.debug(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property, skipping');
+					continue;
+				}
+
+				const rootMetadataVersion = await rootMetadata.version?.('primitive');
+				if (rootMetadataVersion !== 1) {
+					this.#logger?.debug(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), ', skipping');
+					continue;
+				}
+
+				allRootMetadata.push(rootMetadata);
+			} catch (error) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, ' -- skipping');
+			}
+		}
+
+		if (allRootMetadata.length === 0) {
+			throw(new Error('No valid root metadata found'));
+		}
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Total valid root metadata count:', allRootMetadata.length);
+
+		// If there's only one root, return it directly
+		if (allRootMetadata.length === 1) {
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			return(allRootMetadata[0]!);
+		}
+
+		// Merge metadata from multiple roots (highest priority first)
+		return(await this.#mergeRootMetadata(allRootMetadata));
+	}
+
+	/**
+	 * Merge metadata from multiple roots with priority ordering.
+	 * The first entry in the array has the highest priority.
+	 *
+	 * This method creates lazy Valuizable wrappers that defer the actual
+	 * merging work until the values are accessed.
+	 */
+	async #mergeRootMetadata(metadataArray: ValuizableObject[]): Promise<ValuizableObject> {
+		// Start with the first (highest priority) metadata as the base
+		const mergedMetadata: ValuizableObject = { ...metadataArray[0] };
+
+		// Create lazy Valuizable wrapper for currencyMap that merges on demand
+		// @ts-ignore - Complex ValuizableMethod type compatibility
+		const mergedCurrencyMapValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+			if (expect !== 'object' && expect !== 'any') {
+				throw(new Error(`Expected object type for merged currency map, got ${expect}`));
+			}
+
+			// Merge currencyMap: higher priority currencies override lower priority ones
+			const mergedCurrencyMap: ValuizableObject = {};
+			// Iterate in reverse order so higher priority ones overwrite
+			for (let i = metadataArray.length - 1; i >= 0; i--) {
+				const metadata = metadataArray[i];
+				if (metadata === undefined) {
+					continue;
+				}
+				if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
+					const currencyMap = await metadata.currencyMap('object');
+					for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
+						mergedCurrencyMap[currencyCode] = tokenValue;
+					}
+				}
+			}
+
+			return(mergedCurrencyMap);
+		};
+		Object.defineProperty(mergedCurrencyMapValuizable, 'instanceTypeID', {
+			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
+			enumerable: false
 		});
-		const rootMetadata = await metadata.value('object');
-		this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata:', rootMetadata);
 
-		if (!('version' in rootMetadata)) {
-			throw(new Error('Root metadata is missing "version" property'));
-		}
+		// Create lazy Valuizable wrapper for services that merges on demand
+		// @ts-ignore - Complex ValuizableMethod type compatibility
+		const mergedServicesValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+			if (expect !== 'object' && expect !== 'any') {
+				throw(new Error(`Expected object type for merged services, got ${expect}`));
+			}
 
-		const rootMetadataVersion = await rootMetadata.version?.('primitive');
-		if (rootMetadataVersion !== 1) {
-			throw(new Error(`Unsupported metadata version: ${rootMetadataVersion}`));
-		}
+			// Merge services: higher priority service entries override lower priority ones
+			const mergedServices: ValuizableObject = {};
+			// Iterate in reverse order so higher priority ones overwrite
+			for (let i = metadataArray.length - 1; i >= 0; i--) {
+				const metadata = metadataArray[i];
+				if (metadata === undefined) {
+					continue;
+				}
+				if ('services' in metadata && metadata.services !== undefined) {
+					const services = await metadata.services('object');
+					for (const [serviceType, serviceValue] of Object.entries(services)) {
+						if (serviceValue === undefined) {
+							continue;
+						}
 
-		return(rootMetadata);
+						// Get the service type object
+						const serviceTypeObj = await serviceValue('object');
+
+						// If this service type doesn't exist in merged yet, create it
+						if (!(serviceType in mergedServices)) {
+							mergedServices[serviceType] = serviceValue;
+						} else {
+							// Merge individual service IDs within this service type
+							const existingServiceType = await mergedServices[serviceType]?.('object');
+							if (existingServiceType === undefined) {
+								mergedServices[serviceType] = serviceValue;
+								continue;
+							}
+
+							const mergedServiceType: ValuizableObject = { ...existingServiceType };
+							for (const [serviceId, serviceConfig] of Object.entries(serviceTypeObj)) {
+								// Overwrite with current entry. Since we iterate in reverse order
+								// (low priority to high priority), higher priority entries (lower index)
+								// will be written last and thus take precedence.
+								mergedServiceType[serviceId] = serviceConfig;
+							}
+
+							// Create a new Valuizable for the merged service type
+							// @ts-ignore - Complex ValuizableMethod type compatibility
+							const mergedServiceTypeValuizable: ValuizableMethod = async (expect: ValuizableKind = 'any') => {
+								if (expect === 'object' || expect === 'any') {
+									return(mergedServiceType);
+								}
+								throw(new Error(`Expected object type for merged service type, got ${expect}`));
+							};
+							Object.defineProperty(mergedServiceTypeValuizable, 'instanceTypeID', {
+								value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
+								enumerable: false
+							});
+							mergedServices[serviceType] = mergedServiceTypeValuizable;
+						}
+					}
+				}
+			}
+
+			return(mergedServices);
+		};
+		Object.defineProperty(mergedServicesValuizable, 'instanceTypeID', {
+			value: ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID,
+			enumerable: false
+		});
+
+		mergedMetadata.currencyMap = mergedCurrencyMapValuizable;
+		mergedMetadata.services = mergedServicesValuizable;
+
+		return(mergedMetadata);
 	}
 
 	async getRootMetadata(): Promise<ToValuizableObject<Pick<ServiceMetadata, 'version'> & DeepPartial<Omit<ServiceMetadata, 'version'>>>> {
