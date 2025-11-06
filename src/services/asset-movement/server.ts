@@ -187,7 +187,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: HandlerName;
 			pathName?: string;
 			assertRequest?: (data: unknown) => SerializedRequest;
-			serializeResponse?: (data: Response) => unknown;
+			serializeResponse?: (data: ExtractOk<Response>) => unknown;
 			assertResponse: (data: unknown) => Response;
 			getSigningData?: (data: SerializedRequest, params: Map<string, string>) => Signable;
 			parseRequestToArgs?: (params: {
@@ -279,7 +279,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 				let serialized;
 				if (input.serializeResponse) {
-					serialized = input.serializeResponse(resp);
+					serialized = input.serializeResponse(resp as ExtractOk<Response>);
 				} else {
 					serialized = resp;
 				}
@@ -296,10 +296,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(false);
-				}
-
 				return({
 					...data,
 					sourceLocation: data.sourceLocation ? convertAssetLocationToString(data.sourceLocation) : undefined,
@@ -314,10 +310,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertRequest: assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
 			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse,
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(data);
-				}
-
 				return({
 					...data,
 					addresses: data.addresses.map(addr => ({
@@ -334,7 +326,20 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'initiateTransfer',
 			getSigningData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 			assertRequest: assertKeetaAssetMovementAnchorInitiateTransferRequest,
-			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse
+			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse,
+			serializeResponse(data) {
+				return({
+					...data,
+					instructionChoices: data.instructionChoices.map(function(choice) {
+						let ret = { ...choice };
+						if ('location' in ret) {
+							ret.location = convertAssetLocationToString(ret.location);
+						}
+						
+						return(ret);
+					})
+				})
+			}
 		});
 
 		addRoute({
@@ -367,10 +372,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				return(getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData({ id }));
 			},
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(data);
-				}
-
 				return({
 					...data,
 					transaction: serializeTransactionResponse(data.transaction)
@@ -384,10 +385,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertRequest: assertKeetaAssetMovementAnchorlistTransactionsRequest,
 			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(data);
-				}
-				
 				return({
 					...data,
 					transactions: data.transactions.map(tx => serializeTransactionResponse(tx))
@@ -402,10 +399,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 			getSigningData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(data);
-				}
-
 				return({
 					...data,
 					...(serializePersistentAddressTemplateResponse(data))
@@ -420,10 +413,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			assertResponse: assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 			getSigningData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 			serializeResponse(data) {
-				if (!data.ok) {
-					return(data);
-				}
-
 				return({
 					...data,
 					templates: data.templates.map(template => serializePersistentAddressTemplateResponse(template)),
