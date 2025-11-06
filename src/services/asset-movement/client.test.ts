@@ -5,7 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import type { KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput } from './common.js';
+import { Errors, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 
 const DEBUG = true;
@@ -193,38 +193,39 @@ test('Asset Movement Anchor Client Test', async function() {
 							}
 						]
 					},
-					Test: {
-						operations: {
-							initiateTransfer: `${serverURL}/api/initiateTransfer`,
-							getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
-							createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
-							listTransactions: `${serverURL}/api/listTransactions`
-						},
-						supportedAssets: [
-							{
-								asset: baseToken.publicKeyString.get(),
-								paths: [
-									{
-										pair: [
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
-											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }}
-										]
-									}
-								]
-							},
-							{
-								asset: testCurrencyUSDC.publicKeyString.get(),
-								paths: [
-									{
-										pair: [
-											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
-										]
-									}
-								]
-							}
-						]
-					},
+					Test: await server.serviceMetadata() as any,
+					// Test: {
+					// 	operations: {
+					// 		initiateTransfer: `${serverURL}/api/initiateTransfer`,
+					// 		getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
+					// 		createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
+					// 		listTransactions: `${serverURL}/api/listTransactions`
+					// 	},
+					// 	supportedAssets: [
+					// 		{
+					// 			asset: baseToken.publicKeyString.get(),
+					// 			paths: [
+					// 				{
+					// 					pair: [
+					// 						{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+					// 						{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }}
+					// 					]
+					// 				}
+					// 			]
+					// 		},
+					// 		{
+					// 			asset: testCurrencyUSDC.publicKeyString.get(),
+					// 			paths: [
+					// 				{
+					// 					pair: [
+					// 						{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+					// 						{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+					// 					]
+					// 				}
+					// 			]
+					// 		}
+					// 	]
+					// },
 					Test2: {
 						operations: {
 							getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
@@ -431,7 +432,28 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		updatedAt: currentDateString
 	};
 
+	const kycCertificateIssuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	const rootCertificate = await (async () => {
+		const issuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+		const certificateBuilder = new CertificateBuilder({
+			subject: kycCertificateIssuer,
+			issuer: issuer,
+			serial: 3,
+			validFrom: new Date(Date.now() - 30_000),
+			validTo: new Date(Date.now() + 120_000)
+		});
+
+		const certificate = await certificateBuilder.build();
+
+		return({ certificate, issuer });
+	})();
+
 	const kycSharePrincipal = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+
+	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
@@ -501,6 +523,18 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					throw(new Error('Missing account authentication'));
 				}
 
+				if (userKYCNeeded.comparePublicKey(account)) {
+					throw(new Errors.KYCShareNeeded({
+						shareWithPrincipals: [ kycSharePrincipal ],
+						neededAttributes: [ 'firstName' ],
+						acceptedIssuers: [ rootCertificate.certificate ],
+						tosFlow: {
+							type: 'url-flow',
+							url: 'https://example.com/tos'
+						}
+					}));
+				}
+
 				return({
 					transaction: testTransaction
 				})
@@ -517,7 +551,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			},
 
 			shareKYC: async function(request) {
-				console.log('request.attributes', request.attributes);
 				const attributes = new SharableCertificateAttributes(request.attributes, { principals: [ kycSharePrincipal ]});
 
 				const firstName = await attributes.getAttribute('firstName');
@@ -584,11 +617,10 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
 
 	async function makeCertificate(name: string) {
-		const issuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const certificateBuilder = new CertificateBuilder({
 			subject: account,
 			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
-			issuer: issuer,
+			issuer: kycCertificateIssuer,
 			serial: 3,
 			validFrom: new Date(Date.now() - 30_000),
 			validTo: new Date(Date.now() + 120_000)
@@ -615,5 +647,26 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	await usdcProvider.shareKYCAttributes({
 		account: account,
 		attributes: validNameCert.sharable
+	});
+
+	let kycNeededError;
+	try {
+		await usdcProvider.getTransferStatus({ id: '555', account: userKYCNeeded });
+	} catch (error) {
+		kycNeededError = error;
+	}
+
+	if (!(kycNeededError instanceof Errors.KYCShareNeeded)) {
+		throw(new Error('Expected KYCShareNeeded error'));
+	}
+
+	expect(kycNeededError.neededAttributes).toEqual([ 'firstName' ]);
+	expect(kycNeededError.acceptedIssuers.length).toEqual(1);
+	expect(kycNeededError.acceptedIssuers[0]?.hash().compareHexString(rootCertificate.certificate.hash())).toEqual(true);
+	expect(kycNeededError.shareWithPrincipals.length).toEqual(1);
+	expect(kycNeededError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toEqual(true);
+	expect(kycNeededError.tosFlow).toEqual({
+		type: 'url-flow',
+		url: 'https://example.com/tos'
 	});
 });

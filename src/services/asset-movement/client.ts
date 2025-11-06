@@ -58,6 +58,7 @@ import type { HTTPSignedField } from '../../lib/http-server-shared.js';
 import { addSignatureToURL } from '../../lib/http-server-shared.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
+import { KeetaAnchorError } from '../../lib/error.js';
 
 // const PARANOID = true;
 
@@ -380,13 +381,24 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		if (!requestInformationJSON.ok) {
 			let errorStr;
 
-			if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
-				errorStr = requestInformationJSON.error;
-			} else {
-				errorStr = 'Unknown error';
+			let parsedError: KeetaAnchorError | null = null;
+			try {
+				parsedError = await KeetaAnchorError.fromJSON(requestInformationJSON);
+			} catch (error: unknown) {
+				this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, requestInformationJSON);
 			}
 
-			throw(new Error(`asset movement request failed: ${errorStr}`));
+			if (parsedError) {
+				throw(parsedError);
+			} else {
+				if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
+					errorStr = requestInformationJSON.error;
+				} else {
+					errorStr = 'Unknown error';
+				}
+	
+				throw(new Error(`asset movement request failed: ${errorStr}`));
+			}
 		}
 
 		// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct because we checked it above.
@@ -601,7 +613,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 				return({
 					account: body.account.assertAccount().publicKeyString.get(),
-					attributes: attributes
+					attributes: attributes,
+					tosAgreement: body.tosAgreement
 				});
 			},
 			body: request,
