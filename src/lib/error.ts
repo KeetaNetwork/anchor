@@ -18,8 +18,20 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 	}
 
 	// Dynamically import KYC errors to avoid circular dependencies
-	const kycModule = await import('../services/kyc/common.js');
-	const KYCErrors = kycModule.Errors;
+
+	const [
+		KYCErrors,
+		AssetMovementErrors
+	] = await Promise.all([
+		(async () => {
+			const kycModule = await import('../services/kyc/common.js');
+			return(kycModule.Errors);
+		})(),
+		(async () => {
+			const assetMovementModule = await import('../services/asset-movement/common.js');
+			return(assetMovementModule.Errors);
+		})()
+	]);
 
 	const ERROR_CLASSES: DeserializableErrorClass[] = [
 		/*
@@ -30,7 +42,8 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		KeetaAnchorUserError,
 		KYCErrors.VerificationNotFound,
 		KYCErrors.CertificateNotFound,
-		KYCErrors.PaymentRequired
+		KYCErrors.PaymentRequired,
+		AssetMovementErrors.KYCShareNeeded
 	];
 
 	const mapping: { [key: string]: (input: unknown) => Promise<KeetaAnchorError> } = {};
