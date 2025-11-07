@@ -1,9 +1,10 @@
 import * as http from 'http';
 import {
+	KeetaAnchorError,
 	KeetaAnchorUserError
 } from './error.js';
 import type { JSONSerializable } from './utils/json.js';
-import type { Logger } from './log/index.js';
+import type { Logger, LogLevel } from './log/index.js';
 import { Log } from './log/index.js';
 import { createAssert } from 'typia';
 
@@ -305,10 +306,20 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 				generatedResult = true;
 			} catch (err) {
+				let logLevel: Lowercase<LogLevel> = 'error';
+				if (KeetaAnchorError.isInstance(err)) {
+					/*
+					 * We're able to safely cast this here because the cast
+					 * duplicates the logic.
+					 */
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					logLevel = err.logLevel.toLowerCase() as Lowercase<typeof err.logLevel>;
+				}
+
 				/**
 				 * If an error occurs, log it and return an error page
 				 */
-				this.logger?.error('KeetaAnchorHTTP.Server', err);
+				this.logger?.[logLevel]('KeetaAnchorHTTP.Server', err);
 
 				/**
 				 * If it is a user error, provide a user-friendly error page
@@ -317,15 +328,14 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				if (errorHandlerRoute !== undefined) {
 					if (KeetaAnchorUserError.isInstance(err)) {
 						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'), request.headers);
-						generatedResult = true;
 					} else {
 						result = await errorHandlerRoute(new Map(), {
 							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
 							statusCode: 500,
 							contentType: 'application/json'
 						}, request.headers);
-						generatedResult = true;
 					}
+					generatedResult = true;
 				}
 
 				if (!generatedResult) {

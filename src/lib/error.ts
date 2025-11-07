@@ -1,3 +1,4 @@
+import type { LogLevel } from './log/index.ts';
 /**
  * Type for error classes that can be deserialized
  */
@@ -53,6 +54,7 @@ export class KeetaAnchorError extends Error {
 	private readonly keetaAnchorErrorObjectTypeID!: string;
 	private static readonly keetaAnchorErrorObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
 	protected userError = false;
+	readonly logLevel: LogLevel = 'ERROR';
 
 	get name(): string {
 		return(this.#name);
