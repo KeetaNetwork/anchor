@@ -90,7 +90,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
 };
 
-async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed' | 'expiry'>): Promise<Signing.Signable> {
+async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>): Promise<Signing.Signable> {
 	const retval: Signing.Signable = [
 		unsignedQuote.request.from,
 		unsignedQuote.request.to,
@@ -101,6 +101,12 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		unsignedQuote.cost.token,
 		unsignedQuote.cost.amount
 	];
+
+	// Include expiry information in the signature if present
+	if (unsignedQuote.expiry !== undefined) {
+		retval.push(unsignedQuote.expiry.serverTime);
+		retval.push(unsignedQuote.expiry.expiresAt);
+	}
 
 	return(retval);
 
@@ -116,38 +122,49 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
 		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'token' | 'amount'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
-		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account'>>
+		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account' | 'expiry'>>
 	>;
 }
 
 async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed' | 'expiry'>, quoteTTL?: number): Promise<KeetaFXAnchorQuoteJSON> {
-	const signableQuote = await formatQuoteSignable(unsignedQuote);
-	const signed = await Signing.SignData(signer, signableQuote);
-
-	const result: KeetaFXAnchorQuoteJSON = {
-		...unsignedQuote,
-		signed: signed
-	};
-
+	// Create expiry information before signing (if quoteTTL is provided)
+	let expiry: KeetaFXAnchorQuoteJSON['expiry'] = undefined;
 	if (quoteTTL !== undefined && quoteTTL > 0) {
 		const serverTime = new Date();
 		const expiresAt = new Date(serverTime.getTime() + quoteTTL);
-		result.expiry = {
+		expiry = {
 			serverTime: serverTime.toISOString(),
 			expiresAt: expiresAt.toISOString()
 		};
 	}
 
+	// Create the quote with expiry (to be included in signature)
+	const quoteToSign: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = {
+		...unsignedQuote,
+		...(expiry !== undefined ? { expiry } : {})
+	};
+
+	// Sign the quote (including expiry if present)
+	const signableQuote = await formatQuoteSignable(quoteToSign);
+	const signed = await Signing.SignData(signer, signableQuote);
+
+	// Return the complete quote with signature
+	const result: KeetaFXAnchorQuoteJSON = {
+		...quoteToSign,
+		signed: signed
+	};
+
 	return(result);
 }
 
 async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<boolean> {
-	// Extract only the fields that are signed (exclude 'signed' and 'expiry')
-	const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed' | 'expiry'> = {
+	// Extract the fields that are signed (all fields except 'signed')
+	const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = {
 		request: quote.request,
 		account: quote.account,
 		convertedAmount: quote.convertedAmount,
-		cost: quote.cost
+		cost: quote.cost,
+		...(quote.expiry !== undefined ? { expiry: quote.expiry } : {})
 	};
 	const signableQuote = await formatQuoteSignable(unsignedQuote);
 

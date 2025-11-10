@@ -293,13 +293,35 @@ test('FX Server Quote Validation Tests', async function() {
 		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
 	}
 
-	/* Test with an expired quote by manipulating the expiresAt timestamp */
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-	const expiredQuote = JSON.parse(JSON.stringify(quote));
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-	expiredQuote.expiry.expiresAt = new Date(Date.now() - 1000).toISOString(); // 1 second in the past
+	/* Test with an expired quote using a server with 1ms TTL */
+	await using shortTTLServer = new KeetaNetFXAnchorHTTPServer({
+		account: account,
+		client: client,
+		quoteSigner: account,
+		fx: {
+			from: [{
+				currencyCodes: [token1.publicKeyString.get()],
+				to: [token2.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function() {
+				return({
+					account: account,
+					convertedAmount: 1000n,
+					cost: {
+						amount: 0n,
+						token: token1
+					}
+				});
+			},
+			quoteTTL: 1 // 1 millisecond
+		}
+	});
 
-	const exchangeResponseExpired = await fetch(`${url}/api/createExchange`, {
+	await shortTTLServer.start();
+	const shortTTLUrl = shortTTLServer.url;
+
+	/* Get a quote with very short TTL */
+	const shortQuoteResponse = await fetch(`${shortTTLUrl}/api/getQuote`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -307,7 +329,36 @@ test('FX Server Quote Validation Tests', async function() {
 		},
 		body: JSON.stringify({
 			request: {
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				from: token1.publicKeyString.get(),
+				to: token2.publicKeyString.get(),
+				amount: '100',
+				affinity: 'from'
+			}
+		})
+	});
+
+	expect(shortQuoteResponse.status).toBe(200);
+	const shortQuoteData: unknown = await shortQuoteResponse.json();
+	expect(shortQuoteData).toHaveProperty('ok', true);
+	expect(shortQuoteData).toHaveProperty('quote');
+
+	if (typeof shortQuoteData !== 'object' || shortQuoteData === null || !('quote' in shortQuoteData)) {
+		throw(new Error('Invalid quote response'));
+	}
+
+	const expiredQuote = shortQuoteData.quote;
+
+	/* Wait to ensure the quote expires */
+	await new Promise(resolve => setTimeout(resolve, 10));
+
+	const exchangeResponseExpired = await fetch(`${shortTTLUrl}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
 				quote: expiredQuote,
 				block: 'AAAAAAAAAA=='
 			}
