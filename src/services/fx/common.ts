@@ -3,6 +3,9 @@ import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
 import { createAssert, createIs } from 'typia';
+import {
+	KeetaAnchorUserError
+} from '../../lib/error.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
@@ -146,3 +149,39 @@ export const isKeetaFXAnchorExchangeResponse: (input: unknown) => input is Keeta
 export const assertKeetaNetTokenPublicKeyString: (input: unknown)  => KeetaNetTokenPublicKeyString = createAssert<KeetaNetTokenPublicKeyString>();
 export const assertConversionInputCanonicalJSON: (input: unknown) => ConversionInputCanonicalJSON = createAssert<ConversionInputCanonicalJSON>();
 export const assertConversionQuoteJSON: (input: unknown) => KeetaFXAnchorQuoteJSON= createAssert<KeetaFXAnchorQuoteJSON>();
+
+class KeetaFXAnchorQuoteValidationFailedError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaFXAnchorQuoteValidationFailedError';
+	private readonly KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID!: string;
+	private static readonly KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID = 'a8f3c2d1-9b4e-4f2a-8c1d-5e6f7a8b9c0d';
+
+	constructor(message?: string) {
+		super(message ?? 'Quote validation failed');
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID', {
+			value: KeetaFXAnchorQuoteValidationFailedError.KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaFXAnchorQuoteValidationFailedError {
+		return(this.hasPropWithValue(input, 'KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID', KeetaFXAnchorQuoteValidationFailedError.KeetaFXAnchorQuoteValidationFailedErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
+export const Errors: {
+	QuoteValidationFailed: typeof KeetaFXAnchorQuoteValidationFailedError;
+} = {
+	/**
+	 * The quote validation failed
+	 */
+	QuoteValidationFailed: KeetaFXAnchorQuoteValidationFailedError
+};

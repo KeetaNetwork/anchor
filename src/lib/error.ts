@@ -22,6 +22,10 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 	const kycModule = await import('../services/kyc/common.js');
 	const KYCErrors = kycModule.Errors;
 
+	// Dynamically import FX errors to avoid circular dependencies
+	const fxModule = await import('../services/fx/common.js');
+	const FXErrors = fxModule.Errors;
+
 	const ERROR_CLASSES: DeserializableErrorClass[] = [
 		/*
 		 * We purposefully leave out KeetaAnchorError here since it
@@ -29,9 +33,8 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		KeetaAnchorUserError,
-		KYCErrors.VerificationNotFound,
-		KYCErrors.CertificateNotFound,
-		KYCErrors.PaymentRequired
+		...Object.values(KYCErrors),
+		...Object.values(FXErrors)
 	];
 
 	const mapping: { [key: string]: (input: unknown) => Promise<KeetaAnchorError> } = {};

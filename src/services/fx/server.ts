@@ -5,7 +5,8 @@ import {
 } from '../../lib/error.js';
 import {
 	assertConversionInputCanonicalJSON,
-	assertConversionQuoteJSON
+	assertConversionQuoteJSON,
+	Errors
 } from './common.js';
 import type {
 	ConversionInputCanonicalJSON,
@@ -61,6 +62,16 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * This is used to handle quotes and estimates
 		 */
 		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
+		/**
+		 * Optional callback to validate a quote before completing an exchange
+		 *
+		 * This allows the FX Server operator to reject quotes that are no longer
+		 * acceptable (e.g., due to price changes, expiry, or other business logic)
+		 *
+		 * @param quote The quote to validate
+		 * @returns true to accept the quote and proceed with the exchange, false to reject it
+		 */
+		validateQuote?: (quote: KeetaFXAnchorQuoteJSON) => Promise<boolean> | boolean;
 	};
 
 	/**
@@ -263,6 +274,14 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const isValidQuote = await verifySignedData(config.quoteSigner, quote);
 			if (!isValidQuote) {
 				throw(new Error('Invalid quote signature'));
+			}
+
+			/* Validate the quote using the optional callback */
+			if (config.fx.validateQuote !== undefined) {
+				const isAcceptable = await config.fx.validateQuote(quote);
+				if (!isAcceptable) {
+					throw(new Errors.QuoteValidationFailed());
+				}
 			}
 
 			const block = new KeetaNet.lib.Block(request.block);
