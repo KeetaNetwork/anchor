@@ -33,10 +33,8 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		KeetaAnchorUserError,
-		KYCErrors.VerificationNotFound,
-		KYCErrors.CertificateNotFound,
-		KYCErrors.PaymentRequired,
-		FXErrors.QuoteValidationFailed
+		...Object.values(KYCErrors),
+		...Object.values(FXErrors)
 	];
 
 	const mapping: { [key: string]: (input: unknown) => Promise<KeetaAnchorError> } = {};
