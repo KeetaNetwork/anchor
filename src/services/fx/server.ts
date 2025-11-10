@@ -213,7 +213,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		if (quoteTTL === undefined) {
 			quoteTTL = maxQuoteTTL; // Default to 5 minutes
 		} else if (quoteTTL > maxQuoteTTL) {
-			throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms (5 minutes)`));
+			throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
 		}
 
 		this.fx = {
