@@ -176,6 +176,7 @@ test('FX Server Quote Validation Tests', async function() {
 
 	let validateQuoteCalled = false;
 	let shouldAcceptQuote = true;
+	let currentTTL = 5000; // Start with 5 seconds
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
 		account: account,
@@ -206,11 +207,9 @@ test('FX Server Quote Validation Tests', async function() {
 				expect(quote).toHaveProperty('signed');
 				return(shouldAcceptQuote);
 			},
-			// Use a function to determine TTL based on request
+			// Use a function to determine TTL based on captured variable
 			quoteTTL: function(_ignore_request) {
-				// For this test, return 5 seconds for all requests
-				// In real usage, this could vary based on request properties
-				return(5000);
+				return(currentTTL);
 			}
 		}
 	});
@@ -298,35 +297,11 @@ test('FX Server Quote Validation Tests', async function() {
 		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
 	}
 
-	/* Test with an expired quote using a server with 1ms TTL */
-	await using shortTTLServer = new KeetaNetFXAnchorHTTPServer({
-		account: account,
-		client: client,
-		quoteSigner: account,
-		fx: {
-			from: [{
-				currencyCodes: [token1.publicKeyString.get()],
-				to: [token2.publicKeyString.get()]
-			}],
-			getConversionRateAndFee: async function() {
-				return({
-					account: account,
-					convertedAmount: 1000n,
-					cost: {
-						amount: 0n,
-						token: token1
-					}
-				});
-			},
-			quoteTTL: 1 // 1 millisecond
-		}
-	});
-
-	await shortTTLServer.start();
-	const shortTTLUrl = shortTTLServer.url;
+	/* Test with an expired quote by changing the TTL to 1ms */
+	currentTTL = 1; // Change TTL to 1 millisecond
 
 	/* Get a quote with very short TTL */
-	const shortQuoteResponse = await fetch(`${shortTTLUrl}/api/getQuote`, {
+	const shortQuoteResponse = await fetch(`${url}/api/getQuote`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -356,7 +331,7 @@ test('FX Server Quote Validation Tests', async function() {
 	/* Wait to ensure the quote expires */
 	await new Promise(resolve => setTimeout(resolve, 10));
 
-	const exchangeResponseExpired = await fetch(`${shortTTLUrl}/api/createExchange`, {
+	const exchangeResponseExpired = await fetch(`${url}/api/createExchange`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
