@@ -6,47 +6,82 @@ if [ -z "${version}" -o -z "${previous_version}" ]; then
     exit 1
 fi
 cd "$(dirname "$0")/.." || exit 1
+
 function confirm() {
-    local prompt
-    local confirm
-    prompt="$1"
-    read -p "${prompt} [y/N] " -n 1 -r confirm
-    echo
-    if [[ $confirm =~ ^[Yy]$ ]]; then
-        return 0
-    else
-        return 1
-    fi
+	local prompt
+	local confirm
+	prompt="$1"
+	read -p "${prompt} [y/N] " -n 1 -r confirm
+	echo
+	if [[ $confirm =~ ^[Yy]$ ]]; then
+		return 0
+	else
+		return 1
+	fi
 }
+
 function getNPMPackageHash() (
-    package="$1"
-    packageHash="$(npm show "${package}" dist.integrity)" || exit 1
-    echo "${packageHash}" | sed 's@^sha512-@@' | base64 -d | xxd -c 120 -u -p | sed 's@^@SHA512: @'
+	package="$1"
+	packageHash="$(npm show "${package}" dist.integrity)" || exit 1
+	echo "${packageHash}" | sed 's@^sha512-@@' | base64 -d | xxd -c 120 -u -p | sed 's@^@SHA512: @'
 )
+function checkPackagePublished() {
+	local package_name="$1"
+	local package_version="$2"
+	local npm_view_output
+	local npm_view_exit
+
+	npm_view_output=$(npm view "${package_name}@${package_version}" version 2>&1)
+	npm_view_exit=$?
+
+	if [ $npm_view_exit -eq 0 ]; then
+		echo "✓ ${package_name}@${package_version} found in registry"
+		return 0
+	else
+		echo "✗ ${package_name}@${package_version} NOT found in registry"
+		if echo "$npm_view_output" | grep -q "401\|403\|authentication"; then
+			echo "  Authentication error: Please check your .npmrc configuration"
+			echo "  You need a GitHub Personal Access Token with read:packages permission"
+		else
+			echo "  Please ensure the version has been merged and CI has completed."
+		fi
+		return 1
+	fi
+}
 workdir=''
 function clean() {
-    if [ -n "${workdir}" ]; then
-        rm -rf "${workdir}"
-        workdir=''
-    fi
+	if [ -n "${workdir}" ]; then
+		rm -rf "${workdir}"
+		workdir=''
+	fi
 }
 trap clean EXIT
-echo "Publishing Anchor v${version}"
+echo "Creating KeetaNet Anchor v${version} Release"
 echo ''
-echo 'Step 1: Publish'
-if confirm 'Perform publish?'; then
-    make do-npm-publish || exit 1
-    echo 'Published.'
+echo "NOTE: Package publishing is automated via GitHub Actions."
+echo "      Packages are published when version changes are merged to main or releases/*."
+echo "      Ensure the packages have been published before proceeding."
+echo ''
+echo 'Step 1: Verify Packages Published'
+if confirm "Verify that @keetanetwork/anchor@${version} is published?"; then
+	echo "Checking NPM registry..."
+	echo "NOTE: Ensure you have GitHub Package Registry access configured in ~/.npmrc"
+	echo "      See: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry"
+	echo ''
+
+	# Check main package
+	if ! checkPackagePublished "@keetanetwork/anchor" "${version}"; then
+		exit 1
+	fi
 else
-    echo 'Skipped.'
+	echo "Skipping package verification. Proceeding anyway..."
 fi
 echo ''
 echo 'Step 2: Generate Change Log Template'
 workdir="$(mktemp -d)" || exit 1
 cat << _EOF_ > "${workdir}/changelog.md"
 ## DRAFT ## <- REMOVE THIS LINE TO PROCEED
-This is Anchor v${version} which ...
-It has the following changes since v${previous_version}:
+This is KeetaNet Anchor v${version} which has the following changes:
 _EOF_
 git log releases/v${previous_version}..HEAD | awk '/^commit /{ commit = $2 } /\(#/{ if (commit == "") { next; }; print commit, $0; commit = ""; }' | sed 's@^@- @' >> "${workdir}/changelog.md"
 echo ''
@@ -55,7 +90,7 @@ cat << _EOF_ >> "${workdir}/changelog.md"
 It includes the following release artifacts:
 NPM Packages:
 \`\`\`
-        @keetanetwork/anchore@${version}   $(getNPMPackageHash "@keetanetwork/anchor@${version}")
+        @keetanetwork/anchor@${version}   $(getNPMPackageHash "@keetanetwork/anchor@${version}")
 \`\`\`
 _EOF_
 echo ''
@@ -66,22 +101,29 @@ https://github.com/KeetaNetwork/anchor/compare/releases/v${previous_version}...r
 _EOF_
 "${EDITOR:-vi}" "${workdir}/changelog.md" || exit 1
 if grep '^## DRAFT' "${workdir}/changelog.md" >/dev/null; then
-    echo 'Aborted.'
-    exit 1
+	echo 'Aborted.'
+	exit 1
 fi
 echo ''
 echo 'Step 5: Tag'
 if confirm 'Perform tag?'; then
-    git tag -f -a -s releases/v${version} -m "$(cat "${workdir}/changelog.md")" || exit 1
-    echo 'Tagged.'
+	git tag -f -a -s releases/v${version} -m "$(cat "${workdir}/changelog.md")" || exit 1
+	echo 'Tagged.'
 else
-    echo 'Skipped.'
+	echo 'Skipped.'
 fi
 
-echo 'Step 6: Make GitHub Release'
-if confirm 'Perform GitHub Release?'; then
+echo 'Step 6: Push Tag to Create GitHub Release'
+echo ''
+echo 'NOTE: GitHub Release will be automatically created by GitHub Actions when the tag is pushed.'
+echo ''
+if confirm 'Push tag to trigger automated GitHub Release?'; then
 	git push --tags || exit 1
-	gh release create "releases/v${version}" --notes-from-tag --title "v${version}"
+	echo ''
+	echo 'Tag pushed successfully!'
+	echo 'GitHub Actions will now automatically create the release.'
+	echo 'You can monitor the progress at:'
+	echo "  https://github.com/KeetaNetwork/anchor/actions"
 else
-    echo 'Skipped.'
+	echo 'Skipped. You can push the tag manually later with: git push --tags'
 fi
