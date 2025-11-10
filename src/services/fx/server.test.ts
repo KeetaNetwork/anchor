@@ -206,7 +206,12 @@ test('FX Server Quote Validation Tests', async function() {
 				expect(quote).toHaveProperty('signed');
 				return(shouldAcceptQuote);
 			},
-			quoteTTL: 5000 // 5 seconds
+			// Use a function to determine TTL based on request
+			quoteTTL: function(_ignore_request) {
+				// For this test, return 5 seconds for all requests
+				// In real usage, this could vary based on request properties
+				return(5000);
+			}
 		}
 	});
 

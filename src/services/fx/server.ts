@@ -75,13 +75,17 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		/**
 		 * Optional quote time-to-live (TTL) in milliseconds
 		 *
+		 * Can be either:
+		 * - A number representing the TTL in milliseconds
+		 * - A function that receives the conversion request and returns the TTL in milliseconds
+		 *
 		 * If specified, quotes will include expiry information and will be rejected
 		 * if they are expired when used in createExchange requests.
 		 *
 		 * Default: 300000 (5 minutes, matching message expiry)
 		 * Maximum: 300000 (5 minutes)
 		 */
-		quoteTTL?: number;
+		quoteTTL?: number | ((request: ConversionInputCanonicalJSON) => number | Promise<number>);
 	};
 
 	/**
@@ -210,10 +214,14 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		const maxQuoteTTL = 5 * 60 * 1000; // 5 minutes (message expiry)
 		let quoteTTL = config.fx.quoteTTL;
 
+		// If quoteTTL is a number, validate it doesn't exceed maximum
+		if (typeof quoteTTL === 'number' && quoteTTL > maxQuoteTTL) {
+			throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
+		}
+
+		// Set default if not provided
 		if (quoteTTL === undefined) {
 			quoteTTL = maxQuoteTTL; // Default to 5 minutes
-		} else if (quoteTTL > maxQuoteTTL) {
-			throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
 		}
 
 		this.fx = {
@@ -298,7 +306,20 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				...rateAndFee
 			});
 
-			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote, config.fx.quoteTTL);
+			// Resolve quoteTTL (could be a number or a function)
+			let resolvedQuoteTTL: number | undefined;
+			if (typeof config.fx.quoteTTL === 'function') {
+				resolvedQuoteTTL = await config.fx.quoteTTL(conversion);
+				// Validate the returned TTL doesn't exceed maximum
+				const maxQuoteTTL = 5 * 60 * 1000; // 5 minutes (message expiry)
+				if (resolvedQuoteTTL > maxQuoteTTL) {
+					throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
+				}
+			} else {
+				resolvedQuoteTTL = config.fx.quoteTTL;
+			}
+
+			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote, resolvedQuoteTTL);
 			const quoteResponse: KeetaFXAnchorQuoteResponse = {
 				ok: true,
 				quote: signedQuote
