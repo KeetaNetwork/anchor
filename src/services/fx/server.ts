@@ -72,6 +72,15 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * @returns true to accept the quote and proceed with the exchange, false to reject it
 		 */
 		validateQuote?: (quote: KeetaFXAnchorQuoteJSON) => Promise<boolean> | boolean;
+		/**
+		 * Optional quote time-to-live (TTL) in milliseconds
+		 *
+		 * If specified, quotes will include expiry information and will be rejected
+		 * if they are expired when used in createExchange requests.
+		 *
+		 * Default: undefined (no expiry)
+		 */
+		quoteTTL?: number;
 	};
 
 	/**
@@ -110,13 +119,24 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 	>;
 }
 
-async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>): Promise<KeetaFXAnchorQuoteJSON> {
+async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>, quoteTTL?: number): Promise<KeetaFXAnchorQuoteJSON> {
 	const signableQuote = await formatQuoteSignable(unsignedQuote);
 	const signed = await Signing.SignData(signer, signableQuote);
 
+	const serverTime = new Date();
+	const signedWithExpiry: KeetaFXAnchorQuoteJSON['signed'] = {
+		...signed
+	};
+
+	if (quoteTTL !== undefined && quoteTTL > 0) {
+		signedWithExpiry.serverTime = serverTime.toISOString();
+		const expiresAt = new Date(serverTime.getTime() + quoteTTL);
+		signedWithExpiry.expiresAt = expiresAt.toISOString();
+	}
+
 	return({
 		...unsignedQuote,
-		signed: signed
+		signed: signedWithExpiry
 	});
 }
 
@@ -239,7 +259,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				...rateAndFee
 			});
 
-			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote);
+			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote, config.fx.quoteTTL);
 			const quoteResponse: KeetaFXAnchorQuoteResponse = {
 				ok: true,
 				quote: signedQuote
@@ -274,6 +294,15 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const isValidQuote = await verifySignedData(config.quoteSigner, quote);
 			if (!isValidQuote) {
 				throw(new Error('Invalid quote signature'));
+			}
+
+			/* Check if the quote has expired (default validation) */
+			if (quote.signed.expiresAt !== undefined) {
+				const now = new Date();
+				const expiresAt = new Date(quote.signed.expiresAt);
+				if (now >= expiresAt) {
+					throw(new Errors.QuoteValidationFailed('Quote has expired'));
+				}
 			}
 
 			/* Validate the quote using the optional callback */

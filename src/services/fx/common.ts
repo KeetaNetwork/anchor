@@ -115,6 +115,10 @@ export type KeetaFXAnchorQuote = {
 		timestamp: string;
 		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
 		signature: string;
+		/* Server time in ISO 8601 format with millisecond precision (optional) */
+		serverTime?: string;
+		/* Expiry time in ISO 8601 format with millisecond precision (optional) */
+		expiresAt?: string;
 	}
 };
 

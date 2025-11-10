@@ -270,3 +270,220 @@ test('FX Server Quote Validation Tests', async function() {
 		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
 	}
 });
+
+test('FX Server Quote Expiry Tests', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
+	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	/* Test with 5 second TTL */
+	await using server = new KeetaNetFXAnchorHTTPServer({
+		account: account,
+		client: client,
+		quoteSigner: account,
+		fx: {
+			from: [{
+				currencyCodes: [token1.publicKeyString.get()],
+				to: [token2.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function() {
+				return({
+					account: account,
+					convertedAmount: 1000n,
+					cost: {
+						amount: 0n,
+						token: token1
+					}
+				});
+			},
+			quoteTTL: 5000 // 5 seconds
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/* Get a quote with expiry information */
+	const quoteResponse = await fetch(`${url}/api/getQuote`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				from: token1.publicKeyString.get(),
+				to: token2.publicKeyString.get(),
+				amount: '100',
+				affinity: 'from'
+			}
+		})
+	});
+
+	expect(quoteResponse.status).toBe(200);
+	const quoteData: unknown = await quoteResponse.json();
+	expect(quoteData).toHaveProperty('ok', true);
+	expect(quoteData).toHaveProperty('quote');
+
+	if (typeof quoteData !== 'object' || quoteData === null || !('quote' in quoteData)) {
+		throw(new Error('Invalid quote response'));
+	}
+
+	const quote = quoteData.quote;
+	if (typeof quote !== 'object' || quote === null || !('signed' in quote)) {
+		throw(new Error('Invalid quote structure'));
+	}
+
+	const signed = quote.signed;
+	if (typeof signed !== 'object' || signed === null) {
+		throw(new Error('Invalid signed structure'));
+	}
+
+	/* Verify that expiry information is included */
+	expect(signed).toHaveProperty('serverTime');
+	expect(signed).toHaveProperty('expiresAt');
+
+	/* Verify that serverTime and expiresAt are valid ISO 8601 timestamps */
+	if (typeof signed !== 'object' || signed === null ||
+	    !('serverTime' in signed) || typeof signed.serverTime !== 'string' ||
+	    !('expiresAt' in signed) || typeof signed.expiresAt !== 'string') {
+		throw(new Error('serverTime and expiresAt should be strings'));
+	}
+
+	const serverTime = new Date(signed.serverTime);
+	const expiresAt = new Date(signed.expiresAt);
+	expect(serverTime.toISOString()).toBe(signed.serverTime);
+	expect(expiresAt.toISOString()).toBe(signed.expiresAt);
+
+	/* Verify that expiresAt is approximately 5 seconds after serverTime */
+	const timeDiff = expiresAt.getTime() - serverTime.getTime();
+	expect(timeDiff).toBeGreaterThanOrEqual(4999); // Allow 1ms tolerance
+	expect(timeDiff).toBeLessThanOrEqual(5001); // Allow 1ms tolerance
+
+	/* Test that a non-expired quote is accepted */
+	const exchangeResponseValid = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				quote: quote,
+				block: 'AAAAAAAAAA==' // A minimal valid base64 string that will decode but fail later (but after expiry check)
+			}
+		})
+	});
+
+	/* The quote should not be rejected for expiry (it will fail for other reasons) */
+	/* If it was rejected for expiry, status would be 400 with QuoteValidationFailed error */
+	const validData: unknown = await exchangeResponseValid.json();
+	if (typeof validData === 'object' && validData !== null && 'name' in validData) {
+		expect(validData.name).not.toBe('KeetaFXAnchorQuoteValidationFailedError');
+	}
+
+	/* Now test with an expired quote by manipulating the expiresAt timestamp */
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+	const expiredQuote = JSON.parse(JSON.stringify(quote));
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+	expiredQuote.signed.expiresAt = new Date(Date.now() - 1000).toISOString(); // 1 second in the past
+
+	const exchangeResponseExpired = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				quote: expiredQuote,
+				block: 'AAAAAAAAAA=='
+			}
+		})
+	});
+
+	/* The expired quote should be rejected */
+	expect(exchangeResponseExpired.status).toBe(400);
+	const expiredData: unknown = await exchangeResponseExpired.json();
+	expect(expiredData).toHaveProperty('ok', false);
+	expect(expiredData).toHaveProperty('error');
+	if (typeof expiredData === 'object' && expiredData !== null && 'name' in expiredData) {
+		expect(expiredData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
+	}
+});
+
+test('FX Server Quote Without Expiry Tests', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
+	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	/* Test without TTL (expiry disabled) */
+	await using server = new KeetaNetFXAnchorHTTPServer({
+		account: account,
+		client: client,
+		quoteSigner: account,
+		fx: {
+			from: [{
+				currencyCodes: [token1.publicKeyString.get()],
+				to: [token2.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function() {
+				return({
+					account: account,
+					convertedAmount: 1000n,
+					cost: {
+						amount: 0n,
+						token: token1
+					}
+				});
+			}
+			/* quoteTTL not specified - no expiry */
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/* Get a quote without expiry information */
+	const quoteResponse = await fetch(`${url}/api/getQuote`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				from: token1.publicKeyString.get(),
+				to: token2.publicKeyString.get(),
+				amount: '100',
+				affinity: 'from'
+			}
+		})
+	});
+
+	expect(quoteResponse.status).toBe(200);
+	const quoteData: unknown = await quoteResponse.json();
+	expect(quoteData).toHaveProperty('ok', true);
+	expect(quoteData).toHaveProperty('quote');
+
+	if (typeof quoteData !== 'object' || quoteData === null || !('quote' in quoteData)) {
+		throw(new Error('Invalid quote response'));
+	}
+
+	const quote = quoteData.quote;
+	if (typeof quote !== 'object' || quote === null || !('signed' in quote)) {
+		throw(new Error('Invalid quote structure'));
+	}
+
+	const signed = quote.signed;
+	if (typeof signed !== 'object' || signed === null) {
+		throw(new Error('Invalid signed structure'));
+	}
+
+	/* Verify that expiry information is NOT included */
+	expect('serverTime' in signed ? signed.serverTime : undefined).toBeUndefined();
+	expect('expiresAt' in signed ? signed.expiresAt : undefined).toBeUndefined();
+});
