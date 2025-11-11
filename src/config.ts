@@ -3,7 +3,7 @@ import type {
 	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
-import KeetaNet from '@keetanetwork/keetanet-client';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 
 type KeetaNetNetworks = typeof KeetaNet.Client.Config.networksArray[number];
 type ResolverOptions = Partial<Omit<ConstructorParameters<typeof Resolver>[0], 'client'>> & {
