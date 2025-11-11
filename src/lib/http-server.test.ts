@@ -57,7 +57,7 @@ test('Basic Functionality', async function() {
 		await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
 			protected transformError(error: unknown): unknown {
 				if (error instanceof CustomError) {
-					return new KeetaAnchorUserError('got custom error')
+					return(new KeetaAnchorUserError('got custom error'));
 				}
 
 				return(error);
