@@ -204,7 +204,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					return(retval);
 				}
-			}
+			};
 
 			if (!seenPaths.has(path) && path !== '' && path !== undefined) {
 				const corsRouteKey = `OPTIONS ${path}`;
