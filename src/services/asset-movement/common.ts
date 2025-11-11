@@ -731,7 +731,7 @@ export type KeetaAssetMovementAnchorlistTransactionsClientRequest = {
 	persistentAddresses?: ({ location: AssetLocationLike; } & ({ persistentAddress?: string; persistentAddressTemplate: string; } | { persistentAddress: string; persistentAddressTemplate?: string; }))[];
 	from?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
 	to?: { location: AssetLocationLike; userAddress?: string; asset?: MovableAsset; };
-	transactions?: { location: AssetLocationLike; transaction: Pick<TransactionId, 'id'>; }[] | undefined;
+	transactions?: { location: AssetLocationLike; transaction: Partial<TransactionId>; }[] | undefined;
 	pagination?: PaginationQuery;
 }
 
@@ -741,7 +741,7 @@ export type KeetaAssetMovementAnchorlistTransactionsRequest = {
 	persistentAddresses?: ({ location: AssetLocationCanonical; } & ({ persistentAddress?: string | undefined; persistentAddressTemplate: string; } | { persistentAddress: string; persistentAddressTemplate?: string | undefined; }))[] | undefined;
 	from?: { location: AssetLocationCanonical; userAddress?: string | undefined; asset?: MovableAsset | undefined; } | undefined;
 	to?: { location: AssetLocationCanonical; userAddress?: string | undefined; asset?: MovableAsset | undefined; } | undefined;
-	transactions?: { location: AssetLocationCanonical; transaction: Pick<TransactionId, 'id'>; }[] | undefined;
+	transactions?: { location: AssetLocationCanonical; transaction: Partial<TransactionId>; }[] | undefined;
 	pagination?: PaginationQuery | undefined;
 }
 
