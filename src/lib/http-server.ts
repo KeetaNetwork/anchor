@@ -453,7 +453,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			let newURL: string;
 			if (typeof this.#url === 'string') {
 				newURL = this.#url;
-			} else if ('port' in this.#url) {
+			} else if (this.#url instanceof URL || ('port' in this.#url && 'hostname' in this.#url && 'toString' in this.#url)) {
 				newURL = this.#url.toString();
 			} else if (typeof this.#url === 'function') {
 				newURL = this.#url(this);
@@ -463,6 +463,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 			const newURLObj = new URL(newURL);
 			newURLObj.pathname = '/';
+			newURLObj.search = '';
 
 			return(newURLObj.toString());
 		}

@@ -210,6 +210,7 @@ test('Basic Functionality', async function() {
 		const urlChecks = [
 			{ in: 'http://example.com/foo', out: 'http://example.com/' },
 			{ in: 'https://example.com:8080/bar/baz', out: 'https://example.com:8080/' },
+			{ in: 'https://example.com:8080/bar/baz?a=b', out: 'https://example.com:8080/' },
 			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
 			{
 				in: function(serverObj: typeof server) {
@@ -217,7 +218,7 @@ test('Basic Functionality', async function() {
 				},
 				out: `http://localhost:${server.port}/`
 			}
-		]
+		];
 		for (const urlCheck of urlChecks) {
 			server.url = urlCheck.in;
 			expect(server.url).toBe(urlCheck.out);
