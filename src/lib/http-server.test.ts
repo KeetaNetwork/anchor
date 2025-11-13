@@ -214,7 +214,7 @@ test('Basic Functionality', async function() {
 			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
 			{
 				in: function(serverObj: typeof server) {
-					return('http://localhost:' + serverObj.port + '/some/other/path');
+					return('http://localhost:' + String(serverObj.port) + '/some/other/path');
 				},
 				out: `http://localhost:${server.port}/`
 			}
