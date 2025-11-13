@@ -7,6 +7,7 @@ import type { JSONSerializable } from './utils/json.js';
 import type { Logger, LogLevel } from './log/index.js';
 import { Log } from './log/index.js';
 import { createAssert } from 'typia';
+import { assertNever } from './utils/never.js';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -36,6 +37,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	readonly logger: NonNullable<KeetaAnchorHTTPServerConfig['logger']>;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
+	#url: undefined | string | URL | ((object: this) => string);
 	readonly #config: ConfigType;
 
 	constructor(config: ConfigType) {
@@ -439,14 +441,37 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	/**
 	 * Get the URL of the server, which can be used to make requests to
 	 * it.  This will use "localhost" as the hostname and the port that
-	 * the server is listening on.
+	 * the server is listening on by default but can be overridden by
+	 * setting a custom URL.
 	 */
 	get url(): string {
 		if (this.port === 0 || this.#server === undefined) {
 			throw(new Error('Server not started'));
 		}
 
+		if (this.#url !== undefined) {
+			let newURL: string;
+			if (typeof this.#url === 'string') {
+				newURL = this.#url;
+			} else if ('port' in this.#url) {
+				newURL = this.#url.toString();
+			} else if (typeof this.#url === 'function') {
+				newURL = this.#url(this);
+			} else {
+				assertNever(this.#url);
+			}
+
+			const newURLObj = new URL(newURL);
+			newURLObj.pathname = '/';
+
+			return(newURLObj.toString());
+		}
+
 		return(`http://localhost:${this.port}`);
+	}
+
+	set url(value: string | URL | ((object: this) => string)) {
+		this.#url = value;
 	}
 
 	[Symbol.asyncDispose](): Promise<void> {
