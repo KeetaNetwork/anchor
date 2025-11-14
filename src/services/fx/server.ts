@@ -22,6 +22,27 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.js';
 
+/**
+ * Maximum quote TTL in milliseconds (5 minutes, matching message expiry)
+ */
+const MAX_QUOTE_TTL = 5 * 60 * 1000;
+
+/**
+ * Default quote TTL in milliseconds (5 minutes, matching message expiry)
+ */
+const DEFAULT_QUOTE_TTL = MAX_QUOTE_TTL;
+
+/**
+ * Validates that a quote TTL value doesn't exceed the maximum allowed
+ * @param ttl The TTL value to validate in milliseconds
+ * @throws Error if the TTL exceeds the maximum
+ */
+function validateQuoteTTL(ttl: number): void {
+	if (ttl > MAX_QUOTE_TTL) {
+		throw(new Error(`quoteTTL cannot exceed ${MAX_QUOTE_TTL}ms`));
+	}
+}
+
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -211,17 +232,16 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		this.client = config.client;
 
 		/* Validate and set quoteTTL with default and maximum */
-		const maxQuoteTTL = 5 * 60 * 1000; // 5 minutes (message expiry)
 		let quoteTTL = config.fx.quoteTTL;
 
 		// If quoteTTL is a number, validate it doesn't exceed maximum
-		if (typeof quoteTTL === 'number' && quoteTTL > maxQuoteTTL) {
-			throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
+		if (typeof quoteTTL === 'number') {
+			validateQuoteTTL(quoteTTL);
 		}
 
 		// Set default if not provided
 		if (quoteTTL === undefined) {
-			quoteTTL = maxQuoteTTL; // Default to 5 minutes
+			quoteTTL = DEFAULT_QUOTE_TTL;
 		}
 
 		this.fx = {
@@ -311,10 +331,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			if (typeof config.fx.quoteTTL === 'function') {
 				resolvedQuoteTTL = await config.fx.quoteTTL(conversion);
 				// Validate the returned TTL doesn't exceed maximum
-				const maxQuoteTTL = 5 * 60 * 1000; // 5 minutes (message expiry)
-				if (resolvedQuoteTTL > maxQuoteTTL) {
-					throw(new Error(`quoteTTL cannot exceed ${maxQuoteTTL}ms`));
-				}
+				validateQuoteTTL(resolvedQuoteTTL);
 			} else {
 				resolvedQuoteTTL = config.fx.quoteTTL;
 			}
