@@ -233,7 +233,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const responseFinalize = async () => {
 				if ('sync' in this.logger && typeof this.logger.sync === 'function') {
 					try {
-						// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 						await this.logger.sync();
 					} catch {
 						/* ignore errors */
