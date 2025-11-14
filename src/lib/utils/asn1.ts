@@ -253,7 +253,7 @@ function prepareValueForSchema(schema: Schema, value: unknown): unknown {
 		if ('choice' in resolved) {
 			const choices = Array.isArray(resolved.choice)
 				? resolved.choice
-				: Array.from(resolved.choice);
+				: Object.values(resolved.choice);
 			for (const choiceSchema of choices) {
 				const preparedChoice = prepareValueForSchema(choiceSchema, value);
 				if (preparedChoice !== value) {
