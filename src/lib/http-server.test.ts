@@ -205,6 +205,26 @@ test('Basic Functionality', async function() {
 		}
 
 		/*
+		 * Ensure we can update the URL
+		 */
+		const urlChecks = [
+			{ in: 'http://example.com/foo', out: 'http://example.com/' },
+			{ in: 'https://example.com:8080/bar/baz', out: 'https://example.com:8080/' },
+			{ in: 'https://example.com:8080/bar/baz?a=b', out: 'https://example.com:8080/' },
+			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
+			{
+				in: function(serverObj: typeof server) {
+					return('http://localhost:' + String(serverObj.port) + '/some/other/path');
+				},
+				out: `http://localhost:${server.port}/`
+			}
+		];
+		for (const urlCheck of urlChecks) {
+			server.url = urlCheck.in;
+			expect(server.url).toBe(urlCheck.out);
+		}
+
+		/*
 		 * We call stop manually here to verify that it works,
 		 * but if we did not call it, the server would be stopped
 		 * automatically when the test function exits due to the
