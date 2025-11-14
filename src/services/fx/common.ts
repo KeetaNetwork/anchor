@@ -116,6 +116,16 @@ export type KeetaFXAnchorQuote = {
 		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
 		signature: string;
 	}
+
+	/**
+	 * Optional expiry information for the quote
+	 */
+	expiry?: {
+		/* Server time in ISO 8601 format with millisecond precision */
+		serverTime: string;
+		/* Expiry time in ISO 8601 format with millisecond precision */
+		expiresAt: string;
+	}
 };
 
 export type KeetaFXAnchorQuoteJSON = ToJSONSerializable<KeetaFXAnchorQuote>;

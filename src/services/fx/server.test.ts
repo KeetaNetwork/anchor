@@ -176,6 +176,7 @@ test('FX Server Quote Validation Tests', async function() {
 
 	let validateQuoteCalled = false;
 	let shouldAcceptQuote = true;
+	let currentTTL = 5000; // Start with 5 seconds
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
 		account: account,
@@ -205,6 +206,10 @@ test('FX Server Quote Validation Tests', async function() {
 				expect(quote).toHaveProperty('cost');
 				expect(quote).toHaveProperty('signed');
 				return(shouldAcceptQuote);
+			},
+			// Use a function to determine TTL based on captured variable
+			quoteTTL: function(_ignore_request) {
+				return(currentTTL);
 			}
 		}
 	});
@@ -240,6 +245,28 @@ test('FX Server Quote Validation Tests', async function() {
 
 	const quote = quoteData.quote;
 
+	/* Verify that expiry information is included */
+	if (typeof quote !== 'object' || quote === null || !('expiry' in quote)) {
+		throw(new Error('Quote should have expiry field'));
+	}
+
+	const expiry = quote.expiry;
+	if (typeof expiry !== 'object' || expiry === null ||
+	    !('serverTime' in expiry) || typeof expiry.serverTime !== 'string' ||
+	    !('expiresAt' in expiry) || typeof expiry.expiresAt !== 'string') {
+		throw(new Error('Expiry should contain serverTime and expiresAt as strings'));
+	}
+
+	const serverTime = new Date(expiry.serverTime);
+	const expiresAt = new Date(expiry.expiresAt);
+	expect(serverTime.toISOString()).toBe(expiry.serverTime);
+	expect(expiresAt.toISOString()).toBe(expiry.expiresAt);
+
+	/* Verify that expiresAt is approximately 5 seconds after serverTime */
+	const timeDiff = expiresAt.getTime() - serverTime.getTime();
+	expect(timeDiff).toBeGreaterThanOrEqual(4999); // Allow 1ms tolerance
+	expect(timeDiff).toBeLessThanOrEqual(5001); // Allow 1ms tolerance
+
 	/* Test that the quote is rejected when validateQuote returns false */
 	validateQuoteCalled = false;
 	shouldAcceptQuote = false;
@@ -269,4 +296,62 @@ test('FX Server Quote Validation Tests', async function() {
 	if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
 		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
 	}
+
+	/* Test with an expired quote by changing the TTL to 1ms */
+	currentTTL = 1; // Change TTL to 1 millisecond
+
+	/* Get a quote with very short TTL */
+	const shortQuoteResponse = await fetch(`${url}/api/getQuote`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				from: token1.publicKeyString.get(),
+				to: token2.publicKeyString.get(),
+				amount: '100',
+				affinity: 'from'
+			}
+		})
+	});
+
+	expect(shortQuoteResponse.status).toBe(200);
+	const shortQuoteData: unknown = await shortQuoteResponse.json();
+	expect(shortQuoteData).toHaveProperty('ok', true);
+	expect(shortQuoteData).toHaveProperty('quote');
+
+	if (typeof shortQuoteData !== 'object' || shortQuoteData === null || !('quote' in shortQuoteData)) {
+		throw(new Error('Invalid quote response'));
+	}
+
+	const expiredQuote = shortQuoteData.quote;
+
+	/* Wait to ensure the quote expires */
+	await new Promise(resolve => setTimeout(resolve, 10));
+
+	const exchangeResponseExpired = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				quote: expiredQuote,
+				block: 'AAAAAAAAAA=='
+			}
+		})
+	});
+
+	/* The expired quote should be rejected */
+	expect(exchangeResponseExpired.status).toBe(400);
+	const expiredData: unknown = await exchangeResponseExpired.json();
+	expect(expiredData).toHaveProperty('ok', false);
+	expect(expiredData).toHaveProperty('error');
+	if (typeof expiredData === 'object' && expiredData !== null && 'name' in expiredData) {
+		expect(expiredData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
+	}
 });
+

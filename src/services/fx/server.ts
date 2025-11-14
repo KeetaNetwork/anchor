@@ -22,6 +22,27 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.js';
 
+/**
+ * Maximum quote TTL in milliseconds (5 minutes, matching message expiry)
+ */
+const MAX_QUOTE_TTL = 5 * 60 * 1000;
+
+/**
+ * Default quote TTL in milliseconds (5 minutes, matching message expiry)
+ */
+const DEFAULT_QUOTE_TTL = MAX_QUOTE_TTL;
+
+/**
+ * Validates that a quote TTL value doesn't exceed the maximum allowed
+ * @param ttl The TTL value to validate in milliseconds
+ * @throws Error if the TTL exceeds the maximum
+ */
+function validateQuoteTTL(ttl: number): void {
+	if (ttl > MAX_QUOTE_TTL) {
+		throw(new Error(`quoteTTL cannot exceed ${MAX_QUOTE_TTL}ms`));
+	}
+}
+
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -72,6 +93,20 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * @returns true to accept the quote and proceed with the exchange, false to reject it
 		 */
 		validateQuote?: (quote: KeetaFXAnchorQuoteJSON) => Promise<boolean> | boolean;
+		/**
+		 * Optional quote time-to-live (TTL) in milliseconds
+		 *
+		 * Can be either:
+		 * - A number representing the TTL in milliseconds
+		 * - A function that receives the conversion request and returns the TTL in milliseconds
+		 *
+		 * If specified, quotes will include expiry information and will be rejected
+		 * if they are expired when used in createExchange requests.
+		 *
+		 * Default: 300000 (5 minutes, matching message expiry)
+		 * Maximum: 300000 (5 minutes)
+		 */
+		quoteTTL?: number | ((request: ConversionInputCanonicalJSON) => number | Promise<number>);
 	};
 
 	/**
@@ -92,6 +127,12 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		unsignedQuote.cost.amount
 	];
 
+	// Include expiry information in the signature if present
+	if (unsignedQuote.expiry !== undefined) {
+		retval.push(unsignedQuote.expiry.serverTime);
+		retval.push(unsignedQuote.expiry.expiresAt);
+	}
+
 	return(retval);
 
 	/**
@@ -106,22 +147,51 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
 		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'token' | 'amount'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
-		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account'>>
+		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account' | 'expiry'>>
 	>;
 }
 
-async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'>): Promise<KeetaFXAnchorQuoteJSON> {
-	const signableQuote = await formatQuoteSignable(unsignedQuote);
+async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed' | 'expiry'>, quoteTTL?: number): Promise<KeetaFXAnchorQuoteJSON> {
+	// Create expiry information before signing (if quoteTTL is provided)
+	let expiry: KeetaFXAnchorQuoteJSON['expiry'] = undefined;
+	if (quoteTTL !== undefined && quoteTTL > 0) {
+		const serverTime = new Date();
+		const expiresAt = new Date(serverTime.getTime() + quoteTTL);
+		expiry = {
+			serverTime: serverTime.toISOString(),
+			expiresAt: expiresAt.toISOString()
+		};
+	}
+
+	// Create the quote with expiry (to be included in signature)
+	const quoteToSign: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = {
+		...unsignedQuote,
+		...(expiry !== undefined ? { expiry } : {})
+	};
+
+	// Sign the quote (including expiry if present)
+	const signableQuote = await formatQuoteSignable(quoteToSign);
 	const signed = await Signing.SignData(signer, signableQuote);
 
-	return({
-		...unsignedQuote,
+	// Return the complete quote with signature
+	const result: KeetaFXAnchorQuoteJSON = {
+		...quoteToSign,
 		signed: signed
-	});
+	};
+
+	return(result);
 }
 
 async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<boolean> {
-	const signableQuote = await formatQuoteSignable(quote);
+	// Extract the fields that are signed (all fields except 'signed')
+	const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = {
+		request: quote.request,
+		account: quote.account,
+		convertedAmount: quote.convertedAmount,
+		cost: quote.cost,
+		...(quote.expiry !== undefined ? { expiry: quote.expiry } : {})
+	};
+	const signableQuote = await formatQuoteSignable(unsignedQuote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
 }
@@ -160,7 +230,24 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 		this.homepage = config.homepage ?? '';
 		this.client = config.client;
-		this.fx = config.fx;
+
+		/* Validate and set quoteTTL with default and maximum */
+		let quoteTTL = config.fx.quoteTTL;
+
+		// If quoteTTL is a number, validate it doesn't exceed maximum
+		if (typeof quoteTTL === 'number') {
+			validateQuoteTTL(quoteTTL);
+		}
+
+		// Set default if not provided
+		if (quoteTTL === undefined) {
+			quoteTTL = DEFAULT_QUOTE_TTL;
+		}
+
+		this.fx = {
+			...config.fx,
+			quoteTTL: quoteTTL
+		};
 		this.account = config.account;
 		this.signer = config.signer ?? config.account;
 		this.quoteSigner = config.quoteSigner;
@@ -239,7 +326,17 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				...rateAndFee
 			});
 
-			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote);
+			// Resolve quoteTTL (could be a number or a function)
+			let resolvedQuoteTTL: number | undefined;
+			if (typeof config.fx.quoteTTL === 'function') {
+				resolvedQuoteTTL = await config.fx.quoteTTL(conversion);
+				// Validate the returned TTL doesn't exceed maximum
+				validateQuoteTTL(resolvedQuoteTTL);
+			} else {
+				resolvedQuoteTTL = config.fx.quoteTTL;
+			}
+
+			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote, resolvedQuoteTTL);
 			const quoteResponse: KeetaFXAnchorQuoteResponse = {
 				ok: true,
 				quote: signedQuote
@@ -274,6 +371,15 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const isValidQuote = await verifySignedData(config.quoteSigner, quote);
 			if (!isValidQuote) {
 				throw(new Error('Invalid quote signature'));
+			}
+
+			/* Check if the quote has expired (default validation) */
+			if (quote.expiry !== undefined) {
+				const now = new Date();
+				const expiresAt = new Date(quote.expiry.expiresAt);
+				if (now >= expiresAt) {
+					throw(new Errors.QuoteValidationFailed('Quote has expired'));
+				}
 			}
 
 			/* Validate the quote using the optional callback */
