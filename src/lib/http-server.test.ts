@@ -50,6 +50,7 @@ test('Basic Functionality', async function() {
 	 */
 	{
 		type ConfigWithAttr = HTTPServer.KeetaAnchorHTTPServerConfig & { attr: string; };
+
 		await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
 			protected async initRoutes(config: ConfigWithAttr): Promise<HTTPServer.Routes> {
 				expect(config.attr).toBeDefined();
@@ -119,6 +120,10 @@ test('Basic Functionality', async function() {
 
 						return({ output: 'true' })
 					}
+				};
+
+				routes['GET /api/custom-error'] = async function() {
+					throw(new CustomError('Custom error message'));
 				}
 
 				return(routes);
@@ -248,6 +253,26 @@ test('Basic Functionality', async function() {
 			} else if ('responseMatch' in check) {
 				expect(response.body).toMatchObject(check.responseMatch);
 			}
+		}
+
+		/*
+		 * Ensure we can update the URL
+		 */
+		const urlChecks = [
+			{ in: 'http://example.com/foo', out: 'http://example.com/' },
+			{ in: 'https://example.com:8080/bar/baz', out: 'https://example.com:8080/' },
+			{ in: 'https://example.com:8080/bar/baz?a=b', out: 'https://example.com:8080/' },
+			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
+			{
+				in: function(serverObj: typeof server) {
+					return('http://localhost:' + String(serverObj.port) + '/some/other/path');
+				},
+				out: `http://localhost:${server.port}/`
+			}
+		];
+		for (const urlCheck of urlChecks) {
+			server.url = urlCheck.in;
+			expect(server.url).toBe(urlCheck.out);
 		}
 
 		/*

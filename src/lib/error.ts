@@ -1,3 +1,4 @@
+import type { LogLevel } from './log/index.ts';
 /**
  * Type for error classes that can be deserialized
  */
@@ -33,6 +34,10 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		})()
 	]);
 
+	// Dynamically import FX errors to avoid circular dependencies
+	const fxModule = await import('../services/fx/common.js');
+	const FXErrors = fxModule.Errors;
+
 	const ERROR_CLASSES: DeserializableErrorClass[] = [
 		/*
 		 * We purposefully leave out KeetaAnchorError here since it
@@ -40,10 +45,9 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		KeetaAnchorUserError,
-		KYCErrors.VerificationNotFound,
-		KYCErrors.CertificateNotFound,
-		KYCErrors.PaymentRequired,
-		AssetMovementErrors.KYCShareNeeded
+		...Object.values(KYCErrors),
+		...Object.values(FXErrors),
+		...Object.values(AssetMovementErrors)
 	];
 
 	const mapping: { [key: string]: (input: unknown) => Promise<KeetaAnchorError> } = {};
@@ -66,6 +70,7 @@ export class KeetaAnchorError extends Error {
 	private readonly keetaAnchorErrorObjectTypeID!: string;
 	private static readonly keetaAnchorErrorObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
 	protected userError = false;
+	readonly logLevel: LogLevel = 'ERROR';
 
 	get name(): string {
 		return(this.#name);
