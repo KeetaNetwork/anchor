@@ -7,7 +7,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 

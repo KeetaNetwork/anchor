@@ -6,7 +6,7 @@ import { createAssert, createIs } from 'typia';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;

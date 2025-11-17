@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
-import * as HTTPServer from './http-server.js';
-import { KeetaAnchorUserError } from './error.js';
+import * as HTTPServer from './index.js';
+import { KeetaAnchorUserError } from '../error.js';
 
 async function testHTTPRequest(serverURL: string, path: string, method: 'GET' | 'POST', body?: string): Promise<{ code: number; body: unknown }> {
 	const fullURL = new URL(path, serverURL);
