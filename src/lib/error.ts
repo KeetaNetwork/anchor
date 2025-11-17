@@ -22,7 +22,8 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 
 	const [
 		KYCErrors,
-		AssetMovementErrors
+		AssetMovementErrors,
+		FXErrors
 	] = await Promise.all([
 		(async () => {
 			const kycModule = await import('../services/kyc/common.js');
@@ -31,12 +32,12 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		(async () => {
 			const assetMovementModule = await import('../services/asset-movement/common.js');
 			return(assetMovementModule.Errors);
+		})(),
+		(async () => {
+			const fxModule = await import('../services/fx/common.js');
+			return(fxModule.Errors);
 		})()
 	]);
-
-	// Dynamically import FX errors to avoid circular dependencies
-	const fxModule = await import('../services/fx/common.js');
-	const FXErrors = fxModule.Errors;
 
 	const ERROR_CLASSES: DeserializableErrorClass[] = [
 		/*
