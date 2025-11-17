@@ -371,7 +371,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				const errorHandlerRoute = routes['ERROR'];
 				if (errorHandlerRoute !== undefined) {
 					let errBody;
-					if ((KeetaAnchorError.isInstance(err) && err['userError'] === true)) {
+					if ((KeetaAnchorError.isInstance(err) && err['userError'])) {
 						errBody = err.asErrorResponse('application/json');
 					} else {
 						errBody = {
