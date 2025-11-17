@@ -193,39 +193,9 @@ test('Asset Movement Anchor Client Test', async function() {
 							}
 						]
 					},
+					// For some reason the type checker fails to recognize that this is the correct type here.
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-assignment
 					Test: await server.serviceMetadata() as any,
-					// Test: {
-					// 	operations: {
-					// 		initiateTransfer: `${serverURL}/api/initiateTransfer`,
-					// 		getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
-					// 		createPersistentForwarding: `${serverURL}/api/createPersistentForwarding`,
-					// 		listTransactions: `${serverURL}/api/listTransactions`
-					// 	},
-					// 	supportedAssets: [
-					// 		{
-					// 			asset: baseToken.publicKeyString.get(),
-					// 			paths: [
-					// 				{
-					// 					pair: [
-					// 						{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
-					// 						{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }}
-					// 					]
-					// 				}
-					// 			]
-					// 		},
-					// 		{
-					// 			asset: testCurrencyUSDC.publicKeyString.get(),
-					// 			paths: [
-					// 				{
-					// 					pair: [
-					// 						{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
-					// 						{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
-					// 					]
-					// 				}
-					// 			]
-					// 		}
-					// 	]
-					// },
 					Test2: {
 						operations: {
 							getTransferStatus: `${serverURL}/api/getTransferStatus/{id}`,
@@ -551,7 +521,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			},
 
 			shareKYC: async function(request) {
-				const attributes = new SharableCertificateAttributes(request.attributes, { principals: [ kycSharePrincipal ]});
+				const attributes = new SharableCertificateAttributes(request.attributes, { principals: [ kycSharePrincipal ] });
 
 				const firstName = await attributes.getAttribute('firstName');
 
@@ -560,7 +530,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 				}
 
 				return({});
-			},
+			}
 		}
 	});
 
@@ -627,7 +597,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		});
 		certificateBuilder.setAttribute('firstName', true, name);
 		const certificate = await certificateBuilder.build();
-		const certificateWithPrivate = new Certificate(await certificate.toDER(), { subjectKey: account });
+		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
 		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
 		await sharable.grantAccess(kycSharePrincipal);
 

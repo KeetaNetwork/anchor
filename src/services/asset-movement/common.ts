@@ -6,7 +6,7 @@ import { createAssert, createAssertEquals, createIs } from 'typia';
 import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server-shared.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { SharableCertificateAttributes } from '../../lib/certificates.js';
+import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
@@ -182,15 +182,15 @@ export interface AssetWithRailsMetadata {
 
 
 export function commonJSONStringify(input: unknown): string {
-	return JSON.stringify(input, function(_, value) {
+	return(JSON.stringify(input, function(_, value: unknown) {
 		if (typeof value === 'bigint') {
 			return(String(value));
 		} else if (KeetaNet.lib.Account.isInstance(value)) {
 			return(value.publicKeyString.get());
-		} else {
-			return(value);
 		}
-	});
+
+		return(value);
+	}));
 }
 
 export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
@@ -813,34 +813,6 @@ export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown
 export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => input is KeetaAssetMovementAnchorShareKYCResponse = createIs<KeetaAssetMovementAnchorShareKYCResponse>();
-
-// interface ErrorClassType<Name> {
-// 	readonly name: Name;
-	
-// 	new(message: string): ThisType<KeetaAnchorUserError>;
-// }
-
-// function makeErrorClass(name: string) {
-// 	return class extends KeetaAnchorUserError {
-// 		static override readonly name: string = name;
-// 		private readonly errorObjectTypeID!: string;
-// 		private static readonly errorObjectTypeID = '00000000-0000-0000-0000-000000000000';
-
-// 		constructor(message?: string) {
-// 			super(message ?? 'An error occurred');
-// 			this.statusCode = 400;
-
-// 			Object.defineProperty(this, 'errorObjectTypeID', {
-// 				value: (this.constructor as typeof KeetaAnchorUserError).errorObjectTypeID,
-// 				enumerable: false
-// 			});
-// 		}
-
-// 		static isInstance(input: unknown): input is InstanceType<ReturnType<typeof makeErrorClass>> {
-// 			return(this.hasPropWithValue(input, 'errorObjectTypeID', (this as typeof KeetaAnchorUserError).errorObjectTypeID));
-// 		}
-// 	};
-// }
 
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 
