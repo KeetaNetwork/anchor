@@ -1,5 +1,6 @@
 import * as http from 'http';
 import {
+	KeetaAnchorError,
 	KeetaAnchorUserError
 } from './error.js';
 import type { JSONSerializable } from './utils/json.js';
@@ -365,7 +366,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				if (errorHandlerRoute !== undefined) {
 					let transformedError = this.transformError(err);
 					let errBody;
-					if (KeetaAnchorUserError.isInstance(transformedError)) {
+					if (KeetaAnchorError.isInstance(transformedError)) {
 						errBody = transformedError.asErrorResponse('application/json');
 					} else {
 						errBody = {
