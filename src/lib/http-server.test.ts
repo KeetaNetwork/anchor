@@ -51,18 +51,7 @@ test('Basic Functionality', async function() {
 	{
 		type ConfigWithAttr = HTTPServer.KeetaAnchorHTTPServerConfig & { attr: string; };
 
-		class CustomError extends Error {
-			__isCustomError = true;
-		}
 		await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
-			protected transformError(error: unknown): unknown {
-				if (error instanceof CustomError) {
-					return(new KeetaAnchorUserError('got custom error'));
-				}
-
-				return(error);
-			}
-
 			protected async initRoutes(config: ConfigWithAttr): Promise<HTTPServer.Routes> {
 				expect(config.attr).toBeDefined();
 
@@ -234,15 +223,6 @@ test('Basic Functionality', async function() {
 			path: `/api/test-raw/${testRawPostHash}`,
 			body: `${testRawPostBody} `,
 			statusCode: 500
-		},
-		{
-			method: 'GET',
-			path: `/api/custom-error`,
-			statusCode: 400,
-			responseMatch: {
-				ok: false,
-				error: 'got custom error'
-			}
 		}] as const;
 
 		for (const check of checks) {

@@ -234,10 +234,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		return(newRoutes);
 	}
 
-	protected transformError(error: unknown): unknown {
-		return(error);
-	}
-
 	private async main(onSetPort?: (port: number) => void): Promise<void> {
 		this.logger?.debug('KeetaAnchorHTTP.Server', 'Starting HTTP server...');
 
@@ -374,16 +370,15 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 */
 				const errorHandlerRoute = routes['ERROR'];
 				if (errorHandlerRoute !== undefined) {
-					const transformedError = this.transformError(err);
 					let errBody;
-					if (KeetaAnchorUserError.isInstance(transformedError)) {
-						errBody = transformedError.asErrorResponse('application/json');
+					if ((KeetaAnchorError.isInstance(err) && err['userError'] === true)) {
+						errBody = err.asErrorResponse('application/json');
 					} else {
 						errBody = {
 							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
 							statusCode: 500,
 							contentType: 'application/json'
-						};
+						}
 					}
 
 					// @ts-ignore
