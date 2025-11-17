@@ -234,10 +234,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		return(newRoutes);
 	}
 
-	protected transformError(error: unknown): unknown {
-		return(error);
-	}
-
 	private async main(onSetPort?: (port: number) => void): Promise<void> {
 		this.logger?.debug('KeetaAnchorHTTP.Server', 'Starting HTTP server...');
 
