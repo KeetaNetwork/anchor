@@ -395,6 +395,7 @@ export type AssetTransferInstructions = ({
 } | {
 	type: 'WIRE' | 'ACH';
 	account: BankAccountAddressResolved;
+	depositMessage?: string;
 	value: string;
 }) & ({
 	assetFee: string;
@@ -494,6 +495,9 @@ export type BankAccountAddressResolved = {
 	} | {
 		type: 'business';
 		businessName: string;
+	} | {
+		type: 'unknown';
+		beneficiaryName: string;
 	}
 } & ({
 	accountType: 'us';
