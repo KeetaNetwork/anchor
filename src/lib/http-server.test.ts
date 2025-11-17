@@ -122,10 +122,6 @@ test('Basic Functionality', async function() {
 					}
 				};
 
-				routes['GET /api/custom-error'] = async function() {
-					throw(new CustomError('Custom error message'));
-				}
-
 				return(routes);
 			}
 		})({ port: 0, attr: 'test-attribute' });
