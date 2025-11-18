@@ -54,8 +54,8 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
-import { addSignatureToURL } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';

@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
-import * as HTTPServer from './http-server.js';
-import { KeetaAnchorUserError } from './error.js';
+import * as HTTPServer from './index.js';
+import { KeetaAnchorUserError } from '../error.js';
 import crypto from 'crypto';
 
 function hashData(data: Buffer): Buffer {

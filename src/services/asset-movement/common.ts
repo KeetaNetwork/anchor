@@ -4,7 +4,7 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
 import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import { KeetaNet } from '../../client/index.js';

@@ -1,5 +1,5 @@
-import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
-import KeetaNet from '@keetanetwork/keetanet-client';
+import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -48,8 +48,8 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
-import type { HTTPSignedFieldURLParameters } from '../../lib/http-server-shared.js';
-import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server-shared.js';
+import type { HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
+import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>

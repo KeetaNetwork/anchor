@@ -3,8 +3,10 @@ import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
 import { createAssert, createIs } from 'typia';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import {
+	KeetaAnchorUserError
+} from '../../lib/error.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
