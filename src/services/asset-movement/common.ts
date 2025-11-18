@@ -198,11 +198,17 @@ function commonToSignable(item: SignableObjectInput): Signable {
 	const result: [ string, Signable[number] ][] = [];
 
 	while (queue.length > 0) {
-		const [ prefix, current ] = queue.shift()!;
+		const next = queue.shift();
+
+		if (!next) {
+			continue;
+		}
+
+		const [ prefix, current ] = next;
 		if (current === null || current === undefined) {
 			continue;
 		}
-		
+
 		if (typeof current === 'boolean') {
 			result.push([ prefix, current ? 1 : 0 ]);
 		} else if (Array.isArray(current)) {
@@ -211,7 +217,8 @@ function commonToSignable(item: SignableObjectInput): Signable {
 			}
 		} else if (typeof current === 'object') {
 			for (const [ key, value ] of Object.entries(current)) {
-				queue.push([ prefix ? `${prefix}.${key}` : key, value ]);
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableObjectInput ]);
 			}
 		} else {
 			result.push([ prefix, current ]);
@@ -712,7 +719,7 @@ export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSign
 		sourceLocation: convertAssetLocationInputToCanonical(input.sourceLocation),
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		outgoingRail: input.outgoingRail,
-		...( 'destinationLocation' in input ? {
+		...('destinationLocation' in input ? {
 			destinationLocation: convertAssetLocationInputToCanonical(input.destinationLocation),
 			destinationAddress: input.destinationAddress
 		} : {
@@ -813,7 +820,7 @@ export type KeetaAssetMovementAnchorShareKYCRequest = ToJSONSerializable<Omit<Ke
 	signed: HTTPSignedField;
 };
 
-export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
+export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
 	return([ 'share-kyc' ]);
 }
 
