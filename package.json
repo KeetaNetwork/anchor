@@ -1,6 +1,6 @@
 {
 	"name": "@keetanetwork/anchor-temporary",
-	"version": "1.0.2",
+	"version": "1.0.3",
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
