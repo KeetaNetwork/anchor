@@ -438,7 +438,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		const routes = [
 			'initiateTransfer',
 			'listTransactions',
-			// XXX:TODO these two should be done later
 			'createPersistentForwardingTemplate',
 			'listPersistentForwardingTemplate',
 			'createPersistentForwarding',
@@ -474,7 +473,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		if (Object.keys(operations).length === 0) {
 			throw(new KeetaAnchorUserError('No operations are supported on this server'));
 		}
-
 		return({
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets

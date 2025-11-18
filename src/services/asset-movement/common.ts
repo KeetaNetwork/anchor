@@ -16,7 +16,6 @@ type HexString = `0x${string}`;
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-// type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.Currency;
@@ -120,7 +119,6 @@ export type AssetLocation = ChainLocation | BankLocation;
 export type BankAccountType = 'us' | 'iban-swift' | 'clabe' | 'pix';
 export const assertBankAccountType: (input: unknown) => BankAccountType = createAssert<BankAccountType>();
 
-// Disable bank-account until it's implemented
 export type AssetLocationString =
 	`chain:${'keeta' | 'evm'}:${bigint}` |
 	`bank-account:${BankAccountType}`;
@@ -130,7 +128,7 @@ export type AssetLocationLike = AssetLocation | AssetLocationString;
 // A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
 	location?: AssetLocationString;
-	id: string; // keeta token pub or evm contract address or currency code
+	id: string; // Keeta token public key string, evm contract address, or a currency code
 }
 
 export type Rail =
@@ -358,15 +356,8 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable
 };
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(_ignore_input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
-	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
-	return([
-		// convertAssetSearchInputToCanonical(pair.from),
-		// convertAssetSearchInputToCanonical(pair.to),
-		// convertAssetLocationInputToCanonical(input.from.location),
-		// convertAssetLocationInputToCanonical(input.to.location),
-		// input.value
-	]);
+	return([]);
 }
 
 export type AssetTransferInstructions = ({
@@ -422,7 +413,7 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 }
 
 export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(input: KeetaAssetMovementAnchorGetTransferStatusRequest): Signable {
-	return([input.id]);
+	return([ input.id ]);
 }
 
 type TransactionStatus = string;
@@ -595,14 +586,8 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 }
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
-	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
-	return([
-		// convertAssetSearchInputToCanonical(pair.from),
-		// convertAssetSearchInputToCanonical(pair.to),
-		// convertAssetLocationInputToCanonical(input.location),
-		// input.value
-	]);
+	return([]);
 }
 
 
@@ -627,6 +612,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = ToJSO
 }
 
 export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -677,6 +663,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 });
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -750,6 +737,7 @@ export type KeetaAssetMovementAnchorlistTransactionsRequest = {
 }
 
 export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(_ignore_input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -773,6 +761,7 @@ export type KeetaAssetMovementAnchorShareKYCRequest = ToJSONSerializable<Omit<Ke
 };
 
 export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 

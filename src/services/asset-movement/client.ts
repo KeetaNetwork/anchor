@@ -184,7 +184,6 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 				continue;
 			}
 
-
 			Object.defineProperty(operationsFunctions, key, {
 				get: async function() {
 					const endpointInfo = assertServiceMetadataEndpoint(await Resolver.Metadata.fullyResolveValuizable(operation));
