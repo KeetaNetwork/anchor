@@ -264,7 +264,7 @@ class KeetaAssetMovementTransfer {
 		this.transfer = transfer;
 	}
 
-	async getTransferStatus(): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
+	async getTransferStatus(): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
 		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
 	}
 
@@ -277,6 +277,7 @@ class KeetaAssetMovementTransfer {
 	}
 }
 
+type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
@@ -438,7 +439,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(anchorTransfer);
 	}
 
-	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
+	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'GET',
 			endpoint: 'getTransferStatus',
@@ -453,7 +454,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async createPersistentForwardingTemplate(request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
+	async createPersistentForwardingTemplate(request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
 		const requestInformationJSON = await this.#makeRequest<
@@ -482,7 +483,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
+	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
 		const requestInformationJSON = await this.#makeRequest<
@@ -547,7 +548,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON.templates);
 	}
 
-	async listTransactions(request: KeetaAssetMovementAnchorlistTransactionsClientRequest): Promise<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse | null> {
+	async listTransactions(request: KeetaAssetMovementAnchorlistTransactionsClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>> {
 		this.logger?.debug(`List persistent forwarding transactions provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
 		const requestInformationJSON = await this.#makeRequest<
