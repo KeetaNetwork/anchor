@@ -54,8 +54,8 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
-import { addSignatureToURL } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
@@ -183,7 +183,6 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			if (operation === undefined) {
 				continue;
 			}
-
 
 			Object.defineProperty(operationsFunctions, key, {
 				get: async function() {
@@ -396,7 +395,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				} else {
 					errorStr = 'Unknown error';
 				}
-	
+
 				throw(new Error(`asset movement request failed: ${errorStr}`));
 			}
 		}
@@ -407,7 +406,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	}
 
 	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
-		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`,);
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
 
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',

@@ -1,5 +1,5 @@
-import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
-import KeetaNet from '@keetanetwork/keetanet-client';
+import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -47,9 +47,9 @@ import {
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
-import Account from '@keetanetwork/keetanet-client/lib/account.js';
-import type { HTTPSignedFieldURLParameters } from '../../lib/http-server-shared.js';
-import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server-shared.js';
+import type Account from '@keetanetwork/keetanet-client/lib/account.js';
+import type { HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
+import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 
 type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
@@ -119,7 +119,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 };
 
 function serializeTransactionResponse(transaction: ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>['transaction']): ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>['transaction'] {
-	return {
+	return({
 		...transaction,
 		from: {
 			...transaction.from,
@@ -129,14 +129,14 @@ function serializeTransactionResponse(transaction: ExtractOk<KeetaAssetMovementA
 			...transaction.to,
 			location: convertAssetLocationToString(transaction.to.location)
 		}
-	};
+	});
 }
 
 function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>['templates'][number]): ExtractOk<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>['templates'][number] {
-	return {
+	return({
 		...template,
-		location: convertAssetLocationToString(template.location),
-	};
+		location: convertAssetLocationToString(template.location)
+	});
 }
 
 export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Required<KeetaAnchorAssetMovementServerConfig> {
@@ -279,6 +279,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 				let serialized;
 				if (input.serializeResponse) {
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					serialized = input.serializeResponse(resp as ExtractOk<Response>);
 				} else {
 					serialized = resp;
@@ -299,7 +300,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				return({
 					...data,
 					sourceLocation: data.sourceLocation ? convertAssetLocationToString(data.sourceLocation) : undefined,
-					destinationLocation: data.destinationLocation ? convertAssetLocationToString(data.destinationLocation) : undefined,
+					destinationLocation: data.destinationLocation ? convertAssetLocationToString(data.destinationLocation) : undefined
 				})
 			}
 		});
@@ -315,8 +316,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					addresses: data.addresses.map(addr => ({
 						...addr,
 						sourceLocation: addr.sourceLocation ? convertAssetLocationToString(addr.sourceLocation) : undefined,
-						destinationLocation: addr.destinationLocation ? convertAssetLocationToString(addr.destinationLocation) : undefined,
-					})),
+						destinationLocation: addr.destinationLocation ? convertAssetLocationToString(addr.destinationLocation) : undefined
+					}))
 				})
 			}
 		});
@@ -331,11 +332,11 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				return({
 					...data,
 					instructionChoices: data.instructionChoices.map(function(choice) {
-						let ret = { ...choice };
+						const ret = { ...choice };
 						if ('location' in ret) {
 							ret.location = convertAssetLocationToString(ret.location);
 						}
-						
+
 						return(ret);
 					})
 				})
@@ -415,7 +416,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			serializeResponse(data) {
 				return({
 					...data,
-					templates: data.templates.map(template => serializePersistentAddressTemplateResponse(template)),
+					templates: data.templates.map(template => serializePersistentAddressTemplateResponse(template))
 				})
 			}
 		});
@@ -437,7 +438,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		const routes = [
 			'initiateTransfer',
 			'listTransactions',
-			// XXX:TODO these two should be done later
 			'createPersistentForwardingTemplate',
 			'listPersistentForwardingTemplate',
 			'createPersistentForwarding',
@@ -473,7 +473,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		if (Object.keys(operations).length === 0) {
 			throw(new KeetaAnchorUserError('No operations are supported on this server'));
 		}
-
 		return({
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets

@@ -4,9 +4,9 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
 import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { SharableCertificateAttributes } from '../../lib/certificates.js';
+import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
@@ -16,7 +16,6 @@ type HexString = `0x${string}`;
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-// type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode;
 
 type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.Currency;
@@ -120,7 +119,6 @@ export type AssetLocation = ChainLocation | BankLocation;
 export type BankAccountType = 'us' | 'iban-swift' | 'clabe' | 'pix';
 export const assertBankAccountType: (input: unknown) => BankAccountType = createAssert<BankAccountType>();
 
-// Disable bank-account until it's implemented
 export type AssetLocationString =
 	`chain:${'keeta' | 'evm'}:${bigint}` |
 	`bank-account:${BankAccountType}`;
@@ -130,7 +128,7 @@ export type AssetLocationLike = AssetLocation | AssetLocationString;
 // A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
 	location?: AssetLocationString;
-	id: string; // keeta token pub or evm contract address or currency code
+	id: string; // Keeta token public key string, evm contract address, or a currency code
 }
 
 export type Rail =
@@ -182,15 +180,15 @@ export interface AssetWithRailsMetadata {
 
 
 export function commonJSONStringify(input: unknown): string {
-	return JSON.stringify(input, function(_, value) {
+	return(JSON.stringify(input, function(_, value: unknown) {
 		if (typeof value === 'bigint') {
 			return(String(value));
 		} else if (KeetaNet.lib.Account.isInstance(value)) {
 			return(value.publicKeyString.get());
-		} else {
-			return(value);
 		}
-	});
+
+		return(value);
+	}));
 }
 
 export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
@@ -358,15 +356,8 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable
 };
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(_ignore_input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
-	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
-	return([
-		// convertAssetSearchInputToCanonical(pair.from),
-		// convertAssetSearchInputToCanonical(pair.to),
-		// convertAssetLocationInputToCanonical(input.from.location),
-		// convertAssetLocationInputToCanonical(input.to.location),
-		// input.value
-	]);
+	return([]);
 }
 
 export type AssetTransferInstructions = ({
@@ -422,7 +413,7 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 }
 
 export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(input: KeetaAssetMovementAnchorGetTransferStatusRequest): Signable {
-	return([input.id]);
+	return([ input.id ]);
 }
 
 type TransactionStatus = string;
@@ -595,14 +586,8 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 }
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
-	// const pair = toAssetPair(input.asset as AssetOrPair);
 	// XXX:TODO probably want to complete this
-	return([
-		// convertAssetSearchInputToCanonical(pair.from),
-		// convertAssetSearchInputToCanonical(pair.to),
-		// convertAssetLocationInputToCanonical(input.location),
-		// input.value
-	]);
+	return([]);
 }
 
 
@@ -627,6 +612,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = ToJSO
 }
 
 export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -677,6 +663,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 });
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -750,6 +737,7 @@ export type KeetaAssetMovementAnchorlistTransactionsRequest = {
 }
 
 export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(_ignore_input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -773,6 +761,7 @@ export type KeetaAssetMovementAnchorShareKYCRequest = ToJSONSerializable<Omit<Ke
 };
 
 export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
+	// XXX:TODO probably want to complete this
 	return([]);
 }
 
@@ -813,34 +802,6 @@ export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown
 export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => input is KeetaAssetMovementAnchorShareKYCResponse = createIs<KeetaAssetMovementAnchorShareKYCResponse>();
-
-// interface ErrorClassType<Name> {
-// 	readonly name: Name;
-	
-// 	new(message: string): ThisType<KeetaAnchorUserError>;
-// }
-
-// function makeErrorClass(name: string) {
-// 	return class extends KeetaAnchorUserError {
-// 		static override readonly name: string = name;
-// 		private readonly errorObjectTypeID!: string;
-// 		private static readonly errorObjectTypeID = '00000000-0000-0000-0000-000000000000';
-
-// 		constructor(message?: string) {
-// 			super(message ?? 'An error occurred');
-// 			this.statusCode = 400;
-
-// 			Object.defineProperty(this, 'errorObjectTypeID', {
-// 				value: (this.constructor as typeof KeetaAnchorUserError).errorObjectTypeID,
-// 				enumerable: false
-// 			});
-// 		}
-
-// 		static isInstance(input: unknown): input is InstanceType<ReturnType<typeof makeErrorClass>> {
-// 			return(this.hasPropWithValue(input, 'errorObjectTypeID', (this as typeof KeetaAnchorUserError).errorObjectTypeID));
-// 		}
-// 	};
-// }
 
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 

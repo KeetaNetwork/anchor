@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
+import type { KeetaFXAnchorQuoteJSON } from './common.js';
 
 test('FX Server Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -164,5 +165,108 @@ test('FX Server Tests', async function() {
 			expect(result_OPTIONS.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type');
 			expect(Number(result_OPTIONS.headers.get('Access-Control-Max-Age'))).toBeGreaterThan(30);
 		}
+	}
+});
+
+test('FX Server Quote Validation Tests', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
+	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	let validateQuoteCalled = false;
+	let shouldAcceptQuote = true;
+
+	await using server = new KeetaNetFXAnchorHTTPServer({
+		account: account,
+		client: client,
+		quoteSigner: account,
+		fx: {
+			from: [{
+				currencyCodes: [token1.publicKeyString.get()],
+				to: [token2.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function() {
+				return({
+					account: account,
+					convertedAmount: 1000n,
+					cost: {
+						amount: 0n,
+						token: token1
+					}
+				});
+			},
+			validateQuote: async function(quote: KeetaFXAnchorQuoteJSON) {
+				validateQuoteCalled = true;
+				/* Verify that the quote has the expected structure */
+				expect(quote).toHaveProperty('request');
+				expect(quote).toHaveProperty('account');
+				expect(quote).toHaveProperty('convertedAmount');
+				expect(quote).toHaveProperty('cost');
+				expect(quote).toHaveProperty('signed');
+				return(shouldAcceptQuote);
+			}
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/* First, get a quote */
+	const quoteResponse = await fetch(`${url}/api/getQuote`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				from: token1.publicKeyString.get(),
+				to: token2.publicKeyString.get(),
+				amount: '100',
+				affinity: 'from'
+			}
+		})
+	});
+
+	expect(quoteResponse.status).toBe(200);
+	const quoteData: unknown = await quoteResponse.json();
+	expect(quoteData).toHaveProperty('ok', true);
+	expect(quoteData).toHaveProperty('quote');
+
+	if (typeof quoteData !== 'object' || quoteData === null || !('quote' in quoteData)) {
+		throw(new Error('Invalid quote response'));
+	}
+
+	const quote = quoteData.quote;
+
+	/* Test that the quote is rejected when validateQuote returns false */
+	validateQuoteCalled = false;
+	shouldAcceptQuote = false;
+
+	const exchangeResponseRejected = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				quote: quote,
+				block: 'AAAAAAAAAA==' // A minimal valid base64 string that will decode but fail later
+			}
+		})
+	});
+
+	/* The validation callback should have been called */
+	expect(validateQuoteCalled).toBe(true);
+	/* And since it returned false, the server should reject the request */
+	expect(exchangeResponseRejected.status).toBe(400);
+	const errorData: unknown = await exchangeResponseRejected.json();
+	expect(errorData).toHaveProperty('ok', false);
+	expect(errorData).toHaveProperty('error');
+	/* Verify we got the correct error type */
+	if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
+		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
 	}
 });

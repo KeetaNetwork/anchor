@@ -3,15 +3,16 @@ import type {
 	Client as KeetaNetClient,
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
-import KeetaNet from '@keetanetwork/keetanet-client';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 
 type KeetaNetNetworks = typeof KeetaNet.Client.Config.networksArray[number];
 type ResolverOptions = Partial<Omit<ConstructorParameters<typeof Resolver>[0], 'client'>> & {
 	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 	network?: bigint | KeetaNetNetworks | string | undefined;
 };
+type ResolverConfig = ConstructorParameters<typeof Resolver>[0];
 
-export function getDefaultResolver(client: KeetaNetClient | KeetaNetUserClient, options: ResolverOptions = {}): Resolver {
+export function getDefaultResolverConfig(client: KeetaNetClient | KeetaNetUserClient, options: ResolverOptions = {}): ResolverConfig {
 	/**
 	 * The default Root account for the resolver is the network account, so
 	 * we need to look it up from what the user provided.
@@ -39,10 +40,16 @@ export function getDefaultResolver(client: KeetaNetClient | KeetaNetUserClient, 
 	}
 	const networkAccount = KeetaNet.lib.Account.generateNetworkAddress(networkID);
 
-	return(new Resolver({
+	return({
 		client: client,
 		root: networkAccount,
 		trustedCAs: [],
 		...options
-	}));
+	});
+}
+
+export function getDefaultResolver(client: KeetaNetClient | KeetaNetUserClient, options: ResolverOptions = {}): Resolver {
+	const resolverConfig = getDefaultResolverConfig(client, options);
+
+	return(new Resolver(resolverConfig));
 }

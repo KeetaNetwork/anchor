@@ -1,6 +1,6 @@
 import type { Account } from "@keetanetwork/keetanet-client/lib/account.js";
-import { KeetaAnchorUserError } from "./error.js";
-import { KeetaNet } from "../client/index.js";
+import { KeetaAnchorUserError } from "../error.js";
+import { KeetaNet } from "../../client/index.js";
 import { createAssertEquals } from "typia";
 
 export interface HTTPSignedField {

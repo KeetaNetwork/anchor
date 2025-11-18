@@ -7,7 +7,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
-import type { HTTPSignedField } from '../../lib/http-server-shared.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -78,6 +78,7 @@ class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaKYCAnchorVerificationNotFoundError';
 	private readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID!: string;
 	private static readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID = '79d7036f-58ad-4eec-b64c-26bdf98cd3c1';
+	override readonly logLevel = 'DEBUG';
 
 	constructor(message?: string) {
 		super(message ?? 'Verification ID not found');
