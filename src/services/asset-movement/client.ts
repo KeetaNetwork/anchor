@@ -28,7 +28,7 @@ import {
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { ServiceMetadata, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
 
@@ -122,18 +122,15 @@ function validateURL(url: string | undefined): URL {
 	return(parsedURL);
 }
 
-async function getEndpoints(resolver: Resolver, request: ProviderSearchInput): Promise<GetEndpointsResult | null> {
-	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
-	if (asset === undefined) {
-		throw(new Error('asset it required to lookup provider'));
-	}
+async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+	const asset = request.asset ? { asset: convertAssetSearchInputToCanonical(request.asset) } : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
 	const response = await resolver.lookup('assetMovement', {
-		asset,
+		...asset,
 		...from,
 		...to
-	});
+	}, shared);
 
 	if (response === undefined) {
 		return(null);
@@ -403,8 +400,8 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
-	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		const endpoints = await getEndpoints(this.resolver, request);
+	async #lookup(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		const endpoints = await getEndpoints(this.resolver, request, shared);
 		if (endpoints === null) {
 			return(null);
 		}
@@ -414,6 +411,15 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		});
 
 		return(providers);
+	}
+
+	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		return(await this.#lookup(request));
+	}
+
+	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {
+		const providers = await this.#lookup({}, { providerIDs: [providerID] });
+		return(providers?.[0] ?? null);
 	}
 
 	/** @internal */

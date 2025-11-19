@@ -24,7 +24,7 @@ export type AssetLocationCanonical = AssetLocationString;
 export type AssetMovementRail = unknown;
 
 export type ProviderSearchInput = {
-	asset: MovableAsset,
+	asset?: MovableAsset,
 	from?: AssetLocationInput,
 	to?: AssetLocationInput
 }
