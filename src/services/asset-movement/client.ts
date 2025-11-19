@@ -158,12 +158,12 @@ function validateURL(url: string | undefined): URL {
 }
 
 async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
-	const asset = request.asset ? convertAssetSearchInputToCanonical(request.asset) : undefined;
+	const asset = request.asset ? { asset: convertAssetSearchInputToCanonical(request.asset) } : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
 	const rail = request.rail ? { rail: request.rail } : {};
 	const response = await resolver.lookup('assetMovement', {
-		asset,
+		...asset,
 		...from,
 		...to,
 		...rail
@@ -659,8 +659,8 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
-	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		const endpoints = await getEndpoints(this.resolver, request);
+	async #lookup(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		const endpoints = await getEndpoints(this.resolver, request, shared);
 		if (endpoints === null) {
 			return(null);
 		}
@@ -672,20 +672,13 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		return(providers);
 	}
 
+	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		return(await this.#lookup(request));
+	}
+
 	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {
-		const endpoints = await getEndpoints(this.resolver, {}, { providerIDs: [ providerID ] });
-		if (endpoints === null) {
-			return(null);
-		}
-
-		const typed = typedAssetMovementServiceEntries(endpoints);
-
-		const found = typed[0];
-		if (found) {
-			return(new KeetaAssetMovementAnchorProvider(found[1], found[0], this));
-		}
-
-		return(null);
+		const providers = await this.#lookup({}, { providerIDs: [providerID] });
+		return(providers?.[0] ?? null);
 	}
 
 	/** @internal */

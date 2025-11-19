@@ -289,6 +289,14 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
+			test: async function() { return((await assetTransferClient.getProviderByID('bad')) === null) },
+			result: true
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProviderByID('Test')) !== null) },
+			result: true
+		},
+		{
 			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: {
 				ok: true,
