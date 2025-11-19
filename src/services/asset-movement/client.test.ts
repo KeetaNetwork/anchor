@@ -290,12 +290,12 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProviderByID('bad'))) },
-			result: null
+			test: async function() { return((await assetTransferClient.getProviderByID('bad')) === null) },
+			result: true
 		},
 		{
-			test: async function() { return((await assetTransferClient.getProviderByID('Test')) === null) },
-			result: false
+			test: async function() { return((await assetTransferClient.getProviderByID('Test')) !== null) },
+			result: true
 		},
 		{
 			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyEUR }))) },
