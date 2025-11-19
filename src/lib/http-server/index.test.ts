@@ -1,6 +1,13 @@
 import { expect, test } from 'vitest';
 import * as HTTPServer from './index.js';
 import { KeetaAnchorUserError } from '../error.js';
+import crypto from 'crypto';
+
+function hashData(data: Buffer): Buffer {
+	const hash = crypto.createHash('sha256');
+	hash.update(data);
+	return(hash.digest());
+}
 
 async function testHTTPRequest(serverURL: string, path: string, method: 'GET' | 'POST', body?: string): Promise<{ code: number; body: unknown }> {
 	const fullURL = new URL(path, serverURL);
@@ -43,6 +50,7 @@ test('Basic Functionality', async function() {
 	 */
 	{
 		type ConfigWithAttr = HTTPServer.KeetaAnchorHTTPServerConfig & { attr: string; };
+
 		await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
 			protected async initRoutes(config: ConfigWithAttr): Promise<HTTPServer.Routes> {
 				expect(config.attr).toBeDefined();
@@ -93,6 +101,27 @@ test('Basic Functionality', async function() {
 					throw(new KeetaAnchorUserError('This is a user error'));
 				};
 
+				routes['POST /api/test-raw/:hash'] = {
+					bodyType: 'raw',
+					handler: async function(params, body) {
+						const hashParam = params.get('hash');
+						if (typeof hashParam !== 'string') {
+							throw(new Error('Missing hash parameter'));
+						}
+
+						const gotHash = hashData(body);
+						const expectedHash = Buffer.from(hashParam, 'hex');
+
+						const equals = gotHash.compare(expectedHash) === 0;
+
+						if (!equals) {
+							throw(new Error('Hash does not match'));
+						}
+
+						return({ output: 'true' })
+					}
+				};
+
 				return(routes);
 			}
 		})({ port: 0, attr: 'test-attribute' });
@@ -107,6 +136,9 @@ test('Basic Functionality', async function() {
 		 * defined and accessible.
 		 */
 		expect(server.url).toBeDefined();
+
+		const testRawPostBody = JSON.stringify({ test: 'data' });
+		const testRawPostHash = hashData(Buffer.from(testRawPostBody)).toString('hex');
 
 		/*
 		 * Make some requests to the server to verify that the routes
@@ -176,12 +208,27 @@ test('Basic Functionality', async function() {
 			path: '/binary-data',
 			statusCode: 200,
 			responseMatchBinary: Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+		}, {
+			method: 'POST',
+			path: `/api/test-raw/${testRawPostHash}`,
+			body: testRawPostBody,
+			statusCode: 200
+		},
+		{
+			method: 'POST',
+			path: `/api/test-raw/${testRawPostHash}`,
+			body: `${testRawPostBody} `,
+			statusCode: 500
 		}] as const;
 
 		for (const check of checks) {
 			let body;
 			if ('body' in check) {
-				body = JSON.stringify(check.body);
+				if (typeof check.body === 'string') {
+					body = check.body;
+				} else {
+					body = JSON.stringify(check.body);
+				}
 			}
 
 			const response = await testHTTPRequest(server.url, check.path, check.method, body);

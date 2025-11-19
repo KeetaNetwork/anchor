@@ -16,9 +16,20 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
  */
 const MAX_REQUEST_SIZE = 1024 * 128;
 
-export type Routes = {
-	[route: string]: (urlParams: Map<string, string>, postData: JSONSerializable | undefined, requestHeaders: http.IncomingHttpHeaders) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+type RouteHandlerWithConfig = {
+	bodyType: 'raw';
+	handler: RouteHandlerMethod<Buffer>;
+} | {
+	bodyType: 'parsed';
+	handler: RouteHandlerMethod;
+} | {
+	bodyType: 'none';
+	handler: RouteHandlerMethod<undefined>;
 };
+type RouteHandler = RouteHandlerMethod | RouteHandlerWithConfig;
+export type Routes = { [route: string]: RouteHandler };
+export type RoutesWithConfigs = { [route: string]: RouteHandlerWithConfig };
 
 export interface KeetaAnchorHTTPServerConfig {
 	/**
@@ -102,8 +113,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		return(null);
 	}
 
-	private static addCORS(routes: Routes): Routes {
-		const newRoutes: Routes = {};
+	private static addCORS(routes: Routes): RoutesWithConfigs {
+		const newRoutes: RoutesWithConfigs = {};
 
 		const validMethods = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD']);
 
@@ -143,15 +154,26 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				throw(new Error(`internal error: routeHandler missing for routeKey ${routeKey}`));
 			}
 
+			let newRoute: RouteHandlerWithConfig;
+
+			if (typeof routeHandler === 'function') {
+				newRoute = {
+					bodyType: 'parsed',
+					handler: routeHandler
+				};
+			} else {
+				newRoute = routeHandler;
+			}
+
 			if (method !== 'ERROR') {
 				if (method === undefined || path === undefined) {
-					newRoutes[routeKey] = routeHandler;
+					newRoutes[routeKey] = newRoute;
 
 					continue;
 				}
 
 				if (!validMethods.has(method)) {
-					newRoutes[routeKey] = routeHandler;
+					newRoutes[routeKey] = newRoute;
 
 					continue;
 				}
@@ -167,35 +189,43 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				validMethodsForPathParts = [...Array.from(validMethods), 'OPTIONS'];
 			}
 
-			newRoutes[routeKey] = async function(...args: Parameters<typeof routes[keyof typeof routes]>) {
-				const retval = await routeHandler(...args);
+			newRoutes[routeKey] = {
+				bodyType: newRoute.bodyType,
+				async handler(...args: Parameters<RouteHandlerMethod<unknown>>) {
+					// This is typed properly, but TS can't infer it here
+					// @ts-ignore
+					const retval = await newRoute.handler(...args);
 
-				/* Add CORS headers to the response for the original route handler */
-				if (retval.contentType === 'application/json' || retval.contentType === undefined) {
-					if (!('headers' in retval) || retval.headers === undefined) {
-						retval.headers = {};
+					/* Add CORS headers to the response for the original route handler */
+					if (retval.contentType === 'application/json' || retval.contentType === undefined) {
+						if (!('headers' in retval) || retval.headers === undefined) {
+							retval.headers = {};
+						}
+						retval.headers['Access-Control-Allow-Origin'] = '*';
 					}
-					retval.headers['Access-Control-Allow-Origin'] = '*';
-				}
 
-				return(retval);
+					return(retval);
+				}
 			};
 
 			if (!seenPaths.has(path) && path !== '' && path !== undefined) {
 				const corsRouteKey = `OPTIONS ${path}`;
 
-				newRoutes[corsRouteKey] = async function() {
-					return({
-						output: '',
-						statusCode: 204,
-						contentType: 'text/plain',
-						headers: {
-							'Access-Control-Allow-Origin': '*',
-							'Access-Control-Allow-Methods': validMethodsForPathParts.join(', '),
-							'Access-Control-Allow-Headers': 'Content-Type',
-							'Access-Control-Max-Age': '86400'
-						}
-					});
+				newRoutes[corsRouteKey] = {
+					bodyType: 'none',
+					async handler() {
+						return({
+							output: '',
+							statusCode: 204,
+							contentType: 'text/plain',
+							headers: {
+								'Access-Control-Allow-Origin': '*',
+								'Access-Control-Allow-Methods': validMethodsForPathParts.join(', '),
+								'Access-Control-Allow-Headers': 'Content-Type',
+								'Access-Control-Max-Age': '86400'
+							}
+						});
+					}
 				};
 				seenPaths.add(path);
 			}
@@ -265,14 +295,25 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			/**
 			 * Attempt to run the route, catch any errors
 			 */
-			let result: Awaited<ReturnType<typeof route>> | undefined = undefined;
+			let result: Awaited<ReturnType<RouteHandlerMethod>> | undefined = undefined;
 			let generatedResult = false;
 			try {
+				if (!request.method) {
+					throw(new Error('internal error: No request method'));
+				}
+
+				let bodyData: JSONSerializable | Buffer | undefined;
+
+				const shouldCheckBody = ['POST', 'PUT', 'PATCH'].includes(request.method);
+
+				if (typeof route === 'function') {
+					throw(new Error('internal error: Route handler missing body type configuration, should have been added in addCORS'));
+				}
+
 				/**
-				 * If POST'ing, read and parse the POST data
+				 * If POST'ing, PUT'ing, or PATCH'ing, read and parse the request body
 				 */
-				let postData: JSONSerializable | undefined;
-				if (request.method === 'POST') {
+				if (shouldCheckBody && route.bodyType !== 'none') {
 					const data = await request.map(function(chunk) {
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 						return(Buffer.from(chunk));
@@ -287,23 +328,25 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						return(Buffer.concat([prev, curr]));
 					}, Buffer.from(''));
 
-					if (request.headers['content-type'] === 'application/json') {
+					if (route.bodyType === 'raw') {
+						bodyData = data;
+					} else if (route.bodyType === 'parsed' && request.headers['content-type'] === 'application/json') {
 						try {
 							// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-							postData = JSON.parse(data.toString('utf-8'));
+							bodyData = JSON.parse(data.toString('utf-8'));
 						} catch {
 							throw(new Error('Invalid JSON data'));
 						}
 					} else {
 						throw(new KeetaAnchorUserError('Unsupported content type'));
 					}
-					/**
-					 * Call the route handler
-					 */
-					result = await route(params, postData, request.headers);
-				} else {
-					result = await route(params, undefined, request.headers);
 				}
+
+				/**
+				 * Call the route handler
+				 */
+				// @ts-ignore
+				result = await route.handler(params, bodyData, request.headers, url);
 
 				generatedResult = true;
 			} catch (err) {
@@ -327,15 +370,19 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 */
 				const errorHandlerRoute = routes['ERROR'];
 				if (errorHandlerRoute !== undefined) {
-					if (KeetaAnchorUserError.isInstance(err)) {
-						result = await errorHandlerRoute(new Map(), err.asErrorResponse('application/json'), request.headers);
+					let errBody;
+					if (KeetaAnchorError.isInstance(err) && err['userError']) {
+						errBody = err.asErrorResponse('application/json');
 					} else {
-						result = await errorHandlerRoute(new Map(), {
+						errBody = {
 							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
 							statusCode: 500,
 							contentType: 'application/json'
-						}, request.headers);
+						};
 					}
+
+					// @ts-ignore
+					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url);
 					generatedResult = true;
 				}
 
