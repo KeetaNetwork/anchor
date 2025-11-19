@@ -206,7 +206,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					return(retval);
 				}
-			}
+			};
 
 			if (!seenPaths.has(path) && path !== '' && path !== undefined) {
 				const corsRouteKey = `OPTIONS ${path}`;
@@ -311,7 +311,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				}
 
 				/**
-				 * If POST'ing, read and parse the POST data
+				 * If POST'ing, PUT'ing, or PATCH'ing, read and parse the request body
 				 */
 				if (shouldCheckBody && route.bodyType !== 'none') {
 					const data = await request.map(function(chunk) {
@@ -378,7 +378,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 							error: JSON.stringify({ ok: false, error: 'Internal Server Error' }),
 							statusCode: 500,
 							contentType: 'application/json'
-						}
+						};
 					}
 
 					// @ts-ignore
