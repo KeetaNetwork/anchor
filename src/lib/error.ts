@@ -26,7 +26,7 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 * is the base error class and could cause circular resolution
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		KeetaAnchorUserError
+		KeetaAnchorUserError, KeetaAnchorUserValidationError
 	];
 
 	// Dynamically import errors to avoid circular dependencies
@@ -273,7 +273,6 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 		return(error);
 	}
 }
-
 
 interface KeetaAnchorUserValidationErrorDetails {
 	fields: {
