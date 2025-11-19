@@ -295,6 +295,14 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: false
 		},
 		{
+			test: async function() { return((await assetTransferClient.getProviderByID('bad'))) },
+			result: null
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProviderByID('Test')) === null) },
+			result: false
+		},
+		{
 			test: async function() { return((await assetTransferClient.getProvidersForTransfer({ asset: testCurrencyEUR }))) },
 			result: null
 		},

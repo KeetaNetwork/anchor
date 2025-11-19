@@ -1236,6 +1236,8 @@ type ResolverStats = {
 	}
 };
 
+type SharedLookupCriteria = { providerIDs?: string[]; };
+
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -2062,7 +2064,7 @@ class Resolver {
 		});
 	}
 
-	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
+	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -2076,9 +2078,25 @@ class Resolver {
 
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
+
+		const definedServicesObject = await definedServices[service]?.('object');
+
+		let filteredDefinedServicesObject: ValuizableObject | undefined;
+		if (sharedCriteria?.providerIDs !== undefined && definedServicesObject) {
+			filteredDefinedServicesObject = {};
+			for (const providerID of sharedCriteria.providerIDs) {
+				if (providerID in definedServicesObject) {
+					filteredDefinedServicesObject[providerID] = definedServicesObject[providerID];
+				}
+			}
+		} else {
+			filteredDefinedServicesObject = definedServicesObject;
+		}
+
 		const serviceLookup = this.lookupMap[service].search;
+
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
-		return(await serviceLookup(await definedServices[service]?.('object'), criteria as any));
+		return(await serviceLookup(filteredDefinedServicesObject, criteria as any));
 	}
 
 	clearCache(): void {
@@ -2097,5 +2115,6 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
-	Services
+	Services,
+	SharedLookupCriteria
 };
