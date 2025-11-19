@@ -20,38 +20,26 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		return(ERROR_CLASS_MAPPING);
 	}
 
-	// Dynamically import KYC errors to avoid circular dependencies
-
-	const [
-		KYCErrors,
-		AssetMovementErrors,
-		FXErrors
-	] = await Promise.all([
-		(async () => {
-			const kycModule = await import('../services/kyc/common.js');
-			return(kycModule.Errors);
-		})(),
-		(async () => {
-			const assetMovementModule = await import('../services/asset-movement/common.js');
-			return(assetMovementModule.Errors);
-		})(),
-		(async () => {
-			const fxModule = await import('../services/fx/common.js');
-			return(fxModule.Errors);
-		})()
-	]);
-
 	const ERROR_CLASSES: DeserializableErrorClass[] = [
 		/*
 		 * We purposefully leave out KeetaAnchorError here since it
 		 * is the base error class and could cause circular resolution
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		KeetaAnchorUserError, KeetaAnchorUserValidationError,
-		...Object.values(KYCErrors),
-		...Object.values(FXErrors),
-		...Object.values(AssetMovementErrors)
+		KeetaAnchorUserError
 	];
+
+	// Dynamically import errors to avoid circular dependencies
+	const importPromises: { Errors: { [key: string]: DeserializableErrorClass }}[] = await Promise.all([
+		import('../services/kyc/common.js'),
+		import('../services/fx/common.js'),
+		import('../services/asset-movement/common.js')
+	]);
+
+	for (const module of importPromises) {
+		const classes = Object.values(module.Errors);
+		ERROR_CLASSES.push(...classes);
+	}
 
 	const mapping: { [key: string]: (input: unknown) => Promise<KeetaAnchorError> } = {};
 	for (const errorClass of ERROR_CLASSES) {
