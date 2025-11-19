@@ -1,3 +1,5 @@
+import type { IValidation, TypeGuardError } from 'typia';
+import { createAssertEquals, createIs } from 'typia';
 import type { LogLevel } from './log/index.ts';
 /**
  * Type for error classes that can be deserialized
@@ -24,7 +26,7 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 * is the base error class and could cause circular resolution
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		KeetaAnchorUserError
+		KeetaAnchorUserError, KeetaAnchorUserValidationError
 	];
 
 	// Dynamically import errors to avoid circular dependencies
@@ -268,5 +270,130 @@ export class KeetaAnchorUserError extends KeetaAnchorError {
 		const error = new this(message);
 		error.restoreFromJSON(other);
 		return(error);
+	}
+}
+
+interface KeetaAnchorUserValidationErrorDetails {
+	fields: {
+		path?: string | undefined;
+		message: string;
+		allowedValues?: string[];
+		expected?: string;
+		receivedValue?: unknown;
+	}[];
+}
+
+const assertKeetaAnchorUserValidationErrorDetails: (input: unknown) => KeetaAnchorUserValidationErrorDetails = createAssertEquals<KeetaAnchorUserValidationErrorDetails>();
+type KeetaAnchorUserValidationErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAnchorUserValidationErrorDetails;
+
+type TypeGuardErrorLike = Pick<TypeGuardError.IProps | IValidation.IError, 'path' | 'expected' | 'value'>;
+
+const isTypeGuardErrorLike: (error: unknown) => error is TypeGuardErrorLike = createIs<TypeGuardErrorLike>();
+
+export class KeetaAnchorUserValidationError extends KeetaAnchorUserError implements KeetaAnchorUserValidationErrorDetails {
+	static readonly isTypeGuardErrorLike: typeof isTypeGuardErrorLike = isTypeGuardErrorLike;
+
+	static override readonly name: string = 'KeetaAnchorUserValidationError';
+	private readonly KeetaAnchorUserValidationErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorUserValidationErrorObjectTypeID = '5fa46799-48b8-4cf2-a3de-9c01418d3ba0';
+	protected override userError = true;
+
+	readonly fields: KeetaAnchorUserValidationErrorDetails['fields'];
+
+	static isInstance(input: unknown): input is KeetaAnchorUserError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorUserValidationErrorObjectTypeID', KeetaAnchorUserValidationError.KeetaAnchorUserValidationErrorObjectTypeID));
+	}
+
+	constructor(args: KeetaAnchorUserValidationErrorDetails, message?: string) {
+		super(message ?? `Validation error on fields ${args.fields.map((f) => f.path).join(', ')}`);
+
+		Object.defineProperty(this, 'KeetaAnchorUserValidationErrorObjectTypeID', {
+			value: KeetaAnchorUserValidationError.KeetaAnchorUserValidationErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.fields = args.fields;
+	}
+
+	override get statusCode() {
+		return(400);
+	}
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				data: { fields: this.fields },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	toJSON(): KeetaAnchorUserValidationErrorJSON {
+		return({
+			...super.toJSON(),
+			fields: this.fields
+		});
+	}
+
+
+	static async fromJSON(input: unknown): Promise<KeetaAnchorUserValidationError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAnchorUserValidationError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAnchorUserValidationErrorDetails(other.data);
+
+		const error = new this(
+			{ fields: parsed.fields },
+			message
+		);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+
+	static fromTypeGuardError(input: TypeGuardErrorLike | TypeGuardErrorLike[], message?: string): KeetaAnchorUserValidationError {
+		let asArr;
+
+		if (Array.isArray(input)) {
+			asArr = input;
+		} else {
+			asArr = [ input ];
+		}
+
+		return(new this({
+			fields: asArr.map(function(single) {
+				let path;
+				if (single.path !== undefined) {
+					const split = single.path.split('.');
+
+					if (split[0] === '$input') {
+						split.shift();
+					}
+
+					if (split.length > 0) {
+						path = split.join('.');
+					}
+				}
+
+				return({
+					path,
+					message: message ?? 'Invalid value',
+					expected: single.expected,
+					receivedValue: single.value
+				});
+			})
+		}, message))
 	}
 }
