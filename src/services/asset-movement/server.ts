@@ -1,4 +1,4 @@
-import * as KeetaAnchorHTTPServer from '../../lib/http-server.js';
+import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import type KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorUserError
