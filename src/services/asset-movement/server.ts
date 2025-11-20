@@ -112,7 +112,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>>;
 
 		/**
-		 * Method to initiate a transfer
+		 * Method to share KYC (Know Your Customer) information
 		 */
 		shareKYC?: (request: KeetaAssetMovementAnchorShareKYCRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>>;
 	}
@@ -228,7 +228,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				if (authenticationRequired || (request && 'signed' in request)) {
 					let signed;
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
-						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url })
+						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url });
 
 						if (!parsed.account || !parsed.signedField) {
 							throw(new KeetaAnchorUserError('Missing authentication information'));
@@ -248,7 +248,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 						account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
 						signed = assertHTTPSignedField(request.signed);
 					} else {
-						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be'))
+						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'))
 					}
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
@@ -463,7 +463,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 					operations[op] = {
 						url: computedURL,
 						options: { authentication: { method: 'keeta-account', type: 'required' }}
-					}
+					};
 				} else {
 					operations[op] = computedURL;
 				}

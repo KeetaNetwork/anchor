@@ -544,7 +544,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 
 	/*
-	 * Start the FX Anchor Server and get the URL
+	 * Start the Asset Movement Anchor Server and get the URL
 	 */
 	await server.start();
 
@@ -590,7 +590,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		from: { location: `chain:keeta:${client.network}` },
 		to: { location: 'bank-account:us', recipient: 'account-123' },
 		value: '100'
-	}
+	};
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
 	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
 

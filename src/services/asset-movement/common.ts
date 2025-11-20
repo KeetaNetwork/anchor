@@ -988,4 +988,4 @@ export const Errors: {
 	 * The user is required to share KYC details
 	 */
 	KYCShareNeeded: KeetaAssetMovementAnchorKYCShareNeededError
-}
+};
