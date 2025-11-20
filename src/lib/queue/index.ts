@@ -63,9 +63,7 @@ export type KeetaAnchorQueueEntryAncillaryData<RESPONSE> = {
 	error?: string | undefined;
 };
 
-export interface KeetaAnchorQueueStorageDriverConstructor<REQUEST extends JSONSerializable, RESPONSE extends JSONSerializable> {
-	new(options?: KeetaAnchorQueueStorageOptions): KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
-}
+export type KeetaAnchorQueueStorageDriverConstructor<REQUEST extends JSONSerializable, RESPONSE extends JSONSerializable> = new(options?: KeetaAnchorQueueStorageOptions) => KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
 
 export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable, RESPONSE extends JSONSerializable> {
 	/**
@@ -150,6 +148,10 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			}
 		}
 
+		/*
+		 * The ID is a branded string, so we must cast the generated UUID
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		id ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
 
 		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::enqueue', `Enqueuing request with id ${String(id)}`);
@@ -256,7 +258,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 	}
 }
 
-export abstract class KeetaAnchorQueueStorageRunner<UREQUEST, URESPONSE, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> {
+export abstract class KeetaAnchorQueueStorageRunner<UREQUEST = unknown, URESPONSE = unknown, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> {
 	private queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
 	private logger?: Logger | undefined;
 	private processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
@@ -281,6 +283,10 @@ export abstract class KeetaAnchorQueueStorageRunner<UREQUEST, URESPONSE, REQUEST
 			throw(new Error('Worker ID other than 0 or worker count other than 1 is not supported yet'));
 		}
 
+		/*
+		 * The worker ID is just a branded version of the worker number
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		this.workerID = this.workers.id as KeetaAnchorQueueWorkerID;
 		this.id = config.id ?? crypto.randomUUID();
 	}
@@ -533,10 +539,12 @@ export abstract class KeetaAnchorQueueStorageRunner<UREQUEST, URESPONSE, REQUEST
 
 export class KeetaAnchorQueueStorageRunnerJSON<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueStorageRunner<UREQUEST, URESPONSE, JSONSerializable, JSONSerializable> {
 	protected decodeRequest(request: JSONSerializable): UREQUEST {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(request as UREQUEST);
 	}
 
 	protected decodeResponse(response: JSONSerializable | null): URESPONSE | null {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(response as URESPONSE | null);
 	}
 

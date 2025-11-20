@@ -1,8 +1,10 @@
 import { test, expect } from 'vitest';
 import { KeetaAnchorPipeline } from './index.js';
-import type {
+import {
 	KeetaAnchorQueueStorageRunnerJSON,
-	KeetaAnchorQueueStorageDriverMemory,
+	KeetaAnchorQueueStorageDriverMemory
+} from '../queue/index.js';
+import type {
 	KeetaAnchorQueueEntry
 } from '../queue/index.ts';
 import type { Logger } from '../log/index.ts';

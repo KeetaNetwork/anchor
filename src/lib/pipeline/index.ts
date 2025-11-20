@@ -8,18 +8,25 @@ type KeetaAnchorPipelineOptions = {
 	logger?: Logger | undefined;
 };
 
+/*
+ * This type alias is for cases where we don't know the exact type of a stage
+ * in the pipeline, but want to work with it in a generic way.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type KeetaAnchorQueueStorageRunnerAny = KeetaAnchorQueueStorageRunner<any, any>;
+
 export class KeetaAnchorPipeline {
-	private stages: { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> }[]
+	private stages: { name: string; runner: KeetaAnchorQueueStorageRunner }[]
 	private logger?: Logger | undefined;
 	readonly id: string;
 
-	constructor(stages: { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> }[], options?: KeetaAnchorPipelineOptions) {
+	constructor(stages: { name: string; runner: KeetaAnchorQueueStorageRunnerAny }[], options?: KeetaAnchorPipelineOptions) {
 		this.id = crypto.randomUUID();
 		this.stages = stages;
 		this.logger = options?.logger;
 	}
 
-	async add(input: any): Promise<KeetaAnchorQueueRequestID> {
+	async add(input: unknown): Promise<KeetaAnchorQueueRequestID> {
 		const firstStage = this.stages[0];
 		if (!firstStage) {
 			throw(new Error('Pipeline has no stages'));
@@ -28,7 +35,7 @@ export class KeetaAnchorPipeline {
 	}
 
 	/** @internal */
-	_testingStages(key: string): { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> }[] {
+	_testingStages(key: string): { name: string; runner: KeetaAnchorQueueStorageRunner }[] {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
 		}
@@ -36,7 +43,7 @@ export class KeetaAnchorPipeline {
 	}
 
 	/** @internal */
-	_testingGetStageByName(key: string, name: string): { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> } | null {
+	_testingGetStageByName(key: string, name: string): { name: string; runner: KeetaAnchorQueueStorageRunnerAny } | null {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
 		}
@@ -60,7 +67,7 @@ export class KeetaAnchorPipeline {
 		return(stageIndex);
 	}
 
-	private getNextStageByName(name: string): { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> } | null {
+	private getNextStageByName(name: string): { name: string; runner: KeetaAnchorQueueStorageRunner } | null {
 		const stageIndex = this.getStageIndexByName(name);
 		if (stageIndex === null) {
 			return(null);
@@ -74,7 +81,7 @@ export class KeetaAnchorPipeline {
 		return(nextStage);
 	}
 
-	private async moveOutputsToNextStage(currentStage: { name: string; runner: KeetaAnchorQueueStorageRunner<any, any> }): Promise<void> {
+	private async moveOutputsToNextStage(currentStage: { name: string; runner: KeetaAnchorQueueStorageRunner }): Promise<void> {
 		const batchSize = 100;
 
 		/*
