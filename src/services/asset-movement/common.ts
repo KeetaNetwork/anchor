@@ -433,7 +433,7 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 } | {
-	type: 'WIRE' | 'ACH';
+	type: 'WIRE' | 'ACH' | 'SEPA_PUSH' | 'WIRE';
 	account: BankAccountAddressResolved;
 	depositMessage?: string;
 	value: string;
