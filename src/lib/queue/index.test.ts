@@ -1,14 +1,16 @@
 import { test, expect, vi } from 'vitest';
 import type { Logger } from '../log/index.ts';
 import {
-	KeetaAnchorQueueStorageRunnerJSON,
+	KeetaAnchorQueueRunnerJSON,
 	KeetaAnchorQueueStorageDriverMemory
 } from './index.js';
 import type {
-	KeetaAnchorQueueStatus
+	KeetaAnchorQueueStatus,
+	KeetaAnchorQueueEntry
 } from './index.ts';
 import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
+import type { JSONSerializable } from '../utils/json.ts';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
@@ -23,7 +25,7 @@ type RequestType = {
 
 type ResponseType = string;
 
-test('Runner Basic Tests', async function() {
+test('Queue Runner Basic Tests', async function() {
 	await using cleanup = new AsyncDisposableStack();
 	vi.useFakeTimers();
 	cleanup.defer(function() {
@@ -35,7 +37,7 @@ test('Runner Basic Tests', async function() {
 	});
 
 	const processCallCountByKey = new Map<string, number>();
-	await using runner = new KeetaAnchorQueueStorageRunnerJSON<RequestType, ResponseType>({
+	await using runner = new KeetaAnchorQueueRunnerJSON<RequestType, ResponseType>({
 		queue: queue,
 		processor: async function(entry) {
 			const key = entry.request.key;
@@ -216,5 +218,189 @@ test('Runner Basic Tests', async function() {
 
 			expect(statuses).toEqual(['aborted', 'pending']);
 		}
+	}
+});
+
+test('Pipeline Basic Tests', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
+		return(new KeetaAnchorQueueRunnerJSON<INPUT, OUTPUT>({
+			id: `${name}_runner`,
+			processor: processor,
+			queue: new KeetaAnchorQueueStorageDriverMemory({
+				id: `${name}_queue`,
+				logger: logger
+			}),
+			logger: logger
+		}));
+	}
+
+	/*
+	 * Define some stages, we will later create a pipeline
+	 *
+	 * Each stage is a queue that has a processor function that
+	 * is faulty on purpose to simulate processing errors.
+	 *
+	 * Each request creates an entry that is processed by the
+	 * processor for that runner and the output is stored
+	 * in the entry output.
+	 */
+	const stage1 = createStage<string, number>('stage1', async function(entry) {
+		if (Math.random() < 0.5) {
+			throw(new Error('Simulated random processing error'));
+		}
+		return({ status: 'completed', output: entry.request.length });
+	});
+	const stage2 = createStage<number, boolean>('stage2', async function(entry) {
+		if (Math.random() < 0.9) {
+			throw(new Error('Simulated random processing error'));
+		}
+		return({ status: 'completed', output: entry.request % 2 === 0 });
+	});
+	const stage3 = createStage<boolean, string>('stage3', async function(entry) {
+		if (Math.random() < 0.01) {
+			throw(new Error('Simulated random processing error'));
+		}
+		return({ status: 'completed', output: entry.request ? 'even' : 'odd' });
+	});
+	const stage4 = createStage<string[], string>('stage4', async function(entry) {
+		if (Math.random() < 0.05) {
+			throw(new Error('Simulated random processing error'));
+		}
+		return({ status: 'completed', output: `Results: ${entry.request.sort().join(', ')}` });
+	});
+
+	/*
+	 * Helper function to run the queues until they are no longer
+	 * runnable after advancing time forward to deal with failure
+	 * retries
+	 */
+	async function runAndMaintainQueues() {
+		let sequentialFalseCount = 0;
+		for (let retry = 0; retry < 10000; retry++) {
+			await stage1.run();
+			await stage1.maintain();
+			const runResult = await stage1.runnable();
+
+			/* Advance time by 10x the process timeout to simulate time passing */
+			vi.advanceTimersByTime(300_000 * 10);
+
+			if (!runResult) {
+				sequentialFalseCount++;
+			} else {
+				sequentialFalseCount = 0;
+			}
+
+			if (sequentialFalseCount >= 5) {
+				/* Assume the pipeline is done if we have multiple empty runs */
+				break;
+			}
+		}
+	}
+
+	/*
+	 * Set the retry parameters to be more aggressive for testing
+	 */
+	stage1._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
+	stage2._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
+	stage3._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
+	stage4._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
+
+	/*
+	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
+	 */
+	stage1.pipe(stage2).pipe(stage3).pipeBatch(stage4, 2, 2);
+	const id1 = await stage1.add('hello');
+	const id2 = await stage1.add('a');
+	const id3 = await stage1.add('abc');
+	const id4 = await stage1.add('defg');
+	const id5 = await stage1.add('blah');
+
+	/*
+	 * Run the queues until they are no longer runnable, simulating
+	 * time passing to allow for failed entries to be set back to
+	 * pending and become runnable again
+	 */
+	await runAndMaintainQueues();
+
+	/*
+	 * Ensure that the initial stages have the expected number of
+	 * moved/completed entries
+	 */
+	expect(await stage1.query({ status: 'completed' })).toHaveLength(0);
+	expect(await stage1.query({ status: 'moved' })).toHaveLength(5);
+	expect(await stage2.query({ status: 'completed' })).toHaveLength(0);
+	expect(await stage2.query({ status: 'moved' })).toHaveLength(5);
+	expect(await stage3.query({ status: 'completed' })).toHaveLength(1);
+	expect(await stage3.query({ status: 'moved' })).toHaveLength(4);
+	expect(await stage4.query({ status: 'completed' })).toHaveLength(2);
+	expect(await stage4.query({ status: 'moved' })).toHaveLength(0);
+
+	/*
+	 * Make sure the final entries comprise 4 of the original 5 entries,
+	 * and store the left over one
+	 */
+	let finalLeftoverID: typeof id1 | undefined;
+	const seenFinalIDs = new Set<typeof id1>();
+	{
+		/*
+		 * Get the entries for the final stage
+		 */
+		const finalEntries = await stage4.query({ status: 'completed' });
+		expect(finalEntries).toHaveLength(2);
+
+		/*
+		 * Add the final entry IDs to a set for later checking
+		 */
+		for (const entry of finalEntries) {
+			seenFinalIDs.add(entry.id);
+		}
+
+		/*
+		 * Extract the parent IDs from the final entries and ensure that
+		 * they cover 4 of the original 5 IDs
+		 */
+		const finalEntryIDs = finalEntries.map(function(entry) {
+			return([...(entry.parentEntryIDs ?? [])]);
+		}).flat();
+		expect(finalEntryIDs).toHaveLength(4);
+		const idsAfterRemovingDuplicates = new Set([id1, id2, id3, id4, id5]);
+		for (const id of finalEntryIDs) {
+			expect(idsAfterRemovingDuplicates.has(id)).toBe(true);
+			idsAfterRemovingDuplicates.delete(id);
+		}
+
+		/*
+		 * There should be only one ID left over, store it for later
+		 */
+		expect(idsAfterRemovingDuplicates.size).toBe(1);
+		finalLeftoverID = idsAfterRemovingDuplicates.values().next().value;
+	}
+	if (!finalLeftoverID) {
+		throw(new Error('internal error: No final leftover ID'));
+	}
+
+	/*
+	 * Now add another entry and run it through the pipeline
+	 */
+	const id6 = await stage1.add('');
+	await runAndMaintainQueues();
+
+	{
+		const finalEntries = (await stage4.query({ status: 'completed' })).filter(function(entry) {
+			return(!seenFinalIDs.has(entry.id));
+		});
+		expect(finalEntries).toHaveLength(1);
+		const finalEntryIDs = finalEntries.map(function(entry) {
+			return([...(entry.parentEntryIDs ?? [])]);
+		}).flat();
+		expect(finalEntryIDs).toHaveLength(2);
+		expect(finalEntryIDs).toContain(finalLeftoverID);
+		expect(finalEntryIDs).toContain(id6);
 	}
 });
