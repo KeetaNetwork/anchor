@@ -11,7 +11,8 @@ import {
 import type {
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueEntry,
-	KeetaAnchorQueueStorageDriver
+	KeetaAnchorQueueStorageDriver,
+	KeetaAnchorQueueRequestID
 } from './index.ts';
 import { Errors } from './common.js';
 
@@ -468,7 +469,7 @@ test('Pipeline Basic Tests', async function() {
 });
 
 for (const driver in drivers) {
-	const driverConfig = drivers[driver as keyof typeof drivers];
+	const driverConfig = drivers[driver];
 	if (driverConfig === undefined) {
 		throw(new Error(`internal error: Missing driver config for driver '${driver}'`));
 	}
@@ -492,25 +493,334 @@ for (const driver in drivers) {
 		const queue = driverInstance.queue;
 
 		/* Test that we can add and get an entry */
-		// XXX:TODO
+		{
+			const id = await queue.add({ key: 'test1' });
+			expect(id).toBeDefined();
+			const entry = await queue.get(id);
+			expect(entry).toBeDefined();
+			expect(entry?.id).toBe(id);
+			expect(entry?.request).toEqual({ key: 'test1' });
+			expect(entry?.status).toBe('pending');
+			expect(entry?.output).toBeNull();
+			expect(entry?.lastError).toBeNull();
+			expect(entry?.failures).toBe(0);
+			expect(entry?.worker).toBeNull();
+			expect(entry?.created).toBeInstanceOf(Date);
+			expect(entry?.updated).toBeInstanceOf(Date);
+		}
 
 		/* Test that we can set status of an entry */
-		// XXX:TODO
+		{
+			const id = await queue.add({ key: 'test2' });
+			await queue.setStatus(id, 'processing');
+			const entry = await queue.get(id);
+			expect(entry?.status).toBe('processing');
+
+			await queue.setStatus(id, 'completed', { output: 'result' });
+			const updatedEntry = await queue.get(id);
+			expect(updatedEntry?.status).toBe('completed');
+			expect(updatedEntry?.output).toBe('result');
+		}
 
 		/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
-		// XXX:TODO
+		{
+			const id = await queue.add({ key: 'test3' });
+			await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
+			const entry = await queue.get(id);
+			expect(entry?.status).toBe('processing');
+
+			await expect(queue.setStatus(id, 'completed', { oldStatus: 'pending' })).rejects.toThrow();
+
+			await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
+			const completedEntry = await queue.get(id);
+			expect(completedEntry?.status).toBe('completed');
+		}
 
 		/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
-		// XXX:TODO
+		{
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const customId = 'custom-id-123' as unknown as KeetaAnchorQueueRequestID;
+			const id1 = await queue.add({ key: 'first' }, { id: customId });
+			expect(id1).toBe(customId);
+
+			const id2 = await queue.add({ key: 'second' }, { id: customId });
+			expect(id2).toBe(customId);
+
+			const entry = await queue.get(customId);
+			expect(entry?.request).toEqual({ key: 'first' });
+		}
 
 		/* Test that we can add an entry with parent and it fails if the parent exists with the appropriate error */
-		// XXX:TODO
+		{
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const parentId1 = 'parent-id-456' as unknown as KeetaAnchorQueueRequestID;
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const parentId2 = 'parent-id-457' as unknown as KeetaAnchorQueueRequestID;
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const parentId3 = 'parent-id-458' as unknown as KeetaAnchorQueueRequestID;
+			await queue.add({ key: 'parent1' }, { id: parentId1 });
+			await queue.add({ key: 'parent2' }, { id: parentId2 });
+			await queue.add({ key: 'parent3' }, { id: parentId3 });
+
+			// Add first child with one parent - should succeed
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childId1 = 'child-id-789' as unknown as KeetaAnchorQueueRequestID;
+			await queue.add({ key: 'child1' }, { id: childId1, parents: new Set([parentId1]) });
+
+			// Try to add second child with same parent - should fail with parentId1 in parentIDsFound
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childId2 = 'child-id-abc' as unknown as KeetaAnchorQueueRequestID;
+			try {
+				return(await queue.add({ key: 'child2' }, { id: childId2, parents: new Set([parentId1]) }));
+			} catch (error: unknown) {
+				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
+				if (!Errors.QuoteValidationFailed.isInstance(error)) {
+					throw(new Error('internal error: Error is not QuoteValidationFailed'));
+				}
+
+				expect(error.parentIDsFound).toBeDefined();
+				expect(error.parentIDsFound?.size).toBe(1);
+				expect(error.parentIDsFound?.has(parentId1)).toBe(true);
+			}
+
+			// Add third child with multiple parents where none conflict - should succeed
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childId3 = 'child-id-def' as unknown as KeetaAnchorQueueRequestID;
+			await queue.add({ key: 'child3' }, { id: childId3, parents: new Set([parentId2, parentId3]) });
+
+			// Try to add fourth child where one parent conflicts - should fail with only conflicting parent in parentIDsFound
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childId4 = 'child-id-ghi' as unknown as KeetaAnchorQueueRequestID;
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const parentId4 = 'parent-id-459' as unknown as KeetaAnchorQueueRequestID;
+			await queue.add({ key: 'parent4' }, { id: parentId4 });
+			try {
+				return(await queue.add({ key: 'child4' }, { id: childId4, parents: new Set([parentId2, parentId4]) }));
+			} catch (error: unknown) {
+				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
+				if (!Errors.QuoteValidationFailed.isInstance(error)) {
+					throw(new Error('internal error: Error is not QuoteValidationFailed'));
+				}
+
+				expect(error.parentIDsFound).toBeDefined();
+				expect(error.parentIDsFound?.size).toBe(1);
+				expect(error.parentIDsFound?.has(parentId2)).toBe(true);
+				expect(error.parentIDsFound?.has(parentId4)).toBe(false);
+			}
+
+			// Try to add fifth child where multiple parents conflict - should fail with all conflicting parents in parentIDsFound
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childId5 = 'child-id-jkl' as unknown as KeetaAnchorQueueRequestID;
+			try {
+				await queue.add({ key: 'child5' }, { id: childId5, parents: new Set([parentId1, parentId2, parentId3]) });
+				expect.fail('Should have thrown an error');
+			} catch (error: unknown) {
+				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
+				if (Errors.QuoteValidationFailed.isInstance(error)) {
+					expect(error.parentIDsFound).toBeDefined();
+					expect(error.parentIDsFound?.size).toBe(3);
+					expect(error.parentIDsFound?.has(parentId1)).toBe(true);
+					expect(error.parentIDsFound?.has(parentId2)).toBe(true);
+					expect(error.parentIDsFound?.has(parentId3)).toBe(true);
+				}
+			}
+		}
 
 		/* Test that we can query entries in various ways */
-		// XXX:TODO
+		{
+			const existingIDs = await queue.query();
+			await queue.add({ key: 'query1' });
+			const id2 = await queue.add({ key: 'query2' });
+			const id3 = await queue.add({ key: 'query3' });
+
+			await queue.setStatus(id2, 'completed', { output: 'done' });
+			await queue.setStatus(id3, 'failed_temporarily');
+
+			const allEntries = await queue.query();
+			expect(allEntries.length).toEqual(existingIDs.length + 3);
+
+			const pendingEntries = await queue.query({ status: 'pending' });
+			expect(pendingEntries.some(function(entry) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const req = entry.request as { key?: string };
+				return(req.key === 'query1');
+			})).toBe(true);
+
+			const completedEntries = await queue.query({ status: 'completed' });
+			expect(completedEntries.some(function(entry) {
+				return(entry.id === id2);
+			})).toBe(true);
+
+			const failedEntries = await queue.query({ status: 'failed_temporarily' });
+			expect(failedEntries.some(function(entry) {
+				return(entry.id === id3);
+			})).toBe(true);
+
+			const limitedEntries = await queue.query({ limit: 2 });
+			expect(limitedEntries.length).toBeLessThanOrEqual(2);
+
+			const futureDate = new Date(Date.now() + 100000);
+			const updatedBeforeEntries = await queue.query({ updatedBefore: futureDate });
+			expect(updatedBeforeEntries.length).toBeGreaterThanOrEqual(3);
+
+			const pastDate = new Date(Date.now() - 100000);
+			const noEntriesBeforePast = await queue.query({ updatedBefore: pastDate });
+			expect(noEntriesBeforePast.length).toBe(0);
+		}
 
 		/* Test that mutating the entry results does not affect the stored entry */
-		// XXX:TODO
+		{
+			const id = await queue.add({ key: 'immutable', nested: { value: 42 }});
+			const entry1 = await queue.get(id);
+			expect(entry1).toBeDefined();
+
+			if (entry1) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const req1 = entry1.request as { key: string; nested: { value: number }};
+				req1.key = 'modified';
+				req1.nested.value = 99;
+				entry1.status = 'completed';
+			}
+
+			const entry2 = await queue.get(id);
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const req2 = entry2?.request as { key: string; nested: { value: number }};
+			expect(req2.key).toBe('immutable');
+			expect(req2.nested.value).toBe(42);
+			expect(entry2?.status).toBe('pending');
+
+			const entries = await queue.query({ status: 'pending' });
+			if (entries.length > 0 && entries[0]) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const req = entries[0].request as { key: string };
+				req.key = 'altered';
+				entries[0].status = 'aborted';
+			}
+
+			const entry3 = await queue.get(id);
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const req3 = entry3?.request as { key: string };
+			expect(req3.key).toBe('immutable');
+			expect(entry3?.status).toBe('pending');
+		}
+
+		/* Test that errors are recorded in the entry correctly */
+		{
+			const entryId = await queue.add({ key: 'error_test' });
+			await queue.setStatus(entryId, 'failed_temporarily', { error: 'Something went wrong' });
+
+			const entryWithError = await queue.get(entryId);
+			expect(entryWithError?.lastError).toBe('Something went wrong');
+			expect(entryWithError?.status).toBe('failed_temporarily');
+		}
+
+		/* Test that marking a entry as `failed_temporarily` increments the failure count */
+		{
+			const entryId = await queue.add({ key: 'failure_count_test' });
+			const initialEntry = await queue.get(entryId);
+			expect(initialEntry?.failures).toBe(0);
+
+			await queue.setStatus(entryId, 'failed_temporarily');
+			const afterFirstFailure = await queue.get(entryId);
+			expect(afterFirstFailure?.failures).toBe(1);
+
+			await queue.setStatus(entryId, 'pending');
+			await queue.setStatus(entryId, 'failed_temporarily');
+			const afterSecondFailure = await queue.get(entryId);
+			expect(afterSecondFailure?.failures).toBe(2);
+
+			await queue.setStatus(entryId, 'pending');
+			await queue.setStatus(entryId, 'failed_temporarily');
+			const afterThirdFailure = await queue.get(entryId);
+			expect(afterThirdFailure?.failures).toBe(3);
+		}
+
+		/* Test that marking an entry as pending/completed does not reset the failure count */
+		{
+			const entryId = await queue.add({ key: 'failure_persist_test' });
+
+			await queue.setStatus(entryId, 'failed_temporarily');
+			await queue.setStatus(entryId, 'failed_temporarily');
+			const afterFailures = await queue.get(entryId);
+			expect(afterFailures?.failures).toBe(2);
+
+			await queue.setStatus(entryId, 'pending');
+			const afterPending = await queue.get(entryId);
+			expect(afterPending?.failures).toBe(2);
+
+			await queue.setStatus(entryId, 'completed', { output: 'done' });
+			const afterCompleted = await queue.get(entryId);
+			expect(afterCompleted?.failures).toBe(2);
+		}
+
+		/* Test that marking an entry as pending/completed clears the lastError */
+		{
+			const entryId = await queue.add({ key: 'error_clear_test' });
+
+			await queue.setStatus(entryId, 'failed_temporarily', { error: 'First error' });
+			const afterFirstError = await queue.get(entryId);
+			expect(afterFirstError?.lastError).toBe('First error');
+
+			await queue.setStatus(entryId, 'pending');
+			const afterPending = await queue.get(entryId);
+			expect(afterPending?.lastError).toBeNull();
+
+			await queue.setStatus(entryId, 'failed_temporarily', { error: 'Second error' });
+			const afterSecondError = await queue.get(entryId);
+			expect(afterSecondError?.lastError).toBe('Second error');
+
+			await queue.setStatus(entryId, 'completed', { output: 'success' });
+			const afterCompleted = await queue.get(entryId);
+			expect(afterCompleted?.lastError).toBeNull();
+		}
+
+		/* Test that updating the status of a non-existent entry throws an error */
+		{
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const nonExistentId = 'non-existent-id-999' as unknown as KeetaAnchorQueueRequestID;
+
+			await expect(queue.setStatus(nonExistentId, 'completed')).rejects.toThrow();
+		}
+
+		/* Test that the entry `updated` changes when the entry is modified */
+		{
+			const entryId = await queue.add({ key: 'updated_test' });
+			const initialEntry = await queue.get(entryId);
+			expect(initialEntry).toBeDefined();
+			const initialUpdated = initialEntry?.updated;
+			expect(initialUpdated).toBeInstanceOf(Date);
+
+			await asleep(10);
+
+			await queue.setStatus(entryId, 'processing');
+			const afterStatusChange = await queue.get(entryId);
+			const updatedAfterChange = afterStatusChange?.updated;
+			expect(updatedAfterChange).toBeInstanceOf(Date);
+			expect(updatedAfterChange?.getTime()).toBeGreaterThan(initialUpdated?.getTime() ?? 0);
+		}
+
+		/* Test that the entry `created` is not changed */
+		{
+			const entryId = await queue.add({ key: 'created_test' });
+			const initialEntry = await queue.get(entryId);
+			expect(initialEntry).toBeDefined();
+			const initialCreated = initialEntry?.created;
+			expect(initialCreated).toBeInstanceOf(Date);
+
+			await asleep(10);
+
+			await queue.setStatus(entryId, 'processing');
+			const afterFirstChange = await queue.get(entryId);
+			expect(afterFirstChange?.created).toEqual(initialCreated);
+
+			await queue.setStatus(entryId, 'completed', { output: 'result' });
+			const afterSecondChange = await queue.get(entryId);
+			expect(afterSecondChange?.created).toEqual(initialCreated);
+
+			await queue.setStatus(entryId, 'failed_temporarily', { error: 'error' });
+			const afterThirdChange = await queue.get(entryId);
+			expect(afterThirdChange?.created).toEqual(initialCreated);
+		}
 	});
 
 	if (driverConfig.persistent) {
@@ -519,7 +829,7 @@ for (const driver in drivers) {
 				await using driverInstance = driverConfig.create('persistence_test', { leave: true });
 				const queue = driverInstance.queue;
 
-				const id = queue.add({ foo: 'bar' });
+				const id = await queue.add({ foo: 'bar' });
 				return(id);
 			})();
 
