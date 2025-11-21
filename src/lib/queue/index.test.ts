@@ -1,16 +1,25 @@
 import { test, expect, vi } from 'vitest';
 import type { Logger } from '../log/index.ts';
+import { asleep } from '../utils/asleep.js';
+import { AsyncDisposableStack } from '../utils/defer.js';
+import type { JSONSerializable } from '../utils/json.ts';
+
 import {
 	KeetaAnchorQueueRunnerJSON,
 	KeetaAnchorQueueStorageDriverMemory
 } from './index.js';
 import type {
 	KeetaAnchorQueueStatus,
-	KeetaAnchorQueueEntry
+	KeetaAnchorQueueEntry,
+	KeetaAnchorQueueStorageDriver
 } from './index.ts';
-import { asleep } from '../utils/asleep.js';
-import { AsyncDisposableStack } from '../utils/defer.js';
-import type { JSONSerializable } from '../utils/json.ts';
+import { Errors } from './common.js';
+
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+
+import { KeetaAnchorQueueStorageDriverFile } from './drivers/queue_file.js';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
@@ -18,14 +27,67 @@ if (DEBUG) {
 	logger = console;
 }
 
-type RequestType = {
-	key: string;
-	newStatus: KeetaAnchorQueueStatus;
+const RunKey = crypto.randomUUID();
+
+const drivers: {
+	[driverName: string]: {
+		persistent: boolean;
+		skip: boolean | (() => Promise<boolean>);
+		create: (key: string, options?: { leave?: boolean }) => {
+			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
+			[Symbol.asyncDispose]: () => Promise<void>;
+		};
+	}
+} = {
+	'Memory': {
+		persistent: false,
+		skip: false,
+		create: function(key: string) {
+			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					return(await queue[Symbol.asyncDispose]());
+				}
+			});
+		}
+	},
+	'File': {
+		persistent: true,
+		skip: false,
+		create: function(key: string, options = { leave: false }) {
+			const filePath = path.join(os.tmpdir(), `${RunKey}-${key}.json`);
+
+			const queue = new KeetaAnchorQueueStorageDriverFile({
+				filePath: filePath,
+				id: key,
+				logger: logger
+			});
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (options?.leave !== true) {
+						try {
+							fs.unlinkSync(filePath);
+						} catch {
+							/* Ignore */
+						}
+					}
+				}
+			});
+		}
+	}
 };
 
-type ResponseType = string;
-
 test('Queue Runner Basic Tests', async function() {
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
 	await using cleanup = new AsyncDisposableStack();
 	vi.useFakeTimers();
 	cleanup.defer(function() {
@@ -366,7 +428,7 @@ test('Pipeline Basic Tests', async function() {
 		 * they cover 4 of the original 5 IDs
 		 */
 		const finalEntryIDs = finalEntries.map(function(entry) {
-			return([...(entry.parentEntryIDs ?? [])]);
+			return([...(entry.parents ?? [])]);
 		}).flat();
 		expect(finalEntryIDs).toHaveLength(4);
 		const idsAfterRemovingDuplicates = new Set([id1, id2, id3, id4, id5]);
@@ -397,10 +459,81 @@ test('Pipeline Basic Tests', async function() {
 		});
 		expect(finalEntries).toHaveLength(1);
 		const finalEntryIDs = finalEntries.map(function(entry) {
-			return([...(entry.parentEntryIDs ?? [])]);
+			return([...(entry.parents ?? [])]);
 		}).flat();
 		expect(finalEntryIDs).toHaveLength(2);
 		expect(finalEntryIDs).toContain(finalLeftoverID);
 		expect(finalEntryIDs).toContain(id6);
 	}
 });
+
+for (const driver in drivers) {
+	const driverConfig = drivers[driver as keyof typeof drivers];
+	if (driverConfig === undefined) {
+		throw(new Error(`internal error: Missing driver config for driver '${driver}'`));
+	}
+
+	let shouldSkip = false;
+	if (driverConfig.skip !== undefined) {
+		if (typeof driverConfig.skip === 'function') {
+			shouldSkip = await driverConfig.skip();
+		} else {
+			shouldSkip = driverConfig.skip;
+		}
+	}
+
+	let testRunner: typeof test | typeof test.skip = test;
+	if (shouldSkip) {
+		testRunner = test.skip;
+	}
+
+	testRunner(`Queue Storage Driver Basic Tests (${driver})`, async function() {
+		await using driverInstance = driverConfig.create('basic_test');
+		const queue = driverInstance.queue;
+
+		/* Test that we can add and get an entry */
+		// XXX:TODO
+
+		/* Test that we can set status of an entry */
+		// XXX:TODO
+
+		/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
+		// XXX:TODO
+
+		/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
+		// XXX:TODO
+
+		/* Test that we can add an entry with parent and it fails if the parent exists with the appropriate error */
+		// XXX:TODO
+
+		/* Test that we can query entries in various ways */
+		// XXX:TODO
+
+		/* Test that mutating the entry results does not affect the stored entry */
+		// XXX:TODO
+	});
+
+	if (driverConfig.persistent) {
+		testRunner(`Queue Storage Driver Persistence Tests (${driver})`, async function() {
+			const id1 = await (async function() {
+				await using driverInstance = driverConfig.create('persistence_test', { leave: true });
+				const queue = driverInstance.queue;
+
+				const id = queue.add({ foo: 'bar' });
+				return(id);
+			})();
+
+			const entry = await (async function() {
+				await using driverInstance = driverConfig.create('persistence_test');
+				const queue = driverInstance.queue;
+				const entry = await queue.get(id1);
+				return(entry);
+			})();
+
+			expect(entry).toBeDefined();
+			expect(entry?.request).toEqual({ foo: 'bar' });
+			expect(entry?.status).toBe('pending');
+			expect(entry?.id).toBe(id1);
+		});
+	}
+}
