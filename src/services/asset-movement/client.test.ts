@@ -8,7 +8,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 
-const DEBUG = true;
+const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
@@ -289,6 +289,14 @@ test('Asset Movement Anchor Client Test', async function() {
 			result: [testCurrencyUSDC.publicKeyString.get(), baseToken.publicKeyString.get()].sort()
 		},
 		{
+			test: async function() { return((await assetTransferClient.getProviderByID('bad')) === null) },
+			result: true
+		},
+		{
+			test: async function() { return((await assetTransferClient.getProviderByID('Test')) !== null) },
+			result: true
+		},
+		{
 			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: {
 				ok: true,
@@ -536,7 +544,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 
 	/*
-	 * Start the FX Anchor Server and get the URL
+	 * Start the Asset Movement Anchor Server and get the URL
 	 */
 	await server.start();
 
@@ -582,7 +590,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		from: { location: `chain:keeta:${client.network}` },
 		to: { location: 'bank-account:us', recipient: 'account-123' },
 		value: '100'
-	}
+	};
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
 	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
 

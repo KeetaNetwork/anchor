@@ -1248,7 +1248,7 @@ type ResolverStats = {
 	}
 };
 
-export type SharedLookupCriteria = { providerIDs?: string[]; };
+type SharedLookupCriteria = { providerIDs?: string[]; };
 
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
@@ -2103,7 +2103,7 @@ class Resolver {
 		});
 	}
 
-	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], filters?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
+	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -2117,14 +2117,13 @@ class Resolver {
 
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
-		const serviceLookup = this.lookupMap[service].search;
 
 		const definedServicesObject = await definedServices[service]?.('object');
 
 		let filteredDefinedServicesObject: ValuizableObject | undefined;
-		if (filters?.providerIDs !== undefined && definedServicesObject) {
+		if (sharedCriteria?.providerIDs !== undefined && definedServicesObject) {
 			filteredDefinedServicesObject = {};
-			for (const providerID of filters.providerIDs) {
+			for (const providerID of sharedCriteria.providerIDs) {
 				if (providerID in definedServicesObject) {
 					filteredDefinedServicesObject[providerID] = definedServicesObject[providerID];
 				}
@@ -2132,6 +2131,8 @@ class Resolver {
 		} else {
 			filteredDefinedServicesObject = definedServicesObject;
 		}
+
+		const serviceLookup = this.lookupMap[service].search;
 
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 		return(await serviceLookup(filteredDefinedServicesObject, criteria as any));
@@ -2155,5 +2156,6 @@ export type {
 	ServiceSearchCriteria,
 	ServiceMetadataEndpoint,
 	ServiceMetadataAuthenticationType,
-	Services
+	Services,
+	SharedLookupCriteria
 };

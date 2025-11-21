@@ -191,6 +191,51 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
+type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
+
+function commonToSignable(item: SignableObjectInput): Signable {
+	const queue: [ string, SignableObjectInput ][] = [[ '', item ]];
+	const result: [ string, Signable[number] ][] = [];
+
+	while (queue.length > 0) {
+		const next = queue.shift();
+
+		if (!next) {
+			continue;
+		}
+
+		const [ prefix, current ] = next;
+		if (current === null || current === undefined) {
+			continue;
+		}
+
+		if (typeof current === 'boolean') {
+			result.push([ prefix, current ? 1 : 0 ]);
+		} else if (Array.isArray(current)) {
+			for (let i = 0; i < current.length; i++) {
+				queue.push([ `${prefix}[${i}]`, current[i] ]);
+			}
+		} else if (typeof current === 'object') {
+			for (const [ key, value ] of Object.entries(current)) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableObjectInput ]);
+			}
+		} else {
+			result.push([ prefix, current ]);
+		}
+
+		if (result.length > 1000) {
+			throw(new KeetaAnchorUserError('Too much data to sign in commonToSignable'));
+		}
+	}
+
+	result.sort((a, b) => {
+		return(a[0].localeCompare(b[0]));
+	});
+
+	return(result.map(item => item[1]));
+}
+
 export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
 	if (typeof input === 'string') {
 		return(input);
@@ -355,9 +400,13 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable
 	signed?: HTTPSignedField;
 };
 
-export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(_ignore_input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
+	return(commonToSignable({
+		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
+		from: { location: convertAssetLocationInputToCanonical(input.from.location) },
+		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient },
+		value: String(input.value)
+	}));
 }
 
 export type AssetTransferInstructions = ({
@@ -384,7 +433,7 @@ export type AssetTransferInstructions = ({
 	contractMethodName: string;
 	contractMethodArgs: string[];
 } | {
-	type: 'WIRE' | 'ACH';
+	type: 'WIRE' | 'ACH' | 'SEPA_PUSH' | 'WIRE';
 	account: BankAccountAddressResolved;
 	depositMessage?: string;
 	value: string;
@@ -413,7 +462,7 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 }
 
 export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(input: KeetaAssetMovementAnchorGetTransferStatusRequest): Signable {
-	return([ input.id ]);
+	return([ 'get-transaction', input.id ]);
 }
 
 type TransactionStatus = string;
@@ -585,9 +634,13 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 	signed?: HTTPSignedField;
 }
 
-export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
+	const pair = toAssetPair(input.asset);
+	return(commonToSignable({
+		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
+		location: convertAssetLocationInputToCanonical(input.location),
+		address: input.address
+	}));
 }
 
 
@@ -612,8 +665,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = ToJSO
 }
 
 export function getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData(_ignore_input: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorListForwardingAddressTemplateRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+	return([ 'list-templates' ]);
 }
 
 
@@ -662,9 +714,18 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	persistentAddressTemplateId: string;
 });
 
-export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(_ignore_input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
+	return(commonToSignable({
+		sourceLocation: convertAssetLocationInputToCanonical(input.sourceLocation),
+		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
+		outgoingRail: input.outgoingRail,
+		...('destinationLocation' in input ? {
+			destinationLocation: convertAssetLocationInputToCanonical(input.destinationLocation),
+			destinationAddress: input.destinationAddress
+		} : {
+			persistentAddressTemplateId: input.persistentAddressTemplateId
+		})
+	}))
 }
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingResponse = (({
@@ -737,8 +798,7 @@ export type KeetaAssetMovementAnchorlistTransactionsRequest = {
 }
 
 export function getKeetaAssetMovementAnchorlistTransactionsRequestSigningData(_ignore_input: KeetaAssetMovementAnchorlistTransactionsClientRequest | KeetaAssetMovementAnchorlistTransactionsRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+	return([ 'list-transactions' ]);
 }
 
 export type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = (({
@@ -761,8 +821,7 @@ export type KeetaAssetMovementAnchorShareKYCRequest = ToJSONSerializable<Omit<Ke
 };
 
 export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
-	// XXX:TODO probably want to complete this
-	return([]);
+	return([ 'share-kyc' ]);
 }
 
 export type KeetaAssetMovementAnchorShareKYCResponse = ({
@@ -929,4 +988,4 @@ export const Errors: {
 	 * The user is required to share KYC details
 	 */
 	KYCShareNeeded: KeetaAssetMovementAnchorKYCShareNeededError
-}
+};
