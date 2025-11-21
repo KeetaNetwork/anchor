@@ -16,8 +16,8 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 
 	protected methodLogger(method: string): Logger | undefined {
 		return(MethodLogger(this.logger, {
-			class: 'KeetaAnchorQueueStorageDriverMemory',
-			file: 'src/lib/queue/index.ts',
+			class: 'KeetaAnchorQueueStorageDriverFile',
+			file: 'src/lib/queue/drivers/queue_file.ts',
 			method: method,
 			instanceID: this.id
 		}));
@@ -29,35 +29,43 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 		}
 
 		const input = fs.readFileSync(this.filePath, 'utf-8');
-		const parsed: unknown = JSON.parse(input, function(key, inputValue) {
-			let nominalValue = this[key];
+		const parsed: unknown = JSON.parse(input, function(this: { [key: string]: unknown }, key, inputValue) {
+			let nominalValue: unknown = this[key];
 			if (key === 'created' || key === 'updated') {
-				nominalValue = new Date(nominalValue);
+				if (typeof nominalValue === 'string' || typeof nominalValue === 'number') {
+					nominalValue = new Date(nominalValue);
+				}
 			}
 			if (key === 'parents' && Array.isArray(inputValue)) {
 				nominalValue = new Set(inputValue);
 			}
 			return(nominalValue);
 		});
+		if (typeof parsed !== 'object' || parsed === null || !('queue' in parsed)) {
+			throw(new Error('Invalid queue file format'));
+		}
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const data = parsed as { queue: InstanceType<typeof KeetaAnchorQueueStorageDriverMemory>['queue'] };
 		Object.assign(this.queue, data.queue);
 	}
 
 	private async syncFile(): Promise<void> {
 		await this.syncInProgress;
-		this.syncInProgress = new Promise<void>(async (resolve) => {
+		this.syncInProgress = (async (): Promise<void> => {
 			const tmpFilePath = `${this.filePath}.${crypto.randomUUID()}`;
 			try {
 				fs.writeFileSync(tmpFilePath, JSON.stringify({
 					queue: this.queue
-				}, function(key, inputValue) {
+				}, function(key, inputValue: unknown): unknown {
 					if (key === 'created' || key === 'updated') {
 						if (inputValue instanceof Date) {
 							return(inputValue.toISOString());
 						}
 					}
-					if (key === 'parents' && inputValue instanceof Set) {
-						return(Array.from(inputValue));
+					if (key === 'parents') {
+						if (inputValue instanceof Set) {
+							return(Array.from(inputValue));
+						}
 					}
 					return(inputValue);
 				}, 2), 'utf-8');
@@ -68,9 +76,8 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 				} catch {
 					/* Ignore */
 				}
-				resolve();
 			}
-		});
+		})();
 		await this.syncInProgress;
 	}
 
