@@ -25,10 +25,11 @@ class KeetaAnchorQueueParentExistsError extends KeetaAnchorError {
 }
 
 export const Errors: {
-	QuoteValidationFailed: typeof KeetaAnchorQueueParentExistsError;
+	ParentExistsError: typeof KeetaAnchorQueueParentExistsError;
 } = {
 	/**
-	 * The quote validation failed
+	 * An entry already exists in the queue that contains one of the parent
+	 * ID(s) as the requested entry.
 	 */
-	QuoteValidationFailed: KeetaAnchorQueueParentExistsError
+	ParentExistsError: KeetaAnchorQueueParentExistsError
 };

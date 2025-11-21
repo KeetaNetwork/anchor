@@ -34,16 +34,16 @@ const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean }) => {
+		create: (key: string, options?: { leave?: boolean }) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
-		};
+		}>;
 	}
 } = {
 	'Memory': {
 		persistent: false,
 		skip: false,
-		create: function(key: string) {
+		create: async function(key: string) {
 			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
 			return({
 				queue: queue,
@@ -56,7 +56,7 @@ const drivers: {
 	'File': {
 		persistent: true,
 		skip: false,
-		create: function(key: string, options = { leave: false }) {
+		create: async function(key: string, options = { leave: false }) {
 			const filePath = path.join(os.tmpdir(), `${RunKey}-${key}.json`);
 
 			const queue = new KeetaAnchorQueueStorageDriverFile({
@@ -489,7 +489,7 @@ for (const driver in drivers) {
 	}
 
 	testRunner(`Queue Storage Driver Basic Tests (${driver})`, async function() {
-		await using driverInstance = driverConfig.create('basic_test');
+		await using driverInstance = await driverConfig.create('basic_test');
 		const queue = driverInstance.queue;
 
 		/* Test that we can add and get an entry */
@@ -573,9 +573,9 @@ for (const driver in drivers) {
 			try {
 				return(await queue.add({ key: 'child2' }, { id: childId2, parents: new Set([parentId1]) }));
 			} catch (error: unknown) {
-				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
-				if (!Errors.QuoteValidationFailed.isInstance(error)) {
-					throw(new Error('internal error: Error is not QuoteValidationFailed'));
+				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+				if (!Errors.ParentExistsError.isInstance(error)) {
+					throw(new Error('internal error: Error is not ParentExistsError'));
 				}
 
 				expect(error.parentIDsFound).toBeDefined();
@@ -597,9 +597,9 @@ for (const driver in drivers) {
 			try {
 				return(await queue.add({ key: 'child4' }, { id: childId4, parents: new Set([parentId2, parentId4]) }));
 			} catch (error: unknown) {
-				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
-				if (!Errors.QuoteValidationFailed.isInstance(error)) {
-					throw(new Error('internal error: Error is not QuoteValidationFailed'));
+				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+				if (!Errors.ParentExistsError.isInstance(error)) {
+					throw(new Error('internal error: Error is not ParentExistsError'));
 				}
 
 				expect(error.parentIDsFound).toBeDefined();
@@ -615,8 +615,8 @@ for (const driver in drivers) {
 				await queue.add({ key: 'child5' }, { id: childId5, parents: new Set([parentId1, parentId2, parentId3]) });
 				expect.fail('Should have thrown an error');
 			} catch (error: unknown) {
-				expect(Errors.QuoteValidationFailed.isInstance(error)).toBe(true);
-				if (Errors.QuoteValidationFailed.isInstance(error)) {
+				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+				if (Errors.ParentExistsError.isInstance(error)) {
 					expect(error.parentIDsFound).toBeDefined();
 					expect(error.parentIDsFound?.size).toBe(3);
 					expect(error.parentIDsFound?.has(parentId1)).toBe(true);
@@ -826,7 +826,7 @@ for (const driver in drivers) {
 	if (driverConfig.persistent) {
 		testRunner(`Queue Storage Driver Persistence Tests (${driver})`, async function() {
 			const id1 = await (async function() {
-				await using driverInstance = driverConfig.create('persistence_test', { leave: true });
+				await using driverInstance = await driverConfig.create('persistence_test', { leave: true });
 				const queue = driverInstance.queue;
 
 				const id = await queue.add({ foo: 'bar' });
@@ -834,7 +834,7 @@ for (const driver in drivers) {
 			})();
 
 			const entry = await (async function() {
-				await using driverInstance = driverConfig.create('persistence_test');
+				await using driverInstance = await driverConfig.create('persistence_test');
 				const queue = driverInstance.queue;
 				const entry = await queue.get(id1);
 				return(entry);

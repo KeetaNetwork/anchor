@@ -1,7 +1,8 @@
 import { KeetaAnchorQueueStorageDriverMemory } from '../index.js';
 import { MethodLogger } from '../internal.js';
-import * as fs from 'fs';
 import type { Logger } from '../../log/index.ts';
+
+import * as fs from 'fs';
 
 export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDriverMemory {
 	private readonly filePath: string;

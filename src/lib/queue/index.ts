@@ -218,7 +218,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			}
 
 			if (matchingParentEntries.size !== 0) {
-				throw(new Errors.QuoteValidationFailed('One or more parent entries already exist in the queue', matchingParentEntries));
+				throw(new Errors.ParentExistsError('One or more parent entries already exist in the queue', matchingParentEntries));
 			}
 		}
 
@@ -817,7 +817,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 						batchID = crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
 					} catch (error: unknown) {
-						if (Errors.QuoteValidationFailed.isInstance(error) && error.parentIDsFound) {
+						if (Errors.ParentExistsError.isInstance(error) && error.parentIDsFound) {
 							logger?.debug('Some of the jobs have already been added to the target queue, skipping those:', error.parentIDsFound.values());
 							for (const requestID of error.parentIDsFound) {
 								iterationTargetSeenRequestIDs.add(requestID);
