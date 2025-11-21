@@ -4,6 +4,35 @@ import type { JSONSerializable } from '../utils/json.ts';
 import type { AssertNever } from '../utils/never.ts';
 import { Errors } from './common.js';
 
+function MethodLogger<T extends Logger | undefined>(input: T, from: { file: string; method: string; class: string; instanceID: string; }): T {
+	if (input === undefined) {
+		// @ts-ignore
+		return(undefined);
+	}
+
+	const fromStr = `${from.class}${from.instanceID ? `:${from.instanceID}` : ''}::${from.method}`;
+	const retval: Logger = {
+		debug: function(...logArgs: unknown[]): void {
+			input.debug(fromStr, ...logArgs);
+		},
+		info: function(...logArgs: unknown[]): void {
+			input.info(fromStr, ...logArgs);
+		},
+		warn: function(...logArgs: unknown[]): void {
+			input.warn(fromStr, ...logArgs);
+		},
+		error: function(...logArgs: unknown[]): void {
+			input.error(fromStr, ...logArgs);
+		},
+		log: function(...logArgs: unknown[]): void {
+			input.log(fromStr, ...logArgs);
+		}
+	};
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(retval as T);
+}
+
 export type KeetaAnchorQueueRequest<REQUEST> = REQUEST;
 export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
@@ -166,10 +195,21 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::new', 'Created new in-memory queue storage driver');
+		this.methodLogger('new')?.debug('Created new in-memory queue storage driver');
+	}
+
+	private methodLogger(method: string): Logger | undefined {
+		return(MethodLogger(this.logger, {
+			class: 'KeetaAnchorQueueStorageDriverMemory',
+			file: 'src/lib/queue/index.ts',
+			method: method,
+			instanceID: this.id
+		}));
 	}
 
 	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+		const logger = this.methodLogger('add');
+
 		let id = info?.id;
 		if (id) {
 			const duplicateID = this.queue.some(function(checkEntry) {
@@ -177,7 +217,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			});
 
 			if (duplicateID) {
-				this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::enqueue', `Request with id ${String(id)} already exists, ignoring`);
+				logger?.debug(`Request with id ${String(id)} already exists, ignoring`);
 
 				return(id);
 			}
@@ -207,7 +247,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		id ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
 
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::enqueue', `Enqueuing request with id ${String(id)}`);
+		logger?.debug(`Enqueuing request with id ${String(id)}`);
 
 		this.queue.push({
 			id: id,
@@ -226,6 +266,8 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 	}
 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>): Promise<void> {
+		const logger = this.methodLogger('setStatus');
+
 		const { oldStatus, by, output } = ancillary ?? {};
 
 		const entry = this.queue.find(function(checkEntry) {
@@ -239,23 +281,23 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
 		}
 
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::setStatus', `Setting request with id ${String(id)} status from "${entry.status}" to "${status}"`);
+		logger?.debug(`Setting request with id ${String(id)} status from "${entry.status}" to "${status}"`);
 
 		/* XXX -- this needs to be replicated in every driver -- is there a better way ? */
 		if (status === 'failed_temporarily') {
 			entry.failures += 1;
-			this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::setStatus', `Incrementing failure count for request with id ${String(id)} to ${entry.failures}`);
+			logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${entry.failures}`);
 		}
 
 		if  (status === 'pending' || status === 'completed') {
-			this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::setStatus', `Clearing last error for request with id ${String(id)}`);
+			logger?.debug(`Clearing last error for request with id ${String(id)}`);
 			entry.lastError = null;
 		}
 		/* END OF XXX */
 
 		if (ancillary?.error) {
 			entry.lastError = ancillary.error;
-			this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::setStatus', `Setting last error for request with id ${String(id)} to:`, ancillary.error);
+			logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
 		}
 
 		entry.status = status;
@@ -263,7 +305,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		entry.worker = by ?? null;
 
 		if (output !== undefined) {
-			this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::setStatus', `Setting output for request with id ${String(id)}:`, output);
+			logger?.debug(`Setting output for request with id ${String(id)}:`, output);
 
 			entry.output = output;
 		}
@@ -282,9 +324,11 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 	}
 
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> {
+		const logger = this.methodLogger('query');
+
 		const queueDuplicate = structuredClone(this.queue);
 
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::query', `Querying queue with id ${this.id} with filter:`, filter);
+		logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 		const allEntriesInStatus = (function() {
 			const filterStatus = filter?.status;
@@ -313,13 +357,13 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			retval = allEntriesInStatus.slice(0, filter.limit);
 		}
 
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::query', `Queried queue with id ${this.id} with filter:`, filter, '-- found', retval.length, 'entries');
+		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', retval.length, 'entries');
 
 		return(retval);
 	}
 
 	async destroy(): Promise<void> {
-		this.logger?.debug('KeetaAnchorQueueStorageDriverMemory::destroy', 'Destroying in-memory queue');
+		this.methodLogger('destroy')?.debug('Destroying in-memory queue');
 	}
 
 	async [Symbol.asyncDispose](): Promise<void> {
@@ -394,7 +438,16 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		this.workerID = this.workers.id as KeetaAnchorQueueWorkerID;
 		this.id = config.id ?? crypto.randomUUID();
 
-		this.logger?.debug('KeetaAnchorQueueStorageRunner::new', 'Created new queue runner attached to queue', this.queue.id);
+		this.methodLogger('new')?.debug('Created new queue runner attached to queue', this.queue.id);
+	}
+
+	private methodLogger(method: string): Logger | undefined {
+		return(MethodLogger(this.logger, {
+			class: 'KeetaAnchorQueueRunner',
+			file: 'src/lib/queue/index.ts',
+			method: method,
+			instanceID: this.id
+		}));
 	}
 
 	/** @internal */
@@ -505,6 +558,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * 	          time spent processing entries
 	 */
 	async run(timeout?: number): Promise<boolean> {
+		const logger = this.methodLogger('run');
 		const batchSize = this.batchSize;
 		const processTimeout = this.processTimeout;
 
@@ -524,7 +578,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			if (timeout !== undefined) {
 				const elapsed = Date.now() - startTime;
 				if (elapsed >= timeout) {
-					this.logger?.debug('KeetaAnchorQueueStorageRunner::run', `Timeout of ${timeout}ms reached after processing ${index + 1} entries`);
+					logger?.debug(`Timeout of ${timeout}ms reached after processing ${index + 1} entries`);
 
 					break;
 				}
@@ -532,7 +586,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string; } = { status: 'failed_temporarily', output: null };
 
-			this.logger?.debug('KeetaAnchorQueueStorageRunner::run', `Processing entry request with id ${String(entry.id)}`);
+			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
 
 			try {
 				/*
@@ -565,7 +619,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					})()
 				]);
 			} catch (error: unknown) {
-				this.logger?.error('KeetaAnchorQueueStorageRunner::run', `Failed to process request with id ${String(entry.id)}, setting state to "${setEntryStatus.status}":`, error);
+				logger?.error(`Failed to process request with id ${String(entry.id)}, setting state to "${setEntryStatus.status}":`, error);
 				setEntryStatus.status = 'failed_temporarily';
 				setEntryStatus.error = String(error);
 			}
@@ -606,16 +660,17 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	private async markStuckRequestsAsStuck(): Promise<void> {
 		const stuckThreshold = this.processTimeout * 10;
 
+		const logger = this.methodLogger('markStuckRequestsAsStuck');
 		const now = Date.now();
 
 		const requests = await this.queue.query({ status: 'processing', limit: 100, lastUpdateBefore: new Date(now - stuckThreshold) });
 		for (const request of requests) {
 			try {
-				this.logger?.info('KeetaAnchorQueueStorageRunner::markStuckRequestsAsStuck', `Marking request with id ${String(request.id)} as stuck`);
+				logger?.warn(`Marking request with id ${String(request.id)} as stuck`);
 
 				await this.queue.setStatus(request.id, 'stuck', { oldStatus: 'processing', by: this.workerID });
 			} catch (error: unknown) {
-				this.logger?.error('KeetaAnchorQueueStorageRunner::markStuckRequestsAsStuck', `Failed to mark request with id ${String(request.id)} as stuck:`, error);
+				logger?.error(`Failed to mark request with id ${String(request.id)} as stuck:`, error);
 			}
 		}
 	}
@@ -624,28 +679,31 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		const retryDelay = this.processTimeout * 10;
 		const maxRetries = this.maxRetries;
 
+		const logger = this.methodLogger('requeueFailedRequests');
 		const now = Date.now();
 
 		const requests = await this.queue.query({ status: 'failed_temporarily', limit: 100, lastUpdateBefore: new Date(now - retryDelay) });
 		for (const request of requests) {
 			try {
 				if (request.failures >= maxRetries) {
-					this.logger?.info('KeetaAnchorQueueStorageRunner::requeueFailedRequests', `Request with id ${String(request.id)} has exceeded maximum retries, not requeuing -- moving to failed_permanently`);
+					logger?.info(`Request with id ${String(request.id)} has exceeded maximum retries, not requeuing -- moving to failed_permanently`);
 					await this.queue.setStatus(request.id, 'failed_permanently', { oldStatus: 'failed_temporarily', by: this.workerID });
 
 					continue;
 				}
 
-				this.logger?.info('KeetaAnchorQueueStorageRunner::requeueFailedRequests', `Requeuing failed request with id ${String(request.id)}`);
+				logger?.debug(`Requeuing failed request with id ${String(request.id)}`);
 
 				await this.queue.setStatus(request.id, 'pending', { oldStatus: 'failed_temporarily', by: this.workerID });
 			} catch (error: unknown) {
-				this.logger?.error('KeetaAnchorQueueStorageRunner::requeueFailedRequests', `Failed to requeue request with id ${String(request.id)}:`, error);
+				logger?.error(`Failed to requeue request with id ${String(request.id)}:`, error);
 			}
 		}
 	}
 
 	private async moveCompletedToNextStage(): Promise<void> {
+		const logger = this.methodLogger('moveCompletedToNextStage');
+
 		const pipes = [...this.pipes];
 		if (pipes.length === 0) {
 			return;
@@ -662,7 +720,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 
 
 		for (const pipe of pipes) {
-			this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', 'Processing pipe to target', pipe.target.id, pipe.isBatchPipe ? '(batch pipe)' : '(single item pipe)');
+			logger?.debug('Processing pipe to target', pipe.target.id, pipe.isBatchPipe ? '(batch pipe)' : '(single item pipe)');
 
 			if (pipe.isBatchPipe) {
 				/**
@@ -708,7 +766,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 				) {
 					iterationTargetSeenRequestIDs.clear();
 
-					this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
+					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
 
 					/**
 					 * Comptue a batch of entries to send to the next stage,
@@ -732,12 +790,12 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					if (batchRaw.length < pipe.minBatchSize) {
 						sequentialFailureCount++;
 						if (sequentialFailureCount >= 3) {
-							this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Not enough completed requests to move to next stage ${pipe.target.id}, stopping batch processing`);
+							logger?.debug(`Not enough completed requests to move to next stage ${pipe.target.id}, stopping batch processing`);
 
 							break;
 						}
 
-						this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Not moving completed requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
+						logger?.debug(`Not moving completed requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
 
 						continue;
 					}
@@ -759,7 +817,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 						return(entry.output);
 					});
 
-					this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Moving batch of ${batchOutput.length} completed requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
+					logger?.debug(`Moving batch of ${batchOutput.length} completed requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
 
 					try {
 						await pipe.target.add(batchOutput, {
@@ -772,7 +830,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 						batchID = crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
 					} catch (error: unknown) {
 						if (Errors.QuoteValidationFailed.isInstance(error) && error.parentIDsFound) {
-							this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', 'Some of the jobs have already been added to the target queue, skipping those:', error.parentIDsFound.values());
+							logger?.debug('Some of the jobs have already been added to the target queue, skipping those:', error.parentIDsFound.values());
 							for (const requestID of error.parentIDsFound) {
 								iterationTargetSeenRequestIDs.add(requestID);
 								allTargetSeenRequestIDs.add(requestID);
@@ -783,7 +841,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 							 * items to the target queue runner, just skip them
 							 * and we will rety them on the next iteration
 							 */
-							this.logger?.error('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Failed to move completed batch to next stage ${pipe.target.id}, will try to create another batch without them:`, error);
+							logger?.error(`Failed to move completed batch to next stage ${pipe.target.id}, will try to create another batch without them:`, error);
 
 							for (const requestID of batchLocalIDs) {
 								skipRequestIDs.add(requestID);
@@ -812,14 +870,14 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					try {
 						const output = this.decodeResponse(request.output);
 						if (output === null) {
-							this.logger?.info('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
+							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
-							this.logger?.debug('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Moving completed request with id ${String(request.id)} to next pipe`, pipe.target.id);
+							logger?.debug(`Moving completed request with id ${String(request.id)} to next pipe`, pipe.target.id);
 							await pipe.target.add(output, { id: request.id });
 						}
 
 					} catch (error: unknown) {
-						this.logger?.error('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Failed to move completed request with id ${String(request.id)} to next stage:`, error);
+						logger?.error(`Failed to move completed request with id ${String(request.id)} to next stage:`, error);
 						shouldMarkAsMoved = false;
 					}
 					if (shouldMarkAsMoved) {
@@ -833,11 +891,11 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		for (const request of allRequests) {
 			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
 			if (sentCount !== TotalPipes) {
-				this.logger?.info('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Completed request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+				logger?.debug(`Completed request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
 				continue;
 			}
 
-			this.logger?.info('KeetaAnchorQueueStorageRunner::moveCompletedToNextStage', `Marking completed request with id ${String(request.id)} as moved`);
+			logger?.debug(`Marking completed request with id ${String(request.id)} as moved`);
 
 			await this.queue.setStatus(request.id, 'moved', { oldStatus: 'completed', by: this.workerID });
 		}
