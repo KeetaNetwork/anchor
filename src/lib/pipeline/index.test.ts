@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { KeetaAnchorPipeline } from './index.js';
 import {
-	KeetaAnchorQueueStorageRunnerJSON,
+	KeetaAnchorQueueRunnerJSON,
 	KeetaAnchorQueueStorageDriverMemory
 } from '../queue/index.js';
 import type {
@@ -36,7 +36,7 @@ test('Pipeline Basic Test', async function() {
 	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
 		return({
 			name: name,
-			runner: new KeetaAnchorQueueStorageRunnerJSON<INPUT, OUTPUT>({
+			runner: new KeetaAnchorQueueRunnerJSON<INPUT, OUTPUT>({
 				id: `${name}_runner`,
 				processor: processor,
 				queue: new KeetaAnchorQueueStorageDriverMemory({
