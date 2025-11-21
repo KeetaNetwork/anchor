@@ -186,8 +186,8 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
  * An in-memory implementation of the KeetaAnchorQueueStorageDriver
  */
 export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-	private queue: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
-	private logger?: Logger | undefined;
+	private readonly queue: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
+	private readonly logger?: Logger | undefined;
 	readonly name = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
 
@@ -375,25 +375,25 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * The queue this runner is responsible for running
 	 */
-	private queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
+	private readonly queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
 	/**
 	 * The logger we should use for logging anything
 	 */
-	private logger?: Logger | undefined;
+	private readonly logger?: Logger | undefined;
 	/**
 	 * The processor function to use for processing entries
 	 */
-	private processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
+	private readonly processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
 	/**
 	 * Worker configuration (not implemented)
 	 */
-	private workers: NonNullable<KeetaAnchorQueueRunnerOptions['workers']>;
-	private workerID: KeetaAnchorQueueWorkerID;
+	private readonly workers: NonNullable<KeetaAnchorQueueRunnerOptions['workers']>;
+	private readonly workerID: KeetaAnchorQueueWorkerID;
 
 	/**
 	 * Pipes to other runners we have registered
 	 */
-	private pipes: ({
+	private readonly pipes: ({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		target: KeetaAnchorQueueRunner<URESPONSE, any, RESPONSE, any>
@@ -807,9 +807,9 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					 * jobs in the next stage that have the parentIDs of one of
 					 * these jobs
 					 */
-					const batchLocalIDs = new Set([...batchRaw.map(function(entry) {
+					const batchLocalIDs = new Set(batchRaw.map(function(entry) {
 						return(entry.id);
-					})]);
+					}));
 					/**
 					 * The outputs for the batch we are sending to the next stage
 					 */
