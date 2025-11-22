@@ -955,7 +955,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	}
 
 	async destroy(): Promise<void> {
-		/* Nothing to do by deafult */
+		this.methodLogger('destroy')?.debug('Destroying queue runner attached to queue', this.queue.id);
 	}
 
 	async [Symbol.asyncDispose](): Promise<void> {

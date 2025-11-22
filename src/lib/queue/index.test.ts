@@ -1,4 +1,4 @@
-import { test, expect, vi } from 'vitest';
+import { test, expect, suite, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Logger } from '../log/index.ts';
 import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
@@ -23,6 +23,10 @@ import * as fs from 'fs';
 import { KeetaAnchorQueueStorageDriverFile } from './drivers/queue_file.js';
 
 const DEBUG = false;
+import { KeetaAnchorQueueStorageDriverSQLite3 } from './drivers/queue_sqlite3.js';
+import * as sqlite from 'sqlite';
+import * as sqlite3 from 'sqlite3';
+
 let logger: Logger | undefined = undefined;
 if (DEBUG) {
 	logger = console;
@@ -61,7 +65,7 @@ const drivers: {
 		persistent: true,
 		skip: false,
 		create: async function(key: string, options = { leave: false }) {
-			const filePath = path.join(os.tmpdir(), `${RunKey}-${key}.json`);
+			const filePath = path.join(os.tmpdir(), `anchor-queue-tests-${RunKey}-${key}.file.json`);
 
 			const queue = new KeetaAnchorQueueStorageDriverFile({
 				filePath: filePath,
@@ -77,6 +81,40 @@ const drivers: {
 							fs.unlinkSync(filePath);
 						} catch {
 							/* Ignore */
+						}
+					}
+				}
+			});
+		}
+	},
+	'SQLite3': {
+		persistent: true,
+		skip: false,
+		create: async function(key: string, options = { leave: false }) {
+			const filePath = path.join(os.tmpdir(), `anchor-queue-tests-${RunKey}-${key}.sqlite3.db`);
+
+			const queue = new KeetaAnchorQueueStorageDriverSQLite3({
+				db: async function() {
+					return(await sqlite.open({
+						filename: filePath,
+						driver: sqlite3.Database,
+						mode: sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE
+					}));
+				},
+				id: key,
+				logger: logger
+			});
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (options?.leave !== true) {
+						for (const addFileSuffix of ['', '-shm', '-wal']) {
+							try {
+								fs.unlinkSync(`${filePath}${addFileSuffix}`);
+							} catch (error) {
+								/* Ignore */
+							}
 						}
 					}
 				}
@@ -472,478 +510,510 @@ test('Pipeline Basic Tests', async function() {
 	}
 });
 
-for (const driver in drivers) {
-	const driverConfig = drivers[driver];
-	if (driverConfig === undefined) {
-		throw(new Error(`internal error: Missing driver config for driver '${driver}'`));
-	}
-
-	let shouldSkip = false;
-	if (driverConfig.skip !== undefined) {
-		if (typeof driverConfig.skip === 'function') {
-			shouldSkip = await driverConfig.skip();
-		} else {
-			shouldSkip = driverConfig.skip;
-		}
-	}
-
-	let testRunner: typeof test | typeof test.skip = test;
-	if (shouldSkip) {
-		testRunner = test.skip;
-	}
-
-	testRunner(`Queue Storage Driver Basic Tests (${driver})`, async function() {
-		await using driverInstance = await driverConfig.create('basic_test');
-		const queue = driverInstance.queue;
-
-		/* Test that we can add and get an entry */
-		{
-			const id = await queue.add({ key: 'test1' });
-			expect(id).toBeDefined();
-			const entry = await queue.get(id);
-			expect(entry).toBeDefined();
-			expect(entry?.id).toBe(id);
-			expect(entry?.request).toEqual({ key: 'test1' });
-			expect(entry?.status).toBe('pending');
-			expect(entry?.output).toBeNull();
-			expect(entry?.lastError).toBeNull();
-			expect(entry?.failures).toBe(0);
-			expect(entry?.worker).toBeNull();
-			expect(entry?.created).toBeInstanceOf(Date);
-			expect(entry?.updated).toBeInstanceOf(Date);
+suite.sequential('Driver Tests', async function() {
+	for (const driver in drivers) {
+		const driverConfig = drivers[driver];
+		if (driverConfig === undefined) {
+			throw(new Error(`internal error: Missing driver config for driver '${driver}'`));
 		}
 
-		/* Test that we can set status of an entry */
-		{
-			const id = await queue.add({ key: 'test2' });
-			await queue.setStatus(id, 'processing');
-			const entry = await queue.get(id);
-			expect(entry?.status).toBe('processing');
-
-			await queue.setStatus(id, 'completed', { output: 'result' });
-			const updatedEntry = await queue.get(id);
-			expect(updatedEntry?.status).toBe('completed');
-			expect(updatedEntry?.output).toBe('result');
+		let shouldSkip = false;
+		if (driverConfig.skip !== undefined) {
+			if (typeof driverConfig.skip === 'function') {
+				shouldSkip = await driverConfig.skip();
+			} else {
+				shouldSkip = driverConfig.skip;
+			}
 		}
 
-		/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
-		{
-			const id = await queue.add({ key: 'test3' });
-			await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
-			const entry = await queue.get(id);
-			expect(entry?.status).toBe('processing');
-
-			await expect(queue.setStatus(id, 'completed', { oldStatus: 'pending' })).rejects.toThrow();
-
-			await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
-			const completedEntry = await queue.get(id);
-			expect(completedEntry?.status).toBe('completed');
-		}
-
-		/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
-		{
-			const customID = generateRequestID();
-			const id1 = await queue.add({ key: 'first' }, { id: customID });
-			expect(id1).toBe(customID);
-
-			const id2 = await queue.add({ key: 'second' }, { id: customID });
-			expect(id2).toBe(customID);
-
-			const entry = await queue.get(customID);
-			expect(entry?.request).toEqual({ key: 'first' });
-		}
-
-		/* Test that we can add an entry with parent and it fails if the parent exists with the appropriate error */
-		{
-			const parentID1 = generateRequestID();
-			const parentID2 = generateRequestID();
-			const parentID3 = generateRequestID();
-			await queue.add({ key: 'parent1' }, { id: parentID1 });
-			await queue.add({ key: 'parent2' }, { id: parentID2 });
-			await queue.add({ key: 'parent3' }, { id: parentID3 });
-
-			// Add first child with one parent - should succeed
-			const childID1 = generateRequestID();
-			await queue.add({ key: 'child1' }, { id: childID1, parents: new Set([parentID1]) });
-
-			// Try to add second child with same parent - should fail with parentID1 in parentIDsFound
-			const childID2 = generateRequestID();
-			try {
-				return(await queue.add({ key: 'child2' }, { id: childID2, parents: new Set([parentID1]) }));
-			} catch (error: unknown) {
-				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-				if (!Errors.ParentExistsError.isInstance(error)) {
-					throw(new Error('internal error: Error is not ParentExistsError'));
+		let suiteRunner: typeof suite | typeof suite.skip = suite;
+let running  = false;
+		let testRunner: any = function(...args: Parameters<typeof test.sequential>) {
+			const fn = args[1];
+			// @ts-ignore
+			test.sequential(args[0], async function(...innerArgs) {
+				if (running) {
+					throw(new Error('Driver Tests: Concurrent test execution detected, tests must be run sequentially from: ' + args[0]));
 				}
-
-				expect(error.parentIDsFound).toBeDefined();
-				expect(error.parentIDsFound?.size).toBe(1);
-				expect(error.parentIDsFound?.has(parentID1)).toBe(true);
-			}
-
-			// Add third child with multiple parents where none conflict - should succeed
-			const childID3 = generateRequestID();
-			await queue.add({ key: 'child3' }, { id: childID3, parents: new Set([parentID2, parentID3]) });
-
-			// Try to add fourth child where one parent conflicts - should fail with only conflicting parent in parentIDsFound
-			const childID4 = generateRequestID();
-			const parentID4 = generateRequestID();
-			await queue.add({ key: 'parent4' }, { id: parentID4 });
-			try {
-				return(await queue.add({ key: 'child4' }, { id: childID4, parents: new Set([parentID2, parentID4]) }));
-			} catch (error: unknown) {
-				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-				if (!Errors.ParentExistsError.isInstance(error)) {
-					throw(new Error('internal error: Error is not ParentExistsError'));
+				running = true;
+				console.log(`Driver Tests: Starting test '${args[0]}' for driver '${driver}'`);
+				try {
+					// @ts-ignore
+					return(await fn(...innerArgs));
+				} finally {
+					running = false;
+					console.log(`Driver Tests: Finished test '${args[0]}' for driver '${driver}'`);
 				}
-
-				expect(error.parentIDsFound).toBeDefined();
-				expect(error.parentIDsFound?.size).toBe(1);
-				expect(error.parentIDsFound?.has(parentID2)).toBe(true);
-				expect(error.parentIDsFound?.has(parentID4)).toBe(false);
-			}
-
-			// Try to add fifth child where multiple parents conflict - should fail with all conflicting parents in parentIDsFound
-			const childID5 = generateRequestID();
-			try {
-				await queue.add({ key: 'child5' }, { id: childID5, parents: new Set([parentID1, parentID2, parentID3]) });
-				expect.fail('Should have thrown an error');
-			} catch (error: unknown) {
-				expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-				if (Errors.ParentExistsError.isInstance(error)) {
-					expect(error.parentIDsFound).toBeDefined();
-					expect(error.parentIDsFound?.size).toBe(3);
-					expect(error.parentIDsFound?.has(parentID1)).toBe(true);
-					expect(error.parentIDsFound?.has(parentID2)).toBe(true);
-					expect(error.parentIDsFound?.has(parentID3)).toBe(true);
-				}
-			}
+			}, ...args.slice(2));
+		};
+		if (shouldSkip) {
+			suiteRunner = suite.skip;
+			testRunner = test.skip;
 		}
 
-		/* Test that we can query entries in various ways */
-		{
-			const existingIDs = await queue.query();
-			await queue.add({ key: 'query1' });
-			const id2 = await queue.add({ key: 'query2' });
-			const id3 = await queue.add({ key: 'query3' });
+		suiteRunner(driver, function(): void {
+			suite(`Basic Tests`, async function(): Promise<void> {
+				let queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
+				let driverInstanceDestroy: () => Promise<void>;
+				beforeAll(async function() {
+					const driverInstance = await driverConfig.create('basic_test');
+					queue = driverInstance.queue;
+					driverInstanceDestroy = driverInstance[Symbol.asyncDispose].bind(driverInstance);
+				});
+				afterAll(async function() {
+					await driverInstanceDestroy();
+				});
 
-			await queue.setStatus(id2, 'completed', { output: 'done' });
-			await queue.setStatus(id3, 'failed_temporarily');
+				/* Test that we can add and get an entry */
+				testRunner('Add and Get Entry', async function() {
+					const id = await queue.add({ key: 'test1' });
+					expect(id).toBeDefined();
+					const entry = await queue.get(id);
+					expect(entry).toBeDefined();
+					expect(entry?.id).toBe(id);
+					expect(entry?.request).toEqual({ key: 'test1' });
+					expect(entry?.status).toBe('pending');
+					expect(entry?.output).toBeNull();
+					expect(entry?.lastError).toBeNull();
+					expect(entry?.failures).toBe(0);
+					expect(entry?.worker).toBeNull();
+					expect(entry?.created).toBeInstanceOf(Date);
+					expect(entry?.updated).toBeInstanceOf(Date);
+				});
 
-			const allEntries = await queue.query();
-			expect(allEntries.length).toEqual(existingIDs.length + 3);
+				/* Test that we can set status of an entry */
+				testRunner('Set Status', async function() {
+					const id = await queue.add({ key: 'test2' });
+					await queue.setStatus(id, 'processing');
+					const entry = await queue.get(id);
+					expect(entry?.status).toBe('processing');
 
-			const pendingEntries = await queue.query({ status: 'pending' });
-			expect(pendingEntries.some(function(entry) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const req = entry.request as { key?: string };
-				return(req.key === 'query1');
-			})).toBe(true);
+					await queue.setStatus(id, 'completed', { output: 'result' });
+					const updatedEntry = await queue.get(id);
+					expect(updatedEntry?.status).toBe('completed');
+					expect(updatedEntry?.output).toBe('result');
+				});
 
-			const completedEntries = await queue.query({ status: 'completed' });
-			expect(completedEntries.some(function(entry) {
-				return(entry.id === id2);
-			})).toBe(true);
+				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
+				testRunner('Set Status with oldStatus', async function() {
+					const id = await queue.add({ key: 'test3' });
+					await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
+					const entry = await queue.get(id);
+					expect(entry?.status).toBe('processing');
 
-			const failedEntries = await queue.query({ status: 'failed_temporarily' });
-			expect(failedEntries.some(function(entry) {
-				return(entry.id === id3);
-			})).toBe(true);
+					await expect(queue.setStatus(id, 'completed', { oldStatus: 'pending' })).rejects.toThrow();
 
-			const limitedEntries = await queue.query({ limit: 2 });
-			expect(limitedEntries.length).toBeLessThanOrEqual(2);
+					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
+					const completedEntry = await queue.get(id);
+					expect(completedEntry?.status).toBe('completed');
+				}, 300_000);
 
-			const futureDate = new Date(Date.now() + 100000);
-			const updatedBeforeEntries = await queue.query({ updatedBefore: futureDate });
-			expect(updatedBeforeEntries.length).toBeGreaterThanOrEqual(3);
+				/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
+				testRunner('Idempotent Add', async function() {
+					const customID = generateRequestID();
+					const id1 = await queue.add({ key: 'first' }, { id: customID });
+					expect(id1).toBe(customID);
 
-			const pastDate = new Date(Date.now() - 100000);
-			const noEntriesBeforePast = await queue.query({ updatedBefore: pastDate });
-			expect(noEntriesBeforePast.length).toBe(0);
-		}
+					const id2 = await queue.add({ key: 'second' }, { id: customID });
+					expect(id2).toBe(customID);
 
-		/* Test that mutating the entry results does not affect the stored entry */
-		{
-			const id = await queue.add({ key: 'immutable', nested: { value: 42 }});
-			const entry1 = await queue.get(id);
-			expect(entry1).toBeDefined();
+					const entry = await queue.get(customID);
+					expect(entry?.request).toEqual({ key: 'first' });
+				});
 
-			if (entry1) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const req1 = entry1.request as { key: string; nested: { value: number }};
-				req1.key = 'modified';
-				req1.nested.value = 99;
-				entry1.status = 'completed';
-			}
+				/* Test that we can add an entry with parent and it fails if the parent exists with the appropriate error */
+				testRunner('Add with Parents', async function() {
+					const parentID1 = generateRequestID();
+					const parentID2 = generateRequestID();
+					const parentID3 = generateRequestID();
+					await queue.add({ key: 'parent1' }, { id: parentID1 });
+					await queue.add({ key: 'parent2' }, { id: parentID2 });
+					await queue.add({ key: 'parent3' }, { id: parentID3 });
 
-			const entry2 = await queue.get(id);
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const req2 = entry2?.request as { key: string; nested: { value: number }};
-			expect(req2.key).toBe('immutable');
-			expect(req2.nested.value).toBe(42);
-			expect(entry2?.status).toBe('pending');
+					// Add first child with one parent - should succeed
+					const childID1 = generateRequestID();
+					await queue.add({ key: 'child1' }, { id: childID1, parents: new Set([parentID1]) });
 
-			const entries = await queue.query({ status: 'pending' });
-			if (entries.length > 0 && entries[0]) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const req = entries[0].request as { key: string };
-				req.key = 'altered';
-				entries[0].status = 'aborted';
-			}
-
-			const entry3 = await queue.get(id);
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const req3 = entry3?.request as { key: string };
-			expect(req3.key).toBe('immutable');
-			expect(entry3?.status).toBe('pending');
-		}
-
-		/* Test that errors are recorded in the entry correctly */
-		{
-			const entryID = await queue.add({ key: 'error_test' });
-			await queue.setStatus(entryID, 'failed_temporarily', { error: 'Something went wrong' });
-
-			const entryWithError = await queue.get(entryID);
-			expect(entryWithError?.lastError).toBe('Something went wrong');
-			expect(entryWithError?.status).toBe('failed_temporarily');
-		}
-
-		/* Test that marking a entry as `failed_temporarily` increments the failure count */
-		{
-			const entryID = await queue.add({ key: 'failure_count_test' });
-			const initialEntry = await queue.get(entryID);
-			expect(initialEntry?.failures).toBe(0);
-
-			await queue.setStatus(entryID, 'failed_temporarily');
-			const afterFirstFailure = await queue.get(entryID);
-			expect(afterFirstFailure?.failures).toBe(1);
-
-			await queue.setStatus(entryID, 'pending');
-			await queue.setStatus(entryID, 'failed_temporarily');
-			const afterSecondFailure = await queue.get(entryID);
-			expect(afterSecondFailure?.failures).toBe(2);
-
-			await queue.setStatus(entryID, 'pending');
-			await queue.setStatus(entryID, 'failed_temporarily');
-			const afterThirdFailure = await queue.get(entryID);
-			expect(afterThirdFailure?.failures).toBe(3);
-		}
-
-		/* Test that marking an entry as pending/completed does not reset the failure count */
-		{
-			const entryID = await queue.add({ key: 'failure_persist_test' });
-
-			await queue.setStatus(entryID, 'failed_temporarily');
-			await queue.setStatus(entryID, 'failed_temporarily');
-			const afterFailures = await queue.get(entryID);
-			expect(afterFailures?.failures).toBe(2);
-
-			await queue.setStatus(entryID, 'pending');
-			const afterPending = await queue.get(entryID);
-			expect(afterPending?.failures).toBe(2);
-
-			await queue.setStatus(entryID, 'completed', { output: 'done' });
-			const afterCompleted = await queue.get(entryID);
-			expect(afterCompleted?.failures).toBe(2);
-		}
-
-		/* Test that marking an entry as pending/completed clears the lastError */
-		{
-			const entryID = await queue.add({ key: 'error_clear_test' });
-
-			await queue.setStatus(entryID, 'failed_temporarily', { error: 'First error' });
-			const afterFirstError = await queue.get(entryID);
-			expect(afterFirstError?.lastError).toBe('First error');
-
-			await queue.setStatus(entryID, 'pending');
-			const afterPending = await queue.get(entryID);
-			expect(afterPending?.lastError).toBeNull();
-
-			await queue.setStatus(entryID, 'failed_temporarily', { error: 'Second error' });
-			const afterSecondError = await queue.get(entryID);
-			expect(afterSecondError?.lastError).toBe('Second error');
-
-			await queue.setStatus(entryID, 'completed', { output: 'success' });
-			const afterCompleted = await queue.get(entryID);
-			expect(afterCompleted?.lastError).toBeNull();
-		}
-
-		/* Test that updating the status of a non-existent entry throws an error */
-		{
-			const nonExistentID = generateRequestID();
-
-			await expect(queue.setStatus(nonExistentID, 'completed')).rejects.toThrow();
-		}
-
-		/* Test that the entry `updated` changes when the entry is modified */
-		{
-			const entryID = await queue.add({ key: 'updated_test' });
-			const initialEntry = await queue.get(entryID);
-			expect(initialEntry).toBeDefined();
-			const initialUpdated = initialEntry?.updated;
-			expect(initialUpdated).toBeInstanceOf(Date);
-
-			await asleep(10);
-
-			await queue.setStatus(entryID, 'processing');
-			const afterStatusChange = await queue.get(entryID);
-			const updatedAfterChange = afterStatusChange?.updated;
-			expect(updatedAfterChange).toBeInstanceOf(Date);
-			expect(updatedAfterChange?.getTime()).toBeGreaterThan(initialUpdated?.getTime() ?? 0);
-		}
-
-		/* Test that the entry `created` is not changed */
-		{
-			const entryID = await queue.add({ key: 'created_test' });
-			const initialEntry = await queue.get(entryID);
-			expect(initialEntry).toBeDefined();
-			const initialCreated = initialEntry?.created;
-			expect(initialCreated).toBeInstanceOf(Date);
-
-			await asleep(10);
-
-			await queue.setStatus(entryID, 'processing');
-			const afterFirstChange = await queue.get(entryID);
-			expect(afterFirstChange?.created).toEqual(initialCreated);
-
-			await queue.setStatus(entryID, 'completed', { output: 'result' });
-			const afterSecondChange = await queue.get(entryID);
-			expect(afterSecondChange?.created).toEqual(initialCreated);
-
-			await queue.setStatus(entryID, 'failed_temporarily', { error: 'error' });
-			const afterThirdChange = await queue.get(entryID);
-			expect(afterThirdChange?.created).toEqual(initialCreated);
-		}
-
-		/* Test that many concurrent adds to different keys work correctly */
-		{
-			const concurrentAdds = 50;
-			const addPromises: Promise<KeetaAnchorQueueRequestID>[] = [];
-
-			for (let index = 0; index < concurrentAdds; index++) {
-				addPromises.push(queue.add({ key: `concurrent_add_${index}`, value: index }));
-			}
-
-			const ids = await Promise.all(addPromises);
-			expect(ids).toHaveLength(concurrentAdds);
-
-			const uniqueIDs = new Set(ids);
-			expect(uniqueIDs.size).toBe(concurrentAdds);
-
-			for (let index = 0; index < concurrentAdds; index++) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const entry = await queue.get(ids[index] as KeetaAnchorQueueRequestID);
-				expect(entry).toBeDefined();
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const req = entry?.request as { key: string; value: number };
-				expect(req.key).toMatch(/^concurrent_add_\d+$/);
-				expect(req.value).toBeGreaterThanOrEqual(0);
-				expect(req.value).toBeLessThan(concurrentAdds);
-			}
-		}
-
-		/* Test that after adding a key, many concurrent changes to the same key are handled correctly (i.e., exactly one succeeds when using oldStatus all others fail) */
-		{
-			const entryID = await queue.add({ key: 'concurrent_status_change' });
-			const initialEntry = await queue.get(entryID);
-			expect(initialEntry?.status).toBe('pending');
-
-			const concurrentUpdates = 20;
-			const updatePromises: Promise<{ success: boolean; error?: unknown }>[] = [];
-
-			for (let index = 0; index < concurrentUpdates; index++) {
-				updatePromises.push((async function() {
+					// Try to add second child with same parent - should fail with parentID1 in parentIDsFound
+					const childID2 = generateRequestID();
 					try {
-						await queue.setStatus(entryID, 'processing', { oldStatus: 'pending' });
-						return({ success: true });
+						await queue.add({ key: 'child2' }, { id: childID2, parents: new Set([parentID1]) });
 					} catch (error: unknown) {
-						return({ success: false, error: error });
-					}
-				})());
-			}
-
-			const results = await Promise.all(updatePromises);
-
-			const successCount = results.filter(function(result) {
-				return(result.success);
-			}).length;
-			const failureCount = results.filter(function(result) {
-				return(!result.success);
-			}).length;
-
-			expect(successCount).toBe(1);
-			expect(failureCount).toBe(concurrentUpdates - 1);
-
-			const finalEntry = await queue.get(entryID);
-			expect(finalEntry?.status).toBe('processing');
-		}
-
-		/* Test that inserting new keys with a common parent ID is handled correctly (i.e., only one insert succeeds, others fail with parentIDsFound) */
-		{
-			const parentID = generateRequestID();
-			await queue.add({ key: 'parent' }, { id: parentID });
-
-			const concurrentAdds = 20;
-			const addPromises: Promise<{ success: boolean; id?: KeetaAnchorQueueRequestID | undefined; parentIDsFound?: Set<KeetaAnchorQueueRequestID> | undefined }>[] = [];
-
-			for (let index = 0; index < concurrentAdds; index++) {
-				addPromises.push((async function() {
-					try {
-						const childID = generateRequestID();
-						const id = await queue.add({ key: `child_${index}` }, { id: childID, parents: new Set([parentID]) });
-						return({ success: true, id: id, parentIDsFound: undefined });
-					} catch (error: unknown) {
-						if (Errors.ParentExistsError.isInstance(error)) {
-							return({ success: false, id: undefined, parentIDsFound: error.parentIDsFound });
+						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.ParentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not ParentExistsError'));
 						}
-						throw(error);
+
+						expect(error.parentIDsFound).toBeDefined();
+						expect(error.parentIDsFound?.size).toBe(1);
+						expect(error.parentIDsFound?.has(parentID1)).toBe(true);
 					}
-				})());
+
+					// Add third child with multiple parents where none conflict - should succeed
+					const childID3 = generateRequestID();
+					await queue.add({ key: 'child3' }, { id: childID3, parents: new Set([parentID2, parentID3]) });
+
+					// Try to add fourth child where one parent conflicts - should fail with only conflicting parent in parentIDsFound
+					const childID4 = generateRequestID();
+					const parentID4 = generateRequestID();
+					await queue.add({ key: 'parent4' }, { id: parentID4 });
+					try {
+						await queue.add({ key: 'child4' }, { id: childID4, parents: new Set([parentID2, parentID4]) });
+					} catch (error: unknown) {
+						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.ParentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not ParentExistsError'));
+						}
+
+						expect(error.parentIDsFound).toBeDefined();
+						expect(error.parentIDsFound?.size).toBe(1);
+						expect(error.parentIDsFound?.has(parentID2)).toBe(true);
+						expect(error.parentIDsFound?.has(parentID4)).toBe(false);
+					}
+
+					// Try to add fifth child where multiple parents conflict - should fail with all conflicting parents in parentIDsFound
+					const childID5 = generateRequestID();
+					try {
+						await queue.add({ key: 'child5' }, { id: childID5, parents: new Set([parentID1, parentID2, parentID3]) });
+						expect.fail('Should have thrown an error');
+					} catch (error: unknown) {
+						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
+						if (Errors.ParentExistsError.isInstance(error)) {
+							expect(error.parentIDsFound).toBeDefined();
+							expect(error.parentIDsFound?.size).toBe(3);
+							expect(error.parentIDsFound?.has(parentID1)).toBe(true);
+							expect(error.parentIDsFound?.has(parentID2)).toBe(true);
+							expect(error.parentIDsFound?.has(parentID3)).toBe(true);
+						}
+					}
+				});
+
+				/* Test that we can query entries in various ways */
+				testRunner('Query Entries', async function() {
+					const existingIDs = await queue.query();
+					await queue.add({ key: 'query1' });
+					const id2 = await queue.add({ key: 'query2' });
+					const id3 = await queue.add({ key: 'query3' });
+
+					await queue.setStatus(id2, 'completed', { output: 'done' });
+					await queue.setStatus(id3, 'failed_temporarily');
+
+					const allEntries = await queue.query();
+					expect(allEntries.length).toEqual(existingIDs.length + 3);
+
+					const pendingEntries = await queue.query({ status: 'pending' });
+					expect(pendingEntries.some(function(entry) {
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						const req = entry.request as { key?: string };
+						return(req.key === 'query1');
+					})).toBe(true);
+
+					const completedEntries = await queue.query({ status: 'completed' });
+					expect(completedEntries.some(function(entry) {
+						return(entry.id === id2);
+					})).toBe(true);
+
+					const failedEntries = await queue.query({ status: 'failed_temporarily' });
+					expect(failedEntries.some(function(entry) {
+						return(entry.id === id3);
+					})).toBe(true);
+
+					const limitedEntries = await queue.query({ limit: 2 });
+					expect(limitedEntries.length).toBeLessThanOrEqual(2);
+
+					const futureDate = new Date(Date.now() + 100000);
+					const updatedBeforeEntries = await queue.query({ updatedBefore: futureDate });
+					expect(updatedBeforeEntries.length).toBeGreaterThanOrEqual(3);
+
+					const pastDate = new Date(Date.now() - 100000);
+					const noEntriesBeforePast = await queue.query({ updatedBefore: pastDate });
+					expect(noEntriesBeforePast.length).toBe(0);
+				});
+
+				/* Test that mutating the entry results does not affect the stored entry */
+				testRunner('Entry Immutability', async function() {
+					const id = await queue.add({ key: 'immutable', nested: { value: 42 }});
+					const entry1 = await queue.get(id);
+					expect(entry1).toBeDefined();
+
+					if (entry1) {
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						const req1 = entry1.request as { key: string; nested: { value: number }};
+						req1.key = 'modified';
+						req1.nested.value = 99;
+						entry1.status = 'completed';
+					}
+
+					const entry2 = await queue.get(id);
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					const req2 = entry2?.request as { key: string; nested: { value: number }};
+					expect(req2.key).toBe('immutable');
+					expect(req2.nested.value).toBe(42);
+					expect(entry2?.status).toBe('pending');
+
+					const entries = await queue.query({ status: 'pending' });
+					if (entries.length > 0 && entries[0]) {
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						const req = entries[0].request as { key: string };
+						req.key = 'altered';
+						entries[0].status = 'aborted';
+					}
+
+					const entry3 = await queue.get(id);
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					const req3 = entry3?.request as { key: string };
+					expect(req3.key).toBe('immutable');
+					expect(entry3?.status).toBe('pending');
+				});
+
+				/* Test that errors are recorded in the entry correctly */
+				testRunner('Error Recording', async function() {
+					const entryID = await queue.add({ key: 'error_test' });
+					await queue.setStatus(entryID, 'failed_temporarily', { error: 'Something went wrong' });
+
+					const entryWithError = await queue.get(entryID);
+					expect(entryWithError?.lastError).toBe('Something went wrong');
+					expect(entryWithError?.status).toBe('failed_temporarily');
+				});
+
+				/* Test that marking a entry as `failed_temporarily` increments the failure count */
+				testRunner('Failure Count Increment', async function() {
+					const entryID = await queue.add({ key: 'failure_count_test' });
+					const initialEntry = await queue.get(entryID);
+					expect(initialEntry?.failures).toBe(0);
+
+					await queue.setStatus(entryID, 'failed_temporarily');
+					const afterFirstFailure = await queue.get(entryID);
+					expect(afterFirstFailure?.failures).toBe(1);
+
+					await queue.setStatus(entryID, 'pending');
+					await queue.setStatus(entryID, 'failed_temporarily');
+					const afterSecondFailure = await queue.get(entryID);
+					expect(afterSecondFailure?.failures).toBe(2);
+
+					await queue.setStatus(entryID, 'pending');
+					await queue.setStatus(entryID, 'failed_temporarily');
+					const afterThirdFailure = await queue.get(entryID);
+					expect(afterThirdFailure?.failures).toBe(3);
+				});
+
+				/* Test that marking an entry as pending/completed does not reset the failure count */
+				testRunner('Failure Count Persistence', async function() {
+					const entryID = await queue.add({ key: 'failure_persist_test' });
+
+					await queue.setStatus(entryID, 'failed_temporarily');
+					await queue.setStatus(entryID, 'failed_temporarily');
+					const afterFailures = await queue.get(entryID);
+					expect(afterFailures?.failures).toBe(2);
+
+					await queue.setStatus(entryID, 'pending');
+					const afterPending = await queue.get(entryID);
+					expect(afterPending?.failures).toBe(2);
+
+					await queue.setStatus(entryID, 'completed', { output: 'done' });
+					const afterCompleted = await queue.get(entryID);
+					expect(afterCompleted?.failures).toBe(2);
+				});
+
+				/* Test that marking an entry as pending/completed clears the lastError */
+				testRunner('Error Clearing', async function() {
+					const entryID = await queue.add({ key: 'error_clear_test' });
+
+					await queue.setStatus(entryID, 'failed_temporarily', { error: 'First error' });
+					const afterFirstError = await queue.get(entryID);
+					expect(afterFirstError?.lastError).toBe('First error');
+
+					await queue.setStatus(entryID, 'pending');
+					const afterPending = await queue.get(entryID);
+					expect(afterPending?.lastError).toBeNull();
+
+					await queue.setStatus(entryID, 'failed_temporarily', { error: 'Second error' });
+					const afterSecondError = await queue.get(entryID);
+					expect(afterSecondError?.lastError).toBe('Second error');
+
+					await queue.setStatus(entryID, 'completed', { output: 'success' });
+					const afterCompleted = await queue.get(entryID);
+					expect(afterCompleted?.lastError).toBeNull();
+				});
+
+				/* Test that updating the status of a non-existent entry throws an error */
+				testRunner('Set Status Non-Existent Entry', async function() {
+					const nonExistentID = generateRequestID();
+
+					await expect(queue.setStatus(nonExistentID, 'completed')).rejects.toThrow();
+				});
+
+				/* Test that the entry `updated` changes when the entry is modified */
+				testRunner('Updated Timestamp Change', async function() {
+					const entryID = await queue.add({ key: 'updated_test' });
+					const initialEntry = await queue.get(entryID);
+					expect(initialEntry).toBeDefined();
+					const initialUpdated = initialEntry?.updated;
+					expect(initialUpdated).toBeInstanceOf(Date);
+
+					await asleep(10);
+
+					await queue.setStatus(entryID, 'processing');
+					const afterStatusChange = await queue.get(entryID);
+					const updatedAfterChange = afterStatusChange?.updated;
+					expect(updatedAfterChange).toBeInstanceOf(Date);
+					expect(updatedAfterChange?.getTime()).toBeGreaterThan(initialUpdated?.getTime() ?? 0);
+				});
+
+				/* Test that the entry `created` is not changed */
+				testRunner('Created Timestamp Immutability', async function() {
+					const entryID = await queue.add({ key: 'created_test' });
+					const initialEntry = await queue.get(entryID);
+					expect(initialEntry).toBeDefined();
+					const initialCreated = initialEntry?.created;
+					expect(initialCreated).toBeInstanceOf(Date);
+
+					await asleep(10);
+
+					await queue.setStatus(entryID, 'processing');
+					const afterFirstChange = await queue.get(entryID);
+					expect(afterFirstChange?.created).toEqual(initialCreated);
+
+					await queue.setStatus(entryID, 'completed', { output: 'result' });
+					const afterSecondChange = await queue.get(entryID);
+					expect(afterSecondChange?.created).toEqual(initialCreated);
+
+					await queue.setStatus(entryID, 'failed_temporarily', { error: 'error' });
+					const afterThirdChange = await queue.get(entryID);
+					expect(afterThirdChange?.created).toEqual(initialCreated);
+				});
+
+				/* Test that many concurrent adds to different keys work correctly */
+				testRunner('Concurrent Adds', async function() {
+					const concurrentAdds = 50;
+					const addPromises: Promise<KeetaAnchorQueueRequestID>[] = [];
+
+					for (let index = 0; index < concurrentAdds; index++) {
+						addPromises.push(queue.add({ key: `concurrent_add_${index}`, value: index }));
+					}
+
+					const ids = await Promise.all(addPromises);
+					expect(ids).toHaveLength(concurrentAdds);
+
+					const uniqueIDs = new Set(ids);
+					expect(uniqueIDs.size).toBe(concurrentAdds);
+
+					for (let index = 0; index < concurrentAdds; index++) {
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						const entry = await queue.get(ids[index] as KeetaAnchorQueueRequestID);
+						expect(entry).toBeDefined();
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						const req = entry?.request as { key: string; value: number };
+						expect(req.key).toMatch(/^concurrent_add_\d+$/);
+						expect(req.value).toBeGreaterThanOrEqual(0);
+						expect(req.value).toBeLessThan(concurrentAdds);
+					}
+				}, 60_000);
+
+				/* Test that after adding a key, many concurrent changes to the same key are handled correctly (i.e., exactly one succeeds when using oldStatus all others fail) */
+				testRunner('Concurrent Status Changes', async function() {
+					const entryID = await queue.add({ key: 'concurrent_status_change' });
+					const initialEntry = await queue.get(entryID);
+					expect(initialEntry?.status).toBe('pending');
+
+					const concurrentUpdates = 20;
+					const updatePromises: Promise<{ success: boolean; error?: unknown }>[] = [];
+
+					for (let index = 0; index < concurrentUpdates; index++) {
+						updatePromises.push((async function() {
+							try {
+								await queue.setStatus(entryID, 'processing', { oldStatus: 'pending' });
+								return({ success: true });
+							} catch (error: unknown) {
+								return({ success: false, error: error });
+							}
+						})());
+					}
+
+					const results = await Promise.all(updatePromises);
+
+					const successCount = results.filter(function(result) {
+						return(result.success);
+					}).length;
+					const failureCount = results.filter(function(result) {
+						return(!result.success);
+					}).length;
+
+					expect(successCount).toBe(1);
+					expect(failureCount).toBe(concurrentUpdates - 1);
+
+					const finalEntry = await queue.get(entryID);
+					expect(finalEntry?.status).toBe('processing');
+				}, 60_000);
+
+				/* Test that inserting new keys with a common parent ID is handled correctly (i.e., only one insert succeeds, others fail with parentIDsFound) */
+				testRunner('Concurrent Adds with Common Parent', async function() {
+					const parentID = generateRequestID();
+					await queue.add({ key: 'parent' }, { id: parentID });
+
+					const concurrentAdds = 20;
+					const addPromises: Promise<{ success: boolean; id?: KeetaAnchorQueueRequestID | undefined; parentIDsFound?: Set<KeetaAnchorQueueRequestID> | undefined }>[] = [];
+
+					for (let index = 0; index < concurrentAdds; index++) {
+						addPromises.push((async function() {
+							try {
+								const childID = generateRequestID();
+								const id = await queue.add({ key: `child_${index}` }, { id: childID, parents: new Set([parentID]) });
+								return({ success: true, id: id, parentIDsFound: undefined });
+							} catch (error: unknown) {
+								if (Errors.ParentExistsError.isInstance(error)) {
+									return({ success: false, id: undefined, parentIDsFound: error.parentIDsFound });
+								}
+								throw(error);
+							}
+						})());
+					}
+
+					const results = await Promise.all(addPromises);
+
+					const successCount = results.filter(function(result) {
+						return(result.success);
+					}).length;
+					const failureCount = results.filter(function(result) {
+						return(!result.success);
+					}).length;
+
+					expect(successCount).toBe(1);
+					expect(failureCount).toBe(concurrentAdds - 1);
+
+					for (const result of results) {
+						if (!result.success) {
+							expect(result.parentIDsFound).toBeDefined();
+							expect(result.parentIDsFound?.size).toBe(1);
+							expect(result.parentIDsFound?.has(parentID)).toBe(true);
+						}
+					}
+				}, 60_000);
+			});
+
+			if (driverConfig.persistent) {
+				testRunner('Persistence Tests', async function() {
+					const id1 = await (async function() {
+						await using driverInstance = await driverConfig.create('persistence_test', { leave: true });
+						const queue = driverInstance.queue;
+
+						const id = await queue.add({ foo: 'bar' });
+						return(id);
+					})();
+
+					const entry = await (async function() {
+						await using driverInstance = await driverConfig.create('persistence_test');
+						const queue = driverInstance.queue;
+						const entry = await queue.get(id1);
+						return(entry);
+					})();
+
+					expect(entry).toBeDefined();
+					expect(entry?.request).toEqual({ foo: 'bar' });
+					expect(entry?.status).toBe('pending');
+					expect(entry?.id).toBe(id1);
+				});
 			}
-
-			const results = await Promise.all(addPromises);
-
-			const successCount = results.filter(function(result) {
-				return(result.success);
-			}).length;
-			const failureCount = results.filter(function(result) {
-				return(!result.success);
-			}).length;
-
-			expect(successCount).toBe(1);
-			expect(failureCount).toBe(concurrentAdds - 1);
-
-			for (const result of results) {
-				if (!result.success) {
-					expect(result.parentIDsFound).toBeDefined();
-					expect(result.parentIDsFound?.size).toBe(1);
-					expect(result.parentIDsFound?.has(parentID)).toBe(true);
-				}
-			}
-		}
-	});
-
-	if (driverConfig.persistent) {
-		testRunner(`Queue Storage Driver Persistence Tests (${driver})`, async function() {
-			const id1 = await (async function() {
-				await using driverInstance = await driverConfig.create('persistence_test', { leave: true });
-				const queue = driverInstance.queue;
-
-				const id = await queue.add({ foo: 'bar' });
-				return(id);
-			})();
-
-			const entry = await (async function() {
-				await using driverInstance = await driverConfig.create('persistence_test');
-				const queue = driverInstance.queue;
-				const entry = await queue.get(id1);
-				return(entry);
-			})();
-
-			expect(entry).toBeDefined();
-			expect(entry?.request).toEqual({ foo: 'bar' });
-			expect(entry?.status).toBe('pending');
-			expect(entry?.id).toBe(id1);
 		});
 	}
-}
+});
