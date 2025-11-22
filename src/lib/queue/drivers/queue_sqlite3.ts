@@ -186,30 +186,33 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 		const db = dbConnection.db;
 		const logger = this.methodLogger(className);
 
-		logger?.debug('Starting DB transaction');
-		await db.run('BEGIN TRANSACTION');
-		logger?.debug('DB transaction started');
+		const result = await this.runWithBusyHandler(async function() {
+			logger?.debug('Starting DB transaction');
+			await db.run('BEGIN TRANSACTION');
+			logger?.debug('DB transaction started');
 
-		try {
-			const result = await this.runWithBusyHandler(async function() {
-				return(await fn(db, logger));
-			});
-
-			logger?.debug('Committing DB transaction');
-			await db.run('COMMIT');
-			logger?.debug('DB transaction committed');
-			return(result);
-		} catch (error: unknown) {
 			try {
-				logger?.debug('Rolling back DB transaction due to error:', error);
-				await db.run('ROLLBACK');
-				logger?.debug('DB transaction rolled back');
-			} catch {
-				logger?.debug('Error rolling back DB transaction !!');
-				/* Ignore rollback errors */
+				const retval = await fn(db, logger);
+
+				logger?.debug('Committing DB transaction');
+				await db.run('COMMIT');
+				logger?.debug('DB transaction committed');
+
+				return(retval);
+			} catch (error: unknown) {
+				try {
+					logger?.debug('Rolling back DB transaction due to error:', error);
+					await db.run('ROLLBACK');
+					logger?.debug('DB transaction rolled back');
+				} catch {
+					logger?.debug('Error rolling back DB transaction !!');
+					/* Ignore rollback errors */
+				}
+				throw(error);
 			}
-			throw(error);
-		}
+		});
+
+		return(result);
 	}
 
 	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
