@@ -181,9 +181,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
  * An in-memory implementation of the KeetaAnchorQueueStorageDriver
  */
 export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-	protected queueStorage: {
-		[path: string]: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[];
-	} = {};
+	protected queueStorage: { [path: string]: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]; } = {};
 	protected readonly logger?: Logger | undefined;
 	protected partitionCounter = 0;
 	private destroyed = false;

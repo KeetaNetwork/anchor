@@ -112,7 +112,7 @@ const drivers: {
 						for (const addFileSuffix of ['', '-shm', '-wal']) {
 							try {
 								fs.unlinkSync(`${filePath}${addFileSuffix}`);
-							} catch (error) {
+							} catch {
 								/* Ignore */
 							}
 						}
@@ -987,7 +987,7 @@ suite.sequential('Driver Tests', async function() {
 
 						async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
 							const value = await queueToCheck.get(id);
-							expect(value).toBeNull;
+							expect(value).toBeNull();
 						}
 
 						const entry1 = await queue.get(id1);

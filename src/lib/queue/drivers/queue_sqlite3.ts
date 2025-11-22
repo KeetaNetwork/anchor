@@ -124,6 +124,11 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				this.methodLogger('runWithBusyHandler')?.debug('Aborting DB operation retries because the instance was destroyed');
 
 				if (lastError !== undefined) {
+					/*
+					 * TypeScript does not know what the error is, but it's whatever we caught,
+					 * so it must be something our caller expects
+					 */
+					// eslint-disable-next-line @typescript-eslint/only-throw-error
 					throw(lastError);
 				}
 				throw(new Error('Aborting because the instance was destroyed'));
