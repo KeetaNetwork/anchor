@@ -36,9 +36,6 @@ type ParentRow = {
 	parent_id: string;
 };
 
-let idSeqNumber = 0;
-const openConnections = new Set<number>();
-
 export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
 	private readonly logger: Logger | undefined;
 	private dbInternal: (() => Promise<sqlite.Database>) | null = null;
@@ -47,12 +44,14 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 	readonly name = 'KeetaAnchorQueueStorageDriverSQLite3';
 	readonly id: string;
 	readonly path: string[] = [];
+	private readonly pathStr: string;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
+		this.pathStr = ['root', this.path].join('.');
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -75,7 +74,8 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 		this.methodLogger('initializeDBConnection')?.debug('Initializing DB schema for queue storage driver');
 		await db.exec(`
 			CREATE TABLE IF NOT EXISTS queue_entries (
-				id TEXT PRIMARY KEY,
+				id TEXT NOT NULL,
+				path TEXT NOT NULL,
 				request TEXT NOT NULL,
 				output TEXT,
 				lastError TEXT,
@@ -83,14 +83,17 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				created INTEGER NOT NULL,
 				updated INTEGER NOT NULL,
 				worker INTEGER,
-				failures INTEGER NOT NULL DEFAULT 0
+				failures INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (id, path)
 			);
 
 			CREATE TABLE IF NOT EXISTS queue_parents (
 				entry_id TEXT NOT NULL,
-				parent_id TEXT NOT NULL UNIQUE,
-				PRIMARY KEY (entry_id, parent_id),
-				FOREIGN KEY (entry_id) REFERENCES queue_entries(id)
+				parent_id TEXT NOT NULL,
+				path TEXT NOT NULL,
+				UNIQUE (parent_id, path),
+				PRIMARY KEY (entry_id, parent_id, path),
+				FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
@@ -117,6 +120,15 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 		let lastError: unknown;
 		for (let retry = 0; retry < 100; retry++) {
+			if (this.dbInternal === null) {
+				this.methodLogger('runWithBusyHandler')?.debug('Aborting DB operation retries because the instance was destroyed');
+
+				if (lastError !== undefined) {
+					throw(lastError);
+				}
+				throw(new Error('Aborting because the instance was destroyed'));
+			}
+
 			try {
 				return(await fn());
 			} catch (error: unknown) {
@@ -125,17 +137,17 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				if (error instanceof Error) {
 					if (error.message.includes('SQLITE_BUSY') || error.message.includes('SQLITE_LOCKED')) {
 						logger?.debug('Database is busy or locked');
+
+						const minBackoff = 100;
+						const maxBackoff = 30_000;
+						const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
+						const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
+
+						this.methodLogger('runWithBusyHandler')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) (interval size: ${backoffIntervalSize}ms, min: ${minBackoff}ms, max: ${maxBackoff}ms) from`, new Error().stack);
+						await asleep(backoff);
+
+						continue;
 					}
-
-					const minBackoff = 100;
-					const maxBackoff = 30_000;
-					const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
-					const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
-
-					this.methodLogger('runWithBusyHandler')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) (interval size: ${backoffIntervalSize}ms, min: ${minBackoff}ms, max: ${maxBackoff}ms) from`, new Error().stack);
-					await asleep(backoff);
-
-					continue;
 				}
 
 				throw(error);
@@ -155,18 +167,14 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 					throw(new Error('Database connection is not available'));
 				}
 
-				const dbConnectionID = idSeqNumber++;
-				this.methodLogger('newDBConnection')?.debug(`Opening new DB connection (${dbConnectionID}) from`, new Error().stack);
+				this.methodLogger('newDBConnection')?.debug('Opening new DB connection');
 				const db = await this.dbInternal();
-				openConnections.add(dbConnectionID);
 
 				return({
 					db: await this.initializeDBConnection(db),
 					[Symbol.asyncDispose]: async (): Promise<void> => {
-						this.methodLogger('dbConnectionDispose')?.debug(`Closing DB connection ${dbConnectionID}, currently open connections:`, openConnections.values());
-						const database = db;
-						await database.close();
-						openConnections.delete(dbConnectionID);
+						this.methodLogger('dbConnectionDispose')?.debug('Closing DB connection');
+						await db.close();
 					}
 				});
 			}));
@@ -208,7 +216,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 		return(await this.dbTransaction('add', async (db, logger): Promise<KeetaAnchorQueueRequestID> => {
 			let entryID = info?.id;
 			if (entryID) {
-				const existingEntry = await db.get<{ id: string }>('SELECT id FROM queue_entries WHERE id = ?', entryID);
+				const existingEntry = await db.get<{ id: string }>('SELECT id FROM queue_entries WHERE id = ? AND path = ?', entryID, this.pathStr);
 				if (existingEntry) {
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
@@ -220,8 +228,8 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				const matchingParentEntries = new Set<KeetaAnchorQueueRequestID>();
 				for (const parentID of parentIDs) {
 					const parentEntryExists = await db.get<ParentRow>(
-						'SELECT parent_id FROM queue_parents WHERE parent_id = ?',
-						parentID
+						'SELECT parent_id FROM queue_parents WHERE parent_id = ? AND path = ?',
+						parentID, this.pathStr
 					);
 					if (parentEntryExists) {
 						matchingParentEntries.add(parentID);
@@ -243,9 +251,10 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 			try {
 				await db.run(
-					`INSERT INTO queue_entries (id, request, output, lastError, status, created, updated, worker, failures)
-					 VALUES (?, ?, NULL, NULL, 'pending', ?, ?, NULL, 0)`,
+					`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
+					 VALUES (?, ?, ?, NULL, NULL, 'pending', ?, ?, NULL, 0)`,
 					entryID,
+					this.pathStr,
 					requestJSON,
 					currentTime,
 					currentTime
@@ -253,7 +262,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 				if (parentIDs && parentIDs.size > 0) {
 					for (const parentID of parentIDs) {
-						await db.run('INSERT INTO queue_parents (entry_id, parent_id) VALUES (?, ?)', entryID, parentID);
+						await db.run('INSERT INTO queue_parents (entry_id, path, parent_id) VALUES (?, ?, ?)', entryID, this.pathStr, parentID);
 					}
 				}
 			} catch (error: unknown) {
@@ -271,7 +280,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 		const { oldStatus, by, output } = ancillary ?? {};
 
 		return(await this.dbTransaction('setStatus', async (db, logger): Promise<void> => {
-			const existingEntry = await db.get<{ status: KeetaAnchorQueueStatus; failures: number; lastError: string | null; output: string | null }>('SELECT status, failures, lastError, output FROM queue_entries WHERE id = ?', id);
+			const existingEntry = await db.get<{ status: KeetaAnchorQueueStatus; failures: number; lastError: string | null; output: string | null }>('SELECT status, failures, lastError, output FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 			if (!existingEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
@@ -314,19 +323,19 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			if (oldStatus) {
 				updateQuery = `UPDATE queue_entries
 				               SET status = ?, updated = ?, worker = ?, failures = ?, lastError = ?, output = ?
-				               WHERE id = ? AND status = ?`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, oldStatus];
+				               WHERE id = ? AND path = ? AND status = ?`;
+				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr, oldStatus];
 			} else {
 				updateQuery = `UPDATE queue_entries
 				               SET status = ?, updated = ?, worker = ?, failures = ?, lastError = ?, output = ?
-				               WHERE id = ?`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id];
+				               WHERE id = ? AND path = ?`;
+				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr];
 			}
 
 			const result = await db.run(updateQuery, ...updateParams);
 
 			if (oldStatus && result.changes === 0) {
-				const currentEntry = await db.get<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = ?', id);
+				const currentEntry = await db.get<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 				if (currentEntry) {
 					throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
 				} else {
@@ -340,8 +349,8 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 		return(await this.dbTransaction('get', async (db): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> => {
 			const row = await db.get<QueueEntryRow>(
 				`SELECT id, request, output, lastError, status, created, updated, worker, failures
-				 FROM queue_entries WHERE id = ?`,
-				id
+				 FROM queue_entries WHERE id = ? AND path = ?`,
+				id, this.pathStr
 			);
 
 			if (!row) {
@@ -349,8 +358,8 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			}
 
 			const parentRows = await db.all<ParentRow[]>(
-				'SELECT parent_id FROM queue_parents WHERE entry_id = ?',
-				id
+				'SELECT parent_id FROM queue_parents WHERE entry_id = ? AND path = ?',
+				id, this.pathStr
 			);
 
 			const parents = parentRows.length > 0
@@ -386,6 +395,9 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			const conditions: string[] = [];
 			const params: (string | number)[] = [];
 
+			conditions.push('path = ?');
+			params.push(this.pathStr);
+
 			if (filter?.status) {
 				conditions.push('status = ?');
 				params.push(filter.status);
@@ -413,8 +425,8 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 			for (const row of rows) {
 				const parentRows = await db.all<ParentRow[]>(
-					'SELECT parent_id FROM queue_parents WHERE entry_id = ?',
-					row.id
+					'SELECT parent_id FROM queue_parents WHERE entry_id = ? AND path = ?',
+					row.id, this.pathStr
 				);
 
 				const parents = parentRows.length > 0
@@ -451,7 +463,18 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
-		throw(new Error('Partitioning is not supported for SQLite3 queue storage driver'));
+		if (this.dbInternal === null) {
+			throw(new Error('Asked to partition the instance has been destroyed'));
+		}
+
+		const retval = new KeetaAnchorQueueStorageDriverSQLite3<REQUEST, RESPONSE>({
+			id: `${this.id}::${path}`,
+			logger: this.logger,
+			db: this.dbInternal,
+			path: [...this.path, path]
+		});
+
+		return(retval);
 	}
 
 	async destroy(): Promise<void> {

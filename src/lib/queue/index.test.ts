@@ -1,4 +1,4 @@
-import { test, expect, suite, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { test, expect, suite, beforeAll, afterAll, vi } from 'vitest';
 import type { Logger } from '../log/index.ts';
 import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
@@ -527,25 +527,7 @@ suite.sequential('Driver Tests', async function() {
 		}
 
 		let suiteRunner: typeof suite | typeof suite.skip = suite;
-let running  = false;
-		let testRunner: any = function(...args: Parameters<typeof test.sequential>) {
-			const fn = args[1];
-			// @ts-ignore
-			test.sequential(args[0], async function(...innerArgs) {
-				if (running) {
-					throw(new Error('Driver Tests: Concurrent test execution detected, tests must be run sequentially from: ' + args[0]));
-				}
-				running = true;
-				console.log(`Driver Tests: Starting test '${args[0]}' for driver '${driver}'`);
-				try {
-					// @ts-ignore
-					return(await fn(...innerArgs));
-				} finally {
-					running = false;
-					console.log(`Driver Tests: Finished test '${args[0]}' for driver '${driver}'`);
-				}
-			}, ...args.slice(2));
-		};
+		let testRunner: typeof test | typeof test.skip = test;
 		if (shouldSkip) {
 			suiteRunner = suite.skip;
 			testRunner = test.skip;
@@ -601,7 +583,9 @@ let running  = false;
 					const entry = await queue.get(id);
 					expect(entry?.status).toBe('processing');
 
-					await expect(queue.setStatus(id, 'completed', { oldStatus: 'pending' })).rejects.toThrow();
+					await expect(async function() {
+						return(await queue.setStatus(id, 'completed', { oldStatus: 'pending' }));
+					}).rejects.toThrow();
 
 					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
 					const completedEntry = await queue.get(id);
@@ -992,34 +976,63 @@ let running  = false;
 
 				/* Test that partitioning works and we can add and get entries from different partitions */
 				testRunner('Partitioning', async function() {
+					/* Ensure we can add and get from different partitions and they do not conflict */
 					const id1 = await queue.add({ key: 'partition_test_1' });
-					const partition1 = await queue.partition('partition1');
-					const partition2 = await queue.partition('partition2');
-					const id2 = await partition1.add({ key: 'partition_test_2' });
-					const id3 = await partition2.add({ key: 'partition_test_3' });
+					let id2: typeof id1;
+					{
+						await using partition1 = await queue.partition('partition1');
+						await using partition2 = await queue.partition('partition2');
+						id2 = await partition1.add({ key: 'partition_test_2' });
+						const id3 = await partition2.add({ key: 'partition_test_3' });
 
-					async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
-						const value = await queueToCheck.get(id);
-						expect(value).toBeNull;
+						async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
+							const value = await queueToCheck.get(id);
+							expect(value).toBeNull;
+						}
+
+						const entry1 = await queue.get(id1);
+						expect(entry1?.request).toEqual({ key: 'partition_test_1' });
+						const entry2 = await partition1.get(id2);
+						expect(entry2?.request).toEqual({ key: 'partition_test_2' });
+						const entry3 = await partition2.get(id3);
+						expect(entry3?.request).toEqual({ key: 'partition_test_3' });
+
+						await shouldNotHave(partition1, id1);
+						await shouldNotHave(partition2, id1);
+						await shouldNotHave(queue, id2);
+						await shouldNotHave(partition2, id2);
+						await shouldNotHave(queue, id3);
+						await shouldNotHave(partition1, id3);
+
+						/* Ensure we can access the partition while the parent queue is still in use */
+						const partition1_again = await queue.partition('partition1');
+						const entry2_again = await partition1_again.get(id2);
+						expect(entry2_again?.request).toEqual({ key: 'partition_test_2' });
 					}
 
-					const entry1 = await queue.get(id1);
-					expect(entry1?.request).toEqual({ key: 'partition_test_1' });
-					const entry2 = await partition1.get(id2);
-					expect(entry2?.request).toEqual({ key: 'partition_test_2' });
-					const entry3 = await partition2.get(id3);
-					expect(entry3?.request).toEqual({ key: 'partition_test_3' });
+					/* Ensure we can access the partition again after all access has been closed */
+					{
+						const partition1_again = await queue.partition('partition1');
+						const entry2_again = await partition1_again.get(id2);
+						expect(entry2_again?.request).toEqual({ key: 'partition_test_2' });
+					}
 
-					await shouldNotHave(partition1, id1);
-					await shouldNotHave(partition2, id1);
-					await shouldNotHave(queue, id2);
-					await shouldNotHave(partition2, id2);
-					await shouldNotHave(queue, id3);
-					await shouldNotHave(partition1, id3);
+					/* Ensure we can use the same ID in two different partitions and they do not conflict */
+					{
+						await using partition3 = await queue.partition('partition3');
 
-					const partition1_again = await queue.partition('partition1');
-					const entry2_again = await partition1_again.get(id2);
-					expect(entry2_again?.request).toEqual({ key: 'partition_test_2' });
+						const entry1 = await queue.get(id1);
+						expect(entry1?.request).toEqual({ key: 'partition_test_1' });
+
+						const id1_again = await partition3.add({ key: 'partition_test_1_again' }, { id: id1 });
+						expect(id1_again).toBe(id1);
+
+						const entry1_again = await queue.get(id1_again);
+						expect(entry1_again?.request).toEqual({ key: 'partition_test_1' });
+
+						const entry1_partition = await partition3.get(id1);
+						expect(entry1_partition?.request).toEqual({ key: 'partition_test_1_again' });
+					}
 				});
 			});
 
