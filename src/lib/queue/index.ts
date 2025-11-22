@@ -47,7 +47,12 @@ export type KeetaAnchorQueueFilter = {
 	limit?: number;
 };
 
-export type KeetaAnchorQueueRunnerOptions = {
+export type KeetaAnchorQueueCommonOptions = {
+	logger?: Logger | undefined;
+	id?: string | undefined;
+};
+
+export type KeetaAnchorQueueRunnerOptions = KeetaAnchorQueueCommonOptions & {
 	/**
 	 * If specified, then multiple workers can be used to process this queue
 	 * in parallel by splitting the work among the workers.
@@ -57,12 +62,11 @@ export type KeetaAnchorQueueRunnerOptions = {
 	workers?: {
 		count: number;
 		id: number;
-	}
+	} | undefined;
 };
 
-export type KeetaAnchorQueueStorageOptions = {
-	logger?: Logger | undefined;
-	id?: string | undefined;
+export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
+	path?: string[] | undefined;
 };
 
 export type KeetaAnchorQueueEntryAncillaryData<RESPONSE> = {
@@ -97,6 +101,17 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * The name of the storage driver
 	 */
 	readonly name: string;
+
+	/**
+	 * The partition ID for this instance of the storage driver
+	 *
+	 * This is used to divide a single storage backend into multiple
+	 * independent queues.
+	 *
+	 * The root partition is an empty array, and each element is
+	 * a heirarchical partition name.
+	 */
+	readonly path: string[];
 
 	/**
 	 * Enqueue an item to be processed by the queue
@@ -148,6 +163,14 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	maintain?: () => Promise<void>;
 
 	/**
+	 * Create a partitioned view of the queue
+	 *
+	 * @param partitionID The partition ID to use
+	 * @returns A new storage driver instance for the partition
+	 */
+	partition: (path: string) => Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>>;
+
+	/**
 	 * Close the storage driver and release any resources
 	 */
 	destroy(): Promise<void>;
@@ -158,17 +181,44 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
  * An in-memory implementation of the KeetaAnchorQueueStorageDriver
  */
 export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-	protected readonly queue: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
+	protected queueStorage: {
+		[path: string]: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[];
+	} = {};
 	protected readonly logger?: Logger | undefined;
+	protected partitionCounter = 0;
 	private destroyed = false;
 	readonly name: string = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
+	readonly path: string[] = [];
 
 	constructor(options?: KeetaAnchorQueueStorageOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
+		this.path.push(...(options?.path ?? []));
+		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Created new in-memory queue storage driver');
+	}
+
+	protected clone(options?: Partial<KeetaAnchorQueueStorageOptions>): KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
+		const cloned = new KeetaAnchorQueueStorageDriverMemory<REQUEST, RESPONSE>({
+			logger: this.logger,
+			id: `${this.id}::${this.partitionCounter++}`,
+			path: [...this.path],
+			...options
+		});
+		cloned.queueStorage = this.queueStorage;
+
+		return(cloned);
+	}
+
+	protected get queue(): KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] {
+		const pathKey = ['root', ...this.path].join('.')
+		let retval = this.queueStorage[pathKey];
+		if (retval === undefined) {
+			retval = this.queueStorage[pathKey] = [];
+		}
+		return(retval);
 	}
 
 	protected methodLogger(method: string): Logger | undefined {
@@ -349,6 +399,20 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		return(retval);
 	}
 
+	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+		this.checkDestroyed();
+
+		const logger = this.methodLogger('partition');
+
+		logger?.debug(`Creating partitioned queue storage driver for path "${path}"`);
+
+		const partitioned = this.clone({
+			path: [...this.path, path]
+		});
+
+		return(partitioned);
+	}
+
 	async destroy(): Promise<void> {
 		this.destroyed = true;
 		this.methodLogger('destroy')?.debug('Destroying in-memory queue');
@@ -405,7 +469,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 */
 	readonly id: string;
 
-	constructor(config: { queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>; processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']; } & KeetaAnchorQueueStorageOptions & KeetaAnchorQueueRunnerOptions) {
+	constructor(config: { queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>; processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']; } & KeetaAnchorQueueRunnerOptions) {
 		this.queue = config.queue;
 		this.logger = config.logger;
 		this.processor = config.processor;

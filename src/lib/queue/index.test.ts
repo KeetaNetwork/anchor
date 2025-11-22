@@ -989,6 +989,38 @@ let running  = false;
 						}
 					}
 				}, 60_000);
+
+				/* Test that partitioning works and we can add and get entries from different partitions */
+				testRunner('Partitioning', async function() {
+					const id1 = await queue.add({ key: 'partition_test_1' });
+					const partition1 = await queue.partition('partition1');
+					const partition2 = await queue.partition('partition2');
+					const id2 = await partition1.add({ key: 'partition_test_2' });
+					const id3 = await partition2.add({ key: 'partition_test_3' });
+
+					async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
+						const value = await queueToCheck.get(id);
+						expect(value).toBeNull;
+					}
+
+					const entry1 = await queue.get(id1);
+					expect(entry1?.request).toEqual({ key: 'partition_test_1' });
+					const entry2 = await partition1.get(id2);
+					expect(entry2?.request).toEqual({ key: 'partition_test_2' });
+					const entry3 = await partition2.get(id3);
+					expect(entry3?.request).toEqual({ key: 'partition_test_3' });
+
+					await shouldNotHave(partition1, id1);
+					await shouldNotHave(partition2, id1);
+					await shouldNotHave(queue, id2);
+					await shouldNotHave(partition2, id2);
+					await shouldNotHave(queue, id3);
+					await shouldNotHave(partition1, id3);
+
+					const partition1_again = await queue.partition('partition1');
+					const entry2_again = await partition1_again.get(id2);
+					expect(entry2_again?.request).toEqual({ key: 'partition_test_2' });
+				});
 			});
 
 			if (driverConfig.persistent) {
@@ -1012,6 +1044,34 @@ let running  = false;
 					expect(entry?.request).toEqual({ foo: 'bar' });
 					expect(entry?.status).toBe('pending');
 					expect(entry?.id).toBe(id1);
+
+					const [ part0_id1, part1_id1 ] = await (async function() {
+						await using driverInstance = await driverConfig.create('partition_persistence_test', { leave: true });
+						const queue = driverInstance.queue;
+
+						await using partition = await queue.partition('part1');
+
+						return([
+							await queue.add({ partition: 'part0' }),
+							await partition.add({ partition: 'part1' })
+						]);
+					})();
+
+					const [ part0_entry, part1_entry ] = await (async function() {
+						await using driverInstance = await driverConfig.create('partition_persistence_test');
+						const queue = driverInstance.queue;
+
+						await using partition = await queue.partition('part1');
+
+						return([
+							await queue.get(part0_id1),
+							await partition.get(part1_id1)
+						]);
+					})();
+					expect(part0_entry).toBeDefined();
+					expect(part0_entry?.request).toEqual({ partition: 'part0' });
+					expect(part1_entry).toBeDefined();
+					expect(part1_entry?.request).toEqual({ partition: 'part1' });
 				});
 			}
 		});

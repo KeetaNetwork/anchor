@@ -15,6 +15,19 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 		this.loadFile();
 	}
 
+	protected clone(options?: Partial<ConstructorParameters<typeof KeetaAnchorQueueStorageDriverFile>[0]>): KeetaAnchorQueueStorageDriverFile {
+		const cloned = new KeetaAnchorQueueStorageDriverFile({
+			logger: this.logger,
+			id: `${this.id}::${this.partitionCounter++}`,
+			path: [...this.path],
+			filePath: this.filePath,
+			...options
+		});
+		cloned.queueStorage = this.queueStorage;
+
+		return(cloned);
+	}
+
 	protected methodLogger(method: string): Logger | undefined {
 		return(MethodLogger(this.logger, {
 			class: 'KeetaAnchorQueueStorageDriverFile',
@@ -47,7 +60,7 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 		}
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const data = parsed as { queue: InstanceType<typeof KeetaAnchorQueueStorageDriverMemory>['queue'] };
-		Object.assign(this.queue, data.queue);
+		Object.assign(this.queueStorage, data.queue);
 	}
 
 	private async syncFile(): Promise<void> {
@@ -56,7 +69,7 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 			const tmpFilePath = `${this.filePath}.${crypto.randomUUID()}`;
 			try {
 				fs.writeFileSync(tmpFilePath, JSON.stringify({
-					queue: this.queue
+					queue: this.queueStorage
 				}, function(key, inputValue: unknown): unknown {
 					if (key === 'created' || key === 'updated') {
 						if (inputValue instanceof Date) {

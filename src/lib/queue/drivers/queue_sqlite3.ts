@@ -46,11 +46,14 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 	readonly name = 'KeetaAnchorQueueStorageDriverSQLite3';
 	readonly id: string;
+	readonly path: string[] = [];
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger
 		this.dbInternal = options.db;
+		this.path = options.path ?? [];
+		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
 	}
@@ -443,6 +446,12 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 
 			return(entries);
 		}));
+	}
+
+	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
+
+		throw(new Error('Partitioning is not supported for SQLite3 queue storage driver'));
 	}
 
 	async destroy(): Promise<void> {
