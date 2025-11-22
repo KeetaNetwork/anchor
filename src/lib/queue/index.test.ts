@@ -928,7 +928,7 @@ suite.sequential('Driver Tests', async function() {
 
 					const finalEntry = await queue.get(entryID);
 					expect(finalEntry?.status).toBe('processing');
-				}, 60_000);
+				}, 30_000);
 
 				/* Test that inserting new keys with a common parent ID is handled correctly (i.e., only one insert succeeds, others fail with parentIDsFound) */
 				testRunner('Concurrent Adds with Common Parent', async function() {
