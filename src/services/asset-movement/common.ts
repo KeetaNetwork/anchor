@@ -769,6 +769,10 @@ export type KeetaAssetMovementAnchorListPersistentForwardingResponse = (({
 	error: string;
 });
 
+export function getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData(_ignore_input: KeetaAssetMovementAnchorListPersistentForwardingClientRequest | KeetaAssetMovementAnchorListPersistentForwardingRequest): Signable {
+	return([ 'list-persistent-forwarding-addresses' ]);
+}
+
 type PaginationQuery = {
 	limit?: number;
 	offset?: number;

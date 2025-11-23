@@ -42,7 +42,10 @@ import {
 	assertKeetaAssetMovementAnchorShareKYCRequest,
 	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
 	convertAssetLocationToString,
-	commonJSONStringify
+	commonJSONStringify,
+	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
+	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -296,6 +299,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'createPersistentForwarding',
 			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+			getSigningData: getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 			serializeResponse(data) {
 				return({
 					...data,
@@ -310,6 +314,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'listPersistentForwarding',
 			assertRequest: assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
 			assertResponse: assertKeetaAssetMovementAnchorListPersistentForwardingResponse,
+			getSigningData: getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
 			serializeResponse(data) {
 				return({
 					...data,
@@ -385,6 +390,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			handlerName: 'listTransactions',
 			assertRequest: assertKeetaAssetMovementAnchorlistTransactionsRequest,
 			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+			getSigningData: getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
 			serializeResponse(data) {
 				return({
 					...data,
