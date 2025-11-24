@@ -450,7 +450,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * The processor function to use for processing entries
 	 */
-	protected abstract processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
+	protected abstract processor(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
 	/**
 	 * Worker configuration (not implemented)
 	 */
@@ -1046,8 +1046,6 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
  * JSON-serializable data without any encoding/decoding needed
  */
 export abstract class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, JSONSerializable, JSONSerializable> {
-	protected abstract readonly processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
-
 	protected decodeRequest(request: JSONSerializable): UREQUEST {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(request as UREQUEST);
