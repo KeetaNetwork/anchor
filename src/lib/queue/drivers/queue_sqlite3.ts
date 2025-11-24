@@ -32,8 +32,8 @@ type QueueEntryRow = {
 	failures: number;
 };
 
-type ParentRow = {
-	parent_id: string;
+type IdempotentRow = {
+	idempotent_id: string;
 };
 
 export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
@@ -87,18 +87,18 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				PRIMARY KEY (id, path)
 			);
 
-			CREATE TABLE IF NOT EXISTS queue_parents (
+			CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
 				entry_id TEXT NOT NULL,
-				parent_id TEXT NOT NULL,
+				idempotent_id TEXT NOT NULL,
 				path TEXT NOT NULL,
-				UNIQUE (parent_id, path),
-				PRIMARY KEY (entry_id, parent_id, path),
+				UNIQUE (idempotent_id, path),
+				PRIMARY KEY (entry_id, idempotent_id, path),
 				FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
 			CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated);
-			CREATE INDEX IF NOT EXISTS idx_queue_parents_parent_id ON queue_parents(parent_id);
+			CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id);
 		`);
 
 		this.dbInitialized = true;
@@ -231,21 +231,21 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				}
 			}
 
-			const parentIDs = info?.parents;
-			if (parentIDs) {
-				const matchingParentEntries = new Set<KeetaAnchorQueueRequestID>();
-				for (const parentID of parentIDs) {
-					const parentEntryExists = await db.get<ParentRow>(
-						'SELECT parent_id FROM queue_parents WHERE parent_id = ? AND path = ?',
-						parentID, this.pathStr
+			const idempotentIDs = info?.idempotentKeys;
+			if (idempotentIDs) {
+				const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
+				for (const idempotentID of idempotentIDs) {
+					const idempotentEntryExists = await db.get<IdempotentRow>(
+						'SELECT idempotent_id FROM queue_idempotent_keys WHERE idempotent_id = ? AND path = ?',
+						idempotentID, this.pathStr
 					);
-					if (parentEntryExists) {
-						matchingParentEntries.add(parentID);
+					if (idempotentEntryExists) {
+						matchingIdempotentEntries.add(idempotentID);
 					}
 				}
 
-				if (matchingParentEntries.size !== 0) {
-					throw(new Errors.ParentExistsError('One or more parent entries already exist in the queue', matchingParentEntries));
+				if (matchingIdempotentEntries.size !== 0) {
+					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 				}
 			}
 
@@ -268,14 +268,14 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 					currentTime
 				);
 
-				if (parentIDs && parentIDs.size > 0) {
-					for (const parentID of parentIDs) {
-						await db.run('INSERT INTO queue_parents (entry_id, path, parent_id) VALUES (?, ?, ?)', entryID, this.pathStr, parentID);
+				if (idempotentIDs && idempotentIDs.size > 0) {
+					for (const idempotentID of idempotentIDs) {
+						await db.run('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES (?, ?, ?)', entryID, this.pathStr, idempotentID);
 					}
 				}
 			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('UNIQUE constraint failed') && parentIDs) {
-					throw(new Errors.ParentExistsError('One or more parent entries already exist in the queue', parentIDs));
+				if (error instanceof Error && error.message.includes('UNIQUE constraint failed') && idempotentIDs) {
+					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
 				}
 				throw(error);
 			}
@@ -365,15 +365,15 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				return(null);
 			}
 
-			const parentRows = await db.all<ParentRow[]>(
-				'SELECT parent_id FROM queue_parents WHERE entry_id = ? AND path = ?',
+			const idempotentRows = await db.all<IdempotentRow[]>(
+				'SELECT idempotent_id FROM queue_idempotent_keys WHERE entry_id = ? AND path = ?',
 				id, this.pathStr
 			);
 
-			const parents = parentRows.length > 0
-				? new Set(parentRows.map(function(parentRow: ParentRow) {
+			const idempotentKeys = idempotentRows.length > 0
+				? new Set(idempotentRows.map(function(idempotentRow: IdempotentRow) {
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(parentRow.parent_id as unknown as KeetaAnchorQueueRequestID);
+					return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
 				}))
 				: undefined;
 
@@ -391,7 +391,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
 				failures: row.failures,
-				parents: parents
+				idempotentKeys: idempotentKeys
 			});
 		}));
 	}
@@ -432,15 +432,15 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			const entries: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
 
 			for (const row of rows) {
-				const parentRows = await db.all<ParentRow[]>(
-					'SELECT parent_id FROM queue_parents WHERE entry_id = ? AND path = ?',
+				const idempotentRows = await db.all<IdempotentRow[]>(
+					'SELECT idempotent_id FROM queue_idempotent_keys WHERE entry_id = ? AND path = ?',
 					row.id, this.pathStr
 				);
 
-				const parents = parentRows.length > 0
-					? new Set(parentRows.map(function(parentRow: ParentRow) {
+				const idempotentKeys = idempotentRows.length > 0
+					? new Set(idempotentRows.map(function(idempotentRow: IdempotentRow) {
 						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						return(parentRow.parent_id as unknown as KeetaAnchorQueueRequestID);
+						return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
 					}))
 					: undefined;
 
@@ -458,7 +458,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
 					failures: row.failures,
-					parents: parents
+					idempotentKeys: idempotentKeys
 				});
 			}
 

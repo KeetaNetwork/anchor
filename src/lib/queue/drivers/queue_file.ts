@@ -50,7 +50,7 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 					nominalValue = new Date(nominalValue);
 				}
 			}
-			if (key === 'parents' && Array.isArray(inputValue)) {
+			if (key === 'idempotentIDs' && Array.isArray(inputValue)) {
 				nominalValue = new Set(inputValue);
 			}
 			return(nominalValue);
@@ -76,7 +76,7 @@ export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDr
 							return(inputValue.toISOString());
 						}
 					}
-					if (key === 'parents') {
+					if (key === 'idempotentIDs') {
 						if (inputValue instanceof Set) {
 							return(Array.from(inputValue));
 						}

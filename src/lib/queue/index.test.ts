@@ -5,7 +5,7 @@ import { AsyncDisposableStack } from '../utils/defer.js';
 import type { JSONSerializable } from '../utils/json.ts';
 
 import {
-	KeetaAnchorQueueRunnerJSON,
+	KeetaAnchorQueueRunnerJSONConfigProc,
 	KeetaAnchorQueueStorageDriverMemory
 } from './index.js';
 import type {
@@ -22,11 +22,11 @@ import * as fs from 'fs';
 
 import { KeetaAnchorQueueStorageDriverFile } from './drivers/queue_file.js';
 
-const DEBUG = false;
 import { KeetaAnchorQueueStorageDriverSQLite3 } from './drivers/queue_sqlite3.js';
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
 
+const DEBUG = false;
 let logger: Logger | undefined = undefined;
 if (DEBUG) {
 	logger = console;
@@ -142,7 +142,7 @@ test('Queue Runner Basic Tests', async function() {
 	});
 
 	const processCallCountByKey = new Map<string, number>();
-	await using runner = new KeetaAnchorQueueRunnerJSON<RequestType, ResponseType>({
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
 		queue: queue,
 		processor: async function(entry) {
 			const key = entry.request.key;
@@ -334,7 +334,7 @@ test('Pipeline Basic Tests', async function() {
 	});
 
 	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
-		return(new KeetaAnchorQueueRunnerJSON<INPUT, OUTPUT>({
+		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
 			id: `${name}_runner`,
 			processor: processor,
 			queue: new KeetaAnchorQueueStorageDriverMemory({
@@ -467,11 +467,11 @@ test('Pipeline Basic Tests', async function() {
 		}
 
 		/*
-		 * Extract the parent IDs from the final entries and ensure that
+		 * Extract the idempotent IDs from the final entries and ensure that
 		 * they cover 4 of the original 5 IDs
 		 */
 		const finalEntryIDs = finalEntries.map(function(entry) {
-			return([...(entry.parents ?? [])]);
+			return([...(entry.idempotentKeys ?? [])]);
 		}).flat();
 		expect(finalEntryIDs).toHaveLength(4);
 		const idsAfterRemovingDuplicates = new Set([id1, id2, id3, id4, id5]);
@@ -502,7 +502,7 @@ test('Pipeline Basic Tests', async function() {
 		});
 		expect(finalEntries).toHaveLength(1);
 		const finalEntryIDs = finalEntries.map(function(entry) {
-			return([...(entry.parents ?? [])]);
+			return([...(entry.idempotentKeys ?? [])]);
 		}).flat();
 		expect(finalEntryIDs).toHaveLength(2);
 		expect(finalEntryIDs).toContain(finalLeftoverID);
@@ -605,8 +605,8 @@ suite.sequential('Driver Tests', async function() {
 					expect(entry?.request).toEqual({ key: 'first' });
 				});
 
-				/* Test that we can add an entry with parent and it fails if the parent exists with the appropriate error */
-				testRunner('Add with Parents', async function() {
+				/* Test that we can add an entry with idempotent ID and it fails if the idempotent key exists with the appropriate error */
+				testRunner('Add with Idempotent Keys', async function() {
 					const parentID1 = generateRequestID();
 					const parentID2 = generateRequestID();
 					const parentID3 = generateRequestID();
@@ -616,58 +616,58 @@ suite.sequential('Driver Tests', async function() {
 
 					// Add first child with one parent - should succeed
 					const childID1 = generateRequestID();
-					await queue.add({ key: 'child1' }, { id: childID1, parents: new Set([parentID1]) });
+					await queue.add({ key: 'child1' }, { id: childID1, idempotentKeys: new Set([parentID1]) });
 
-					// Try to add second child with same parent - should fail with parentID1 in parentIDsFound
+					// Try to add second child with same parent - should fail with parentID1 in idempotentIDsFound
 					const childID2 = generateRequestID();
 					try {
-						await queue.add({ key: 'child2' }, { id: childID2, parents: new Set([parentID1]) });
+						await queue.add({ key: 'child2' }, { id: childID2, idempotentKeys: new Set([parentID1]) });
 					} catch (error: unknown) {
-						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-						if (!Errors.ParentExistsError.isInstance(error)) {
-							throw(new Error('internal error: Error is not ParentExistsError'));
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
 						}
 
-						expect(error.parentIDsFound).toBeDefined();
-						expect(error.parentIDsFound?.size).toBe(1);
-						expect(error.parentIDsFound?.has(parentID1)).toBe(true);
+						expect(error.idempotentIDsFound).toBeDefined();
+						expect(error.idempotentIDsFound?.size).toBe(1);
+						expect(error.idempotentIDsFound?.has(parentID1)).toBe(true);
 					}
 
-					// Add third child with multiple parents where none conflict - should succeed
+					// Add third child with multiple idempotent kes where none conflict - should succeed
 					const childID3 = generateRequestID();
-					await queue.add({ key: 'child3' }, { id: childID3, parents: new Set([parentID2, parentID3]) });
+					await queue.add({ key: 'child3' }, { id: childID3, idempotentKeys: new Set([parentID2, parentID3]) });
 
-					// Try to add fourth child where one parent conflicts - should fail with only conflicting parent in parentIDsFound
+					// Try to add fourth child where one idempotent ID conflicts - should fail with only conflicting identempotent ID in idempotentIDsFound
 					const childID4 = generateRequestID();
 					const parentID4 = generateRequestID();
 					await queue.add({ key: 'parent4' }, { id: parentID4 });
 					try {
-						await queue.add({ key: 'child4' }, { id: childID4, parents: new Set([parentID2, parentID4]) });
+						await queue.add({ key: 'child4' }, { id: childID4, idempotentKeys: new Set([parentID2, parentID4]) });
 					} catch (error: unknown) {
-						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-						if (!Errors.ParentExistsError.isInstance(error)) {
-							throw(new Error('internal error: Error is not ParentExistsError'));
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
 						}
 
-						expect(error.parentIDsFound).toBeDefined();
-						expect(error.parentIDsFound?.size).toBe(1);
-						expect(error.parentIDsFound?.has(parentID2)).toBe(true);
-						expect(error.parentIDsFound?.has(parentID4)).toBe(false);
+						expect(error.idempotentIDsFound).toBeDefined();
+						expect(error.idempotentIDsFound?.size).toBe(1);
+						expect(error.idempotentIDsFound?.has(parentID2)).toBe(true);
+						expect(error.idempotentIDsFound?.has(parentID4)).toBe(false);
 					}
 
-					// Try to add fifth child where multiple parents conflict - should fail with all conflicting parents in parentIDsFound
+					// Try to add fifth child where multiple idempotent keys conflict - should fail with all conflicting identempotent IDs in idempotentIDsFound
 					const childID5 = generateRequestID();
 					try {
-						await queue.add({ key: 'child5' }, { id: childID5, parents: new Set([parentID1, parentID2, parentID3]) });
+						await queue.add({ key: 'child5' }, { id: childID5, idempotentKeys: new Set([parentID1, parentID2, parentID3]) });
 						expect.fail('Should have thrown an error');
 					} catch (error: unknown) {
-						expect(Errors.ParentExistsError.isInstance(error)).toBe(true);
-						if (Errors.ParentExistsError.isInstance(error)) {
-							expect(error.parentIDsFound).toBeDefined();
-							expect(error.parentIDsFound?.size).toBe(3);
-							expect(error.parentIDsFound?.has(parentID1)).toBe(true);
-							expect(error.parentIDsFound?.has(parentID2)).toBe(true);
-							expect(error.parentIDsFound?.has(parentID3)).toBe(true);
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (Errors.IdempotentExistsError.isInstance(error)) {
+							expect(error.idempotentIDsFound).toBeDefined();
+							expect(error.idempotentIDsFound?.size).toBe(3);
+							expect(error.idempotentIDsFound?.has(parentID1)).toBe(true);
+							expect(error.idempotentIDsFound?.has(parentID2)).toBe(true);
+							expect(error.idempotentIDsFound?.has(parentID3)).toBe(true);
 						}
 					}
 				});
@@ -930,23 +930,23 @@ suite.sequential('Driver Tests', async function() {
 					expect(finalEntry?.status).toBe('processing');
 				}, 30_000);
 
-				/* Test that inserting new keys with a common parent ID is handled correctly (i.e., only one insert succeeds, others fail with parentIDsFound) */
-				testRunner('Concurrent Adds with Common Parent', async function() {
+				/* Test that inserting new keys with a common idempotent ID is handled correctly (i.e., only one insert succeeds, others fail with IdempotentExistsError) */
+				testRunner('Concurrent Adds with Common Idempotent Key', async function() {
 					const parentID = generateRequestID();
 					await queue.add({ key: 'parent' }, { id: parentID });
 
 					const concurrentAdds = 20;
-					const addPromises: Promise<{ success: boolean; id?: KeetaAnchorQueueRequestID | undefined; parentIDsFound?: Set<KeetaAnchorQueueRequestID> | undefined }>[] = [];
+					const addPromises: Promise<{ success: boolean; id?: KeetaAnchorQueueRequestID | undefined; idempotentIDsFound?: Set<KeetaAnchorQueueRequestID> | undefined }>[] = [];
 
 					for (let index = 0; index < concurrentAdds; index++) {
 						addPromises.push((async function() {
 							try {
 								const childID = generateRequestID();
-								const id = await queue.add({ key: `child_${index}` }, { id: childID, parents: new Set([parentID]) });
-								return({ success: true, id: id, parentIDsFound: undefined });
+								const id = await queue.add({ key: `child_${index}` }, { id: childID, idempotentKeys: new Set([parentID]) });
+								return({ success: true, id: id, idempotentIDsFound: undefined });
 							} catch (error: unknown) {
-								if (Errors.ParentExistsError.isInstance(error)) {
-									return({ success: false, id: undefined, parentIDsFound: error.parentIDsFound });
+								if (Errors.IdempotentExistsError.isInstance(error)) {
+									return({ success: false, id: undefined, idempotentIDsFound: error.idempotentIDsFound });
 								}
 								throw(error);
 							}
@@ -967,9 +967,9 @@ suite.sequential('Driver Tests', async function() {
 
 					for (const result of results) {
 						if (!result.success) {
-							expect(result.parentIDsFound).toBeDefined();
-							expect(result.parentIDsFound?.size).toBe(1);
-							expect(result.parentIDsFound?.has(parentID)).toBe(true);
+							expect(result.idempotentIDsFound).toBeDefined();
+							expect(result.idempotentIDsFound?.size).toBe(1);
+							expect(result.idempotentIDsFound?.has(parentID)).toBe(true);
 						}
 					}
 				}, 60_000);

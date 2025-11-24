@@ -16,9 +16,9 @@ export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
 	 */
 	id: KeetaAnchorQueueRequestID;
 	/**
-	 * Parent job IDs from a previous stage
+	 * Idempotent IDs from a previous stage
 	 */
-	parents?: Set<KeetaAnchorQueueRequestID> | undefined;
+	idempotentKeys?: Set<KeetaAnchorQueueRequestID> | undefined;
 	request: KeetaAnchorQueueRequest<REQUEST>;
 	output: RESPONSE | null;
 	lastError: string | null;
@@ -28,8 +28,12 @@ export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
 	worker: KeetaAnchorQueueWorkerID | null;
 	failures: number;
 };
+
+/**
+ * Extra information to provide to a request when adding an entry to the queue
+ */
 export type KeetaAnchorQueueEntryExtra = {
-	[key in 'parents' | 'id']?: KeetaAnchorQueueEntry<never, never>[key] | undefined;
+	[key in 'idempotentKeys' | 'id']?: KeetaAnchorQueueEntry<never, never>[key] | undefined;
 };
 
 export type KeetaAnchorQueueFilter = {
@@ -252,21 +256,21 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			}
 		}
 
-		const parentIDs = info?.parents;
-		if (parentIDs) {
-			const matchingParentEntries = new Set<KeetaAnchorQueueRequestID>();
-			for (const parentID of parentIDs) {
-				const parentEntryExists = this.queue.some(function(checkEntry) {
-					return(checkEntry.parents?.has(parentID) ?? false);
+		const idempotentIDs = info?.idempotentKeys;
+		if (idempotentIDs) {
+			const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
+			for (const idempotentID of idempotentIDs) {
+				const idemoptentEntryExists = this.queue.some(function(checkEntry) {
+					return(checkEntry.idempotentKeys?.has(idempotentID) ?? false);
 				});
 
-				if (parentEntryExists) {
-					matchingParentEntries.add(parentID);
+				if (idemoptentEntryExists) {
+					matchingIdempotentEntries.add(idempotentID);
 				}
 			}
 
-			if (matchingParentEntries.size !== 0) {
-				throw(new Errors.ParentExistsError('One or more parent entries already exist in the queue', matchingParentEntries));
+			if (matchingIdempotentEntries.size !== 0) {
+				throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 			}
 		}
 
@@ -288,7 +292,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			created: new Date(),
 			updated: new Date(),
 			worker: null,
-			parents: parentIDs ? new Set(parentIDs) : undefined
+			idempotentKeys: idempotentIDs ? new Set(idempotentIDs) : undefined
 		});
 
 		return(id);
@@ -421,6 +425,19 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 	}
 }
 
+/**
+ * A Queue Runner and Request Translator for processing entries in a queue
+ *
+ * The queue runner is responsible for pulling entries from the queue,
+ * processing them, and updating their status in the queue.  As well
+ * as moving jobs between queues by piping the output of one runner
+ * to another.  Additionally, maintenance tasks such as re-queuing
+ * failed jobs and marking stuck jobs are also handled by the runner.
+ *
+ * This is an abstract base class that must be extended to provide
+ * the actual processing logic as well as the encoding and decoding
+ * for requests and responses.
+ */
 export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unknown, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> {
 	/**
 	 * The queue this runner is responsible for running
@@ -433,7 +450,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * The processor function to use for processing entries
 	 */
-	private readonly processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
+	protected abstract processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
 	/**
 	 * Worker configuration (not implemented)
 	 */
@@ -467,10 +484,9 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 */
 	readonly id: string;
 
-	constructor(config: { queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>; processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']; } & KeetaAnchorQueueRunnerOptions) {
+	constructor(config: { queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>; } & KeetaAnchorQueueRunnerOptions) {
 		this.queue = config.queue;
 		this.logger = config.logger;
-		this.processor = config.processor;
 		this.workers = config.workers ?? {
 			count: 1,
 			id: 0
@@ -854,7 +870,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					/**
 					 * The IDs for the entries we are sending to the next stage
 					 * target -- this may get reduced if we find there are already
-					 * jobs in the next stage that have the parentIDs of one of
+					 * jobs in the next stage that have the idempotentIDs of one of
 					 * these jobs
 					 */
 					const batchLocalIDs = new Set(batchRaw.map(function(entry) {
@@ -872,16 +888,16 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					try {
 						await pipe.target.add(batchOutput, {
 							id: batchID,
-							/* Use the set of IDs as the parent IDs for the batch */
-							parents: batchLocalIDs
+							/* Use the set of IDs as the idempotent IDs for the batch */
+							idempotentKeys: batchLocalIDs
 						});
 
 						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 						batchID = crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
 					} catch (error: unknown) {
-						if (Errors.ParentExistsError.isInstance(error) && error.parentIDsFound) {
-							logger?.debug('Some of the jobs have already been added to the target queue, skipping those:', error.parentIDsFound.values());
-							for (const requestID of error.parentIDsFound) {
+						if (Errors.IdempotentExistsError.isInstance(error) && error.idempotentIDsFound) {
+							logger?.debug('Some of the jobs have already been added to the target queue, skipping those:', error.idempotentIDsFound.values());
+							for (const requestID of error.idempotentIDsFound) {
 								iterationTargetSeenRequestIDs.add(requestID);
 								allTargetSeenRequestIDs.add(requestID);
 							}
@@ -1025,7 +1041,13 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	}
 }
 
-export class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, JSONSerializable, JSONSerializable> {
+/**
+ * A KeetaAnchorQueueRunner for use when you want to process already
+ * JSON-serializable data without any encoding/decoding needed
+ */
+export abstract class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, JSONSerializable, JSONSerializable> {
+	protected abstract readonly processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
+
 	protected decodeRequest(request: JSONSerializable): UREQUEST {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		return(request as UREQUEST);
@@ -1042,6 +1064,19 @@ export class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializable = JSON
 
 	protected encodeResponse(response: JSONSerializable | null): JSONSerializable | null {
 		return(response);
+	}
+}
+
+/**
+ * A KeetaAnchorQueueRunnerJSON that takes a processor function
+ * in the constructor -- this is mainly useful for testing
+ */
+export class KeetaAnchorQueueRunnerJSONConfigProc<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunnerJSON<UREQUEST, URESPONSE> {
+	protected readonly processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
+
+	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & { processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor']; }) {
+		super(config);
+		this.processor = config.processor;
 	}
 }
 
