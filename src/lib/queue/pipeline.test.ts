@@ -7,7 +7,7 @@ import type {
 	KeetaAnchorQueueEntry
 } from './index.ts';
 
-const DEBUG = true;
+const DEBUG = false;
 let logger: Logger | undefined = undefined;
 if (DEBUG) {
 	logger = console;

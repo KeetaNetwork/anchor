@@ -27,8 +27,18 @@ class KeetaAnchorQueueRunnerAny<UREQUEST = any, URESPONSE = any, REQUEST extends
 }
 
 type KeetaAnchorQueuePipelineStage<REQUEST, RESPONSE> = {
+	/**
+	 * Name of the stage (must be unique within the pipeline)
+	 */
 	name: string;
+	/**
+	 * Constructor of the runner to use for this stage
+	 */
 	runner: typeof KeetaAnchorQueueRunner<REQUEST, RESPONSE, JSONSerializable, JSONSerializable>;
+	/**
+	 * Arguments to pass to the runner constructor
+	 */
+	args?: [{ [key: string]: unknown; }?, ...unknown[]];
 };
 
 export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
@@ -370,11 +380,22 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 				 */
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				const runnerClass = stage.runner as typeof KeetaAnchorQueueRunnerAny;
-				const runner = new runnerClass({
+				const runnerArgsFirst = stage.args?.[0];
+				const runnerArgs0: ConstructorParameters<typeof KeetaAnchorQueueRunnerAny>[0] = {
 					id: `${this.id}::runner::${stage.name}`,
 					queue: queue,
-					logger: this.logger
-				});
+					logger: this.logger,
+					...(runnerArgsFirst ?? {})
+				};
+				const runnerArgs = [runnerArgs0, ...(stage.args?.slice(1) ?? [])] as const;
+
+				/*
+				 * We check the first parameter's type above, but all the remaining
+				 * parameters are user-defined and we cannot validate them here
+				 * so we cast to the tuple `any` type to avoid type checking
+				 */
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-argument
+				const runner = new runnerClass(...runnerArgs as [any]);
 
 				/*
 				 * The type assertions here are necessary because we cannot

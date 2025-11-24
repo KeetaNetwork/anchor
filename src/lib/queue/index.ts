@@ -450,7 +450,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * The processor function to use for processing entries
 	 */
-	protected abstract processor(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; }>;
+	protected abstract processor(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
 	/**
 	 * Worker configuration (not implemented)
 	 */
@@ -650,7 +650,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 				}
 			}
 
-			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string; } = { status: 'failed_temporarily', output: null };
+			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 
 			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
 
