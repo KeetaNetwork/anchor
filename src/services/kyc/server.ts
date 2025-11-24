@@ -1,4 +1,4 @@
-import KeetaNet from '@keetanetwork/keetanet-client';
+import { KeetaNet } from '../../client/index.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';

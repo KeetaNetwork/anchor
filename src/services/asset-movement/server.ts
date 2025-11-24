@@ -1,5 +1,5 @@
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
-import KeetaNet from '@keetanetwork/keetanet-client';
+import { KeetaNet } from '../../client/index.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
