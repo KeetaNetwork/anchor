@@ -158,7 +158,7 @@ function validateURL(url: string | undefined): URL {
 }
 
 async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
-	const asset = request.asset ? { asset: convertAssetSearchInputToCanonical(request.asset) } : undefined;
+	const asset = request.asset ? { asset: convertAssetOrPairSearchInputToCanonical(request.asset) } : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
 	const rail = request.rail ? { rail: request.rail } : {};

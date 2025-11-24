@@ -22,8 +22,8 @@ test('Asset Movement Anchor Client Test', async function() {
 	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSDC } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	if (!testCurrencyUSDC.isToken() || !testCurrencyEUR.isToken()) {
+	const { account: testCurrencyEURC } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSDC.isToken() || !testCurrencyEURC.isToken()) {
 		throw(new Error('USDC is not a token'));
 	}
 	const initialAccountUSDCBalance = 500000n;
@@ -72,7 +72,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					paths: [
 						{
 							pair: [
-								{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
 								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
 							]
 						}
@@ -84,7 +84,18 @@ test('Asset Movement Anchor Client Test', async function() {
 						{
 							pair: [
 								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
-								{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+							]
+						}
+					]
+				},
+				{
+					asset: [ testCurrencyUSDC.publicKeyString.get(), 'USD' ],
+					paths: [
+						{
+							pair: [
+								{ location: 'bank-account:us', id: 'USD', rails: { common: [ 'EVM_SEND' ] }},
+								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
 					]
@@ -208,7 +219,7 @@ test('Asset Movement Anchor Client Test', async function() {
 									{
 										pair: [
 											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+											{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
 								]
@@ -245,7 +256,7 @@ test('Asset Movement Anchor Client Test', async function() {
 	});
 
 	const getProviderTests: [ ProviderSearchInput, string[] ][] = [
-		[ { asset: testCurrencyEUR }, [] ],
+		[ { asset: testCurrencyEURC }, [] ],
 		[ { asset: baseToken, from: 'chain:keeta:123', to: 'chain:evm:100' }, [ 'Test' ] ],
 		[ { asset: baseToken, from: 'chain:evm:100', to: 'chain:keeta:123' }, [ 'Test' ] ],
 		[ { asset: baseToken }, [ 'Test' ] ],
@@ -256,7 +267,8 @@ test('Asset Movement Anchor Client Test', async function() {
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: [ 'EVM_CALL', 'EVM_SEND' ] }, [] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: 'KEETA_SEND' }, [ 'Test', 'Test2' ] ],
-		[ { asset: testCurrencyUSDC }, [ 'Test', 'Test2' ] ]
+		[ { asset: testCurrencyUSDC }, [ 'Test', 'Test2' ] ],
+		[ { asset: { from: testCurrencyUSDC, to: 'USD' } }, [ 'Test' ] ]
 	];
 
 	for (const [ input, expectedProviderIDs ] of getProviderTests) {

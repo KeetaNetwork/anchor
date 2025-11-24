@@ -9,7 +9,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets, convertAssetOrPairSearchInputToCanonical } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -176,7 +176,7 @@ type ServiceMetadata = {
 				};
 
 				supportedAssets: {
-					asset: KeetaNetAccountTokenPublicKeyString;
+					asset: KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical | ([ KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical, KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical ]);
 
 					paths: {
 						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
@@ -254,7 +254,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		countryCodes: CountrySearchInput[];
 	};
 	'assetMovement': {
-		asset?: MovableAssetSearchInput | undefined;
+		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
 		from?: AssetLocationString;
 		to?: AssetLocationString;
 		/**
@@ -1548,7 +1548,7 @@ class Resolver {
 	}
 
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
-		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
+		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
@@ -1557,68 +1557,79 @@ class Resolver {
 
 		const filteredAssetMovement: SupportedAssets[] = [];
 		for (const supportedAsset of supportedAssets) {
-			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
-				continue;
-			}
-
 			let matchFound = false;
 
-			if (!fromCanonical && !toCanonical) {
-				matchFound = true;
-			} else {
-				for (const path of supportedAsset.paths) {
-					const pairSorted: typeof path.pair = [ ...path.pair ];
+			for (const path of supportedAsset.paths) {
+				const pairSorted: typeof path.pair = [ ...path.pair ];
 
-					if (fromCanonical) {
-						if (pairSorted[0]?.location !== fromCanonical) {
-							pairSorted.reverse();
+				if (fromCanonical) {
+					if (pairSorted[0]?.location !== fromCanonical) {
+						pairSorted.reverse();
+					}
+				} else if (toCanonical) {
+					if (pairSorted[1]?.location !== toCanonical) {
+						pairSorted.reverse();
+					}
+				}
+
+				if (fromCanonical && pairSorted[0].location !== fromCanonical) {
+					continue;
+				}
+
+				if (toCanonical && pairSorted[1].location !== toCanonical) {
+					continue;
+				}
+
+				if (assetCanonical) {
+					if (typeof assetCanonical === 'string') {
+						if (!([ pairSorted[0].id, pairSorted[1].id ].includes(assetCanonical))) {
+							continue;
 						}
-					} else if (toCanonical) {
-						if (pairSorted[1]?.location !== toCanonical) {
-							pairSorted.reverse();
-						}
-					}
-
-					if (fromCanonical && pairSorted[0].location !== fromCanonical) {
-						continue;
-					}
-
-					if (toCanonical && pairSorted[1].location !== toCanonical) {
-						continue;
-					}
-
-					const [ from /* , to */ ] = pairSorted;
-
-					// XXX:TODO what rails do we want to check here? This is just inbound
-					const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
-
-					if (supportedRails.length === 0) {
-						continue;
-					}
-
-					if (criteria.rail !== undefined) {
-						if (typeof criteria.rail === 'string') {
-							if (!supportedRails.includes(criteria.rail)) {
+					} else {
+						if (fromCanonical || toCanonical) {
+							if (pairSorted[0].id !== assetCanonical.from || pairSorted[1].id !== assetCanonical.to) {
 								continue;
 							}
 						} else {
-							let railMatchFound = false;
-							for (const checkRail of criteria.rail) {
-								if (supportedRails.includes(checkRail)) {
-									railMatchFound = true;
-									break;
-								}
-							}
-
-							if (!railMatchFound) {
+							const eitherId = [ pairSorted[0].id, pairSorted[1].id ];
+							if (!(eitherId.includes(assetCanonical.from)) || !(eitherId.includes(assetCanonical.to))) {
 								continue;
 							}
 						}
 					}
-
-					matchFound = true;
-					break;
 				}
+
+				const [ from /* , to */ ] = pairSorted;
+
+				// XXX:TODO what rails do we want to check here? This is just inbound
+				const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
+
+				if (supportedRails.length === 0) {
+					continue;
+				}
+
+				if (criteria.rail !== undefined) {
+					if (typeof criteria.rail === 'string') {
+						if (!supportedRails.includes(criteria.rail)) {
+							continue;
+						}
+					} else {
+						let railMatchFound = false;
+						for (const checkRail of criteria.rail) {
+							if (supportedRails.includes(checkRail)) {
+								railMatchFound = true;
+								break;
+							}
+						}
+
+						if (!railMatchFound) {
+							continue;
+						}
+					}
+				}
+
+				matchFound = true;
+				break;
 			}
 
 			if (matchFound) {

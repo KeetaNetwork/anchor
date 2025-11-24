@@ -16,10 +16,10 @@ type HexString = `0x${string}`;
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
-type CountrySearchCanonical = CurrencyInfo.ISOCountryCode;
+export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
 
-type CurrencySearchInput = CurrencyInfo.ISOCurrencyCode | CurrencyInfo.Currency;
-type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode; /* XXX:TODO */
+type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode | `$${string}`; /* XXX:TODO */
+type CurrencySearchInput = CurrencySearchCanonical | CurrencyInfo.Currency;
 
 type TokenSearchInput = TokenAddress | TokenPublicKeyString;
 type TokenSearchCanonical = TokenPublicKeyString;
@@ -27,7 +27,7 @@ type TokenSearchCanonical = TokenPublicKeyString;
 export type EVMAsset = `evm:${HexString}`;
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | EVMAsset;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | EVMAsset;
-export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencyInfo.Currency | CurrencyInfo.ISOCurrencyCode | EVMAsset;
+export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | EVMAsset;
 
 export function toEVMAsset(input: HexString): EVMAsset {
 	return(`evm:${input}`);
@@ -63,7 +63,7 @@ export type AssetLocationInput = AssetLocation | AssetLocationString;
 export type AssetLocationCanonical = AssetLocationString;
 
 export type ProviderSearchInput = {
-	asset?: MovableAsset;
+	asset?: MovableAsset | AssetPair;
 	from?: AssetLocationInput;
 	to?: AssetLocationInput;
 	rail?: Rail | Rail[];
@@ -156,8 +156,9 @@ export interface AssetPath {
 	kycProviders?: string[];
 };
 
+export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
 export interface SupportedAssets {
-	asset: TokenPublicKeyString;
+	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
 }
 
@@ -513,7 +514,7 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 type PhysicalAddress = {
 	line1: string;
 	line2?: string;
-	country: CountrySearchCanonical;
+	country: ISOCountryCode;
 	postalCode: string;
 	subdivision: string;
 	city: string;
@@ -549,7 +550,7 @@ export type BankAccountAddressResolved = {
 	accountType: 'iban-swift';
 
 
-	country?: CountrySearchCanonical;
+	country?: ISOCountryCode;
 
 	accountNumber: string;
 	bic?: string;
@@ -600,7 +601,7 @@ export type BankAccountAddressObfuscated = {
 
 } | {
 	accountType: 'iban-swift';
-	country?: CountrySearchCanonical;
+	country?: ISOCountryCode;
 	bic?: string;
 } | {
 	accountType: 'clabe';
