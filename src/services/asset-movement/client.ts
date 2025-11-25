@@ -274,7 +274,8 @@ class KeetaAssetMovementTransfer {
 	}
 
 	async getTransferStatus(): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
-		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
+		const account = this.request.account ? { account: this.request.account } : undefined;
+		return(await this.provider.getTransferStatus({ id: this.transfer.id, ...account }));
 	}
 
 	get transferId(): string {
