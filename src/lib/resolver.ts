@@ -1877,7 +1877,7 @@ class Resolver {
 		}
 		const assetMovementServices = await services.assetMovement('object');
 		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
-		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+		await Promise.all(Object.values(assetMovementServices).map(async (service) => {
 			if (service === undefined) {
 				throw(new Error('assetMovement has undefined service entry'));
 			}
@@ -1887,7 +1887,7 @@ class Resolver {
 			}
 
 			const supportedAssets = await serviceEntry.supportedAssets('array');
-			await Promise.all(supportedAssets.map(async function(supportedAsset) {
+			await Promise.all(supportedAssets.map(async (supportedAsset) => {
 				if (supportedAsset === undefined) {
 					throw(new Error('supportedAsset entry is undefined'));
 				}
@@ -1895,13 +1895,28 @@ class Resolver {
 				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
 					throw(new Error('asset is missing from supportedAsset entry'));
 				}
-				const asset = await assetEntry.asset('string');
+				const asset = await assetEntry.asset('any');
 
-				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
-				if (!checkTokenObject.isToken()) {
-					throw(new Error('Not a token account'));
+				let toAddAssets;
+				if (typeof asset === 'string') {
+					toAddAssets = [ asset ];
+				} else if (Array.isArray(asset) && asset[0] && asset[1]) {
+					toAddAssets = [ await asset[0]('string'), await asset[1]('string') ];
+				} else {
+					throw(new Error('unsupported asset type in supportedAsset entry'));
 				}
-				allAssets.add(checkTokenObject.publicKeyString.get());
+
+				for (const asset of toAddAssets) {
+					try {
+						const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+						if (!checkTokenObject.isToken()) {
+							throw(new Error('Not a token account'));
+						}
+						allAssets.add(checkTokenObject.publicKeyString.get());
+					} catch (error) {
+						this.#logger?.debug(`Resolver:${this.id}`, 'Invalid token public key in supportedAsset entry:', asset, ' -- ignoring:', error);
+					}
+				}
 			}));
 		}));
 
