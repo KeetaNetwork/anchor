@@ -268,7 +268,7 @@ test('Asset Movement Anchor Client Test', async function() {
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: 'KEETA_SEND' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC }, [ 'Test', 'Test2' ] ],
-		[ { asset: { from: testCurrencyUSDC, to: 'USD' } }, [ 'Test' ] ]
+		[ { asset: { from: testCurrencyUSDC, to: 'USD' }}, [ 'Test' ] ]
 	];
 
 	for (const [ input, expectedProviderIDs ] of getProviderTests) {
