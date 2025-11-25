@@ -33,36 +33,8 @@ type ASN1ContextTag = ASN1Types.ASN1ContextTag;
 type Schema = ASN1Types.ValidateASN1.Schema;
 type SchemaMap<T extends Schema> = ASN1Types.ValidateASN1.SchemaMap<T>;
 
-type EncodeOptions = {
-	attributeName?: string;
-	valuePrinter?: (value: unknown) => string;
-};
-
-function defaultPrintValue(value: unknown): string {
-	try {
-		return(JSON.stringify(value));
-	} catch {
-		return(String(value));
-	}
-}
-
 function isPlainObject(value: unknown): value is { [key: string]: unknown } {
 	return(typeof value === 'object' && value !== null && !Array.isArray(value));
-}
-
-export function encodeValueBySchema(schema: Schema, value: unknown, options?: EncodeOptions): ASN1AnyJS {
-	try {
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
-
-		return(new ValidateASN1(schema).fromJavaScriptObject(value));
-	} catch (err) {
-		const printer = options?.valuePrinter ?? defaultPrintValue;
-		const prefix = options?.attributeName ? `Attribute ${options.attributeName}: ` : '';
-		const message = err instanceof Error ? err.message : String(err);
-
-		throw(new Error(`${prefix}${message} (value: ${printer(value)})`));
-	}
 }
 
 // Helper to recursively normalize object properties

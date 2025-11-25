@@ -1,7 +1,7 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
-import { ASN1toJS, encodeValueBySchema, normalizeDecodedASN1 } from './utils/asn1.js';
+import { ASN1toJS, normalizeDecodedASN1, ValidateASN1 } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
@@ -192,7 +192,17 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 
 function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
 	const schema = CertificateAttributeSchema[name];
-	const encodedJS = encodeValueBySchema(schema, value, { attributeName: name });
+
+	let encodedJS;
+	try {
+		// XXX:TODO Fix depth issue
+		// @ts-ignore
+		encodedJS = new ValidateASN1(schema).fromJavaScriptObject(value);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw(new Error(`Attribute ${name}: ${message} (value: ${JSON.stringify(DPO(value))})`));
+	}
+
 	if (encodedJS === undefined) {
 		throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
 	}

@@ -486,12 +486,10 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 			} else {
 				return(`\t\t${fname}: ${wrappedInContext}`);
 			}
+		} else if (isOptional) {
+			return(`\t\t${fname}: { optional: ${baseSchema} }`);
 		} else {
-			if (isOptional) {
-				return(`\t\t${fname}: { optional: ${baseSchema} }`);
-			} else {
-				return(`\t\t${fname}: ${baseSchema}`);
-			}
+			return(`\t\t${fname}: ${baseSchema}`);
 		}
 	}).join(',\n');
 
