@@ -1,8 +1,7 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
-import { ASN1toJS, contextualizeStructSchema, encodeValueBySchema, normalizeDecodedASN1 } from './utils/asn1.js';
-import type { Schema as ASN1Schema } from './utils/asn1.js';
+import { ASN1toJS, encodeValueBySchema, normalizeDecodedASN1 } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
@@ -191,12 +190,8 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
-function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
-	return(contextualizeStructSchema(schema));
-}
-
 function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
-	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
+	const schema = CertificateAttributeSchema[name];
 	const encodedJS = encodeValueBySchema(schema, value, { attributeName: name });
 	if (encodedJS === undefined) {
 		throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
@@ -237,11 +232,21 @@ function encodeForSensitive(
 }
 
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
-	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
+	const schema = CertificateAttributeSchema[name];
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
-	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	const candidate = normalizeDecodedASN1(decodedUnknown, principals);
+	const decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
+	const validator = new ASN1.ValidateASN1(schema);
+	// XXX:TODO Fix depth issue
+	// @ts-ignore
+	const plainObject = validator.toJavaScriptObject(decodedASN1);
+
+	// Post-process to:
+	// 1. Unwrap any remaining ASN.1-like objects
+	// 2. Add domain-specific $blob function to Reference objects
+	// XXX:TODO Fix depth issue
+	// @ts-ignore
+	const candidate = normalizeDecodedASN1(plainObject, principals);
 	return(asAttributeValue(name, candidate));
 }
 
@@ -1146,20 +1151,30 @@ export class SharableCertificateAttributes {
 				const referenceID = digestInfo.digest.toString('hex').toUpperCase();
 				const referenceValue = this.#attributes[name]?.references?.[referenceID];
 				const contentType = parent.external.contentType;
+
+				// After toJavaScriptObject(), digestAlgorithm is a string (OID), not {oid: string}
+				// Normalize it for checkHashWithOID
+				const digestAlgoField = 'digestAlgorithm' in digestInfo ? digestInfo.digestAlgorithm : undefined;
+				const normalizedDigest = {
+					...parent.digest,
+					digestAlgorithm: typeof digestAlgoField === 'string'
+						? { oid: digestAlgoField }
+						: digestAlgoField
+				};
+
 				return(async function() {
 					if (!referenceValue) {
 						throw(new Error(`Missing reference value for ID ${referenceID}`));
 					}
 					const referenceData = Buffer.from(referenceValue, 'base64');
-					const referenceDataAB = arrayBufferToBuffer(referenceData);
 
 					/* Verify the hash matches what was certified */
-					const checkHash = await checkHashWithOID(referenceData, parent.digest);
+					const checkHash = await checkHashWithOID(referenceData, normalizedDigest);
 					if (checkHash !== true) {
 						throw(checkHash);
 					}
 
-					return(new Blob([referenceDataAB], { type: contentType }));
+					return(new Blob([referenceData], { type: contentType }));
 				});
 			}
 
