@@ -142,11 +142,17 @@ export async function checkHashWithOID(input: Buffer | ArrayBuffer, expected: un
 	if (typeof expected !== 'object' || expected === null || !('digestAlgorithm' in expected) || !('digest' in expected)) {
 		return(new Error('Invalid expected DigestInfo structure'));
 	}
-	if (typeof expected.digestAlgorithm !== 'object' || expected.digestAlgorithm === null || !('oid' in expected.digestAlgorithm)) {
+
+	// digestAlgorithm can be either a string (OID) or an object {oid: string}
+	let hashAlgoOID: string;
+	if (typeof expected.digestAlgorithm === 'string') {
+		hashAlgoOID = expected.digestAlgorithm;
+	} else if (typeof expected.digestAlgorithm === 'object' && expected.digestAlgorithm !== null && 'oid' in expected.digestAlgorithm && typeof expected.digestAlgorithm.oid === 'string') {
+		hashAlgoOID = expected.digestAlgorithm.oid;
+	} else {
 		return(new Error('Invalid digestAlgorithm in expected DigestInfo'));
 	}
 
-	const hashAlgoOID = expected.digestAlgorithm.oid;
 	const hashValue = expected.digest;
 	switch (hashAlgoOID) {
 		case '2.16.840.1.101.3.4.2.8':

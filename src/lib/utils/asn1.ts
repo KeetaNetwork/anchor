@@ -124,11 +124,6 @@ export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount
 		if (typeof url === 'string' && typeof mimeType === 'string' && digestInfo) {
 			let cachedValue: Blob | null = null;
 
-			// Normalize the digest object for the $blob function
-			const digestAlgorithm = typeof digestInfo.digestAlgorithm === 'string'
-				? { oid: digestInfo.digestAlgorithm }
-				: digestInfo.digestAlgorithm;
-
 			return({
 				...normalizeDecodedASN1Object(obj, principals),
 				$blob: async function(additionalPrincipals?: ConstructorParameters<typeof EncryptedContainer>[0]): Promise<Blob> {
@@ -175,14 +170,12 @@ export function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount
 						}
 					}
 
-					// Verify hash - digestAlgorithm is now normalized to { oid: string }
+					// Verify hash (checkHashWithOID now accepts string OIDs directly)
 					if (!Buffer.isBuffer(digestInfo.digest)) {
 						throw(new TypeError('Digest value is not a buffer'));
 					}
-					const validHash = await checkHashWithOID(data, {
-						digest: digestInfo.digest,
-						digestAlgorithm: digestAlgorithm
-					});
+
+					const validHash = await checkHashWithOID(data, digestInfo);
 					if (validHash !== true) {
 						throw(validHash);
 					}

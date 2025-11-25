@@ -1152,24 +1152,14 @@ export class SharableCertificateAttributes {
 				const referenceValue = this.#attributes[name]?.references?.[referenceID];
 				const contentType = parent.external.contentType;
 
-				// After toJavaScriptObject(), digestAlgorithm is a string (OID), not {oid: string}
-				// Normalize it for checkHashWithOID
-				const digestAlgoField = 'digestAlgorithm' in digestInfo ? digestInfo.digestAlgorithm : undefined;
-				const normalizedDigest = {
-					...parent.digest,
-					digestAlgorithm: typeof digestAlgoField === 'string'
-						? { oid: digestAlgoField }
-						: digestAlgoField
-				};
-
 				return(async function() {
 					if (!referenceValue) {
 						throw(new Error(`Missing reference value for ID ${referenceID}`));
 					}
-					const referenceData = Buffer.from(referenceValue, 'base64');
 
+					const referenceData = Buffer.from(referenceValue, 'base64');
 					/* Verify the hash matches what was certified */
-					const checkHash = await checkHashWithOID(referenceData, normalizedDigest);
+					const checkHash = await checkHashWithOID(referenceData, parent.digest);
 					if (checkHash !== true) {
 						throw(checkHash);
 					}
