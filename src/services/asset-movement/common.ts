@@ -225,7 +225,7 @@ function commonToSignable(item: SignableObjectInput): Signable {
 			result.push([ prefix, current ]);
 		}
 
-		if (result.length > 1000) {
+		if (queue.length > 1000) {
 			throw(new KeetaAnchorUserError('Too much data to sign in commonToSignable'));
 		}
 	}
