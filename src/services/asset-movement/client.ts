@@ -407,7 +407,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					errorStr = 'Unknown error';
 				}
 
-				throw(new Error(`asset movement request failed: ${errorStr}`));
+				throw(new Error(`asset movement ${input.endpoint} request failed: ${errorStr}`));
 			}
 		}
 

@@ -194,6 +194,11 @@ export function commonJSONStringify(input: unknown): string {
 
 type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
 
+/**
+ * The maximum queue length for the commonToSignable function to prevent DoS attacks
+ */
+const TO_SIGNABLE_MAX_QUEUE_LENGTH = 250;
+
 function commonToSignable(item: SignableObjectInput): Signable {
 	const queue: [ string, SignableObjectInput ][] = [[ '', item ]];
 	const result: [ string, Signable[number] ][] = [];
@@ -225,7 +230,7 @@ function commonToSignable(item: SignableObjectInput): Signable {
 			result.push([ prefix, current ]);
 		}
 
-		if (queue.length > 1000) {
+		if (queue.length > TO_SIGNABLE_MAX_QUEUE_LENGTH) {
 			throw(new KeetaAnchorUserError('Too much data to sign in commonToSignable'));
 		}
 	}
