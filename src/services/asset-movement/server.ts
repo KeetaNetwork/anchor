@@ -199,7 +199,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				// Typescript needs any here, but eslint does not like it
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends [ any, Account.Account | null ]) => any ? R : never;
-			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => HTTPSignedFieldURLParameters;
+			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => Partial<HTTPSignedFieldURLParameters>;
 		}) {
 			const handler = config.assetMovement[input.handlerName];
 			if (handler === undefined) {

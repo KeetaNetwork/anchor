@@ -16,8 +16,8 @@ export interface HTTPSignedField {
 export const assertHTTPSignedField: (input: unknown) => HTTPSignedField = createAssertEquals<HTTPSignedField>();
 
 export interface HTTPSignedFieldURLParameters {
-	signedField: HTTPSignedField | null;
-	account: Account | null;
+	signedField: HTTPSignedField;
+	account: Account;
 }
 
 export function addSignatureToURL(input: URL | string, data: HTTPSignedFieldURLParameters): URL {
@@ -36,19 +36,15 @@ export function addSignatureToURL(input: URL | string, data: HTTPSignedFieldURLP
 			throw(new KeetaAnchorUserError(`URL already has signed field parameter: ${searchKey}`));
 		}
 
-		if (data.signedField) {
-			url.searchParams.set(`signed.${key}`, data.signedField[key]);
-		}
+		url.searchParams.set(`signed.${key}`, data.signedField[key]);
 	}
 
-	if (data.account) {
-		url.searchParams.set('account', data.account.publicKeyString.get());
-	}
+	url.searchParams.set('account', data.account.publicKeyString.get());
 
 	return(url);
 }
 
-export function parseSignatureFromURL(input: URL | string): HTTPSignedFieldURLParameters {
+export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFieldURLParameters> {
 	let url: URL;
 
 	if (typeof input === 'string') {
@@ -57,13 +53,15 @@ export function parseSignatureFromURL(input: URL | string): HTTPSignedFieldURLPa
 		url = new URL(input.toString());
 	}
 
-	const signedField = ((): HTTPSignedField | null => {
+	const retVal: Partial<HTTPSignedFieldURLParameters> = {};
+
+	const signedField = ((): HTTPSignedField | undefined => {
 		const nonce = url.searchParams.get('signed.nonce');
 		const timestamp = url.searchParams.get('signed.timestamp');
 		const signature = url.searchParams.get('signed.signature');
 
-		if (nonce === null && timestamp === null && signature === null) {
-			return(null);
+		if (!nonce && !timestamp && !signature) {
+			return(undefined);
 		}
 
 		if (!nonce || !timestamp || !signature) {
@@ -73,15 +71,22 @@ export function parseSignatureFromURL(input: URL | string): HTTPSignedFieldURLPa
 		return({ nonce, timestamp, signature });
 	})();
 
-	const account = ((): Account | null => {
+	if (signedField) {
+		retVal.signedField = signedField;
+	}
+
+	const account = ((): Account | undefined => {
 		const accountParam = url.searchParams.get('account');
-		if (accountParam === null) {
-			return(null);
+		if (!accountParam) {
+			return(undefined);
 		}
 
 		return(KeetaNet.lib.Account.fromPublicKeyString(accountParam).assertAccount());
 	})();
 
+	if (account) {
+		retVal.account = account;
+	}
 
-	return({ signedField, account });
+	return(retVal);
 }

@@ -370,7 +370,11 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body = JSON.stringify({ ...serializedRequest, signed });
 		} else {
 			if (signed) {
-				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account?.assertAccount() ?? null });
+				if (!input.account) {
+					throw(new Error('invariant: Account information is required for this operation, which should exist at this point'));
+				}
+
+				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account.assertAccount() });
 			}
 
 			if (input.body) {
