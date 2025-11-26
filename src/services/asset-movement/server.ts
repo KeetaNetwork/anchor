@@ -51,11 +51,9 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
-import type { HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
+import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-
-type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -452,15 +450,15 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			[ 'getTransferStatus', 'getTransferStatus/{id}' ]
 		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
 
-		for (const inp of routes) {
+		for (const routeInput of routes) {
 			let op;
 			let url;
-			if (Array.isArray(inp)) {
-				op = inp[0];
-				url = inp[1];
+			if (Array.isArray(routeInput)) {
+				op = routeInput[0];
+				url = routeInput[1];
 			} else {
-				op = inp;
-				url = inp;
+				op = routeInput;
+				url = routeInput;
 			}
 
 			if (this.assetMovement[op] !== undefined) {

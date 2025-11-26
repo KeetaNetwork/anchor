@@ -9,6 +9,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
+import { assertNever } from '../../lib/utils/never.js';
 
 
 type HexString = `0x${string}`;
@@ -128,7 +129,10 @@ export type AssetLocationLike = AssetLocation | AssetLocationString;
 // A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
 	location?: AssetLocationString;
-	id: string; // Keeta token public key string, evm contract address, or a currency code
+	/**
+	 * Keeta token public key string, evm contract address, or a currency code
+	 */
+	id: string;
 }
 
 export type Rail =
@@ -236,7 +240,12 @@ function commonToSignable(item: SignableObjectInput): Signable {
 	}
 
 	result.sort((a, b) => {
-		return(a[0].localeCompare(b[0]));
+		return(a[0].localeCompare(b[0], 'en-US', {
+			usage: 'sort',
+			numeric: true,
+			sensitivity: 'case',
+			ignorePunctuation: false
+		}));
 	});
 
 	return(result.map(item => item[1]));
@@ -253,9 +262,7 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 		} else if (input.chain.type === 'evm') {
 			return(`chain:evm:${input.chain.chainId}`);
 		} else {
-			// We can ignore this any as we have already checked the type above, and the type here is only for error reporting
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/consistent-type-assertions
-			throw(new Error(`Invalid chain type in AssetLocation ${(input.chain as any).type}`));
+			assertNever(input.chain);
 		}
 	} else if (input.type === 'bank-account') {
 		return(`bank-account:${assertBankAccountType(input.account.type)}`);
@@ -265,23 +272,19 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 }
 
 export function toAssetLocationFromString(input: string): AssetLocation {
-	const parts = input.split(':');
+	const [ kind, ...parts ] = input.split(':');
 
-	if (!parts || parts.length === 0) {
-		throw(new Error('Invalid AssetLocation string'));
-	}
-
-	if (parts[0] === 'chain') {
-		if (parts.length !== 3) {
+	if (kind === 'chain') {
+		if (parts.length !== 2) {
 			throw(new Error('Invalid AssetLocation chain string'));
 		}
 
-		const chainType = parts[1];
-		if (!parts[2] || typeof parts[2] !== 'string') {
+		const chainType = parts[0];
+		if (!parts[1] || typeof parts[1] !== 'string') {
 			throw(new Error('Invalid chain id in AssetLocation string'));
 		}
 
-		const chainId = BigInt(parts[2]);
+		const chainId = BigInt(parts[1]);
 
 		return({
 			type: 'chain',
@@ -301,14 +304,14 @@ export function toAssetLocationFromString(input: string): AssetLocation {
 				}
 			})()
 		});
-	} else if (parts[0] === 'bank-account') {
-		if (parts.length !== 2) {
+	} else if (kind === 'bank-account') {
+		if (parts.length !== 1) {
 			throw(new Error('Invalid AssetLocation bank-account string'));
 		}
 
 		return({
 			type: 'bank-account',
-			account: { type: assertBankAccountType(parts[1]) }
+			account: { type: assertBankAccountType(parts[0]) }
 		});
 	} else {
 		throw(new Error('Invalid AssetLocation string'));
@@ -874,13 +877,13 @@ export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => inp
 
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 
-type KeetaAssetMovementAnchorKYCShareNeededErrorTosFlow = {
+type KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow = {
 	type: 'url-flow';
 	url: string;
 }
 
 interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
-	tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTosFlow | undefined;
+	tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
 	neededAttributes: string[] | undefined;
 	shareWithPrincipals: ReturnType<Account['publicKeyString']['get']>[];
 	acceptedIssuers: string[];
@@ -900,13 +903,13 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 
 	readonly shareWithPrincipals: Account[];
 	readonly neededAttributes: string[] | undefined;
-	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTosFlow | undefined;
+	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
 	readonly acceptedIssuers: KeetaNetCertificate[];
 
 	constructor(args: {
 		neededAttributes?: string[] | undefined;
 		shareWithPrincipals: Account[];
-		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTosFlow | undefined;
+		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
 		acceptedIssuers: KeetaNetCertificate[];
 	}, message?: string) {
 		super(message ?? 'User Not Onboarded to Asset Movement Service');

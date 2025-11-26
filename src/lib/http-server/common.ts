@@ -3,6 +3,8 @@ import { KeetaAnchorUserError } from "../error.js";
 import { KeetaNet } from "../../client/index.js";
 import { createAssertEquals } from "typia";
 
+export type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>;
+
 export interface HTTPSignedField {
 	nonce: string;
 	/* Date and time of the request in ISO 8601 format */
