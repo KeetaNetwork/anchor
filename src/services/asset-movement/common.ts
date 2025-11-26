@@ -401,7 +401,7 @@ type ConvertToExternalRequest<
 	Signed = { signed?: HTTPSignedField | undefined }
 > =
 	ToJSONSerializable<Omit<Internal, keyof Overrides>> &
-	Overrides & 
+	Overrides &
 	Signed;
 
 export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
