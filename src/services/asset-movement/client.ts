@@ -556,7 +556,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse
 		});
 
-		this.logger?.debug(`list persistent forwarding address templates request successful, ${requestInformationJSON.templates}`);
+		this.logger?.debug(`list persistent forwarding address templates request successful`, requestInformationJSON.templates);
 
 		return(requestInformationJSON.templates);
 	}

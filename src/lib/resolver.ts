@@ -1591,8 +1591,8 @@ class Resolver {
 								continue;
 							}
 						} else {
-							const eitherId = [ pairSorted[0].id, pairSorted[1].id ];
-							if (!(eitherId.includes(assetCanonical.from)) || !(eitherId.includes(assetCanonical.to))) {
+							const eitherId = new Set([ pairSorted[0].id, pairSorted[1].id ]);
+							if (!(eitherId.has(assetCanonical.from)) || !(eitherId.has(assetCanonical.to))) {
 								continue;
 							}
 						}
