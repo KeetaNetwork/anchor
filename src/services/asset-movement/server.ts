@@ -228,7 +228,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				}
 
 				let account: Account.Account | null = null;
-				if (authenticationRequired || (request && 'signed' in request)) {
+				if (authenticationRequired || (request !== undefined && 'signed' in request)) {
 					let signed;
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
 						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url });
@@ -251,7 +251,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 						account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
 						signed = assertHTTPSignedField(request.signed);
 					} else {
-						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'))
+						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'));
 					}
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];

@@ -157,7 +157,7 @@ function validateURL(url: string | undefined): URL {
 	return(parsedURL);
 }
 
-async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria, logger?: Logger): Promise<GetEndpointsResult | null> {
 	const asset = request.asset ? { asset: convertAssetOrPairSearchInputToCanonical(request.asset) } : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
@@ -205,7 +205,16 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 					return({
 						url: function(params?: { [key: string]: string; }): URL {
-							let substitutedURL = decodeURI(url);
+							let substitutedURL;
+
+							try {
+								substitutedURL = decodeURI(url)
+							} catch (error) {
+								logger?.debug('getEndpoints', 'Failed to decode URI, using original URL for substitution', error, url);
+
+								substitutedURL = url;
+							}
+
 							for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
 								substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
 							}
@@ -265,7 +274,8 @@ class KeetaAssetMovementTransfer {
 	}
 
 	async getTransferStatus(): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
-		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
+		const account = this.request.account ? { account: this.request.account } : undefined;
+		return(await this.provider.getTransferStatus({ id: this.transfer.id, ...account }));
 	}
 
 	get transferId(): string {
@@ -397,7 +407,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					errorStr = 'Unknown error';
 				}
 
-				throw(new Error(`asset movement request failed: ${errorStr}`));
+				throw(new Error(`asset movement ${input.endpoint} request failed: ${errorStr}`));
 			}
 		}
 
@@ -660,7 +670,7 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 	}
 
 	async #lookup(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		const endpoints = await getEndpoints(this.resolver, request, shared);
+		const endpoints = await getEndpoints(this.resolver, request, shared, this.logger);
 		if (endpoints === null) {
 			return(null);
 		}
