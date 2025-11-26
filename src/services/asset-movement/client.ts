@@ -6,8 +6,6 @@ import type {
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
 import type {
-	KeetaAssetMovementAnchorInitiateTransferRequest,
-	KeetaAssetMovementAnchorGetTransferStatusRequest,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
@@ -15,22 +13,52 @@ import type {
 	ProviderSearchInput,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
-	AssetTransferInstructions
+	AssetTransferInstructions,
+	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
+	KeetaAssetMovementAnchorInitiateTransferClientRequest,
+	KeetaNetAccount,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
+	KeetaAssetMovementAnchorlistTransactionsClientRequest,
+	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
+	PersistentAddressTemplateData,
+	KeetaAssetMovementAnchorGetTransferStatusClientRequest,
+	KeetaAssetMovementAnchorShareKYCClientRequest,
+	KeetaAssetMovementAnchorShareKYCRequest,
+	KeetaAssetMovementAnchorShareKYCResponse
 } from './common.js';
 import {
 	assertKeetaSupportedAssets,
 	convertAssetLocationToString,
+	convertAssetOrPairSearchInputToCanonical,
 	convertAssetSearchInputToCanonical,
+	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
+	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
+	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
+	getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
+	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
+	isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
 	isKeetaAssetMovementAnchorGetExchangeStatusResponse,
 	isKeetaAssetMovementAnchorInitiateTransferResponse,
-	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+	isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
+	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+	isKeetaAssetMovementAnchorShareKYCResponse
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
-import type { ServiceMetadata, SharedLookupCriteria } from '../../lib/resolver.ts';
+import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
+import { createAssertEquals } from 'typia';
+import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
+import type { Signable } from '../../lib/utils/signing.js';
+import { SignData } from '../../lib/utils/signing.js';
+import { KeetaAnchorError } from '../../lib/error.js';
 
 // const PARANOID = true;
 
@@ -86,11 +114,18 @@ function typedAssetMovementServiceEntries<T extends object>(obj: T): [keyof T, T
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
 }
 
+const assertServiceMetadataEndpoint = createAssertEquals<ServiceMetadataEndpoint>();
+
 /**
  * A list of operations that can be performed by the Asset Movement Anchor service.
  */
 type KeetaAssetMovementAnchorOperations = {
-	[operation in keyof NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations']]?: (params?: { [key: string]: string; }) => URL;
+	[operation in keyof NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations']]?: {
+		url: (params?: { [key: string]: string; }) => URL;
+		options: {
+			authentication: ServiceMetadataAuthenticationType;
+		};
+	};
 };
 
 /**
@@ -122,14 +157,16 @@ function validateURL(url: string | undefined): URL {
 	return(parsedURL);
 }
 
-async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
-	const asset = request.asset ? { asset: convertAssetSearchInputToCanonical(request.asset) } : undefined;
+async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, shared?: SharedLookupCriteria, logger?: Logger): Promise<GetEndpointsResult | null> {
+	const asset = request.asset ? { asset: convertAssetOrPairSearchInputToCanonical(request.asset) } : undefined;
 	const from = request.from ? { from: convertAssetLocationToString(request.from) } : {};
 	const to = request.to ? { to: convertAssetLocationToString(request.to) } : {};
+	const rail = request.rail ? { rail: request.rail } : {};
 	const response = await resolver.lookup('assetMovement', {
 		...asset,
 		...from,
-		...to
+		...to,
+		...rail
 	}, shared);
 
 	if (response === undefined) {
@@ -142,21 +179,49 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
-		for (const [key, operation] of Object.entries(operations)) {
+		for (const [ key, operation ] of Object.entries(operations)) {
 			if (operation === undefined) {
 				continue;
 			}
 
 			Object.defineProperty(operationsFunctions, key, {
 				get: async function() {
-					const url = await operation('string');
-					return(function(params?: { [key: string]: string; }): URL {
-						let substitutedURL = url;
-						for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
-							substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
-						}
+					const endpointInfo = assertServiceMetadataEndpoint(await Resolver.Metadata.fullyResolveValuizable(operation));
 
-						return(validateURL(substitutedURL));
+					let url;
+					let authentication: ServiceMetadataAuthenticationType = {
+						type: 'none',
+						method: 'keeta-account'
+					};
+
+					if (typeof endpointInfo === 'string') {
+						url = endpointInfo;
+					} else {
+						url = endpointInfo.url;
+						if (endpointInfo.options?.authentication) {
+							authentication = endpointInfo.options.authentication;
+						}
+					}
+
+					return({
+						url: function(params?: { [key: string]: string; }): URL {
+							let substitutedURL;
+
+							try {
+								substitutedURL = decodeURI(url)
+							} catch (error) {
+								logger?.debug('getEndpoints', 'Failed to decode URI, using original URL for substitution', error, url);
+
+								substitutedURL = url;
+							}
+
+							for (const [paramKey, paramValue] of Object.entries(params ?? {})) {
+								substitutedURL = substitutedURL.replace(`{${paramKey}}`, encodeURIComponent(paramValue));
+							}
+
+							return(validateURL(substitutedURL));
+						},
+						options: { authentication }
 					});
 				},
 				enumerable: true,
@@ -199,17 +264,18 @@ class KeetaAssetMovementAnchorBase {
  */
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
-	private request: KeetaAssetMovementAnchorInitiateTransferRequest;
+	private request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
 	private transfer:  { id: string, instructionChoices: AssetTransferInstructions[] }
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
 	}
 
-	async getTransferStatus(): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
-		return(await this.provider.getTransferStatus({ id: this.transfer.id }));
+	async getTransferStatus(): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		const account = this.request.account ? { account: this.request.account } : undefined;
+		return(await this.provider.getTransferStatus({ id: this.transfer.id, ...account }));
 	}
 
 	get transferId(): string {
@@ -235,34 +301,150 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		this.parent = parent;
 	}
 
-	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<KeetaAssetMovementTransfer> {
-		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
-
-		const endpoints = this.serviceInfo.operations;
-		const initiateTransfer = await endpoints.initiateTransfer;
-		if (initiateTransfer === undefined) {
-			throw(new Error('Asset Movement service does not support initiateTransfer operation'));
+	async #getOperationData(operationName: keyof KeetaAssetMovementAnchorOperations, params?: { [key: string]: string; }) {
+		const endpoint = await this.serviceInfo.operations[operationName];
+		if (endpoint === undefined) {
+			throw(new Error(`Asset Movement service does not support ${operationName} operation`));
 		}
-		const initiateTransferURL = initiateTransfer();
-		const requestInformation = await fetch(initiateTransferURL, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json'
-			},
-			body: JSON.stringify({
-				...request
-			})
+
+		if (endpoint.options.authentication.method !== 'keeta-account') {
+			throw(new Error(`Unsupported authentication method: ${endpoint.options.authentication.method}`));
+		}
+
+		return({
+			url: endpoint.url(params),
+			auth: endpoint.options.authentication
+		})
+	}
+
+	async #makeRequest<
+		Response extends { ok: true } | { ok: false; error: string; },
+		Request = undefined,
+		SerializedRequest = Request
+	>(input: {
+		method: 'GET' | 'POST';
+		endpoint: keyof KeetaAssetMovementAnchorOperations;
+		account?: KeetaNetAccount | undefined;
+		params?: { [key: string]: string; } | undefined;
+		body?: Request | undefined;
+		serializeRequest?: (body: Request) => (SerializedRequest | Promise<Omit<SerializedRequest, 'signed'>>);
+
+		getSignedData?: (request: SerializedRequest) => Signable;
+		isResponse: (data: unknown) => data is Response;
+	}): Promise<Extract<Response, { ok: true }>>  {
+		const { url, auth } = await this.#getOperationData(input.endpoint, input.params);
+
+		let serializedRequest;
+
+		if (input.body && input.serializeRequest) {
+			serializedRequest = await input.serializeRequest(input.body);
+		} else {
+			serializedRequest = input.body;
+		}
+
+		let signed: HTTPSignedField | undefined;
+
+		if (auth.type === 'required' || (auth.type === 'optional' && input.account)) {
+			if (!input.account) {
+				throw(new Error('Account information is required for this operation'));
+			}
+
+			if (!input.getSignedData) {
+				throw(new Error('getSignedData function is required for signing the request'));
+			}
+
+			// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct in the arguments.
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const signable = input.getSignedData(serializedRequest as SerializedRequest);
+
+			signed = await SignData(input.account.assertAccount(), signable);
+		}
+
+		let usingUrl = url;
+		const headers: { [key: string]: string } = {
+			'Accept': 'application/json'
+		};
+		let body: BodyInit | null = null;
+		if (input.method === 'POST') {
+			headers['Content-Type'] = 'application/json';
+			body = JSON.stringify({ ...serializedRequest, signed });
+		} else {
+			if (signed) {
+				if (!input.account) {
+					throw(new Error('invariant: Account information is required for this operation, which should exist at this point'));
+				}
+
+				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account.assertAccount() });
+			}
+
+			if (input.body) {
+				throw(new Error('Body cannot be sent with GET requests'));
+			}
+		}
+
+		const requestInformation = await fetch(usingUrl, {
+			method: input.method, headers, body
 		});
 
 		const requestInformationJSON: unknown = await requestInformation.json();
-		if (!isKeetaAssetMovementAnchorInitiateTransferResponse(requestInformationJSON)) {
+		if (!input.isResponse(requestInformationJSON)) {
 			throw(new Error(`Invalid response from asset movement service: ${JSON.stringify(requestInformationJSON)}`));
 		}
 
 		if (!requestInformationJSON.ok) {
-			throw(new Error(`asset movement request failed: ${requestInformationJSON.error}`));
+			let errorStr;
+
+			let parsedError: KeetaAnchorError | null = null;
+			try {
+				parsedError = await KeetaAnchorError.fromJSON(requestInformationJSON);
+			} catch (error: unknown) {
+				this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, requestInformationJSON);
+			}
+
+			if (parsedError) {
+				throw(parsedError);
+			} else {
+				if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
+					errorStr = requestInformationJSON.error;
+				} else {
+					errorStr = 'Unknown error';
+				}
+
+				throw(new Error(`asset movement ${input.endpoint} request failed: ${errorStr}`));
+			}
 		}
+
+		// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct because we checked it above.
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(requestInformationJSON as Extract<Response, { ok: true }>);
+	}
+
+	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
+
+		const requestInformationJSON = await this.#makeRequest({
+			method: 'POST',
+			endpoint: 'initiateTransfer',
+			account: request.account,
+			serializeRequest(body) {
+				return({
+					...body,
+					value: String(body.value),
+					from: {
+						location: convertAssetLocationToString(body.from.location)
+					},
+					to: {
+						location: convertAssetLocationToString(body.to.location),
+						recipient: body.to.recipient
+					},
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+					account: body.account?.assertAccount().publicKeyString.get()
+				})
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorInitiateTransferResponse
+		});
 
 		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
@@ -270,101 +452,191 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(anchorTransfer);
 	}
 
-	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusRequest): Promise<KeetaAssetMovementAnchorGetTransferStatusResponse> {
-		const endpoints = this.serviceInfo.operations;
-		const getTransferStatus = await endpoints.getTransferStatus;
-		if (getTransferStatus === undefined) {
-			throw(new Error('Asset Movement service does not support getTransferStatus operation'));
-		}
-		const getTransferURL = getTransferStatus({ id: request.id });
-		const requestInformation = await fetch(getTransferURL, {
+	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		const requestInformationJSON = await this.#makeRequest({
 			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json'
-			}
+			endpoint: 'getTransferStatus',
+			account: request.account,
+			params: { id: request.id },
+			getSignedData: () => getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(request),
+			isResponse: isKeetaAssetMovementAnchorGetExchangeStatusResponse
 		});
-
-		const requestInformationJSON: unknown = await requestInformation.json();
-		if (!isKeetaAssetMovementAnchorGetExchangeStatusResponse(requestInformationJSON)) {
-			throw(new Error(`Invalid response from asset movement service: ${JSON.stringify(requestInformationJSON)}`));
-		}
-
-		if (!requestInformationJSON.ok) {
-			throw(new Error(`asset movement request failed: ${requestInformationJSON.error}`));
-		}
 
 		this.logger?.debug(`asset movement request successful, request ID ${request.id}`);
 
 		return(requestInformationJSON);
 	}
 
-	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Promise<KeetaAssetMovementAnchorCreatePersistentForwardingResponse | null> {
+	async createPersistentForwardingTemplate(request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
-		const endpoints = this.serviceInfo.operations;
-		const createPersistentForwarding = await endpoints.createPersistentForwarding;
-		if (createPersistentForwarding === undefined) {
-			throw(new Error('Asset Movement service does not support createPersistentForwarding operation'));
-		}
-		const createPersistentForwardingURL = createPersistentForwarding();
-		const requestInformation = await fetch(createPersistentForwardingURL, {
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
+			KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
+			KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest
+		>({
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json'
+			endpoint: 'createPersistentForwardingTemplate',
+			account: request.account,
+			serializeRequest(body) {
+				return({
+					...body,
+					location: convertAssetLocationToString(body.location),
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+					account: body.account?.assertAccount().publicKeyString.get()
+				})
 			},
-			body: JSON.stringify({
-				...request
-			})
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse
 		});
 
-		const requestInformationJSON: unknown = await requestInformation.json();
-		if (!isKeetaAssetMovementAnchorCreatePersistentForwardingResponse(requestInformationJSON)) {
-			throw(new Error(`Invalid response from create persistent forwarding request: ${JSON.stringify(requestInformationJSON)}`));
-		}
-
-		if (!requestInformationJSON.ok) {
-			throw(new Error(`create persistent forwarding request failed: ${requestInformationJSON.error}`));
-		}
-
-		this.logger?.debug(`create persistent forwarding request successful, ${requestInformationJSON.address}`);
+		this.logger?.debug(`create persistent forwarding request successful`, requestInformationJSON.address);
 
 		return(requestInformationJSON);
 	}
 
-	async listTransactions(request: KeetaAssetMovementAnchorlistTransactionsRequest): Promise<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse | null> {
-		this.logger?.debug(`List persistent forwarding transactions provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+	async createPersistentForwardingAddress(request: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
+		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
-		const endpoints = this.serviceInfo.operations;
-		const listTransactions = await endpoints.listTransactions;
-		if (listTransactions === undefined) {
-			throw(new Error('Asset Movement service does not support listTransactions operation'));
-		}
-		const listTransactionsURL = listTransactions();
-		const requestInformation = await fetch(listTransactionsURL, {
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+			KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
+			KeetaAssetMovementAnchorCreatePersistentForwardingRequest
+		>({
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json'
+			endpoint: 'createPersistentForwarding',
+			account: request.account,
+			serializeRequest(body) {
+				const base = {
+					sourceLocation: convertAssetLocationToString(body.sourceLocation),
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+					account: body.account?.assertAccount().publicKeyString.get()
+				} as const;
+
+				if ('persistentAddressTemplateId' in body) {
+					return({
+						...base,
+						persistentAddressTemplateId: body.persistentAddressTemplateId
+					});
+				} else {
+					return({
+						...base,
+						destinationAddress: body.destinationAddress,
+						destinationLocation: convertAssetLocationToString(body.destinationLocation)
+					});
+				}
 			},
-			body: JSON.stringify({
-				...request
-			})
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorCreatePersistentForwardingResponse
 		});
 
-		const requestInformationJSON: unknown = await requestInformation.json();
-		if (!isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse(requestInformationJSON)) {
-			throw(new Error(`Invalid response from list persistent transactions request: ${JSON.stringify(requestInformationJSON)}`));
-		}
+		this.logger?.debug(`create persistent forwarding request successful`, requestInformationJSON.address);
 
-		if (!requestInformationJSON.ok) {
-			throw(new Error(`list persistent transactions request failed: ${requestInformationJSON.error}`));
-		}
+		return(requestInformationJSON);
+	}
+
+	async listForwardingAddressTemplates(request: KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest): Promise<PersistentAddressTemplateData[]> {
+		this.logger?.debug(`Listing persistent forwarding address templates for provider ID: ${String(this.providerID)}`);
+
+		const requestInformationJSON = await this.#makeRequest({
+			method: 'POST',
+			endpoint: 'listPersistentForwardingTemplate',
+			account: request.account,
+			body: request,
+			serializeRequest(body) {
+				return({
+					account: body.account?.assertAccount().publicKeyString.get(),
+					asset: body.asset?.map(a => convertAssetSearchInputToCanonical(a)),
+					location: body.location?.map(l => convertAssetLocationToString(l))
+				});
+			},
+			getSignedData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse
+		});
+
+		this.logger?.debug(`list persistent forwarding address templates request successful`, requestInformationJSON.templates);
+
+		return(requestInformationJSON.templates);
+	}
+
+	async listTransactions(request: KeetaAssetMovementAnchorlistTransactionsClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>> {
+		this.logger?.debug(`List persistent forwarding transactions provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
+			KeetaAssetMovementAnchorlistTransactionsClientRequest,
+			KeetaAssetMovementAnchorlistTransactionsRequest
+		>({
+			method: 'POST',
+			endpoint: 'listTransactions',
+			account: request.account,
+			serializeRequest(body) {
+				return({
+					account: body.account?.assertAccount().publicKeyString.get(),
+					pagination: body.pagination,
+					persistentAddresses: body.persistentAddresses?.map(pa => ({
+						location: convertAssetLocationToString(pa.location),
+						...('persistentAddressTemplate' in pa ?
+							{ persistentAddressTemplate: pa.persistentAddressTemplate } :
+							{ persistentAddress: pa.persistentAddress }
+						)
+					})),
+					from: body.from ? {
+						location: convertAssetLocationToString(body.from.location),
+						userAddress: body.from.userAddress,
+						asset: body.from.asset ? convertAssetSearchInputToCanonical(body.from.asset) : undefined
+					} : undefined,
+					to: body.to ? {
+						location: convertAssetLocationToString(body.to.location),
+						userAddress: body.to.userAddress,
+						asset: body.to.asset ? convertAssetSearchInputToCanonical(body.to.asset) : undefined
+					} : undefined
+				});
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse
+		});
 
 		this.logger?.debug(`list persistent transactions request successful, ${requestInformationJSON.transactions}`);
 
 		return(requestInformationJSON);
+	}
+
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest): Promise<void> {
+		this.logger?.debug('Sharing KYC attributes');
+
+		await this.#makeRequest<
+			KeetaAssetMovementAnchorShareKYCResponse,
+			KeetaAssetMovementAnchorShareKYCClientRequest,
+			KeetaAssetMovementAnchorShareKYCRequest
+		>({
+			method: 'POST',
+			endpoint: 'shareKYC',
+			account: request.account,
+			async serializeRequest(body) {
+				let attributes;
+				if (typeof body.attributes === 'string') {
+					attributes = body.attributes;
+				} else {
+					attributes = await body.attributes.export({ format: 'string' });
+				}
+
+				return({
+					account: body.account.assertAccount().publicKeyString.get(),
+					attributes: attributes,
+					tosAgreement: body.tosAgreement
+				});
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorShareKYCRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
+		});
+
+		this.logger?.debug(`done sharing KYC attributes`);
+
 	}
 }
 
@@ -401,7 +673,7 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 	}
 
 	async #lookup(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		const endpoints = await getEndpoints(this.resolver, request, shared);
+		const endpoints = await getEndpoints(this.resolver, request, shared, this.logger);
 		if (endpoints === null) {
 			return(null);
 		}
