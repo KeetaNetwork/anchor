@@ -329,10 +329,8 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
 	const schema = CertificateAttributeSchema[name];
 
-	let encodedJS;
+	let encodedJS: ASN1.ASN1AnyJS;
 	try {
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
 		encodedJS = new ASN1.ValidateASN1(schema).fromJavaScriptObject(value);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -379,19 +377,17 @@ function encodeForSensitive(
 
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
 	const decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
 	const validator = new ASN1.ValidateASN1(schema);
 	// XXX:TODO Fix depth issue
-	// @ts-ignore
+	// @ts-expect-error
 	const plainObject = validator.toJavaScriptObject(decodedASN1);
 
 	// Post-process to:
 	// 1. Unwrap any remaining ASN.1-like objects
 	// 2. Add domain-specific $blob function to Reference objects
 	// XXX:TODO Fix depth issue
-	// @ts-ignore
+	// @ts-expect-error
 	const candidate = normalizeDecodedASN1(plainObject, principals);
 	return(asAttributeValue(name, candidate));
 }
@@ -854,7 +850,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 	}
 
 	private setPlainAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer): void {
-		// @ts-ignore
+		// @ts-expect-error
 		this.attributes[name] = { sensitive: false, value } satisfies typeof this.attributes[NAME];
 	}
 
@@ -1304,13 +1300,14 @@ export class SharableCertificateAttributes {
 					}
 
 					const referenceData = Buffer.from(referenceValue, 'base64');
+					const referenceDataAB = bufferToArrayBuffer(referenceData);
 					/* Verify the hash matches what was certified */
 					const checkHash = await checkHashWithOID(referenceData, parent.digest);
 					if (checkHash !== true) {
 						throw(checkHash);
 					}
 
-					return(new Blob([referenceData], { type: contentType }));
+					return(new Blob([referenceDataAB], { type: contentType }));
 				});
 			}
 
