@@ -557,7 +557,7 @@ export type BankAccountAddressResolved = {
 
 	country?: ISOCountryCode;
 
-	accountNumber: string;
+	accountNumber?: string;
 	bic?: string;
 
 	iban?: string;
