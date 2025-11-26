@@ -14,6 +14,7 @@ import { assertNever } from '../../lib/utils/never.js';
 
 type HexString = `0x${string}`;
 
+
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
 
@@ -393,6 +394,16 @@ export type OperationNames = keyof Operations;
 
 export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
 
+
+type ConvertToExternalRequest<
+	Internal extends object,
+	Overrides extends object,
+	Signed = { signed?: HTTPSignedField | undefined }
+> =
+	ToJSONSerializable<Omit<Internal, keyof Overrides>> &
+	Overrides & 
+	Signed;
+
 export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	account?: KeetaNetAccount | undefined;
 	asset: AssetOrPair;
@@ -402,12 +413,11 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	allowedRails?: Rail[];
 }
 
-export type KeetaAssetMovementAnchorInitiateTransferRequest = ToJSONSerializable<Omit<KeetaAssetMovementAnchorInitiateTransferClientRequest, 'asset' | 'from' | 'to'>> & {
+export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
 	from: { location: AssetLocationCanonical; };
 	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
-	signed?: HTTPSignedField;
-};
+}>;
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
 	return(commonToSignable({
@@ -636,12 +646,11 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateCli
 }
 
 
-export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = ToJSONSerializable<Omit<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest, 'asset' | 'location' | 'address'>> & {
+export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest, {
 	asset: AssetOrPairCanonical;
 	location: AssetLocationCanonical;
 	address: AddressResolved;
-	signed?: HTTPSignedField;
-}
+}>;
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
 	const pair = toAssetPair(input.asset);
@@ -828,10 +837,9 @@ export type KeetaAssetMovementAnchorShareKYCClientRequest = {
 	tosAgreement?: { id: string; };
 }
 
-export type KeetaAssetMovementAnchorShareKYCRequest = ToJSONSerializable<Omit<KeetaAssetMovementAnchorShareKYCClientRequest, 'attributes'>> & {
+export type KeetaAssetMovementAnchorShareKYCRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorShareKYCClientRequest, {
 	attributes: string;
-	signed: HTTPSignedField;
-};
+}, { signed: HTTPSignedField }>;
 
 export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_input: KeetaAssetMovementAnchorShareKYCClientRequest | KeetaAssetMovementAnchorShareKYCRequest): Signable {
 	return([ 'share-kyc' ]);
