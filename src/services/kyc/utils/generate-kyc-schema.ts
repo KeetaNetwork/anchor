@@ -399,7 +399,7 @@ function generateOidConstants() {
 
 function genSequenceSchema(typeName: string, fields: { [key: string]: { type: string; optional?: boolean }}, config: { field_order?: string[] }) {
 	const fieldOrder = config?.field_order ?? Object.keys(fields);
-	const structFields: { [key: string]: string } = {};
+	const structFields: { [key: string]: { schema: string; optional: boolean; isChoice: boolean }} = {};
 
 	for (const fname of fieldOrder) {
 		const fcfg = fields[fname];
@@ -409,6 +409,8 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 		const baseType = resolveToBaseType(fcfg.type);
 
 		let fieldSchema;
+		let isChoiceType = false;
+
 		// Check if field type is GeneralizedTime (date)
 		if (baseType === 'GeneralizedTime') {
 			fieldSchema = 'ASN1.ValidateASN1.IsDate';
@@ -433,6 +435,7 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 			const isExtension = oidSchema.extensions[fieldTypeSnake]?.fields ?? oidSchema.extensions[fieldType]?.fields;
 
 			const hasSchema = isChoice ?? isSequence ?? isSensitiveSequence ?? isSensitiveChoice ?? isExtension;
+			isChoiceType = !!(isChoice ?? isSensitiveChoice);
 
 			if (hasSchema) {
 				fieldSchema = `${fieldTypePascal}Schema`;
@@ -453,15 +456,41 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 			}
 		}
 
-		if (fcfg.optional) {
-			structFields[fname] = `{ optional: ${fieldSchema} }`;
-		} else {
-			structFields[fname] = fieldSchema;
-		}
+		// Store field metadata
+		structFields[fname] = {
+			schema: fieldSchema,
+			optional: fcfg.optional ?? false,
+			isChoice: isChoiceType
+		};
 	}
 
-	const containsObject = fieldOrder.map(function(fname) {
-		return(`\t\t${fname}: ${structFields[fname]}`);
+	// Check if ANY field is optional - if so, ALL fields need context tags for proper ordering
+	const hasAnyOptionalField = fieldOrder.some(function(fname) {
+		const fieldInfo = structFields[fname];
+		return(fieldInfo?.optional ?? false);
+	});
+
+	const containsObject = fieldOrder.map(function(fname, index) {
+		const fieldInfo = structFields[fname];
+		if (!fieldInfo) {
+			throw(new Error(`Field ${fname} not found in structFields`));
+		}
+
+		const baseSchema = fieldInfo.schema;
+		const isOptional = fieldInfo.optional;
+		const isChoiceField = fieldInfo.isChoice;
+		if (hasAnyOptionalField && !isChoiceField) {
+			const wrappedInContext = `{ type: 'context', kind: 'explicit', value: ${index}, contains: ${baseSchema} }`;
+			if (isOptional) {
+				return(`\t\t${fname}: { optional: ${wrappedInContext} }`);
+			} else {
+				return(`\t\t${fname}: ${wrappedInContext}`);
+			}
+		} else if (isOptional) {
+			return(`\t\t${fname}: { optional: ${baseSchema} }`);
+		} else {
+			return(`\t\t${fname}: ${baseSchema}`);
+		}
 	}).join(',\n');
 
 	return(`export const ${typeName}Schema: ASN1.Schema = {\n\ttype: 'struct',\n\tfieldNames: [${fieldOrder.map(f => `'${f}'`).join(', ')}],\n\tcontains: {\n${containsObject}\n\t}\n};`);
