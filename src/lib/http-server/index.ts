@@ -12,9 +12,9 @@ import { assertNever } from '../utils/never.js';
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 /**
- * The maximum size of a request (1MiB)
+ * The maximum size of a request (128MiB)
  */
-const MAX_REQUEST_SIZE = 1024 ** 2;
+const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {
