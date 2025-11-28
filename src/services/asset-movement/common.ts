@@ -9,8 +9,10 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import { assertNever } from '../../lib/utils/never.js';
+import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
+import { convertAssetLocationInputToCanonical } from './lib/location.js';
 
+export * from './lib/location.js';
 
 type HexString = `0x${string}`;
 
@@ -27,9 +29,12 @@ type TokenSearchInput = TokenAddress | TokenPublicKeyString;
 type TokenSearchCanonical = TokenPublicKeyString;
 
 export type EVMAsset = `evm:${HexString}`;
-export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | EVMAsset;
-export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | EVMAsset;
-export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | EVMAsset;
+export type TronAsset = `tron:${string}`;
+export type SolanaAsset = `solana:${string}`;
+export type ChainAssetString = SolanaAsset | EVMAsset | TronAsset | TokenPublicKeyString;
+export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
+export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
+export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | ChainAssetString;
 
 export function toEVMAsset(input: HexString): EVMAsset {
 	return(`evm:${input}`);
@@ -61,8 +66,47 @@ export function isEVMAsset(input: unknown): input is EVMAsset {
 	return(typeof input === 'string' && input.startsWith('evm:0x'));
 }
 
-export type AssetLocationInput = AssetLocation | AssetLocationString;
-export type AssetLocationCanonical = AssetLocationString;
+export function toTronAsset(input: string): TronAsset {
+	return(`tron:${input}`);
+}
+
+export function parseTronAsset(input: TronAsset): string {
+	const parts = input.split(':');
+	if (parts.length !== 2 || parts[0] !== 'tron') {
+		throw(new Error('Invalid TronAsset string'));
+	}
+
+	const value = parts[1];
+	if (!value || typeof value !== 'string' || value.length === 0) {
+		throw(new Error('Invalid hex string in TronAsset'));
+	}
+
+	return(value);
+}
+
+export function isTronAsset(input: unknown): input is TronAsset {
+	return(typeof input === 'string' && input.startsWith('tron:'));
+}
+
+export function toSolanaAsset(input: string): SolanaAsset {
+	return(`solana:${input}`);
+}
+
+export function parseSolanaAsset(input: SolanaAsset): string {
+	const parts = input.split(':');
+	if (parts.length !== 2 || parts[0] !== 'solana') {
+		throw(new Error('Invalid SolanaAsset string'));
+	}
+	const value = parts[1];
+	if (!value || typeof value !== 'string' || value.length === 0) {
+		throw(new Error('Invalid string in SolanaAsset'));
+	}
+	return(value);
+}
+
+export function isSolanaAsset(input: unknown): input is SolanaAsset {
+	return(typeof input === 'string' && input.startsWith('solana:'));
+}
 
 export type ProviderSearchInput = {
 	asset?: MovableAsset | AssetPair;
@@ -70,62 +114,6 @@ export type ProviderSearchInput = {
 	to?: AssetLocationInput;
 	rail?: Rail | Rail[];
 }
-/**
- * Defines the chain and id for a supported asset location
- */
-
-interface BaseLocation<Type extends 'chain' | 'bank-account'> {
-	type: Type;
-}
-
-export interface BankLocation extends BaseLocation<'bank-account'> {
-	account: {
-		type: BankAccountType;
-	}
-}
-
-interface BaseChainLocation<Data> extends BaseLocation<'chain'> {
-	type: 'chain';
-	chain: Data;
-}
-
-export type ChainLocation = {
-	type: 'chain';
-	chain: {
-		type: 'keeta';
-		networkId: bigint;
-	} | {
-		type: 'evm';
-		chainId: bigint;
-	}
-};
-
-export type ChainLocationType = ChainLocation['chain']['type'];
-
-export type PickChainLocation<T extends ChainLocationType = ChainLocationType> = BaseChainLocation<Extract<ChainLocation['chain'], { type: T }>>;
-
-export function isChainLocation<T extends ChainLocationType>(input: AssetLocation, chainType?: T): input is PickChainLocation<T> {
-	if (input.type !== 'chain') {
-		return(false);
-	}
-
-	if (chainType !== undefined) {
-		return(input.chain.type === chainType);
-	}
-
-	return(true);
-}
-
-export type AssetLocation = ChainLocation | BankLocation;
-
-export type BankAccountType = 'us' | 'iban-swift' | 'clabe' | 'pix';
-export const assertBankAccountType: (input: unknown) => BankAccountType = createAssert<BankAccountType>();
-
-export type AssetLocationString =
-	`chain:${'keeta' | 'evm'}:${bigint}` |
-	`bank-account:${BankAccountType}`;
-
-export type AssetLocationLike = AssetLocation | AssetLocationString;
 
 // A given asset should have a location and ID for the contract or public key for that asset
 export interface Asset {
@@ -136,8 +124,9 @@ export interface Asset {
 	id: string;
 }
 
-export type Rail =
-	'ACH' | 'ACH_DEBIT' | 'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'WIRE' | 'WIRE_RECEIVE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'CLABE_PUSH' | 'SEPA_PUSH';
+type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'WIRE_RECEIVE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'CLABE_PUSH' | 'SEPA_PUSH';
+type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND';
+export type Rail = FiatRails | CryptoRails;
 
 // Rails can be inbound, outbound or common (inbound and outbound)
 export interface AssetWithRails extends Asset {
@@ -251,93 +240,6 @@ function commonToSignable(item: SignableObjectInput): Signable {
 
 	return(result.map(item => item[1]));
 }
-
-export function convertAssetLocationToString(input: AssetLocationLike): AssetLocationString {
-	if (typeof input === 'string') {
-		return(input);
-	}
-
-	if (input.type === 'chain') {
-		if (input.chain.type === 'keeta') {
-			return(`chain:keeta:${input.chain.networkId}`);
-		} else if (input.chain.type === 'evm') {
-			return(`chain:evm:${input.chain.chainId}`);
-		} else {
-			assertNever(input.chain);
-		}
-	} else if (input.type === 'bank-account') {
-		return(`bank-account:${assertBankAccountType(input.account.type)}`);
-	} else {
-		throw(new Error(`Invalid AssetLocation type: ${JSON.stringify(input)}`));
-	}
-}
-
-export function toAssetLocationFromString(input: string): AssetLocation {
-	const [ kind, ...parts ] = input.split(':');
-
-	if (kind === 'chain') {
-		if (parts.length !== 2) {
-			throw(new Error('Invalid AssetLocation chain string'));
-		}
-
-		const chainType = parts[0];
-		if (!parts[1] || typeof parts[1] !== 'string') {
-			throw(new Error('Invalid chain id in AssetLocation string'));
-		}
-
-		const chainId = BigInt(parts[1]);
-
-		return({
-			type: 'chain',
-			chain: (() => {
-				if (chainType === 'keeta') {
-					return({
-						type: 'keeta',
-						networkId: chainId
-					});
-				} else if (chainType === 'evm') {
-					return({
-						type: 'evm',
-						chainId: chainId
-					});
-				} else {
-					throw(new Error(`Invalid chain type in AssetLocation string: ${chainType}`));
-				}
-			})()
-		});
-	} else if (kind === 'bank-account') {
-		if (parts.length !== 1) {
-			throw(new Error('Invalid AssetLocation bank-account string'));
-		}
-
-		return({
-			type: 'bank-account',
-			account: { type: assertBankAccountType(parts[0]) }
-		});
-	} else {
-		throw(new Error('Invalid AssetLocation string'));
-	}
-}
-
-export function convertAssetLocationInputToCanonical(input: AssetLocationInput): AssetLocationCanonical {
-	if (typeof input === 'string') {
-		return(input);
-	} else if (typeof input === 'object' && input !== null) {
-		return(convertAssetLocationToString(input));
-	}
-
-	throw(new Error(`Invalid AssetLocationInput type: ${typeof input}`));
-}
-
-
-export function toAssetLocation(input: AssetLocationInput): AssetLocation {
-	if (typeof input === 'string') {
-		return(toAssetLocationFromString(input));
-	} else {
-		return(input);
-	}
-}
-
 
 export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {
 	if (input instanceof CurrencyInfo.Currency || CurrencyInfo.Currency.isCurrencyCode(input) || CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
@@ -453,9 +355,73 @@ export type AssetTransferInstructions = ({
 	contractMethodArgs: string[];
 } | {
 	type: 'WIRE' | 'ACH' | 'SEPA_PUSH';
+
+	/**
+	 * The resolved bank account address details to send funds to
+	 */
 	account: BankAccountAddressResolved;
+
+	/**
+	 * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
+	 */
 	depositMessage?: string;
+
+	/**
+	 * Amount to send, as a string in the asset's smallest unit (e.g. cents for USD).
+	 */
 	value: string;
+} | {
+	type: 'TRON_SEND';
+	location: AssetLocationLike;
+
+	/**
+	 * Tron address to send to
+	 */
+	sendToAddress: string;
+
+	/**
+	 * Amount to send, as a string in the asset's smallest unit (e.g. SUN for TRX).
+	 */
+	value: string;
+
+	/**
+	 * TRC20 token contract address if non-TRX.
+	 * Omitting will indicate native TRX.
+	 */
+	tokenAddress?: string;
+} | {
+	type: 'BITCOIN_SEND';
+	location: AssetLocationLike;
+
+	/**
+	 * Bitcoin address to send to
+	 */
+	sendToAddress: string;
+
+	/**
+	 * Amount in sats to send, as a string
+	 */
+	value: string;
+} | {
+	type: 'SOLANA_SEND';
+	location: AssetLocationLike;
+
+	/**
+	 * Solana recipient address (base58 pubkey).
+	 */
+	sendToAddress: string;
+
+	/**
+	 * Amount to send, as a string (e.g. in lamports or
+	 * normalized units, depending on your convention).
+	 */
+	value: string;
+
+	/**
+	 * SPL token mint address if non-native SOL.
+	 * Omitting will indicate native SOL.
+	 */
+	tokenMintAddress?: string;
 }) & ({
 	assetFee: string;
 	totalReceiveAmount?: string;
