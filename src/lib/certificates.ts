@@ -19,6 +19,16 @@ import { checkHashWithOID } from './utils/external.js';
  */
 const DPO = KeetaNetClient.lib.Utils.Helper.debugPrintableObject.bind(KeetaNetClient.lib.Utils.Helper);
 
+/*
+ * Base Certificate types, aliased for convenience
+ */
+type BaseCertificateClass = typeof KeetaNetClient.lib.Utils.Certificate.Certificate;
+type BaseCertificate = InstanceType<BaseCertificateClass>;
+const BaseCertificate: BaseCertificateClass = KeetaNetClient.lib.Utils.Certificate.Certificate;
+type BaseCertificateBuilderClass = typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder;
+type BaseCertificateBuilder = InstanceType<BaseCertificateBuilderClass>;
+const BaseCertificateBuilder: BaseCertificateBuilderClass = KeetaNetClient.lib.Utils.Certificate.CertificateBuilder;
+
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
 
@@ -490,7 +500,7 @@ class SensitiveAttribute<T = ArrayBuffer> {
  */
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
-type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>[0]>;
+type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<BaseCertificateBuilderClass>[0]>;
 type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & {
 	/**
 	 * The key of the subject -- used for Sensitive Attributes as well
@@ -535,7 +545,7 @@ type CertificateKYCAttributeSchema = ASN1.SchemaMap<typeof CertificateKYCAttribu
 // Attribute input type sourced from generated definitions
 type CertificateAttributeInput<NAME extends CertificateAttributeNames> = CertificateAttributeValue<NAME>;
 
-export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.CertificateBuilder {
+export class CertificateBuilder extends BaseCertificateBuilder {
 	readonly #attributes: {
 		[name: string]: { sensitive: boolean; value: ArrayBuffer }
 	} = {};
@@ -597,7 +607,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		};
 	}
 
-	protected async addExtensions(...args: Parameters<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']>): ReturnType<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']> {
+	protected async addExtensions(...args: Parameters<BaseCertificateBuilder['addExtensions']>): ReturnType<BaseCertificateBuilder['addExtensions']> {
 		const retval = await super.addExtensions(...args);
 
 		const subject = args[0].subjectPublicKey;
@@ -641,7 +651,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 		if (certAttributes.length > 0) {
 			retval.push(
-				KeetaNetClient.lib.Utils.Certificate.CertificateBuilder.extension(oids.keeta.KYC_ATTRIBUTES, certAttributes)
+				BaseCertificateBuilder.extension(oids.keeta.KYC_ATTRIBUTES, certAttributes)
 			);
 		}
 
@@ -672,7 +682,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	}
 }
 
-export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
+export class Certificate extends BaseCertificate {
 	private readonly subjectKey: KeetaNetAccount;
 	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
 	static readonly SharableAttributes: typeof SharableCertificateAttributes;
@@ -690,7 +700,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		}
 	} = {};
 
-	constructor(input: ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.Certificate>[0], options?: ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.Certificate>[1] & { subjectKey?: KeetaNetAccount }) {
+	constructor(input: ConstructorParameters<BaseCertificateClass>[0], options?: ConstructorParameters<BaseCertificateClass>[1] & { subjectKey?: KeetaNetAccount }) {
 		super(input, options);
 
 		this.subjectKey = options?.subjectKey ?? this.subjectPublicKey;
@@ -797,6 +807,7 @@ export namespace SharableCertificateAttributesTypes {
 	};
 	export type ContentsSchema = {
 		certificate: string;
+		intermediates?: string[] | undefined;
 		attributes: {
 			[name: string]: {
 				sensitive: true;
@@ -816,6 +827,7 @@ type SharableCertificateAttributesContentsSchema = SharableCertificateAttributes
 
 export class SharableCertificateAttributes {
 	#certificate?: Certificate;
+	#intermediates?: Set<BaseCertificate>;
 	#attributes: {
 		[name: string]: {
 			sensitive: boolean;
@@ -893,7 +905,31 @@ export class SharableCertificateAttributes {
 	 * and a list of attribute names to include -- if no list is
 	 * provided, all attributes are included.
 	 */
-	static async fromCertificate(certificate: Certificate, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes> {
+	static async fromCertificate(certificate: Certificate, intermediates?: Set<BaseCertificate>, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes>;
+	/** @deprecated Use the overload with three parameters instead */
+	static async fromCertificate(certificate: Certificate, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes>;
+	static async fromCertificate(certificate: Certificate, intermediatesOrAttributeNames?: Set<BaseCertificate> | CertificateAttributeNames[], definitelyAttributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes> {
+		let intermediates: Set<BaseCertificate> | undefined = undefined;
+		let attributeNames: CertificateAttributeNames[] | undefined = undefined;
+
+		if (definitelyAttributeNames !== undefined) {
+			if (intermediatesOrAttributeNames !== undefined) {
+				if (Array.isArray(intermediatesOrAttributeNames)) {
+					throw(new TypeError('Expected Set<BaseCertificate> for intermediates'));
+				}
+				intermediates = intermediatesOrAttributeNames;
+			}
+			attributeNames = definitelyAttributeNames;
+		} else {
+			if (intermediatesOrAttributeNames !== undefined) {
+				if (Array.isArray(intermediatesOrAttributeNames)) {
+					attributeNames = intermediatesOrAttributeNames;
+				} else {
+					intermediates = intermediatesOrAttributeNames;
+				}
+			}
+		}
+
 		if (attributeNames === undefined) {
 			/*
 			 * We know the keys are whatever the Certificate says they are, so
@@ -985,6 +1021,9 @@ export class SharableCertificateAttributes {
 
 		const contentsString = JSON.stringify({
 			certificate: certificate.toPEM(),
+			intermediates: intermediates ? Array.from(intermediates).map(function(certificate) {
+				return(certificate.toPEM());
+			}) : undefined,
 			attributes: attributes
 		} satisfies SharableCertificateAttributesContentsSchema);
 
@@ -993,7 +1032,9 @@ export class SharableCertificateAttributes {
 		const container = EncryptedContainer.fromPlaintext(bufferToArrayBuffer(contentsBuffer), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
 
-		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
+		const retval = new SharableCertificateAttributes(containerBuffer, {
+			principals: temporaryUser
+		});
 		await retval.revokeAccess(temporaryUser);
 		return(retval);
 	}
@@ -1035,6 +1076,12 @@ export class SharableCertificateAttributes {
 		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
 		const contentsJSON: unknown = JSON.parse(contentsString);
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
+
+		this.#intermediates = new Set<BaseCertificate>();
+		for (const intermediatePEM of contents.intermediates ?? []) {
+			const intermediateCert = new BaseCertificate(intermediatePEM);
+			this.#intermediates.add(intermediateCert);
+		}
 
 		this.#certificate = new Certificate(contents.certificate);
 		const attributePromises = Object.entries(contents.attributes).map(async ([name, attr]): Promise<[string, { sensitive: boolean; value: ArrayBuffer; references?: { [id: string]: string; } | undefined; }]> => {
@@ -1100,6 +1147,14 @@ export class SharableCertificateAttributes {
 			throw(new Error('internal error: certificate not populated'));
 		}
 		return(this.#certificate);
+	}
+
+	async getIntermediates(): Promise<Set<BaseCertificate>> {
+		await this.#populate();
+		if (this.#intermediates && this.#intermediates.size > 0) {
+			return(new Set(this.#intermediates));
+		}
+		return(new Set());
 	}
 
 	async getAttributeBuffer(name: string): Promise<ArrayBuffer | undefined> {
