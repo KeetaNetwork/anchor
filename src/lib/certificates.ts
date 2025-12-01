@@ -377,12 +377,73 @@ function encodeForSensitive(
 	return(Buffer.from(String(value), 'utf-8'));
 }
 
+/**
+ * Create a backwards-compatible version of a schema by removing context tag wrappers from struct fields. 
+ */
+function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
+	// If it's a struct, unwrap context tags from its fields
+	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'struct') {
+		const unwrappedContains: { [key: string]: ASN1.Schema } = {};
+		for (const [fieldName, fieldSchema] of Object.entries(schema.contains)) {
+			// eslint-disable-next-line @typescript-eslint/no-use-before-define
+			unwrappedContains[fieldName] = unwrapFieldSchema(fieldSchema);
+		}
+
+		return({
+			type: 'struct',
+			fieldNames: schema.fieldNames,
+			contains: unwrappedContains
+		});
+	}
+
+	return(schema);
+}
+
+function unwrapFieldSchema(fieldSchema: ASN1.Schema): ASN1.Schema {
+	if (typeof fieldSchema === 'object' && fieldSchema !== null && 'optional' in fieldSchema) {
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
+		const unwrapped = unwrapSingleLayer(fieldSchema.optional);
+		return({ optional: unwrapped });
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	return(unwrapSingleLayer(fieldSchema));
+}
+
+function unwrapSingleLayer(schema: ASN1.Schema): ASN1.Schema {
+	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'context') {
+		return(schema.contains);
+	}
+
+	return(schema);
+}
+
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
-	const decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	const validator = new ASN1.ValidateASN1(schema);
+
+	let decodedASN1;
+	let usedSchema = schema;
+	try {
+		// Try with current schema (includes context tags for structs with optional fields)
+		// XXX:TODO Fix depth issue
+		// @ts-ignore
+		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
+	} catch (firstError) {
+		// Fallback: try with backwards-compatible schema (context tags stripped)
+		// This supports old certificates encoded before context tags were added
+		try {
+			const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
+			// XXX:TODO Fix depth issue
+			// @ts-ignore
+			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
+			usedSchema = backwardsCompatSchema;
+		} catch (secondError) {
+			// If both fail, throw the original error
+			throw(firstError);
+		}
+	}
+
+	const validator = new ASN1.ValidateASN1(usedSchema);
 	// XXX:TODO Fix depth issue
 	// @ts-ignore
 	const plainObject = validator.toJavaScriptObject(decodedASN1);
@@ -1386,5 +1447,8 @@ export const _Testing = {
 	ValidateASN1: ASN1.ValidateASN1,
 	BufferStorageASN1: ASN1.BufferStorageASN1,
 	JStoASN1: ASN1.JStoASN1,
-	normalizeDecodedASN1
+	normalizeDecodedASN1,
+	decodeAttribute,
+	unwrapContextTagsFromSchema,
+	CertificateAttributeSchema
 };
