@@ -328,7 +328,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 			let newOutput = existingEntry.output;
 			if (output !== undefined) {
 				logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-				newOutput = output !== null ? JSON.stringify(output) : null;
+				newOutput = output === null ? null : JSON.stringify(output);
 			}
 
 			let updateQuery: string;

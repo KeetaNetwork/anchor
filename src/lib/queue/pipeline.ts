@@ -385,7 +385,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 					id: `${this.id}::runner::${stage.name}`,
 					queue: queue,
 					logger: this.logger,
-					...(runnerArgsFirst ?? {})
+					...runnerArgsFirst
 				};
 				const runnerArgs = [runnerArgs0, ...(stage.args?.slice(1) ?? [])] as const;
 
