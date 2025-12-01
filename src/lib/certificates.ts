@@ -1019,11 +1019,22 @@ export class SharableCertificateAttributes {
 			}
 		}
 
+		if (!intermediates) {
+			intermediates = new Set();
+		}
+
+		let intermediatesJSON;
+		if (intermediates.size === 0) {
+			intermediatesJSON = undefined;
+		} else {
+			intermediatesJSON = Array.from(intermediates).map(function(intermediateCertificate) {
+				return(intermediateCertificate.toPEM());
+			});
+		}
+
 		const contentsString = JSON.stringify({
 			certificate: certificate.toPEM(),
-			intermediates: intermediates ? Array.from(intermediates).map(function(certificate) {
-				return(certificate.toPEM());
-			}) : undefined,
+			intermediates: intermediatesJSON,
 			attributes: attributes
 		} satisfies SharableCertificateAttributesContentsSchema);
 
@@ -1149,6 +1160,13 @@ export class SharableCertificateAttributes {
 		return(this.#certificate);
 	}
 
+	/**
+	 * Get the intermediate certificates included in this sharable
+	 * certificate container
+	 *
+	 * @return A set of BaseCertificate objects representing the
+	 *         intermediate certificates attached to this container
+	 */
 	async getIntermediates(): Promise<Set<BaseCertificate>> {
 		await this.#populate();
 		if (this.#intermediates && this.#intermediates.size > 0) {
@@ -1206,7 +1224,7 @@ export class SharableCertificateAttributes {
 						throw(new Error(`Missing reference value for ID ${referenceID}`));
 					}
 					const referenceData = Buffer.from(referenceValue, 'base64');
-					const referenceDataAB = arrayBufferToBuffer(referenceData);
+					const referenceDataAB = bufferToArrayBuffer(referenceData);
 
 					/* Verify the hash matches what was certified */
 					const checkHash = await checkHashWithOID(referenceData, parent.digest);
