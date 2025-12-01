@@ -912,15 +912,7 @@ export class SharableCertificateAttributes {
 		let intermediates: Set<BaseCertificate> | undefined = undefined;
 		let attributeNames: CertificateAttributeNames[] | undefined = undefined;
 
-		if (definitelyAttributeNames !== undefined) {
-			if (intermediatesOrAttributeNames !== undefined) {
-				if (Array.isArray(intermediatesOrAttributeNames)) {
-					throw(new TypeError('Expected Set<BaseCertificate> for intermediates'));
-				}
-				intermediates = intermediatesOrAttributeNames;
-			}
-			attributeNames = definitelyAttributeNames;
-		} else {
+		if (definitelyAttributeNames === undefined) {
 			if (intermediatesOrAttributeNames !== undefined) {
 				if (Array.isArray(intermediatesOrAttributeNames)) {
 					attributeNames = intermediatesOrAttributeNames;
@@ -928,6 +920,14 @@ export class SharableCertificateAttributes {
 					intermediates = intermediatesOrAttributeNames;
 				}
 			}
+		} else {
+			if (intermediatesOrAttributeNames !== undefined) {
+				if (Array.isArray(intermediatesOrAttributeNames)) {
+					throw(new TypeError('Expected Set<BaseCertificate> for intermediates'));
+				}
+				intermediates = intermediatesOrAttributeNames;
+			}
+			attributeNames = definitelyAttributeNames;
 		}
 
 		if (attributeNames === undefined) {
