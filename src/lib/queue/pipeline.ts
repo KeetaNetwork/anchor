@@ -18,7 +18,7 @@ import type { JSONSerializable } from '../utils/json.js';
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 class KeetaAnchorQueueRunnerAny<UREQUEST = any, URESPONSE = any, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE> {
-	protected processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor'] = () => { throw(new Error('not implemented')); }
+	protected processor(): ReturnType<KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']> { throw(new Error('not implemented')); }
 	protected decodeRequest(): UREQUEST { throw(new Error('not implemented')); }
 	protected decodeResponse(): URESPONSE | null { throw(new Error('not implemented')); }
 	protected encodeRequest(): REQUEST { throw(new Error('not implemented')); }

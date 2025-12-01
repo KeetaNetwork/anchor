@@ -2,14 +2,16 @@ import type { BrandedString, Brand } from '../utils/brand.ts';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.ts';
 import type { AssertNever } from '../utils/never.ts';
+import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
 import { MethodLogger } from './internal.js';
+import { AsyncDisposableStack } from '../utils/defer.js';
 
 export type KeetaAnchorQueueRequest<REQUEST> = REQUEST;
 export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
-export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved';
+export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
 export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
 	/**
 	 * The Job ID
@@ -33,7 +35,7 @@ export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
  * Extra information to provide to a request when adding an entry to the queue
  */
 export type KeetaAnchorQueueEntryExtra = {
-	[key in 'idempotentKeys' | 'id']?: KeetaAnchorQueueEntry<never, never>[key] | undefined;
+	[key in 'idempotentKeys' | 'id' | 'status']?: KeetaAnchorQueueEntry<never, never>[key] | undefined;
 };
 
 export type KeetaAnchorQueueFilter = {
@@ -274,6 +276,11 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			}
 		}
 
+		/**
+		 * The status to use for the new entry
+		 */
+		const status = info?.status ?? 'pending';
+
 		/*
 		 * The ID is a branded string, so we must cast the generated UUID
 		 */
@@ -287,7 +294,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			request: request,
 			output: null,
 			lastError: null,
-			status: 'pending',
+			status: status,
 			failures: 0,
 			created: new Date(),
 			updated: new Date(),
@@ -313,7 +320,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		}
 
 		if (oldStatus && entry.status !== oldStatus) {
-			throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
+			throw(new Errors.IncorrectStateAssertedError(id, oldStatus, entry.status));
 		}
 
 		logger?.debug(`Setting request with id ${String(id)} status from "${entry.status}" to "${status}"`);
@@ -451,6 +458,17 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * The processor function to use for processing entries
 	 */
 	protected abstract processor(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+
+	/**
+	 * The processor for stuck jobs (optional)
+	 */
+	protected processorStuck?(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+
+	/**
+	 * The processor for aborted jobs (optional)
+	 */
+	protected processorAborted?(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+
 	/**
 	 * Worker configuration (not implemented)
 	 */
@@ -473,11 +491,22 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	})[] = [];
 
 	/**
+	 * Initialization promise
+	 */
+	private initializePromise: Promise<void> | undefined;
+
+	/**
 	 * Configuration for this queue
 	 */
 	private maxRetries = 5;
 	private processTimeout = 300_000; /* 5 minutes */
 	private batchSize = 100;
+
+	/**
+	 * How many runners can process this queue in parallel
+	 */
+	protected maxRunners?: number;
+	private runnerLockKey: KeetaAnchorQueueRequestID;
 
 	/**
 	 * The ID of this runner for diagnostic purposes
@@ -492,9 +521,14 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			id: 0
 		};
 
-		/* XXX:TODO: Support multiple workers */
-		if (this.workers.id !== 0 || this.workers.count !== 1) {
-			throw(new Error('Worker ID other than 0 or worker count other than 1 is not supported yet'));
+		if (this.workers.id < 0) {
+			throw(new Error('Worker ID cannot be negative'));
+		}
+
+		if (this.maxRunners) {
+			if (this.workers.id > this.maxRunners - 1 || this.workers.count > this.maxRunners) {
+				throw(new Error('Worker ID other than 0 or worker count other than 1 is not supported yet'));
+			}
 		}
 
 		/*
@@ -502,9 +536,44 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		 */
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		this.workerID = this.workers.id as KeetaAnchorQueueWorkerID;
+
+		/*
+		 * The runner lock key, a unique key used to ensure only
+		 * one instance of a given runner is running at a time
+		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		this.runnerLockKey = `@runner-lock:9ba756f0-7aa2-41c7-a1ea-b010dc752ae8.worker.${this.workerID}` as unknown as KeetaAnchorQueueRequestID;
+
+		/**
+		 * Instance ID
+		 */
 		this.id = config.id ?? crypto.randomUUID();
 
 		this.methodLogger('new')?.debug('Created new queue runner attached to queue', this.queue.id);
+	}
+
+	private async initialize(): Promise<void> {
+		if (this.initializePromise) {
+			return(await this.initializePromise);
+		}
+
+		/* Ensure the sequential lock entry exists */
+		this.initializePromise = (async () => {
+			/*
+			 * We store `null` as the request value because we
+			 * don't have anything better to store -- it's not
+			 * always going to be compatible with the type
+			 * REQUEST but we know that we will never actually
+			 * use the value.
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			await this.queue.add(null as unknown as REQUEST, {
+				id: this.runnerLockKey,
+				status: '@internal'
+			});
+		})();
+
+		return(await this.initializePromise);
 	}
 
 	private methodLogger(method: string): Logger | undefined {
@@ -517,21 +586,34 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	}
 
 	/** @internal */
-	_testingSetParams(key: string, maxBatchSize: number, processTimeout: number, maxRetries: number): void {
+	_Testing(key: string): {
+		setParams: (maxBatchSize: number, processTimeout: number, maxRetries: number, maxWorkers?: number) => void;
+		queue: () => KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
+		markWorkerAsProcessing: () => Promise<void>;
+	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
 		}
-		this.batchSize = maxBatchSize;
-		this.processTimeout = processTimeout;
-		this.maxRetries = maxRetries;
-	}
 
-	/** @internal */
-	_testingQueue(key: string): KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
-			throw(new Error('This is a testing only method'));
-		}
-		return(this.queue);
+		return({
+			setParams: (maxBatchSize: number, processTimeout: number, maxRetries: number, maxWorkers?: number) => {
+				this.batchSize = maxBatchSize;
+				this.processTimeout = processTimeout;
+				this.maxRetries = maxRetries;
+				if (maxWorkers !== undefined) {
+					this.maxRunners = maxWorkers;
+				}
+			},
+			queue: () => {
+				return(this.queue);
+			},
+			markWorkerAsProcessing: async () => {
+				await this.queue.setStatus(this.runnerLockKey, 'processing', {
+					oldStatus: '@internal',
+					by: this.workerID
+				});
+			}
+		});
 	}
 
 	protected abstract decodeRequest(request: REQUEST): UREQUEST;
@@ -552,6 +634,8 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * Enqueue an item to be processed by the queue
 	 */
 	async add(request: UREQUEST, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+		await this.initialize();
+
 		const encodedRequest = this.encodeRequest(request);
 		const newID = await this.queue.add(encodedRequest, info);
 		return(newID);
@@ -561,6 +645,8 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * Get a single entry from storage by ID
 	 */
 	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<UREQUEST, URESPONSE> | null> {
+		await this.initialize();
+
 		const entry = await this.queue.get(id);
 		if (!entry) {
 			return(null);
@@ -573,6 +659,8 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * Get entries from storage with an optional filter
 	 */
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<UREQUEST, URESPONSE>[]> {
+		await this.initialize();
+
 		const entries = await this.queue.query(filter);
 		return(entries.map((entry) => {
 			return(this.decodeEntry(entry));
@@ -583,6 +671,8 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * Set the status of an entry in the queue
 	 */
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<URESPONSE>): Promise<void> {
+		await this.initialize();
+
 		let encodedOutput: RESPONSE | null | undefined = undefined;
 		if (ancillary?.output !== undefined) {
 			encodedOutput = this.encodeResponse(ancillary.output);
@@ -598,6 +688,8 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * Checks to see if the queue is runnable
 	 */
 	async runnable(): Promise<boolean> {
+		await this.initialize();
+
 		const pendingEntries = await this.queue.query({ status: 'pending', limit: 1 });
 		if (pendingEntries.length > 0) {
 			return(true);
@@ -613,6 +705,72 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		return(false);
 	}
 
+	private async getRunnerLock(cleanup: AsyncDisposableStack): Promise<boolean> {
+		const logger = this.methodLogger('getRunnerLock');
+
+		try {
+			logger?.debug('Acquiring sequential processing lock for worker ID', this.workerID);
+			await this.queue.setStatus(this.runnerLockKey, 'processing', {
+				oldStatus: '@internal',
+				by: this.workerID
+			});
+			logger?.debug('Acquired sequential processing lock for worker ID', this.workerID);
+		} catch (error: unknown) {
+			if (Errors.IncorrectStateAssertedError.isInstance(error)) {
+				return(false);
+			}
+
+			throw(error);
+		}
+
+		cleanup.defer(async () => {
+			for (let retry = 0; retry < 10; retry++) {
+				logger?.debug(`Releasing sequential processing lock try #${retry + 1} for worker ID`, this.workerID);
+				try {
+					await this.queue.setStatus(this.runnerLockKey, '@internal', {
+						oldStatus: 'processing',
+						by: undefined
+					});
+				} catch {
+					await asleep(1000);
+					continue;
+				}
+				break;
+			}
+		});
+
+		return(true);
+	}
+
+	private async maintainRunnerLock(): Promise<void> {
+		const logger = this.methodLogger('maintainRunnerLock');
+		const moment = new Date();
+		await using cleanup = new AsyncDisposableStack();
+
+		const obtained = await this.getRunnerLock(cleanup);
+		if (obtained) {
+			return;
+		}
+
+		/**
+		 * Check to see if the lock is stale
+		 */
+		const lockEntry = await this.queue.get(this.runnerLockKey);
+
+		if (!lockEntry) {
+			return;
+		}
+		const lockAge = moment.getTime() - lockEntry.updated.getTime();
+		if (lockAge > this.processTimeout * 10) {
+			logger?.warn('Processing lock is stale, taking over lock for worker ID', this.workerID);
+
+			await this.queue.setStatus(this.runnerLockKey, '@internal', {
+				oldStatus: 'processing',
+				by: this.workerID
+			});
+		}
+	}
+
 	/**
 	 * Run the queue processor
 	 *
@@ -624,29 +782,34 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * 	          time spent processing entries
 	 */
 	async run(timeout?: number): Promise<boolean> {
+		await this.initialize();
+
 		const logger = this.methodLogger('run');
 		const batchSize = this.batchSize;
 		const processTimeout = this.processTimeout;
+		await using cleanup = new AsyncDisposableStack();
 
 		let retval = true;
 
 		const startTime = Date.now();
 
-		for (let index = 0; index < batchSize; index++) {
-			const entries = await this.queue.query({ status: 'pending', limit: 1 });
-			const entry = entries[0];
-			if (entry === undefined) {
-				retval = false;
+		const locked = await this.getRunnerLock(cleanup);
+		if (!locked) {
+			logger?.debug('Another worker is already processing the queue, skipping run');
 
-				break;
-			}
+			return(true);
+		}
 
+		const processJobOk = Symbol('processJobOk');
+		const processJobTimeout = Symbol('processJobTimeout');
+
+		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<REQUEST, RESPONSE>, startingStatus: KeetaAnchorQueueStatus, processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>): Promise<typeof processJobTimeout | typeof processJobOk> => {
 			if (timeout !== undefined) {
 				const elapsed = Date.now() - startTime;
 				if (elapsed >= timeout) {
-					logger?.debug(`Timeout of ${timeout}ms reached after processing ${index + 1} entries`);
+					logger?.debug(`Timeout of ${timeout}ms reached after processing ${index} entries (${startingStatus} phase; elapsed ${elapsed}ms)`);
 
-					break;
+					return(processJobTimeout);
 				}
 			}
 
@@ -658,7 +821,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 				/*
 				 * Get a lock by setting it to 'processing'
 				 */
-				await this.queue.setStatus(entry.id, 'processing', { oldStatus: 'pending', by: this.workerID });
+				await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
 
 				/*
 				 * Process the entry with a timeout, if the timeout is reached
@@ -676,7 +839,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					}),
 					(async () => {
 						try {
-							return(await this.processor(this.decodeEntry(entry)));
+							return(await processor(this.decodeEntry(entry)));
 						} finally {
 							if (timeoutTimer) {
 								clearTimeout(timeoutTimer);
@@ -685,13 +848,21 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					})()
 				]);
 			} catch (error: unknown) {
+				if (Errors.IncorrectStateAssertedError.isInstance(error)) {
+					logger?.info(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
+
+					return(processJobOk);
+				}
+
 				logger?.error(`Failed to process request with id ${String(entry.id)}, setting state to "${setEntryStatus.status}":`, error);
 				setEntryStatus.status = 'failed_temporarily';
 				setEntryStatus.error = String(error);
 			}
 
 			if (setEntryStatus.status === 'processing') {
-				throw(new Error('Processor returned invalid status "processing"'));
+				logger?.error(`Processor for request with id ${String(entry.id)} returned invalid status "processing"`);
+				setEntryStatus.status = 'failed_temporarily';
+				setEntryStatus.error = 'Processor returned invalid status "processing"';
 			}
 
 			let by: KeetaAnchorQueueWorkerID | undefined = this.workerID;
@@ -701,8 +872,30 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
+			return(processJobOk);
 		}
 
+		/*
+		 * Process pending jobs first
+		 */
+		for (let index = 0; index < batchSize; index++) {
+			const entries = await this.queue.query({ status: 'pending', limit: 1 });
+			const entry = entries[0];
+			if (entry === undefined) {
+				retval = false;
+
+				break;
+			}
+
+			const result = await processJob(index, entry, 'pending', this.processor.bind(this));
+			if (result === processJobTimeout) {
+				break;
+			}
+		}
+
+		/*
+		 * Next process any pipes to other runners
+		 */
 		const pipes = [...this.pipes];
 		for (const pipe of pipes) {
 			let remainingTime: number | undefined = undefined;
@@ -717,6 +910,41 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			const pipeHasMoreWork = await pipe.target.run(remainingTime);
 			if (pipeHasMoreWork) {
 				retval = true;
+			}
+		}
+
+		/**
+		 * Process stuck or aborted jobs (if possible)
+		 */
+		const conditions = [{
+			status: 'aborted' as const,
+			processor: this.processorAborted?.bind(this)
+		}, {
+			status: 'stuck' as const,
+			processor: this.processorStuck?.bind(this)
+		}];
+
+		let timeoutReached = false;
+		for (const condition of conditions) {
+			if (condition.processor === undefined) {
+				continue;
+			}
+			for (let index = 0; index < batchSize; index++) {
+				const entries = await this.queue.query({ status: condition.status, limit: 1 });
+				const entry = entries[0];
+				if (entry === undefined) {
+					break;
+				}
+
+				const result = await processJob(index, entry, condition.status, condition.processor);
+				if (result === processJobTimeout) {
+					timeoutReached = true;
+					break;
+				}
+			}
+
+			if (timeoutReached) {
+				break;
 			}
 		}
 
@@ -969,41 +1197,50 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	}
 
 	async maintain(): Promise<void> {
+		const logger = this.methodLogger('maintain');
+
 		if (this.workers.id !== 0) {
 			return;
 		}
 
+		await this.initialize();
+		try {
+			await this.maintainRunnerLock();
+		} catch (error: unknown) {
+			logger?.debug('Failed to maintain runner lock:', error);
+		}
+
 		try {
 			await this.markStuckRequestsAsStuck();
-		} catch {
-			/* Ignore errors, we will try again later */
+		} catch (error: unknown) {
+			logger?.debug('Failed to mark stuck requests as stuck:', error);
 		}
 
 		try {
 			await this.requeueFailedRequests();
-		} catch {
-			/* Ignore errors, we will try again later */
+		} catch (error: unknown) {
+			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
 		try {
 			await this.moveCompletedToNextStage();
-		} catch {
-			/* Ignore errors, we will try again later */
+		} catch (error: unknown) {
+			logger?.debug('Failed to move completed requests to next stage:', error);
 		}
 
 		for (const pipe of this.pipes) {
 			try {
 				await pipe.target.maintain();
-			} catch {
-				/* Ignore errors, we will try again later */
+			} catch (error: unknown) {
+				logger?.debug(`Failed to maintain piped runner with ID ${pipe.target.id}:`, error);
 			}
 		}
 
 		if (this.queue.maintain) {
 			try {
 				await this.queue.maintain();
-			} catch {
-				/* Ignore errors, we will try again later */
+			} catch (error: unknown) {
+				logger?.debug(`Failed to maintain queue storage driver with ID ${this.queue.id}`, error);
 			}
 		}
 	}
@@ -1072,9 +1309,19 @@ export abstract class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializab
 export class KeetaAnchorQueueRunnerJSONConfigProc<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunnerJSON<UREQUEST, URESPONSE> {
 	protected readonly processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
 
-	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & { processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor']; }) {
+	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & {
+		processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
+		processorStuck?: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processorStuck'] | undefined;
+		processorAborted?: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processorAborted'] | undefined;
+	}) {
 		super(config);
 		this.processor = config.processor;
+		if (config.processorStuck) {
+			this.processorStuck = config.processorStuck;
+		}
+		if (config.processorAborted) {
+			this.processorAborted = config.processorAborted;
+		}
 	}
 }
 

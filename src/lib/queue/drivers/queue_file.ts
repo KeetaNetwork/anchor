@@ -4,7 +4,7 @@ import type { Logger } from '../../log/index.ts';
 
 import * as fs from 'fs';
 
-export class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDriverMemory {
+export default class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueStorageDriverMemory {
 	private readonly filePath: string;
 	private syncInProgress: Promise<void> | null = null;
 	readonly name = 'KeetaAnchorQueueStorageDriverFile';

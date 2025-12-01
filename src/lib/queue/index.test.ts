@@ -20,9 +20,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-import { KeetaAnchorQueueStorageDriverFile } from './drivers/queue_file.js';
+import KeetaAnchorQueueStorageDriverFile from './drivers/queue_file.js';
+import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
 
-import { KeetaAnchorQueueStorageDriverSQLite3 } from './drivers/queue_sqlite3.js';
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
 
@@ -138,12 +138,15 @@ test('Queue Runner Basic Tests', async function() {
 	});
 
 	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'basic-tests',
 		logger: logger
 	});
 
 	const processCallCountByKey = new Map<string, number>();
 	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+		id: 'basic-tests-runner',
 		queue: queue,
+		logger: logger,
 		processor: async function(entry) {
 			const key = entry.request.key;
 			if (key.startsWith('timedout_early')) {
@@ -162,8 +165,7 @@ test('Queue Runner Basic Tests', async function() {
 			}
 
 			return({ status: entry.request.newStatus, output: 'OK' });
-		},
-		logger: logger
+		}
 	});
 
 	/*
@@ -171,7 +173,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 100, 3);
+	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 100, 3);
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -275,7 +277,7 @@ test('Queue Runner Basic Tests', async function() {
 		const id = await runner.add({ key: 'stuck', newStatus: 'completed' });
 
 		/* Pretend the job is processing */
-		await runner._testingQueue('bc81abf8-e43b-490b-b486-744fb49a5082').setStatus(id, 'processing', { oldStatus: 'pending' });
+		await runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').queue().setStatus(id, 'processing', { oldStatus: 'pending' });
 		vi.advanceTimersByTime(100 * 10 + 200);
 		await runner.run();
 		{
@@ -325,6 +327,342 @@ test('Queue Runner Basic Tests', async function() {
 		}
 	}
 });
+
+test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'aborted-stuck-test',
+		logger: logger
+	});
+
+	const processCallCountByKey = new Map<string, number>();
+	const processAbortedCallCountByKey = new Map<string, number>();
+	const processStuckCallCountByKey = new Map<string, number>();
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+		id: 'aborted-stuck-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function(entry) {
+			const key = entry.request.key;
+			if (key.startsWith('timedout_early')) {
+				await asleep(500);
+			}
+
+			const callCount = processCallCountByKey.get(key) ?? 0;
+			processCallCountByKey.set(key, callCount + 1);
+
+			if (key.startsWith('timedout_late')) {
+				await asleep(500);
+			}
+
+			if (key.startsWith('error')) {
+				throw(new Error('Processing error'));
+			}
+
+			return({ status: entry.request.newStatus, output: 'OK' });
+		},
+		processorAborted: async function(entry) {
+			const callCount = processAbortedCallCountByKey.get(entry.request.key) ?? 0;
+			processAbortedCallCountByKey.set(entry.request.key, callCount + 1);
+
+			if (entry.request.key.includes('forward')) {
+				return({ status: 'completed', output: 'OK' });
+			}
+
+			if (entry.request.key.includes('backward')) {
+				return({ status: 'pending', output: null });
+			}
+			throw(new Error('Got some other kind of aborted job'));
+		},
+		processorStuck: async function(entry) {
+			const callCount = processStuckCallCountByKey.get(entry.request.key) ?? 0;
+			processStuckCallCountByKey.set(entry.request.key, callCount + 1);
+
+			if (entry.request.key.includes('forward')) {
+				return({ status: 'completed', output: 'OK' });
+			}
+
+			if (entry.request.key.includes('backward')) {
+				return({ status: 'pending', output: null });
+			}
+			throw(new Error('Got some other kind of stuck job'));
+		}
+	});
+
+	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 50, 3);
+
+	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
+
+	/**
+	 * Test that aborted jobs are handled by the aborted processor
+	 */
+	{
+		logger?.debug('aborted', '> Test that aborted jobs are handled by the aborted processor');
+
+		/*
+		 * Run the job, it should be aborted and then processed by the
+		 * aborted processor which will complete it (since the key contains 'forward')
+		 */
+		{
+			/*
+			 * First run to pick up the job -- it will timeout and consume the
+			 * entire time budget for the `run` call so it will not transition
+			 * from aborted to processing to completed in the same run
+			 */
+			vi.useRealTimers();
+			await runner.run(50);
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('aborted');
+
+			/* The main processor was called once -- resulting a timeout, leading to the aborted status */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+
+			/* We haven't run the queue again so the aborted processor should not have been called yet */
+			expect(processAbortedCallCountByKey.get('timedout_late_forward_aborted')).toBe(undefined);
+		}
+
+		{
+			/*
+			 * Next, run the process again and this time it
+			 * should be processed by the aborted processor
+			 */
+			vi.useRealTimers();
+			await runner.run();
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('completed');
+
+			/* The main processor was already called above and not called again, so should remain 1 */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+
+			/* The aborted processor should have been called once */
+			expect(processAbortedCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+		}
+	}
+
+	/**
+	 * Test that stuck jobs are handled by the stuck processor
+	 */
+	{
+		logger?.debug('stuck', '> Test that stuck jobs are handled by the stuck processor');
+		const id_stuck = await runner.add({ key: 'timedout_late_forward_stuck', newStatus: 'completed' });
+		/*
+		 * Move the job to the stuck status manually.  This
+		 * simulates a job that was processing but the worker
+		 * died without completing it.
+		 */
+		await runner.setStatus(id_stuck, 'stuck', { oldStatus: 'pending' });
+
+		/*
+		 * Run the job, it should be processed by the
+		 * stuck processor which will complete it (since the key contains 'forward')
+		 */
+		{
+			await runner.run();
+
+			const status_stuck = await runner.get(id_stuck);
+			expect(status_stuck?.status).toBe('completed');
+
+			/* Since we moved the job directly to stuck, it never ran so processCallCount is undefined */
+			expect(processCallCountByKey.get('timedout_late_forward_stuck')).toBe(undefined);
+
+			/* The stuck processor should have been called once */
+			expect(processStuckCallCountByKey.get('timedout_late_forward_stuck')).toBe(1);
+		}
+	}
+});
+
+
+for (const singleWorkerID of [true, false]) {
+	let mode = 'Multiple Workers IDs';
+	let name = 'multiworker';
+	if (singleWorkerID) {
+		mode = 'Single Worker ID'
+		name = 'singleworker';
+	}
+
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
+	test(`Queue Runner ${mode} Tests`, async function() {
+		const runnerCount = 10;
+		const messageCount = runnerCount * 5;
+
+		await using cleanup = new AsyncDisposableStack();
+		vi.useFakeTimers();
+		cleanup.defer(function() {
+			vi.useRealTimers();
+		});
+
+		await using queue = new KeetaAnchorQueueStorageDriverMemory({
+			id: `${name}-test`,
+			logger: logger
+		});
+
+		const processCallCountByKey = new Map<string, number>();
+		let running = false
+		function runnerArgs(index: number): ConstructorParameters<typeof KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>>[0] {
+			let configuredRunnerCount = runnerCount;
+			let configuredWorkerID = index;
+			if (singleWorkerID) {
+				configuredRunnerCount = 1;
+				configuredWorkerID = 0;
+			}
+			return({
+				id: `${name}-test-runner-${index}`,
+				queue: queue,
+				logger: logger,
+				workers: {
+					count: configuredRunnerCount,
+					id: configuredWorkerID
+				},
+				processor: async function(entry) {
+					await using cleanupProcessor = new AsyncDisposableStack();
+					if (singleWorkerID) {
+						if (running) {
+							throw(new Error('Processor is already running a job, but this runner is supposed to be sequential'));
+						}
+						running = true;
+						cleanupProcessor.defer(function() {
+							running = false;
+						});
+					}
+
+					const calls = processCallCountByKey.get(entry.request.key) ?? 0;
+					processCallCountByKey.set(entry.request.key, calls + 1);
+
+					vi.advanceTimersByTime(50);
+
+					return({ status: entry.request.newStatus, output: 'OK' });
+				}
+			});
+		};
+
+		const runners = Array.from({ length: runnerCount }).map(function(_ignored_value, index) {
+			const runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+				...runnerArgs(index)
+			});
+			cleanup.defer(async function() {
+				await runner.destroy();
+			});
+
+			runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(3, 100, 3, 1);
+
+			return(runner);
+		});
+
+		function getRunnerFromIndex(index: number) {
+			const runner = runners[index % runners.length];
+			if (!runner) {
+				throw(new Error('internal error: runner is undefined'));
+			}
+			return(runner);
+		}
+
+		const ids = await Promise.all(Array.from({ length: messageCount }).map(async function(_ignored_key, index) {
+			const runner = getRunnerFromIndex(index);
+			return(await runner.add({ key: `key_${index}`, newStatus: 'completed' }));
+		}));
+
+		/**
+		 * Helper function to call `runner.run` in parallel multiple times, with a specified timeout
+		 */
+		async function runInParallel(count: number, maxRetries: number, timeoutMs?: number): Promise<{ completed: number; failed: number; result: boolean | undefined; error: unknown; }> {
+			const results = await Promise.allSettled(Array.from({ length: count }).map(async function(_ignored_key, index) {
+				const runner = getRunnerFromIndex(index);
+
+				let retval = false;
+				for (let retries = 0; retries < maxRetries; retries++) {
+					retval = await runner.run(timeoutMs);
+				}
+
+				return(retval);
+			}));
+
+			let completedCount = 0;
+			let failedCount = 0;
+			let resultValue: boolean | undefined = undefined;
+			let resultError: unknown = undefined;
+			for (const result of results) {
+				if (result.status === 'fulfilled') {
+					completedCount++;
+					resultValue = result.value;
+				} else if (result.status === 'rejected') {
+					failedCount++;
+					resultError = result.reason;
+				}
+			}
+
+			return({ completed: completedCount, failed: failedCount, result: resultValue, error: resultError });
+		}
+
+		/**
+		 * Test that a sequential queue processes jobs one at a time
+		 */
+		{
+			logger?.debug(name, '> Test that no workers run the same job concurrently');
+
+			const maxRunAttempts = 20;
+
+			const results = await runInParallel(maxRunAttempts, 8, 100);
+			expect({ completed: results.completed, failed: results.failed }).toEqual({ completed: maxRunAttempts, failed: 0 });
+
+			/*
+			 * Ensure that every job is processed either 0 or 1 times only
+			 */
+			for (const [key, count] of processCallCountByKey.entries()) {
+				if (count !== 1) {
+					expect.fail(`Key ${key} was processed ${count} times, expected only once`);
+				}
+			}
+
+			/*
+			 * Ensure that the expected number of jobs were
+			 * processed since this is a deterministic process
+			 * because the timers are being faked
+			 */
+			if (singleWorkerID) {
+				expect(processCallCountByKey.size).toBe(10);
+			} else {
+				expect(processCallCountByKey.size).toBe(23);
+			}
+
+			const id0 = ids[0];
+			if (id0 === undefined) {
+				throw(new Error('internal error: ids[0] is undefined'));
+			}
+
+			/*
+			 * Check that all runners see the same completed status for the first job
+			 */
+			for (let runnerIndex = 0; runnerIndex < runners.length; runnerIndex++) {
+				const runner = getRunnerFromIndex(runnerIndex);
+				const entry = await runner.get(id0);
+				expect(entry?.status).toBe('completed');
+				expect(entry?.output).toBe('OK');
+			}
+		}
+	});
+}
 
 test('Pipeline Basic Tests', async function() {
 	await using cleanup = new AsyncDisposableStack();
@@ -411,10 +749,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
-	stage2._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
-	stage3._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
-	stage4._testingSetParams('bc81abf8-e43b-490b-b486-744fb49a5082', 100, 300_000, 10_000);
+	stage1._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage2._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage3._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage4._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -585,12 +923,24 @@ suite.sequential('Driver Tests', async function() {
 
 					await expect(async function() {
 						return(await queue.setStatus(id, 'completed', { oldStatus: 'pending' }));
-					}).rejects.toThrow();
+					}).rejects.toThrow(Errors.IncorrectStateAssertedError);
 
 					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
 					const completedEntry = await queue.get(id);
 					expect(completedEntry?.status).toBe('completed');
 				}, 300_000);
+
+				/* Test that we can add and get an entry with a specific status */
+				testRunner('Add Entry with Initial Status', async function() {
+					const id = await queue.add({ key: 'with_status' }, { status: 'moved' });
+					const entry = await queue.get(id);
+					expect(entry?.status).toBe('moved');
+
+					await queue.setStatus(id, 'completed', { output: 'result' });
+					const updatedEntry = await queue.get(id);
+					expect(updatedEntry?.status).toBe('completed');
+					expect(updatedEntry?.output).toBe('result');
+				});
 
 				/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
 				testRunner('Idempotent Add', async function() {

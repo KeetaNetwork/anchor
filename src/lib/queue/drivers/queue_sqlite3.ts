@@ -36,7 +36,7 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
-export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
+export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
 	private readonly logger: Logger | undefined;
 	private dbInternal: (() => Promise<sqlite.Database>) | null = null;
 	private dbInitialized = false;
@@ -257,13 +257,19 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			const currentTime = Date.now();
 			const requestJSON = JSON.stringify(request);
 
+			/**
+			 * The status to use for the new entry
+			 */
+			const status = info?.status ?? 'pending';
+
 			try {
 				await db.run(
 					`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
-					 VALUES (?, ?, ?, NULL, NULL, 'pending', ?, ?, NULL, 0)`,
+					 VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL, 0)`,
 					entryID,
 					this.pathStr,
 					requestJSON,
+					status,
 					currentTime,
 					currentTime
 				);
@@ -294,7 +300,7 @@ export class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializab
 			}
 
 			if (oldStatus && existingEntry.status !== oldStatus) {
-				throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
+				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
 			}
 
 			logger?.debug(`Setting request with id ${String(id)} status from "${existingEntry.status}" to "${status}"`);

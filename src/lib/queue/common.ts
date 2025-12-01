@@ -1,5 +1,5 @@
 import { KeetaAnchorError } from '../error.js';
-import type { KeetaAnchorQueueRequestID } from './index.js';
+import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueStatus } from './index.js';
 
 class KeetaAnchorQueueIdempotentKeyExistsError extends KeetaAnchorError {
 	static override readonly name: string = 'KeetaAnchorQueueIdempotentExists';
@@ -24,12 +24,37 @@ class KeetaAnchorQueueIdempotentKeyExistsError extends KeetaAnchorError {
 	}
 }
 
+class KeetaAnchorQueueIncorrectStateAssertedError extends KeetaAnchorError {
+	static override readonly name: string = 'KeetaAnchorQueueIncorrectState';
+	private readonly KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID = '9a298ad0-7144-483c-bac2-20c914df3697';
+
+	constructor(id: KeetaAnchorQueueRequestID, expectedStatus: KeetaAnchorQueueStatus, actualStatus: KeetaAnchorQueueStatus, message?: string) {
+		super(message ?? `The entry (${String(id)}) is in an incorrect state. Expected: ${expectedStatus}, Actual: ${actualStatus}`);
+		this.statusCode = -1;
+
+		Object.defineProperty(this, 'KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID', {
+			value: KeetaAnchorQueueIncorrectStateAssertedError.KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaAnchorQueueIncorrectStateAssertedError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID', KeetaAnchorQueueIncorrectStateAssertedError.KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID));
+	}
+}
+
 export const Errors: {
 	IdempotentExistsError: typeof KeetaAnchorQueueIdempotentKeyExistsError;
+	IncorrectStateAssertedError: typeof KeetaAnchorQueueIncorrectStateAssertedError;
 } = {
 	/**
 	 * An entry already exists in the queue that contains one of the idempotent
 	 * ID(s) as the requested entry.
 	 */
-	IdempotentExistsError: KeetaAnchorQueueIdempotentKeyExistsError
+	IdempotentExistsError: KeetaAnchorQueueIdempotentKeyExistsError,
+	/**
+	 * The entry is not in the state asserted by the request
+	 */
+	IncorrectStateAssertedError: KeetaAnchorQueueIncorrectStateAssertedError
 };
