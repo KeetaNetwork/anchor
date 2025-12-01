@@ -1019,11 +1019,9 @@ export class SharableCertificateAttributes {
 			}
 		}
 
-		if (!intermediates) {
-			intermediates = new Set();
-		}
 
 		let intermediatesJSON;
+		intermediates ??= new Set();
 		if (intermediates.size === 0) {
 			intermediatesJSON = undefined;
 		} else {
