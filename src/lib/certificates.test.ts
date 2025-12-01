@@ -414,11 +414,17 @@ test('Rust Certificate Interoperability', async function() {
 
 test('Certificate Sharable Attributes', async function() {
 	/*
+	 * Moment to process certificates in
+	 */
+	const moment = new Date();
+
+	/*
 	 * Build a certificate with a test value from the users public key
 	 */
-	const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
-	const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
-	const viewerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 2);
+	const rootIssuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
+	const issuerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
+	const subjectAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 2);
+	const viewerAccount = KeetaNetClient.lib.Account.fromSeed(testSeed, 3);
 
 	/* Subject Account without a Private Key, for later use */
 	const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(subjectAccount.publicKeyString.get());
@@ -426,12 +432,34 @@ test('Certificate Sharable Attributes', async function() {
 	/* Viewer Account without a Private Key, for later use */
 	const viewerAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(viewerAccount.publicKeyString.get());
 
+	/* Create a root CA Certificate */
+	const rootCABuilder = new Certificates.Certificate.Builder({
+		issuer: rootIssuerAccount,
+		subject: rootIssuerAccount,
+		serial: 1,
+		validFrom: new Date(moment.getTime() - 60_000),
+		validTo: new Date(moment.getTime() + 1000 * 60 * 60 * 24 * 365 * 10)
+	});
+	const rootCA = await rootCABuilder.build();
+
+	/* Create an intermediate CA Builder */
+	const issuerBuilder = new Certificates.Certificate.Builder({
+		issuer: rootIssuerAccount,
+		subject: issuerAccount,
+		issuerDN: rootCA.subjectDN,
+		serial: 10,
+		validFrom: new Date(moment.getTime() - 60_000),
+		validTo: new Date(moment.getTime() + 1000 * 60 * 60 * 24 * 365 * 5)
+	});
+	const issuerCA = await issuerBuilder.build();
+
 	/* Create a Certificate Builder */
 	const builder1 = new Certificates.Certificate.Builder({
 		issuer: issuerAccount,
 		subject: subjectAccountNoPrivate,
-		validFrom: new Date(Date.now() - 30_000),
-		validTo: new Date(Date.now() + 1000 * 60 * 60 * 24)
+		issuerDN: issuerCA.subjectDN,
+		validFrom: new Date(moment.getTime() - 60_000),
+		validTo: new Date(moment.getTime() + 1000 * 60 * 60 * 24)
 	});
 
 	/*
@@ -472,12 +500,18 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Create a sharable object and grant a third user access
 	 */
-	const sharable = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, ['fullName', 'email', 'documentDriversLicense', 'dateOfBirth', 'phoneNumber' /* non-existent */]);
-	await sharable.grantAccess(viewerAccountNoPrivate);
+	const sharableWithIntermediates = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, new Set([issuerCA]), ['fullName', 'email', 'documentDriversLicense', 'dateOfBirth', 'phoneNumber' /* non-existent */]);
+	const sharableWithoutIntermediates = await Certificates.SharableCertificateAttributes.fromCertificate(certificateWithPrivate, undefined, ['fullName', 'email', 'documentDriversLicense', 'dateOfBirth', 'phoneNumber' /* non-existent */]);
 
-	expect(sharable.principals.length).toBe(1);
-	const sharedSerialized = await sharable.export();
-	const sharedSerializedString = await sharable.export({ format: 'string' });
+	await sharableWithIntermediates.grantAccess(viewerAccountNoPrivate);
+	await sharableWithoutIntermediates.grantAccess(viewerAccountNoPrivate);
+
+	expect(sharableWithIntermediates.principals.length).toBe(1);
+	expect(sharableWithoutIntermediates.principals.length).toBe(1);
+
+	const sharedSerialized = await sharableWithIntermediates.export();
+	const sharedSerializedString = await sharableWithIntermediates.export({ format: 'string' });
+	const sharedWithoutIntermediatesSerializedString = await sharableWithoutIntermediates.export({ format: 'string' });
 
 	/*
 	 * Attempt to view with the incorrect account
@@ -510,6 +544,24 @@ test('Certificate Sharable Attributes', async function() {
 	const importedDOB = await imported.getAttribute('dateOfBirth');
 	expect(importedDOB instanceof Date).toEqual(true);
 	expect(importedDOB?.valueOf()).toEqual(testDOB.valueOf());
+
+	const importedIntermediates = await imported.getIntermediates();
+	expect(importedIntermediates.size).toBe(1);
+	const importedIntermediate = importedIntermediates.values().next().value;
+	expect(importedIntermediate).toBeDefined();
+	if (importedIntermediate === undefined) {
+		throw(new Error('internal error: Expected intermediate CA'));
+	}
+	expect(importedIntermediate.equals(issuerCA)).toBe(true);
+
+	/* Also verify importing without intermediates works */
+	{
+		const importedNoIntermediates = new Certificates.SharableCertificateAttributes(sharedWithoutIntermediatesSerializedString, { principals: viewerAccount });
+		const importedNoIntermediatesIntermediates = await importedNoIntermediates.getIntermediates();
+		expect(importedNoIntermediatesIntermediates.size).toBe(0);
+		expect(importedNoIntermediates.principals.length).toBe(1);
+		expect(await importedNoIntermediates.getAttribute('fullName')).toBe('Test User');
+	}
 
 	/*
 	 * Verify that the document is accessible
