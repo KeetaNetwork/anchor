@@ -387,6 +387,23 @@ function encodeForSensitive(
 	return(Buffer.from(String(value), 'utf-8'));
 }
 
+function unwrapSingleLayer(schema: ASN1.Schema): ASN1.Schema {
+	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'context') {
+		return(schema.contains);
+	}
+
+	return(schema);
+}
+
+function unwrapFieldSchema(fieldSchema: ASN1.Schema): ASN1.Schema {
+	if (typeof fieldSchema === 'object' && fieldSchema !== null && 'optional' in fieldSchema) {
+		const unwrapped = unwrapSingleLayer(fieldSchema.optional);
+		return({ optional: unwrapped });
+	}
+
+	return(unwrapSingleLayer(fieldSchema));
+}
+
 /**
  * Create a backwards-compatible version of a schema by removing context tag wrappers from struct fields.
  */
@@ -395,7 +412,6 @@ function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
 	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'struct') {
 		const unwrappedContains: { [key: string]: ASN1.Schema } = {};
 		for (const [fieldName, fieldSchema] of Object.entries(schema.contains)) {
-			// eslint-disable-next-line @typescript-eslint/no-use-before-define
 			unwrappedContains[fieldName] = unwrapFieldSchema(fieldSchema);
 		}
 
@@ -404,25 +420,6 @@ function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
 			fieldNames: schema.fieldNames,
 			contains: unwrappedContains
 		});
-	}
-
-	return(schema);
-}
-
-function unwrapFieldSchema(fieldSchema: ASN1.Schema): ASN1.Schema {
-	if (typeof fieldSchema === 'object' && fieldSchema !== null && 'optional' in fieldSchema) {
-		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		const unwrapped = unwrapSingleLayer(fieldSchema.optional);
-		return({ optional: unwrapped });
-	}
-
-	// eslint-disable-next-line @typescript-eslint/no-use-before-define
-	return(unwrapSingleLayer(fieldSchema));
-}
-
-function unwrapSingleLayer(schema: ASN1.Schema): ASN1.Schema {
-	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'context') {
-		return(schema.contains);
 	}
 
 	return(schema);
