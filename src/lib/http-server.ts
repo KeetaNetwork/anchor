@@ -22,6 +22,12 @@ export type Routes = {
 
 export interface KeetaAnchorHTTPServerConfig {
 	/**
+	 * Identifier for the server instance -- if one is not given
+	 * a random one will be generated.
+	 */
+	id?: string;
+
+	/**
 	 * The port for the HTTP server to listen on (default is an ephemeral port).
 	 */
 	port?: number;
@@ -35,6 +41,7 @@ export interface KeetaAnchorHTTPServerConfig {
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
 	readonly port: NonNullable<KeetaAnchorHTTPServerConfig['port']>;
 	readonly logger: NonNullable<KeetaAnchorHTTPServerConfig['logger']>;
+	readonly id: NonNullable<KeetaAnchorHTTPServerConfig['id']>;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#url: undefined | string | URL | ((object: this) => string);
@@ -43,6 +50,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	constructor(config: ConfigType) {
 		this.#config = { ...config };
 		this.port = config.port ?? 0;
+		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 	}
 

@@ -4,6 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
+import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
 const DEBUG = false;
@@ -393,14 +394,36 @@ test('FX Anchor Client Test', async function() {
 		const swapRequestBlock = await swapBlockBuilder.seal();
 
 		const exchangeWithBlock = await quoteFromEstimate.createExchange(swapRequestBlock);
+
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
-		expect(exchangeWithBlock.exchange.exchangeID).toBe(swapRequestBlock.hash.toString());
+		expect(exchangeWithBlock.exchange.exchangeID).toBeDefined();
+
+		/**
+		 * Wait for exchange to complete in the queue -- because we're using the same
+		 * account, if we do not wait for it to complete the account head block
+		 * will be wrong on the second block submission
+		 */
+		async function waitForExchangeToComplete(exchange: Awaited<ReturnType<typeof quoteFromEstimate.createExchange>>) {
+			let exchangeStatus: Awaited<ReturnType<typeof exchange.getExchangeStatus>>;
+			exchangeStatus = await exchange.getExchangeStatus();
+			while (exchangeStatus?.status !== 'completed') {
+				await asleep(100);
+				exchangeStatus = await exchange.getExchangeStatus();
+				logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchange.exchange.exchangeID}:`, exchangeStatus);
+			}
+			return(exchangeStatus);
+		}
+
+		const exchangeStatusWithBlock = await waitForExchangeToComplete(exchangeWithBlock);
+		expect(exchangeStatusWithBlock.exchangeID).toBe(exchangeWithBlock.exchange.exchangeID);
+		expect(exchangeStatusWithBlock.status).toBe('completed');
 
 		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBeDefined();
 
-		const exchangeStatus = await exchange.getExchangeStatus();
+		const exchangeStatus = await waitForExchangeToComplete(exchange);
 		expect(exchangeStatus.exchangeID).toBe(exchange.exchange.exchangeID);
+		expect(exchangeStatus.status).toBe('completed');
 
 		/* Multiply by 2 since we createExchange twice for the same swap */
 		cumulativeEURChange += BigInt(receiveAmount) * 2n;
@@ -418,7 +441,7 @@ test('FX Anchor Client Test', async function() {
 		const newLiquidityBalances = (await client.allBalances({ account: liquidityProvider })).filter(removeBaseTokenBalanceEntry);
 		expect(toJSONSerializable([...newLiquidityBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyUSD, balance: cumulativeUSDChange }, { token: testCurrencyEUR, balance: (initialLiquidityProviderEURBalance - cumulativeEURChange) }].sort(sortBalances)));
 	}
-});
+}, 30_000);
 
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);

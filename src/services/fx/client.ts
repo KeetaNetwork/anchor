@@ -393,7 +393,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
-		return({ exchangeID: requestInformationJSON.exchangeID });
+		return({
+			exchangeID: requestInformationJSON.exchangeID,
+			status: requestInformationJSON.status
+		});
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
@@ -415,7 +418,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
-		return({ exchangeID: requestInformationJSON.exchangeID });
+		return({
+			exchangeID: requestInformationJSON.exchangeID,
+			status: requestInformationJSON.status
+		});
 	}
 
 	/** @internal */

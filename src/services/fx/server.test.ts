@@ -96,9 +96,9 @@ test('FX Server Tests', async function() {
 
 		const getParams = [
 			{ test: '', error: 404 },
-			// eslint-disable-next-line @typescript-eslint/no-base-to-string
-			{ test: `/${{}}`, error: 500 }
-			// { test: '123', error: 500 } // TODO node client takes too long to timeout retries
+			{ test: '/[object Object]', error: 400 },
+			{ test: '123', error: 404 },
+			{ test: '/123', error: 400 }
 		]
 		for (const param of getParams) {
 			const serverURL = `${url}/api/getExchangeStatus${param.test}`;
