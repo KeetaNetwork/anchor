@@ -2,6 +2,7 @@ import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
+import type { Schema as ASN1Schema } from './utils/asn1.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';
 import { EncryptedContainer } from './encrypted-container.js';
@@ -666,7 +667,6 @@ test('Certificate Sharable Attributes', async function() {
 	expect(allAttributes.length).toBe(4);
 });
 
-
 test('Struct with optional fields', function() {
 	const schema = {
 		type: 'struct',
@@ -708,5 +708,74 @@ test('Struct with optional fields', function() {
 	const result2 = Certificates._Testing.normalizeDecodedASN1(validator.toJavaScriptObject(decoded2), []);
 	expect(result2).toEqual(onlyRequired);
 	expect(Object.keys(result2 ?? {})).toEqual(['required']);
+});
+
+test('Schema unwrapping utilities', function() {
+	const { unwrapSingleLayer, unwrapFieldSchema, unwrapContextTagsFromSchema, ValidateASN1 } = Certificates._Testing;
+
+	const stringSchema = { type: 'string' as const, kind: 'utf8' as const };
+	const wrapInContext = (schema: unknown, value = 0) => ({
+		type: 'context' as const,
+		kind: 'explicit' as const,
+		value,
+		contains: schema
+	});
+
+	const singleLayerCases = [
+		{ name: 'context tag', input: wrapInContext(stringSchema), expected: stringSchema },
+		{ name: 'non-context', input: stringSchema, expected: stringSchema },
+		{ name: 'primitive', input: ValidateASN1.IsInteger, expected: ValidateASN1.IsInteger }
+	];
+	for (const { name, input, expected } of singleLayerCases) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const result = unwrapSingleLayer(input as ASN1Schema);
+		expect(result, `unwrapSingleLayer: ${name}`).toEqual(expected);
+	}
+
+	const fieldSchemaCases = [
+		{ name: 'optional+context', input: { optional: wrapInContext(stringSchema) }, expected: { optional: stringSchema }},
+		{ name: 'required+context', input: wrapInContext(ValidateASN1.IsInteger, 1), expected: ValidateASN1.IsInteger },
+		{ name: 'optional no context', input: { optional: stringSchema }, expected: { optional: stringSchema }},
+		{ name: 'required no context', input: stringSchema, expected: stringSchema }
+	];
+	for (const { name, input, expected } of fieldSchemaCases) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const result = unwrapFieldSchema(input as ASN1Schema);
+		expect(result, `unwrapFieldSchema: ${name}`).toEqual(expected);
+	}
+
+	const structWithContext = {
+		type: 'struct' as const,
+		fieldNames: ['name', 'email'],
+		contains: {
+			name: wrapInContext(stringSchema, 0),
+			email: { optional: wrapInContext(stringSchema, 1) }
+		}
+	};
+	const structUnwrapped = {
+		type: 'struct',
+		fieldNames: ['name', 'email'],
+		contains: {
+			name: stringSchema,
+			email: { optional: stringSchema }
+		}
+	};
+	const structNoContext = {
+		type: 'struct' as const,
+		fieldNames: ['x'],
+		contains: { x: stringSchema }
+	};
+
+	const contextTagsCases = [
+		{ name: 'struct with context', input: structWithContext, expected: structUnwrapped },
+		{ name: 'struct no context', input: structNoContext, expected: structNoContext },
+		{ name: 'non-struct', input: stringSchema, expected: stringSchema },
+		{ name: 'primitive', input: ValidateASN1.IsOID, expected: ValidateASN1.IsOID }
+	];
+	for (const { name, input, expected } of contextTagsCases) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const result = unwrapContextTagsFromSchema(input as ASN1Schema);
+		expect(result, `unwrapContextTagsFromSchema: ${name}`).toEqual(expected);
+	}
 });
 

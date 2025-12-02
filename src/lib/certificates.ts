@@ -341,8 +341,6 @@ function encodeAttribute(name: CertificateAttributeNames, value: unknown): Array
 
 	let encodedJS;
 	try {
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
 		encodedJS = new ASN1.ValidateASN1(schema).fromJavaScriptObject(value);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -432,16 +430,12 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 	let usedSchema = schema;
 	try {
 		// Try with current schema (includes context tags for structs with optional fields)
-		// XXX:TODO Fix depth issue
-		// @ts-ignore
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
 	} catch (firstError) {
 		// Fallback: try with backwards-compatible schema (context tags stripped)
 		// This supports old certificates encoded before context tags were added
 		try {
 			const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
-			// XXX:TODO Fix depth issue
-			// @ts-ignore
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
 			usedSchema = backwardsCompatSchema;
@@ -451,22 +445,16 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		}
 	}
 
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
 	if (!decodedASN1) {
 		throw(new Error('Failed to decode ASN1 data'));
 	}
 
 	const validator = new ASN1.ValidateASN1(usedSchema);
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
 	const plainObject = validator.toJavaScriptObject(decodedASN1);
 
 	// Post-process to:
 	// 1. Unwrap any remaining ASN.1-like objects
 	// 2. Add domain-specific $blob function to Reference objects
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
 	const candidate = normalizeDecodedASN1(plainObject, principals);
 	return(asAttributeValue(name, candidate));
 }
@@ -1531,6 +1519,8 @@ export const _Testing = {
 	JStoASN1: ASN1.JStoASN1,
 	normalizeDecodedASN1,
 	decodeAttribute,
+	unwrapSingleLayer,
+	unwrapFieldSchema,
 	unwrapContextTagsFromSchema,
 	CertificateAttributeSchema
 };
