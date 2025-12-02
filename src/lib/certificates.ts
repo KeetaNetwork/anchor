@@ -1217,8 +1217,15 @@ export class SharableCertificateAttributes {
 				}));
 			}
 
-			const attrValue = await certificate.getAttributeValue(name);
-			await walkResultAndReplaceReferences(attrValue);
+			/*
+			 * Decode the attribute value to extract $blob references.
+			 * Skip for entityType which has schema compatibility issues
+			 * with old certificates and has no external references anyway.
+			 */
+			if (name !== 'entityType') {
+				const attrValue = await certificate.getAttributeValue(name);
+				await walkResultAndReplaceReferences(attrValue);
+			}
 
 			if (attr.sensitive) {
 				attributes[name] = {
