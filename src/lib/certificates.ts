@@ -430,6 +430,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 	let usedSchema = schema;
 	try {
 		// Try with current schema (includes context tags for structs with optional fields)
+		// @ts-expect-error
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
 	} catch (firstError) {
 		// Fallback: try with backwards-compatible schema (context tags stripped)
@@ -455,6 +456,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 	// Post-process to:
 	// 1. Unwrap any remaining ASN.1-like objects
 	// 2. Add domain-specific $blob function to Reference objects
+	// @ts-expect-error
 	const candidate = normalizeDecodedASN1(plainObject, principals);
 	return(asAttributeValue(name, candidate));
 }
