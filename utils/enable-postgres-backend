@@ -1,0 +1,33 @@
+#! /usr/bin/env bash
+if [[ $1 == "off" ]]
+then
+   if [[ -n $ANCHOR_TESTING_POSTGRES_DOCKER_ID ]]
+   then
+      docker stop $ANCHOR_TESTING_POSTGRES_DOCKER_ID > /dev/null
+   fi
+   echo "unset ANCHOR_TESTING_POSTGRES_DOCKER_ID"
+   echo "unset ANCHOR_TESTING_POSTGRES_HOST"
+   echo "unset ANCHOR_TESTING_POSTGRES_PORT"
+   echo "unset ANCHOR_TESTING_POSTGRES_USER"
+   echo "unset ANCHOR_TESTING_POSTGRES_PASS"
+else
+   id="$(docker run -e POSTGRES_PASSWORD=postgres --detach --publish-all --rm postgres)"
+   ALREADY_WAITED=0
+   until docker exec $id pg_isready -h localhost > /dev/null
+   do 
+      sleep 1;
+      ALREADY_WAITED=$(($ALREADY_WAITED+1))
+      if [ $ALREADY_WAITED -gt 30 ]
+      then
+         echo "Waiting for PG timed-out" 1>&2
+         exit 64
+      fi 
+   done
+   port="$(docker container inspect "${id}" | jq -crM --tab '.[0].NetworkSettings.Ports["5432/tcp"][] | select(.HostIp == "0.0.0.0") | .HostPort')"
+
+   echo "export ANCHOR_TESTING_POSTGRES_DOCKER_ID=${id}"
+   echo "export ANCHOR_TESTING_POSTGRES_HOST=127.0.0.1"
+   echo "export ANCHOR_TESTING_POSTGRES_PORT=${port}"
+   echo "export ANCHOR_TESTING_POSTGRES_USER=postgres"
+   echo "export ANCHOR_TESTING_POSTGRES_PASS=postgres"
+fi
