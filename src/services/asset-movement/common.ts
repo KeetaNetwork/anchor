@@ -860,7 +860,7 @@ interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
 	tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
 	neededAttributes: string[] | undefined;
 	shareWithPrincipals: ReturnType<Account['publicKeyString']['get']>[];
-	acceptedIssuers: string[];
+	acceptedIssuers: { name: string; value: string; }[][];
 }
 
 export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
@@ -877,13 +877,13 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	readonly shareWithPrincipals: Account[];
 	readonly neededAttributes: string[] | undefined;
 	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-	readonly acceptedIssuers: string[];
+	readonly acceptedIssuers: { name: string; value: string; }[][];
 
 	constructor(args: {
 		neededAttributes?: string[] | undefined;
 		shareWithPrincipals: Account[];
 		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-		acceptedIssuers: string[];
+		acceptedIssuers: { name: string; value: string; }[][];
 	}, message?: string) {
 		super(message ?? 'User Not Onboarded to Asset Movement Service');
 		this.statusCode = 403;
