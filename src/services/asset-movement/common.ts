@@ -869,7 +869,6 @@ export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (i
 
 type KeetaAssetMovementAnchorKYCShareNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties;
 
-type KeetaNetCertificate = InstanceType<typeof KeetaNet.lib.Utils.Certificate.Certificate>
 class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaAssetMovementAnchorKYCShareNeededError';
 	private readonly KeetaAssetMovementAnchorKYCShareNeededErrorObjectTypeID!: string;
