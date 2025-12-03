@@ -426,6 +426,13 @@ function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
 
+	// Special handling for entityType
+	if (name === 'entityType') {
+		const rawASN1 = ASN1.ASN1toJS(value);
+		const candidate = normalizeDecodedASN1(rawASN1, principals);
+		return(asAttributeValue(name, candidate));
+	}
+
 	let decodedASN1: ASN1.ASN1AnyJS | undefined;
 	let usedSchema = schema;
 	try {
