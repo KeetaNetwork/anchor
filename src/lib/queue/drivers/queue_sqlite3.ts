@@ -39,7 +39,7 @@ type IdempotentRow = {
 export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
 	private readonly logger: Logger | undefined;
 	private dbInternal: (() => Promise<sqlite.Database>) | null = null;
-	private dbInitialized = false;
+	private dbInitializationPromise?: Promise<boolean>;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverSQLite3';
 	readonly id: string;
@@ -48,7 +48,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
-		this.logger = options?.logger
+		this.logger = options?.logger;
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', this.path].join('.');
@@ -66,42 +66,46 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 
 		db.configure('busyTimeout', 100);
 
-		if (this.dbInitialized) {
+		if (this.dbInitializationPromise) {
+			await this.dbInitializationPromise;
 			return(db);
 		}
-		this.dbInitialized = true;
 
 		this.methodLogger('initializeDBConnection')?.debug('Initializing DB schema for queue storage driver');
-		await db.exec(`
-			CREATE TABLE IF NOT EXISTS queue_entries (
-				id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				request TEXT NOT NULL,
-				output TEXT,
-				lastError TEXT,
-				status TEXT NOT NULL,
-				created INTEGER NOT NULL,
-				updated INTEGER NOT NULL,
-				worker INTEGER,
-				failures INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (id, path)
-			);
+		this.dbInitializationPromise = (async function() {
+			await db.exec(`
+				CREATE TABLE IF NOT EXISTS queue_entries (
+					id TEXT NOT NULL,
+					path TEXT NOT NULL,
+					request TEXT NOT NULL,
+					output TEXT,
+					lastError TEXT,
+					status TEXT NOT NULL,
+					created INTEGER NOT NULL,
+					updated INTEGER NOT NULL,
+					worker INTEGER,
+					failures INTEGER NOT NULL DEFAULT 0,
+					PRIMARY KEY (id, path)
+				);
 
-			CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
-				entry_id TEXT NOT NULL,
-				idempotent_id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				UNIQUE (idempotent_id, path),
-				PRIMARY KEY (entry_id, idempotent_id, path),
-				FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
-			);
+				CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
+					entry_id TEXT NOT NULL,
+					idempotent_id TEXT NOT NULL,
+					path TEXT NOT NULL,
+					UNIQUE (idempotent_id, path),
+					PRIMARY KEY (entry_id, idempotent_id, path),
+					FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
+				);
 
-			CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
-			CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated);
-			CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id);
-		`);
+				CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
+				CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated);
+				CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id);
+			`);
 
-		this.dbInitialized = true;
+			return(true);
+		})();
+
+		await this.dbInitializationPromise;
 
 		return(db);
 	}
@@ -478,7 +482,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.dbInternal === null) {
-			throw(new Error('Asked to partition the instance has been destroyed'));
+			throw(new Error('Asked to partition the instance, but the instance has been destroyed'));
 		}
 
 		const retval = new KeetaAnchorQueueStorageDriverSQLite3<REQUEST, RESPONSE>({

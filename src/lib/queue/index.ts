@@ -115,7 +115,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * independent queues.
 	 *
 	 * The root partition is an empty array, and each element is
-	 * a heirarchical partition name.
+	 * a hierarchical partition name.
 	 */
 	readonly path: string[];
 
@@ -262,11 +262,11 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		if (idempotentIDs) {
 			const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
 			for (const idempotentID of idempotentIDs) {
-				const idemoptentEntryExists = this.queue.some(function(checkEntry) {
+				const idempotentEntryExists = this.queue.some(function(checkEntry) {
 					return(checkEntry.idempotentKeys?.has(idempotentID) ?? false);
 				});
 
-				if (idemoptentEntryExists) {
+				if (idempotentEntryExists) {
 					matchingIdempotentEntries.add(idempotentID);
 				}
 			}
@@ -873,7 +873,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
 			return(processJobOk);
-		}
+		};
 
 		/*
 		 * Process pending jobs first
@@ -1063,7 +1063,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
 
 					/**
-					 * Comptue a batch of entries to send to the next stage,
+					 * Compute a batch of entries to send to the next stage,
 					 * constrained to the max batch size of the pipe and
 					 * the entries which have non-null outputs
 					 */
@@ -1133,7 +1133,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 							/*
 							 * If we got some kind of other error adding these
 							 * items to the target queue runner, just skip them
-							 * and we will rety them on the next iteration
+							 * and we will retry them on the next iteration
 							 */
 							logger?.error(`Failed to move completed batch to next stage ${pipe.target.id}, will try to create another batch without them:`, error);
 

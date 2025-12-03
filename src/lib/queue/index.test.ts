@@ -492,7 +492,7 @@ for (const singleWorkerID of [true, false]) {
 	let mode = 'Multiple Workers IDs';
 	let name = 'multiworker';
 	if (singleWorkerID) {
-		mode = 'Single Worker ID'
+		mode = 'Single Worker ID';
 		name = 'singleworker';
 	}
 
@@ -519,7 +519,7 @@ for (const singleWorkerID of [true, false]) {
 		});
 
 		const processCallCountByKey = new Map<string, number>();
-		let running = false
+		let running = false;
 		function runnerArgs(index: number): ConstructorParameters<typeof KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>>[0] {
 			let configuredRunnerCount = runnerCount;
 			let configuredWorkerID = index;
@@ -983,11 +983,11 @@ suite.sequential('Driver Tests', async function() {
 						expect(error.idempotentIDsFound?.has(parentID1)).toBe(true);
 					}
 
-					// Add third child with multiple idempotent kes where none conflict - should succeed
+					// Add third child with multiple idempotent keys where none conflict - should succeed
 					const childID3 = generateRequestID();
 					await queue.add({ key: 'child3' }, { id: childID3, idempotentKeys: new Set([parentID2, parentID3]) });
 
-					// Try to add fourth child where one idempotent ID conflicts - should fail with only conflicting identempotent ID in idempotentIDsFound
+					// Try to add fourth child where one idempotent ID conflicts - should fail with only conflicting idempotent ID in idempotentIDsFound
 					const childID4 = generateRequestID();
 					const parentID4 = generateRequestID();
 					await queue.add({ key: 'parent4' }, { id: parentID4 });
@@ -1005,7 +1005,7 @@ suite.sequential('Driver Tests', async function() {
 						expect(error.idempotentIDsFound?.has(parentID4)).toBe(false);
 					}
 
-					// Try to add fifth child where multiple idempotent keys conflict - should fail with all conflicting identempotent IDs in idempotentIDsFound
+					// Try to add fifth child where multiple idempotent keys conflict - should fail with all conflicting idempotent IDs in idempotentIDsFound
 					const childID5 = generateRequestID();
 					try {
 						await queue.add({ key: 'child5' }, { id: childID5, idempotentKeys: new Set([parentID1, parentID2, parentID3]) });
