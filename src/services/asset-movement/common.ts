@@ -860,7 +860,7 @@ interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
 	tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
 	neededAttributes: string[] | undefined;
 	shareWithPrincipals: ReturnType<Account['publicKeyString']['get']>[];
-	acceptedIssuers: string[];
+	acceptedIssuers: { name: string; value: string; }[][];
 }
 
 export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
@@ -869,7 +869,6 @@ export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (i
 
 type KeetaAssetMovementAnchorKYCShareNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties;
 
-type KeetaNetCertificate = InstanceType<typeof KeetaNet.lib.Utils.Certificate.Certificate>
 class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaAssetMovementAnchorKYCShareNeededError';
 	private readonly KeetaAssetMovementAnchorKYCShareNeededErrorObjectTypeID!: string;
@@ -878,13 +877,13 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	readonly shareWithPrincipals: Account[];
 	readonly neededAttributes: string[] | undefined;
 	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-	readonly acceptedIssuers: KeetaNetCertificate[];
+	readonly acceptedIssuers: { name: string; value: string; }[][];
 
 	constructor(args: {
 		neededAttributes?: string[] | undefined;
 		shareWithPrincipals: Account[];
 		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-		acceptedIssuers: KeetaNetCertificate[];
+		acceptedIssuers: { name: string; value: string; }[][];
 	}, message?: string) {
 		super(message ?? 'User Not Onboarded to Asset Movement Service');
 		this.statusCode = 403;
@@ -934,9 +933,7 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 			shareWithPrincipals: this.shareWithPrincipals.map(function(account) {
 				return(account.publicKeyString.get());
 			}),
-			acceptedIssuers: this.acceptedIssuers.map(function(cert) {
-				return(cert.toString());
-			})
+			acceptedIssuers: this.acceptedIssuers
 		});
 	}
 
@@ -956,9 +953,7 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 				}),
 				neededAttributes: parsed.neededAttributes,
 				tosFlow: parsed.tosFlow,
-				acceptedIssuers: parsed.acceptedIssuers.map(function(certString) {
-					return(new KeetaNet.lib.Utils.Certificate.Certificate(certString));
-				})
+				acceptedIssuers: parsed.acceptedIssuers
 			},
 			message
 		);
