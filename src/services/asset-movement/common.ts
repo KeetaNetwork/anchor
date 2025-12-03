@@ -878,13 +878,13 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	readonly shareWithPrincipals: Account[];
 	readonly neededAttributes: string[] | undefined;
 	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-	readonly acceptedIssuers: KeetaNetCertificate[];
+	readonly acceptedIssuers: string[];
 
 	constructor(args: {
 		neededAttributes?: string[] | undefined;
 		shareWithPrincipals: Account[];
 		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
-		acceptedIssuers: KeetaNetCertificate[];
+		acceptedIssuers: string[];
 	}, message?: string) {
 		super(message ?? 'User Not Onboarded to Asset Movement Service');
 		this.statusCode = 403;
@@ -934,9 +934,7 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 			shareWithPrincipals: this.shareWithPrincipals.map(function(account) {
 				return(account.publicKeyString.get());
 			}),
-			acceptedIssuers: this.acceptedIssuers.map(function(cert) {
-				return(cert.toString());
-			})
+			acceptedIssuers: this.acceptedIssuers
 		});
 	}
 
@@ -956,9 +954,7 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 				}),
 				neededAttributes: parsed.neededAttributes,
 				tosFlow: parsed.tosFlow,
-				acceptedIssuers: parsed.acceptedIssuers.map(function(certString) {
-					return(new KeetaNet.lib.Utils.Certificate.Certificate(certString));
-				})
+				acceptedIssuers: parsed.acceptedIssuers
 			},
 			message
 		);

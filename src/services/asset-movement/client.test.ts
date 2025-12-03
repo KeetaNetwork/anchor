@@ -517,7 +517,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					throw(new Errors.KYCShareNeeded({
 						shareWithPrincipals: [ kycSharePrincipal ],
 						neededAttributes: [ 'firstName' ],
-						acceptedIssuers: [ rootCertificate.certificate ],
+						acceptedIssuers: [ 'testSubjectDN' ],
 						tosFlow: {
 							type: 'url-flow',
 							url: 'https://example.com/tos'
@@ -652,7 +652,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 	expect(kycNeededError.neededAttributes).toEqual([ 'firstName' ]);
 	expect(kycNeededError.acceptedIssuers.length).toEqual(1);
-	expect(kycNeededError.acceptedIssuers[0]?.hash().compareHexString(rootCertificate.certificate.hash())).toEqual(true);
+	expect(kycNeededError.acceptedIssuers).toEqual([ 'testSubjectDN' ]);
 	expect(kycNeededError.shareWithPrincipals.length).toEqual(1);
 	expect(kycNeededError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toEqual(true);
 	expect(kycNeededError.tosFlow).toEqual({
