@@ -423,23 +423,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	};
 
 	const kycCertificateIssuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-
-	const rootCertificate = await (async () => {
-		const issuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-
-		const certificateBuilder = new CertificateBuilder({
-			subject: kycCertificateIssuer,
-			issuer: issuer,
-			serial: 3,
-			validFrom: new Date(Date.now() - 30_000),
-			validTo: new Date(Date.now() + 120_000)
-		});
-
-		const certificate = await certificateBuilder.build();
-
-		return({ certificate, issuer });
-	})();
-
 	const kycSharePrincipal = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 
