@@ -78,7 +78,7 @@ function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount[]): un
 	// Unwrap ASN.1-like objects from ambiguous schemas (IsAnyString, IsAnyDate, IsBitString)
 	// These are plain objects like { type: 'string', kind: 'utf8', value: 'text' }
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	const obj = input as { type?: string; kind?: string; value?: unknown; unusedBits?: number };
+	const obj = input as { type?: string; kind?: string; value?: unknown; unusedBits?: number; contains?: unknown };
 	if (obj.type === 'string' && 'value' in obj && typeof obj.value === 'string') {
 		return(obj.value);
 	}
@@ -423,6 +423,78 @@ function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
 	return(schema);
 }
 
+/**
+ * Fallback decoder for entityType attribute from old certificates.
+ * Transforms raw ASN1 into the expected EntityType structure.
+ */
+function decodeEntityTypeFallback(value: ArrayBuffer, principals: KeetaNetAccount[]): unknown {
+	const rawASN1 = ASN1.ASN1toJS(value);
+	// Per EntityTypeSchema: value 0 = organization, value 1 = person
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const choiceTag = (Array.isArray(rawASN1) ? rawASN1[0] : rawASN1) as { type?: string; value?: number; contains?: unknown };
+	if (choiceTag?.type === 'context' && typeof choiceTag.value === 'number') {
+		/*
+		 * Transform schemeName CHOICE
+		 */
+		function transformSchemeName(raw: unknown): unknown {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const ctx = raw as { type?: string; value?: number; contains?: unknown };
+			if (ctx?.type === 'context' && typeof ctx.value === 'number') {
+				return(normalizeDecodedASN1(ctx.contains, principals));
+			}
+
+			return(normalizeDecodedASN1(raw, principals));
+		}
+
+		/*
+		 * Transform identification arrays into proper objects
+		 */
+		function transformIdentifications(items: unknown): unknown {
+			if (!Array.isArray(items)) {
+				return(normalizeDecodedASN1(items, principals));
+			}
+
+			return(items.map(function(item) {
+				if (!Array.isArray(item)) {
+					return(normalizeDecodedASN1(item, principals));
+				}
+				// Position 0 is always 'id'
+				// Position 1 could be 'issuer' (string) or 'schemeName' (object/array)
+				// Position 2 (if exists) is 'schemeName'
+				const result: { id?: unknown; issuer?: unknown; schemeName?: unknown } = {};
+				if (item.length >= 1) {
+					result.id = normalizeDecodedASN1(item[0], principals);
+				}
+
+				if (item.length === 2) {
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+					const val = item[1];
+					if (typeof val === 'string') {
+						result.issuer = val;
+					} else {
+						result.schemeName = transformSchemeName(val);
+					}
+				} else if (item.length >= 3) {
+					result.issuer = normalizeDecodedASN1(item[1], principals);
+					result.schemeName = transformSchemeName(item[2]);
+				}
+
+				return(result);
+			}));
+		}
+
+		const transformed = transformIdentifications(choiceTag.contains);
+		if (choiceTag.value === 0) {
+			return({ organization: transformed });
+		} else if (choiceTag.value === 1) {
+			return({ person: transformed });
+		}
+	}
+
+	// Fallback to raw normalized output
+	return(normalizeDecodedASN1(rawASN1, principals));
+}
+
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
 	const schema = CertificateAttributeSchema[name];
 
@@ -436,6 +508,12 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		// Fallback: try with backwards-compatible schema (context tags stripped)
 		// This supports old certificates encoded before context tags were added
 		try {
+			// Special handling for entityType
+			if (name === 'entityType') {
+				const candidate = decodeEntityTypeFallback(value, principals);
+				return(asAttributeValue(name, candidate));
+			}
+
 			const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
@@ -1521,6 +1599,7 @@ export const _Testing = {
 	JStoASN1: ASN1.JStoASN1,
 	normalizeDecodedASN1,
 	decodeAttribute,
+	decodeEntityTypeFallback,
 	unwrapSingleLayer,
 	unwrapFieldSchema,
 	unwrapContextTagsFromSchema,
