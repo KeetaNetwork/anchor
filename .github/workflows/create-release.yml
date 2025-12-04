@@ -1,0 +1,38 @@
+name: Create GitHub Release
+
+on:
+  push:
+    tags:
+      - 'releases/v*'
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#releases/v}
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG_NAME, Version: $VERSION"
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ steps.get_version.outputs.tag }}" \
+            --notes-from-tag \
+            --title "v${{ steps.get_version.outputs.version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
