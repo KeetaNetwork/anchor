@@ -423,23 +423,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	};
 
 	const kycCertificateIssuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-
-	const rootCertificate = await (async () => {
-		const issuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-
-		const certificateBuilder = new CertificateBuilder({
-			subject: kycCertificateIssuer,
-			issuer: issuer,
-			serial: 3,
-			validFrom: new Date(Date.now() - 30_000),
-			validTo: new Date(Date.now() + 120_000)
-		});
-
-		const certificate = await certificateBuilder.build();
-
-		return({ certificate, issuer });
-	})();
-
 	const kycSharePrincipal = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 
@@ -517,7 +500,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					throw(new Errors.KYCShareNeeded({
 						shareWithPrincipals: [ kycSharePrincipal ],
 						neededAttributes: [ 'firstName' ],
-						acceptedIssuers: [ rootCertificate.certificate ],
+						acceptedIssuers: [ [ { name: 'iss', value: 'testSubjectDN' } ] ],
 						tosFlow: {
 							type: 'url-flow',
 							url: 'https://example.com/tos'
@@ -652,7 +635,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 	expect(kycNeededError.neededAttributes).toEqual([ 'firstName' ]);
 	expect(kycNeededError.acceptedIssuers.length).toEqual(1);
-	expect(kycNeededError.acceptedIssuers[0]?.hash().compareHexString(rootCertificate.certificate.hash())).toEqual(true);
+	expect(kycNeededError.acceptedIssuers).toEqual([[{ name: 'iss', value: 'testSubjectDN' }]]);
 	expect(kycNeededError.shareWithPrincipals.length).toEqual(1);
 	expect(kycNeededError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toEqual(true);
 	expect(kycNeededError.tosFlow).toEqual({
