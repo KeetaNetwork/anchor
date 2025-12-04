@@ -133,6 +133,7 @@ export type KeetaFXAnchorExchange = {
 	 * ID used to identify the conversion request
 	 */
 	exchangeID: string
+	status: 'pending' | 'completed' | 'failed';
 }
 
 export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange &
