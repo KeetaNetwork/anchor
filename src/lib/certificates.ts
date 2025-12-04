@@ -433,19 +433,22 @@ function decodeEntityTypeFallback(value: ArrayBuffer, principals: KeetaNetAccoun
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	const choiceTag = (Array.isArray(rawASN1) ? rawASN1[0] : rawASN1) as { type?: string; value?: number; contains?: unknown };
 	if (choiceTag?.type === 'context' && typeof choiceTag.value === 'number') {
-		// Transform schemeName CHOICE: value 0 = code, value 1 = proprietary
+		/*
+		 * Transform schemeName CHOICE
+		 */
 		function transformSchemeName(raw: unknown): unknown {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const ctx = raw as { type?: string; value?: number; contains?: unknown };
 			if (ctx?.type === 'context' && typeof ctx.value === 'number') {
-				const val = normalizeDecodedASN1(ctx.contains, principals);
-				if (ctx.value === 0) { return({ code: val }); }
-				if (ctx.value === 1) { return({ proprietary: val }); }
+				return(normalizeDecodedASN1(ctx.contains, principals));
 			}
+
 			return(normalizeDecodedASN1(raw, principals));
 		}
 
-		// Transform identification arrays into proper objects
+		/*
+		 * Transform identification arrays into proper objects
+		 */
 		function transformIdentifications(items: unknown): unknown {
 			if (!Array.isArray(items)) {
 				return(normalizeDecodedASN1(items, principals));
