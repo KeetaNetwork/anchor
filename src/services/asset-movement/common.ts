@@ -851,21 +851,19 @@ export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => inp
 
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 
-type KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow = {
+type KeetaAssetMovementAnchorKYCExternalURLFlow = {
 	type: 'url-flow';
 	url: string;
 }
 
-interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
-	tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
+export interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
+	tosFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 	neededAttributes: string[] | undefined;
 	shareWithPrincipals: ReturnType<Account['publicKeyString']['get']>[];
 	acceptedIssuers: { name: string; value: string; }[][];
 }
 
 export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
-
-
 
 type KeetaAssetMovementAnchorKYCShareNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties;
 
@@ -876,13 +874,13 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 
 	readonly shareWithPrincipals: Account[];
 	readonly neededAttributes: string[] | undefined;
-	readonly tosFlow: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
+	readonly tosFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 	readonly acceptedIssuers: { name: string; value: string; }[][];
 
 	constructor(args: {
 		neededAttributes?: string[] | undefined;
 		shareWithPrincipals: Account[];
-		tosFlow?: KeetaAssetMovementAnchorKYCShareNeededErrorTOSFlow | undefined;
+		tosFlow?: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 		acceptedIssuers: { name: string; value: string; }[][];
 	}, message?: string) {
 		super(message ?? 'User Not Onboarded to Asset Movement Service');
@@ -963,11 +961,98 @@ class KeetaAssetMovementAnchorKYCShareNeededError extends KeetaAnchorUserError {
 	}
 }
 
+export interface KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties {
+	toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
+}
+
+export const assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties>();
+
+type KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties;
+
+class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaAssetMovementAnchorAdditionalKYCNeededError';
+	private readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '3f4d6acd-8915-40de-94fa-4c6c48c01623';
+
+	readonly toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
+
+	constructor(args: KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, message?: string) {
+		super(message ?? 'User requires additional KYC to proceed with asset movement');
+		this.statusCode = 403;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorAdditionalKYCNeededError.KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.toCompleteFlow = args.toCompleteFlow;
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorAdditionalKYCNeededError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID', KeetaAssetMovementAnchorAdditionalKYCNeededError.KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID));
+	}
+
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { toCompleteFlow } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_ADDITIONAL_KYC_NEEDED',
+				data: { toCompleteFlow },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	toJSON(): KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON {
+		return({
+			...super.toJSON(),
+			toCompleteFlow: this.toCompleteFlow
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorAdditionalKYCNeededError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorAdditionalKYCNeededError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties(other.data);
+
+		const error = new this(
+			{
+				toCompleteFlow: parsed.toCompleteFlow
+			},
+			message
+		);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
+	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
 } = {
 	/**
 	 * The user is required to share KYC details
 	 */
-	KYCShareNeeded: KeetaAssetMovementAnchorKYCShareNeededError
+	KYCShareNeeded: KeetaAssetMovementAnchorKYCShareNeededError,
+
+	/**
+	 * The user is required to complete additional KYC steps
+	 */
+	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError
 };
