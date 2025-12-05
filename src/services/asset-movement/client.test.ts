@@ -656,18 +656,18 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	}
 
 	{
-		let kycNeededError;
+		let additionalNeededError;
 		try {
 			await usdcProvider.getTransferStatus({ id: '555', account: userAdditionalKYCNeeded });
 		} catch (error) {
-			kycNeededError = error;
+			additionalNeededError = error;
 		}
 
-		if (!(kycNeededError instanceof Errors.AdditionalKYCNeeded)) {
-			throw(new Error('Expected KYCShareNeeded error'));
+		if (!(additionalNeededError instanceof Errors.AdditionalKYCNeeded)) {
+			throw(new Error('Expected AdditionalKYCNeeded error'));
 		}
 
-		expect(kycNeededError.toCompleteFlow).toEqual({
+		expect(additionalNeededError.toCompleteFlow).toEqual({
 			type: 'url-flow',
 			url: 'https://example.com/tos'
 		});
