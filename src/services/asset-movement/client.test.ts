@@ -427,6 +427,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 
 	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
@@ -506,6 +507,15 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 							url: 'https://example.com/tos'
 						}
 					}));
+				}
+
+				if (userAdditionalKYCNeeded.comparePublicKey(account)) {
+					throw(new Errors.AdditionalKYCNeeded({
+						toCompleteFlow: {
+							type: 'url-flow',
+							url: 'https://example.com/tos'
+						}
+					}, 'User requires additional KYC to proceed with asset movement'));
 				}
 
 				return({
@@ -622,24 +632,44 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		attributes: validNameCert.sharable
 	});
 
-	let kycNeededError;
-	try {
-		await usdcProvider.getTransferStatus({ id: '555', account: userKYCNeeded });
-	} catch (error) {
-		kycNeededError = error;
+	{
+		let kycNeededError;
+		try {
+			await usdcProvider.getTransferStatus({ id: '555', account: userKYCNeeded });
+		} catch (error) {
+			kycNeededError = error;
+		}
+
+		if (!(kycNeededError instanceof Errors.KYCShareNeeded)) {
+			throw(new Error('Expected KYCShareNeeded error'));
+		}
+
+		expect(kycNeededError.neededAttributes).toEqual([ 'firstName' ]);
+		expect(kycNeededError.acceptedIssuers.length).toEqual(1);
+		expect(kycNeededError.acceptedIssuers).toEqual([[{ name: 'iss', value: 'testSubjectDN' }]]);
+		expect(kycNeededError.shareWithPrincipals.length).toEqual(1);
+		expect(kycNeededError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toEqual(true);
+		expect(kycNeededError.tosFlow).toEqual({
+			type: 'url-flow',
+			url: 'https://example.com/tos'
+		});
 	}
 
-	if (!(kycNeededError instanceof Errors.KYCShareNeeded)) {
-		throw(new Error('Expected KYCShareNeeded error'));
-	}
+	{
+		let additionalNeededError;
+		try {
+			await usdcProvider.getTransferStatus({ id: '555', account: userAdditionalKYCNeeded });
+		} catch (error) {
+			additionalNeededError = error;
+		}
 
-	expect(kycNeededError.neededAttributes).toEqual([ 'firstName' ]);
-	expect(kycNeededError.acceptedIssuers.length).toEqual(1);
-	expect(kycNeededError.acceptedIssuers).toEqual([[{ name: 'iss', value: 'testSubjectDN' }]]);
-	expect(kycNeededError.shareWithPrincipals.length).toEqual(1);
-	expect(kycNeededError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toEqual(true);
-	expect(kycNeededError.tosFlow).toEqual({
-		type: 'url-flow',
-		url: 'https://example.com/tos'
-	});
+		if (!(additionalNeededError instanceof Errors.AdditionalKYCNeeded)) {
+			throw(new Error('Expected AdditionalKYCNeeded error'));
+		}
+
+		expect(additionalNeededError.toCompleteFlow).toEqual({
+			type: 'url-flow',
+			url: 'https://example.com/tos'
+		});
+	}
 });
