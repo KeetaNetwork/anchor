@@ -660,7 +660,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
-	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>> {
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<{ initialResponse: ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>; }> {
 		this.logger?.debug('Sharing KYC attributes');
 
 		const response = await this.#makeRequest<
@@ -712,7 +712,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		this.logger?.debug(`done sharing KYC attributes`);
 
-		return(response);
+		return({ initialResponse: response });
 	}
 }
 
