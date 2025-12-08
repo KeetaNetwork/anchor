@@ -714,6 +714,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
 		});
 
+		this.logger?.debug(`done sharing KYC attributes`);
+
 		if (response.isPending && shouldAwaitOrOptions && response.promiseURL) {
 			this.logger?.debug('KYC attribute sharing is pending, awaiting promise URL');
 
@@ -735,8 +737,6 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 			return({ isPending: false });
 		}
-
-		this.logger?.debug(`done sharing KYC attributes`);
 
 		return({ isPending: response.isPending });
 	}
