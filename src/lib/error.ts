@@ -281,7 +281,7 @@ interface KeetaAnchorUserValidationErrorDetails {
 		allowedValues?: string[];
 		expected?: string;
 		receivedValue?: unknown;
-		valueRules?: { minimum?: string | number | undefined; maximum?: string | number | undefined };
+		valueRules?: { minimum?: string | undefined; maximum?: string | undefined };
 	}[];
 }
 
