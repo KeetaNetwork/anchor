@@ -684,6 +684,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions?: false): Promise<{ isPending?: boolean | undefined; }>;
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: true | AwaitPromiseURLOptions): Promise<{ isPending: false; }>;
 	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<{ isPending?: boolean | undefined; }> {
 		this.logger?.debug('Sharing KYC attributes');
 
