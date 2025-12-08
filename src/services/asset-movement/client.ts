@@ -59,6 +59,7 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
+import { KeetaNet } from '../../client/index.js';
 
 // const PARANOID = true;
 
@@ -291,6 +292,7 @@ class KeetaAssetMovementTransfer {
 interface AwaitPromiseURLOptions {
 	defaultPollIntervalMs?: number;
 	timeoutMs?: number;
+	abortSignal?: AbortSignal;
 }
 
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
@@ -321,6 +323,37 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			url: endpoint.url(params),
 			auth: endpoint.options.authentication
 		})
+	}
+
+	async #parseResponseError(data: unknown) {
+		if (typeof data !== 'object' || data === null) {
+			throw(new Error('Response is not an error'));
+		}
+
+		if (!('ok' in data) || data.ok !== false) {
+			throw(new Error('Response is not an error'));
+		}
+
+		let errorStr;
+
+		let parsedError: KeetaAnchorError | null = null;
+		try {
+			parsedError = await KeetaAnchorError.fromJSON(data);
+		} catch (error: unknown) {
+			this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, data);
+		}
+
+		if (parsedError) {
+			return(parsedError);
+		} else {
+			if ('error' in data && typeof data.error === 'string') {
+				errorStr = data.error;
+			} else {
+				errorStr = 'Unknown error';
+			}
+
+			return(new Error(`asset movement request failed: ${errorStr}`));
+		}
 	}
 
 	async #makeRequest<
@@ -398,26 +431,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		if (!requestInformationJSON.ok) {
-			let errorStr;
-
-			let parsedError: KeetaAnchorError | null = null;
-			try {
-				parsedError = await KeetaAnchorError.fromJSON(requestInformationJSON);
-			} catch (error: unknown) {
-				this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, requestInformationJSON);
-			}
-
-			if (parsedError) {
-				throw(parsedError);
-			} else {
-				if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
-					errorStr = requestInformationJSON.error;
-				} else {
-					errorStr = 'Unknown error';
-				}
-
-				throw(new Error(`asset movement ${input.endpoint} request failed: ${errorStr}`));
-			}
+			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
 		// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct because we checked it above.
@@ -617,6 +631,10 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		const timeout = options?.timeoutMs ?? (5 * 60 * 1000);
 
 		while (true) {
+			if (options?.abortSignal?.aborted) {
+				break;
+			}
+
 			let response;
 
 			try {
@@ -631,7 +649,13 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			}
 
 			if (response.status !== 202) {
-				throw(new Error(`Error waiting for promise URL to complete: HTTP ${response.status}`));
+				let errorData: unknown;
+				try {
+					errorData = await response.json();
+				} catch {
+					throw(new Error(`Error parsing error response json from promise, status code ${response.status}`));
+				}
+				throw(await this.#parseResponseError(errorData));
 			}
 
 			if (Date.now() - startTime > timeout) {
@@ -656,7 +680,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				retryAfterMS = options?.defaultPollIntervalMs ?? 1000;
 			}
 
-			await new Promise(resolve => setTimeout(resolve, retryAfterMS));
+			await KeetaNet.lib.Utils.Helper.asleep(retryAfterMS);
 		}
 	}
 

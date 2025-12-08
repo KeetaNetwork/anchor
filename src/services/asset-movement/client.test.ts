@@ -8,6 +8,7 @@ import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorH
 import { Errors, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
+import { KeetaAnchorUserValidationError } from '../../lib/error.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -441,6 +442,15 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					throw(new Error('Missing promise ID'));
 				}
 
+				if (pid.includes('error')) {
+					throw(new KeetaAnchorUserValidationError({
+						fields: [{
+							path: 'firstName',
+							message: 'Invalid first name provided'
+						}]
+					}));
+				}
+
 				if (!promisePolling[pid]) {
 					promisePolling[pid] = 0;
 				}
@@ -674,6 +684,42 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		});
 
 		expect(promisePolling['testpromise']).toEqual(3);
+	}
+
+	{
+		const abortSignal = AbortSignal.abort();
+
+		const hasPromiseCert = await makeCertificate('testpromiseabort');
+		await usdcProvider.shareKYCAttributes({
+			account: account,
+			attributes: hasPromiseCert.sharable
+		}, {
+			abortSignal: abortSignal
+		});
+
+		expect(promisePolling['testpromiseabort'] ?? 0).toEqual(0);
+	}
+
+
+	{
+		const hasPromiseCert = await makeCertificate('promiseerror');
+
+		let caughtError;
+		try {
+			await usdcProvider.shareKYCAttributes({
+				account: account,
+				attributes: hasPromiseCert.sharable
+			});
+			throw(new Error('Expected error was not thrown'));
+		} catch (error) {
+			caughtError = error;
+		}
+
+		if (!(caughtError instanceof KeetaAnchorUserValidationError)) {
+			throw(new Error('Expected KeetaAnchorUserValidationError'));
+		}
+
+		expect(caughtError.fields[0]?.path).toEqual('firstName');
 	}
 
 	const validNameCert = await makeCertificate('Alice');
