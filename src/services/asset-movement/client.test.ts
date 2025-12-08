@@ -4,9 +4,10 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
-import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
+import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
+import type { Routes } from '../../lib/http-server/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -429,7 +430,41 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
-	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+	const promisePolling: { [key: string]: number } = {};
+
+	await using server = new (class extends KeetaNetAssetMovementAnchorHTTPServer {
+		protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<Routes> {
+			const routes = await super.initRoutes(config);
+			routes['GET /_promises/:promiseID'] = async (params) => {
+				const pid = params.get('promiseID');
+				if (!pid) {
+					throw(new Error('Missing promise ID'));
+				}
+
+				if (!promisePolling[pid]) {
+					promisePolling[pid] = 0;
+				}
+				const newCount = promisePolling[pid]++;
+
+				if (newCount < 2) {
+					return({
+						ok: true,
+						statusCode: 202,
+						output: 'pending',
+						headers: {
+							'Retry-After': '0.1'
+						}
+					})
+				}
+
+				return({
+					ok: true,
+					output: 'ok'
+				});
+			}
+			return(routes);
+		}
+	})({
 		...(logger ? { logger: logger } : {}),
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		assetMovement: {
@@ -538,11 +573,16 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 				const firstName = await attributes.getAttribute('firstName');
 
-				if (firstName !== 'Alice') {
+				if (firstName?.includes('promise')) {
+					return({
+						isPending: true,
+						promiseURL: `/_promises/${firstName}`
+					});
+				} else if (firstName === 'Alice') {
+					return({});
+				} else  {
 					throw(new Error(`Invalid first name, got ${firstName}`));
 				}
-
-				return({});
 			}
 		}
 	});
@@ -625,6 +665,16 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			attributes: invalidNameCert.sharable
 		});
 	}).rejects.toThrow();
+
+	{
+		const hasPromiseCert = await makeCertificate('testpromise');
+		await usdcProvider.shareKYCAttributes({
+			account: account,
+			attributes: hasPromiseCert.sharable
+		});
+
+		expect(promisePolling['testpromise']).toEqual(3);
+	}
 
 	const validNameCert = await makeCertificate('Alice');
 	await usdcProvider.shareKYCAttributes({

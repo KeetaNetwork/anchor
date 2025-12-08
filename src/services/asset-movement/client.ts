@@ -287,6 +287,12 @@ class KeetaAssetMovementTransfer {
 	}
 }
 
+
+interface AwaitPromiseURLOptions {
+	defaultPollIntervalMs?: number;
+	timeoutMs?: number;
+}
+
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
@@ -605,10 +611,59 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest): Promise<void> {
+	async #awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<void> {
+		const startTime = Date.now();
+
+		const timeout = options?.timeoutMs ?? (5 * 60 * 1000);
+
+		while (true) {
+			let response;
+
+			try {
+				response = await fetch(promiseURL);
+			} catch (error) {
+				this.logger?.debug('KeetaAssetMovementAnchorProvider::awaitPromiseURL', 'Error fetching promise URL', error);
+				throw(new Error(`Error fetching promise URL: ${String(error)}`));
+			}
+
+			if (response.status === 200) {
+				return;
+			}
+
+			if (response.status !== 202) {
+				throw(new Error(`Error waiting for promise URL to complete: HTTP ${response.status}`));
+			}
+
+			if (Date.now() - startTime > timeout) {
+				throw(new Error('Timeout waiting for promise URL to complete'));
+			}
+
+			let retryAfterMS: number | undefined;
+			const retryAfterHeader = response.headers.get('Retry-After');
+			if (retryAfterHeader) {
+
+				if (!isNaN(Number(retryAfterHeader))) {
+					retryAfterMS = Number(retryAfterHeader) * 1000;
+				} else {
+					const retryAfterDate = new Date(retryAfterHeader);
+					if (!isNaN(retryAfterDate.getTime())) {
+						retryAfterMS = retryAfterDate.getTime() - Date.now();
+					}
+				}
+			}
+
+			if (!retryAfterMS) {
+				retryAfterMS = options?.defaultPollIntervalMs ?? 1000;
+			}
+
+			await new Promise(resolve => setTimeout(resolve, retryAfterMS));
+		}
+	}
+
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>> {
 		this.logger?.debug('Sharing KYC attributes');
 
-		await this.#makeRequest<
+		const response = await this.#makeRequest<
 			KeetaAssetMovementAnchorShareKYCResponse,
 			KeetaAssetMovementAnchorShareKYCClientRequest,
 			KeetaAssetMovementAnchorShareKYCRequest
@@ -635,8 +690,29 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
 		});
 
+		if (response.isPending && shouldAwaitOrOptions && response.promiseURL) {
+			this.logger?.debug('KYC attribute sharing is pending, awaiting promise URL');
+
+			let options: AwaitPromiseURLOptions | undefined;
+			if (typeof shouldAwaitOrOptions === 'object') {
+				options = shouldAwaitOrOptions;
+			}
+
+			let promiseURL;
+
+			if (response.promiseURL.startsWith('/')) {
+				const operationData = await this.#getOperationData('shareKYC');
+				promiseURL = new URL(response.promiseURL, operationData.url).toString();
+			} else {
+				promiseURL = response.promiseURL;
+			}
+
+			await this.#awaitPromiseURL(promiseURL, options);
+		}
+
 		this.logger?.debug(`done sharing KYC attributes`);
 
+		return(response);
 	}
 }
 
