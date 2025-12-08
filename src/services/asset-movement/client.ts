@@ -684,7 +684,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 	}
 
-	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<{ initialResponse: ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>; }> {
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, shouldAwaitOrOptions: boolean | AwaitPromiseURLOptions = true): Promise<{ isPending?: boolean | undefined; }> {
 		this.logger?.debug('Sharing KYC attributes');
 
 		const response = await this.#makeRequest<
@@ -732,11 +732,13 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			}
 
 			await this.#awaitPromiseURL(promiseURL, options);
+
+			return({ isPending: false });
 		}
 
 		this.logger?.debug(`done sharing KYC attributes`);
 
-		return({ initialResponse: response });
+		return({ isPending: response.isPending });
 	}
 }
 
