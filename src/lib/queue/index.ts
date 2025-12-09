@@ -2,6 +2,7 @@ import type { BrandedString, Brand } from '../utils/brand.ts';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.ts';
 import type { AssertNever } from '../utils/never.ts';
+import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
 import { MethodLogger } from './internal.js';
@@ -778,10 +779,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * true if there may be more work to do, or false if the queue
 	 * is empty.
 	 *
-	 * @param timeout Optional timeout in milliseconds to limit the total
-	 * 	          time spent processing entries
+	 * @param options Optional run options
 	 */
-	async run(timeout?: number): Promise<boolean> {
+	async run(options?: KeetaAnchorQueueRunOptions): Promise<boolean> {
+		const timeout = options?.timeoutMs;
+
 		await this.initialize();
 
 		const logger = this.methodLogger('run');
@@ -907,7 +909,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				}
 			}
 
-			const pipeHasMoreWork = await pipe.target.run(remainingTime);
+			const pipeHasMoreWork = await pipe.target.run({
+				...options,
+				timeoutMs: remainingTime
+			});
+
 			if (pipeHasMoreWork) {
 				retval = true;
 			}

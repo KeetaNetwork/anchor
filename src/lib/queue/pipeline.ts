@@ -10,6 +10,7 @@ import type {
 import { MethodLogger } from './internal.js';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.js';
+import type { KeetaAnchorQueueRunOptions } from './common.js';
 
 /**
  * A KeetaAnchorQueueRunner that uses `any` for the user types
@@ -70,7 +71,7 @@ export interface KeetaAnchorQueuePipeline<QueueRequest, FINALQueueResult> {
 	 * @param timeoutMs The maximum time to run the processing jobs (in milliseconds). If not specified, runs until all available jobs are processed.
 	 * @returns `true` if there are more jobs to process, `false` otherwise
 	 */
-	run: (timeoutMs?: number) => Promise<boolean>;
+	run: (options?: KeetaAnchorQueueRunOptions) => Promise<boolean>;
 	/**
 	 * Run maintenance tasks for the pipeline -- this includes moving tasks from various states
 	 * and between stages of the pipeline
@@ -203,7 +204,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 		});
 	}
 
-	async run(timeoutMs?: number): Promise<boolean> {
+	async run(options?: KeetaAnchorQueueRunOptions): Promise<boolean> {
 		await this.init();
 
 		const logger = this.methodLogger('run');
@@ -211,7 +212,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 		const stage1 = this.getStage(KeetaAnchorQueuePipelineAdvanced.StageID.first);
 		let retval = true;
 		try {
-			retval = await stage1.run(timeoutMs);
+			retval = await stage1.run(options);
 		} catch (error) {
 			logger?.error('Error running stage processor:', error);
 		}

@@ -296,13 +296,13 @@ test('Queue Runner Basic Tests', async function() {
 
 	{
 		logger?.debug('basic', '> Test the runner timeout works correctly');
-		const before_any_jobs = await runner.run(0);
+		const before_any_jobs = await runner.run({ timeoutMs: 0 });
 		expect(before_any_jobs).toBe(false);
 
 		const id_1 = await runner.add({ key: 'timedout_late_two', newStatus: 'completed' });
 		const id_2 = await runner.add({ key: 'timedout_late_two', newStatus: 'completed' });
 		{
-			const after_jobs_before_processing = await runner.run(0);
+			const after_jobs_before_processing = await runner.run({ timeoutMs: 0 });
 			expect(after_jobs_before_processing).toBe(true);
 			const status_1 = await runner.get(id_1);
 			const status_2 = await runner.get(id_2);
@@ -311,7 +311,7 @@ test('Queue Runner Basic Tests', async function() {
 		}
 		{
 			vi.useRealTimers();
-			const after_jobs = await runner.run(10);
+			const after_jobs = await runner.run({ timeoutMs: 10 });
 			vi.useFakeTimers();
 			expect(after_jobs).toBe(true);
 			const status_1 = await runner.get(id_1);
@@ -422,7 +422,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 			 * from aborted to processing to completed in the same run
 			 */
 			vi.useRealTimers();
-			await runner.run(50);
+			await runner.run({ timeoutMs: 50 });
 			vi.useFakeTimers();
 
 			const status_aborted = await runner.get(id_aborted);
@@ -592,7 +592,7 @@ for (const singleWorkerID of [true, false]) {
 
 				let retval = false;
 				for (let retries = 0; retries < maxRetries; retries++) {
-					retval = await runner.run(timeoutMs);
+					retval = await runner.run({ timeoutMs });
 				}
 
 				return(retval);
