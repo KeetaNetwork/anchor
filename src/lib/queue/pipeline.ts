@@ -267,37 +267,27 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 	}
 
 }
+
+type MapKeetaAnchorQueuePipelineStages<In extends readonly [ unknown, ...unknown[] ]> =
+	In extends [ infer First, ...infer Rest extends [ unknown, ...unknown[] ] ] ?
+		readonly [ KeetaAnchorQueuePipelineStage<First, Rest[0]>, ...MapKeetaAnchorQueuePipelineStages<Rest> ] : [];
+
+type MapKeetaAnchorQueueRunner<In extends readonly [ unknown, ...unknown[] ]> =
+	In extends [ infer First, ...infer Rest extends [ unknown, ...unknown[] ] ] ?
+		readonly [ KeetaAnchorQueueRunner<First, Rest[0]>, ...MapKeetaAnchorQueueRunner<Rest> ] : [];
+
+type FirstElement<T extends readonly unknown[]> = T extends [ infer First, ...unknown[] ] ? First : never;
+type LastElement<T extends readonly unknown[]> = T extends [ ...unknown[], infer Last ] ? Last : never;
+
 /**
  * Abstract base class for queue basic pipelines -- this provides
  * a standardized way to implement custom processing pipelines that
  * consist of multiple stages but do not require batching
  */
-export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = unknown, OUT1 = unknown, OUT2 = unknown, OUT3 = unknown, OUT4 = unknown, OUT5 = unknown, OUT6 = unknown, OUT7 = unknown, OUT8 = unknown, OUT9 = unknown, OUT10 = unknown> extends KeetaAnchorQueuePipelineAdvanced<IN1, FINALOUT> implements KeetaAnchorQueuePipeline<IN1, FINALOUT> {
-	protected readonly abstract stages: readonly [
-		KeetaAnchorQueuePipelineStage<IN1, OUT1>,
-		KeetaAnchorQueuePipelineStage<OUT1, OUT2>?,
-		KeetaAnchorQueuePipelineStage<OUT2, OUT3>?,
-		KeetaAnchorQueuePipelineStage<OUT3, OUT4>?,
-		KeetaAnchorQueuePipelineStage<OUT4, OUT5>?,
-		KeetaAnchorQueuePipelineStage<OUT5, OUT6>?,
-		KeetaAnchorQueuePipelineStage<OUT6, OUT7>?,
-		KeetaAnchorQueuePipelineStage<OUT7, OUT8>?,
-		KeetaAnchorQueuePipelineStage<OUT8, OUT9>?,
-		KeetaAnchorQueuePipelineStage<OUT9, OUT10>?
-	];
+export abstract class KeetaAnchorQueuePipelineBasic<Stages extends readonly [ unknown, ...unknown[] ]> extends KeetaAnchorQueuePipelineAdvanced<FirstElement<Stages>, LastElement<Stages>> implements KeetaAnchorQueuePipeline<FirstElement<Stages>, LastElement<Stages>> {
+	protected readonly abstract stages: MapKeetaAnchorQueuePipelineStages<Stages>;
 
-	protected stageRunners!: [
-		KeetaAnchorQueueRunner<IN1, OUT1>,
-		KeetaAnchorQueueRunner<OUT1, OUT2>?,
-		KeetaAnchorQueueRunner<OUT2, OUT3>?,
-		KeetaAnchorQueueRunner<OUT3, OUT4>?,
-		KeetaAnchorQueueRunner<OUT4, OUT5>?,
-		KeetaAnchorQueueRunner<OUT5, OUT6>?,
-		KeetaAnchorQueueRunner<OUT6, OUT7>?,
-		KeetaAnchorQueueRunner<OUT7, OUT8>?,
-		KeetaAnchorQueueRunner<OUT8, OUT9>?,
-		KeetaAnchorQueueRunner<OUT9, OUT10>?
-	];
+	protected stageRunners!: MapKeetaAnchorQueueRunner<Stages>;
 
 	constructor(options: KeetaAnchorQueueCommonOptions & { baseQueue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>; }) {
 		super(options);
@@ -319,10 +309,10 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 		}));
 	}
 
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first): KeetaAnchorQueueRunner<IN1, unknown>;
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaAnchorQueueRunner<unknown, FINALOUT>;
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first): KeetaAnchorQueueRunner<FirstElement<Stages>, unknown>;
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaAnchorQueueRunner<unknown, LastElement<Stages>>;
 	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | null;
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | KeetaAnchorQueueRunner<IN1, unknown> | KeetaAnchorQueueRunner<unknown, FINALOUT> | null {
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | KeetaAnchorQueueRunner<FirstElement<Stages>, unknown> | KeetaAnchorQueueRunner<unknown, LastElement<Stages>> | null {
 		if (this.initPromise === undefined) {
 			throw(new Error('Pipeline not initialized'));
 		}
@@ -331,7 +321,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 			const runner = this.stageRunners[0];
 			if (runner !== undefined) {
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(runner as unknown as KeetaAnchorQueueRunner<IN1, unknown>);
+				return(runner as unknown as KeetaAnchorQueueRunner<FirstElement<Stages>, unknown>);
 			}
 			throw(new Error('First stage runner not found'));
 		} else if (stageID === KeetaAnchorQueuePipelineAdvanced.StageID.last) {
@@ -339,7 +329,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 				const runner = this.stageRunners[index];
 				if (runner !== undefined) {
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(runner as unknown as KeetaAnchorQueueRunner<unknown, FINALOUT>);
+					return(runner as unknown as KeetaAnchorQueueRunner<unknown, LastElement<Stages>>);
 				}
 			}
 			throw(new Error('Last stage runner not found'));
@@ -403,8 +393,11 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 				 * The type assertions here are necessary because we cannot
 				 * express the relationship between the various generic
 				 * types in the stages array and the stageRunners array
+				 *
+				 * The ts-ignore is necessary because TypeScript does not allow us to push to a readonly array.
 				 */
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-argument
+				// @ts-ignore
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 				this.stageRunners.push(runner as any);
 
 				lastRunner?.pipe(runner);
