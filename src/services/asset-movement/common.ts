@@ -811,9 +811,14 @@ export function getKeetaAssetMovementAnchorShareKYCRequestSigningData(_ignore_in
 	return([ 'share-kyc' ]);
 }
 
-export type KeetaAssetMovementAnchorShareKYCResponse = ({
+export type KeetaAssetMovementAnchorShareKYCResponse = (({
 	ok: true;
+} & ({
+	isPending?: false;
 } | {
+	isPending: true;
+	promiseURL?: string;
+})) | {
 	ok: false;
 	error: string;
 });

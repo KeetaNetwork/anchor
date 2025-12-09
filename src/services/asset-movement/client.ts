@@ -59,6 +59,7 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
+import { KeetaNet } from '../../client/index.js';
 
 // const PARANOID = true;
 
@@ -287,6 +288,13 @@ class KeetaAssetMovementTransfer {
 	}
 }
 
+
+interface AwaitPromiseURLOptions {
+	defaultPollIntervalMs?: number;
+	timeoutMs?: number;
+	abortSignal?: AbortSignal;
+}
+
 class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
@@ -315,6 +323,37 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			url: endpoint.url(params),
 			auth: endpoint.options.authentication
 		})
+	}
+
+	async #parseResponseError(data: unknown) {
+		if (typeof data !== 'object' || data === null) {
+			throw(new Error('Response is not an error'));
+		}
+
+		if (!('ok' in data) || data.ok !== false) {
+			throw(new Error('Response is not an error'));
+		}
+
+		let errorStr;
+
+		let parsedError: KeetaAnchorError | null = null;
+		try {
+			parsedError = await KeetaAnchorError.fromJSON(data);
+		} catch (error: unknown) {
+			this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, data);
+		}
+
+		if (parsedError) {
+			return(parsedError);
+		} else {
+			if ('error' in data && typeof data.error === 'string') {
+				errorStr = data.error;
+			} else {
+				errorStr = 'Unknown error';
+			}
+
+			return(new Error(`asset movement request failed: ${errorStr}`));
+		}
 	}
 
 	async #makeRequest<
@@ -392,26 +431,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		if (!requestInformationJSON.ok) {
-			let errorStr;
-
-			let parsedError: KeetaAnchorError | null = null;
-			try {
-				parsedError = await KeetaAnchorError.fromJSON(requestInformationJSON);
-			} catch (error: unknown) {
-				this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, requestInformationJSON);
-			}
-
-			if (parsedError) {
-				throw(parsedError);
-			} else {
-				if ('error' in requestInformationJSON && typeof requestInformationJSON.error === 'string') {
-					errorStr = requestInformationJSON.error;
-				} else {
-					errorStr = 'Unknown error';
-				}
-
-				throw(new Error(`asset movement ${input.endpoint} request failed: ${errorStr}`));
-			}
+			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
 		// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct because we checked it above.
@@ -605,10 +625,69 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest): Promise<void> {
+	async #awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<void> {
+		const startTime = Date.now();
+
+		const timeout = options?.timeoutMs ?? (5 * 60 * 1000);
+
+		while (true) {
+			if (options?.abortSignal?.aborted) {
+				break;
+			}
+
+			let response;
+
+			try {
+				response = await fetch(promiseURL);
+			} catch (error) {
+				this.logger?.debug('KeetaAssetMovementAnchorProvider::awaitPromiseURL', 'Error fetching promise URL', error);
+				throw(new Error(`Error fetching promise URL: ${String(error)}`));
+			}
+
+			if (response.status === 200) {
+				return;
+			}
+
+			if (response.status !== 202) {
+				let errorData: unknown;
+				try {
+					errorData = await response.json();
+				} catch {
+					throw(new Error(`Error parsing error response json from promise, status code ${response.status}`));
+				}
+				throw(await this.#parseResponseError(errorData));
+			}
+
+			if (Date.now() - startTime > timeout) {
+				throw(new Error('Timeout waiting for promise URL to complete'));
+			}
+
+			let retryAfterMS: number | undefined;
+			const retryAfterHeader = response.headers.get('Retry-After');
+			if (retryAfterHeader) {
+
+				if (!isNaN(Number(retryAfterHeader))) {
+					retryAfterMS = Number(retryAfterHeader) * 1000;
+				} else {
+					const retryAfterDate = new Date(retryAfterHeader);
+					if (!isNaN(retryAfterDate.getTime())) {
+						retryAfterMS = retryAfterDate.getTime() - Date.now();
+					}
+				}
+			}
+
+			if (!retryAfterMS) {
+				retryAfterMS = options?.defaultPollIntervalMs ?? 1000;
+			}
+
+			await KeetaNet.lib.Utils.Helper.asleep(retryAfterMS);
+		}
+	}
+
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, awaitOptions?: AwaitPromiseURLOptions): Promise<void> {
 		this.logger?.debug('Sharing KYC attributes');
 
-		await this.#makeRequest<
+		const response = await this.#makeRequest<
 			KeetaAssetMovementAnchorShareKYCResponse,
 			KeetaAssetMovementAnchorShareKYCClientRequest,
 			KeetaAssetMovementAnchorShareKYCRequest
@@ -635,8 +714,22 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
 		});
 
-		this.logger?.debug(`done sharing KYC attributes`);
+		if (response.isPending && response.promiseURL) {
+			this.logger?.debug('KYC attribute sharing is pending, awaiting promise URL');
 
+			let promiseURL;
+
+			if (response.promiseURL.startsWith('/')) {
+				const operationData = await this.#getOperationData('shareKYC');
+				promiseURL = new URL(response.promiseURL, operationData.url).toString();
+			} else {
+				promiseURL = response.promiseURL;
+			}
+
+			await this.#awaitPromiseURL(promiseURL, { ...awaitOptions });
+		}
+
+		this.logger?.debug(`done sharing KYC attributes`);
 	}
 }
 
