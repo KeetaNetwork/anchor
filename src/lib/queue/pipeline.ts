@@ -252,7 +252,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 				logger?.debug(`Destroying queue for stage "#${index}"`);
 				await queue.destroy();
 			} catch (error) {
-				logger?.error(`Error destroying queue for stage "#${index}:`, error);
+				logger?.error(`Error destroying queue for stage "#${index}":`, error);
 			}
 		}
 	}
@@ -352,7 +352,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<Stages extends readonly [ un
 	 * Create the pipeline from the user-defined stages
 	 */
 	protected async createPipeline(): Promise<void> {
-		const logger = this.methodLogger('init');
+		const logger = this.methodLogger('createPipeline');
 
 		let lastRunner: InstanceType<typeof KeetaAnchorQueueRunnerAny> | undefined = undefined;
 		for (const stage of this.stages) {
