@@ -17,16 +17,16 @@ import type { JSONSerializable } from '../utils/json.js';
  * and outputs of various stages are not known ahead of time
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-class KeetaAnchorQueueRunnerAny<UREQUEST = any, URESPONSE = any, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE> {
-	protected processor(): ReturnType<KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']> { throw(new Error('not implemented')); }
-	protected decodeRequest(): UREQUEST { throw(new Error('not implemented')); }
-	protected decodeResponse(): URESPONSE | null { throw(new Error('not implemented')); }
-	protected encodeRequest(): REQUEST { throw(new Error('not implemented')); }
-	protected encodeResponse(): RESPONSE | null { throw(new Error('not implemented')); }
+class KeetaAnchorQueueRunnerAny<UserRequest = any, UserResult = any, QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UserRequest, UserResult, QueueRequest, QueueResult> {
+	protected processor(): ReturnType<KeetaAnchorQueueRunner<UserRequest, UserResult, QueueRequest, QueueResult>['processor']> { throw(new Error('not implemented')); }
+	protected decodeRequest(): UserRequest { throw(new Error('not implemented')); }
+	protected decodeResponse(): UserResult | null { throw(new Error('not implemented')); }
+	protected encodeRequest(): QueueRequest { throw(new Error('not implemented')); }
+	protected encodeResponse(): QueueResult | null { throw(new Error('not implemented')); }
 
 }
 
-type KeetaAnchorQueuePipelineStage<REQUEST, RESPONSE> = {
+type KeetaAnchorQueuePipelineStage<QueueRequest, QueueResult> = {
 	/**
 	 * Name of the stage (must be unique within the pipeline)
 	 */
@@ -34,14 +34,14 @@ type KeetaAnchorQueuePipelineStage<REQUEST, RESPONSE> = {
 	/**
 	 * Constructor of the runner to use for this stage
 	 */
-	runner: typeof KeetaAnchorQueueRunner<REQUEST, RESPONSE, JSONSerializable, JSONSerializable>;
+	runner: typeof KeetaAnchorQueueRunner<QueueRequest, QueueResult, JSONSerializable, JSONSerializable>;
 	/**
 	 * Arguments to pass to the runner constructor
 	 */
 	args?: [{ [key: string]: unknown; }?, ...unknown[]];
 };
 
-export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
+export interface KeetaAnchorQueuePipeline<QueueRequest, FINALQueueResult> {
 	readonly id: string;
 
 	/**
@@ -50,7 +50,7 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	 * @param request The request to add
 	 * @returns The ID of the newly added request
 	 */
-	add: (request: REQUEST) => Promise<KeetaAnchorQueueRequestID>;
+	add: (request: QueueRequest) => Promise<KeetaAnchorQueueRequestID>;
 	/**
 	 * Get the entry of a request at the final stage of the pipeline
 	 * stage or `null` if not in the final stage
@@ -60,7 +60,7 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	 * @param id The ID of the request to get
 	 * @returns The entry at the final stage or `null` if not found, with the original request (may be `null` if not available)
 	 */
-	get: (id: KeetaAnchorQueueRequestID) => Promise<(Omit<KeetaAnchorQueueEntry<REQUEST, FINALRESPONSE>, 'request'> & { request: REQUEST | null; }) | null>;
+	get: (id: KeetaAnchorQueueRequestID) => Promise<(Omit<KeetaAnchorQueueEntry<QueueRequest, FINALQueueResult>, 'request'> & { request: QueueRequest | null; }) | null>;
 	/**
 	 * Run the pipeline processing jobs for up to the specified timeout (in milliseconds)
 	 * The process may take longer than the timeout if a job is already in progress
@@ -83,6 +83,9 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	[Symbol.asyncDispose]: () => Promise<void>;
 }
 
+const symbolFirst: unique symbol = Symbol('first');
+const symbolLast: unique symbol = Symbol('last');
+
 /**
  * Abstract base class for queue advanced pipelines -- this provides
  * a standardized way to implement custom processing pipelines that
@@ -97,13 +100,11 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 	protected destroyed = false;
 
 	static readonly StageID: {
-		readonly first: unique symbol;
-		readonly last: unique symbol;
+		readonly first: typeof symbolFirst;
+		readonly last: typeof symbolLast;
 	} = {
-			// @ts-ignore
-			first: Symbol('first'),
-			// @ts-ignore
-			last: Symbol('last')
+			first: symbolFirst,
+			last: symbolLast
 		};
 
 	constructor(options: KeetaAnchorQueueCommonOptions & { baseQueue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>; }) {

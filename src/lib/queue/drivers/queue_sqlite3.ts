@@ -36,7 +36,7 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
-export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
+export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private dbInternal: (() => Promise<sqlite.Database>) | null = null;
 	private dbInitializationPromise?: Promise<boolean>;
@@ -46,12 +46,12 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { db: () => Promise<sqlite.Database>; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', this.path].join('.');
+		this.pathStr = ['root', ...this.path].join('.');
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -224,7 +224,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		return(result);
 	}
 
-	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (db, logger): Promise<KeetaAnchorQueueRequestID> => {
 			let entryID = info?.id;
 			if (entryID) {
@@ -294,7 +294,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		}));
 	}
 
-	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>): Promise<void> {
+	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
 		const { oldStatus, by, output } = ancillary ?? {};
 
 		return(await this.dbTransaction('setStatus', async (db, logger): Promise<void> => {
@@ -363,8 +363,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		}));
 	}
 
-	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> {
-		return(await this.dbTransaction('get', async (db): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> => {
+	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
+		return(await this.dbTransaction('get', async (db): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
 			const row = await db.get<QueueEntryRow>(
 				`SELECT id, request, output, lastError, status, created, updated, worker, failures
 				 FROM queue_entries WHERE id = ? AND path = ?`,
@@ -391,9 +391,9 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				id: row.id as unknown as KeetaAnchorQueueRequestID,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				request: JSON.parse(row.request) as REQUEST,
+				request: JSON.parse(row.request) as QueueRequest,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				output: row.output ? JSON.parse(row.output) as RESPONSE : null,
+				output: row.output ? JSON.parse(row.output) as QueueResult : null,
 				lastError: row.lastError,
 				status: row.status,
 				created: new Date(row.created),
@@ -406,8 +406,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		}));
 	}
 
-	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> {
-		return(await this.dbTransaction('query', async (db, logger): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> => {
+	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
+		return(await this.dbTransaction('query', async (db, logger): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 			const conditions: string[] = [];
@@ -439,7 +439,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 
 			const rows = await db.all<QueueEntryRow[]>(query, ...params);
 
-			const entries: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
+			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 			for (const row of rows) {
 				const idempotentRows = await db.all<IdempotentRow[]>(
@@ -458,9 +458,9 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					id: row.id as unknown as KeetaAnchorQueueRequestID,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					request: JSON.parse(row.request) as REQUEST,
+					request: JSON.parse(row.request) as QueueRequest,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					output: row.output ? JSON.parse(row.output) as RESPONSE : null,
+					output: row.output ? JSON.parse(row.output) as QueueResult : null,
 					lastError: row.lastError,
 					status: row.status,
 					created: new Date(row.created),
@@ -478,14 +478,14 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<REQUEST extends JSONSe
 		}));
 	}
 
-	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.dbInternal === null) {
 			throw(new Error('Asked to partition the instance, but the instance has been destroyed'));
 		}
 
-		const retval = new KeetaAnchorQueueStorageDriverSQLite3<REQUEST, RESPONSE>({
+		const retval = new KeetaAnchorQueueStorageDriverSQLite3<QueueRequest, QueueResult>({
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			db: this.dbInternal,
