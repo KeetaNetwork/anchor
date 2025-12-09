@@ -302,7 +302,7 @@ export class KeetaAnchorUserValidationError extends KeetaAnchorUserError impleme
 
 	readonly fields: KeetaAnchorUserValidationErrorDetails['fields'];
 
-	static isInstance(input: unknown): input is KeetaAnchorUserError {
+	static isInstance(input: unknown): input is KeetaAnchorUserValidationError {
 		return(this.hasPropWithValue(input, 'KeetaAnchorUserValidationErrorObjectTypeID', KeetaAnchorUserValidationError.KeetaAnchorUserValidationErrorObjectTypeID));
 	}
 
