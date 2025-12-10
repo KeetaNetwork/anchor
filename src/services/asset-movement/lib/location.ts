@@ -147,7 +147,7 @@ export function toAssetLocationFromString(input: string): AssetLocation {
 				if (chainType === 'keeta' || chainType === 'evm') {
 					const chainId = BigInt(parts[1]);
 
-					if (chainId <= 0n) {
+					if (chainId < 0n) {
 						throw(new Error(`Invalid chain id in AssetLocation string: ${parts[1]}`));
 					}
 
