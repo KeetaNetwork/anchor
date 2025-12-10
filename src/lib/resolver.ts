@@ -9,7 +9,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, convertAssetSearchInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets, convertAssetOrPairSearchInputToCanonical } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -34,6 +34,11 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
+type ServiceMetadataAuthenticationType = {
+	method: 'keeta-account';
+	type: 'required' | 'optional' | 'none';
+};
+type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }}
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure
@@ -160,14 +165,18 @@ type ServiceMetadata = {
 		assetMovement?: {
 			[id: string]: {
 				operations: {
-					initiateTransfer?: string;
-					getTransferStatus?: string;
-					createPersistentForwarding?: string;
-					listTransactions?: string
+					initiateTransfer?: ServiceMetadataEndpoint;
+					getTransferStatus?: ServiceMetadataEndpoint;
+					createPersistentForwardingTemplate?: ServiceMetadataEndpoint;
+					listPersistentForwardingTemplate?: ServiceMetadataEndpoint;
+					createPersistentForwarding?: ServiceMetadataEndpoint;
+					listPersistentForwarding?: ServiceMetadataEndpoint;
+					listTransactions?: ServiceMetadataEndpoint;
+					shareKYC?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: {
-					asset: KeetaNetAccountTokenPublicKeyString;
+					asset: KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical | ([ KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical, KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical ]);
 
 					paths: {
 						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
@@ -245,10 +254,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		countryCodes: CountrySearchInput[];
 	};
 	'assetMovement': {
-		asset?: MovableAssetSearchInput;
+		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
 		from?: AssetLocationString;
 		to?: AssetLocationString;
-		rail?: Rail;
+		/**
+		 * Search for a provider which supports ANY of the following rail(s)
+		 */
+		rail?: Rail | Rail[] | undefined;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
@@ -1236,6 +1248,8 @@ type ResolverStats = {
 	}
 };
 
+type SharedLookupCriteria = { providerIDs?: string[]; };
+
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -1534,10 +1548,7 @@ class Resolver {
 	}
 
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
-		if (criteria.rail !== undefined) {
-			throw(new Error('Asset movement service does not support rail search criteria'));
-		}
-		const assetCanonical = criteria.asset ? convertAssetSearchInputToCanonical(criteria.asset) : undefined;
+		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
@@ -1546,45 +1557,86 @@ class Resolver {
 
 		const filteredAssetMovement: SupportedAssets[] = [];
 		for (const supportedAsset of supportedAssets) {
-			if (assetCanonical && supportedAsset.asset !== assetCanonical) {
-				continue;
-			}
-			if (fromCanonical) {
-				let fromMatch = false;
-				for (const path of supportedAsset.paths) {
-					for (const pair of path.pair) {
-						if (pair.location === fromCanonical) {
-							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
-							const outboundPairMatch = pair.rails.outbound && pair.rails.outbound.length > 0;
-							if (commonPairMatch || outboundPairMatch) {
-								fromMatch = true;
+			let matchFound = false;
+
+			for (const path of supportedAsset.paths) {
+				const pairSorted: typeof path.pair = [ ...path.pair ];
+
+				if (fromCanonical) {
+					if (pairSorted[0]?.location !== fromCanonical) {
+						pairSorted.reverse();
+					}
+				} else if (toCanonical) {
+					if (pairSorted[1]?.location !== toCanonical) {
+						pairSorted.reverse();
+					}
+				}
+
+				if (fromCanonical && pairSorted[0].location !== fromCanonical) {
+					continue;
+				}
+
+				if (toCanonical && pairSorted[1].location !== toCanonical) {
+					continue;
+				}
+
+				if (assetCanonical) {
+					if (typeof assetCanonical === 'string') {
+						if (!([ pairSorted[0].id, pairSorted[1].id ].includes(assetCanonical))) {
+							continue;
+						}
+					} else {
+						if (fromCanonical || toCanonical) {
+							if (pairSorted[0].id !== assetCanonical.from || pairSorted[1].id !== assetCanonical.to) {
+								continue;
+							}
+						} else {
+							const eitherId = new Set([ pairSorted[0].id, pairSorted[1].id ]);
+							if (!(eitherId.has(assetCanonical.from)) || !(eitherId.has(assetCanonical.to))) {
+								continue;
 							}
 						}
 					}
 				}
-				if (!fromMatch) {
+
+				const [ from /* , to */ ] = pairSorted;
+
+				// XXX:TODO what rails do we want to check here? This is just inbound
+				const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
+
+				if (supportedRails.length === 0) {
 					continue;
 				}
-			}
-			if (toCanonical) {
-				let toMatch = false;
-				for (const path of supportedAsset.paths) {
-					for (const pair of path.pair) {
-						if (pair.location === toCanonical) {
-							const commonPairMatch = pair.rails.common && pair.rails.common.length > 0;
-							const inboundPairMatch = pair.rails.inbound && pair.rails.inbound.length > 0;
-							if (commonPairMatch || inboundPairMatch) {
-								toMatch = true;
+
+				if (criteria.rail !== undefined) {
+					if (typeof criteria.rail === 'string') {
+						if (!supportedRails.includes(criteria.rail)) {
+							continue;
+						}
+					} else {
+						let railMatchFound = false;
+						for (const checkRail of criteria.rail) {
+							if (supportedRails.includes(checkRail)) {
+								railMatchFound = true;
+								break;
 							}
+						}
+
+						if (!railMatchFound) {
+							continue;
 						}
 					}
 				}
-				if (!toMatch) {
-					continue;
-				}
+
+				matchFound = true;
+				break;
 			}
-			filteredAssetMovement.push(supportedAsset);
+
+			if (matchFound) {
+				filteredAssetMovement.push(supportedAsset);
+			}
 		}
+
 		return(filteredAssetMovement);
 	}
 
@@ -1825,7 +1877,7 @@ class Resolver {
 		}
 		const assetMovementServices = await services.assetMovement('object');
 		const allAssets = new Set<KeetaNetAccountTokenPublicKeyString>();
-		await Promise.all(Object.values(assetMovementServices).map(async function(service) {
+		await Promise.all(Object.values(assetMovementServices).map(async (service) => {
 			if (service === undefined) {
 				throw(new Error('assetMovement has undefined service entry'));
 			}
@@ -1835,7 +1887,7 @@ class Resolver {
 			}
 
 			const supportedAssets = await serviceEntry.supportedAssets('array');
-			await Promise.all(supportedAssets.map(async function(supportedAsset) {
+			await Promise.all(supportedAssets.map(async (supportedAsset) => {
 				if (supportedAsset === undefined) {
 					throw(new Error('supportedAsset entry is undefined'));
 				}
@@ -1843,13 +1895,28 @@ class Resolver {
 				if (!('asset' in assetEntry) || assetEntry.asset === undefined) {
 					throw(new Error('asset is missing from supportedAsset entry'));
 				}
-				const asset = await assetEntry.asset('string');
+				const asset = await assetEntry.asset('any');
 
-				const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
-				if (!checkTokenObject.isToken()) {
-					throw(new Error('Not a token account'));
+				let toAddAssets;
+				if (typeof asset === 'string') {
+					toAddAssets = [ asset ];
+				} else if (Array.isArray(asset) && asset[0] && asset[1]) {
+					toAddAssets = [ await asset[0]('string'), await asset[1]('string') ];
+				} else {
+					throw(new Error('unsupported asset type in supportedAsset entry'));
 				}
-				allAssets.add(checkTokenObject.publicKeyString.get());
+
+				for (const asset of toAddAssets) {
+					try {
+						const checkTokenObject = KeetaNetAccount.fromPublicKeyString(asset);
+						if (!checkTokenObject.isToken()) {
+							throw(new Error('Not a token account'));
+						}
+						allAssets.add(checkTokenObject.publicKeyString.get());
+					} catch (error) {
+						this.#logger?.debug(`Resolver:${this.id}`, 'Invalid token public key in supportedAsset entry:', asset, ' -- ignoring:', error);
+					}
+				}
 			}));
 		}));
 
@@ -2062,7 +2129,7 @@ class Resolver {
 		});
 	}
 
-	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria']): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
+	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -2076,9 +2143,25 @@ class Resolver {
 
 		this.#logger?.debug(`Resolver:${this.id}`, 'Looking up', service, 'with criteria:', criteria, 'in', definedServices);
 
+
+		const definedServicesObject = await definedServices[service]?.('object');
+
+		let filteredDefinedServicesObject: ValuizableObject | undefined;
+		if (sharedCriteria?.providerIDs !== undefined && definedServicesObject) {
+			filteredDefinedServicesObject = {};
+			for (const providerID of sharedCriteria.providerIDs) {
+				if (providerID in definedServicesObject) {
+					filteredDefinedServicesObject[providerID] = definedServicesObject[providerID];
+				}
+			}
+		} else {
+			filteredDefinedServicesObject = definedServicesObject;
+		}
+
 		const serviceLookup = this.lookupMap[service].search;
+
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
-		return(await serviceLookup(await definedServices[service]?.('object'), criteria as any));
+		return(await serviceLookup(filteredDefinedServicesObject, criteria as any));
 	}
 
 	clearCache(): void {
@@ -2097,5 +2180,8 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
-	Services
+	ServiceMetadataEndpoint,
+	ServiceMetadataAuthenticationType,
+	Services,
+	SharedLookupCriteria
 };
