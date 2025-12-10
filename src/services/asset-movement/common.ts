@@ -330,6 +330,8 @@ export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(in
 	}));
 }
 
+export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
+
 export type AssetTransferInstructions = ({
 	type: 'KEETA_SEND';
 	location: AssetLocationLike;
@@ -423,7 +425,7 @@ export type AssetTransferInstructions = ({
 	 */
 	tokenMintAddress?: string;
 }) & ({
-	assetFee: string;
+	assetFee: string | { value: string; purpose: AssetFeeLineItemType; }[];
 	totalReceiveAmount?: string;
 	persistentAddressId?: string;
 });
