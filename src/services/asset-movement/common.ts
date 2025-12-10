@@ -425,7 +425,7 @@ export type AssetTransferInstructions = ({
 	 */
 	tokenMintAddress?: string;
 }) & ({
-	assetFee: string | { value: string; purpose: AssetFeeLineItemType; }[];
+	assetFee: string | { lineItems: { value: string; purpose: AssetFeeLineItemType; }[]; total: string; };
 	totalReceiveAmount?: string;
 	persistentAddressId?: string;
 });
