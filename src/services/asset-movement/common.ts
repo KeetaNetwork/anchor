@@ -330,6 +330,17 @@ export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(in
 	}));
 }
 
+export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
+export type AssetFeeBreakdown = {
+	lineItems: {
+		value: string;
+		purpose: AssetFeeLineItemType;
+		asset?: MovableAssetSearchCanonical;
+	}[];
+	totalPricedIn?: MovableAssetSearchCanonical;
+	total: string;
+};
+
 export type AssetTransferInstructions = ({
 	type: 'KEETA_SEND';
 	location: AssetLocationLike;
@@ -423,7 +434,11 @@ export type AssetTransferInstructions = ({
 	 */
 	tokenMintAddress?: string;
 }) & ({
-	assetFee: string;
+	/**
+	 * assetFee is an advisory fee estimate for the fee that will be incurred when the instruction is executed.
+	 * This can be a total value or a breakdown of line items for the executed transfer.
+	 */
+	assetFee: string | AssetFeeBreakdown;
 	totalReceiveAmount?: string;
 	persistentAddressId?: string;
 });
