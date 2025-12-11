@@ -345,7 +345,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			if (oldStatus && result.changes === 0) {
 				const currentEntry = await db.get<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 				if (currentEntry) {
-					throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
+					throw(new Errors.IncorrectStateAssertedError(id, oldStatus, currentEntry.status));
 				} else {
 					throw(new Error(`Request with ID ${String(id)} not found`));
 				}
