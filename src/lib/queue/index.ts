@@ -5,7 +5,10 @@ import type { AssertNever } from '../utils/never.ts';
 import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
-import { MethodLogger } from './internal.js';
+import {
+	MethodLogger,
+	ManageStatusUpdates
+} from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
 export type KeetaAnchorQueueRequest<QueueRequest> = QueueRequest;
@@ -311,8 +314,6 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 
 		const logger = this.methodLogger('setStatus');
 
-		const { oldStatus, by, output } = ancillary ?? {};
-
 		const entry = this.queue.find(function(checkEntry) {
 			return(checkEntry.id === id);
 		});
@@ -320,38 +321,9 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 			throw(new Error(`Request with ID ${String(id)} not found`));
 		}
 
-		if (oldStatus && entry.status !== oldStatus) {
-			throw(new Errors.IncorrectStateAssertedError(id, oldStatus, entry.status));
-		}
+		const changedFields = ManageStatusUpdates<QueueResult>(id, entry, status, ancillary, logger);
 
-		logger?.debug(`Setting request with id ${String(id)} status from "${entry.status}" to "${status}"`);
-
-		/* XXX -- this needs to be replicated in every driver -- is there a better way ? */
-		if (status === 'failed_temporarily') {
-			entry.failures += 1;
-			logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${entry.failures}`);
-		}
-
-		if  (status === 'pending' || status === 'completed') {
-			logger?.debug(`Clearing last error for request with id ${String(id)}`);
-			entry.lastError = null;
-		}
-		/* END OF XXX */
-
-		if (ancillary?.error) {
-			entry.lastError = ancillary.error;
-			logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
-		}
-
-		entry.status = status;
-		entry.updated = new Date();
-		entry.worker = by ?? null;
-
-		if (output !== undefined) {
-			logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-
-			entry.output = output;
-		}
+		Object.assign(entry, changedFields);
 	}
 
 	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {

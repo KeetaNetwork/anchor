@@ -912,6 +912,12 @@ suite.sequential('Driver Tests', async function() {
 					const updatedEntry = await queue.get(id);
 					expect(updatedEntry?.status).toBe('completed');
 					expect(updatedEntry?.output).toBe('result');
+
+					await queue.setStatus(id, 'failed_temporarily', { output: 'result_failed' });
+					const failedEntry = await queue.get(id);
+					expect(failedEntry?.status).toBe('failed_temporarily');
+					expect(failedEntry?.output).toBe('result_failed');
+					expect(failedEntry?.failures).toBe(1);
 				});
 
 				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */

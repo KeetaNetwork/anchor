@@ -1,4 +1,3 @@
-import { MethodLogger } from '../internal.js';
 import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueStorageDriverConstructor,
@@ -11,6 +10,10 @@ import type {
 	KeetaAnchorQueueFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
+import {
+	MethodLogger,
+	ManageStatusUpdates
+} from '../internal.js';
 import { Errors } from '../common.js';
 
 import { asleep } from '../../utils/asleep.js';
@@ -295,44 +298,31 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	}
 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
-		const { oldStatus, by, output } = ancillary ?? {};
-
 		return(await this.dbTransaction('setStatus', async (db, logger): Promise<void> => {
 			const existingEntry = await db.get<{ status: KeetaAnchorQueueStatus; failures: number; lastError: string | null; output: string | null }>('SELECT status, failures, lastError, output FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 			if (!existingEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
-			if (oldStatus && existingEntry.status !== oldStatus) {
-				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
-			}
+			const changedData = ManageStatusUpdates<QueueResult>(id, {
+				status: existingEntry.status,
+				failures: existingEntry.failures
+			}, status, ancillary, logger);
 
-			logger?.debug(`Setting request with id ${String(id)} status from "${existingEntry.status}" to "${status}"`);
+			const newEntry = {
+				...existingEntry,
+				...changedData
+			};
 
-			let newFailures = existingEntry.failures;
-			if (status === 'failed_temporarily') {
-				newFailures += 1;
-				logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${newFailures}`);
-			}
+			const oldStatus = ancillary?.oldStatus;
+			const currentTime = newEntry.updated?.getTime();
+			const workerValue = newEntry.worker;
+			const newFailures = newEntry.failures;
+			const newLastError = newEntry.lastError;
+			const newOutput = newEntry.output ? JSON.stringify(newEntry.output) : null;
 
-			let newLastError = existingEntry.lastError;
-			if (status === 'pending' || status === 'completed') {
-				logger?.debug(`Clearing last error for request with id ${String(id)}`);
-				newLastError = null;
-			}
-
-			if (ancillary?.error) {
-				newLastError = ancillary.error;
-				logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
-			}
-
-			const currentTime = Date.now();
-			const workerValue = by ?? null;
-
-			let newOutput = existingEntry.output;
-			if (output !== undefined) {
-				logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-				newOutput = output === null ? null : JSON.stringify(output);
+			if (currentTime === undefined || workerValue === undefined || newFailures === undefined) {
+				throw(new Error('Internal error: Missing updated data for status update'));
 			}
 
 			let updateQuery: string;
