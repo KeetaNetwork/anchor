@@ -332,7 +332,11 @@ export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(in
 
 export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
 export type AssetFeeBreakdown = {
-	lineItems: { value: string; purpose: AssetFeeLineItemType; }[];
+	lineItems: {
+		value: string;
+		purpose: AssetFeeLineItemType;
+		asset?: MovableAssetSearchCanonical;
+	}[];
 	total: string;
 };
 
