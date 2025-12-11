@@ -1,8 +1,6 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as oids from '../services/kyc/oids.generated.js';
 import * as ASN1 from './utils/asn1.js';
-import { ASN1toJS, contextualizeStructSchema, encodeValueBySchema, normalizeDecodedASN1 } from './utils/asn1.js';
-import type { Schema as ASN1Schema } from './utils/asn1.js';
 import { arrayBufferLikeToBuffer, arrayBufferToBuffer, Buffer, bufferToArrayBuffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { assertNever } from './utils/never.js';
@@ -19,6 +17,11 @@ import { checkHashWithOID } from './utils/external.js';
  */
 const DPO = KeetaNetClient.lib.Utils.Helper.debugPrintableObject.bind(KeetaNetClient.lib.Utils.Helper);
 
+/**
+ * Short alias for the KeetaNetAccount type
+ */
+const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
+
 /* ENUM */
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
 
@@ -26,7 +29,149 @@ type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyT
  * An alias for the KeetaNetAccount type
  */
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
-const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
+
+/*
+ * Base Certificate types, aliased for convenience
+ */
+type BaseCertificateClass = typeof KeetaNetClient.lib.Utils.Certificate.Certificate;
+type BaseCertificate = InstanceType<BaseCertificateClass>;
+const BaseCertificate: BaseCertificateClass = KeetaNetClient.lib.Utils.Certificate.Certificate;
+type BaseCertificateBuilderClass = typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder;
+type BaseCertificateBuilder = InstanceType<BaseCertificateBuilderClass>;
+const BaseCertificateBuilder: BaseCertificateBuilderClass = KeetaNetClient.lib.Utils.Certificate.CertificateBuilder;
+
+function isPlainObject(value: unknown): value is { [key: string]: unknown } {
+	return(typeof value === 'object' && value !== null && !Array.isArray(value));
+}
+
+/**
+ * Recursively normalize object properties
+ */
+function normalizeDecodedASN1Object(obj: object, principals: KeetaNetAccount[]): { [key: string]: unknown } {
+	const result: { [key: string]: unknown } = {};
+	for (const [key, value] of Object.entries(obj)) {
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
+		result[key] = normalizeDecodedASN1(value, principals);
+	}
+	return(result);
+}
+
+/**
+ * Post-process the output from toJavaScriptObject() to:
+ * 1. Unwrap any remaining ASN.1-like objects (from IsAnyString/IsAnyDate)
+ * 2. Add domain-specific $blob function to Reference objects
+ */
+function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount[]): unknown {
+	// Handle primitives
+	if (input === undefined || input === null || typeof input !== 'object') {
+		return(input);
+	}
+	if (input instanceof Date || Buffer.isBuffer(input) || input instanceof ArrayBuffer) {
+		return(input);
+	}
+
+	// Handle arrays
+	if (Array.isArray(input)) {
+		return(input.map(item => normalizeDecodedASN1(item, principals)));
+	}
+
+	// Unwrap ASN.1-like objects from ambiguous schemas (IsAnyString, IsAnyDate, IsBitString)
+	// These are plain objects like { type: 'string', kind: 'utf8', value: 'text' }
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const obj = input as { type?: string; kind?: string; value?: unknown; unusedBits?: number; contains?: unknown };
+	if (obj.type === 'string' && 'value' in obj && typeof obj.value === 'string') {
+		return(obj.value);
+	}
+	if (obj.type === 'date' && 'value' in obj && obj.value instanceof Date) {
+		return(obj.value);
+	}
+	if (obj.type === 'bitstring' && 'value' in obj && Buffer.isBuffer(obj.value)) {
+		return(obj.value);
+	}
+
+	// Check if this is a Reference object (has external.url and digest fields)
+	if ('external' in obj && 'digest' in obj && isPlainObject(obj.external) && isPlainObject(obj.digest)) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const ref = obj as { external: { url?: string; contentType?: string }; digest?: { digestAlgorithm?: string | { oid?: string }; digest?: unknown }; encryptionAlgorithm?: string | { oid?: string }};
+		const url = ref.external.url;
+		const mimeType = ref.external.contentType;
+
+		// After toJavaScriptObject(), OIDs are strings, not {oid: string}
+		const encryptionAlgoOID = typeof ref.encryptionAlgorithm === 'string'
+			? ref.encryptionAlgorithm
+			: ref.encryptionAlgorithm?.oid;
+		const digestInfo = ref.digest;
+
+		if (typeof url === 'string' && typeof mimeType === 'string' && digestInfo) {
+			let cachedValue: Blob | null = null;
+
+			return({
+				...normalizeDecodedASN1Object(obj, principals),
+				$blob: async function(additionalPrincipals?: ConstructorParameters<typeof EncryptedContainer>[0]): Promise<Blob> {
+					if (cachedValue) {
+						return(cachedValue);
+					}
+
+					const fetchResult = await fetch(url);
+					if (!fetchResult.ok) {
+						throw(new Error(`Failed to fetch remote data from ${url}: ${fetchResult.status} ${fetchResult.statusText}`));
+					}
+
+					const dataBlob = await fetchResult.blob();
+					let data = await dataBlob.arrayBuffer();
+
+					// Handle JSON base64 encoding
+					if (dataBlob.type === 'application/json') {
+						try {
+							const asJSON: unknown = JSON.parse(Buffer.from(data).toString('utf-8'));
+							if (isPlainObject(asJSON) && Object.keys(asJSON).length === 2) {
+								if ('data' in asJSON && typeof asJSON.data === 'string' && 'mimeType' in asJSON && typeof asJSON.mimeType === 'string') {
+									data = bufferToArrayBuffer(Buffer.from(asJSON.data, 'base64'));
+								}
+							}
+						} catch {
+							/* Ignored */
+						}
+					}
+
+					// Decrypt if needed
+					if (encryptionAlgoOID) {
+						switch (encryptionAlgoOID) {
+							case '1.3.6.1.4.1.62675.2':
+							case 'KeetaEncryptedContainerV1': {
+								const container = EncryptedContainer.fromEncryptedBuffer(data, [
+									...principals,
+									...(additionalPrincipals ?? [])
+								]);
+								data = await container.getPlaintext();
+								break;
+							}
+							default:
+								throw(new Error(`Unsupported encryption algorithm OID: ${encryptionAlgoOID}`));
+						}
+					}
+
+					// Verify hash (checkHashWithOID now accepts string OIDs directly)
+					if (!Buffer.isBuffer(digestInfo.digest)) {
+						throw(new TypeError('Digest value is not a buffer'));
+					}
+
+					const validHash = await checkHashWithOID(data, digestInfo);
+					if (validHash !== true) {
+						throw(validHash);
+					}
+
+					const blob = new Blob([data], { type: mimeType });
+					cachedValue = blob;
+					return(blob);
+				}
+			});
+		}
+	}
+
+	// Recursively process plain objects
+	return(normalizeDecodedASN1Object(obj, principals));
+}
 
 function isBlob(input: unknown): input is Blob {
 	if (typeof input !== 'object' || input === null) {
@@ -191,13 +336,17 @@ function asCertificateAttributeNames(name: string): CertificateAttributeNames {
 	return(name);
 }
 
-function resolveSchema(name: CertificateAttributeNames, schema: ASN1Schema): ASN1Schema {
-	return(contextualizeStructSchema(schema));
-}
-
 function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
-	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
-	const encodedJS = encodeValueBySchema(schema, value, { attributeName: name });
+	const schema = CertificateAttributeSchema[name];
+
+	let encodedJS;
+	try {
+		encodedJS = new ASN1.ValidateASN1(schema).fromJavaScriptObject(value);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw(new Error(`Attribute ${name}: ${message} (value: ${JSON.stringify(DPO(value))})`));
+	}
+
 	if (encodedJS === undefined) {
 		throw(new Error(`Unsupported attribute value for encoding: ${JSON.stringify(DPO(value))}`));
 	}
@@ -236,12 +385,157 @@ function encodeForSensitive(
 	return(Buffer.from(String(value), 'utf-8'));
 }
 
+function unwrapSingleLayer(schema: ASN1.Schema): ASN1.Schema {
+	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'context') {
+		return(schema.contains);
+	}
+
+	return(schema);
+}
+
+function unwrapFieldSchema(fieldSchema: ASN1.Schema): ASN1.Schema {
+	if (typeof fieldSchema === 'object' && fieldSchema !== null && 'optional' in fieldSchema) {
+		const unwrapped = unwrapSingleLayer(fieldSchema.optional);
+		return({ optional: unwrapped });
+	}
+
+	return(unwrapSingleLayer(fieldSchema));
+}
+
+/**
+ * Create a backwards-compatible version of a schema by removing context tag wrappers from struct fields.
+ */
+function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
+	// If it's a struct, unwrap context tags from its fields
+	if (typeof schema === 'object' && schema !== null && 'type' in schema && schema.type === 'struct') {
+		const unwrappedContains: { [key: string]: ASN1.Schema } = {};
+		for (const [fieldName, fieldSchema] of Object.entries(schema.contains)) {
+			unwrappedContains[fieldName] = unwrapFieldSchema(fieldSchema);
+		}
+
+		return({
+			type: 'struct',
+			fieldNames: schema.fieldNames,
+			contains: unwrappedContains
+		});
+	}
+
+	return(schema);
+}
+
+/**
+ * Fallback decoder for entityType attribute from old certificates.
+ * Transforms raw ASN1 into the expected EntityType structure.
+ */
+function decodeEntityTypeFallback(value: ArrayBuffer, principals: KeetaNetAccount[]): unknown {
+	const rawASN1 = ASN1.ASN1toJS(value);
+	// Per EntityTypeSchema: value 0 = organization, value 1 = person
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const choiceTag = (Array.isArray(rawASN1) ? rawASN1[0] : rawASN1) as { type?: string; value?: number; contains?: unknown };
+	if (choiceTag?.type === 'context' && typeof choiceTag.value === 'number') {
+		/*
+		 * Transform schemeName CHOICE
+		 */
+		function transformSchemeName(raw: unknown): unknown {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const ctx = raw as { type?: string; value?: number; contains?: unknown };
+			if (ctx?.type === 'context' && typeof ctx.value === 'number') {
+				return(normalizeDecodedASN1(ctx.contains, principals));
+			}
+
+			return(normalizeDecodedASN1(raw, principals));
+		}
+
+		/*
+		 * Transform identification arrays into proper objects
+		 */
+		function transformIdentifications(items: unknown): unknown {
+			if (!Array.isArray(items)) {
+				return(normalizeDecodedASN1(items, principals));
+			}
+
+			return(items.map(function(item) {
+				if (!Array.isArray(item)) {
+					return(normalizeDecodedASN1(item, principals));
+				}
+				// Position 0 is always 'id'
+				// Position 1 could be 'issuer' (string) or 'schemeName' (object/array)
+				// Position 2 (if exists) is 'schemeName'
+				const result: { id?: unknown; issuer?: unknown; schemeName?: unknown } = {};
+				if (item.length >= 1) {
+					result.id = normalizeDecodedASN1(item[0], principals);
+				}
+
+				if (item.length === 2) {
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+					const val = item[1];
+					if (typeof val === 'string') {
+						result.issuer = val;
+					} else {
+						result.schemeName = transformSchemeName(val);
+					}
+				} else if (item.length >= 3) {
+					result.issuer = normalizeDecodedASN1(item[1], principals);
+					result.schemeName = transformSchemeName(item[2]);
+				}
+
+				return(result);
+			}));
+		}
+
+		const transformed = transformIdentifications(choiceTag.contains);
+		if (choiceTag.value === 0) {
+			return({ organization: transformed });
+		} else if (choiceTag.value === 1) {
+			return({ person: transformed });
+		}
+	}
+
+	// Fallback to raw normalized output
+	return(normalizeDecodedASN1(rawASN1, principals));
+}
+
 async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: ArrayBuffer, principals: KeetaNetAccount[]): Promise<CertificateAttributeValue<NAME>> {
-	const schema = resolveSchema(name, CertificateAttributeSchema[name]);
-	// XXX:TODO Fix depth issue
-	// @ts-ignore
-	const decodedUnknown: unknown = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	const candidate = normalizeDecodedASN1(decodedUnknown, principals);
+	const schema = CertificateAttributeSchema[name];
+
+	let decodedASN1: ASN1.ASN1AnyJS | undefined;
+	let usedSchema = schema;
+	try {
+		// Try with current schema (includes context tags for structs with optional fields)
+		// @ts-expect-error
+		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
+	} catch (firstError) {
+		// Fallback: try with backwards-compatible schema (context tags stripped)
+		// This supports old certificates encoded before context tags were added
+		try {
+			// Special handling for entityType
+			if (name === 'entityType') {
+				const candidate = decodeEntityTypeFallback(value, principals);
+				return(asAttributeValue(name, candidate));
+			}
+
+			const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
+			usedSchema = backwardsCompatSchema;
+		} catch {
+			// If both fail, throw the original error
+			throw(firstError);
+		}
+	}
+
+	if (!decodedASN1) {
+		throw(new Error('Failed to decode ASN1 data'));
+	}
+
+	const validator = new ASN1.ValidateASN1(usedSchema);
+	const plainObject = validator.toJavaScriptObject(decodedASN1);
+
+	// Post-process to:
+	// 1. Unwrap any remaining ASN.1-like objects
+	// 2. Add domain-specific $blob function to Reference objects
+	// @ts-expect-error
+	const candidate = normalizeDecodedASN1(plainObject, principals);
 	return(asAttributeValue(name, candidate));
 }
 
@@ -356,7 +650,7 @@ class SensitiveAttribute<T = ArrayBuffer> {
 			const dataObject = new ASN1.BufferStorageASN1(data, SensitiveAttributeSchemaInternal);
 			decodedAttribute = dataObject.getASN1();
 		} catch {
-			const js = ASN1toJS(data);
+			const js = ASN1.ASN1toJS(data);
 			throw(new Error(`SensitiveAttribute.decode: unexpected DER shape ${JSON.stringify(DPO(js))}`));
 		}
 
@@ -490,7 +784,7 @@ class SensitiveAttribute<T = ArrayBuffer> {
  */
 type CertificateAttributeNames = keyof typeof CertificateAttributeOIDDB;
 
-type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>[0]>;
+type BaseCertificateBuilderParams = NonNullable<ConstructorParameters<BaseCertificateBuilderClass>[0]>;
 type CertificateBuilderParams = Required<Pick<BaseCertificateBuilderParams, 'issuer' | 'validFrom' | 'validTo' | 'serial' | 'hashLib' | 'issuerDN' | 'subjectDN' | 'isCA'> & {
 	/**
 	 * The key of the subject -- used for Sensitive Attributes as well
@@ -535,7 +829,7 @@ type CertificateKYCAttributeSchema = ASN1.SchemaMap<typeof CertificateKYCAttribu
 // Attribute input type sourced from generated definitions
 type CertificateAttributeInput<NAME extends CertificateAttributeNames> = CertificateAttributeValue<NAME>;
 
-export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.CertificateBuilder {
+export class CertificateBuilder extends BaseCertificateBuilder {
 	readonly #attributes: {
 		[name: string]: { sensitive: boolean; value: ArrayBuffer }
 	} = {};
@@ -597,7 +891,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 		};
 	}
 
-	protected async addExtensions(...args: Parameters<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']>): ReturnType<InstanceType<typeof KeetaNetClient.lib.Utils.Certificate.CertificateBuilder>['addExtensions']> {
+	protected async addExtensions(...args: Parameters<BaseCertificateBuilder['addExtensions']>): ReturnType<BaseCertificateBuilder['addExtensions']> {
 		const retval = await super.addExtensions(...args);
 
 		const subject = args[0].subjectPublicKey;
@@ -641,7 +935,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 
 		if (certAttributes.length > 0) {
 			retval.push(
-				KeetaNetClient.lib.Utils.Certificate.CertificateBuilder.extension(oids.keeta.KYC_ATTRIBUTES, certAttributes)
+				BaseCertificateBuilder.extension(oids.keeta.KYC_ATTRIBUTES, certAttributes)
 			);
 		}
 
@@ -672,7 +966,7 @@ export class CertificateBuilder extends KeetaNetClient.lib.Utils.Certificate.Cer
 	}
 }
 
-export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificate {
+export class Certificate extends BaseCertificate {
 	private readonly subjectKey: KeetaNetAccount;
 	static readonly Builder: typeof CertificateBuilder = CertificateBuilder;
 	static readonly SharableAttributes: typeof SharableCertificateAttributes;
@@ -690,7 +984,7 @@ export class Certificate extends KeetaNetClient.lib.Utils.Certificate.Certificat
 		}
 	} = {};
 
-	constructor(input: ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.Certificate>[0], options?: ConstructorParameters<typeof KeetaNetClient.lib.Utils.Certificate.Certificate>[1] & { subjectKey?: KeetaNetAccount }) {
+	constructor(input: ConstructorParameters<BaseCertificateClass>[0], options?: ConstructorParameters<BaseCertificateClass>[1] & { subjectKey?: KeetaNetAccount }) {
 		super(input, options);
 
 		this.subjectKey = options?.subjectKey ?? this.subjectPublicKey;
@@ -797,6 +1091,7 @@ export namespace SharableCertificateAttributesTypes {
 	};
 	export type ContentsSchema = {
 		certificate: string;
+		intermediates?: string[] | undefined;
 		attributes: {
 			[name: string]: {
 				sensitive: true;
@@ -816,6 +1111,7 @@ type SharableCertificateAttributesContentsSchema = SharableCertificateAttributes
 
 export class SharableCertificateAttributes {
 	#certificate?: Certificate;
+	#intermediates?: Set<BaseCertificate>;
 	#attributes: {
 		[name: string]: {
 			sensitive: boolean;
@@ -893,7 +1189,31 @@ export class SharableCertificateAttributes {
 	 * and a list of attribute names to include -- if no list is
 	 * provided, all attributes are included.
 	 */
-	static async fromCertificate(certificate: Certificate, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes> {
+	static async fromCertificate(certificate: Certificate, intermediates?: Set<BaseCertificate>, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes>;
+	/** @deprecated Use the overload with three parameters instead */
+	static async fromCertificate(certificate: Certificate, attributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes>;
+	static async fromCertificate(certificate: Certificate, intermediatesOrAttributeNames?: Set<BaseCertificate> | CertificateAttributeNames[], definitelyAttributeNames?: CertificateAttributeNames[]): Promise<SharableCertificateAttributes> {
+		let intermediates: Set<BaseCertificate> | undefined = undefined;
+		let attributeNames: CertificateAttributeNames[] | undefined = undefined;
+
+		if (definitelyAttributeNames === undefined) {
+			if (intermediatesOrAttributeNames !== undefined) {
+				if (Array.isArray(intermediatesOrAttributeNames)) {
+					attributeNames = intermediatesOrAttributeNames;
+				} else {
+					intermediates = intermediatesOrAttributeNames;
+				}
+			}
+		} else {
+			if (intermediatesOrAttributeNames !== undefined) {
+				if (Array.isArray(intermediatesOrAttributeNames)) {
+					throw(new TypeError('Expected Set<BaseCertificate> for intermediates'));
+				}
+				intermediates = intermediatesOrAttributeNames;
+			}
+			attributeNames = definitelyAttributeNames;
+		}
+
 		if (attributeNames === undefined) {
 			/*
 			 * We know the keys are whatever the Certificate says they are, so
@@ -965,8 +1285,15 @@ export class SharableCertificateAttributes {
 				}));
 			}
 
-			const attrValue = await certificate.getAttributeValue(name);
-			await walkResultAndReplaceReferences(attrValue);
+			/*
+			 * Decode the attribute value to extract $blob references.
+			 * Skip for entityType which has schema compatibility issues
+			 * with old certificates and has no external references anyway.
+			 */
+			if (name !== 'entityType') {
+				const attrValue = await certificate.getAttributeValue(name);
+				await walkResultAndReplaceReferences(attrValue);
+			}
 
 			if (attr.sensitive) {
 				attributes[name] = {
@@ -983,8 +1310,20 @@ export class SharableCertificateAttributes {
 			}
 		}
 
+
+		let intermediatesJSON;
+		intermediates ??= new Set();
+		if (intermediates.size === 0) {
+			intermediatesJSON = undefined;
+		} else {
+			intermediatesJSON = Array.from(intermediates).map(function(intermediateCertificate) {
+				return(intermediateCertificate.toPEM());
+			});
+		}
+
 		const contentsString = JSON.stringify({
 			certificate: certificate.toPEM(),
+			intermediates: intermediatesJSON,
 			attributes: attributes
 		} satisfies SharableCertificateAttributesContentsSchema);
 
@@ -993,7 +1332,9 @@ export class SharableCertificateAttributes {
 		const container = EncryptedContainer.fromPlaintext(bufferToArrayBuffer(contentsBuffer), [temporaryUser], true);
 		const containerBuffer = await container.getEncodedBuffer();
 
-		const retval = new SharableCertificateAttributes(containerBuffer, { principals: temporaryUser });
+		const retval = new SharableCertificateAttributes(containerBuffer, {
+			principals: temporaryUser
+		});
 		await retval.revokeAccess(temporaryUser);
 		return(retval);
 	}
@@ -1035,6 +1376,12 @@ export class SharableCertificateAttributes {
 		const contentsString = Buffer.from(contentsBufferDecompressed).toString('utf-8');
 		const contentsJSON: unknown = JSON.parse(contentsString);
 		const contents = assertSharableCertificateAttributesContentsSchema(contentsJSON);
+
+		this.#intermediates = new Set<BaseCertificate>();
+		for (const intermediatePEM of contents.intermediates ?? []) {
+			const intermediateCert = new BaseCertificate(intermediatePEM);
+			this.#intermediates.add(intermediateCert);
+		}
 
 		this.#certificate = new Certificate(contents.certificate);
 		const attributePromises = Object.entries(contents.attributes).map(async ([name, attr]): Promise<[string, { sensitive: boolean; value: ArrayBuffer; references?: { [id: string]: string; } | undefined; }]> => {
@@ -1102,6 +1449,21 @@ export class SharableCertificateAttributes {
 		return(this.#certificate);
 	}
 
+	/**
+	 * Get the intermediate certificates included in this sharable
+	 * certificate container
+	 *
+	 * @return A set of BaseCertificate objects representing the
+	 *         intermediate certificates attached to this container
+	 */
+	async getIntermediates(): Promise<Set<BaseCertificate>> {
+		await this.#populate();
+		if (this.#intermediates && this.#intermediates.size > 0) {
+			return(new Set(this.#intermediates));
+		}
+		return(new Set());
+	}
+
 	async getAttributeBuffer(name: string): Promise<ArrayBuffer | undefined> {
 		await this.#populate();
 		const attr = this.#attributes[name];
@@ -1151,7 +1513,7 @@ export class SharableCertificateAttributes {
 						throw(new Error(`Missing reference value for ID ${referenceID}`));
 					}
 					const referenceData = Buffer.from(referenceValue, 'base64');
-					const referenceDataAB = arrayBufferToBuffer(referenceData);
+					const referenceDataAB = bufferToArrayBuffer(referenceData);
 
 					/* Verify the hash matches what was certified */
 					const checkHash = await checkHashWithOID(referenceData, parent.digest);
@@ -1231,5 +1593,15 @@ Certificate.SharableAttributes = SharableCertificateAttributes;
 /** @internal */
 export const _Testing = {
 	SensitiveAttributeBuilder,
-	SensitiveAttribute
+	SensitiveAttribute,
+	ValidateASN1: ASN1.ValidateASN1,
+	BufferStorageASN1: ASN1.BufferStorageASN1,
+	JStoASN1: ASN1.JStoASN1,
+	normalizeDecodedASN1,
+	decodeAttribute,
+	decodeEntityTypeFallback,
+	unwrapSingleLayer,
+	unwrapFieldSchema,
+	unwrapContextTagsFromSchema,
+	CertificateAttributeSchema
 };

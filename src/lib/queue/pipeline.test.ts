@@ -24,7 +24,7 @@ test('Basic Tests', async function() {
 	type IN2 = OUT1;
 	type OUT2 = { value: number; doubled: number; length: number; };
 
-	await using pipeline = new class extends KeetaAnchorQueuePipelineBasic<IN1, OUT2, OUT1, OUT2> {
+	await using pipeline = new class extends KeetaAnchorQueuePipelineBasic<[ IN1, OUT1, OUT2 ]> {
 		protected readonly stages = [{
 			name: 'doubler',
 			runner: class extends KeetaAnchorQueueRunnerJSON<IN1, OUT1> {
