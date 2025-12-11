@@ -4,7 +4,7 @@
 		"composite": false,
 		"tsBuildInfoFile": "./.tsbuildinfo",
 		"disableSolutionSearching": true,
-		"target": "esnext",
+		"target": "es2022",
 		"module": "nodenext",
 		"rootDir": "./src",
 		"moduleResolution": "nodenext",

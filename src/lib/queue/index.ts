@@ -678,7 +678,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(false);
 	}
 
-	private async getRunnerLock(cleanup: AsyncDisposableStack): Promise<boolean> {
+	private async getRunnerLock(cleanup: InstanceType<typeof AsyncDisposableStack>): Promise<boolean> {
 		const logger = this.methodLogger('getRunnerLock');
 
 		try {
