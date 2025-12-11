@@ -337,6 +337,7 @@ export type AssetFeeBreakdown = {
 		purpose: AssetFeeLineItemType;
 		asset?: MovableAssetSearchCanonical;
 	}[];
+	totalPricedIn?: MovableAssetSearchCanonical;
 	total: string;
 };
 
