@@ -434,6 +434,10 @@ export type AssetTransferInstructions = ({
 	 */
 	tokenMintAddress?: string;
 }) & ({
+	/**
+	 * assetFee is an advisory fee estimate for the fee that will be incurred when the instruction is executed.
+	 * This can be a total value or a breakdown of line items for the executed transfer.
+	 */
 	assetFee: string | AssetFeeBreakdown;
 	totalReceiveAmount?: string;
 	persistentAddressId?: string;
