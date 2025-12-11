@@ -48,7 +48,7 @@ export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, 
 	logger?.debug(`Setting request with id ${String(id)} status from "${existingEntry.status}" to "${status}"`);
 
 	if (status === 'failed_temporarily') {
-		let newFailures = existingEntry.failures;
+		const newFailures = existingEntry.failures;
 		retval.failures = newFailures + 1;
 		logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${newFailures}`);
 	}

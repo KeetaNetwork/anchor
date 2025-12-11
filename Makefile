@@ -104,7 +104,7 @@ test: node_modules $(GENERATED_FILES)
 
 # Run linting
 do-lint: node_modules $(GENERATED_FILES)
-	npm run eslint -- --config .eslint.config.mjs src ${KEETA_ANCHOR_LINT_ARGS}
+	npm run eslint -- --config .eslint.config.mjs ${KEETA_ANCHOR_LINT_ARGS}
 
 # Files created during the "build" or "prepare" processes
 # are cleaned up by the "clean" target.
