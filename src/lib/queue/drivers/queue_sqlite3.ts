@@ -318,8 +318,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			const currentTime = newEntry.updated?.getTime();
 			const workerValue = newEntry.worker;
 			const newFailures = newEntry.failures;
-			const newLastError = newEntry.lastError;
-			const newOutput = newEntry.output ? JSON.stringify(newEntry.output) : null;
+			const newLastError = newEntry.lastError !== undefined ? newEntry.lastError : existingEntry.lastError;
+			const newOutput = newEntry.output !== undefined ? JSON.stringify(newEntry.output) : null;
 
 			if (currentTime === undefined || workerValue === undefined || newFailures === undefined) {
 				throw(new Error('Internal error: Missing updated data for status update'));
