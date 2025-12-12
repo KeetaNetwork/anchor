@@ -1,4 +1,3 @@
-import { MethodLogger } from '../internal.js';
 import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueStorageDriverConstructor,
@@ -11,6 +10,10 @@ import type {
 	KeetaAnchorQueueFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
+import {
+	MethodLogger,
+	ManageStatusUpdates
+} from '../internal.js';
 import { Errors } from '../common.js';
 
 import { asleep } from '../../utils/asleep.js';
@@ -283,37 +286,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
-			if (oldStatus && currentEntry.status !== oldStatus) {
-				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, currentEntry.status));
-			}
-
-			logger?.debug(`Setting request with id ${String(id)} status from "${currentEntry.status}" to "${status}"`);
-
-			let newFailures = currentEntry.failures;
-			if (status === 'failed_temporarily') {
-				newFailures += 1;
-				logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${newFailures}`);
-			}
-
-			let newLastError = currentEntry.last_error;
-			if (status === 'pending' || status === 'completed') {
-				logger?.debug(`Clearing last error for request with id ${String(id)}`);
-				newLastError = null;
-			}
-
-			if (ancillary?.error) {
-				newLastError = ancillary.error;
-				logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
-			}
-
-			const currentTime = Date.now();
-			const workerValue = by ?? null;
-
-			let newOutput = currentEntry.output;
-			if (output !== undefined) {
-				logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-				newOutput = output !== null ? JSON.stringify(output) : null;
-			}
+			const newEntry = ManageStatusUpdates<QueueResult>(id, currentEntry, status, ancillary, logger);
+			const currentTime = newEntry.updated.getTime();
+			const workerValue = newEntry.worker;
+			const newFailures = newEntry.failures ?? currentEntry.failures;
+			const newLastError = newEntry.lastError !== undefined ? newEntry.lastError : currentEntry.last_error;
+			const newOutput = newEntry.output !== undefined ? JSON.stringify(newEntry.output) : currentEntry.output;
 
 			let updateQuery: string;
 			let updateParams: (KeetaAnchorQueueRequestID | string | number | null)[];
@@ -334,8 +312,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			if (oldStatus && result.rowCount === 0) {
 				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
+				const currentStatus = currentEntry.rows[0]?.status;
 				if (currentEntry.rows.length > 0) {
-					throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
+					if (currentStatus === undefined) {
+						throw(new Error(`internal error: could not retrieve current status for request with ID ${String(id)}`));
+					}
+					throw(new Errors.IncorrectStateAssertedError(id, oldStatus, currentStatus));
 				} else {
 					throw(new Error(`Request with ID ${String(id)} not found`));
 				}

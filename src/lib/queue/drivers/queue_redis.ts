@@ -1,4 +1,3 @@
-import { MethodLogger } from '../internal.js';
 import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueStorageDriverConstructor,
@@ -11,6 +10,10 @@ import type {
 	KeetaAnchorQueueFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
+import {
+	MethodLogger,
+	ManageStatusUpdates
+} from '../internal.js';
 import { Errors } from '../common.js';
 
 import type { Logger } from '../../log/index.ts';
@@ -228,43 +231,22 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
 		}
 
-		logger?.debug(`Setting request with id ${String(id)} status from "${existingEntry.status}" to "${status}"`);
-
-		let newFailures = existingEntry.failures;
-		if (status === 'failed_temporarily') {
-			newFailures += 1;
-			logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${newFailures}`);
-		}
-
-		let newLastError = existingEntry.lastError;
-		if (status === 'pending' || status === 'completed') {
-			logger?.debug(`Clearing last error for request with id ${String(id)}`);
-			newLastError = null;
-		}
-
-		if (ancillary?.error) {
-			newLastError = ancillary.error;
-			logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
-		}
-
-		const currentTime = Date.now();
-		const workerValue = by ?? null;
-
-		let newOutput = existingEntry.output;
-		if (output !== undefined) {
-			logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-			newOutput = output !== null ? JSON.stringify(output) : null;
-		}
+		const newEntryRaw = ManageStatusUpdates<QueueResult>(id, existingEntry, status, ancillary, logger);
+		const newEntry: Partial<QueueEntryData> = {
+			status: newEntryRaw.status,
+			worker: newEntryRaw.worker,
+			failures: newEntryRaw.failures ?? existingEntry.failures,
+			updated: newEntryRaw.updated.getTime(),
+			lastError: newEntryRaw.lastError !== undefined ? newEntryRaw.lastError : existingEntry.lastError,
+			output: newEntryRaw.output !== undefined ? newEntryRaw.output ? JSON.stringify(newEntryRaw.output) : null : existingEntry.output
+		};
 
 		const updatedEntry: QueueEntryData = {
 			...existingEntry,
-			status: status,
-			updated: currentTime,
-			worker: workerValue,
-			failures: newFailures,
-			lastError: newLastError,
-			output: newOutput
+			...newEntry
 		};
+
+		const currentTime = updatedEntry.updated;
 
 		if (oldStatus) {
 			const luaScript = `
@@ -316,7 +298,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 			if (resultObj.err === 'STATUS_MISMATCH') {
-				throw(new Error(`Request with ID ${String(id)} status is not "${oldStatus}", cannot update to "${status}"`));
+				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
 			}
 		} else {
 			const multi = redis.multi();
