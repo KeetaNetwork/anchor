@@ -115,7 +115,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		const logger = this.methodLogger('runWithRetry');
 
 		let lastError: unknown;
-		for (let retry = 0; retry < 100; retry++) {
+		for (let retry = 0; retry < 16; retry++) {
 			if (this.poolInternal === null) {
 				this.methodLogger('runWithRetry')?.debug('Aborting DB operation retries because the instance was destroyed');
 
