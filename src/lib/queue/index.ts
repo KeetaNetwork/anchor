@@ -479,7 +479,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * How many runners can process this queue in parallel
 	 */
 	protected maxRunners?: number;
-	private runnerLockKey: KeetaAnchorQueueRequestID;
+	private readonly runnerLockKey: KeetaAnchorQueueRequestID;
 
 	/**
 	 * The ID of this runner for diagnostic purposes
