@@ -43,7 +43,7 @@ jobs:
 
       - name: Setup Services
         run: |
-	  ./utils/enable-postgres-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
+          ./utils/enable-postgres-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
           ./utils/enable-redis-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
 
       - name: Run Tests
@@ -64,5 +64,5 @@ jobs:
 
       - name: Stop Services
         run: |
-	  ./utils/enable-postgres-backend off
+          ./utils/enable-postgres-backend off
           ./utils/enable-redis-backend off
