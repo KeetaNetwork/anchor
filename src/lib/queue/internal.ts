@@ -37,10 +37,15 @@ export function MethodLogger<T extends Logger | undefined>(input: T, from: { fil
 	return(retval as T extends Logger ? Logger : undefined);
 }
 
-export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, existingEntry: Pick<KeetaAnchorQueueEntry<unknown, QueueResult>, 'status' | 'failures'>, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>, logger?: Logger): Pick<Partial<KeetaAnchorQueueEntry<unknown, QueueResult>>, 'status' | 'worker' | 'updated' | 'lastError' | 'failures' | 'output'> {
-	const retval: Pick<Partial<KeetaAnchorQueueEntry<unknown, QueueResult>>, 'status' | 'worker' | 'updated' | 'lastError' | 'failures' | 'output'> = {};
+type StatusUpdateResult<QueueResult> = Pick<Partial<KeetaAnchorQueueEntry<unknown, QueueResult>>, 'lastError' | 'failures' | 'output'> & Pick<KeetaAnchorQueueEntry<unknown, QueueResult>, 'status' | 'worker' | 'updated'>;
+export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, existingEntry: Pick<KeetaAnchorQueueEntry<unknown, QueueResult>, 'status' | 'failures'>, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>, logger?: Logger): StatusUpdateResult<QueueResult> {
+	const retval: StatusUpdateResult<QueueResult> = {
+		status: status,
+		worker: ancillary?.by ?? null,
+		updated: new Date()
+	};
 
-	const { oldStatus, by, output } = ancillary ?? {};
+	const { oldStatus, output } = ancillary ?? {};
 	if (oldStatus && existingEntry.status !== oldStatus) {
 		throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
 	}
@@ -62,10 +67,6 @@ export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, 
 		retval.lastError = ancillary.error;
 		logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
 	}
-
-	retval.updated = new Date();
-	retval.worker = by ?? null;
-	retval.status = status;
 
 	if (output !== undefined) {
 		retval.output = output;
