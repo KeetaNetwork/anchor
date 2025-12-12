@@ -1,0 +1,31 @@
+#! /usr/bin/env bash
+if [[ "$1" = "off" ]]
+then
+   if [[ -n $ANCHOR_TESTING_REDIS_DOCKER_ID ]]
+   then
+      docker stop $ANCHOR_TESTING_REDIS_DOCKER_ID > /dev/null
+   fi
+   echo "unset ANCHOR_TESTING_REDIS_DOCKER_ID"
+   echo "unset ANCHOR_TESTING_REDIS_HOST"
+   echo "unset ANCHOR_TESTING_REDIS_PORT"
+   echo "unset ANCHOR_TESTING_REDIS_SECRET"
+else
+   id="$(docker run --detach --publish-all --rm redis redis-server --requirepass redis)"
+   ALREADY_WAITED=0
+   until docker exec $id redis-cli -h localhost -a redis ping > /dev/null
+   do 
+      sleep 1;
+      ALREADY_WAITED=$(($ALREADY_WAITED+1))
+      if [ $ALREADY_WAITED -gt 30 ]
+      then
+         echo "Waiting for Redis timed-out" 1>&2
+         exit 64
+      fi 
+   done
+   port="$(docker container inspect "${id}" | jq -crM --tab '.[0].NetworkSettings.Ports["6379/tcp"][] | select(.HostIp == "0.0.0.0") | .HostPort')"
+
+   echo "export ANCHOR_TESTING_REDIS_DOCKER_ID=${id}"
+   echo "export ANCHOR_TESTING_REDIS_HOST=127.0.0.1"
+   echo "export ANCHOR_TESTING_REDIS_PORT=${port}"
+   echo "export ANCHOR_TESTING_REDIS_SECRET=redis"
+fi

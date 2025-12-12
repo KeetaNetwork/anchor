@@ -32,20 +32,6 @@ To run the linter, use:
 make do-lint
 ```
 
-## GitHub Package Registry Authentication
-
-This project depends on packages from the GitHub Package Registry (@keetanetwork scope). To authenticate:
-
-1. **Set the GITHUB_TOKEN environment variable**: This token must have `read:packages` permission
-2. **Configure .npmrc**: The repository includes a `.npmrc` file that references the GitHub Package Registry. When running locally or in CI, ensure the authentication token is configured.
-
-The CI workflow automatically sets up authentication using:
-```bash
-echo '//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}' >> ~/.npmrc
-```
-
-If you need to install dependencies locally, ensure your `GITHUB_TOKEN` is set and properly configured in your `.npmrc` file.
-
 ## Project Structure
 
 - `src/` - TypeScript source code
@@ -70,3 +56,6 @@ If you need to install dependencies locally, ensure your `GITHUB_TOKEN` is set a
 - The `.nvmrc` file is automatically generated from `package.json`
 - Generated files for KYC service are created automatically during the build process
 - Do not commit `node_modules/`, `dist/`, or other build artifacts (they're in `.gitignore`)
+- To start Redis or PostgreSQL for local development and testing use the scripts in `utils/` directory:
+  - `utils/enable-postgres-backend`
+  - `utils/enable-redis-backend`

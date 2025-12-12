@@ -41,6 +41,11 @@ jobs:
           # Needed to fetch packages from GitHub Package Registry
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup Services
+        run: |
+          ./utils/enable-postgres-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
+          ./utils/enable-redis-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
+
       - name: Run Tests
         run: make test
         env:
@@ -57,3 +62,7 @@ jobs:
           args: >
             -Dproject.settings=./.sonar-project.properties
 
+      - name: Stop Services
+        run: |
+          ./utils/enable-postgres-backend off
+          ./utils/enable-redis-backend off

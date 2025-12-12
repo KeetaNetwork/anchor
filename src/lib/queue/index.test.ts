@@ -22,9 +22,14 @@ import * as fs from 'fs';
 
 import KeetaAnchorQueueStorageDriverFile from './drivers/queue_file.js';
 import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
+import KeetaAnchorQueueStorageDriverRedis from './drivers/queue_redis.js';
+import KeetaAnchorQueueStorageDriverPostgres from './drivers/queue_postgres.js';
 
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
+import { createClient } from 'redis';
+import type { RedisClientType } from 'redis';
+import * as pg from 'pg';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
@@ -36,6 +41,42 @@ const RunKey = crypto.randomUUID();
 function generateRequestID(): KeetaAnchorQueueRequestID {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID);
+}
+
+function getTestingRedisConfig(): { host: string; port: number; password: string | undefined; } | null {
+	const host = process.env['ANCHOR_TESTING_REDIS_HOST'];
+	const portStr = process.env['ANCHOR_TESTING_REDIS_PORT'];
+
+	if (!host || !portStr) {
+		return(null);
+	}
+
+	const password = process.env['ANCHOR_TESTING_REDIS_SECRET'];
+
+	const port = Number(portStr);
+	if (isNaN(port) || port <= 0 || port >= 65536) {
+		return(null);
+	}
+
+	return({ host: host, port: port, password: password });
+}
+
+function getTestingPostgresConfig(): { host: string; port: number; user: string; password: string; } | null {
+	const host = process.env['ANCHOR_TESTING_POSTGRES_HOST'];
+	const portStr = process.env['ANCHOR_TESTING_POSTGRES_PORT'];
+	const user = process.env['ANCHOR_TESTING_POSTGRES_USER'];
+	const password = process.env['ANCHOR_TESTING_POSTGRES_PASS'];
+
+	if (!host || !portStr || !user || !password) {
+		return(null);
+	}
+
+	const port = Number(portStr);
+	if (isNaN(port) || port <= 0 || port >= 65536) {
+		return(null);
+	}
+
+	return({ host: host, port: port, user: user, password: password });
 }
 
 const drivers: {
@@ -119,6 +160,145 @@ const drivers: {
 					}
 				}
 			});
+		}
+	},
+	'Redis': {
+		persistent: true,
+		skip: async function() {
+			return(getTestingRedisConfig() === null);
+		},
+		create: async function(key: string, options = { leave: false }) {
+			const redisConfig = getTestingRedisConfig();
+			if (!redisConfig) {
+				throw(new Error('Redis configuration not available'));
+			}
+
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			let client = undefined as RedisClientType | undefined;
+
+			const queue = new KeetaAnchorQueueStorageDriverRedis({
+				redis: async function(): Promise<RedisClientType> {
+					if (!client) {
+						const clientOptions: Parameters<typeof createClient>[0] = {
+							socket: {
+								host: redisConfig.host,
+								port: redisConfig.port
+							}
+						};
+						if (redisConfig.password) {
+							clientOptions.password = redisConfig.password;
+						}
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						client = createClient(clientOptions) as RedisClientType;
+						await client.connect();
+					}
+					return(client);
+				},
+				id: key,
+				logger: logger
+			});
+
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (client) {
+						if (!options?.leave) {
+							const keys = await client.keys(`queue:root*`);
+							if (keys.length > 0) {
+								await client.del(keys);
+							}
+						}
+						await client.quit();
+					}
+				}
+			});
+		}
+	},
+	'PostgreSQL': {
+		persistent: true,
+		skip: async function() {
+			return(getTestingPostgresConfig() === null);
+		},
+		create: async function(key: string, options = { leave: false }) {
+			const postgresConfig = getTestingPostgresConfig();
+			if (!postgresConfig) {
+				throw(new Error('Postgres configuration not available'));
+			}
+
+			const dbName = `anchor_queue_test_${key}_${RunKey.replace(/-/g, '_')}`;
+			let pool: pg.Pool | undefined;
+			let adminPool: pg.Pool | undefined;
+
+			try {
+				adminPool = new pg.Pool({
+					host: postgresConfig.host,
+					port: postgresConfig.port,
+					user: postgresConfig.user,
+					password: postgresConfig.password,
+					database: undefined
+				});
+
+				try {
+					await adminPool.query(`CREATE DATABASE "${dbName}"`);
+				} catch (error: unknown) {
+					if (!(error instanceof Error && error.message.includes('already exists'))) {
+						throw(error);
+					}
+				}
+
+				await adminPool.end();
+				adminPool = undefined;
+
+				pool = new pg.Pool({
+					host: postgresConfig.host,
+					port: postgresConfig.port,
+					user: postgresConfig.user,
+					password: postgresConfig.password,
+					database: dbName
+				});
+
+				const queue = new KeetaAnchorQueueStorageDriverPostgres({
+					pool: async function(): Promise<pg.Pool> {
+						if (!pool) {
+							throw(new Error('Pool is not available'));
+						}
+						return(pool);
+					},
+					id: key,
+					logger: logger
+				});
+
+				return({
+					queue: queue,
+					[Symbol.asyncDispose]: async function() {
+						await queue[Symbol.asyncDispose]();
+						if (pool) {
+							await pool.end();
+							pool = undefined;
+						}
+						if (!options?.leave) {
+							adminPool = new pg.Pool({
+								host: postgresConfig.host,
+								port: postgresConfig.port,
+								user: postgresConfig.user,
+								password: postgresConfig.password,
+								database: undefined
+							});
+							await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+							await adminPool.end();
+						}
+					}
+				});
+			} catch (error: unknown) {
+				if (adminPool) {
+					await adminPool.end();
+				}
+				if (pool) {
+					await pool.end();
+				}
+				throw(error);
+			}
 		}
 	}
 };
