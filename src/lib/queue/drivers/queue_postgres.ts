@@ -36,7 +36,7 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
-export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
+export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
 	private dbInitialized = false;
@@ -46,7 +46,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { pool: () => Promise<pg.Pool>; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { pool: () => Promise<pg.Pool>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger
 		this.poolInternal = options.pool;
@@ -204,7 +204,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 		return(result);
 	}
 
-	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
 			let entryID = info?.id;
 			if (entryID) {
@@ -269,8 +269,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 		}));
 	}
 
-	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>): Promise<void> {
-		const { oldStatus, by, output } = ancillary ?? {};
+	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
+		const { oldStatus } = ancillary ?? {};
 
 		return(await this.dbTransaction('setStatus', async (client, logger): Promise<void> => {
 			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>('SELECT status, failures, last_error, output FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
@@ -343,8 +343,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 		}));
 	}
 
-	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> {
-		return(await this.dbTransaction('get', async (client): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> => {
+	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
+		return(await this.dbTransaction('get', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
 			const row = await client.query<QueueEntryRow>(
 				`SELECT id, request, output, last_error, status, created, updated, worker, failures
 				 FROM queue_entries WHERE id = $1 AND path = $2`,
@@ -376,9 +376,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				id: entry.id as unknown as KeetaAnchorQueueRequestID,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				request: JSON.parse(entry.request) as REQUEST,
+				request: JSON.parse(entry.request) as QueueRequest,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				output: entry.output ? JSON.parse(entry.output) as RESPONSE : null,
+				output: entry.output ? JSON.parse(entry.output) as QueueResult : null,
 				lastError: entry.last_error,
 				status: entry.status,
 				created: new Date(Number(entry.created)),
@@ -391,8 +391,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 		}));
 	}
 
-	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> {
-		return(await this.dbTransaction('query', async (client, logger): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> => {
+	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
+		return(await this.dbTransaction('query', async (client, logger): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 			const conditions: string[] = [];
@@ -425,7 +425,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 
 			const rows = await client.query<QueueEntryRow>(query, params);
 
-			const entries: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
+			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 			for (const row of rows.rows) {
 				const idempotentRows = await client.query<IdempotentRow>(
@@ -444,9 +444,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					id: row.id as unknown as KeetaAnchorQueueRequestID,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					request: JSON.parse(row.request) as REQUEST,
+					request: JSON.parse(row.request) as QueueRequest,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					output: row.output ? JSON.parse(row.output) as RESPONSE : null,
+					output: row.output ? JSON.parse(row.output) as QueueResult : null,
 					lastError: row.last_error,
 					status: row.status,
 					created: new Date(Number(row.created)),
@@ -464,14 +464,14 @@ export default class KeetaAnchorQueueStorageDriverPostgres<REQUEST extends JSONS
 		}));
 	}
 
-	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.poolInternal === null) {
 			throw(new Error('Asked to partition but the instance has been destroyed'));
 		}
 
-		const retval = new KeetaAnchorQueueStorageDriverPostgres<REQUEST, RESPONSE>({
+		const retval = new KeetaAnchorQueueStorageDriverPostgres<QueueRequest, QueueResult>({
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			pool: this.poolInternal,

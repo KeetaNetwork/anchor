@@ -31,7 +31,7 @@ type QueueEntryData = {
 	idempotentKeys?: string[];
 };
 
-export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
+export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private redisInternal: (() => Promise<RedisClientType>) | null = null;
 
@@ -40,7 +40,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<REQUEST, RESPONSE>>[0]> & { redis: () => Promise<RedisClientType>; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { redis: () => Promise<RedisClientType>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger
 		this.redisInternal = options.redis;
@@ -82,7 +82,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 		return(`queue:${this.pathStr}:index:all`);
 	}
 
-	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('add');
 
@@ -211,8 +211,8 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 		return(entryID);
 	}
 
-	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>): Promise<void> {
-		const { oldStatus, by, output } = ancillary ?? {};
+	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
+		const { oldStatus } = ancillary ?? {};
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('setStatus');
 
@@ -332,7 +332,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 		}
 	}
 
-	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> {
+	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
 		const redis = await this.getRedis();
 
 		const entryJSON = await redis.get(this.queueKey(id));
@@ -354,9 +354,9 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id: entryData.id as unknown as KeetaAnchorQueueRequestID,
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			request: JSON.parse(entryData.request) as REQUEST,
+			request: JSON.parse(entryData.request) as QueueRequest,
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			output: entryData.output ? JSON.parse(entryData.output) as RESPONSE : null,
+			output: entryData.output ? JSON.parse(entryData.output) as QueueResult : null,
 			lastError: entryData.lastError,
 			status: entryData.status,
 			created: new Date(entryData.created),
@@ -368,7 +368,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 		});
 	}
 
-	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> {
+	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('query');
 
@@ -420,7 +420,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 			}
 		}
 
-		const entries: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] = [];
+		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 		for (const entryIDStr of entryIDs) {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -436,14 +436,14 @@ export default class KeetaAnchorQueueStorageDriverRedis<REQUEST extends JSONSeri
 		return(entries);
 	}
 
-	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.redisInternal === null) {
 			throw(new Error('Asked to partition but the instance has been destroyed'));
 		}
 
-		const retval = new KeetaAnchorQueueStorageDriverRedis<REQUEST, RESPONSE>({
+		const retval = new KeetaAnchorQueueStorageDriverRedis<QueueRequest, QueueResult>({
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			redis: this.redisInternal,
