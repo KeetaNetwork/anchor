@@ -6,6 +6,7 @@ import { createAssert, createIs } from 'typia';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
@@ -109,13 +110,7 @@ export type KeetaFXAnchorQuote = {
 	/**
 	 * Signature information to verify the quote
 	 */
-	signed: {
-		nonce: string;
-		/* Date and time of the request in ISO 8601 format */
-		timestamp: string;
-		/* Signature of the account public key and the nonce as an ASN.1 Sequence, Base64 DER */
-		signature: string;
-	}
+	signed: HTTPSignedField;
 };
 
 export type KeetaFXAnchorQuoteJSON = ToJSONSerializable<KeetaFXAnchorQuote>;

@@ -10,6 +10,7 @@ import type {
 import { MethodLogger } from './internal.js';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.js';
+import type { KeetaAnchorQueueRunOptions } from './common.js';
 
 /**
  * A KeetaAnchorQueueRunner that uses `any` for the user types
@@ -17,16 +18,16 @@ import type { JSONSerializable } from '../utils/json.js';
  * and outputs of various stages are not known ahead of time
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-class KeetaAnchorQueueRunnerAny<UREQUEST = any, URESPONSE = any, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE> {
-	protected processor(): ReturnType<KeetaAnchorQueueRunner<UREQUEST, URESPONSE, REQUEST, RESPONSE>['processor']> { throw(new Error('not implemented')); }
-	protected decodeRequest(): UREQUEST { throw(new Error('not implemented')); }
-	protected decodeResponse(): URESPONSE | null { throw(new Error('not implemented')); }
-	protected encodeRequest(): REQUEST { throw(new Error('not implemented')); }
-	protected encodeResponse(): RESPONSE | null { throw(new Error('not implemented')); }
+class KeetaAnchorQueueRunnerAny<UserRequest = any, UserResult = any, QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UserRequest, UserResult, QueueRequest, QueueResult> {
+	protected processor(): ReturnType<KeetaAnchorQueueRunner<UserRequest, UserResult, QueueRequest, QueueResult>['processor']> { throw(new Error('not implemented')); }
+	protected decodeRequest(): UserRequest { throw(new Error('not implemented')); }
+	protected decodeResponse(): UserResult | null { throw(new Error('not implemented')); }
+	protected encodeRequest(): QueueRequest { throw(new Error('not implemented')); }
+	protected encodeResponse(): QueueResult | null { throw(new Error('not implemented')); }
 
 }
 
-type KeetaAnchorQueuePipelineStage<REQUEST, RESPONSE> = {
+type KeetaAnchorQueuePipelineStage<QueueRequest, QueueResult> = {
 	/**
 	 * Name of the stage (must be unique within the pipeline)
 	 */
@@ -34,14 +35,14 @@ type KeetaAnchorQueuePipelineStage<REQUEST, RESPONSE> = {
 	/**
 	 * Constructor of the runner to use for this stage
 	 */
-	runner: typeof KeetaAnchorQueueRunner<REQUEST, RESPONSE, JSONSerializable, JSONSerializable>;
+	runner: typeof KeetaAnchorQueueRunner<QueueRequest, QueueResult, JSONSerializable, JSONSerializable>;
 	/**
 	 * Arguments to pass to the runner constructor
 	 */
 	args?: [{ [key: string]: unknown; }?, ...unknown[]];
 };
 
-export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
+export interface KeetaAnchorQueuePipeline<QueueRequest, FINALQueueResult> {
 	readonly id: string;
 
 	/**
@@ -50,7 +51,7 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	 * @param request The request to add
 	 * @returns The ID of the newly added request
 	 */
-	add: (request: REQUEST) => Promise<KeetaAnchorQueueRequestID>;
+	add: (request: QueueRequest) => Promise<KeetaAnchorQueueRequestID>;
 	/**
 	 * Get the entry of a request at the final stage of the pipeline
 	 * stage or `null` if not in the final stage
@@ -60,7 +61,7 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	 * @param id The ID of the request to get
 	 * @returns The entry at the final stage or `null` if not found, with the original request (may be `null` if not available)
 	 */
-	get: (id: KeetaAnchorQueueRequestID) => Promise<(Omit<KeetaAnchorQueueEntry<REQUEST, FINALRESPONSE>, 'request'> & { request: REQUEST | null; }) | null>;
+	get: (id: KeetaAnchorQueueRequestID) => Promise<(Omit<KeetaAnchorQueueEntry<QueueRequest, FINALQueueResult>, 'request'> & { request: QueueRequest | null; }) | null>;
 	/**
 	 * Run the pipeline processing jobs for up to the specified timeout (in milliseconds)
 	 * The process may take longer than the timeout if a job is already in progress
@@ -70,7 +71,7 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	 * @param timeoutMs The maximum time to run the processing jobs (in milliseconds). If not specified, runs until all available jobs are processed.
 	 * @returns `true` if there are more jobs to process, `false` otherwise
 	 */
-	run: (timeoutMs?: number) => Promise<boolean>;
+	run: (options?: KeetaAnchorQueueRunOptions) => Promise<boolean>;
 	/**
 	 * Run maintenance tasks for the pipeline -- this includes moving tasks from various states
 	 * and between stages of the pipeline
@@ -82,6 +83,9 @@ export interface KeetaAnchorQueuePipeline<REQUEST, FINALRESPONSE> {
 	destroy: () => Promise<void>;
 	[Symbol.asyncDispose]: () => Promise<void>;
 }
+
+const symbolFirst: unique symbol = Symbol('first');
+const symbolLast: unique symbol = Symbol('last');
 
 /**
  * Abstract base class for queue advanced pipelines -- this provides
@@ -97,13 +101,11 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 	protected destroyed = false;
 
 	static readonly StageID: {
-		readonly first: unique symbol;
-		readonly last: unique symbol;
+		readonly first: typeof symbolFirst;
+		readonly last: typeof symbolLast;
 	} = {
-			// @ts-ignore
-			first: Symbol('first'),
-			// @ts-ignore
-			last: Symbol('last')
+			first: symbolFirst,
+			last: symbolLast
 		};
 
 	constructor(options: KeetaAnchorQueueCommonOptions & { baseQueue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>; }) {
@@ -202,7 +204,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 		});
 	}
 
-	async run(timeoutMs?: number): Promise<boolean> {
+	async run(options?: KeetaAnchorQueueRunOptions): Promise<boolean> {
 		await this.init();
 
 		const logger = this.methodLogger('run');
@@ -210,7 +212,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 		const stage1 = this.getStage(KeetaAnchorQueuePipelineAdvanced.StageID.first);
 		let retval = true;
 		try {
-			retval = await stage1.run(timeoutMs);
+			retval = await stage1.run(options);
 		} catch (error) {
 			logger?.error('Error running stage processor:', error);
 		}
@@ -250,7 +252,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 				logger?.debug(`Destroying queue for stage "#${index}"`);
 				await queue.destroy();
 			} catch (error) {
-				logger?.error(`Error destroying queue for stage "#${index}:`, error);
+				logger?.error(`Error destroying queue for stage "#${index}":`, error);
 			}
 		}
 	}
@@ -265,37 +267,27 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 	}
 
 }
+
+type MapKeetaAnchorQueuePipelineStages<In extends readonly [ unknown, ...unknown[] ]> =
+	In extends [ infer First, ...infer Rest extends [ unknown, ...unknown[] ] ] ?
+		readonly [ KeetaAnchorQueuePipelineStage<First, Rest[0]>, ...MapKeetaAnchorQueuePipelineStages<Rest> ] : [];
+
+type MapKeetaAnchorQueueRunner<In extends readonly [ unknown, ...unknown[] ]> =
+	In extends [ infer First, ...infer Rest extends [ unknown, ...unknown[] ] ] ?
+		readonly [ KeetaAnchorQueueRunner<First, Rest[0]>, ...MapKeetaAnchorQueueRunner<Rest> ] : [];
+
+type FirstElement<T extends readonly unknown[]> = T extends [ infer First, ...unknown[] ] ? First : never;
+type LastElement<T extends readonly unknown[]> = T extends [ ...unknown[], infer Last ] ? Last : never;
+
 /**
  * Abstract base class for queue basic pipelines -- this provides
  * a standardized way to implement custom processing pipelines that
  * consist of multiple stages but do not require batching
  */
-export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = unknown, OUT1 = unknown, OUT2 = unknown, OUT3 = unknown, OUT4 = unknown, OUT5 = unknown, OUT6 = unknown, OUT7 = unknown, OUT8 = unknown, OUT9 = unknown, OUT10 = unknown> extends KeetaAnchorQueuePipelineAdvanced<IN1, FINALOUT> implements KeetaAnchorQueuePipeline<IN1, FINALOUT> {
-	protected readonly abstract stages: readonly [
-		KeetaAnchorQueuePipelineStage<IN1, OUT1>,
-		KeetaAnchorQueuePipelineStage<OUT1, OUT2>?,
-		KeetaAnchorQueuePipelineStage<OUT2, OUT3>?,
-		KeetaAnchorQueuePipelineStage<OUT3, OUT4>?,
-		KeetaAnchorQueuePipelineStage<OUT4, OUT5>?,
-		KeetaAnchorQueuePipelineStage<OUT5, OUT6>?,
-		KeetaAnchorQueuePipelineStage<OUT6, OUT7>?,
-		KeetaAnchorQueuePipelineStage<OUT7, OUT8>?,
-		KeetaAnchorQueuePipelineStage<OUT8, OUT9>?,
-		KeetaAnchorQueuePipelineStage<OUT9, OUT10>?
-	];
+export abstract class KeetaAnchorQueuePipelineBasic<Stages extends readonly [ unknown, ...unknown[] ]> extends KeetaAnchorQueuePipelineAdvanced<FirstElement<Stages>, LastElement<Stages>> implements KeetaAnchorQueuePipeline<FirstElement<Stages>, LastElement<Stages>> {
+	protected readonly abstract stages: MapKeetaAnchorQueuePipelineStages<Stages>;
 
-	protected stageRunners!: [
-		KeetaAnchorQueueRunner<IN1, OUT1>,
-		KeetaAnchorQueueRunner<OUT1, OUT2>?,
-		KeetaAnchorQueueRunner<OUT2, OUT3>?,
-		KeetaAnchorQueueRunner<OUT3, OUT4>?,
-		KeetaAnchorQueueRunner<OUT4, OUT5>?,
-		KeetaAnchorQueueRunner<OUT5, OUT6>?,
-		KeetaAnchorQueueRunner<OUT6, OUT7>?,
-		KeetaAnchorQueueRunner<OUT7, OUT8>?,
-		KeetaAnchorQueueRunner<OUT8, OUT9>?,
-		KeetaAnchorQueueRunner<OUT9, OUT10>?
-	];
+	protected stageRunners!: MapKeetaAnchorQueueRunner<Stages>;
 
 	constructor(options: KeetaAnchorQueueCommonOptions & { baseQueue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>; }) {
 		super(options);
@@ -317,10 +309,10 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 		}));
 	}
 
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first): KeetaAnchorQueueRunner<IN1, unknown>;
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaAnchorQueueRunner<unknown, FINALOUT>;
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first): KeetaAnchorQueueRunner<FirstElement<Stages>, unknown>;
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaAnchorQueueRunner<unknown, LastElement<Stages>>;
 	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | null;
-	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | KeetaAnchorQueueRunner<IN1, unknown> | KeetaAnchorQueueRunner<unknown, FINALOUT> | null {
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | KeetaAnchorQueueRunner<FirstElement<Stages>, unknown> | KeetaAnchorQueueRunner<unknown, LastElement<Stages>> | null {
 		if (this.initPromise === undefined) {
 			throw(new Error('Pipeline not initialized'));
 		}
@@ -329,7 +321,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 			const runner = this.stageRunners[0];
 			if (runner !== undefined) {
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(runner as unknown as KeetaAnchorQueueRunner<IN1, unknown>);
+				return(runner as unknown as KeetaAnchorQueueRunner<FirstElement<Stages>, unknown>);
 			}
 			throw(new Error('First stage runner not found'));
 		} else if (stageID === KeetaAnchorQueuePipelineAdvanced.StageID.last) {
@@ -337,7 +329,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 				const runner = this.stageRunners[index];
 				if (runner !== undefined) {
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(runner as unknown as KeetaAnchorQueueRunner<unknown, FINALOUT>);
+					return(runner as unknown as KeetaAnchorQueueRunner<unknown, LastElement<Stages>>);
 				}
 			}
 			throw(new Error('Last stage runner not found'));
@@ -360,7 +352,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 	 * Create the pipeline from the user-defined stages
 	 */
 	protected async createPipeline(): Promise<void> {
-		const logger = this.methodLogger('init');
+		const logger = this.methodLogger('createPipeline');
 
 		let lastRunner: InstanceType<typeof KeetaAnchorQueueRunnerAny> | undefined = undefined;
 		for (const stage of this.stages) {
@@ -385,7 +377,7 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 					id: `${this.id}::runner::${stage.name}`,
 					queue: queue,
 					logger: this.logger,
-					...(runnerArgsFirst ?? {})
+					...runnerArgsFirst
 				};
 				const runnerArgs = [runnerArgs0, ...(stage.args?.slice(1) ?? [])] as const;
 
@@ -401,8 +393,11 @@ export abstract class KeetaAnchorQueuePipelineBasic<IN1 = unknown, FINALOUT = un
 				 * The type assertions here are necessary because we cannot
 				 * express the relationship between the various generic
 				 * types in the stages array and the stageRunners array
+				 *
+				 * The ts-ignore is necessary because TypeScript does not allow us to push to a readonly array.
 				 */
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-argument
+				// @ts-ignore
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
 				this.stageRunners.push(runner as any);
 
 				lastRunner?.pipe(runner);

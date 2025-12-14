@@ -296,13 +296,13 @@ test('Queue Runner Basic Tests', async function() {
 
 	{
 		logger?.debug('basic', '> Test the runner timeout works correctly');
-		const before_any_jobs = await runner.run(0);
+		const before_any_jobs = await runner.run({ timeoutMs: 0 });
 		expect(before_any_jobs).toBe(false);
 
 		const id_1 = await runner.add({ key: 'timedout_late_two', newStatus: 'completed' });
 		const id_2 = await runner.add({ key: 'timedout_late_two', newStatus: 'completed' });
 		{
-			const after_jobs_before_processing = await runner.run(0);
+			const after_jobs_before_processing = await runner.run({ timeoutMs: 0 });
 			expect(after_jobs_before_processing).toBe(true);
 			const status_1 = await runner.get(id_1);
 			const status_2 = await runner.get(id_2);
@@ -311,7 +311,7 @@ test('Queue Runner Basic Tests', async function() {
 		}
 		{
 			vi.useRealTimers();
-			const after_jobs = await runner.run(10);
+			const after_jobs = await runner.run({ timeoutMs: 10 });
 			vi.useFakeTimers();
 			expect(after_jobs).toBe(true);
 			const status_1 = await runner.get(id_1);
@@ -422,7 +422,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 			 * from aborted to processing to completed in the same run
 			 */
 			vi.useRealTimers();
-			await runner.run(50);
+			await runner.run({ timeoutMs: 50 });
 			vi.useFakeTimers();
 
 			const status_aborted = await runner.get(id_aborted);
@@ -492,7 +492,7 @@ for (const singleWorkerID of [true, false]) {
 	let mode = 'Multiple Workers IDs';
 	let name = 'multiworker';
 	if (singleWorkerID) {
-		mode = 'Single Worker ID'
+		mode = 'Single Worker ID';
 		name = 'singleworker';
 	}
 
@@ -519,7 +519,7 @@ for (const singleWorkerID of [true, false]) {
 		});
 
 		const processCallCountByKey = new Map<string, number>();
-		let running = false
+		let running = false;
 		function runnerArgs(index: number): ConstructorParameters<typeof KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>>[0] {
 			let configuredRunnerCount = runnerCount;
 			let configuredWorkerID = index;
@@ -592,7 +592,7 @@ for (const singleWorkerID of [true, false]) {
 
 				let retval = false;
 				for (let retries = 0; retries < maxRetries; retries++) {
-					retval = await runner.run(timeoutMs);
+					retval = await runner.run({ timeoutMs });
 				}
 
 				return(retval);
@@ -912,6 +912,12 @@ suite.sequential('Driver Tests', async function() {
 					const updatedEntry = await queue.get(id);
 					expect(updatedEntry?.status).toBe('completed');
 					expect(updatedEntry?.output).toBe('result');
+
+					await queue.setStatus(id, 'failed_temporarily', { output: 'result_failed' });
+					const failedEntry = await queue.get(id);
+					expect(failedEntry?.status).toBe('failed_temporarily');
+					expect(failedEntry?.output).toBe('result_failed');
+					expect(failedEntry?.failures).toBe(1);
 				});
 
 				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
@@ -983,11 +989,11 @@ suite.sequential('Driver Tests', async function() {
 						expect(error.idempotentIDsFound?.has(parentID1)).toBe(true);
 					}
 
-					// Add third child with multiple idempotent kes where none conflict - should succeed
+					// Add third child with multiple idempotent keys where none conflict - should succeed
 					const childID3 = generateRequestID();
 					await queue.add({ key: 'child3' }, { id: childID3, idempotentKeys: new Set([parentID2, parentID3]) });
 
-					// Try to add fourth child where one idempotent ID conflicts - should fail with only conflicting identempotent ID in idempotentIDsFound
+					// Try to add fourth child where one idempotent ID conflicts - should fail with only conflicting idempotent ID in idempotentIDsFound
 					const childID4 = generateRequestID();
 					const parentID4 = generateRequestID();
 					await queue.add({ key: 'parent4' }, { id: parentID4 });
@@ -1005,7 +1011,7 @@ suite.sequential('Driver Tests', async function() {
 						expect(error.idempotentIDsFound?.has(parentID4)).toBe(false);
 					}
 
-					// Try to add fifth child where multiple idempotent keys conflict - should fail with all conflicting identempotent IDs in idempotentIDsFound
+					// Try to add fifth child where multiple idempotent keys conflict - should fail with all conflicting idempotent IDs in idempotentIDsFound
 					const childID5 = generateRequestID();
 					try {
 						await queue.add({ key: 'child5' }, { id: childID5, idempotentKeys: new Set([parentID1, parentID2, parentID3]) });

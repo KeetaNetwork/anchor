@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
-import { KeetaAnchorUserError, KeetaAnchorError } from './error.js';
+import { KeetaAnchorUserError, KeetaAnchorError, KeetaAnchorUserValidationError } from './error.js';
+import typia, { createAssertEquals } from 'typia';
 
 test('Basic Error Test', async function() {
 	const keetaAnchorError = new KeetaAnchorError('test error');
@@ -59,3 +60,85 @@ test('Error fromJSON with invalid input', async function() {
 	await expect(async () => await KeetaAnchorError.fromJSON({ ok: false, message: 'Foo', name: 'UnknownError' })).rejects.toThrow('Invalid error JSON object');
 	await expect(async () => await KeetaAnchorUserError.fromJSON({ ok: true })).rejects.toThrow('Invalid error JSON object');
 });
+
+test('KeetaAnchorUserValidationError Test', async function() {
+	interface AssertLike { key: string; message: { type: 'string'; value: string } };
+	const validateValue = typia.createValidate<AssertLike>();
+	const assertValue = createAssertEquals<AssertLike>();
+
+	const tests: [ unknown, { path?: string; message: string; expected?: unknown; receivedValue?: unknown; } | null][] = [
+		[
+			{ key: 'test', message: { type: 'abc', value: 'hello' }},
+			{ message: 'Invalid value', path: 'message.type', receivedValue: 'abc', expected: '"string"' }
+		],
+		[
+			{ key: 123, message: { type: 'string', value: 'hello' }},
+			{ message: 'Invalid value', expected: 'string', path: 'key', receivedValue: 123 }
+		],
+		[
+			{ key: 'test', message: { type: 'string', value: 'hello' }},
+			null
+		],
+		[
+			'5',
+			{ message: 'Invalid value', expected: 'AssertLike', receivedValue: '5' }
+		]
+	];
+
+	for (const [ input, expectedError ] of tests) {
+		try {
+			assertValue(input);
+			if (expectedError === null) {
+				continue;
+			}
+		} catch (error) {
+			if (expectedError === null) {
+				throw(new Error(`Expected assertion to pass, but it failed with error: ${error}`));
+			}
+
+			if (!KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
+				throw(new TypeError('Invalid TypeGuardErrorLike object'));
+			}
+
+			const keetaError = KeetaAnchorUserValidationError.fromTypeGuardError(error);
+			const field = keetaError.fields[0];
+
+			if (!field) {
+				throw(new Error('Expected at least one field in KeetaAnchorUserValidationError'));
+			}
+
+			expect(field.path).toBe(expectedError.path);
+			expect(field.message).toBe(expectedError.message);
+			expect(field.expected).toBe(expectedError.expected);
+			expect(field.receivedValue).toBe(expectedError.receivedValue);
+
+			continue;
+		}
+
+		if (expectedError !== null) {
+			throw(new Error('Expected assertion to do opposite of what happened'));
+		}
+	}
+
+	for (const [ input, expectedError ] of tests) {
+		const validate = validateValue(input);
+
+		if (expectedError === null && validate.success) {
+			continue;
+		} else if (expectedError !== null && !validate.success) {
+			const keetaError = KeetaAnchorUserValidationError.fromTypeGuardError(validate.errors);
+			const field = keetaError.fields[0];
+
+			if (!field) {
+				throw(new Error('Expected at least one field in KeetaAnchorUserValidationError'));
+			}
+
+			expect(field.path).toBe(expectedError.path);
+			expect(field.message).toBe(expectedError.message);
+			expect(field.expected).toBe(expectedError.expected);
+			expect(field.receivedValue).toBe(expectedError.receivedValue);
+		} else {
+			throw(new Error('Expected validation to do opposite of what happened'));
+		}
+	}
+})

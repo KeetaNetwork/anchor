@@ -1,6 +1,10 @@
 import { KeetaAnchorError } from '../error.js';
 import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueStatus } from './index.js';
 
+export type KeetaAnchorQueueRunOptions = {
+	timeoutMs?: number | undefined;
+};
+
 class KeetaAnchorQueueIdempotentKeyExistsError extends KeetaAnchorError {
 	static override readonly name: string = 'KeetaAnchorQueueIdempotentExists';
 	private readonly KeetaAnchorQueueIdempotentExistsErrorObjectTypeID!: string;

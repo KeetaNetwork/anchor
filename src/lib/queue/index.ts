@@ -2,17 +2,21 @@ import type { BrandedString, Brand } from '../utils/brand.ts';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.ts';
 import type { AssertNever } from '../utils/never.ts';
+import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
-import { MethodLogger } from './internal.js';
+import {
+	MethodLogger,
+	ManageStatusUpdates
+} from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
-export type KeetaAnchorQueueRequest<REQUEST> = REQUEST;
+export type KeetaAnchorQueueRequest<QueueRequest> = QueueRequest;
 export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
-export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
+export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
 	 */
@@ -21,8 +25,8 @@ export type KeetaAnchorQueueEntry<REQUEST, RESPONSE> = {
 	 * Idempotent IDs from a previous stage
 	 */
 	idempotentKeys?: Set<KeetaAnchorQueueRequestID> | undefined;
-	request: KeetaAnchorQueueRequest<REQUEST>;
-	output: RESPONSE | null;
+	request: KeetaAnchorQueueRequest<QueueRequest>;
+	output: QueueResult | null;
 	lastError: string | null;
 	status: KeetaAnchorQueueStatus;
 	created: Date;
@@ -75,7 +79,7 @@ export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
 	path?: string[] | undefined;
 };
 
-export type KeetaAnchorQueueEntryAncillaryData<RESPONSE> = {
+export type KeetaAnchorQueueEntryAncillaryData<QueueResult> = {
 	/**
 	 * The previous status of the entry -- if the entry is not currently in this status,
 	 * the status update will fail
@@ -88,16 +92,16 @@ export type KeetaAnchorQueueEntryAncillaryData<RESPONSE> = {
 	/**
 	 * The output data to store with the entry
 	 */
-	output?: RESPONSE | null | undefined;
+	output?: QueueResult | null | undefined;
 	/**
 	 * An error message to store with the entry
 	 */
 	error?: string | undefined;
 };
 
-export type KeetaAnchorQueueStorageDriverConstructor<REQUEST extends JSONSerializable, RESPONSE extends JSONSerializable> = new(options?: KeetaAnchorQueueStorageOptions) => KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
+export type KeetaAnchorQueueStorageDriverConstructor<QueueRequest extends JSONSerializable, QueueResult extends JSONSerializable> = new(options?: KeetaAnchorQueueStorageOptions) => KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 
-export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable, RESPONSE extends JSONSerializable> {
+export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializable, QueueResult extends JSONSerializable> {
 	/**
 	 * An ID for this instance of the storage driver
 	 */
@@ -115,7 +119,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * independent queues.
 	 *
 	 * The root partition is an empty array, and each element is
-	 * a heirarchical partition name.
+	 * a hierarchical partition name.
 	 */
 	readonly path: string[];
 
@@ -130,7 +134,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 *           nothing will be added.
 	 * @returns The ID for the newly created pending entry
 	 */
-	add: (request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra) => Promise<KeetaAnchorQueueRequestID>;
+	add: (request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra) => Promise<KeetaAnchorQueueRequestID>;
 
 	/**
 	 * Update the status of an entry in the queue
@@ -142,7 +146,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * @param ancillary Optional ancillary data for the status update
 	 * @returns void
 	 */
-	setStatus: (id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>) => Promise<void>;
+	setStatus: (id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>) => Promise<void>;
 
 	/**
 	 * Get entries from storage with an optional filter
@@ -150,7 +154,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * @param filter The filter to apply (optional)
 	 * @returns An array of entries matching the criteria
 	 */
-	query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]>;
+	query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]>;
 
 	/**
 	 * Get a single entry from storage by ID
@@ -158,7 +162,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * @param id The ID of the entry to retrieve
 	 * @returns The entry if found, or null if not found
 	 */
-	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null>;
+	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
 
 	/**
 	 * Perform maintenance tasks on the storage driver
@@ -174,7 +178,7 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 	 * @param partitionID The partition ID to use
 	 * @returns A new storage driver instance for the partition
 	 */
-	partition: (path: string) => Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>>;
+	partition: (path: string) => Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>>;
 
 	/**
 	 * Close the storage driver and release any resources
@@ -186,8 +190,8 @@ export interface KeetaAnchorQueueStorageDriver<REQUEST extends JSONSerializable,
 /**
  * An in-memory implementation of the KeetaAnchorQueueStorageDriver
  */
-export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-	protected queueStorage: { [path: string]: KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]; } = {};
+export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
+	protected queueStorage: { [path: string]: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]; } = {};
 	protected readonly logger?: Logger | undefined;
 	protected partitionCounter = 0;
 	private destroyed = false;
@@ -204,8 +208,8 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		this.methodLogger('new')?.debug('Created new in-memory queue storage driver');
 	}
 
-	protected clone(options?: Partial<KeetaAnchorQueueStorageOptions>): KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE> {
-		const cloned = new KeetaAnchorQueueStorageDriverMemory<REQUEST, RESPONSE>({
+	protected clone(options?: Partial<KeetaAnchorQueueStorageOptions>): KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
+		const cloned = new KeetaAnchorQueueStorageDriverMemory<QueueRequest, QueueResult>({
 			logger: this.logger,
 			id: `${this.id}::${this.partitionCounter++}`,
 			path: [...this.path],
@@ -216,8 +220,8 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		return(cloned);
 	}
 
-	protected get queue(): KeetaAnchorQueueEntry<REQUEST, RESPONSE>[] {
-		const pathKey = ['root', ...this.path].join('.')
+	protected get queue(): KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] {
+		const pathKey = ['root', ...this.path].join('.');
 		let retval = this.queueStorage[pathKey];
 		if (retval === undefined) {
 			retval = this.queueStorage[pathKey] = [];
@@ -240,7 +244,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		}
 	}
 
-	async add(request: KeetaAnchorQueueRequest<REQUEST>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		this.checkDestroyed();
 
 		const logger = this.methodLogger('add');
@@ -262,11 +266,11 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		if (idempotentIDs) {
 			const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
 			for (const idempotentID of idempotentIDs) {
-				const idemoptentEntryExists = this.queue.some(function(checkEntry) {
+				const idempotentEntryExists = this.queue.some(function(checkEntry) {
 					return(checkEntry.idempotentKeys?.has(idempotentID) ?? false);
 				});
 
-				if (idemoptentEntryExists) {
+				if (idempotentEntryExists) {
 					matchingIdempotentEntries.add(idempotentID);
 				}
 			}
@@ -305,12 +309,10 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		return(id);
 	}
 
-	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<RESPONSE>): Promise<void> {
+	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
 		this.checkDestroyed();
 
 		const logger = this.methodLogger('setStatus');
-
-		const { oldStatus, by, output } = ancillary ?? {};
 
 		const entry = this.queue.find(function(checkEntry) {
 			return(checkEntry.id === id);
@@ -319,41 +321,12 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 			throw(new Error(`Request with ID ${String(id)} not found`));
 		}
 
-		if (oldStatus && entry.status !== oldStatus) {
-			throw(new Errors.IncorrectStateAssertedError(id, oldStatus, entry.status));
-		}
+		const changedFields = ManageStatusUpdates<QueueResult>(id, entry, status, ancillary, logger);
 
-		logger?.debug(`Setting request with id ${String(id)} status from "${entry.status}" to "${status}"`);
-
-		/* XXX -- this needs to be replicated in every driver -- is there a better way ? */
-		if (status === 'failed_temporarily') {
-			entry.failures += 1;
-			logger?.debug(`Incrementing failure count for request with id ${String(id)} to ${entry.failures}`);
-		}
-
-		if  (status === 'pending' || status === 'completed') {
-			logger?.debug(`Clearing last error for request with id ${String(id)}`);
-			entry.lastError = null;
-		}
-		/* END OF XXX */
-
-		if (ancillary?.error) {
-			entry.lastError = ancillary.error;
-			logger?.debug(`Setting last error for request with id ${String(id)} to:`, ancillary.error);
-		}
-
-		entry.status = status;
-		entry.updated = new Date();
-		entry.worker = by ?? null;
-
-		if (output !== undefined) {
-			logger?.debug(`Setting output for request with id ${String(id)}:`, output);
-
-			entry.output = output;
-		}
+		Object.assign(entry, changedFields);
 	}
 
-	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE> | null> {
+	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
 		this.checkDestroyed();
 
 		const entry = this.queue.find(function(checkEntry) {
@@ -367,7 +340,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		return(structuredClone(entry));
 	}
 
-	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<REQUEST, RESPONSE>[]> {
+	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
 		this.checkDestroyed();
 
 		const logger = this.methodLogger('query');
@@ -408,7 +381,7 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
 		return(retval);
 	}
 
-	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>> {
+	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.checkDestroyed();
 
 		const logger = this.methodLogger('partition');
@@ -445,11 +418,11 @@ export class KeetaAnchorQueueStorageDriverMemory<REQUEST extends JSONSerializabl
  * the actual processing logic as well as the encoding and decoding
  * for requests and responses.
  */
-export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unknown, REQUEST extends JSONSerializable = JSONSerializable, RESPONSE extends JSONSerializable = JSONSerializable> {
+export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult = unknown, QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> {
 	/**
 	 * The queue this runner is responsible for running
 	 */
-	private readonly queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
+	private readonly queue: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 	/**
 	 * The logger we should use for logging anything
 	 */
@@ -457,17 +430,17 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * The processor function to use for processing entries
 	 */
-	protected abstract processor(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+	protected abstract processor(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
 
 	/**
 	 * The processor for stuck jobs (optional)
 	 */
-	protected processorStuck?(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+	protected processorStuck?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
 
 	/**
 	 * The processor for aborted jobs (optional)
 	 */
-	protected processorAborted?(entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>): Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>;
+	protected processorAborted?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
 
 	/**
 	 * Worker configuration (not implemented)
@@ -481,11 +454,11 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	private readonly pipes: ({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<URESPONSE, any, RESPONSE, any>
+		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
 	} | {
 		isBatchPipe: true;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<URESPONSE[], any, JSONSerializable, any>;
+		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
 		minBatchSize: number;
 		maxBatchSize: number;
 	})[] = [];
@@ -506,14 +479,14 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * How many runners can process this queue in parallel
 	 */
 	protected maxRunners?: number;
-	private runnerLockKey: KeetaAnchorQueueRequestID;
+	private readonly runnerLockKey: KeetaAnchorQueueRequestID;
 
 	/**
 	 * The ID of this runner for diagnostic purposes
 	 */
 	readonly id: string;
 
-	constructor(config: { queue: KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>; } & KeetaAnchorQueueRunnerOptions) {
+	constructor(config: { queue: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>; } & KeetaAnchorQueueRunnerOptions) {
 		this.queue = config.queue;
 		this.logger = config.logger;
 		this.workers = config.workers ?? {
@@ -563,11 +536,11 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			 * We store `null` as the request value because we
 			 * don't have anything better to store -- it's not
 			 * always going to be compatible with the type
-			 * REQUEST but we know that we will never actually
+			 * QueueRequest but we know that we will never actually
 			 * use the value.
 			 */
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			await this.queue.add(null as unknown as REQUEST, {
+			await this.queue.add(null as unknown as QueueRequest, {
 				id: this.runnerLockKey,
 				status: '@internal'
 			});
@@ -588,7 +561,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/** @internal */
 	_Testing(key: string): {
 		setParams: (maxBatchSize: number, processTimeout: number, maxRetries: number, maxWorkers?: number) => void;
-		queue: () => KeetaAnchorQueueStorageDriver<REQUEST, RESPONSE>;
+		queue: () => KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 		markWorkerAsProcessing: () => Promise<void>;
 	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
@@ -616,13 +589,13 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		});
 	}
 
-	protected abstract decodeRequest(request: REQUEST): UREQUEST;
-	protected abstract decodeResponse(response: RESPONSE | null): URESPONSE | null;
+	protected abstract decodeRequest(request: QueueRequest): UserRequest;
+	protected abstract decodeResponse(response: QueueResult | null): UserResult | null;
 
-	protected abstract encodeRequest(request: UREQUEST): REQUEST;
-	protected abstract encodeResponse(response: URESPONSE | null): RESPONSE | null;
+	protected abstract encodeRequest(request: UserRequest): QueueRequest;
+	protected abstract encodeResponse(response: UserResult | null): QueueResult | null;
 
-	protected decodeEntry(entry: KeetaAnchorQueueEntry<REQUEST, RESPONSE>): KeetaAnchorQueueEntry<UREQUEST, URESPONSE> {
+	protected decodeEntry(entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>): KeetaAnchorQueueEntry<UserRequest, UserResult> {
 		return({
 			...entry,
 			request: this.decodeRequest(entry.request),
@@ -633,7 +606,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Enqueue an item to be processed by the queue
 	 */
-	async add(request: UREQUEST, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
+	async add(request: UserRequest, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		await this.initialize();
 
 		const encodedRequest = this.encodeRequest(request);
@@ -644,7 +617,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Get a single entry from storage by ID
 	 */
-	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<UREQUEST, URESPONSE> | null> {
+	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<UserRequest, UserResult> | null> {
 		await this.initialize();
 
 		const entry = await this.queue.get(id);
@@ -658,7 +631,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Get entries from storage with an optional filter
 	 */
-	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<UREQUEST, URESPONSE>[]> {
+	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<UserRequest, UserResult>[]> {
 		await this.initialize();
 
 		const entries = await this.queue.query(filter);
@@ -670,10 +643,10 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Set the status of an entry in the queue
 	 */
-	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<URESPONSE>): Promise<void> {
+	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<UserResult>): Promise<void> {
 		await this.initialize();
 
-		let encodedOutput: RESPONSE | null | undefined = undefined;
+		let encodedOutput: QueueResult | null | undefined = undefined;
 		if (ancillary?.output !== undefined) {
 			encodedOutput = this.encodeResponse(ancillary.output);
 		}
@@ -705,7 +678,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		return(false);
 	}
 
-	private async getRunnerLock(cleanup: AsyncDisposableStack): Promise<boolean> {
+	private async getRunnerLock(cleanup: InstanceType<typeof AsyncDisposableStack>): Promise<boolean> {
 		const logger = this.methodLogger('getRunnerLock');
 
 		try {
@@ -778,10 +751,11 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	 * true if there may be more work to do, or false if the queue
 	 * is empty.
 	 *
-	 * @param timeout Optional timeout in milliseconds to limit the total
-	 * 	          time spent processing entries
+	 * @param options Optional run options
 	 */
-	async run(timeout?: number): Promise<boolean> {
+	async run(options?: KeetaAnchorQueueRunOptions): Promise<boolean> {
+		const timeout = options?.timeoutMs;
+
 		await this.initialize();
 
 		const logger = this.methodLogger('run');
@@ -803,7 +777,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 		const processJobOk = Symbol('processJobOk');
 		const processJobTimeout = Symbol('processJobTimeout');
 
-		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<REQUEST, RESPONSE>, startingStatus: KeetaAnchorQueueStatus, processor: (entry: KeetaAnchorQueueEntry<UREQUEST, URESPONSE>) => Promise<{ status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; }>): Promise<typeof processJobTimeout | typeof processJobOk> => {
+		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, processor: (entry: KeetaAnchorQueueEntry<UserRequest, UserResult>) => Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>): Promise<typeof processJobTimeout | typeof processJobOk> => {
 			if (timeout !== undefined) {
 				const elapsed = Date.now() - startTime;
 				if (elapsed >= timeout) {
@@ -813,7 +787,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 				}
 			}
 
-			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: URESPONSE | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
+			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 
 			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
 
@@ -873,7 +847,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
 			return(processJobOk);
-		}
+		};
 
 		/*
 		 * Process pending jobs first
@@ -907,7 +881,11 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 				}
 			}
 
-			const pipeHasMoreWork = await pipe.target.run(remainingTime);
+			const pipeHasMoreWork = await pipe.target.run({
+				...options,
+				timeoutMs: remainingTime
+			});
+
 			if (pipeHasMoreWork) {
 				retval = true;
 			}
@@ -1063,13 +1041,13 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
 
 					/**
-					 * Comptue a batch of entries to send to the next stage,
+					 * Compute a batch of entries to send to the next stage,
 					 * constrained to the max batch size of the pipe and
 					 * the entries which have non-null outputs
 					 */
 					const batchRaw = requests.map((entry) => {
 						return({ output: this.decodeResponse(entry.output), id: entry.id });
-					}).filter(function(entry): entry is { output: URESPONSE; id: KeetaAnchorQueueRequestID; } {
+					}).filter(function(entry): entry is { output: UserResult; id: KeetaAnchorQueueRequestID; } {
 						if (entry === null) {
 							return(false);
 						}
@@ -1133,7 +1111,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 							/*
 							 * If we got some kind of other error adding these
 							 * items to the target queue runner, just skip them
-							 * and we will rety them on the next iteration
+							 * and we will retry them on the next iteration
 							 */
 							logger?.error(`Failed to move completed batch to next stage ${pipe.target.id}, will try to create another batch without them:`, error);
 
@@ -1248,7 +1226,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Pipe the the completed entries of this runner to another runner
 	 */
-	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<URESPONSE, T1, RESPONSE, T2>): typeof target {
+	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
 		this.pipes.push({
 			isBatchPipe: false,
 			target: target
@@ -1259,7 +1237,7 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
 	/**
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
-	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<URESPONSE[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
 		this.pipes.push({
 			isBatchPipe: true,
 			target: target,
@@ -1282,15 +1260,15 @@ export abstract class KeetaAnchorQueueRunner<UREQUEST = unknown, URESPONSE = unk
  * A KeetaAnchorQueueRunner for use when you want to process already
  * JSON-serializable data without any encoding/decoding needed
  */
-export abstract class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UREQUEST, URESPONSE, JSONSerializable, JSONSerializable> {
-	protected decodeRequest(request: JSONSerializable): UREQUEST {
+export abstract class KeetaAnchorQueueRunnerJSON<UserRequest extends JSONSerializable = JSONSerializable, UserResult extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunner<UserRequest, UserResult, JSONSerializable, JSONSerializable> {
+	protected decodeRequest(request: JSONSerializable): UserRequest {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(request as UREQUEST);
+		return(request as UserRequest);
 	}
 
-	protected decodeResponse(response: JSONSerializable | null): URESPONSE | null {
+	protected decodeResponse(response: JSONSerializable | null): UserResult | null {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(response as URESPONSE | null);
+		return(response as UserResult | null);
 	}
 
 	protected encodeRequest(request: JSONSerializable): JSONSerializable {
@@ -1306,13 +1284,13 @@ export abstract class KeetaAnchorQueueRunnerJSON<UREQUEST extends JSONSerializab
  * A KeetaAnchorQueueRunnerJSON that takes a processor function
  * in the constructor -- this is mainly useful for testing
  */
-export class KeetaAnchorQueueRunnerJSONConfigProc<UREQUEST extends JSONSerializable = JSONSerializable, URESPONSE extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunnerJSON<UREQUEST, URESPONSE> {
-	protected readonly processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
+export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerializable = JSONSerializable, UserResult extends JSONSerializable = JSONSerializable> extends KeetaAnchorQueueRunnerJSON<UserRequest, UserResult> {
+	protected readonly processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
 
 	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & {
-		processor: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processor'];
-		processorStuck?: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processorStuck'] | undefined;
-		processorAborted?: KeetaAnchorQueueRunner<UREQUEST, URESPONSE>['processorAborted'] | undefined;
+		processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
+		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | undefined;
+		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | undefined;
 	}) {
 		super(config);
 		this.processor = config.processor;
