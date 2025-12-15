@@ -517,6 +517,19 @@ test('Queue Runner Basic Tests', async function() {
 			expect(statuses).toEqual(['aborted', 'pending']);
 		}
 	}
+
+	{
+		logger?.debug('basic', '> Test that adding by string ID works correctly');
+
+		vi.useRealTimers();
+		const id = await runner.add({ key: 'string_id_one', newStatus: 'completed' }, { id: 'custom-string-id-one' });
+		await runner.run();
+		expect(id).toBe('custom-string-id-one');
+		const status = await runner.get(id);
+		expect(status?.status).toBe('completed');
+		vi.useFakeTimers();
+	}
+
 });
 
 test('Queue Runner Aborted and Stuck Jobs Tests', async function() {

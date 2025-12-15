@@ -12,7 +12,8 @@ import type {
 } from '../index.ts';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -224,7 +225,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
-			let entryID = info?.id;
+			let entryID = ConvertStringToRequestID(info?.id);
 			if (entryID) {
 				const existingEntry = await client.query<{ id: string }>('SELECT id FROM queue_entries WHERE id = $1 AND path = $2', [entryID, this.pathStr]);
 				if (existingEntry.rows.length > 0) {
@@ -251,8 +252,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				}
 			}
 
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			entryID ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 			logger?.debug(`Enqueuing request with id ${String(entryID)}`);
 
@@ -364,14 +364,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			const idempotentKeys = idempotentRows.rows.length > 0
 				? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+					return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 				}))
 				: undefined;
 
 			return({
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				id: entry.id as unknown as KeetaAnchorQueueRequestID,
+				id: ConvertStringToRequestID(entry.id),
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				request: JSON.parse(entry.request) as QueueRequest,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -432,14 +430,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 				const idempotentKeys = idempotentRows.rows.length > 0
 					? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+						return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 					}))
 					: undefined;
 
 				entries.push({
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					id: row.id as unknown as KeetaAnchorQueueRequestID,
+					id: ConvertStringToRequestID(row.id),
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					request: JSON.parse(row.request) as QueueRequest,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
