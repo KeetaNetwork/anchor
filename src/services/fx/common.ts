@@ -47,10 +47,6 @@ export type KeetaFXAnchorClientCreateExchangeRequest = {
 	block: InstanceType<typeof KeetaNetLib.Block>;
 };
 
-export type KeetaFXAnchorClientGetExchangeStatusRequest = {
-	exchangeID: string
-};
-
 export type KeetaFXAnchorEstimate = {
 	/**
 	 * Conversion request that was provided
