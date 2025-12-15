@@ -312,8 +312,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
-				token: request.expected.token?.publicKeyString.get(),
-				amount: request.expected.amount?.toString()
+				token: request.expected.token.publicKeyString.get(),
+				amount: request.expected.amount.toString()
 			}
 		};
 
