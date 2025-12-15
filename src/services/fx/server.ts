@@ -26,6 +26,7 @@ import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '.
 import { KeetaAnchorQueuePipelineBasic } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
+import * as typia from 'typia';
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -325,9 +326,9 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 
 	protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
-		// XXX:TODO: Use typia to validate structure
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const reqJSON = request as KeetaFXAnchorQueueStage1RequestJSON;
+		/* See note at bottom of file */
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
+		const reqJSON = assertKeetaFXAnchorQueueStage1RequestJSON(request);
 
 		const retval: KeetaFXAnchorQueueStage1Request = {
 			block: new KeetaNet.lib.Block(reqJSON.block),
@@ -342,9 +343,9 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 
 	protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
-		// XXX:TODO: Use typia to validate structure
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(response as KeetaFXAnchorQueueStage1Response | null);
+		/* See note at bottom of file */
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
+		return(assertKeetaFXAnchorQueueStage1ResponseOrNull(response));
 	}
 }
 
@@ -709,3 +710,12 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		await super.stop();
 	}
 }
+
+/*
+ * These are placed at the bottm of the file because the generation
+ * breaks the code coverage computation;  Normally, we'd place these
+ * in a ".generated.ts" file but for simplicity of internal types
+ * we keep them here.
+ */
+const assertKeetaFXAnchorQueueStage1RequestJSON = typia.createAssert<KeetaFXAnchorQueueStage1RequestJSON>();
+const assertKeetaFXAnchorQueueStage1ResponseOrNull = typia.createAssert<KeetaFXAnchorQueueStage1Response | null>();
