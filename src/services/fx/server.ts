@@ -348,7 +348,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 }
 
-class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineBasic<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> {
+class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineBasic<[KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response]> {
 	protected readonly stages: readonly [{
 		name: 'process_swap_request';
 		runner: typeof KeetaFXAnchorQueuePipelineStage1;
@@ -357,7 +357,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineBasic<KeetaFXAn
 		}];
 	}];
 
-	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineBasic<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>>[0] & { serverConfig: KeetaAnchorFXServerConfig; }) {
+	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineBasic<[KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response]>>[0] & { serverConfig: KeetaAnchorFXServerConfig; }) {
 		super(options);
 
 		this.stages = [{
@@ -428,7 +428,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					this.logger.error('KeetaNetFXAnchorHTTPServer::pipelineAutoRunInterval', 'Error maintaining pipeline:', error);
 				}
 				try {
-					await this.pipeline.run(5000);
+					await this.pipeline.run({ timeoutMs: 5000 });
 				} catch (error) {
 					this.logger.error('KeetaNetFXAnchorHTTPServer::pipelineAutoRunInterval', 'Error running pipeline:', error);
 				} finally {
