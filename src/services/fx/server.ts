@@ -605,7 +605,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 				ok: true,
-				exchangeID: exchangeID?.toString() ?? 'XXX:TODO',
+				exchangeID: exchangeID.toString(),
 				status: 'pending'
 			};
 
