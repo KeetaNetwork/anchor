@@ -5,6 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { asleep } from '../../lib/utils/asleep.js';
+import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
 const DEBUG = false;
@@ -63,6 +64,13 @@ test('FX Anchor Client Test', async function() {
 		quoteSigner: quoteSigner,
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		fx: {
+			storage: {
+				queue: new KeetaAnchorQueueStorageDriverMemory({
+					logger: logger,
+					id: 'queue'
+				}),
+				autoRun: false
+			},
 			getConversionRateAndFee: async function(request) {
 				let rate = 0.88;
 				if (request.affinity === 'to') {
@@ -398,16 +406,24 @@ test('FX Anchor Client Test', async function() {
 		// TODO - fix createConversionSwap in server setup to complete swap and return ID
 		expect(exchangeWithBlock.exchange.exchangeID).toBeDefined();
 
+		const exchangeStatusFirst = await exchangeWithBlock.getExchangeStatus();
+		expect(exchangeStatusFirst.exchangeID).toBe(exchangeWithBlock.exchange.exchangeID);
+		expect(exchangeStatusFirst.status).toBe('pending');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-member-access
+		expect((exchangeStatusFirst as any).blockhash).toBeUndefined();
+
 		/**
 		 * Wait for exchange to complete in the queue -- because we're using the same
 		 * account, if we do not wait for it to complete the account head block
 		 * will be wrong on the second block submission
 		 */
 		async function waitForExchangeToComplete(exchangeInput: Awaited<ReturnType<typeof quoteFromEstimate.createExchange>>) {
+			await server.pipeline.run();
+			await server.pipeline.maintain();
+
 			let exchangeStatus: Awaited<ReturnType<typeof exchangeInput.getExchangeStatus>>;
 			exchangeStatus = await exchangeInput.getExchangeStatus();
 			while (exchangeStatus?.status !== 'completed') {
-				await asleep(100);
 				exchangeStatus = await exchangeInput.getExchangeStatus();
 				logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchangeInput.exchange.exchangeID}:`, exchangeStatus);
 			}
@@ -417,6 +433,7 @@ test('FX Anchor Client Test', async function() {
 		const exchangeStatusWithBlock = await waitForExchangeToComplete(exchangeWithBlock);
 		expect(exchangeStatusWithBlock.exchangeID).toBe(exchangeWithBlock.exchange.exchangeID);
 		expect(exchangeStatusWithBlock.status).toBe('completed');
+		expect(exchangeStatusWithBlock.blockhash).toBeDefined();
 
 		const exchange = await quoteFromEstimate.createExchange();
 		expect(exchange.exchange.exchangeID).toBeDefined();
@@ -424,6 +441,7 @@ test('FX Anchor Client Test', async function() {
 		const exchangeStatus = await waitForExchangeToComplete(exchange);
 		expect(exchangeStatus.exchangeID).toBe(exchange.exchange.exchangeID);
 		expect(exchangeStatus.status).toBe('completed');
+		expect(exchangeStatus.blockhash).toBeDefined();
 
 		/* Multiply by 2 since we createExchange twice for the same swap */
 		cumulativeEURChange += BigInt(receiveAmount) * 2n;
