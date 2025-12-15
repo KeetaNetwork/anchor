@@ -129,14 +129,26 @@ export type KeetaFXAnchorExchange = {
 	 */
 	exchangeID: string
 } & ({
+	/**
+	 * Status of the exchange request
+	 */
 	status: 'pending' | 'failed';
 } | {
+	/**
+	 * Status of the exchange request
+	 */
 	status: 'completed';
+	/**
+	 * Blockhash where the exchange was completed -- the user-supplied
+	 * blockhash for their portion of the exchange transaction can be
+	 * used to look up the transaction on-chain as well, but we return
+	 * a value here so that it can be looked up without needing to store
+	 * that initially block.
+	 */
 	blockhash: string;
 });
 
-export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange &
-({
+export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange & ({
 	ok: true;
 } | {
 	ok: false;
