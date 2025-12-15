@@ -403,13 +403,13 @@ test('FX Anchor Client Test', async function() {
 		 * account, if we do not wait for it to complete the account head block
 		 * will be wrong on the second block submission
 		 */
-		async function waitForExchangeToComplete(exchange: Awaited<ReturnType<typeof quoteFromEstimate.createExchange>>) {
-			let exchangeStatus: Awaited<ReturnType<typeof exchange.getExchangeStatus>>;
-			exchangeStatus = await exchange.getExchangeStatus();
+		async function waitForExchangeToComplete(exchangeInput: Awaited<ReturnType<typeof quoteFromEstimate.createExchange>>) {
+			let exchangeStatus: Awaited<ReturnType<typeof exchangeInput.getExchangeStatus>>;
+			exchangeStatus = await exchangeInput.getExchangeStatus();
 			while (exchangeStatus?.status !== 'completed') {
 				await asleep(100);
-				exchangeStatus = await exchange.getExchangeStatus();
-				logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchange.exchange.exchangeID}:`, exchangeStatus);
+				exchangeStatus = await exchangeInput.getExchangeStatus();
+				logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchangeInput.exchange.exchangeID}:`, exchangeStatus);
 			}
 			return(exchangeStatus);
 		}
