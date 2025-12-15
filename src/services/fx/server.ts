@@ -625,7 +625,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const queueEntryInfo = await instance.pipeline.get(exchangeID as unknown as KeetaAnchorQueueRequestID);
-			const status: Extract<KeetaFXAnchorExchangeResponse, { ok: true }>['status'] = (function() {
+			const exchangeResponse = (function(): KeetaFXAnchorExchangeResponse {
 				const inputStatus = queueEntryInfo?.status;
 				switch (inputStatus) {
 					case undefined:
@@ -635,11 +635,35 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					case 'stuck':
 					case 'aborted':
 					case 'failed_temporarily':
-						return('pending');
-					case 'completed':
-						return('completed');
+						return({
+							ok: true,
+							status: 'pending',
+							exchangeID: exchangeID
+						});
+					case 'completed': {
+						const blockHash = queueEntryInfo?.output?.blockHash;
+						if (blockHash === undefined) {
+							return({
+								ok: true,
+								status: 'pending',
+								exchangeID: exchangeID
+							});
+						} else {
+							return({
+								ok: true,
+								status: 'completed',
+								exchangeID: exchangeID,
+								blockhash: blockHash
+							});
+						}
+					}
 					case 'failed_permanently':
-						return('failed');
+						return({
+							ok: false,
+							exchangeID: exchangeID,
+							status: 'failed',
+							error: 'Exchange failed'
+						});
 					case 'moved':
 						throw(new Error('Exchange ID has been moved'));
 					case '@internal':
@@ -648,12 +672,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 						assertNever(inputStatus);
 				}
 			})();
-
-			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
-				ok: true,
-				exchangeID: exchangeID,
-				status: status
-			};
 
 			logger.debug('GET /api/getExchangeStatus/:id', 'Exchange Status for ID', exchangeID, 'is', exchangeResponse, 'based on jobInfo', queueEntryInfo);
 

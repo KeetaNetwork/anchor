@@ -128,8 +128,12 @@ export type KeetaFXAnchorExchange = {
 	 * ID used to identify the conversion request
 	 */
 	exchangeID: string
-	status: 'pending' | 'completed' | 'failed';
-}
+} & ({
+	status: 'pending' | 'failed';
+} | {
+	status: 'completed';
+	blockhash: string;
+});
 
 export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange &
 ({
