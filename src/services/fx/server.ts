@@ -177,6 +177,7 @@ type KeetaFXAnchorQueueStage1Request = {
 	expected: Required<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>;
 };
 type KeetaFXAnchorQueueStage1RequestJSON = {
+	version: 1;
 	/* Base64 encoded block from the user */
 	block: string;
 	/* Original request */
@@ -195,7 +196,7 @@ type KeetaFXAnchorQueueStage1Response = {
 	/**
 	 * The hash of one of the blocks submitted
 	 */
-	blockHash: string;
+	blockhash: string;
 };
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
@@ -235,7 +236,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			return({
 				status: 'completed',
 				output: {
-					blockHash: block.hash.toString()
+					blockhash: block.hash.toString()
 				}
 			});
 		}
@@ -303,13 +304,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		return({
 			status: 'pending',
 			output: {
-				blockHash: block.hash.toString()
+				blockhash: block.hash.toString()
 			}
 		});
 	}
 
 	protected encodeRequest(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
 		const retval: KeetaFXAnchorQueueStage1RequestJSON = {
+			version: 1,
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
@@ -642,8 +644,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 							exchangeID: exchangeID
 						});
 					case 'completed': {
-						const blockHash = queueEntryInfo?.output?.blockHash;
-						if (blockHash === undefined) {
+						const blockhash = queueEntryInfo?.output?.blockhash;
+						if (blockhash === undefined) {
 							return({
 								ok: true,
 								status: 'pending',
@@ -654,7 +656,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 								ok: true,
 								status: 'completed',
 								exchangeID: exchangeID,
-								blockhash: blockHash
+								blockhash: blockhash
 							});
 						}
 					}
