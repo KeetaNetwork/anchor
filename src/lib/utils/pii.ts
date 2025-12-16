@@ -66,16 +66,8 @@ type StoredAttribute = {
  */
 export class PIIStore {
 	readonly #attributes = new Map<PIIAttributeNames, StoredAttribute>();
-	readonly #subjectKey: KeetaNetAccount;
 
-	/**
-	 * Create a new PIIStore
-	 *
-	 * @param subjectKey - The account to encrypt sensitive attributes for.
-	 */
-	constructor(subjectKey: KeetaNetAccount) {
-		this.#subjectKey = subjectKey;
-
+	constructor() {
 		// Define Node.js util.inspect custom formatter to prevent PII exposure
 		Object.defineProperty(this, Symbol.for('nodejs.util.inspect.custom'), {
 			value: () => REDACTED,
@@ -89,15 +81,11 @@ export class PIIStore {
 	 * Create a PIIStore from a Certificate, extracting all attributes
 	 *
 	 * @param certificate - The certificate to extract attributes from
-	 * @param subjectKey - The subject's key (used for new PIIStore context)
 	 *
 	 * @returns A new PIIStore populated with the certificate's attributes
 	 */
-	static fromCertificate(
-		certificate: Certificate,
-		subjectKey: KeetaNetAccount
-	): PIIStore {
-		const store = new PIIStore(subjectKey);
+	static fromCertificate(certificate: Certificate): PIIStore {
+		const store = new PIIStore();
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const attributeNames = Object.keys(certificate.attributes) as PIIAttributeNames[];
@@ -148,12 +136,14 @@ export class PIIStore {
 	 * Get or create a SensitiveAttribute from a stored PII value
 	 *
 	 * @param name - The attribute name to convert
+	 * @param subjectKey - The account to encrypt the attribute for
 	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
 	 * @throws PIIAttributeNotFoundError if the attribute is not set
 	 */
 	async toSensitiveAttribute<K extends PIIAttributeNames>(
-		name: K
+		name: K,
+		subjectKey: KeetaNetAccount
 	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>> {
 		if (!this.hasAttribute(name)) {
 			throw(new PIIAttributeNotFoundError(name));
@@ -162,7 +152,7 @@ export class PIIStore {
 		const stored = this.#attributes.get(name);
 		const storedValue = stored?.value;
 		if (SensitiveAttribute.isInstance(storedValue)) {
-            // If already a SensitiveAttribute, return it directly
+			// If already a SensitiveAttribute, return it directly
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			return(storedValue as SensitiveAttribute<CertificateAttributeValue<K>>);
 		}
@@ -170,7 +160,7 @@ export class PIIStore {
 		// Otherwise, encrypt the plain value
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const value = storedValue as CertificateAttributeValue<K>;
-		return(await new SensitiveAttributeBuilder(this.#subjectKey)
+		return(await new SensitiveAttributeBuilder(subjectKey)
 			.set(name, value)
 			.build());
 	}
@@ -200,10 +190,17 @@ export class PIIStore {
 	}
 
 	/**
-	 * Prevent JSON serialization of PII data
+	 * Serialize to JSON with redacted values
+	 *
+	 * Shows attribute names for debugging, but all values are redacted.
 	 */
-	toJSON(): { type: string; message: string } {
-		return({ type: 'PIIStore', message: 'REDACTED' });
+	toJSON(): { type: string; attributes: { [key: string]: string }} {
+		const attributes: { [key: string]: string } = {};
+		for (const name of this.#attributes.keys()) {
+			attributes[name] = '[REDACTED]';
+		}
+
+		return({ type: 'PIIStore', attributes });
 	}
 }
 

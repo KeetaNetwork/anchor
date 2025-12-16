@@ -34,7 +34,6 @@ const TEST_ATTRIBUTES = [
 
 const REDACTION_METHODS = [
 	{ name: 'toString()', expose: (s: PIIStore) => s.toString(), expected: '[PII: REDACTED]' },
-	{ name: 'JSON.stringify()', expose: (s: PIIStore) => JSON.stringify(s), expected: '{"type":"PIIStore","message":"REDACTED"}' },
 	{ name: 'util.inspect()', expose: (s: PIIStore) => util.inspect(s), expected: '[PII: REDACTED]' },
 	{ name: 'string coercion', expose: (s: PIIStore) => String(s), expected: '[PII: REDACTED]' },
 	{ name: 'template literal', expose: (s: PIIStore) => `${s}`, expected: '[PII: REDACTED]' }
@@ -45,7 +44,7 @@ const REDACTION_METHODS = [
 // ============================================================================
 
 function createStore(): PIIStore {
-	return(new PIIStore(testAccounts.subject));
+	return(new PIIStore());
 }
 
 function createPopulatedStore(): PIIStore {
@@ -63,7 +62,7 @@ async function getValue<K extends PIIAttributeNames>(
 	store: PIIStore,
 	name: K
 ): Promise<CertificateAttributeValue<K>> {
-	return(await (await store.toSensitiveAttribute(name)).getValue());
+	return(await (await store.toSensitiveAttribute(name, testAccounts.subject)).getValue());
 }
 
 /**
@@ -117,7 +116,7 @@ test('getAttributeNames returns set attribute names in order', function() {
 test('toSensitiveAttribute throws PIIAttributeNotFoundError for missing', async function() {
 	const store = createStore();
 	for (const { name } of TEST_ATTRIBUTES) {
-		await expect(store.toSensitiveAttribute(name)).rejects.toThrowError(PIIAttributeNotFoundError);
+		await expect(store.toSensitiveAttribute(name, testAccounts.subject)).rejects.toThrowError(PIIAttributeNotFoundError);
 	}
 });
 
@@ -135,8 +134,15 @@ test('setAttribute overwrites existing values', async function() {
 // Tests: Redaction
 // ============================================================================
 
-test('toJSON returns redacted object', function() {
-	expect(createPopulatedStore().toJSON()).toEqual({ type: 'PIIStore', message: 'REDACTED' });
+test('toJSON returns redacted object with attribute names', function() {
+	const json = createPopulatedStore().toJSON();
+	expect(json.type).toBe('PIIStore');
+	expect(Object.keys(json.attributes).sort()).toEqual(
+		TEST_ATTRIBUTES.map(a => a.name).sort()
+	);
+	for (const value of Object.values(json.attributes)) {
+		expect(value).toBe('[REDACTED]');
+	}
 });
 
 test('redaction prevents PII exposure', function() {
@@ -158,8 +164,8 @@ test('redaction prevents PII exposure', function() {
 // ============================================================================
 
 test('fromCertificate extracts all attributes', async function() {
-	const { certificateWithKey, subjectKey } = await createTestCertificate();
-	const store = PIIStore.fromCertificate(certificateWithKey, subjectKey);
+	const { certificateWithKey } = await createTestCertificate();
+	const store = PIIStore.fromCertificate(certificateWithKey);
 
 	const expectedAttrs: [PIIAttributeNames, unknown][] = [
 		['fullName', testAttributeValues.fullName],
@@ -185,7 +191,7 @@ test('toCertificateBuilder <-> fromCertificate round-trip', async function() {
 		.build({ serial: 1 });
 
 	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
-	const extractedStore = PIIStore.fromCertificate(certWithKey, testAccounts.subject);
+	const extractedStore = PIIStore.fromCertificate(certWithKey);
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		expect(await getValue(extractedStore, name)).toEqual(value);
 	}
@@ -195,7 +201,7 @@ test('toSensitiveAttribute creates encrypted attribute with correct public key',
 	const store = createStore();
 	store.setAttribute('email', 'test@example.com');
 
-	const sensitiveAttr = await store.toSensitiveAttribute('email');
+	const sensitiveAttr = await store.toSensitiveAttribute('email', testAccounts.subject);
 	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
 	expect(await sensitiveAttr.getValue()).toBe('test@example.com');
 });
@@ -205,7 +211,7 @@ test('setSensitiveAttribute accepts pre-built attribute', async function() {
 	store.setAttribute('email', 'secure@example.com');
 
 	const builder = createBuilder();
-	builder.setSensitiveAttribute('email', await store.toSensitiveAttribute('email'));
+	builder.setSensitiveAttribute('email', await store.toSensitiveAttribute('email', testAccounts.subject));
 	const certificate = await builder.build({ serial: 1 });
 
 	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
@@ -213,10 +219,10 @@ test('setSensitiveAttribute accepts pre-built attribute', async function() {
 });
 
 test('setSensitiveAttribute rejects wrong subject key', async function() {
-	const wrongKeyStore = new PIIStore(testAccounts.other);
+	const wrongKeyStore = new PIIStore();
 	wrongKeyStore.setAttribute('email', 'wrong@example.com');
 
-	const wrongKeyAttr = await wrongKeyStore.toSensitiveAttribute('email');
+	const wrongKeyAttr = await wrongKeyStore.toSensitiveAttribute('email', testAccounts.other);
 	expect(function() {
 		createBuilder().setSensitiveAttribute('email', wrongKeyAttr);
 	}).toThrowError('SensitiveAttribute was encrypted for a different subject');
