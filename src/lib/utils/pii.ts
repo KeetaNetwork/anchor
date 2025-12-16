@@ -19,28 +19,42 @@ export type PIIAttributeNames = keyof CertificateAttributeValueMap;
 const REDACTED = '[PII: REDACTED]';
 
 /**
- * Error thrown when attempting to access an attribute that does not exist
+ * PII error codes
  */
-export class PIIAttributeNotFoundError extends KeetaAnchorError {
-	static override readonly name: string = 'PIIAttributeNotFoundError';
-	private readonly PIIAttributeNotFoundErrorObjectTypeID!: string;
-	private static readonly PIIAttributeNotFoundErrorObjectTypeID = 'b8e3c7a1-5d2f-4e6b-9a1c-3f8d2e7b4c5a';
+export type PIIErrorCode = 'PII_ATTRIBUTE_NOT_FOUND' | 'PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED';
 
+/**
+ * Error class for PII-related errors
+ */
+export class PIIError extends KeetaAnchorError {
+	static override readonly name: string = 'PIIError';
+	private readonly PIIErrorObjectTypeID!: string;
+	private static readonly PIIErrorObjectTypeID = 'b8e3c7a1-5d2f-4e6b-9a1c-3f8d2e7b4c5a';
+
+	readonly code: PIIErrorCode;
 	readonly attributeName: string;
 
-	constructor(attributeName: string) {
-		super(`Attribute '${attributeName}' not found in PIIStore`);
+	constructor(code: PIIErrorCode, attributeName: string, message: string) {
+		super(message);
 
-		Object.defineProperty(this, 'PIIAttributeNotFoundErrorObjectTypeID', {
-			value: PIIAttributeNotFoundError.PIIAttributeNotFoundErrorObjectTypeID,
+		Object.defineProperty(this, 'PIIErrorObjectTypeID', {
+			value: PIIError.PIIErrorObjectTypeID,
 			enumerable: false
 		});
 
+		this.code = code;
 		this.attributeName = attributeName;
 	}
 
-	static isInstance(input: unknown): input is PIIAttributeNotFoundError {
-		return(this.hasPropWithValue(input, 'PIIAttributeNotFoundErrorObjectTypeID', PIIAttributeNotFoundError.PIIAttributeNotFoundErrorObjectTypeID));
+	static isInstance(input: unknown, code?: PIIErrorCode): input is PIIError {
+		if (!this.hasPropWithValue(input, 'PIIErrorObjectTypeID', PIIError.PIIErrorObjectTypeID)) {
+			return(false);
+		}
+		if (code && !this.hasPropWithValue(input, 'code', code)) {
+			return(false);
+		}
+
+		return(true);
 	}
 }
 
@@ -130,8 +144,27 @@ export class PIIStore {
 		return(Array.from(this.#attributes.keys()));
 	}
 
-	#isKnownAttribute(name: string): name is PIIAttributeNames {
-		return(name in CertificateAttributeOIDDB);
+	/**
+	 * Expose an external (non-certificate) attribute value
+	 *
+	 * Known certificate attributes cannot be exposed directly - use toSensitiveAttribute instead.
+	 *
+	 * @param name - The external attribute name
+	 * @returns The raw value
+	 *
+	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if the attribute is not set
+	 * @throws PIIError with PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED if attempting to expose a known certificate attribute
+	 */
+	exposeAttribute<T>(name: string): T {
+		if (this.#isKnownAttribute(name)) {
+			throw(new PIIError('PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED', name, `Cannot expose known attribute '${name}'`));
+		}
+		if (!this.#attributes.has(name)) {
+			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
+		}
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(this.#attributes.get(name)?.value as T);
 	}
 
 	/**
@@ -141,13 +174,13 @@ export class PIIStore {
 	 * @param subjectKey - The account to encrypt the attribute for
 	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
-	 * @throws PIIAttributeNotFoundError if the attribute is not set
+	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if the attribute is not set
 	 */
 	async toSensitiveAttribute<K extends PIIAttributeNames>(name: K,subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
 	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
 	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
 		if (!this.#attributes.has(name)) {
-			throw(new PIIAttributeNotFoundError(name));
+			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
 		}
 
 		const stored = this.#attributes.get(name);
@@ -209,6 +242,10 @@ export class PIIStore {
 		}
 
 		return({ type: 'PIIStore', attributes });
+	}
+
+	#isKnownAttribute(name: string): name is PIIAttributeNames {
+		return(name in CertificateAttributeOIDDB);
 	}
 }
 

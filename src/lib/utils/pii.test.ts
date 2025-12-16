@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import * as util from 'util';
 import { Buffer } from './buffer.js';
-import { PIIStore, PIIAttributeNotFoundError } from './pii.js';
+import { PIIStore, PIIError } from './pii.js';
 import type { PIIAttributeNames } from './pii.js';
 import type { CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
 import { createTestCertificate, testAttributeValues, testAccounts } from './tests/certificates.js';
@@ -34,10 +34,10 @@ const TEST_ATTRIBUTES = [
 ];
 
 const REDACTION_METHODS = [
-	{ name: 'toString()', expose: (s: PIIStore) => s.toString(), expected: '[PII: REDACTED]' },
-	{ name: 'util.inspect()', expose: (s: PIIStore) => util.inspect(s), expected: '[PII: REDACTED]' },
-	{ name: 'string coercion', expose: (s: PIIStore) => String(s), expected: '[PII: REDACTED]' },
-	{ name: 'template literal', expose: (s: PIIStore) => `${s}`, expected: '[PII: REDACTED]' }
+	{ name: 'toString()', expose: function(s: PIIStore) { return(s.toString()); }, expected: '[PII: REDACTED]' },
+	{ name: 'util.inspect()', expose: function(s: PIIStore) { return(util.inspect(s)); }, expected: '[PII: REDACTED]' },
+	{ name: 'string coercion', expose: function(s: PIIStore) { return(String(s)); }, expected: '[PII: REDACTED]' },
+	{ name: 'template literal', expose: function(s: PIIStore) { return(`${s}`); }, expected: '[PII: REDACTED]' }
 ];
 
 // ============================================================================
@@ -81,6 +81,23 @@ function createBuilder(): InstanceType<typeof Certificate.Builder> {
 	}));
 }
 
+/**
+ * Assert that a function throws a PIIError with a specific code
+ */
+function expectPIIError(fn: () => unknown, code: Parameters<typeof PIIError.isInstance>[1]): PIIError {
+	try {
+		fn();
+		expect.fail(`Expected PIIError with code ${code}`);
+	} catch (error) {
+		expect(PIIError.isInstance(error, code)).toBe(true);
+		if (PIIError.isInstance(error)) {
+			return(error);
+		}
+	}
+
+	throw(new Error('Unreachable'));
+}
+
 // ============================================================================
 // Tests: Basic Operations
 // ============================================================================
@@ -114,10 +131,12 @@ test('getAttributeNames returns set attribute names in order', function() {
 	}
 });
 
-test('toSensitiveAttribute throws PIIAttributeNotFoundError for missing', async function() {
+test('toSensitiveAttribute throws PIIError for missing attributes', async function() {
 	const store = createStore();
 	for (const { name } of TEST_ATTRIBUTES) {
-		await expect(store.toSensitiveAttribute(name, testAccounts.subject)).rejects.toThrowError(PIIAttributeNotFoundError);
+		await expect(store.toSensitiveAttribute(name, testAccounts.subject)).rejects.toSatisfy(
+			function(error: unknown) { return(PIIError.isInstance(error, 'PII_ATTRIBUTE_NOT_FOUND')); }
+		);
 	}
 });
 
@@ -145,6 +164,26 @@ test('toSensitiveAttribute handles external attributes via JSON serialization', 
 	expect(decrypted).toEqual(externalData);
 });
 
+test('exposeAttribute returns external attribute values', function() {
+	const store = createStore();
+	const externalData = { provider: 'test', score: 42 };
+	store.setAttribute('externalProvider.result', externalData);
+	expect(store.exposeAttribute('externalProvider.result')).toEqual(externalData);
+});
+
+test('exposeAttribute throws PIIError for missing attributes', function() {
+	const store = createStore();
+	const error = expectPIIError(function() { return(store.exposeAttribute('nonexistent')); }, 'PII_ATTRIBUTE_NOT_FOUND');
+	expect(error.attributeName).toBe('nonexistent');
+});
+
+test('exposeAttribute throws PIIError for known certificate attributes', function() {
+	const store = createStore();
+	store.setAttribute('firstName', 'John');
+	const error = expectPIIError(function() { return(store.exposeAttribute('firstName')); }, 'PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED');
+	expect(error.attributeName).toBe('firstName');
+});
+
 // ============================================================================
 // Tests: Redaction
 // ============================================================================
@@ -153,7 +192,7 @@ test('toJSON returns redacted object with attribute names', function() {
 	const json = createPopulatedStore().toJSON();
 	expect(json.type).toBe('PIIStore');
 	expect(Object.keys(json.attributes).sort()).toEqual(
-		TEST_ATTRIBUTES.map(a => a.name).sort()
+		TEST_ATTRIBUTES.map(function(a) { return(a.name); }).sort()
 	);
 	for (const value of Object.values(json.attributes)) {
 		expect(value).toBe('[REDACTED]');
@@ -162,13 +201,13 @@ test('toJSON returns redacted object with attribute names', function() {
 
 test('redaction prevents PII exposure', function() {
 	const store = createPopulatedStore();
-	for (const { name, expose, expected } of REDACTION_METHODS) {
-		const result = expose(store);
-		expect(result, name).toBe(expected);
+	for (const method of REDACTION_METHODS) {
+		const result = method.expose(store);
+		expect(result, method.name).toBe(method.expected);
 
 		for (const { value } of TEST_ATTRIBUTES) {
 			if (typeof value === 'string') {
-				expect(result, `${name} leaked "${value}"`).not.toContain(value);
+				expect(result, `${method.name} leaked "${value}"`).not.toContain(value);
 			}
 		}
 	}
@@ -180,19 +219,10 @@ test('redaction prevents PII exposure', function() {
 
 test('fromCertificate extracts all attributes', async function() {
 	const { certificateWithKey } = await createTestCertificate();
+
 	const store = PIIStore.fromCertificate(certificateWithKey);
-
-	const expectedAttrs: [PIIAttributeNames, unknown][] = [
-		['fullName', testAttributeValues.fullName],
-		['email', testAttributeValues.email],
-		['phoneNumber', testAttributeValues.phoneNumber],
-		['dateOfBirth', testAttributeValues.dateOfBirth],
-		['address', testAttributeValues.address],
-		['entityType', testAttributeValues.entityType]
-	];
-
-	for (const [name, expected] of expectedAttrs) {
-		expect(await getValue(store, name), name).toEqual(expected);
+	for (const name of ['fullName', 'email', 'phoneNumber', 'dateOfBirth', 'address', 'entityType'] as const) {
+		expect(await getValue(store, name), name).toEqual(testAttributeValues[name]);
 	}
 
 	expect(store.toString()).toBe('[PII: REDACTED]');
