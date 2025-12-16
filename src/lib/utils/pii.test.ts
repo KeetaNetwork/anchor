@@ -159,7 +159,7 @@ test('redaction prevents PII exposure', function() {
 
 test('fromCertificate extracts all attributes', async function() {
 	const { certificateWithKey, subjectKey } = await createTestCertificate();
-	const store = await PIIStore.fromCertificate(certificateWithKey, subjectKey);
+	const store = PIIStore.fromCertificate(certificateWithKey, subjectKey);
 
 	const expectedAttrs: [PIIAttributeNames, unknown][] = [
 		['fullName', testAttributeValues.fullName],
@@ -185,7 +185,7 @@ test('toCertificateBuilder <-> fromCertificate round-trip', async function() {
 		.build({ serial: 1 });
 
 	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
-	const extractedStore = await PIIStore.fromCertificate(certWithKey, testAccounts.subject);
+	const extractedStore = PIIStore.fromCertificate(certWithKey, testAccounts.subject);
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		expect(await getValue(extractedStore, name)).toEqual(value);
 	}

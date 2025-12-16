@@ -1,7 +1,7 @@
 import type * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import type { CertificateAttributeValueMap, CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
-import type { SensitiveAttribute } from '../certificates.js';
-import { type CertificateBuilder, Certificate, SensitiveAttributeBuilder } from '../certificates.js';
+import type { CertificateBuilder, Certificate } from '../certificates.js';
+import { SensitiveAttribute, SensitiveAttributeBuilder } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
 
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -43,6 +43,11 @@ export class PIIAttributeNotFoundError extends KeetaAnchorError {
 	}
 }
 
+type StoredAttribute = {
+	value: unknown;
+	sensitive: boolean;
+};
+
 /**
  * PIIStore is a secure container for Personally Identifiable Information (PII).
  *
@@ -60,7 +65,7 @@ export class PIIAttributeNotFoundError extends KeetaAnchorError {
  * ```
  */
 export class PIIStore {
-	readonly #attributes = new Map<PIIAttributeNames, unknown>();
+	readonly #attributes = new Map<PIIAttributeNames, StoredAttribute>();
 	readonly #subjectKey: KeetaNetAccount;
 
 	/**
@@ -81,25 +86,29 @@ export class PIIStore {
 	}
 
 	/**
-	 * Create a PIIStore from a Certificate, extracting all attribute values
+	 * Create a PIIStore from a Certificate, extracting all attributes
 	 *
 	 * @param certificate - The certificate to extract attributes from
-	 * @param subjectKey - Private key for decrypting sensitive attributes
+	 * @param subjectKey - The subject's key (used for new PIIStore context)
 	 *
-	 * @returns A new PIIStore populated with the certificate's attribute values
+	 * @returns A new PIIStore populated with the certificate's attributes
 	 */
-	static async fromCertificate(
+	static fromCertificate(
 		certificate: Certificate,
 		subjectKey: KeetaNetAccount
-	): Promise<PIIStore> {
+	): PIIStore {
 		const store = new PIIStore(subjectKey);
-		const certWithKey = new Certificate(certificate.toPEM(), { subjectKey });
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const attributeNames = Object.keys(certWithKey.attributes) as PIIAttributeNames[];
+		const attributeNames = Object.keys(certificate.attributes) as PIIAttributeNames[];
 		for (const name of attributeNames) {
-			const value = await certWithKey.getAttributeValue(name);
-			store.setAttribute(name, value);
+			const attr = certificate.attributes[name];
+			if (attr) {
+				store.#attributes.set(name, {
+					value: attr.value,
+					sensitive: attr.sensitive
+				});
+			}
 		}
 
 		return(store);
@@ -110,9 +119,10 @@ export class PIIStore {
 	 *
 	 * @param name - The attribute name
 	 * @param value - The value to store
+	 * @param sensitive - Whether the attribute is sensitive (default: true)
 	 */
-	setAttribute<K extends PIIAttributeNames>(name: K, value: CertificateAttributeValue<K>): void {
-		this.#attributes.set(name, value);
+	setAttribute<K extends PIIAttributeNames>(name: K, value: CertificateAttributeValue<K>, sensitive = true): void {
+		this.#attributes.set(name, { value, sensitive });
 	}
 
 	/**
@@ -135,9 +145,7 @@ export class PIIStore {
 	}
 
 	/**
-	 * Create a SensitiveAttribute from a stored PII value
-	 *
-	 * The attribute is encrypted using the subject key provided at construction.
+	 * Get or create a SensitiveAttribute from a stored PII value
 	 *
 	 * @param name - The attribute name to convert
 	 * @returns A SensitiveAttribute containing the encrypted value
@@ -151,8 +159,17 @@ export class PIIStore {
 			throw(new PIIAttributeNotFoundError(name));
 		}
 
+		const stored = this.#attributes.get(name);
+		const storedValue = stored?.value;
+		if (SensitiveAttribute.isInstance(storedValue)) {
+            // If already a SensitiveAttribute, return it directly
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			return(storedValue as SensitiveAttribute<CertificateAttributeValue<K>>);
+		}
+
+		// Otherwise, encrypt the plain value
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const value = this.#attributes.get(name) as CertificateAttributeValue<K>;
+		const value = storedValue as CertificateAttributeValue<K>;
 		return(await new SensitiveAttributeBuilder(this.#subjectKey)
 			.set(name, value)
 			.build());
@@ -166,10 +183,9 @@ export class PIIStore {
 	 * @returns The certificate builder with the attributes applied
 	 */
 	toCertificateBuilder(builder: CertificateBuilder): CertificateBuilder {
-		for (const name of this.#attributes.keys()) {
-			const value = this.#attributes.get(name);
-			if (value !== undefined && value !== null) {
-				builder.setAttribute(name, true, value);
+		for (const [name, attr] of this.#attributes.entries()) {
+			if (attr.value !== undefined && attr.value !== null) {
+				builder.setAttribute(name, attr.sensitive, attr.value);
 			}
 		}
 

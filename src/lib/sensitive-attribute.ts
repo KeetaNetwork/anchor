@@ -369,6 +369,9 @@ export class SensitiveAttributeBuilder {
 }
 
 export class SensitiveAttribute<T = ArrayBuffer> {
+	private static readonly SensitiveAttributeObjectTypeID = 'c0cc9591-cebb-4441-babe-23739279e3f2';
+	private readonly SensitiveAttributeObjectTypeID!: string;
+
 	readonly #account: KeetaNetAccount;
 	readonly #encryptedDER: ArrayBuffer;
 	readonly #info: ReturnType<SensitiveAttribute<T>['decode']>;
@@ -379,12 +382,28 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 		data: Buffer | ArrayBuffer,
 		decoder?: (data: Buffer | ArrayBuffer) => T | Promise<T>
 	) {
+		Object.defineProperty(this, 'SensitiveAttributeObjectTypeID', {
+			value: SensitiveAttribute.SensitiveAttributeObjectTypeID,
+			enumerable: false
+		});
+
 		this.#account = account;
 		this.#encryptedDER = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
 		this.#info = this.decode(data);
 		if (decoder) {
 			this.#decoder = decoder;
 		}
+	}
+
+	/**
+	 * Check if a value is a SensitiveAttribute instance
+	 */
+	static isInstance(input: unknown): input is SensitiveAttribute<unknown> {
+		if (typeof input !== 'object' || input === null) {
+			return(false);
+		}
+
+		return(Reflect.get(input, 'SensitiveAttributeObjectTypeID') === SensitiveAttribute.SensitiveAttributeObjectTypeID);
 	}
 
 	/**
