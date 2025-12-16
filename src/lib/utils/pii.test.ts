@@ -61,11 +61,13 @@ function createPopulatedStore(): PIIStore {
 	return(store);
 }
 
-test('PIIStore: setAttribute and exposeAttribute', function() {
+test('PIIStore: setAttribute and run', function() {
 	const store = new PIIStore();
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		store.setAttribute(name, value);
-		expect(store.exposeAttribute(name)).toEqual(value);
+		store.run([name], function(v) {
+			expect(v).toEqual(value);
+		});
 	}
 });
 
@@ -90,10 +92,10 @@ test('PIIStore: getAttributeNames', function() {
 	}
 });
 
-test('PIIStore: exposeAttribute throws for missing attributes', function() {
+test('PIIStore: run throws for missing attributes', function() {
 	const store = new PIIStore();
 	for (const { name } of TEST_ATTRIBUTES) {
-		expect(function() { store.exposeAttribute(name); }).toThrowError(PIIAttributeNotFoundError);
+		expect(function() { store.run([name], function() {}); }).toThrowError(PIIAttributeNotFoundError);
 	}
 });
 
@@ -101,11 +103,26 @@ test('PIIStore: setAttribute overwrites existing values', function() {
 	const store = new PIIStore();
 
 	store.setAttribute('firstName', 'John');
-	expect(store.exposeAttribute('firstName')).toBe('John');
+	store.run(['firstName'], function(v) { expect(v).toBe('John'); });
 
 	store.setAttribute('firstName', 'Jane');
-	expect(store.exposeAttribute('firstName')).toBe('Jane');
+	store.run(['firstName'], function(v) { expect(v).toBe('Jane'); });
 	expect(store.getAttributeNames()).toEqual(['firstName']);
+});
+
+test('PIIStore: run with multiple attributes', function() {
+	const store = createPopulatedStore();
+
+	store.run(['firstName', 'lastName'], function(first, last) {
+		expect(first).toBe('John');
+		expect(last).toBe('Doe');
+	});
+
+	store.run(['email', 'phoneNumber', 'dateOfBirth'], function(email, phone, dob) {
+		expect(email).toBe('john.doe@example.com');
+		expect(phone).toBe('+1-555-123-4567');
+		expect(dob).toEqual(new Date('1990-01-15'));
+	});
 });
 
 test('PIIStore: toJSON returns redacted object', function() {
@@ -132,12 +149,12 @@ test('PIIStore.fromCertificate: extracts attributes from certificate', async fun
 	const { certificateWithKey, subjectKey } = await createTestCertificate();
 
 	const store = await PIIStore.fromCertificate(certificateWithKey, subjectKey);
-	expect(store.exposeAttribute('fullName')).toBe(testAttributeValues.fullName);
-	expect(store.exposeAttribute('email')).toBe(testAttributeValues.email);
-	expect(store.exposeAttribute('phoneNumber')).toBe(testAttributeValues.phoneNumber);
-	expect(store.exposeAttribute('dateOfBirth')).toEqual(testAttributeValues.dateOfBirth);
-	expect(store.exposeAttribute('address')).toEqual(testAttributeValues.address);
-	expect(store.exposeAttribute('entityType')).toEqual(testAttributeValues.entityType);
+	store.run(['fullName'], function(v) { expect(v).toBe(testAttributeValues.fullName); });
+	store.run(['email'], function(v) { expect(v).toBe(testAttributeValues.email); });
+	store.run(['phoneNumber'], function(v) { expect(v).toBe(testAttributeValues.phoneNumber); });
+	store.run(['dateOfBirth'], function(v) { expect(v).toEqual(testAttributeValues.dateOfBirth); });
+	store.run(['address'], function(v) { expect(v).toEqual(testAttributeValues.address); });
+	store.run(['entityType'], function(v) { expect(v).toEqual(testAttributeValues.entityType); });
 
 	// Verify redaction still works
 	expect(store.toString()).toBe('[PII: REDACTED]');
@@ -170,6 +187,6 @@ test('PIIStore round-trip: toCertificateBuilder <-> fromCertificate', async func
 	const certificateWithKey = new Certificate(certificate, { subjectKey });
 	const extractedStore = await PIIStore.fromCertificate(certificateWithKey, subjectKey);
 	for (const { name, value } of TEST_ATTRIBUTES) {
-		expect(extractedStore.exposeAttribute(name)).toEqual(value);
+		extractedStore.run([name], function(v) { expect(v).toEqual(value); });
 	}
 });

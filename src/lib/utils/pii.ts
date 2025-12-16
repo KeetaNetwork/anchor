@@ -107,24 +107,6 @@ export class PIIStore {
 	}
 
 	/**
-	 * Expose an attribute value from the store (intentionality)
-	 *
-	 * @param name - The attribute name to retrieve
-     *
-	 * @returns The stored value
-     *
-	 * @throws PIIAttributeNotFoundError if the attribute is not set
-	 */
-	exposeAttribute<K extends PIIAttributeNames>(name: K): CertificateAttributeValue<K> {
-		if (!this.hasAttribute(name)) {
-			throw(new PIIAttributeNotFoundError(name));
-		}
-
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(this.#attributes.get(name) as CertificateAttributeValue<K>);
-	}
-
-	/**
 	 * Check if an attribute exists in the store
 	 *
 	 * @param name - The attribute name to check
@@ -141,6 +123,35 @@ export class PIIStore {
 	 */
 	getAttributeNames(): PIIAttributeNames[] {
 		return(Array.from(this.#attributes.keys()));
+	}
+
+	/**
+	 * Access PII values within a scoped callback
+	 *
+	 * Values are only accessible within the callback and cannot be returned,
+	 * preventing accidental exposure of PII outside the controlled scope. It
+     * is possible to still expose the PII however, this is designed to enforce
+     * intentionality, not to make access impossible.
+	 *
+	 * @param names - Array of attribute names to access
+	 * @param fn - Callback that receives the attribute values
+	 *
+	 * @throws PIIAttributeNotFoundError if any attribute is not sets
+	 */
+	run<K extends PIIAttributeNames[]>(
+		names: [...K],
+		fn: (...values: { [I in keyof K]: CertificateAttributeValue<K[I]> }) => void
+	): void {
+		const values = names.map((name) => {
+			if (!this.hasAttribute(name)) {
+				throw(new PIIAttributeNotFoundError(name));
+			}
+
+			return(this.#attributes.get(name));
+		});
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		fn(...values as { [I in keyof K]: CertificateAttributeValue<K[I]> });
 	}
 
 	/**
