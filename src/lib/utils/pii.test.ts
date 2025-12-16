@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import * as util from 'util';
+import { Buffer } from './buffer.js';
 import { PIIStore, PIIAttributeNotFoundError } from './pii.js';
 import type { PIIAttributeNames } from './pii.js';
 import type { CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
@@ -128,6 +129,20 @@ test('setAttribute overwrites existing values', async function() {
 	store.setAttribute('firstName', 'Jane');
 	expect(await getValue(store, 'firstName')).toBe('Jane');
 	expect(store.getAttributeNames()).toEqual(['firstName']);
+});
+
+test('toSensitiveAttribute handles external attributes via JSON serialization', async function() {
+	const store = createStore();
+	const externalData = { provider: 'test', score: 42, verified: true };
+	store.setAttribute('externalProvider.result', externalData);
+
+	const sensitiveAttr = await store.toSensitiveAttribute<ArrayBuffer>('externalProvider.result', testAccounts.subject);
+	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
+
+	const rawBytes = await sensitiveAttr.getValue();
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+	const decrypted: typeof externalData = JSON.parse(Buffer.from(rawBytes).toString('utf-8'));
+	expect(decrypted).toEqual(externalData);
 });
 
 // ============================================================================
