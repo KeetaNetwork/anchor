@@ -107,10 +107,12 @@ export class PIIStore {
 	}
 
 	/**
-	 * Expose an attribute value from the store
+	 * Expose an attribute value from the store (intentionality)
 	 *
 	 * @param name - The attribute name to retrieve
+     *
 	 * @returns The stored value
+     *
 	 * @throws PIIAttributeNotFoundError if the attribute is not set
 	 */
 	exposeAttribute<K extends PIIAttributeNames>(name: K): CertificateAttributeValue<K> {
