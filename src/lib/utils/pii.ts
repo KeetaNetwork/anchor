@@ -1,8 +1,9 @@
 import type * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { CertificateAttributeValueMap, CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, type CertificateAttributeValueMap, type CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
 import type { CertificateBuilder, Certificate } from '../certificates.js';
 import { SensitiveAttribute, SensitiveAttributeBuilder } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
+import { Buffer } from '../utils/buffer.js';
 
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
@@ -25,9 +26,9 @@ export class PIIAttributeNotFoundError extends KeetaAnchorError {
 	private readonly PIIAttributeNotFoundErrorObjectTypeID!: string;
 	private static readonly PIIAttributeNotFoundErrorObjectTypeID = 'b8e3c7a1-5d2f-4e6b-9a1c-3f8d2e7b4c5a';
 
-	readonly attributeName: PIIAttributeNames;
+	readonly attributeName: string;
 
-	constructor(attributeName: PIIAttributeNames) {
+	constructor(attributeName: string) {
 		super(`Attribute '${attributeName}' not found in PIIStore`);
 
 		Object.defineProperty(this, 'PIIAttributeNotFoundErrorObjectTypeID', {
@@ -65,7 +66,7 @@ type StoredAttribute = {
  * ```
  */
 export class PIIStore {
-	readonly #attributes = new Map<PIIAttributeNames, StoredAttribute>();
+	readonly #attributes = new Map<string, StoredAttribute>();
 
 	constructor() {
 		// Define Node.js util.inspect custom formatter to prevent PII exposure
@@ -103,39 +104,40 @@ export class PIIStore {
 	}
 
 	/**
-	 * Set an attribute value in the store
+	 * Set a known certificate attribute
 	 *
 	 * @param name - The attribute name
 	 * @param value - The value to store
 	 * @param sensitive - Whether the attribute is sensitive (default: true)
 	 */
-	setAttribute<K extends PIIAttributeNames>(name: K, value: CertificateAttributeValue<K>, sensitive = true): void {
+	setAttribute<K extends PIIAttributeNames>(name: K, value: CertificateAttributeValue<K>, sensitive?: boolean): void;
+	setAttribute<T>(name: string, value: T, sensitive?: boolean): void;
+	setAttribute(name: string, value: unknown, sensitive = true): void {
 		this.#attributes.set(name, { value, sensitive });
 	}
 
 	/**
 	 * Check if an attribute exists in the store
-	 *
-	 * @param name - The attribute name to check
-	 * @returns True if the attribute is set, false otherwise
 	 */
-	hasAttribute(name: PIIAttributeNames): boolean {
+	hasAttribute(name: string): boolean {
 		return(this.#attributes.has(name));
 	}
 
 	/**
 	 * Get all attribute names currently stored
-	 *
-	 * @returns Array of attribute names
 	 */
-	getAttributeNames(): PIIAttributeNames[] {
+	getAttributeNames(): string[] {
 		return(Array.from(this.#attributes.keys()));
 	}
 
+	#isKnownAttribute(name: string): name is PIIAttributeNames {
+		return(name in CertificateAttributeOIDDB);
+	}
+
 	/**
-	 * Get or create a SensitiveAttribute from a stored PII value
+	 * Create a SensitiveAttribute
 	 *
-	 * @param name - The attribute name to convert
+	 * @param name - The known attribute name to convert
 	 * @param subjectKey - The account to encrypt the attribute for
 	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
@@ -144,8 +146,19 @@ export class PIIStore {
 	async toSensitiveAttribute<K extends PIIAttributeNames>(
 		name: K,
 		subjectKey: KeetaNetAccount
-	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>> {
-		if (!this.hasAttribute(name)) {
+	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
+	/**
+	 * Create a SensitiveAttribute
+	 *
+	 * @param name - The external attribute name to convert
+	 * @param subjectKey - The account to encrypt the attribute for
+	 * @returns A SensitiveAttribute containing the encrypted value
+	 *
+	 * @throws PIIAttributeNotFoundError if the attribute is not set
+	 */
+	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
+	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
+		if (!this.#attributes.has(name)) {
 			throw(new PIIAttributeNotFoundError(name));
 		}
 
@@ -153,28 +166,35 @@ export class PIIStore {
 		const storedValue = stored?.value;
 		if (SensitiveAttribute.isInstance(storedValue)) {
 			// If already a SensitiveAttribute, return it directly
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			return(storedValue as SensitiveAttribute<CertificateAttributeValue<K>>);
+			return(storedValue);
 		}
 
-		// Otherwise, encrypt the plain value
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const value = storedValue as CertificateAttributeValue<K>;
-		return(await new SensitiveAttributeBuilder(subjectKey)
-			.set(name, value)
-			.build());
+		// Known attributes use schema-aware encoding
+		if (this.#isKnownAttribute(name)) {
+			const builder = new SensitiveAttributeBuilder(subjectKey);
+			// @ts-expect-error storedValue type is validated at setAttribute time
+			builder.set(name, storedValue);
+			return(await builder.build());
+		} else {
+			// External attributes are JSON-serialized
+			const jsonBytes = Buffer.from(JSON.stringify(storedValue), 'utf-8');
+			return(await new SensitiveAttributeBuilder(subjectKey)
+				.set(jsonBytes)
+				.build());
+		}
 	}
 
 	/**
-	 * Apply all stored attributes to a CertificateBuilder
+	 * Apply known attributes to a CertificateBuilder
+	 *
+	 * External attributes are not included in the certificate.
 	 *
 	 * @param builder - The certificate builder to apply attributes to
-	 *
 	 * @returns The certificate builder with the attributes applied
 	 */
 	toCertificateBuilder(builder: CertificateBuilder): CertificateBuilder {
 		for (const [name, attr] of this.#attributes.entries()) {
-			if (attr.value !== undefined && attr.value !== null) {
+			if (this.#isKnownAttribute(name) && attr.value !== undefined && attr.value !== null) {
 				builder.setAttribute(name, attr.sensitive, attr.value);
 			}
 		}
