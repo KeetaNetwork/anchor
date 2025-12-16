@@ -1,6 +1,7 @@
 import type * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import type { CertificateAttributeValueMap, CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
-import { type CertificateBuilder, Certificate } from '../certificates.js';
+import type { SensitiveAttribute } from '../certificates.js';
+import { type CertificateBuilder, Certificate, SensitiveAttributeBuilder } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
 
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -60,8 +61,16 @@ export class PIIAttributeNotFoundError extends KeetaAnchorError {
  */
 export class PIIStore {
 	readonly #attributes = new Map<PIIAttributeNames, unknown>();
+	readonly #subjectKey: KeetaNetAccount;
 
-	constructor() {
+	/**
+	 * Create a new PIIStore
+	 *
+	 * @param subjectKey - The account to encrypt sensitive attributes for.
+	 */
+	constructor(subjectKey: KeetaNetAccount) {
+		this.#subjectKey = subjectKey;
+
 		// Define Node.js util.inspect custom formatter to prevent PII exposure
 		Object.defineProperty(this, Symbol.for('nodejs.util.inspect.custom'), {
 			value: () => REDACTED,
@@ -83,7 +92,7 @@ export class PIIStore {
 		certificate: Certificate,
 		subjectKey: KeetaNetAccount
 	): Promise<PIIStore> {
-		const store = new PIIStore();
+		const store = new PIIStore(subjectKey);
 		const certWithKey = new Certificate(certificate.toPEM(), { subjectKey });
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -126,32 +135,27 @@ export class PIIStore {
 	}
 
 	/**
-	 * Access PII values within a scoped callback
+	 * Create a SensitiveAttribute from a stored PII value
 	 *
-	 * Values are only accessible within the callback and cannot be returned,
-	 * preventing accidental exposure of PII outside the controlled scope. It
-     * is possible to still expose the PII however, this is designed to enforce
-     * intentionality, not to make access impossible.
+	 * The attribute is encrypted using the subject key provided at construction.
 	 *
-	 * @param names - Array of attribute names to access
-	 * @param fn - Callback that receives the attribute values
+	 * @param name - The attribute name to convert
+	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
-	 * @throws PIIAttributeNotFoundError if any attribute is not sets
+	 * @throws PIIAttributeNotFoundError if the attribute is not set
 	 */
-	run<K extends PIIAttributeNames[]>(
-		names: [...K],
-		fn: (...values: { [I in keyof K]: CertificateAttributeValue<K[I]> }) => void
-	): void {
-		const values = names.map((name) => {
-			if (!this.hasAttribute(name)) {
-				throw(new PIIAttributeNotFoundError(name));
-			}
-
-			return(this.#attributes.get(name));
-		});
+	async toSensitiveAttribute<K extends PIIAttributeNames>(
+		name: K
+	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>> {
+		if (!this.hasAttribute(name)) {
+			throw(new PIIAttributeNotFoundError(name));
+		}
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		fn(...values as { [I in keyof K]: CertificateAttributeValue<K[I]> });
+		const value = this.#attributes.get(name) as CertificateAttributeValue<K>;
+		return(await new SensitiveAttributeBuilder(this.#subjectKey)
+			.set(name, value)
+			.build());
 	}
 
 	/**

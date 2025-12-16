@@ -7,9 +7,10 @@ import { createTestCertificate, testAttributeValues, testAccounts } from './test
 import { Certificate } from '../certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 
-/**
- * Type-safe helper for defining test attributes
- */
+// ============================================================================
+// Test Data
+// ============================================================================
+
 function attr<K extends PIIAttributeNames>(
 	name: K,
 	value: CertificateAttributeValue<K>
@@ -17,9 +18,6 @@ function attr<K extends PIIAttributeNames>(
 	return({ name, value });
 }
 
-/**
- * Test data for attribute operations
- */
 const TEST_ATTRIBUTES = [
 	attr('firstName', 'John'),
 	attr('lastName', 'Doe'),
@@ -34,45 +32,69 @@ const TEST_ATTRIBUTES = [
 	})
 ];
 
-/**
- * Redaction exposure methods to verify PII is never leaked
- */
-const REDACTION_METHODS: {
-	name: string;
-	expose: (store: PIIStore) => string;
-	expected: string;
-}[] = [
-	{ name: 'toString()', expose: (s) => s.toString(), expected: '[PII: REDACTED]' },
-	{ name: 'JSON.stringify()', expose: (s) => JSON.stringify(s), expected: '{"type":"PIIStore","message":"REDACTED"}' },
-	{ name: 'util.inspect()', expose: (s) => util.inspect(s), expected: '[PII: REDACTED]' },
-	{ name: 'string coercion', expose: (s) => String(s), expected: '[PII: REDACTED]' },
-	{ name: 'template literal', expose: (s) => `${s}`, expected: '[PII: REDACTED]' }
+const REDACTION_METHODS = [
+	{ name: 'toString()', expose: (s: PIIStore) => s.toString(), expected: '[PII: REDACTED]' },
+	{ name: 'JSON.stringify()', expose: (s: PIIStore) => JSON.stringify(s), expected: '{"type":"PIIStore","message":"REDACTED"}' },
+	{ name: 'util.inspect()', expose: (s: PIIStore) => util.inspect(s), expected: '[PII: REDACTED]' },
+	{ name: 'string coercion', expose: (s: PIIStore) => String(s), expected: '[PII: REDACTED]' },
+	{ name: 'template literal', expose: (s: PIIStore) => `${s}`, expected: '[PII: REDACTED]' }
 ];
 
-/**
- * Helper to create a populated store
- */
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function createStore(): PIIStore {
+	return(new PIIStore(testAccounts.subject));
+}
+
 function createPopulatedStore(): PIIStore {
-	const store = new PIIStore();
+	const store = createStore();
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		store.setAttribute(name, value);
 	}
-
 	return(store);
 }
 
-test('PIIStore: setAttribute and run', function() {
-	const store = new PIIStore();
+/**
+ * Get decrypted value from store
+ */
+async function getValue<K extends PIIAttributeNames>(
+	store: PIIStore,
+	name: K
+): Promise<CertificateAttributeValue<K>> {
+	return(await (await store.toSensitiveAttribute(name)).getValue());
+}
+
+/**
+ * Create a certificate builder for the subject
+ */
+function createBuilder(): InstanceType<typeof Certificate.Builder> {
+	const subjectNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(
+		testAccounts.subject.publicKeyString.get()
+	);
+	return(new Certificate.Builder({
+		issuer: testAccounts.issuer.assertAccount(),
+		subject: subjectNoPrivate.assertAccount(),
+		validFrom: new Date(),
+		validTo: new Date(Date.now() + 86400000)
+	}));
+}
+
+// ============================================================================
+// Tests: Basic Operations
+// ============================================================================
+
+test('setAttribute and toSensitiveAttribute round-trip', async function() {
+	const store = createStore();
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		store.setAttribute(name, value);
-		store.run([name], function(v) {
-			expect(v).toEqual(value);
-		});
+		expect(await getValue(store, name)).toEqual(value);
 	}
 });
 
-test('PIIStore: hasAttribute', function() {
-	const store = new PIIStore();
+test('hasAttribute tracks set attributes', function() {
+	const store = createStore();
 	for (const { name, value } of TEST_ATTRIBUTES) {
 		expect(store.hasAttribute(name)).toBe(false);
 		store.setAttribute(name, value);
@@ -80,8 +102,8 @@ test('PIIStore: hasAttribute', function() {
 	}
 });
 
-test('PIIStore: getAttributeNames', function() {
-	const store = new PIIStore();
+test('getAttributeNames returns set attribute names in order', function() {
+	const store = createStore();
 	expect(store.getAttributeNames()).toEqual([]);
 
 	const expectedNames: PIIAttributeNames[] = [];
@@ -92,101 +114,110 @@ test('PIIStore: getAttributeNames', function() {
 	}
 });
 
-test('PIIStore: run throws for missing attributes', function() {
-	const store = new PIIStore();
+test('toSensitiveAttribute throws PIIAttributeNotFoundError for missing', async function() {
+	const store = createStore();
 	for (const { name } of TEST_ATTRIBUTES) {
-		expect(function() { store.run([name], function() {}); }).toThrowError(PIIAttributeNotFoundError);
+		await expect(store.toSensitiveAttribute(name)).rejects.toThrowError(PIIAttributeNotFoundError);
 	}
 });
 
-test('PIIStore: setAttribute overwrites existing values', function() {
-	const store = new PIIStore();
-
+test('setAttribute overwrites existing values', async function() {
+	const store = createStore();
 	store.setAttribute('firstName', 'John');
-	store.run(['firstName'], function(v) { expect(v).toBe('John'); });
+	expect(await getValue(store, 'firstName')).toBe('John');
 
 	store.setAttribute('firstName', 'Jane');
-	store.run(['firstName'], function(v) { expect(v).toBe('Jane'); });
+	expect(await getValue(store, 'firstName')).toBe('Jane');
 	expect(store.getAttributeNames()).toEqual(['firstName']);
 });
 
-test('PIIStore: run with multiple attributes', function() {
-	const store = createPopulatedStore();
+// ============================================================================
+// Tests: Redaction
+// ============================================================================
 
-	store.run(['firstName', 'lastName'], function(first, last) {
-		expect(first).toBe('John');
-		expect(last).toBe('Doe');
-	});
-
-	store.run(['email', 'phoneNumber', 'dateOfBirth'], function(email, phone, dob) {
-		expect(email).toBe('john.doe@example.com');
-		expect(phone).toBe('+1-555-123-4567');
-		expect(dob).toEqual(new Date('1990-01-15'));
-	});
+test('toJSON returns redacted object', function() {
+	expect(createPopulatedStore().toJSON()).toEqual({ type: 'PIIStore', message: 'REDACTED' });
 });
 
-test('PIIStore: toJSON returns redacted object', function() {
-	const store = createPopulatedStore();
-	expect(store.toJSON()).toEqual({ type: 'PIIStore', message: 'REDACTED' });
-});
-
-test('PIIStore: redaction prevents PII exposure', function() {
+test('redaction prevents PII exposure', function() {
 	const store = createPopulatedStore();
 	for (const { name, expose, expected } of REDACTION_METHODS) {
 		const result = expose(store);
-		expect(result, `${name} should return redacted value`).toBe(expected);
+		expect(result, name).toBe(expected);
 
-		// Verify no PII values leaked
 		for (const { value } of TEST_ATTRIBUTES) {
 			if (typeof value === 'string') {
-				expect(result, `${name} should not contain "${value}"`).not.toContain(value);
+				expect(result, `${name} leaked "${value}"`).not.toContain(value);
 			}
 		}
 	}
 });
 
-test('PIIStore.fromCertificate: extracts attributes from certificate', async function() {
+// ============================================================================
+// Tests: Certificate Integration
+// ============================================================================
+
+test('fromCertificate extracts all attributes', async function() {
 	const { certificateWithKey, subjectKey } = await createTestCertificate();
-
 	const store = await PIIStore.fromCertificate(certificateWithKey, subjectKey);
-	store.run(['fullName'], function(v) { expect(v).toBe(testAttributeValues.fullName); });
-	store.run(['email'], function(v) { expect(v).toBe(testAttributeValues.email); });
-	store.run(['phoneNumber'], function(v) { expect(v).toBe(testAttributeValues.phoneNumber); });
-	store.run(['dateOfBirth'], function(v) { expect(v).toEqual(testAttributeValues.dateOfBirth); });
-	store.run(['address'], function(v) { expect(v).toEqual(testAttributeValues.address); });
-	store.run(['entityType'], function(v) { expect(v).toEqual(testAttributeValues.entityType); });
 
-	// Verify redaction still works
+	const expectedAttrs: [PIIAttributeNames, unknown][] = [
+		['fullName', testAttributeValues.fullName],
+		['email', testAttributeValues.email],
+		['phoneNumber', testAttributeValues.phoneNumber],
+		['dateOfBirth', testAttributeValues.dateOfBirth],
+		['address', testAttributeValues.address],
+		['entityType', testAttributeValues.entityType]
+	];
+
+	for (const [name, expected] of expectedAttrs) {
+		expect(await getValue(store, name), name).toEqual(expected);
+	}
+
 	expect(store.toString()).toBe('[PII: REDACTED]');
 });
 
-test('PIIStore round-trip: toCertificateBuilder <-> fromCertificate', async function() {
-	const issuerAccount = testAccounts.issuer;
-	const subjectKey = testAccounts.subject;
-	const subjectAccountNoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(
-		subjectKey.publicKeyString.get()
-	);
+test('toCertificateBuilder <-> fromCertificate round-trip', async function() {
+	const originalStore = createPopulatedStore();
 
-	// Create PIIStore with test attributes
-	const originalStore = new PIIStore();
-	for (const { name, value } of TEST_ATTRIBUTES) {
-		originalStore.setAttribute(name, value);
-	}
-
-	// Build certificate using toCertificateBuilder
 	const certificate = await originalStore
-		.toCertificateBuilder(new Certificate.Builder({
-			issuer: issuerAccount.assertAccount(),
-			subject: subjectAccountNoPrivate.assertAccount(),
-			validFrom: new Date(),
-			validTo: new Date(Date.now() + 1000 * 60 * 60 * 24)
-		}))
+		.toCertificateBuilder(createBuilder())
 		.build({ serial: 1 });
 
-	// Create a certificate with the private key
-	const certificateWithKey = new Certificate(certificate, { subjectKey });
-	const extractedStore = await PIIStore.fromCertificate(certificateWithKey, subjectKey);
+	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
+	const extractedStore = await PIIStore.fromCertificate(certWithKey, testAccounts.subject);
 	for (const { name, value } of TEST_ATTRIBUTES) {
-		extractedStore.run([name], function(v) { expect(v).toEqual(value); });
+		expect(await getValue(extractedStore, name)).toEqual(value);
 	}
+});
+
+test('toSensitiveAttribute creates encrypted attribute with correct public key', async function() {
+	const store = createStore();
+	store.setAttribute('email', 'test@example.com');
+
+	const sensitiveAttr = await store.toSensitiveAttribute('email');
+	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
+	expect(await sensitiveAttr.getValue()).toBe('test@example.com');
+});
+
+test('setSensitiveAttribute accepts pre-built attribute', async function() {
+	const store = createStore();
+	store.setAttribute('email', 'secure@example.com');
+
+	const builder = createBuilder();
+	builder.setSensitiveAttribute('email', await store.toSensitiveAttribute('email'));
+	const certificate = await builder.build({ serial: 1 });
+
+	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
+	expect(await certWithKey.getAttributeValue('email')).toBe('secure@example.com');
+});
+
+test('setSensitiveAttribute rejects wrong subject key', async function() {
+	const wrongKeyStore = new PIIStore(testAccounts.other);
+	wrongKeyStore.setAttribute('email', 'wrong@example.com');
+
+	const wrongKeyAttr = await wrongKeyStore.toSensitiveAttribute('email');
+	expect(function() {
+		createBuilder().setSensitiveAttribute('email', wrongKeyAttr);
+	}).toThrowError('SensitiveAttribute was encrypted for a different subject');
 });

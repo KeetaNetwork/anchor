@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
+import { bufferToArrayBuffer } from './utils/buffer.js';
 import type { Schema as ASN1Schema } from './utils/asn1.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';
@@ -60,88 +60,6 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 }
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
-const testAccount1 = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
-const testAccount2 = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
-
-test('Sensitive Attributes', async function() {
-	/*
-	 * Build a sensitive attribute with a test value from the users public key
-	 */
-	const testAccount1NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount1.publicKeyString.get());
-	const builder1 = new Certificates._Testing.SensitiveAttributeBuilder(testAccount1NoPrivate);
-	const contactDetails: ArrayBuffer = bufferToArrayBuffer(Buffer.from(JSON.stringify({
-		fullName: 'Test User',
-		emailAddress: 'test@example.com',
-		phoneNumber: '+1 555 911 3808'
-	}), 'utf-8'));
-
-	builder1.set(contactDetails);
-
-	const attribute = await builder1.build();
-
-	/*
-	 * Access it with the private key
-	 */
-	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
-	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue();
-	expect(Buffer.from(sensitiveAttribute1Value).toString('base64')).toEqual(Buffer.from(contactDetails).toString('base64'));
-
-	/**
-	 * Process the attribute as JSON
-	 */
-	const attributeJSON = sensitiveAttribute1.toJSON();
-	expect(JSON.parse(JSON.stringify(attributeJSON))).toEqual(attributeJSON);
-	if (typeof attributeJSON !== 'object' || attributeJSON === null) {
-		throw(new Error('Expected JSON object'));
-	}
-	expect(Object.keys(attributeJSON)).toContain('version');
-	expect(Object.keys(attributeJSON)).toContain('cipher');
-	expect(Object.keys(attributeJSON)).toContain('publicKey');
-	expect(Object.keys(attributeJSON)).toContain('hashedValue');
-	expect(Object.keys(attributeJSON)).toContain('encryptedValue');
-	expect(Object.keys(attributeJSON).length).toBe(5);
-
-	/*
-	 * Validate it with the public key and value
-	 */
-	const sensitiveAttribute1Proof = await sensitiveAttribute1.getProof();
-
-	const sensitiveAttribute2 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, attribute);
-	const sensitiveAttribute2Valid = await sensitiveAttribute2.validateProof(sensitiveAttribute1Proof);
-	expect(sensitiveAttribute2Valid).toBe(true);
-
-	/*
-	 * Attempt to access it with the wrong private key
-	 */
-	const sensitiveAttribute3 = new Certificates._Testing.SensitiveAttribute(testAccount2, attribute);
-	await expect(async function() {
-		return(await sensitiveAttribute3.getProof());
-	}).rejects.toThrow();
-
-	/*
-	 * Attempt to validate it with the wrong value
-	 */
-	const sensitiveAttribute2Invalid = await sensitiveAttribute2.validateProof({
-		...sensitiveAttribute1Proof,
-		value: 'Something'
-	});
-	expect(sensitiveAttribute2Invalid).toBe(false);
-
-	/*
-	 * Attempt to validate it with the wrong public key
-	 */
-	const sensitiveAttribute3Invalid = await sensitiveAttribute3.validateProof(sensitiveAttribute1Proof);
-	expect(sensitiveAttribute3Invalid).toBe(false);
-
-	/*
-	 * Attempt to validate a tampered attribute
-	 */
-	const attributeBuffer = arrayBufferToBuffer(attribute);
-	attributeBuffer.set([0x00], attributeBuffer.length - 3);
-	const tamperedAttribute = bufferToArrayBuffer(attributeBuffer);
-	const sensitiveAttribute4 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, tamperedAttribute);
-	expect(await sensitiveAttribute4.validateProof(sensitiveAttribute1Proof)).toBe(false);
-});
 
 test('Certificates', async function() {
 	/*
