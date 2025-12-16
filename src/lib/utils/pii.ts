@@ -137,25 +137,13 @@ export class PIIStore {
 	/**
 	 * Create a SensitiveAttribute
 	 *
-	 * @param name - The known attribute name to convert
+	 * @param name - The attribute name to convert
 	 * @param subjectKey - The account to encrypt the attribute for
 	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
 	 * @throws PIIAttributeNotFoundError if the attribute is not set
 	 */
-	async toSensitiveAttribute<K extends PIIAttributeNames>(
-		name: K,
-		subjectKey: KeetaNetAccount
-	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
-	/**
-	 * Create a SensitiveAttribute
-	 *
-	 * @param name - The external attribute name to convert
-	 * @param subjectKey - The account to encrypt the attribute for
-	 * @returns A SensitiveAttribute containing the encrypted value
-	 *
-	 * @throws PIIAttributeNotFoundError if the attribute is not set
-	 */
+	async toSensitiveAttribute<K extends PIIAttributeNames>(name: K,subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
 	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
 	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
 		if (!this.#attributes.has(name)) {
