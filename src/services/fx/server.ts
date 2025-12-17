@@ -188,10 +188,8 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 		if (!account.isAccount() && !account.isStorage()) {
 			throw(new Error('FX Account should be an Account or Storage Account'))
 		}
-	} else {
-		if (signer === null) {
-			throw(new Error('Either account or signer must be provided'));
-		}
+	} else if (signer === null) {
+		throw(new Error('Either account or signer must be provided'));
 	}
 
 	return({
@@ -267,14 +265,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 						error: `Mismatched account for FX request and configured account (no matching account found)`
 					});
 				}
-			} else {
-				if (!checkAccount.comparePublicKey(entry.request.account)) {
-					return({
-						status: 'failed_permanently',
-						output: null,
-						error: `Mismatched account for FX request and configured account (single account not matched)`
-					});
-				}
+			} else if (!checkAccount.comparePublicKey(entry.request.account)) {
+				return({
+					status: 'failed_permanently',
+					output: null,
+					error: `Mismatched account for FX request and configured account (single account not matched)`
+				});
 			}
 
 			userClient = new KeetaNet.UserClient({
@@ -414,8 +410,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 }
 
 class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
-	private serverConfig: KeetaAnchorFXServerConfig;
-	private accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
+	private readonly serverConfig: KeetaAnchorFXServerConfig;
+	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
 	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>; } = {};
 
 	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] & { serverConfig: KeetaAnchorFXServerConfig; accounts: InstanceType<typeof KeetaNet.lib.Account.Set>; }) {
