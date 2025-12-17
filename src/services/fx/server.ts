@@ -224,7 +224,7 @@ type KeetaFXAnchorQueueStage1Response = {
 	/**
 	 * All the blocks for the given swap request
 	 */
-	blocks?: string[];
+	blocks: string[];
 	/**
 	 * The hash of one of the blocks submitted
 	 */
@@ -285,10 +285,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* Check for the block already being on the network, if so we can mark this job as completed */
 		const blockExists = await userClient.block(block.hash);
 		if (blockExists !== null) {
+			const existingOutput = entry.output;
+			const blocks = existingOutput?.blocks ?? [Buffer.from(block.toBytes()).toString('base64')];
+
 			return({
 				status: 'completed',
 				output: {
-					blockhash: block.hash.toString()
+					blockhash: block.hash.toString(),
+					blocks: blocks
 				}
 			});
 		}
@@ -356,7 +360,10 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		return({
 			status: 'pending',
 			output: {
-				blockhash: block.hash.toString()
+				blockhash: block.hash.toString(),
+				blocks: swapBlocks.map(function(block) {
+					return(Buffer.from(block.toBytes()).toString('base64'));
+				})
 			}
 		});
 	}
