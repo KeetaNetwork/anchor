@@ -254,7 +254,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		super(config);
 
 		this.serverConfig = config.serverConfig;
-		this.processorAborted = this.processorStuck;
+		this.processorAborted = this.processorStuck.bind(this);
 	}
 
 	/**
