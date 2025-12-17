@@ -164,24 +164,44 @@ test('toSensitiveAttribute handles external attributes via JSON serialization', 
 	expect(decrypted).toEqual(externalData);
 });
 
-test('exposeAttribute returns external attribute values', function() {
+test('run provides scoped access to external attributes', function() {
 	const store = createStore();
 	const externalData = { provider: 'test', score: 42 };
 	store.setAttribute('externalProvider.result', externalData);
-	expect(store.exposeAttribute('externalProvider.result')).toEqual(externalData);
+
+	const result = store.run(function(get) {
+		return(get<typeof externalData>('externalProvider.result'));
+	});
+	expect(result).toEqual(externalData);
 });
 
-test('exposeAttribute throws PIIError for missing attributes', function() {
+test('run provides scoped access to known attributes', function() {
 	const store = createStore();
-	const error = expectPIIError(function() { return(store.exposeAttribute('nonexistent')); }, 'PII_ATTRIBUTE_NOT_FOUND');
+	store.setAttribute('firstName', 'John');
+	store.setAttribute('lastName', 'Doe');
+
+	const fullName = store.run(function(get) {
+		return(`${get<string>('firstName')} ${get<string>('lastName')}`);
+	});
+	expect(fullName).toBe('John Doe');
+});
+
+test('run throws PIIError for missing attributes', function() {
+	const store = createStore();
+	const error = expectPIIError(function() {
+		store.run(function(get) { return(get('nonexistent')); });
+	}, 'PII_ATTRIBUTE_NOT_FOUND');
 	expect(error.attributeName).toBe('nonexistent');
 });
 
-test('exposeAttribute throws PIIError for known certificate attributes', function() {
+test('run returns callback result', function() {
 	const store = createStore();
-	store.setAttribute('firstName', 'John');
-	const error = expectPIIError(function() { return(store.exposeAttribute('firstName')); }, 'PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED');
-	expect(error.attributeName).toBe('firstName');
+	store.setAttribute('count', 5);
+
+	const doubled = store.run(function(get) {
+		return(get<number>('count') * 2);
+	});
+	expect(doubled).toBe(10);
 });
 
 // ============================================================================

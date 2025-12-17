@@ -21,7 +21,7 @@ const REDACTED = '[PII: REDACTED]';
 /**
  * PII error codes
  */
-export type PIIErrorCode = 'PII_ATTRIBUTE_NOT_FOUND' | 'PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED';
+export type PIIErrorCode = 'PII_ATTRIBUTE_NOT_FOUND';
 
 /**
  * Error class for PII-related errors
@@ -145,26 +145,27 @@ export class PIIStore {
 	}
 
 	/**
-	 * Expose an external (non-certificate) attribute value
+	 * Execute a function with scoped access to PII values
 	 *
-	 * Known certificate attributes cannot be exposed directly - use toSensitiveAttribute instead.
+	 * Provides controlled access to all attribute values.
 	 *
-	 * @param name - The external attribute name
-	 * @returns The raw value
+	 * @param fn - Function that receives a getter for accessing attribute values
+	 * @returns The return value of the callback function
 	 *
-	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if the attribute is not set
-	 * @throws PIIError with PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED if attempting to expose a known certificate attribute
+	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if accessing a missing attribute
 	 */
-	exposeAttribute<T>(name: string): T {
-		if (this.#isKnownAttribute(name)) {
-			throw(new PIIError('PII_KNOWN_ATTRIBUTE_EXPOSURE_DENIED', name, `Cannot expose known attribute '${name}'`));
-		}
-		if (!this.#attributes.has(name)) {
-			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
-		}
+	run<R>(fn: (get: <T>(name: string) => T) => R): R {
+		const attributes = this.#attributes;
+		const get = function<T>(name: string): T {
+			if (!attributes.has(name)) {
+				throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
+			}
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(this.#attributes.get(name)?.value as T);
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			return(attributes.get(name)?.value as T);
+		};
+
+		return(fn(get));
 	}
 
 	/**
