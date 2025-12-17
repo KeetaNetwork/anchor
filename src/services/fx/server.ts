@@ -28,6 +28,16 @@ import type { JSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
 import * as typia from 'typia';
 
+/**
+ * Enable additional runtime "paranoid" checks in the FX server.
+ *
+ * This may have a small performance impact but increases safety
+ * by ensuring that the accounts used in quotes are actually
+ * configured in the server.
+ *
+ * During the transition to multiple accounts this may help catch
+ * misconfigurations so it is enabled by default for now.
+ */
 const PARANOID = true;
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -230,16 +240,43 @@ type KeetaFXAnchorQueueStage1Response = {
 	 */
 	blockhash: string;
 };
+
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
 	protected sequential = true;
+
+	/**
+	 * Timeout for processing a single job -- if exceeded the job is marked as aborted
+	 */
+	protected processTimeout: number = 60 * 1000;
 
 	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] & { serverConfig: KeetaAnchorFXServerConfig; }) {
 		super(config);
 
 		this.serverConfig = config.serverConfig;
+		this.processorAborted = this.processorStuck;
 	}
 
+	/**
+	 * Handles both stuck (no status update after a long period) and
+	 * aborted (timeout while processing an entry) states.
+	 *
+	 * We just put the job back into pending because the processor
+	 * will check the network state again.
+	 */
+	protected async processorStuck(entry: Parameters<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>>[0]): ReturnType<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>> {
+		return({
+			status: 'pending',
+			output: entry.output
+		});
+	}
+
+	/**
+	 * Process the entry, attempting to submit the swap block(s)
+	 * to the network.  Verifies the block can be submitted before
+	 * attempting submission.  Also verifies if the block is already
+	 * on the network and marks the job as completed if so.
+	 */
 	protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']>[0]): ReturnType<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']> {
 		const { block, expected, request } = entry.request;
 		const expectedToken = expected.token;
