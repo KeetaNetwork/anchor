@@ -1,5 +1,5 @@
 import type * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { CertificateAttributeOIDDB, type CertificateAttributeValueMap, type CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, type CertificateAttributeValueMap } from '../../services/kyc/iso20022.generated.js';
 import type { CertificateBuilder, Certificate } from '../certificates.js';
 import { SensitiveAttribute, SensitiveAttributeBuilder } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
@@ -69,17 +69,9 @@ type StoredAttribute = {
  * It encapsulates sensitive data and prevents accidental logging or serialization
  * by overriding common output methods to return redacted placeholders.
  *
- * @example
- * ```typescript
- * const store = new PIIStore();
- * store.setAttribute('firstName', 'John');
- * store.setAttribute('lastName', 'Doe');
- *
- * console.log(store); // '[PIIStore: REDACTED]'
- * JSON.stringify(store); // '{"type":"PIIStore","message":"REDACTED"}'
- * ```
+ * @typeParam T - Attribute type map
  */
-export class PIIStore {
+export class PIIStore<T extends CertificateAttributeValueMap = CertificateAttributeValueMap> {
 	readonly #attributes = new Map<string, StoredAttribute>();
 
 	constructor() {
@@ -118,14 +110,14 @@ export class PIIStore {
 	}
 
 	/**
-	 * Set a known certificate attribute
+	 * Set an attribute
 	 *
 	 * @param name - The attribute name
 	 * @param value - The value to store
 	 * @param sensitive - Whether the attribute is sensitive (default: true)
 	 */
-	setAttribute<K extends PIIAttributeNames>(name: K, value: CertificateAttributeValue<K>, sensitive?: boolean): void;
-	setAttribute<T>(name: string, value: T, sensitive?: boolean): void;
+	setAttribute<K extends keyof T & string>(name: K, value: T[K], sensitive?: boolean): void;
+	setAttribute(name: string, value: unknown, sensitive?: boolean): void;
 	setAttribute(name: string, value: unknown, sensitive = true): void {
 		this.#attributes.set(name, { value, sensitive });
 	}
@@ -133,7 +125,7 @@ export class PIIStore {
 	/**
 	 * Check if an attribute exists in the store
 	 */
-	hasAttribute(name: string): boolean {
+	hasAttribute(name: keyof T & string | string): boolean {
 		return(this.#attributes.has(name));
 	}
 
@@ -154,15 +146,15 @@ export class PIIStore {
 	 *
 	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if accessing a missing attribute
 	 */
-	run<R>(fn: (get: <T>(name: string) => T) => R): R {
+	run<R>(fn: (get: <K extends keyof T & string>(name: K) => T[K]) => R): R {
 		const attributes = this.#attributes;
-		const get = <T>(name: string): T => {
+		const get = <K extends keyof T & string>(name: K): T[K] => {
 			if (!this.hasAttribute(name)) {
 				throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
 			}
 
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			return(attributes.get(name)?.value as T);
+			return(attributes.get(name)?.value as T[K]);
 		};
 
 		return(fn(get));
@@ -177,8 +169,8 @@ export class PIIStore {
 	 *
 	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if the attribute is not set
 	 */
-	async toSensitiveAttribute<K extends PIIAttributeNames>(name: K,subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
-	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
+	async toSensitiveAttribute<K extends keyof T & PIIAttributeNames>(name: K, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T[K]>>;
+	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>>;
 	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
 		if (!this.hasAttribute(name)) {
 			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
@@ -198,11 +190,16 @@ export class PIIStore {
 			builder.set(name, storedValue);
 			return(await builder.build());
 		} else {
-			// External attributes are JSON-serialized
+			// External attributes are JSON-serialized with a JSON decoder
 			const jsonBytes = Buffer.from(JSON.stringify(storedValue), 'utf-8');
+			const jsonDecoder = function(data: Buffer | ArrayBuffer): unknown {
+				const bytes = data instanceof ArrayBuffer ? Buffer.from(data) : data;
+				return(JSON.parse(bytes.toString('utf-8')));
+			};
+
 			return(await new SensitiveAttributeBuilder(subjectKey)
 				.set(jsonBytes)
-				.build());
+				.build(jsonDecoder));
 		}
 	}
 

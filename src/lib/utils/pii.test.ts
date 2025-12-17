@@ -1,12 +1,20 @@
 import { test, expect } from 'vitest';
 import * as util from 'util';
-import { Buffer } from './buffer.js';
 import { PIIStore, PIIError } from './pii.js';
 import type { PIIAttributeNames } from './pii.js';
-import type { CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
+import type { CertificateAttributeValue, CertificateAttributeValueMap } from '../../services/kyc/iso20022.generated.js';
 import { createTestCertificate, testAttributeValues, testAccounts } from './tests/certificates.js';
 import { Certificate } from '../certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+
+/**
+ * Extended attribute map for testing external attributes
+ */
+type ExtendedAttributes = CertificateAttributeValueMap & {
+	'externalProvider.result': { provider: string; score: number; verified?: boolean };
+	'count': number;
+	'nonexistent': unknown;
+};
 
 // ============================================================================
 // Test Data
@@ -46,6 +54,10 @@ const REDACTION_METHODS = [
 
 function createStore(): PIIStore {
 	return(new PIIStore());
+}
+
+function createExtendedStore(): PIIStore<ExtendedAttributes> {
+	return(new PIIStore<ExtendedAttributes>());
 }
 
 function createPopulatedStore(): PIIStore {
@@ -151,26 +163,24 @@ test('setAttribute overwrites existing values', async function() {
 });
 
 test('toSensitiveAttribute handles external attributes via JSON serialization', async function() {
-	const store = createStore();
+	const store = createExtendedStore();
 	const externalData = { provider: 'test', score: 42, verified: true };
 	store.setAttribute('externalProvider.result', externalData);
 
-	const sensitiveAttr = await store.toSensitiveAttribute<ArrayBuffer>('externalProvider.result', testAccounts.subject);
+	const sensitiveAttr = await store.toSensitiveAttribute('externalProvider.result', testAccounts.subject);
 	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
 
-	const rawBytes = await sensitiveAttr.getValue();
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-	const decrypted: typeof externalData = JSON.parse(Buffer.from(rawBytes).toString('utf-8'));
+	const decrypted = await sensitiveAttr.getValue();
 	expect(decrypted).toEqual(externalData);
 });
 
 test('run provides scoped access to external attributes', function() {
-	const store = createStore();
+	const store = createExtendedStore();
 	const externalData = { provider: 'test', score: 42 };
 	store.setAttribute('externalProvider.result', externalData);
 
 	const result = store.run(function(get) {
-		return(get<typeof externalData>('externalProvider.result'));
+		return(get('externalProvider.result'));
 	});
 	expect(result).toEqual(externalData);
 });
@@ -181,13 +191,13 @@ test('run provides scoped access to known attributes', function() {
 	store.setAttribute('lastName', 'Doe');
 
 	const fullName = store.run(function(get) {
-		return(`${get<string>('firstName')} ${get<string>('lastName')}`);
+		return(`${get('firstName')} ${get('lastName')}`);
 	});
 	expect(fullName).toBe('John Doe');
 });
 
 test('run throws PIIError for missing attributes', function() {
-	const store = createStore();
+	const store = createExtendedStore();
 	const error = expectPIIError(function() {
 		store.run(function(get) { return(get('nonexistent')); });
 	}, 'PII_ATTRIBUTE_NOT_FOUND');
@@ -195,11 +205,11 @@ test('run throws PIIError for missing attributes', function() {
 });
 
 test('run returns callback result', function() {
-	const store = createStore();
+	const store = createExtendedStore();
 	store.setAttribute('count', 5);
 
 	const doubled = store.run(function(get) {
-		return(get<number>('count') * 2);
+		return(get('count') * 2);
 	});
 	expect(doubled).toBe(10);
 });
