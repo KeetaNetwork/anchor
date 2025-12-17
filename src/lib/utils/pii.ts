@@ -156,8 +156,8 @@ export class PIIStore {
 	 */
 	run<R>(fn: (get: <T>(name: string) => T) => R): R {
 		const attributes = this.#attributes;
-		const get = function<T>(name: string): T {
-			if (!attributes.has(name)) {
+		const get = <T>(name: string): T => {
+			if (!this.hasAttribute(name)) {
 				throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
 			}
 
@@ -180,7 +180,7 @@ export class PIIStore {
 	async toSensitiveAttribute<K extends PIIAttributeNames>(name: K,subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
 	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
 	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
-		if (!this.#attributes.has(name)) {
+		if (!this.hasAttribute(name)) {
 			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
 		}
 
