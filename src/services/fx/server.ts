@@ -23,10 +23,12 @@ import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
-import { KeetaAnchorQueuePipelineBasic } from '../../lib/queue/pipeline.js';
+import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
 import * as typia from 'typia';
+
+const PARANOID = true;
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -35,17 +37,28 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	homepage?: string | (() => Promise<string> | string);
 
 	/**
-	 * The account to use for performing swaps for a given pair
+	 * All accounts that may be used by the server to perform swaps
 	 *
-	 * This may be either a function or a KeetaNet Account instance.
+	 * Temporary compatibility: If this is not provided, the single
+	 * `account` property will be used to create a set of one account.
 	 */
-	account: KeetaNetAccount | KeetaNetStorageAccount | ((request: ConversionInputCanonicalJSON) => Promise<KeetaNetAccount | KeetaNetStorageAccount> | KeetaNetAccount | KeetaNetStorageAccount);
+	accounts?: InstanceType<typeof KeetaNet.lib.Account.Set>;
+
+	/**
+	 * Account to use to perform transactions
+	 *
+	 * @deprecated Use `signer` and `accounts` instead
+	 */
+	account?: InstanceType<typeof KeetaNet.lib.Account> | undefined;
+
 	/**
 	 * Account which can be used to sign transactions
-	 * for the account above (if not supplied the
-	 * account will be used).
+	 * for the accounts above
 	 *
 	 * This may be either a function or a KeetaNet Account instance.
+	 *
+	 * Temporary compatibility: If not provided, the `account` property
+	 * will be used as the signer.
 	 */
 	signer?: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonicalJSON) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
 
@@ -68,6 +81,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * This is used to handle quotes and estimates
 		 */
 		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
+
 		/**
 		 * Optional callback to validate a quote before completing an exchange
 		 *
@@ -78,23 +92,25 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * @returns true to accept the quote and proceed with the exchange, false to reject it
 		 */
 		validateQuote?: (quote: KeetaFXAnchorQuoteJSON) => Promise<boolean> | boolean;
+
+	};
+
+	/**
+	 * Storage driver to use for stateful operation and managing queues
+	 *
+	 * You are responsible for running and maintaining the queue processor unless
+	 * you enable auto-run below.
+	 */
+	storage?: {
 		/**
-		 * Storage driver to use for stateful operation and managing queues
-		 *
-		 * You are responsible for running and maintaining the queue processor unless
-		 * you enable auto-run below.
+		 * The storage driver or queue runner to use to serialize
+		 * and batch requests
 		 */
-		storage?: {
-			/**
-			 * The storage driver or queue runner to use to serialize
-			 * and batch requests
-			 */
-			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
-			/**
-			 * If enabled the server will automatically run the queue processor
-			 */
-			autoRun?: boolean;
-		};
+		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
+		/**
+		 * If enabled the server will automatically run the queue processor
+		 */
+		autoRun?: boolean;
 	};
 
 	/**
@@ -149,40 +165,58 @@ async function verifySignedData(signedBy: Signing.VerifableAccount, quote: Keeta
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
 }
 
-async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount; }> {
-	const account = KeetaNet.lib.Account.isInstance(config.account) ? config.account : await config.account(request);
+async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount | null; }> {
+	let account: KeetaNetAccount | KeetaNetStorageAccount | null;
+	// eslint-disable-next-line @typescript-eslint/no-deprecated
+	if (config.account !== undefined) {
+		const rateFee = await config.fx.getConversionRateAndFee(request);
+		account = rateFee.account;
+	} else {
+		account = null;
+	}
+
 	let signer: Signing.SignableAccount | null = null;
 	if (config.signer !== undefined) {
 		signer = (KeetaNet.lib.Account.isInstance(config.signer) ? config.signer : await config.signer(request)).assertAccount();
 	}
 
-	if (signer === null) {
-		signer = account.assertAccount();
-	}
+	if (account !== null) {
+		if (signer === null) {
+			signer = account.assertAccount();
+		}
 
-	if (!account.isAccount() && !account.isStorage()) {
-		throw(new Error('FX Account should be an Account or Storage Account'))
+		if (!account.isAccount() && !account.isStorage()) {
+			throw(new Error('FX Account should be an Account or Storage Account'))
+		}
+	} else {
+		if (signer === null) {
+			throw(new Error('Either account or signer must be provided'));
+		}
 	}
 
 	return({
-		signer: signer,
-		account: account
+		account: account,
+		signer: signer
 	});
 }
 
 /* QUEUE PROCESSOR PIPELINE */
 type KeetaFXAnchorQueueStage1Request = {
+	account: KeetaNetAccount;
 	block: Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['block'];
 	request: ConversionInputCanonicalJSON;
 	expected: Required<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>;
 };
 type KeetaFXAnchorQueueStage1RequestJSON = {
+	/** Version of the request format */
 	version: 1;
-	/* Base64 encoded block from the user */
+	/** FX Anchor Account performing swap */
+	account: string;
+	/** Base64 encoded block from the user */
 	block: string;
-	/* Original request */
+	/** Original request */
 	request: ConversionInputCanonicalJSON;
-	/* Expected exchange details for verification */
+	/** Expected exchange details for verification */
 	expected: {
 		token: string;
 		amount: string;
@@ -219,13 +253,35 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		if (KeetaNet.UserClient.isInstance(config.client)) {
 			userClient = config.client;
 		} else {
-			const { account, signer } = await requestToAccounts(config, request);
+			const { signer, account: checkAccount } = await requestToAccounts(config, request);
+
+			if (checkAccount === null) {
+				if (this.serverConfig.accounts === undefined) {
+					throw(new Error('No accounts configured for FX server'));
+				}
+
+				if (!this.serverConfig.accounts.has(entry.request.account)) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: `Mismatched account for FX request and configured account (no matching account found)`
+					});
+				}
+			} else {
+				if (!checkAccount.comparePublicKey(entry.request.account)) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: `Mismatched account for FX request and configured account (single account not matched)`
+					});
+				}
+			}
 
 			userClient = new KeetaNet.UserClient({
 				client: config.client.client,
 				network: config.client.network,
 				networkAlias: config.client.networkAlias,
-				account: account,
+				account: entry.request.account,
 				signer: signer
 			});
 		}
@@ -312,6 +368,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	protected encodeRequest(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
 		const retval: KeetaFXAnchorQueueStage1RequestJSON = {
 			version: 1,
+			account: request.account.publicKeyString.get(),
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
@@ -332,7 +389,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const reqJSON = assertKeetaFXAnchorQueueStage1RequestJSON(request);
 
+		if (reqJSON.version !== 1) {
+			throw(new Error(`Unsupported KeetaFXAnchorQueueStage1Request version ${reqJSON.version}`));
+		}
+
 		const retval: KeetaFXAnchorQueueStage1Request = {
+			account: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.account),
 			block: new KeetaNet.lib.Block(reqJSON.block),
 			request: reqJSON.request,
 			expected: {
@@ -351,32 +413,127 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 }
 
-class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineBasic<[KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response]> {
-	protected readonly stages: readonly [{
-		name: 'process_swap_request';
-		runner: typeof KeetaFXAnchorQueuePipelineStage1;
-		args: [{
-			serverConfig: KeetaAnchorFXServerConfig;
-		}];
-	}];
+class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
+	private serverConfig: KeetaAnchorFXServerConfig;
+	private accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
+	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>; } = {};
 
-	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineBasic<[KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response]>>[0] & { serverConfig: KeetaAnchorFXServerConfig; }) {
+	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] & { serverConfig: KeetaAnchorFXServerConfig; accounts: InstanceType<typeof KeetaNet.lib.Account.Set>; }) {
 		super(options);
 
-		this.stages = [{
-			name: 'process_swap_request',
-			runner: KeetaFXAnchorQueuePipelineStage1,
-			args: [{
-				serverConfig: options.serverConfig
-			}]
-		}] as const;
+		this.serverConfig = options.serverConfig;
+		this.accounts = options.accounts;
 	}
+
+	protected async createPipeline(): Promise<void> {
+		for (const account of this.accounts) {
+			const queue = await this.baseQueue.partition(account.publicKeyAndTypeString);
+			this.queues.push(queue);
+
+			const runner = new KeetaFXAnchorQueuePipelineStage1({
+				id: `keeta-fx-anchor-runner-${account.publicKeyAndTypeString}`,
+				queue: queue,
+				logger: this.logger,
+				serverConfig: this.serverConfig
+			});
+			this.runners[account.publicKeyAndTypeString] = runner;
+		}
+	}
+
+	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaFXAnchorQueuePipelineStage1;
+	protected getStage(_ignore_stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaFXAnchorQueuePipelineStage1 | null {
+		throw(new Error('method not supported'));
+	}
+
+	async add(request: KeetaFXAnchorQueueStage1Request): ReturnType<KeetaFXAnchorQueuePipelineStage1['add']> {
+		await super.init();
+
+		const account = request.account.publicKeyAndTypeString;
+
+		const runner = this.runners[account];
+		if (runner === undefined) {
+			throw(new Error(`No queue runner for account ${account}`));
+		}
+
+		return(await runner.add(request));
+	}
+
+	async get(id: KeetaAnchorQueueRequestID): ReturnType<KeetaFXAnchorQueuePipelineStage1['get']> {
+		await super.init();
+
+		for (const account of this.accounts) {
+			const runner = this.runners[account.publicKeyAndTypeString];
+			if (runner === undefined) {
+				continue;
+			}
+
+			const entry = await runner.get(id);
+			if (entry !== null) {
+				return(entry);
+			}
+		}
+
+		return(null);
+	}
+
+	async run(options?: Parameters<KeetaFXAnchorQueuePipelineStage1['run']>[0]): ReturnType<KeetaFXAnchorQueuePipelineStage1['run']> {
+		await super.init();
+
+		let retval = false;
+		for (const account of this.accounts) {
+			const runner = this.runners[account.publicKeyAndTypeString];
+			if (runner === undefined) {
+				continue;
+			}
+
+			const more = await runner.run(options);
+			if (more) {
+				retval = true;
+			}
+		}
+
+		return(retval);
+	}
+
+	async maintain(): Promise<void> {
+		await super.init();
+
+		for (const account of this.accounts) {
+			const runner = this.runners[account.publicKeyAndTypeString];
+			if (runner === undefined) {
+				continue;
+			}
+
+			await runner.maintain();
+		}
+	}
+
+	async destroy(): Promise<void> {
+		const logger = this.methodLogger('destroy');
+
+		if (this.destroyed) {
+			return;
+		}
+		this.destroyed = true;
+
+		await super.destroy();
+
+		for (const runner of Object.values(this.runners)) {
+			try {
+				await runner.destroy();
+			} catch (error) {
+				logger?.error('Error destroying runner:', error);
+			}
+		}
+	}
+
 }
 
-export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Required<KeetaAnchorFXServerConfig> {
+export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage'> {
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly client: KeetaAnchorFXServerConfig['client'];
-	readonly account: KeetaAnchorFXServerConfig['account'];
+	readonly accounts: NonNullable<KeetaAnchorFXServerConfig['accounts']>;
+	readonly account: KeetaAnchorFXServerConfig['account'] = undefined;
 	readonly signer: NonNullable<KeetaAnchorFXServerConfig['signer']>;
 	readonly quoteSigner: KeetaAnchorFXServerConfig['quoteSigner'];
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
@@ -389,16 +546,46 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		this.homepage = config.homepage ?? '';
 		this.client = config.client;
 		this.fx = config.fx;
-		this.account = config.account;
-		this.signer = config.signer ?? config.account;
 		this.quoteSigner = config.quoteSigner;
+
+		/*
+		 * Setup the accounts
+		 */
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		if (config.account !== undefined && config.accounts === undefined) {
+			/*
+			 * Deprecated: If a single account is provided, use that
+			 * along with the signer to create the accounts set
+			 */
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
+			this.accounts = new KeetaNet.lib.Account.Set([config.account]);
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
+			this.signer = config.signer ?? config.account;
+		// eslint-disable-next-line @typescript-eslint/no-deprecated
+		} else if (config.accounts !== undefined && config.account === undefined) {
+			/*
+			 * Only allow either "account" or "accounts"+"signer" to be provided
+			 */
+			if (config.signer === undefined) {
+				throw(new Error('If "accounts" is provided, "signer" must also be provided'));
+			}
+
+			this.accounts = config.accounts;
+			this.signer = config.signer;
+		} else {
+			throw(new Error('Either "account" (and optional "signer") or "accounts" and "signer" must be provided, but not both "account" and "accounts"'));
+		}
+
+		if (this.accounts.size === 0) {
+			throw(new Error('No FX accounts provided'));
+		}
 
 		/*
 		 * If no storage driver is provided, we default to an in-memory
 		 * that we auto-run
 		 */
-		let autorun = this.fx.storage?.autoRun ?? false;
-		if (this.fx.storage === undefined) {
+		let autorun = config.storage?.autoRun ?? false;
+		if (config.storage === undefined) {
 			autorun = true;
 		}
 
@@ -407,10 +594,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		 */
 		this.pipeline = new KeetaFXAnchorQueuePipeline({
 			id: 'keeta-fx-anchor-queue-pipeline',
-			baseQueue: this.fx.storage?.queue ?? new KeetaAnchorQueueStorageDriverMemory({
+			baseQueue: config.storage?.queue ?? new KeetaAnchorQueueStorageDriverMemory({
 				id: 'keeta-fx-anchor-queue-pipeline-memory-driver',
 				logger: this.logger
 			}),
+			accounts: this.accounts,
 			logger: this.logger,
 			serverConfig: this
 		});
@@ -517,6 +705,13 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
 
+			if (PARANOID) {
+				const quoteAccount = rateAndFee.account;
+				if (!instance.accounts.has(quoteAccount)) {
+					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
+				};
+			}
+
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 				request: conversion,
 				...rateAndFee
@@ -598,6 +793,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({
+				account: KeetaNet.lib.Account.fromPublicKeyString(quote.account),
 				block: block,
 				request: quote.request,
 				expected: {
