@@ -178,7 +178,7 @@ test('run provides scoped access to known attributes', function() {
 	store.setAttribute('lastName', 'Doe');
 
 	const fullName = store.run(function(get) {
-		return(`${get<string>('firstName')} ${get<string>('lastName')}`);
+		return(`${get('firstName')} ${get('lastName')}`);
 	});
 	expect(fullName).toBe('John Doe');
 });
@@ -189,16 +189,6 @@ test('run throws PIIError for missing attributes', function() {
 		store.run(function(get) { return(get('nonexistent')); });
 	}, 'PII_ATTRIBUTE_NOT_FOUND');
 	expect(error.attributeName).toBe('nonexistent');
-});
-
-test('run returns callback result', function() {
-	const store = createStore();
-	store.setAttribute('count', 5);
-
-	const doubled = store.run(function(get) {
-		return(get<number>('count') * 2);
-	});
-	expect(doubled).toBe(10);
 });
 
 // ============================================================================

@@ -147,14 +147,18 @@ export class PIIStore {
 	/**
 	 * Execute a function with scoped access to PII values
 	 *
-	 * Provides controlled access to all attribute values.
+	 * Provides controlled access to all attribute values. Known certificate attributes
+	 * are automatically typed; external attributes require an explicit type parameter.
 	 *
 	 * @param fn - Function that receives a getter for accessing attribute values
 	 * @returns The return value of the callback function
 	 *
 	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if accessing a missing attribute
 	 */
-	run<R>(fn: (get: <T>(name: string) => T) => R): R {
+	run<R>(fn: (get: {
+		<K extends PIIAttributeNames>(name: K): CertificateAttributeValue<K>;
+		<T>(name: string): T;
+	}) => R): R {
 		const attributes = this.#attributes;
 		const get = <T>(name: string): T => {
 			if (!this.hasAttribute(name)) {
