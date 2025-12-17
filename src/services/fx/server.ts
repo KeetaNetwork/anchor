@@ -749,7 +749,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				const quoteAccount = rateAndFee.account;
 				if (!instance.accounts.has(quoteAccount)) {
 					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
-				};
+				}
 			}
 
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
@@ -944,6 +944,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			clearInterval(this.pipelineAutoRunInterval);
 			this.pipelineAutoRunInterval = null;
 		}
+
+		await this.pipeline.destroy();
 
 		await super.stop();
 	}
