@@ -139,7 +139,7 @@ export type KeetaFXAnchorExchange = {
 	 * blockhash for their portion of the exchange transaction can be
 	 * used to look up the transaction on-chain as well, but we return
 	 * a value here so that it can be looked up without needing to store
-	 * that initially block.
+	 * that initial block.
 	 */
 	blockhash: string;
 });

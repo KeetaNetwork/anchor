@@ -5,6 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
+import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 
 const DEBUG = false;
@@ -111,7 +112,7 @@ for (const useDeprecated of [false, true]) {
 			serverArgs = {
 				accounts: new KeetaNet.lib.Account.Set(liquidityProviders),
 				signer: liquidityProviderSigner
-			}
+			};
 		}
 
 		await using server = new KeetaNetFXAnchorHTTPServer({
@@ -517,6 +518,7 @@ for (const useDeprecated of [false, true]) {
 
 					exchangeStatus = await exchangeInput.getExchangeStatus();
 					logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchangeInput.exchange.exchangeID}:`, exchangeStatus);
+					await asleep(50);
 				}
 				return(exchangeStatus);
 			}
@@ -542,7 +544,7 @@ for (const useDeprecated of [false, true]) {
 			const removeBaseTokenBalanceEntry = function(balanceEntry: { balance: bigint, token: KeetaNetToken; }) {
 				/* Remove the KTA token balance since it may have changed due to fees */
 				return(!balanceEntry.token.comparePublicKey(baseToken));
-			}
+			};
 			const newAccountBalances = (await client.allBalances({ account })).filter(removeBaseTokenBalanceEntry);
 
 			expect(toJSONSerializable([...newAccountBalances].sort(sortBalances))).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: cumulativeEURChange }, { token: testCurrencyUSD, balance: (initialAccountUSDBalance - cumulativeUSDChange) }].sort(sortBalances)));

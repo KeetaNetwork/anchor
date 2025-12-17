@@ -186,7 +186,7 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 		}
 
 		if (!account.isAccount() && !account.isStorage()) {
-			throw(new Error('FX Account should be an Account or Storage Account'))
+			throw(new Error('FX Account should be an Account or Storage Account'));
 		}
 	} else if (signer === null) {
 		throw(new Error('Either account or signer must be provided'));
@@ -906,7 +906,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 }
 
 /*
- * These are placed at the bottm of the file because the generation
+ * These are placed at the bottom of the file because the generation
  * breaks the code coverage computation;  Normally, we'd place these
  * in a ".generated.ts" file but for simplicity of internal types
  * we keep them here.
