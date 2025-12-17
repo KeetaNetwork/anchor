@@ -60,7 +60,7 @@ export type KeetaFXAnchorClientConfig = {
 	 * The logger to use for logging messages. If not provided, no logging
 	 * will be done.
 	 */
-	logger?: Logger;
+	logger?: Logger | undefined;
 	/**
 	 * The resolver to use for resolving FX Anchor services. If not
 	 * provided, a default resolver will be created using the provided

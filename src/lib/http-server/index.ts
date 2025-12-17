@@ -46,7 +46,7 @@ export interface KeetaAnchorHTTPServerConfig {
 	/**
 	 * Enable debug logging
 	 */
-	logger?: Logger;
+	logger?: Logger | undefined;
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {

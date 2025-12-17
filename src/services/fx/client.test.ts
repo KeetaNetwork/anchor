@@ -58,7 +58,7 @@ test('FX Anchor Client Test', async function() {
 		}
 	});
 	await using server = new KeetaNetFXAnchorHTTPServer({
-		...(logger ? { logger: logger } : {}),
+		logger: logger,
 		account: liquidityProvider,
 		quoteSigner: quoteSigner,
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
@@ -178,7 +178,7 @@ test('FX Anchor Client Test', async function() {
 		// Should fail with no signer error
 		new KeetaNetAnchor.FX.Client(noSignerUserClient, {
 			root: account,
-			...(logger ? { logger: logger } : {})
+			logger: logger
 		});
 	}).rejects.toThrow();
 
@@ -186,7 +186,7 @@ test('FX Anchor Client Test', async function() {
 		root: account,
 		signer: account,
 		account: account,
-		...(logger ? { logger: logger } : {})
+		logger: logger
 	});
 
 	const conversionTests = [
@@ -275,7 +275,7 @@ test('FX Anchor Client Test', async function() {
 
 	const fxClient = new KeetaNetAnchor.FX.Client(client, {
 		root: account,
-		...(logger ? { logger: logger } : {})
+		logger: logger
 	});
 
 	/* Get Estimate from Currency Codes */
