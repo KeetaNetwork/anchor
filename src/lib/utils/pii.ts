@@ -198,11 +198,16 @@ export class PIIStore {
 			builder.set(name, storedValue);
 			return(await builder.build());
 		} else {
-			// External attributes are JSON-serialized
+			// External attributes are JSON-serialized with a JSON decoder
 			const jsonBytes = Buffer.from(JSON.stringify(storedValue), 'utf-8');
+			const jsonDecoder = function(data: Buffer | ArrayBuffer): unknown {
+				const bytes = data instanceof ArrayBuffer ? Buffer.from(data) : data;
+				return(JSON.parse(bytes.toString('utf-8')));
+			};
+
 			return(await new SensitiveAttributeBuilder(subjectKey)
 				.set(jsonBytes)
-				.build());
+				.build(jsonDecoder));
 		}
 	}
 

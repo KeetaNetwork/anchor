@@ -1,6 +1,5 @@
 import { test, expect } from 'vitest';
 import * as util from 'util';
-import { Buffer } from './buffer.js';
 import { PIIStore, PIIError } from './pii.js';
 import type { PIIAttributeNames } from './pii.js';
 import type { CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
@@ -155,12 +154,10 @@ test('toSensitiveAttribute handles external attributes via JSON serialization', 
 	const externalData = { provider: 'test', score: 42, verified: true };
 	store.setAttribute('externalProvider.result', externalData);
 
-	const sensitiveAttr = await store.toSensitiveAttribute<ArrayBuffer>('externalProvider.result', testAccounts.subject);
+	const sensitiveAttr = await store.toSensitiveAttribute<typeof externalData>('externalProvider.result', testAccounts.subject);
 	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
 
-	const rawBytes = await sensitiveAttr.getValue();
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-	const decrypted: typeof externalData = JSON.parse(Buffer.from(rawBytes).toString('utf-8'));
+	const decrypted = await sensitiveAttr.getValue();
 	expect(decrypted).toEqual(externalData);
 });
 

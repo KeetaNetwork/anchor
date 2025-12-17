@@ -256,118 +256,6 @@ function decodeForSensitive(
 	return(normalizeDecodedValue(plainObject));
 }
 
-export class SensitiveAttributeBuilder {
-	readonly #account: KeetaNetAccount;
-	#value: Buffer | undefined;
-	#attributeName: CertificateAttributeNames | undefined;
-
-	constructor(account: KeetaNetAccount) {
-		this.#account = account;
-	}
-
-	/**
-	 * Set a schema-aware attribute value (handles encoding internally)
-	 */
-	set<K extends CertificateAttributeNames>(name: K, value: CertificateAttributeValue<K>): this;
-	/**
-	 * Set raw bytes for encryption
-	 */
-	set(value: Buffer | ArrayBufferLike): this;
-	set<K extends CertificateAttributeNames>(
-		nameOrValue: K | Buffer | ArrayBufferLike,
-		value?: CertificateAttributeValue<K>
-	): this {
-		// Distinguish overloads: if value provided, first arg is name; otherwise it's raw bytes
-		if (value !== undefined && typeof nameOrValue === 'string') {
-			this.#attributeName = nameOrValue;
-			this.#value = encodeForSensitive(nameOrValue, value);
-		} else if (Buffer.isBuffer(nameOrValue)) {
-			this.#value = nameOrValue;
-		} else if (typeof nameOrValue === 'object' && nameOrValue !== null) {
-			this.#value = arrayBufferLikeToBuffer(nameOrValue);
-		}
-
-		return(this);
-	}
-
-	async build<T = ArrayBuffer>(): Promise<SensitiveAttribute<T>> {
-		if (this.#value === undefined) {
-			throw(new Error('Value not set'));
-		}
-
-		const salt = crypto.randomBytes(32);
-
-		const hashingAlgorithm = KeetaNetClient.lib.Utils.Hash.HashFunctionName;
-		const publicKey = Buffer.from(this.#account.publicKey.get());
-
-		const cipher = 'aes-256-gcm';
-		const key = crypto.randomBytes(32);
-		const nonce = crypto.randomBytes(12);
-		const encryptedKey = await this.#account.encrypt(bufferToArrayBuffer(key));
-
-		function encrypt(value: Buffer) {
-			const cipherObject = crypto.createCipheriv(cipher, key, nonce);
-			let retval = Buffer.concat([cipherObject.update(value), cipherObject.final()]);
-
-			// For AES-GCM, append the 16-byte authentication tag
-			if (cipher === 'aes-256-gcm') {
-				retval = Buffer.concat([retval, getGCMAuthTag(cipherObject)]);
-			}
-
-			return(retval);
-		}
-
-		const encryptedValue = encrypt(this.#value);
-		const encryptedSalt = encrypt(arrayBufferLikeToBuffer(salt));
-
-		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, this.#value]);
-		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(saltedValue);
-
-		const attributeStructure: SensitiveAttributeSchema = [
-			/* Version */
-			0n,
-			/* Cipher Details */
-			[
-				/* Algorithm */
-				{ type: 'oid', oid: getOID(cipher, sensitiveAttributeOIDDB) },
-				/* IV or Nonce */
-				nonce,
-				/* Symmetric key, encrypted with the public key of the account */
-				Buffer.from(encryptedKey)
-			],
-			/* Hashed Value */
-			[
-				/* Encrypted Salt */
-				Buffer.from(encryptedSalt),
-				/* Hashing Algorithm */
-				{ type: 'oid', oid: getOID(hashingAlgorithm, sensitiveAttributeOIDDB) },
-				/* Hash of <Encrypted Salt> || <Public Key> || <Value> */
-				Buffer.from(hashedAndSaltedValue)
-			],
-			/* Encrypted Value, encrypted with the Cipher above */
-			encryptedValue
-		];
-
-		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
-
-		// Produce canonical DER as ArrayBuffer
-		const encryptedDER = encodedAttributeObject.toBER(false);
-
-		// Create decoder if we have an attribute name
-		let decoder: ((data: Buffer | ArrayBuffer) => T | Promise<T>) | undefined;
-		if (this.#attributeName) {
-			const attrName = this.#attributeName;
-			decoder = function(data: Buffer | ArrayBuffer): T {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(decodeForSensitive(attrName, data) as T);
-			};
-		}
-
-		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		return(new SensitiveAttribute<T>(this.#account, encryptedDER, decoder));
-	}
-}
-
 export class SensitiveAttribute<T = ArrayBuffer> {
 	private static readonly SensitiveAttributeObjectTypeID = 'c0cc9591-cebb-4441-babe-23739279e3f2';
 	private readonly SensitiveAttributeObjectTypeID!: string;
@@ -551,3 +439,112 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 	}
 }
 
+export class SensitiveAttributeBuilder {
+	readonly #account: KeetaNetAccount;
+	#value: Buffer | undefined;
+	#attributeName: CertificateAttributeNames | undefined;
+
+	constructor(account: KeetaNetAccount) {
+		this.#account = account;
+	}
+
+	/**
+	 * Set a schema-aware attribute value (handles encoding internally)
+	 */
+	set<K extends CertificateAttributeNames>(name: K, value: CertificateAttributeValue<K>): this;
+	/**
+	 * Set raw bytes for encryption
+	 */
+	set(value: Buffer | ArrayBufferLike): this;
+	set<K extends CertificateAttributeNames>(
+		nameOrValue: K | Buffer | ArrayBufferLike,
+		value?: CertificateAttributeValue<K>
+	): this {
+		// Distinguish overloads: if value provided, first arg is name; otherwise it's raw bytes
+		if (value !== undefined && typeof nameOrValue === 'string') {
+			this.#attributeName = nameOrValue;
+			this.#value = encodeForSensitive(nameOrValue, value);
+		} else if (Buffer.isBuffer(nameOrValue)) {
+			this.#value = nameOrValue;
+		} else if (typeof nameOrValue === 'object' && nameOrValue !== null) {
+			this.#value = arrayBufferLikeToBuffer(nameOrValue);
+		}
+
+		return(this);
+	}
+
+	async build<T = ArrayBuffer>(decoder?: (data: Buffer | ArrayBuffer) => T | Promise<T>): Promise<SensitiveAttribute<T>> {
+		if (this.#value === undefined) {
+			throw(new Error('Value not set'));
+		}
+
+		const salt = crypto.randomBytes(32);
+
+		const hashingAlgorithm = KeetaNetClient.lib.Utils.Hash.HashFunctionName;
+		const publicKey = Buffer.from(this.#account.publicKey.get());
+
+		const cipher = 'aes-256-gcm';
+		const key = crypto.randomBytes(32);
+		const nonce = crypto.randomBytes(12);
+		const encryptedKey = await this.#account.encrypt(bufferToArrayBuffer(key));
+
+		function encrypt(value: Buffer) {
+			const cipherObject = crypto.createCipheriv(cipher, key, nonce);
+			let retval = Buffer.concat([cipherObject.update(value), cipherObject.final()]);
+
+			// For AES-GCM, append the 16-byte authentication tag
+			if (cipher === 'aes-256-gcm') {
+				retval = Buffer.concat([retval, getGCMAuthTag(cipherObject)]);
+			}
+
+			return(retval);
+		}
+
+		const encryptedValue = encrypt(this.#value);
+		const encryptedSalt = encrypt(arrayBufferLikeToBuffer(salt));
+
+		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, this.#value]);
+		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(saltedValue);
+
+		const attributeStructure: SensitiveAttributeSchema = [
+			/* Version */
+			0n,
+			/* Cipher Details */
+			[
+				/* Algorithm */
+				{ type: 'oid', oid: getOID(cipher, sensitiveAttributeOIDDB) },
+				/* IV or Nonce */
+				nonce,
+				/* Symmetric key, encrypted with the public key of the account */
+				Buffer.from(encryptedKey)
+			],
+			/* Hashed Value */
+			[
+				/* Encrypted Salt */
+				Buffer.from(encryptedSalt),
+				/* Hashing Algorithm */
+				{ type: 'oid', oid: getOID(hashingAlgorithm, sensitiveAttributeOIDDB) },
+				/* Hash of <Encrypted Salt> || <Public Key> || <Value> */
+				Buffer.from(hashedAndSaltedValue)
+			],
+			/* Encrypted Value, encrypted with the Cipher above */
+			encryptedValue
+		];
+
+		// Produce canonical DER as ArrayBuffer
+		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
+		const encryptedDER = encodedAttributeObject.toBER(false);
+
+		// Use provided decoder, or create one from attribute name, or undefined for raw bytes
+		let effectiveDecoder: ((data: Buffer | ArrayBuffer) => T | Promise<T>) | undefined = decoder;
+		if (!effectiveDecoder && this.#attributeName) {
+			const attrName = this.#attributeName;
+			effectiveDecoder = function(data: Buffer | ArrayBuffer): T {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				return(decodeForSensitive(attrName, data) as T);
+			};
+		}
+
+		return(new SensitiveAttribute<T>(this.#account, encryptedDER, effectiveDecoder));
+	}
+}
