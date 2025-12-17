@@ -20,6 +20,8 @@ type CreateNodeAndClientResponse = {
 		enable: () => void;
 		addFeeFreeAccount: (account: KeetaNetClientGenericAccount) => void;
 	}
+	destroy: () => Promise<void>;
+	[Symbol.asyncDispose]: () => Promise<void>;
 };
 
 type KeetaNetClientGenericAccount = NonNullable<ConstructorParameters<typeof KeetaNetClient.UserClient>[0]['signer']>;
@@ -157,6 +159,12 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			addFeeFreeAccount: function(account) {
 				feeFreeAccounts.add(account.publicKeyString.get());
 			}
+		},
+		destroy: async function() {
+			await testNode.stop();
+		},
+		[Symbol.asyncDispose]: async function() {
+			await testNode.stop();
 		}
 	};
 

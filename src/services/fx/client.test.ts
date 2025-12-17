@@ -18,7 +18,8 @@ test('FX Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 1);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
-	const { userClient: client } = await createNodeAndClient(account);
+	await using nodeAndClient = await createNodeAndClient(account);
+	const client = nodeAndClient.userClient;
 	const baseToken = client.baseToken;
 
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -463,7 +464,9 @@ test('FX Anchor Client Test', async function() {
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const account2 = KeetaNet.lib.Account.fromSeed(seed, 1);
-	const { userClient: client, fees } = await createNodeAndClient(account);
+	await using nodeAndClient = await createNodeAndClient(account);
+	const client = nodeAndClient.userClient;
+	const fees = nodeAndClient.fees;
 
 	/**
 	 * Disable fees to avoid tests failing due to fee issues
