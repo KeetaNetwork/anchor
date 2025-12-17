@@ -530,7 +530,7 @@ export class SensitiveAttributeBuilder {
 			/* Encrypted Value, encrypted with the Cipher above */
 			encryptedValue
 		];
-
+		
 		// Produce canonical DER as ArrayBuffer
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
 		const encryptedDER = encodedAttributeObject.toBER(false);
