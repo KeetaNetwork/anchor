@@ -517,10 +517,6 @@ test('Queue Runner Basic Tests', async function() {
 			expect(statuses).toEqual(['aborted', 'pending']);
 		}
 	}
-
-	{
-	}
-
 });
 
 test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
