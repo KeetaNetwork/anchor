@@ -42,7 +42,7 @@ type IdempotentRow = {
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
-	private dbInitialized = false;
+	private dbInitializationPromise: Promise<boolean> | null = null;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverPostgres';
 	readonly id: string;
@@ -61,43 +61,58 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	private async initializeDBConnection(pool: pg.Pool): Promise<pg.Pool> {
-		if (this.dbInitialized) {
+		const logger = this.methodLogger('initializeDBConnection');
+
+		if (this.dbInitializationPromise !== null) {
+			logger?.debug('DB schema initialization already in progress or completed, waiting for it to finish');
+
+			await this.dbInitializationPromise;
 			return(pool);
 		}
-		this.dbInitialized = true;
 
-		this.methodLogger('initializeDBConnection')?.debug('Initializing DB schema for queue storage driver');
+		this.dbInitializationPromise = (async () => {
+			logger?.debug('Initializing DB schema for queue storage driver');
 
-		await pool.query(`
-			CREATE TABLE IF NOT EXISTS queue_entries (
-				id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				request TEXT NOT NULL,
-				output TEXT,
-				last_error TEXT,
-				status TEXT NOT NULL,
-				created BIGINT NOT NULL,
-				updated BIGINT NOT NULL,
-				worker BIGINT,
-				failures INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (id, path)
-			)`);
+			const client = await pool.connect();
+			try {
+				await client.query(`
+					CREATE TABLE IF NOT EXISTS queue_entries (
+						id TEXT NOT NULL,
+						path TEXT NOT NULL,
+						request TEXT NOT NULL,
+						output TEXT,
+						last_error TEXT,
+						status TEXT NOT NULL,
+						created BIGINT NOT NULL,
+						updated BIGINT NOT NULL,
+						worker BIGINT,
+						failures INTEGER NOT NULL DEFAULT 0,
+						PRIMARY KEY (id, path)
+					)`);
 
-		await pool.query(`
-			CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
-				entry_id TEXT NOT NULL,
-				idempotent_id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				UNIQUE (idempotent_id, path),
-				PRIMARY KEY (entry_id, idempotent_id, path),
-				FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
-			)`);
+				await client.query(`
+					CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
+						entry_id TEXT NOT NULL,
+						idempotent_id TEXT NOT NULL,
+						path TEXT NOT NULL,
+						UNIQUE (idempotent_id, path),
+						PRIMARY KEY (entry_id, idempotent_id, path),
+						FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
+					)`);
 
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status)');
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated)');
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id)');
+			} finally {
+				client.release();
+			}
 
-		this.dbInitialized = true;
+			logger?.debug('Completed DB schema initialization for queue storage driver');
+
+			return(true);
+		})();
+
+		await this.dbInitializationPromise;
 
 		return(pool);
 	}
