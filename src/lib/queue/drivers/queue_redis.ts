@@ -12,7 +12,8 @@ import type {
 } from '../index.ts';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -89,7 +90,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('add');
 
-		let entryID = info?.id;
+		let entryID = ConvertStringToRequestID(info?.id);
 		if (entryID) {
 			const exists = await redis.exists(this.queueKey(entryID));
 			if (exists) {
@@ -113,8 +114,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			}
 		}
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		entryID ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+		entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 		logger?.debug(`Enqueuing request with id ${String(entryID)}`);
 
@@ -177,8 +177,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			`;
 
 			const idempotentKeyPairs = idempotentKeysArr.map((idKey) => {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(this.idempotentKey(idKey as unknown as KeetaAnchorQueueRequestID));
+				return(this.idempotentKey(ConvertStringToRequestID(idKey)));
 			});
 
 			try {
@@ -327,14 +326,12 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 
 		const idempotentKeys = entryData.idempotentKeys && entryData.idempotentKeys.length > 0
 			? new Set(entryData.idempotentKeys.map(function(key: string) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(key as unknown as KeetaAnchorQueueRequestID);
+				return(ConvertStringToRequestID(key));
 			}))
 			: undefined;
 
 		return({
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id: entryData.id as unknown as KeetaAnchorQueueRequestID,
+			id: ConvertStringToRequestID(entryData.id),
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			request: JSON.parse(entryData.request) as QueueRequest,
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -405,8 +402,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 		for (const entryIDStr of entryIDs) {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const entryID = entryIDStr as unknown as KeetaAnchorQueueRequestID;
+			const entryID = ConvertStringToRequestID(entryIDStr);
 			const entry = await this.get(entryID);
 			if (entry) {
 				if (filter?.status && entry.status !== filter.status) {

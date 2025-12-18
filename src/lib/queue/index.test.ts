@@ -1534,6 +1534,27 @@ suite.sequential('Driver Tests', async function() {
 					}
 				}, 60_000);
 
+				testRunner('Add by String ID', async function() {
+					await using driverInstance = await driverConfig.create('string_id_test');
+					const localQueue = driverInstance.queue;
+
+					const runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'string_id_runner',
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						},
+						queue: localQueue,
+						logger: logger
+					});
+					const id = await runner.add({ key: 'string_id_one' }, { id: 'custom-string-id-one' });
+					while (await runner.run()) {
+						await asleep(50);
+					}
+					expect(id).toBe('custom-string-id-one');
+					const status = await runner.get(id);
+					expect(status?.status).toBe('completed');
+				});
+
 				/* Test that partitioning works and we can add and get entries from different partitions */
 				testRunner('Partitioning', async function() {
 					/* Ensure we can add and get from different partitions and they do not conflict */

@@ -7,7 +7,8 @@ import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
@@ -39,7 +40,7 @@ export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
  * Extra information to provide to a request when adding an entry to the queue
  */
 export type KeetaAnchorQueueEntryExtra = {
-	[key in 'idempotentKeys' | 'id' | 'status']?: KeetaAnchorQueueEntry<never, never>[key] | undefined;
+	[key in 'idempotentKeys' | 'id' | 'status']?: (key extends 'id' ? KeetaAnchorQueueRequestID | string : KeetaAnchorQueueEntry<never, never>[key]) | undefined;
 };
 
 export type KeetaAnchorQueueFilter = {
@@ -249,7 +250,7 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 
 		const logger = this.methodLogger('add');
 
-		let id = info?.id;
+		let id = ConvertStringToRequestID(info?.id);
 		if (id) {
 			const duplicateID = this.queue.some(function(checkEntry) {
 				return(checkEntry.id === id);
@@ -286,10 +287,9 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		const status = info?.status ?? 'pending';
 
 		/*
-		 * The ID is a branded string, so we must cast the generated UUID
+		 * The ID is a branded string, so we must convert the generated UUID
 		 */
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		id ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+		id ??= ConvertStringToRequestID(crypto.randomUUID());
 
 		logger?.debug(`Enqueuing request with id ${String(id)}`);
 
@@ -514,8 +514,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 * The runner lock key, a unique key used to ensure only
 		 * one instance of a given runner is running at a time
 		 */
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		this.runnerLockKey = `@runner-lock:9ba756f0-7aa2-41c7-a1ea-b010dc752ae8.worker.${this.workerID}` as unknown as KeetaAnchorQueueRequestID;
+		this.runnerLockKey = ConvertStringToRequestID(`@runner-lock:9ba756f0-7aa2-41c7-a1ea-b010dc752ae8.worker.${this.workerID}`);
 
 		/**
 		 * Instance ID
@@ -1017,8 +1016,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				/**
 				 * Compute a durable ID for this batch and target
 				 */
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				let batchID = crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+				let batchID = ConvertStringToRequestID(crypto.randomUUID());
 
 				/**
 				 * Keep track of sequential failures to find enough entries
@@ -1098,8 +1096,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 							idempotentKeys: batchLocalIDs
 						});
 
-						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						batchID = crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+						batchID = ConvertStringToRequestID(crypto.randomUUID());
 					} catch (error: unknown) {
 						if (Errors.IdempotentExistsError.isInstance(error) && error.idempotentIDsFound) {
 							logger?.debug('Some of the jobs have already been added to the target queue, skipping those:', error.idempotentIDsFound.values());
