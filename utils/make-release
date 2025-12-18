@@ -87,6 +87,8 @@ git log releases/v${previous_version}..HEAD | awk '/^commit /{ commit = $2 } /\(
 echo ''
 echo 'Step 3: Generate Release Artifact Records'
 cat << _EOF_ >> "${workdir}/changelog.md"
+
+
 It includes the following release artifacts:
 NPM Packages:
 \`\`\`
