@@ -233,7 +233,7 @@ const drivers: {
 				dbNameKey = dbNameKey.slice(0, 6) + hash(dbNameKey, 8);
 			}
 
-			const dbName = `anchor_test_${key}_${RunKey.replace(/-/g, '_')}`;
+			const dbName = `anchor_test_${dbNameKey}_${RunKey.replace(/-/g, '_')}`;
 			let pool: pg.Pool | undefined;
 			let adminPool: pg.Pool | undefined;
 
