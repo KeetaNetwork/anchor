@@ -1065,14 +1065,15 @@ suite.sequential('Driver Tests', async function() {
 		suiteRunner(driver, function(): void {
 			suite(`Basic Tests`, async function(): Promise<void> {
 				let queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
-				let driverInstanceDestroy: () => Promise<void>;
+				let driverInstance: Awaited<ReturnType<typeof driverConfig.create>>;
 				beforeAll(async function() {
-					const driverInstance = await driverConfig.create('basic_test');
+					driverInstance = await driverConfig.create('basic_test');
 					queue = driverInstance.queue;
-					driverInstanceDestroy = driverInstance[Symbol.asyncDispose].bind(driverInstance);
+
 				});
+
 				afterAll(async function() {
-					await driverInstanceDestroy();
+					await driverInstance[Symbol.asyncDispose]();
 				});
 
 				/* Test that we can add and get an entry */
