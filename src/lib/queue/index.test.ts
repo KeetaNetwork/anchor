@@ -280,30 +280,34 @@ const drivers: {
 					queue: queue,
 					[Symbol.asyncDispose]: async function() {
 						await queue[Symbol.asyncDispose]();
-						if (pool) {
-							await pool.end();
-							pool = undefined;
-						}
+
+						await pool?.end();
+						pool = undefined;
+
 						if (!options?.leave) {
-							adminPool = new pg.Pool({
-								host: postgresConfig.host,
-								port: postgresConfig.port,
-								user: postgresConfig.user,
-								password: postgresConfig.password,
-								database: undefined
-							});
-							await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-							await adminPool.end();
+							try {
+								const cleanupPool = new pg.Pool({
+									host: postgresConfig.host,
+									port: postgresConfig.port,
+									user: postgresConfig.user,
+									password: postgresConfig.password,
+									database: undefined
+								});
+
+								await cleanupPool.query(`DROP DATABASE "${dbName}"`);
+								await cleanupPool.end();
+							} catch {
+								/* Ignore */
+							}
 						}
 					}
 				});
 			} catch (error: unknown) {
-				if (adminPool) {
-					await adminPool.end();
-				}
-				if (pool) {
-					await pool.end();
-				}
+				await adminPool?.end();
+				adminPool = undefined;
+
+				await pool?.end();
+				pool = undefined;
 				throw(error);
 			}
 		}
