@@ -1581,6 +1581,7 @@ suite.sequential('Driver Tests', async function() {
 						const queue = driverInstance.queue;
 
 						const id = await queue.add({ foo: 'bar' });
+
 						return(id);
 					})();
 

@@ -421,7 +421,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		return(entries);
 	}
 
-	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.redisInternal === null) {
