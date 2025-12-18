@@ -135,7 +135,7 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 	 */
 	protected abstract getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first): KeetaAnchorQueueRunner<IN1, unknown>;
 	protected abstract getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaAnchorQueueRunner<unknown, FINALOUT>;
-	protected abstract getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunnerAny | null;
+	protected abstract getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last | string): KeetaAnchorQueueRunner<unknown, unknown> | null;
 
 	/**
 	 * Create a new queue to use in a pipeline stage

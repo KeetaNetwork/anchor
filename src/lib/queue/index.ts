@@ -443,7 +443,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	protected processorAborted?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
 
 	/**
-	 * Worker configuration (not implemented)
+	 * Worker configuration
 	 */
 	private readonly workers: NonNullable<KeetaAnchorQueueRunnerOptions['workers']>;
 	private readonly workerID: KeetaAnchorQueueWorkerID;
@@ -471,9 +471,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Configuration for this queue
 	 */
-	private maxRetries = 5;
-	private processTimeout = 300_000; /* 5 minutes */
-	private batchSize = 100;
+	protected maxRetries = 5;
+	protected processTimeout = 300_000; /* 5 minutes */
+	protected batchSize = 100;
 
 	/**
 	 * How many runners can process this queue in parallel

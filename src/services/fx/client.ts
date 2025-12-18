@@ -60,7 +60,7 @@ export type KeetaFXAnchorClientConfig = {
 	 * The logger to use for logging messages. If not provided, no logging
 	 * will be done.
 	 */
-	logger?: Logger;
+	logger?: Logger | undefined;
 	/**
 	 * The resolver to use for resolving FX Anchor services. If not
 	 * provided, a default resolver will be created using the provided
@@ -393,7 +393,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
-		return({ exchangeID: requestInformationJSON.exchangeID });
+		return(requestInformationJSON);
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
@@ -415,7 +415,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
-		return({ exchangeID: requestInformationJSON.exchangeID });
+		return(requestInformationJSON);
 	}
 
 	/** @internal */

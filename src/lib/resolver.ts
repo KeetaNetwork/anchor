@@ -691,7 +691,7 @@ type ResolverConfig = {
 	/**
 	 * Logger to use for debugging
 	 */
-	logger?: Logger;
+	logger?: Logger | undefined;
 	/**
 	 * ID for this instance of the resolver
 	 */

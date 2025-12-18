@@ -96,9 +96,9 @@ test('FX Server Tests', async function() {
 
 		const getParams = [
 			{ test: '', error: 404 },
-			// eslint-disable-next-line @typescript-eslint/no-base-to-string
-			{ test: `/${{}}`, error: 500 }
-			// { test: '123', error: 500 } // TODO node client takes too long to timeout retries
+			{ test: '/[object Object]', error: 400 },
+			{ test: '123', error: 404 },
+			{ test: '/123', error: 400 }
 		]
 		for (const param of getParams) {
 			const serverURL = `${url}/api/getExchangeStatus${param.test}`;
@@ -268,5 +268,64 @@ test('FX Server Quote Validation Tests', async function() {
 	/* Verify we got the correct error type */
 	if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
 		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
+	}
+});
+
+test('FX Server Constructor Variation Tests', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const quoteSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const client = {
+		client: new KeetaNet.Client([]),
+		network: 0n,
+		networkAlias: 'test' as const
+	};
+
+	const invalidChecks: Partial<ConstructorParameters<typeof KeetaNetFXAnchorHTTPServer>[0]>[] = [{
+		/** Invalid - Must supply signer when accounts is supplied */
+		accounts: new KeetaNet.lib.Account.Set([account])
+	}, {
+		/** Invalid - Must supply only one of account or accounts */
+		account: account,
+		accounts: new KeetaNet.lib.Account.Set([account])
+	}, {
+		/** Invalid -- neither account nor accounts+signer is supplied */
+	}]
+
+	const validChecks: Partial<ConstructorParameters<typeof KeetaNetFXAnchorHTTPServer>[0]>[] = [{
+		accounts: new KeetaNet.lib.Account.Set([account]),
+		signer: account
+	}, {
+		account: account
+	}]
+
+	const performCheck = async function(config: Partial<ConstructorParameters<typeof KeetaNetFXAnchorHTTPServer>[0]>) {
+		await using server = new KeetaNetFXAnchorHTTPServer({
+			...config,
+			client: client,
+			quoteSigner: quoteSigner,
+			fx: {
+				getConversionRateAndFee: async function() {
+					return({
+						account: account,
+						convertedAmount: 1000n,
+						cost: {
+							token: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+							amount: 0n
+						}
+					});
+				}
+			}
+		});
+		return(server);
+	};
+
+	for (const invalidCheck of invalidChecks) {
+		await expect(async function() {
+			return(await performCheck(invalidCheck));
+		}).rejects.toThrow();
+	}
+
+	for (const validCheck of validChecks) {
+		await expect(performCheck(validCheck)).resolves.toBeInstanceOf(KeetaNetFXAnchorHTTPServer);
 	}
 });
