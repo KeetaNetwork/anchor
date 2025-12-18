@@ -3,6 +3,7 @@ import type { Logger } from '../log/index.ts';
 import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 import type { JSONSerializable } from '../utils/json.ts';
+import { hash } from '../utils/tests/hash.js';
 
 import {
 	KeetaAnchorQueueRunnerJSONConfigProc,
@@ -195,6 +196,7 @@ const drivers: {
 					return(client);
 				},
 				id: key,
+				path: [`key_${key}_${RunKey}`],
 				logger: logger
 			});
 
@@ -226,7 +228,12 @@ const drivers: {
 				throw(new Error('Postgres configuration not available'));
 			}
 
-			const dbName = `anchor_queue_test_${key}_${RunKey.replace(/-/g, '_')}`;
+			let dbNameKey = key;
+			if (dbNameKey.length > 14) {
+				dbNameKey = dbNameKey.slice(0, 6) + hash(dbNameKey, 8);
+			}
+
+			const dbName = `anchor_test_${dbNameKey}_${RunKey.replace(/-/g, '_')}`;
 			let pool: pg.Pool | undefined;
 			let adminPool: pg.Pool | undefined;
 
@@ -273,30 +280,34 @@ const drivers: {
 					queue: queue,
 					[Symbol.asyncDispose]: async function() {
 						await queue[Symbol.asyncDispose]();
-						if (pool) {
-							await pool.end();
-							pool = undefined;
-						}
+
+						await pool?.end();
+						pool = undefined;
+
 						if (!options?.leave) {
-							adminPool = new pg.Pool({
-								host: postgresConfig.host,
-								port: postgresConfig.port,
-								user: postgresConfig.user,
-								password: postgresConfig.password,
-								database: undefined
-							});
-							await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-							await adminPool.end();
+							try {
+								const cleanupPool = new pg.Pool({
+									host: postgresConfig.host,
+									port: postgresConfig.port,
+									user: postgresConfig.user,
+									password: postgresConfig.password,
+									database: undefined
+								});
+
+								await cleanupPool.query(`DROP DATABASE "${dbName}"`);
+								await cleanupPool.end();
+							} catch {
+								/* Ignore */
+							}
 						}
 					}
 				});
 			} catch (error: unknown) {
-				if (adminPool) {
-					await adminPool.end();
-				}
-				if (pool) {
-					await pool.end();
-				}
+				await adminPool?.end();
+				adminPool = undefined;
+
+				await pool?.end();
+				pool = undefined;
 				throw(error);
 			}
 		}
@@ -1054,31 +1065,34 @@ suite.sequential('Driver Tests', async function() {
 		suiteRunner(driver, function(): void {
 			suite(`Basic Tests`, async function(): Promise<void> {
 				let queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
-				let driverInstanceDestroy: () => Promise<void>;
+				let driverInstance: Awaited<ReturnType<typeof driverConfig.create>>;
 				beforeAll(async function() {
-					const driverInstance = await driverConfig.create('basic_test');
+					driverInstance = await driverConfig.create('basic_test');
 					queue = driverInstance.queue;
-					driverInstanceDestroy = driverInstance[Symbol.asyncDispose].bind(driverInstance);
+
 				});
+
 				afterAll(async function() {
-					await driverInstanceDestroy();
+					await driverInstance[Symbol.asyncDispose]();
 				});
 
 				/* Test that we can add and get an entry */
 				testRunner('Add and Get Entry', async function() {
-					const id = await queue.add({ key: 'test1' });
-					expect(id).toBeDefined();
-					const entry = await queue.get(id);
-					expect(entry).toBeDefined();
-					expect(entry?.id).toBe(id);
-					expect(entry?.request).toEqual({ key: 'test1' });
-					expect(entry?.status).toBe('pending');
-					expect(entry?.output).toBeNull();
-					expect(entry?.lastError).toBeNull();
-					expect(entry?.failures).toBe(0);
-					expect(entry?.worker).toBeNull();
-					expect(entry?.created).toBeInstanceOf(Date);
-					expect(entry?.updated).toBeInstanceOf(Date);
+					for (const createWithStatus of [undefined, 'pending', 'processing'] as const) {
+						const id = await queue.add({ key: 'test1' }, { status: createWithStatus });
+						expect(id).toBeDefined();
+						const entry = await queue.get(id);
+						expect(entry).toBeDefined();
+						expect(entry?.id).toBe(id);
+						expect(entry?.request).toEqual({ key: 'test1' });
+						expect(entry?.status).toBe(createWithStatus ?? 'pending');
+						expect(entry?.output).toBeNull();
+						expect(entry?.lastError).toBeNull();
+						expect(entry?.failures).toBe(0);
+						expect(entry?.worker).toBeNull();
+						expect(entry?.created).toBeInstanceOf(Date);
+						expect(entry?.updated).toBeInstanceOf(Date);
+					}
 				});
 
 				/* Test that we can set status of an entry */
@@ -1210,43 +1224,53 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that we can query entries in various ways */
 				testRunner('Query Entries', async function() {
-					const existingIDs = await queue.query();
-					await queue.add({ key: 'query1' });
-					const id2 = await queue.add({ key: 'query2' });
-					const id3 = await queue.add({ key: 'query3' });
+					await using queueInfo = await driverConfig.create('query-entries');
+					const localQueue = queueInfo.queue;
 
-					await queue.setStatus(id2, 'completed', { output: 'done' });
-					await queue.setStatus(id3, 'failed_temporarily');
+					const id1 = await localQueue.add({ key: 'query1' });
+					const id2 = await localQueue.add({ key: 'query2' });
+					const id3 = await localQueue.add({ key: 'query3' });
+					const id4 = await localQueue.add({ key: 'query4' });
 
-					const allEntries = await queue.query();
-					expect(allEntries.length).toEqual(existingIDs.length + 3);
+					await localQueue.setStatus(id2, 'completed', { output: 'done' });
+					await localQueue.setStatus(id3, 'failed_temporarily');
+					await localQueue.setStatus(id4, 'processing');
 
-					const pendingEntries = await queue.query({ status: 'pending' });
-					expect(pendingEntries.some(function(entry) {
-						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						const req = entry.request as { key?: string };
-						return(req.key === 'query1');
-					})).toBe(true);
+					for (const withLimit of [undefined, 10]) {
+						const addQueryArgs: Parameters<typeof localQueue.query>[0] = {};
+						if (withLimit !== undefined) {
+							addQueryArgs.limit = withLimit;
+						}
 
-					const completedEntries = await queue.query({ status: 'completed' });
-					expect(completedEntries.some(function(entry) {
-						return(entry.id === id2);
-					})).toBe(true);
+						const allEntries = await localQueue.query({ ...addQueryArgs });
+						expect(allEntries.length).toEqual(4);
 
-					const failedEntries = await queue.query({ status: 'failed_temporarily' });
-					expect(failedEntries.some(function(entry) {
-						return(entry.id === id3);
-					})).toBe(true);
+						const pendingEntries = await localQueue.query({ status: 'pending', ...addQueryArgs });
+						expect(pendingEntries.length).toBe(1);
+						expect(pendingEntries[0]?.id).toBe(id1);
 
-					const limitedEntries = await queue.query({ limit: 2 });
-					expect(limitedEntries.length).toBeLessThanOrEqual(2);
+						const completedEntries = await localQueue.query({ status: 'completed', ...addQueryArgs });
+						expect(completedEntries.length).toBe(1);
+						expect(completedEntries[0]?.id).toBe(id2);
+
+						const failedEntries = await localQueue.query({ status: 'failed_temporarily', ...addQueryArgs });
+						expect(failedEntries.length).toBe(1);
+						expect(failedEntries[0]?.id).toBe(id3);
+
+						const processingEntries = await localQueue.query({ status: 'processing', ...addQueryArgs });
+						expect(processingEntries.length).toBe(1);
+						expect(processingEntries[0]?.id).toBe(id4);
+					}
+
+					const limitedEntries = await localQueue.query({ limit: 2 });
+					expect(limitedEntries.length).toBe(2);
 
 					const futureDate = new Date(Date.now() + 100000);
-					const updatedBeforeEntries = await queue.query({ updatedBefore: futureDate });
-					expect(updatedBeforeEntries.length).toBeGreaterThanOrEqual(3);
+					const updatedBeforeEntries = await localQueue.query({ updatedBefore: futureDate });
+					expect(updatedBeforeEntries.length).toBe(4);
 
 					const pastDate = new Date(Date.now() - 100000);
-					const noEntriesBeforePast = await queue.query({ updatedBefore: pastDate });
+					const noEntriesBeforePast = await localQueue.query({ updatedBefore: pastDate });
 					expect(noEntriesBeforePast.length).toBe(0);
 				});
 
@@ -1579,6 +1603,7 @@ suite.sequential('Driver Tests', async function() {
 						const queue = driverInstance.queue;
 
 						const id = await queue.add({ foo: 'bar' });
+
 						return(id);
 					})();
 
