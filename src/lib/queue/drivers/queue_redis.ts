@@ -146,7 +146,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			const idempotentKeysArr = Array.from(idempotentIDs).map(String);
 			const luaScript = `
 				local entryKey = KEYS[1]
-				local pendingIndexKey = KEYS[2]
+				local statusIndexKey = KEYS[2]
 				local allIndexKey = KEYS[3]
 				
 				local entryData = ARGV[1]
@@ -164,7 +164,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				
 				-- Add the entry
 				redis.call('SET', entryKey, entryData)
-				redis.call('ZADD', pendingIndexKey, score, entryId)
+				redis.call('ZADD', statusIndexKey, score, entryId)
 				redis.call('ZADD', allIndexKey, score, entryId)
 				
 				-- Set idempotent keys
@@ -185,7 +185,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				await redis.eval(luaScript, {
 					keys: [
 						this.queueKey(entryID),
-						this.indexKey('pending'),
+						this.indexKey(status),
 						this.indexKey()
 					],
 					arguments: [
@@ -205,7 +205,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		} else {
 			const multi = redis.multi();
 			multi.set(this.queueKey(entryID), JSON.stringify(entryData));
-			multi.zAdd(this.indexKey('pending'), { score: currentTime, value: String(entryID) });
+			multi.zAdd(this.indexKey(status), { score: currentTime, value: String(entryID) });
 			multi.zAdd(this.indexKey(), { score: currentTime, value: String(entryID) });
 
 			await multi.exec();
@@ -409,6 +409,9 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			const entryID = entryIDStr as unknown as KeetaAnchorQueueRequestID;
 			const entry = await this.get(entryID);
 			if (entry) {
+				if (filter?.status && entry.status !== filter.status) {
+					continue;
+				}
 				entries.push(entry);
 			}
 		}

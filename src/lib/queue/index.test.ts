@@ -1066,19 +1066,21 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that we can add and get an entry */
 				testRunner('Add and Get Entry', async function() {
-					const id = await queue.add({ key: 'test1' });
-					expect(id).toBeDefined();
-					const entry = await queue.get(id);
-					expect(entry).toBeDefined();
-					expect(entry?.id).toBe(id);
-					expect(entry?.request).toEqual({ key: 'test1' });
-					expect(entry?.status).toBe('pending');
-					expect(entry?.output).toBeNull();
-					expect(entry?.lastError).toBeNull();
-					expect(entry?.failures).toBe(0);
-					expect(entry?.worker).toBeNull();
-					expect(entry?.created).toBeInstanceOf(Date);
-					expect(entry?.updated).toBeInstanceOf(Date);
+					for (const createWithStatus of [undefined, 'pending', 'processing'] as const) {
+						const id = await queue.add({ key: 'test1' }, { status: createWithStatus });
+						expect(id).toBeDefined();
+						const entry = await queue.get(id);
+						expect(entry).toBeDefined();
+						expect(entry?.id).toBe(id);
+						expect(entry?.request).toEqual({ key: 'test1' });
+						expect(entry?.status).toBe(createWithStatus ?? 'pending');
+						expect(entry?.output).toBeNull();
+						expect(entry?.lastError).toBeNull();
+						expect(entry?.failures).toBe(0);
+						expect(entry?.worker).toBeNull();
+						expect(entry?.created).toBeInstanceOf(Date);
+						expect(entry?.updated).toBeInstanceOf(Date);
+					}
 				});
 
 				/* Test that we can set status of an entry */
