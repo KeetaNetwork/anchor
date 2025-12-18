@@ -1225,52 +1225,52 @@ suite.sequential('Driver Tests', async function() {
 				/* Test that we can query entries in various ways */
 				testRunner('Query Entries', async function() {
 					await using queueInfo = await driverConfig.create('query-entries');
-					const queue = queueInfo.queue;
+					const localQueue = queueInfo.queue;
 
-					const id1 = await queue.add({ key: 'query1' });
-					const id2 = await queue.add({ key: 'query2' });
-					const id3 = await queue.add({ key: 'query3' });
-					const id4 = await queue.add({ key: 'query4' });
+					const id1 = await localQueue.add({ key: 'query1' });
+					const id2 = await localQueue.add({ key: 'query2' });
+					const id3 = await localQueue.add({ key: 'query3' });
+					const id4 = await localQueue.add({ key: 'query4' });
 
-					await queue.setStatus(id2, 'completed', { output: 'done' });
-					await queue.setStatus(id3, 'failed_temporarily');
-					await queue.setStatus(id4, 'processing');
+					await localQueue.setStatus(id2, 'completed', { output: 'done' });
+					await localQueue.setStatus(id3, 'failed_temporarily');
+					await localQueue.setStatus(id4, 'processing');
 
 					for (const withLimit of [undefined, 10]) {
-						const addQueryArgs: Parameters<typeof queue.query>[0] = {};
+						const addQueryArgs: Parameters<typeof localQueue.query>[0] = {};
 						if (withLimit !== undefined) {
 							addQueryArgs.limit = withLimit;
 						}
 
-						const allEntries = await queue.query({ ...addQueryArgs });
+						const allEntries = await localQueue.query({ ...addQueryArgs });
 						expect(allEntries.length).toEqual(4);
 
-						const pendingEntries = await queue.query({ status: 'pending', ...addQueryArgs });
+						const pendingEntries = await localQueue.query({ status: 'pending', ...addQueryArgs });
 						expect(pendingEntries.length).toBe(1);
 						expect(pendingEntries[0]?.id).toBe(id1);
 
-						const completedEntries = await queue.query({ status: 'completed', ...addQueryArgs });
+						const completedEntries = await localQueue.query({ status: 'completed', ...addQueryArgs });
 						expect(completedEntries.length).toBe(1);
 						expect(completedEntries[0]?.id).toBe(id2);
 
-						const failedEntries = await queue.query({ status: 'failed_temporarily', ...addQueryArgs });
+						const failedEntries = await localQueue.query({ status: 'failed_temporarily', ...addQueryArgs });
 						expect(failedEntries.length).toBe(1);
 						expect(failedEntries[0]?.id).toBe(id3);
 
-						const processingEntries = await queue.query({ status: 'processing', ...addQueryArgs });
+						const processingEntries = await localQueue.query({ status: 'processing', ...addQueryArgs });
 						expect(processingEntries.length).toBe(1);
 						expect(processingEntries[0]?.id).toBe(id4);
 					}
 
-					const limitedEntries = await queue.query({ limit: 2 });
+					const limitedEntries = await localQueue.query({ limit: 2 });
 					expect(limitedEntries.length).toBe(2);
 
 					const futureDate = new Date(Date.now() + 100000);
-					const updatedBeforeEntries = await queue.query({ updatedBefore: futureDate });
+					const updatedBeforeEntries = await localQueue.query({ updatedBefore: futureDate });
 					expect(updatedBeforeEntries.length).toBe(4);
 
 					const pastDate = new Date(Date.now() - 100000);
-					const noEntriesBeforePast = await queue.query({ updatedBefore: pastDate });
+					const noEntriesBeforePast = await localQueue.query({ updatedBefore: pastDate });
 					expect(noEntriesBeforePast.length).toBe(0);
 				});
 
