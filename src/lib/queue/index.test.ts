@@ -3,6 +3,7 @@ import type { Logger } from '../log/index.ts';
 import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 import type { JSONSerializable } from '../utils/json.ts';
+import { hash } from '../utils/tests/hash.js';
 
 import {
 	KeetaAnchorQueueRunnerJSONConfigProc,
@@ -226,7 +227,12 @@ const drivers: {
 				throw(new Error('Postgres configuration not available'));
 			}
 
-			const dbName = `anchor_queue_test_${key}_${RunKey.replace(/-/g, '_')}`;
+			let dbNameKey = key;
+			if (dbNameKey.length > 14) {
+				dbNameKey = dbNameKey.slice(0, 6) + hash(dbNameKey, 8);
+			}
+
+			const dbName = `anchor_test_${key}_${RunKey.replace(/-/g, '_')}`;
 			let pool: pg.Pool | undefined;
 			let adminPool: pg.Pool | undefined;
 
