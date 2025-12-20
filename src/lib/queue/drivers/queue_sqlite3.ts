@@ -302,6 +302,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
+			await this.toctouDelay?.();
+
 			const changedData = ManageStatusUpdates<QueueResult>(id, {
 				status: existingEntry.status,
 				failures: existingEntry.failures
@@ -339,6 +341,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			}
 
 			const result = await db.run(updateQuery, ...updateParams);
+
+			await this.toctouDelay?.();
 
 			if (oldStatus && result.changes === 0) {
 				const currentEntry = await db.get<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);

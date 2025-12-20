@@ -211,6 +211,9 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const logger = this.methodLogger('setStatus');
 
 		const entryJSON = await redis.get(this.queueKey(id));
+
+		await this.toctouDelay?.();
+
 		if (!entryJSON) {
 			throw(new Error(`Request with ID ${String(id)} not found`));
 		}

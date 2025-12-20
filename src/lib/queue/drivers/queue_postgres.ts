@@ -294,6 +294,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
+			await this.toctouDelay?.();
+
 			const currentEntry = existingEntry.rows[0];
 			if (!currentEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
@@ -322,6 +324,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			}
 
 			const result = await client.query(updateQuery, updateParams);
+
+			await this.toctouDelay?.();
 
 			if (oldStatus && result.rowCount === 0) {
 				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
