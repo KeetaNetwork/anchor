@@ -1563,8 +1563,18 @@ suite.sequential('Driver Tests', async function() {
 					{
 						await using partition1 = await queue.partition('partition1');
 						await using partition2 = await queue.partition('partition2');
+						await using partition11 = await partition1.partition('partition1');
+						await using partition111 = await partition11.partition('partition1');
+
+						expect(partition1.path).toEqual([...queue.path, 'partition1']);
+						expect(partition2.path).toEqual([...queue.path, 'partition2']);
+						expect(partition11.path).toEqual([...queue.path, 'partition1', 'partition1']);
+						expect(partition111.path).toEqual([...queue.path, 'partition1', 'partition1', 'partition1']);
+
 						id2 = await partition1.add({ key: 'partition_test_2' });
 						const id3 = await partition2.add({ key: 'partition_test_3' });
+						const id4 = await partition11.add({ key: 'partition_test_1_1' });
+						const id5 = await partition111.add({ key: 'partition_test_1_1_1' });
 
 						async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
 							const value = await queueToCheck.get(id);
@@ -1577,13 +1587,31 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry2?.request).toEqual({ key: 'partition_test_2' });
 						const entry3 = await partition2.get(id3);
 						expect(entry3?.request).toEqual({ key: 'partition_test_3' });
+						const entry4 = await partition11.get(id4);
+						expect(entry4?.request).toEqual({ key: 'partition_test_1_1' });
+						const entry5 = await partition111.get(id5);
+						expect(entry5?.request).toEqual({ key: 'partition_test_1_1_1' });
 
 						await shouldNotHave(partition1, id1);
 						await shouldNotHave(partition2, id1);
+						await shouldNotHave(partition11, id1);
+						await shouldNotHave(partition111, id1);
 						await shouldNotHave(queue, id2);
 						await shouldNotHave(partition2, id2);
+						await shouldNotHave(partition11, id2);
+						await shouldNotHave(partition111, id2);
 						await shouldNotHave(queue, id3);
 						await shouldNotHave(partition1, id3);
+						await shouldNotHave(partition11, id3);
+						await shouldNotHave(partition111, id3);
+						await shouldNotHave(queue, id4);
+						await shouldNotHave(partition1, id4);
+						await shouldNotHave(partition2, id4);
+						await shouldNotHave(partition111, id4);
+						await shouldNotHave(queue, id5);
+						await shouldNotHave(partition1, id5);
+						await shouldNotHave(partition2, id5);
+						await shouldNotHave(partition11, id5);
 
 						/* Ensure we can access the partition while the parent queue is still in use */
 						const partition1_again = await queue.partition('partition1');
@@ -1640,33 +1668,50 @@ suite.sequential('Driver Tests', async function() {
 					expect(entry?.status).toBe('pending');
 					expect(entry?.id).toBe(id1);
 
-					const [ part0_id1, part1_id1 ] = await (async function() {
+					const [ part0_id1, part1_id1, part11_id1, part111_id1 ] = await (async function() {
 						await using driverInstance = await driverConfig.create('partition_persistence_test', { leave: true });
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
+						await using subpartition = await partition.partition('part1');
+						await using subsubpartition = await subpartition.partition('part1');
 
 						return([
 							await queue.add({ partition: 'part0' }),
-							await partition.add({ partition: 'part1' })
+							await partition.add({ partition: 'part1' }),
+							await subpartition.add({ partition: 'part1.1' }),
+							await subsubpartition.add({ partition: 'part1.1.1' })
 						]);
 					})();
 
-					const [ part0_entry, part1_entry ] = await (async function() {
+					expect(part0_id1).toBeDefined();
+					expect(part1_id1).toBeDefined();
+					expect(part11_id1).toBeDefined();
+					expect(part111_id1).toBeDefined();
+
+					const [ part0_entry, part1_entry, part11_entry, part111_entry ] = await (async function() {
 						await using driverInstance = await driverConfig.create('partition_persistence_test');
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
+						await using subpartition = await partition.partition('part1');
+						await using subsubpartition = await subpartition.partition('part1');
 
 						return([
 							await queue.get(part0_id1),
-							await partition.get(part1_id1)
+							await partition.get(part1_id1),
+							await subpartition.get(part11_id1),
+							await subsubpartition.get(part111_id1)
 						]);
 					})();
 					expect(part0_entry).toBeDefined();
 					expect(part0_entry?.request).toEqual({ partition: 'part0' });
 					expect(part1_entry).toBeDefined();
 					expect(part1_entry?.request).toEqual({ partition: 'part1' });
+					expect(part11_entry).toBeDefined();
+					expect(part11_entry?.request).toEqual({ partition: 'part1.1' });
+					expect(part111_entry).toBeDefined();
+					expect(part111_entry?.request).toEqual({ partition: 'part1.1.1' });
 				});
 			}
 		});
