@@ -936,6 +936,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 		const requests = await this.queue.query({ status: 'processing', limit: 100, updatedBefore: new Date(now - stuckThreshold) });
 		for (const request of requests) {
+			/*
+			 * Skip the runner lock entries, they are managed separately
+			 */
+			if (request.id.toString().startsWith('@runner-lock:9ba756f0-7aa2-41c7-a1ea-b010dc752ae8.worker.')) {
+				continue;
+			}
+
 			try {
 				logger?.warn(`Marking request with id ${String(request.id)} as stuck`);
 
