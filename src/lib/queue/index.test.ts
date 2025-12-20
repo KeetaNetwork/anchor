@@ -1102,12 +1102,81 @@ suite.sequential('Driver Tests', async function() {
 						const entry = await queue.get(generateRequestID());
 						expect(entry).toBeNull();
 					}
+				});
+
+				/* Test that we can set status of an entry */
+				testRunner('Set Status', async function() {
+					const id = await queue.add({ key: 'test2' });
+					await queue.setStatus(id, 'processing');
+					const entry = await queue.get(id);
+					expect(entry?.status).toBe('processing');
+
+					await queue.setStatus(id, 'completed', { output: 'result' });
+					const updatedEntry = await queue.get(id);
+					expect(updatedEntry?.status).toBe('completed');
+					expect(updatedEntry?.output).toBe('result');
+
+					await queue.setStatus(id, 'failed_temporarily', { output: 'result_failed' });
+					const failedEntry = await queue.get(id);
+					expect(failedEntry?.status).toBe('failed_temporarily');
+					expect(failedEntry?.output).toBe('result_failed');
+					expect(failedEntry?.failures).toBe(1);
+				});
+
+				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
+				testRunner('Set Status with oldStatus', async function() {
+					await using queueLocal = await queue.partition('set-status-with-oldstatus');
+
+					/*
+					 * Add a Time-of-Check to Time-of-Use delay to simulate
+					 * a network delay that would cause some clients to be
+					 * able to compete to add the same ID
+					 */
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const id = await queueLocal.add({ key: 'test3' });
+					await queueLocal.setStatus(id, 'processing', { oldStatus: 'pending' });
+					const entry = await queueLocal.get(id);
+					expect(entry?.status).toBe('processing');
+
+					await expect(async function() {
+						return(await queueLocal.setStatus(id, 'completed', { oldStatus: 'pending' }));
+					}).rejects.toThrow(Errors.IncorrectStateAssertedError);
+
+					await queueLocal.setStatus(id, 'completed', { oldStatus: 'processing' });
+					const completedEntry = await queueLocal.get(id);
+					expect(completedEntry?.status).toBe('completed');
+				}, 300_000);
+
+				/* Test that we can add and get an entry with a specific status */
+				testRunner('Add Entry with Initial Status', async function() {
+					const id = await queue.add({ key: 'with_status' }, { status: 'moved' });
+					const entry = await queue.get(id);
+					expect(entry?.status).toBe('moved');
+
+					await queue.setStatus(id, 'completed', { output: 'result' });
+					const updatedEntry = await queue.get(id);
+					expect(updatedEntry?.status).toBe('completed');
+					expect(updatedEntry?.output).toBe('result');
+				});
+
+				/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
+				testRunner('Idempotent Add', async function() {
+					const customID = generateRequestID();
+					const id1 = await queue.add({ key: 'first' }, { id: customID });
+					expect(id1).toBe(customID);
+
+					const id2 = await queue.add({ key: 'second' }, { id: customID });
+					expect(id2).toBe(customID);
+
+					const entry = await queue.get(customID);
+					expect(entry?.request).toEqual({ key: 'first' });
 
 					/*
 					 * Test adding the same ID concurrently
 					 */
 					{
-						await using queueLocal = await queue.partition('add-and-get-concurrently');
+						await using queueLocal = await queue.partition('idempotent-add-concurrently');
 
 						/*
 						 * Add a Time-of-Check to Time-of-Use delay to simulate
@@ -1138,66 +1207,6 @@ suite.sequential('Driver Tests', async function() {
 						const entry_again = await queueLocal.get(id1_again);
 						expect(entry_again).toBeDefined();
 					}
-				});
-
-				/* Test that we can set status of an entry */
-				testRunner('Set Status', async function() {
-					const id = await queue.add({ key: 'test2' });
-					await queue.setStatus(id, 'processing');
-					const entry = await queue.get(id);
-					expect(entry?.status).toBe('processing');
-
-					await queue.setStatus(id, 'completed', { output: 'result' });
-					const updatedEntry = await queue.get(id);
-					expect(updatedEntry?.status).toBe('completed');
-					expect(updatedEntry?.output).toBe('result');
-
-					await queue.setStatus(id, 'failed_temporarily', { output: 'result_failed' });
-					const failedEntry = await queue.get(id);
-					expect(failedEntry?.status).toBe('failed_temporarily');
-					expect(failedEntry?.output).toBe('result_failed');
-					expect(failedEntry?.failures).toBe(1);
-				});
-
-				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
-				testRunner('Set Status with oldStatus', async function() {
-					const id = await queue.add({ key: 'test3' });
-					await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
-					const entry = await queue.get(id);
-					expect(entry?.status).toBe('processing');
-
-					await expect(async function() {
-						return(await queue.setStatus(id, 'completed', { oldStatus: 'pending' }));
-					}).rejects.toThrow(Errors.IncorrectStateAssertedError);
-
-					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
-					const completedEntry = await queue.get(id);
-					expect(completedEntry?.status).toBe('completed');
-				}, 300_000);
-
-				/* Test that we can add and get an entry with a specific status */
-				testRunner('Add Entry with Initial Status', async function() {
-					const id = await queue.add({ key: 'with_status' }, { status: 'moved' });
-					const entry = await queue.get(id);
-					expect(entry?.status).toBe('moved');
-
-					await queue.setStatus(id, 'completed', { output: 'result' });
-					const updatedEntry = await queue.get(id);
-					expect(updatedEntry?.status).toBe('completed');
-					expect(updatedEntry?.output).toBe('result');
-				});
-
-				/* Test that we can add an entry with an ID that already exists and it does nothing (idempotent add) */
-				testRunner('Idempotent Add', async function() {
-					const customID = generateRequestID();
-					const id1 = await queue.add({ key: 'first' }, { id: customID });
-					expect(id1).toBe(customID);
-
-					const id2 = await queue.add({ key: 'second' }, { id: customID });
-					expect(id2).toBe(customID);
-
-					const entry = await queue.get(customID);
-					expect(entry?.request).toEqual({ key: 'first' });
 				});
 
 				/* Test that we can add an entry with idempotent ID and it fails if the idempotent key exists with the appropriate error */
@@ -1501,8 +1510,11 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that after adding a key, many concurrent changes to the same key are handled correctly (i.e., exactly one succeeds when using oldStatus all others fail) */
 				testRunner('Concurrent Status Changes', async function() {
-					const entryID = await queue.add({ key: 'concurrent_status_change' });
-					const initialEntry = await queue.get(entryID);
+					await using queueLocal = await queue.partition('concurrent-status-changes');
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const entryID = await queueLocal.add({ key: 'concurrent_status_change' });
+					const initialEntry = await queueLocal.get(entryID);
 					expect(initialEntry?.status).toBe('pending');
 
 					const concurrentUpdates = 20;
@@ -1511,7 +1523,7 @@ suite.sequential('Driver Tests', async function() {
 					for (let index = 0; index < concurrentUpdates; index++) {
 						updatePromises.push((async function() {
 							try {
-								await queue.setStatus(entryID, 'processing', { oldStatus: 'pending' });
+								await queueLocal.setStatus(entryID, 'processing', { oldStatus: 'pending' });
 								return({ success: true });
 							} catch (error: unknown) {
 								return({ success: false, error: error });
@@ -1531,7 +1543,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(successCount).toBe(1);
 					expect(failureCount).toBe(concurrentUpdates - 1);
 
-					const finalEntry = await queue.get(entryID);
+					const finalEntry = await queueLocal.get(entryID);
 					expect(finalEntry?.status).toBe('processing');
 				}, 30_000);
 
