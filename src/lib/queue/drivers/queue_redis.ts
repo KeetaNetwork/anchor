@@ -249,24 +249,24 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				local allIndexKey = ARGV[5]
 				local entryId = ARGV[6]
 				local score = ARGV[7]
-				
+
 				local current = redis.call('GET', key)
 				if not current then
 					return {err = 'NOT_FOUND'}
 				end
-				
+
 				local currentData = cjson.decode(current)
 				if currentData.status ~= expectedStatus then
 					return {err = 'STATUS_MISMATCH'}
 				end
-				
+
 				redis.call('SET', key, newData)
 				if oldIndexKey ~= newIndexKey then
 					redis.call('ZREM', oldIndexKey, entryId)
 				end
 				redis.call('ZADD', newIndexKey, score, entryId)
 				redis.call('ZADD', allIndexKey, score, entryId)
-				
+
 				return {ok = 'OK'}
 			`;
 
