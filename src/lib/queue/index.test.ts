@@ -38,6 +38,8 @@ if (DEBUG) {
 	logger = console;
 }
 
+const TestingKey = 'bc81abf8-e43b-490b-b486-744fb49a5082';
+
 const RunKey = crypto.randomUUID();
 function generateRequestID(): KeetaAnchorQueueRequestID {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -364,7 +366,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams(100, 100, 3);
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -468,7 +470,7 @@ test('Queue Runner Basic Tests', async function() {
 		const id = await runner.add({ key: 'stuck', newStatus: 'completed' });
 
 		/* Pretend the job is processing */
-		await runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').queue().setStatus(id, 'processing', { oldStatus: 'pending' });
+		await runner._Testing(TestingKey).queue().setStatus(id, 'processing', { oldStatus: 'pending' });
 		vi.advanceTimersByTime(100 * 10 + 200);
 		await runner.run();
 		{
@@ -592,7 +594,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams(100, 50, 3);
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -756,7 +758,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams(3, 100, 3, 1);
 
 			return(runner);
 		});
@@ -940,10 +942,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage2._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage3._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage4._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage2._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage3._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage4._Testing(TestingKey).setParams(100, 300_000, 10_000);
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -1069,7 +1071,6 @@ suite.sequential('Driver Tests', async function() {
 				beforeAll(async function() {
 					driverInstance = await driverConfig.create('basic_test');
 					queue = driverInstance.queue;
-
 				});
 
 				afterAll(async function() {
