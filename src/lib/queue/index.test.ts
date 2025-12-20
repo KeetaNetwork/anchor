@@ -1094,6 +1094,50 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry?.created).toBeInstanceOf(Date);
 						expect(entry?.updated).toBeInstanceOf(Date);
 					}
+
+					/*
+					 * Test getting a non-existent entry
+					 */
+					{
+						const entry = await queue.get(generateRequestID());
+						expect(entry).toBeNull();
+					}
+
+					/*
+					 * Test adding the same ID concurrently
+					 */
+					{
+						await using queueLocal = await queue.partition('add-and-get-concurrently');
+
+						/*
+						 * Add a Time-of-Check to Time-of-Use delay to simulate
+						 * a network delay that would cause some clients to be
+						 * able to compete to add the same ID
+						 */
+						queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+						const allIds = await Promise.all(Array.from({ length: 20 }).map(async function(_ignored_value, index) {
+							return(await queueLocal.add({ key: `test${index + 1}` }, { id: 'custom_id_123' }));
+						}));
+
+						for (const id of allIds) {
+							expect(id).toBe('custom_id_123');
+						}
+						const id1 = allIds[0];
+						if (id1 === undefined) {
+							throw(new Error('internal error: id1 is undefined'));
+						}
+						const entry = await queueLocal.get(id1);
+
+						expect(entry).toBeDefined();
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+						expect(entry?.request).toEqual({ key: expect.stringMatching(/^test/) });
+
+						const id1_again = await queueLocal.add({ key: 'test1' }, { id: 'custom_id_123' });
+						expect(id1_again).toBe('custom_id_123');
+						const entry_again = await queueLocal.get(id1_again);
+						expect(entry_again).toBeDefined();
+					}
 				});
 
 				/* Test that we can set status of an entry */

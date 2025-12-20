@@ -49,6 +49,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -237,6 +238,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			const idempotentIDs = info?.idempotentKeys;
@@ -255,6 +258,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 				if (matchingIdempotentEntries.size !== 0) {
 					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
@@ -269,28 +274,21 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			 */
 			const status = info?.status ?? 'pending';
 
-			try {
-				await db.run(
-					`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
-					 VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL, 0)`,
-					entryID,
-					this.pathStr,
-					requestJSON,
-					status,
-					currentTime,
-					currentTime
-				);
+			await db.run(
+				`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
+				 VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL, 0)`,
+				entryID,
+				this.pathStr,
+				requestJSON,
+				status,
+				currentTime,
+				currentTime
+			);
 
-				if (idempotentIDs && idempotentIDs.size > 0) {
-					for (const idempotentID of idempotentIDs) {
-						await db.run('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES (?, ?, ?)', entryID, this.pathStr, idempotentID);
-					}
+			if (idempotentIDs && idempotentIDs.size > 0) {
+				for (const idempotentID of idempotentIDs) {
+					await db.run('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES (?, ?, ?)', entryID, this.pathStr, idempotentID);
 				}
-			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('UNIQUE constraint failed') && idempotentIDs) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
-				}
-				throw(error);
 			}
 
 			return(entryID);
@@ -489,5 +487,26 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 	async [Symbol.asyncDispose](): Promise<void> {
 		return(await this.destroy());
+	}
+
+	/** @internal */
+	_Testing(key: string): {
+		setToctouDelay(delay: number): void;
+		unsetToctouDelay(): void;
+	} {
+		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
+			throw(new Error('This is a testing only method'));
+		}
+
+		return({
+			setToctouDelay: (delay: number): void => {
+				this.toctouDelay = async (): Promise<void> => {
+					return(await asleep(delay));
+				};
+			},
+			unsetToctouDelay: (): void => {
+				this.toctouDelay = undefined;
+			}
+		});
 	}
 }

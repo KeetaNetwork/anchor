@@ -186,6 +186,12 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	 */
 	destroy(): Promise<void>;
 	[Symbol.asyncDispose](): Promise<void>;
+
+	/** @internal */
+	_Testing?: (key: string) => {
+		setToctouDelay?(delay: number): void;
+		unsetToctouDelay?(): void;
+	};
 }
 
 /**
