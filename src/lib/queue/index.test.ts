@@ -38,6 +38,8 @@ if (DEBUG) {
 	logger = console;
 }
 
+const TestingKey = 'bc81abf8-e43b-490b-b486-744fb49a5082';
+
 const RunKey = crypto.randomUUID();
 function generateRequestID(): KeetaAnchorQueueRequestID {
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -364,7 +366,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams(100, 100, 3);
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -468,7 +470,7 @@ test('Queue Runner Basic Tests', async function() {
 		const id = await runner.add({ key: 'stuck', newStatus: 'completed' });
 
 		/* Pretend the job is processing */
-		await runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').queue().setStatus(id, 'processing', { oldStatus: 'pending' });
+		await runner._Testing(TestingKey).queue().setStatus(id, 'processing', { oldStatus: 'pending' });
 		vi.advanceTimersByTime(100 * 10 + 200);
 		await runner.run();
 		{
@@ -592,7 +594,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams(100, 50, 3);
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -756,7 +758,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams(3, 100, 3, 1);
 
 			return(runner);
 		});
@@ -940,10 +942,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage2._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage3._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage4._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage2._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage3._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage4._Testing(TestingKey).setParams(100, 300_000, 10_000);
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -1069,7 +1071,6 @@ suite.sequential('Driver Tests', async function() {
 				beforeAll(async function() {
 					driverInstance = await driverConfig.create('basic_test');
 					queue = driverInstance.queue;
-
 				});
 
 				afterAll(async function() {
@@ -1092,6 +1093,14 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry?.worker).toBeNull();
 						expect(entry?.created).toBeInstanceOf(Date);
 						expect(entry?.updated).toBeInstanceOf(Date);
+					}
+
+					/*
+					 * Test getting a non-existent entry
+					 */
+					{
+						const entry = await queue.get(generateRequestID());
+						expect(entry).toBeNull();
 					}
 				});
 
@@ -1116,17 +1125,26 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
 				testRunner('Set Status with oldStatus', async function() {
-					const id = await queue.add({ key: 'test3' });
-					await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
-					const entry = await queue.get(id);
+					await using queueLocal = await queue.partition('set-status-with-oldstatus');
+
+					/*
+					 * Add a Time-of-Check to Time-of-Use delay to simulate
+					 * a network delay that would cause some clients to be
+					 * able to compete to add the same ID
+					 */
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const id = await queueLocal.add({ key: 'test3' });
+					await queueLocal.setStatus(id, 'processing', { oldStatus: 'pending' });
+					const entry = await queueLocal.get(id);
 					expect(entry?.status).toBe('processing');
 
 					await expect(async function() {
-						return(await queue.setStatus(id, 'completed', { oldStatus: 'pending' }));
+						return(await queueLocal.setStatus(id, 'completed', { oldStatus: 'pending' }));
 					}).rejects.toThrow(Errors.IncorrectStateAssertedError);
 
-					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
-					const completedEntry = await queue.get(id);
+					await queueLocal.setStatus(id, 'completed', { oldStatus: 'processing' });
+					const completedEntry = await queueLocal.get(id);
 					expect(completedEntry?.status).toBe('completed');
 				}, 300_000);
 
@@ -1153,6 +1171,42 @@ suite.sequential('Driver Tests', async function() {
 
 					const entry = await queue.get(customID);
 					expect(entry?.request).toEqual({ key: 'first' });
+
+					/*
+					 * Test adding the same ID concurrently
+					 */
+					{
+						await using queueLocal = await queue.partition('idempotent-add-concurrently');
+
+						/*
+						 * Add a Time-of-Check to Time-of-Use delay to simulate
+						 * a network delay that would cause some clients to be
+						 * able to compete to add the same ID
+						 */
+						queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+						const allIds = await Promise.all(Array.from({ length: 20 }).map(async function(_ignored_value, index) {
+							return(await queueLocal.add({ key: `test${index + 1}` }, { id: 'custom_id_123' }));
+						}));
+
+						for (const id of allIds) {
+							expect(id).toBe('custom_id_123');
+						}
+						const id1 = allIds[0];
+						if (id1 === undefined) {
+							throw(new Error('internal error: id1 is undefined'));
+						}
+						const entry = await queueLocal.get(id1);
+
+						expect(entry).toBeDefined();
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+						expect(entry?.request).toEqual({ key: expect.stringMatching(/^test/) });
+
+						const id1_again = await queueLocal.add({ key: 'test1' }, { id: 'custom_id_123' });
+						expect(id1_again).toBe('custom_id_123');
+						const entry_again = await queueLocal.get(id1_again);
+						expect(entry_again).toBeDefined();
+					}
 				});
 
 				/* Test that we can add an entry with idempotent ID and it fails if the idempotent key exists with the appropriate error */
@@ -1456,8 +1510,11 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that after adding a key, many concurrent changes to the same key are handled correctly (i.e., exactly one succeeds when using oldStatus all others fail) */
 				testRunner('Concurrent Status Changes', async function() {
-					const entryID = await queue.add({ key: 'concurrent_status_change' });
-					const initialEntry = await queue.get(entryID);
+					await using queueLocal = await queue.partition('concurrent-status-changes');
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const entryID = await queueLocal.add({ key: 'concurrent_status_change' });
+					const initialEntry = await queueLocal.get(entryID);
 					expect(initialEntry?.status).toBe('pending');
 
 					const concurrentUpdates = 20;
@@ -1466,7 +1523,7 @@ suite.sequential('Driver Tests', async function() {
 					for (let index = 0; index < concurrentUpdates; index++) {
 						updatePromises.push((async function() {
 							try {
-								await queue.setStatus(entryID, 'processing', { oldStatus: 'pending' });
+								await queueLocal.setStatus(entryID, 'processing', { oldStatus: 'pending' });
 								return({ success: true });
 							} catch (error: unknown) {
 								return({ success: false, error: error });
@@ -1486,7 +1543,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(successCount).toBe(1);
 					expect(failureCount).toBe(concurrentUpdates - 1);
 
-					const finalEntry = await queue.get(entryID);
+					const finalEntry = await queueLocal.get(entryID);
 					expect(finalEntry?.status).toBe('processing');
 				}, 30_000);
 
