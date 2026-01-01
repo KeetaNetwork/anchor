@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { GenericAccount as KeetaNetGenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -16,6 +16,7 @@ type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: stri
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
 type KeetaNetAccountTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account<typeof KeetaNetAccount.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+type KeetaNetAccountPublicKeyString = ReturnType<InstanceType<typeof KeetaNetClient.lib.Account>['publicKeyString']['get']>;
 
 /**
  * Canonical form of a currency code for use in the ServiceMetadata
@@ -162,6 +163,39 @@ type ServiceMetadata = {
 				}[];
 			}
 		};
+		/**
+		 * Order Matcher services
+		 *
+		 * This is used to identify service providers which perform MATCH_SWAP operations on the network, and the pairs that they support
+		 */
+		orderMatcher?: {
+			/**
+			 * Provider ID which identifies the FX provider
+			 */
+			[id: string]: {
+				operations: {
+					getPairHistory?: string;
+					getPairInfo?: string;
+					getPairDepth?: string;
+				};
+
+				matchingAccounts: KeetaNetAccountPublicKeyString[];
+
+				/**
+				 * Path for which can be used to identify which
+				 * tokens this order matcher provider will operate on
+				 */
+				pairs: {
+					base: KeetaNetAccountTokenPublicKeyString[];
+					quote: KeetaNetAccountTokenPublicKeyString[];
+
+					fees?: {
+						type: 'sell-token-percentage';
+						minPercentBasisPoints: number;
+					}
+				}[];
+			}
+		};
 		assetMovement?: {
 			[id: string]: {
 				operations: {
@@ -245,6 +279,10 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * KYC providers
 		 */
 		kycProviders?: string[];
+	};
+	'orderMatcher': {
+		base?: KeetaNetAccountTokenPublicKeyString;
+		quote?: KeetaNetAccountTokenPublicKeyString;
 	};
 	'kyc': {
 		/**
@@ -374,6 +412,11 @@ function assertValidOperationsFX(input: unknown): asserts input is { operations:
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsOrderMatcher(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['orderMatcher']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
 function assertValidOperationsAssetMovement(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['assetMovement']>[string]>['operations'] } {
 	/* XXX:TODO: Validate the specific operations */
 	assertValidOperationsBanking(input);
@@ -450,6 +493,25 @@ const assertResolverLookupFXResult = async function(input: unknown): Promise<Res
 	// @ts-ignore
 	return(input);
 };
+
+const assertResolverLookupOrderMatcherResult = async function(input: unknown): Promise<ResolverLookupServiceResults<'orderMatcher'>[string]> {
+	assertValidOperationsOrderMatcher(input);
+	// XXX:TODO: Perform deeper validation of the "pairs" structure
+	if (!('pairs' in input)) {
+		throw(new Error('Expected "pairs" key in order matcher service, but it was not found'));
+	}
+
+	const pairsUnrealized = input.pairs;
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	if (!Metadata.isValuizable(pairsUnrealized)) {
+		throw(new Error(`Expected "pairs" to be an Valuizable, got ${typeof pairsUnrealized}`));
+	}
+	// XXX:TODO: Perform deeper validation of the "pairs" structure
+	await pairsUnrealized('array');
+	// XXX:TODO: Perform deeper validation of the "pairs" structure
+	// @ts-ignore
+	return(input);
+}
 
 const assertResolverLookupAssetMovementResults = async function(input: unknown): Promise<ResolverLookupServiceResults<'assetMovement'>[string]> {
 	assertValidOperationsAssetMovement(input);
@@ -1276,6 +1338,9 @@ class Resolver {
 		'fx': {
 			search: this.lookupFXServices.bind(this)
 		},
+		'orderMatcher': {
+			search: this.lookupOrderMatcherServices.bind(this)
+		},
 		'assetMovement': {
 			search: this.lookupAssetMovementServices.bind(this)
 		},
@@ -1542,6 +1607,96 @@ class Resolver {
 			} catch (checkFXServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking FX service', checkFXServiceID, ':', checkFXServiceError, ' -- ignoring');
 			}
+		}
+
+		return(retval);
+	}
+
+	private async lookupOrderMatcherServices(orderMatcherServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'orderMatcher'>) {
+		if (orderMatcherServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'orderMatcher'> = {};
+		for (const checkOrderMatcherServiceID in orderMatcherServices) {
+			try {
+				const checkOrderMatcherService = await assertResolverLookupOrderMatcherResult(await orderMatcherServices[checkOrderMatcherServiceID]?.('object'));
+				if (!checkOrderMatcherService) {
+					continue;
+				}
+
+				const pairsUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['orderMatcher']>[string]['pairs']> = checkOrderMatcherService.pairs;
+				const pairs = await pairsUnrealized?.('array');
+				if (pairs === undefined) {
+					continue;
+				}
+
+				let acceptable = false;
+
+				if (criteria.base === undefined && criteria.quote === undefined) {
+					acceptable = true;
+				} else {
+					for (const pairUnrealized of pairs) {
+						const pair = await pairUnrealized?.('object');
+						if (pair === undefined) {
+							continue;
+						}
+	
+						const [ baseTokenAddresses, quoteTokenAddresses ] = await Promise.all([ pair.base, pair.quote ].map(async (tokenListUnrealized) => {
+							const tokenList = await tokenListUnrealized?.('array') ?? [];
+
+							const resolvedAddresses = await Promise.all(tokenList.map(async (tokenUnrealized) => {
+								try {
+									const publicKey = await tokenUnrealized?.('string');
+									return(KeetaNetAccount.fromPublicKeyString(publicKey).assertKeyType(KeetaNetAccount.AccountKeyAlgorithm.TOKEN));
+								} catch (error) {
+									this.#logger?.debug(`Resolver:${this.id}`, 'Error resolving token address in order matcher pair:', error, ' -- ignoring');
+									return(undefined);
+								}
+							}));
+
+							const tokenAddresses = resolvedAddresses.filter(function(token): token is TokenAddress {
+								return(token !== undefined);
+							});
+	
+							return(new KeetaNetAccount.Set(tokenAddresses));
+						}));
+
+						if (!baseTokenAddresses || !quoteTokenAddresses) {
+							throw(new Error('internal error: base or quote token addresses could not be resolved'));
+						}
+
+						if (criteria.base !== undefined && !baseTokenAddresses.has(KeetaNetAccount.fromPublicKeyString(criteria.base))) {
+							continue;
+						}
+
+						if (criteria.quote !== undefined && !quoteTokenAddresses.has(KeetaNetAccount.fromPublicKeyString(criteria.quote))) {
+							continue;
+						}
+	
+						acceptable = true;
+						break;
+					}
+				}
+
+				if (!acceptable) {
+					continue;
+				}
+
+				/* XXX: TODO: Apply criteria filtering here */
+
+				retval[checkOrderMatcherServiceID] = checkOrderMatcherService;
+			} catch (checkOrderMatcherServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking Order Matcher service', checkOrderMatcherServiceID, ':', checkOrderMatcherServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any order matcher services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
 		}
 
 		return(retval);

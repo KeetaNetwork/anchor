@@ -12,6 +12,10 @@ import type {
 	KeetaAssetMovementClientConfig
 } from '../services/asset-movement/client.ts';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
+import type {
+	KeetaOrderMatcherClientConfig,
+} from '../services/order-matcher/client.ts';
+import KeetaOrderMatcherClient from '../services/order-matcher/client.js';
 
 // TODO: Determine how we want to export the client
 // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -30,6 +34,13 @@ export namespace FX {
 export namespace AssetMovement {
 	export type ClientConfig = KeetaAssetMovementClientConfig;
 	export const Client: typeof KeetaAssetMovementAnchorClient = KeetaAssetMovementAnchorClient;
+}
+
+// TODO: Determine how we want to export the client
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace OrderMatcher {
+	export type ClientConfig = KeetaOrderMatcherClientConfig;
+	export const Client: typeof KeetaOrderMatcherClient = KeetaOrderMatcherClient;
 }
 
 export {
