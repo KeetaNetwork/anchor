@@ -373,7 +373,7 @@ export type AssetFeeBreakdown = {
 		 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
 		 */
 		value: string;
-		
+
 		/**
 		 * The purpose of the fee line item. @see AssetFeeLineItemType
 		 */
@@ -597,7 +597,7 @@ type TransactionIds<T extends string> = {
 export type KeetaAssetMovementTransaction = {
 	/**
 	 * The unique (per anchor) identifier for the asset movement transaction.
-	 * 
+	 *
 	 * This ID is opaque and has no meaning outside of a specific anchor's system.
 	 */
 	id: string;
