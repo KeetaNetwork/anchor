@@ -1641,7 +1641,7 @@ class Resolver {
 						if (pair === undefined) {
 							continue;
 						}
-	
+
 						const [ baseTokenAddresses, quoteTokenAddresses ] = await Promise.all([ pair.base, pair.quote ].map(async (tokenListUnrealized) => {
 							const tokenList = await tokenListUnrealized?.('array') ?? [];
 
@@ -1658,7 +1658,7 @@ class Resolver {
 							const tokenAddresses = resolvedAddresses.filter(function(token): token is TokenAddress {
 								return(token !== undefined);
 							});
-	
+
 							return(new KeetaNetAccount.Set(tokenAddresses));
 						}));
 
@@ -1673,7 +1673,7 @@ class Resolver {
 						if (criteria.quote !== undefined && !quoteTokenAddresses.has(KeetaNetAccount.fromPublicKeyString(criteria.quote))) {
 							continue;
 						}
-	
+
 						acceptable = true;
 						break;
 					}

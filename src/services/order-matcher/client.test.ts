@@ -138,7 +138,7 @@ test('Order matcher client retrieves price info and history', async function() {
 		throw(new Error('Provider lookup returned null unexpectedly'));
 	}
 
-	expect(provider.id).toBe('TestProvider');
+	expect(String(provider.providerID)).toBe('TestProvider');
 
 	expect(provider.matchingAccounts.map(account => account.publicKeyString.get())).toEqual([ account.publicKeyString.get() ]);
 	const [metadata] = provider.pairs;

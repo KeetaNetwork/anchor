@@ -13,7 +13,7 @@ import type {
 } from '../services/asset-movement/client.ts';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type {
-	KeetaOrderMatcherClientConfig,
+	KeetaOrderMatcherClientConfig
 } from '../services/order-matcher/client.ts';
 import KeetaOrderMatcherClient from '../services/order-matcher/client.js';
 

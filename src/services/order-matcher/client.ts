@@ -23,7 +23,7 @@ import type {
 	KeetaOrderMatcherPriceInfoResponse,
 	KeetaOrderMatcherPairDepthResponse
 } from './common.ts';
-import { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
 type ProviderID = BrandedString<'OrderMatcherProviderID'>;
 
@@ -53,13 +53,15 @@ type KeetaOrderMatcherServiceInfo = {
 	pairs: KeetaOrderMatcherPairMetadataCanonical[];
 };
 
-type GetEndpointsResult = Record<string, KeetaOrderMatcherServiceInfo>;
+type GetEndpointsResult = { [key: string]: KeetaOrderMatcherServiceInfo };
 
-function typedServiceEntries<T extends Record<string, unknown>>(obj: T): [keyof T, T[keyof T]][] {
+function typedServiceEntries<T extends { [key: string]: unknown }>(obj: T): [keyof T, T[keyof T]][] {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(Object.entries(obj) as [keyof T, T[keyof T]][]);
 }
 
 function toProviderID(value: string): ProviderID {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(value as unknown as ProviderID);
 }
 
@@ -104,6 +106,7 @@ async function getEndpoints(resolver: Resolver, criteria: Partial<ServiceSearchC
 				});
 			})();
 
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			operationsFunctions[operationKey as keyof KeetaOrderMatcherServiceInfo['operations']] = asyncFactory;
 		}
 
@@ -133,11 +136,16 @@ async function getEndpoints(resolver: Resolver, criteria: Partial<ServiceSearchC
 			if (pairInfo.fees !== undefined) {
 				const feesObject = await pairInfo.fees('object');
 				const typeValue = await feesObject.type('string');
-				const minPercentBasisPointsValue = await feesObject.minPercentBasisPoints('number');
-				fees = {
-					type: typeValue as KeetaOrderMatcherPairFeeMetadata['type'],
-					minPercentBasisPoints: Number(minPercentBasisPointsValue)
-				};
+				if (typeValue === 'sell-token-percentage') {
+					const minPercentBasisPointsValue = await feesObject.minPercentBasisPoints('number');
+					fees = {
+						type: typeValue,
+						minPercentBasisPoints: Number(minPercentBasisPointsValue)
+					};
+				} else {
+					throw(new Error(`Unsupported pair fee type: ${typeValue}`));
+				}
+
 			}
 
 			const pairMetadata: KeetaOrderMatcherPairMetadataCanonical = {
@@ -166,7 +174,7 @@ async function getEndpoints(resolver: Resolver, criteria: Partial<ServiceSearchC
 		return(null);
 	}
 
-	const endpoints = Object.fromEntries(await Promise.all(serviceInfoPromises)) as GetEndpointsResult;
+	const endpoints = Object.fromEntries(await Promise.all(serviceInfoPromises));
 
 	return(endpoints);
 }
@@ -186,10 +194,6 @@ export class KeetaOrderMatcherProvider {
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
 		this.parent = parent;
-	}
-
-	get id(): string {
-		return(this.providerID as unknown as string);
 	}
 
 	get matchingAccounts(): readonly KeetaNetAccount[] {
@@ -224,7 +228,7 @@ export class KeetaOrderMatcherProvider {
 			throw(new Error(`Order matcher price history request failed: ${responseJSON.error}`));
 		}
 
-		this.parent.logger?.debug(`Order matcher price history request successful, provider ${this.id} for ${canonicalPair.tokenA}:${canonicalPair.tokenB}`);
+		this.parent.logger?.debug(`Order matcher price history request successful, provider ${String(this.providerID)} for ${canonicalPair.tokenA}:${canonicalPair.tokenB}`);
 		return(responseJSON);
 	}
 
@@ -252,7 +256,7 @@ export class KeetaOrderMatcherProvider {
 			throw(new Error(`Order matcher price info request failed: ${responseJSON.error}`));
 		}
 
-		this.parent.logger?.debug(`Order matcher price info request successful, provider ${this.id} for ${canonicalPair.tokenA}:${canonicalPair.tokenB}`);
+		this.parent.logger?.debug(`Order matcher price info request successful, provider ${String(this.providerID)} for ${canonicalPair.tokenA}:${canonicalPair.tokenB}`);
 		return(responseJSON);
 	}
 
@@ -287,7 +291,7 @@ export class KeetaOrderMatcherProvider {
 			throw(new Error(`Order matcher pair depth request failed: ${responseJSON.error}`));
 		}
 
-		this.parent.logger?.debug(`Order matcher pair depth request successful, provider ${this.id} for ${canonicalPair.tokenA}:${canonicalPair.tokenB} grouping ${grouping}`);
+		this.parent.logger?.debug(`Order matcher pair depth request successful, provider ${String(this.providerID)} for ${canonicalPair.tokenA}:${canonicalPair.tokenB} grouping ${grouping}`);
 		return(responseJSON);
 	}
 }
@@ -321,8 +325,8 @@ class KeetaOrderMatcherClient {
 			return(null);
 		}
 
-		return(typedServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
-			return(new KeetaOrderMatcherProvider(serviceInfo, toProviderID(providerID as string), this));
+		return(typedServiceEntries(providerEndpoints).map(([ providerID, serviceInfo ]) => {
+			return(new KeetaOrderMatcherProvider(serviceInfo, toProviderID(String(providerID)), this));
 		}));
 	}
 
@@ -354,7 +358,7 @@ class KeetaOrderMatcherClient {
 	}
 
 	async getProvidersForPair(pair: TokenPairInput): Promise<KeetaOrderMatcherProvider[] | null> {
-		return(this.getProviders({ base: pair[0], quote: pair[1] }));
+		return(await this.getProviders({ base: pair[0], quote: pair[1] }));
 	}
 }
 

@@ -32,25 +32,18 @@ export interface KeetaAnchorOrderMatcherServerConfig extends KeetaAnchorHTTPServ
 	};
 }
 
-function canonicalizeTokenAccounts(accounts: TokenAccount[]): TokenAccount[] {
-	return(accounts.map((account) => account.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)));
-}
+function isTokenStringArray(value: unknown): value is [string, string] {
+	if (!Array.isArray(value) || value.length !== 2) {
+		return(false);
+	}
 
-function canonicalizeAccounts(accounts: KeetaNetAccount[]): KeetaNetAccount[] {
-	return(accounts.map((account) => account));
-}
-
-function canonicalizePairs(pairs: OrderMatcherPairConfig[]): OrderMatcherPairConfig[] {
-	return(pairs.map((pair) => {
-		const canonicalPair: OrderMatcherPairConfig = {
-			base: canonicalizeTokenAccounts(pair.base),
-			quote: canonicalizeTokenAccounts(pair.quote)
-		};
-		if (pair.fees !== undefined) {
-			canonicalPair.fees = pair.fees;
+	for (const item of value) {
+		if (typeof item !== 'string') {
+			return(false);
 		}
-		return(canonicalPair);
-	}));
+	}
+
+	return(true);
 }
 
 function parseTokenParameter(params: Map<string, string>): [ TokenAddress, TokenAddress ] {
@@ -60,30 +53,20 @@ function parseTokenParameter(params: Map<string, string>): [ TokenAddress, Token
 	}
 
 	const segments = tokensParam.split(':');
-	if (segments.length !== 2) {
+
+	if (!isTokenStringArray(segments)) {
 		throw(new Error('Invalid tokens parameter, expected format {tokenA}:{tokenB}'));
 	}
 
-	const [tokenAPublicKey, tokenBPublicKey] = segments as [string, string];
-	if (tokenAPublicKey === '' || tokenBPublicKey === '') {
-		throw(new Error('Invalid tokens parameter, expected non-empty token identifiers'));
-	}
-
-	const tokenA = KeetaNet.lib.Account.fromPublicKeyString(tokenAPublicKey).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	const tokenB = KeetaNet.lib.Account.fromPublicKeyString(tokenBPublicKey).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-
-	return([ tokenA, tokenB ]);
+	return([
+		KeetaNet.lib.Account.fromPublicKeyString(segments[0]).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+		KeetaNet.lib.Account.fromPublicKeyString(segments[1]).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+	]);
 }
 
 export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorOrderMatcherServerConfig> {
 	readonly homepage: KeetaAnchorOrderMatcherServerConfig['homepage'];
-	readonly orderMatcher: {
-		matchingAccounts: KeetaNetAccount[];
-		pairs: OrderMatcherPairConfig[];
-		getPairHistory?: KeetaAnchorOrderMatcherServerConfig['orderMatcher']['getPairHistory'];
-		getPairInfo: KeetaAnchorOrderMatcherServerConfig['orderMatcher']['getPairInfo'];
-		getPairDepth?: KeetaAnchorOrderMatcherServerConfig['orderMatcher']['getPairDepth'];
-	};
+	readonly orderMatcher: KeetaAnchorOrderMatcherServerConfig['orderMatcher'];
 
 	constructor(config: KeetaAnchorOrderMatcherServerConfig) {
 		super(config);
@@ -93,19 +76,13 @@ export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaN
 		}
 
 		this.homepage = config.homepage;
-		this.orderMatcher = {
-			matchingAccounts: canonicalizeAccounts(config.orderMatcher.matchingAccounts),
-			pairs: canonicalizePairs(config.orderMatcher.pairs),
-			getPairHistory: config.orderMatcher.getPairHistory,
-			getPairInfo: config.orderMatcher.getPairInfo,
-			getPairDepth: config.orderMatcher.getPairDepth
-		};
+		this.orderMatcher = config.orderMatcher;
 	}
 
-	protected override async initRoutes(_config: KeetaAnchorOrderMatcherServerConfig): Promise<Routes> {
+	protected override async initRoutes(config: KeetaAnchorOrderMatcherServerConfig): Promise<Routes> {
 		const routes: Routes = {};
 
-		if (this.homepage !== undefined) {
+		if (config.homepage !== undefined) {
 			routes['GET /'] = async () => {
 				const resolvedHomepage = typeof this.homepage === 'function' ? await this.homepage() : this.homepage;
 				return({
@@ -115,10 +92,11 @@ export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaN
 			};
 		}
 
-		if (this.orderMatcher.getPairHistory !== undefined) {
+		const { getPairHistory, getPairInfo, getPairDepth } = config.orderMatcher;
+		if (getPairHistory !== undefined) {
 			routes['GET /api/price-history/:tokens'] = async (urlParams) => {
 				const pair = parseTokenParameter(urlParams);
-				const response = await this.orderMatcher.getPairHistory?.(pair);
+				const response = await getPairHistory(pair);
 				if (response === undefined) {
 					throw(new Error('Price history handler returned undefined response'));
 				}
@@ -131,14 +109,14 @@ export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaN
 
 		routes['GET /api/price-info/:tokens'] = async (urlParams) => {
 			const pair = parseTokenParameter(urlParams);
-			const response = await this.orderMatcher.getPairInfo(pair);
+			const response = await getPairInfo(pair);
 			return({
 				output: JSON.stringify(response),
 				contentType: 'application/json'
 			});
 		};
 
-		if (this.orderMatcher.getPairDepth !== undefined) {
+		if (getPairDepth !== undefined) {
 			routes['GET /api/pair-depth/:tokens'] = async (urlParams, _body, _headers, requestUrl) => {
 				const pair = parseTokenParameter(urlParams);
 				const groupingParam = requestUrl.searchParams.get('grouping');
@@ -151,7 +129,7 @@ export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaN
 					throw(new Error('Invalid grouping query parameter, expected positive numeric value'));
 				}
 
-				const response = await this.orderMatcher.getPairDepth?.(pair, grouping);
+				const response = await getPairDepth(pair, grouping);
 				if (response === undefined) {
 					throw(new Error('Pair depth handler returned undefined response'));
 				}

@@ -67,7 +67,7 @@ test('Order matcher server exposes price endpoints and metadata', async function
 
 	let priceInfoCalls = 0;
 	let priceHistoryCalls = 0;
-		let pairDepthCalls = 0;
+	let pairDepthCalls = 0;
 
 	await using server = new KeetaNetOrderMatcherHTTPServer({
 		orderMatcher: {
@@ -107,17 +107,17 @@ test('Order matcher server exposes price endpoints and metadata', async function
 
 	const infoFetch = await fetch(`${server.url}/api/price-info/${baseKey}:${quoteKey}`);
 	expect(infoFetch.ok).toBe(true);
-	const infoJSON = await infoFetch.json();
+	const infoJSON: unknown = await infoFetch.json();
 	expect(infoJSON).toEqual(priceInfoResponse);
 
 	const historyFetch = await fetch(`${server.url}/api/price-history/${baseKey}:${quoteKey}`);
 	expect(historyFetch.ok).toBe(true);
-	const historyJSON = await historyFetch.json();
+	const historyJSON: unknown = await historyFetch.json();
 	expect(historyJSON).toEqual(priceHistoryResponse);
 
 	const depthFetch = await fetch(`${server.url}/api/pair-depth/${baseKey}:${quoteKey}?grouping=100`);
 	expect(depthFetch.ok).toBe(true);
-	const depthJSON = await depthFetch.json();
+	const depthJSON: unknown = await depthFetch.json();
 	expect(depthJSON).toEqual(pairDepthResponse);
 
 	expect(priceInfoCalls).toBe(1);
