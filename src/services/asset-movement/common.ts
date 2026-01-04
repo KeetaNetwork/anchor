@@ -306,15 +306,44 @@ type ConvertToExternalRequest<
 	Overrides &
 	Signed;
 
+/**
+ * The client-side request type for initiating an asset transfer via the Keeta Asset Movement Anchor service
+ */
 export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+	/**
+	 * Optional KeetaNet account to use for signing the request
+	 */
 	account?: KeetaNetAccount | undefined;
+
+	/**
+	 * The asset or asset pair to transfer, if a pair is given the from and to locations must support both assets in the pair
+	 */
 	asset: AssetOrPair;
+
+	/**
+	 * The source location for the asset transfer
+	 */
 	from: { location: AssetLocationLike; };
+
+	/**
+	 * The destination location and recipient for the asset transfer
+	 */
 	to: { location: AssetLocationLike; recipient: RecipientResolved; };
+
+	/**
+	 * The amount of the asset to transfer, as a string in the asset's smallest unit (e.g. cents for USD).
+	 */
 	value: string | bigint;
+
+	/**
+	 * Optional list of allowed rails for the transfer, the service should throw an error if none of the allowed rails are available
+	 */
 	allowedRails?: Rail[];
 }
 
+/**
+ * The serialized HTTP Body for the {@link KeetaAssetMovementAnchorInitiateTransferClientRequest} request
+ */
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
 	from: { location: AssetLocationCanonical; };
@@ -330,39 +359,117 @@ export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(in
 	}));
 }
 
+/**
+ * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
+ */
 export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
+
+/**
+ * Breakdown of fees for an asset transfer, including line items and total amounts.
+ */
 export type AssetFeeBreakdown = {
 	lineItems: {
+		/**
+		 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
+		 */
 		value: string;
+		
+		/**
+		 * The purpose of the fee line item. @see AssetFeeLineItemType
+		 */
 		purpose: AssetFeeLineItemType;
+
+		/**
+		 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
+		 */
 		asset?: MovableAssetSearchCanonical;
 	}[];
+	/**
+	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
+	 */
 	totalPricedIn?: MovableAssetSearchCanonical;
+
+	/**
+	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
+	 */
 	total: string;
 };
 
+/**
+ * An instruction on how to complete a transfer, ex: where to send tokens, or where to wire USD.
+ */
 export type AssetTransferInstructions = ({
 	type: 'KEETA_SEND';
+
+	/**
+	 * The location from which to send the asset for this instruction, this will only be a keeta chain location.
+	 */
 	location: AssetLocationLike;
 
+	/**
+	 * The keeta public key address to send to
+	 */
 	sendToAddress: string;
+
+	/**
+	 * Amount to send, as a string in the asset's smallest unit.
+	 */
 	value: string;
+
+	/**
+	 * The token address to send.
+	 */
 	tokenAddress: string;
 
+	/**
+	 * If provided, the value to put in the external keeta transfer.
+	 */
 	external?: string;
 } | {
 	type: 'EVM_SEND';
+	/**
+	 * The EVM location from which to send the asset for this instruction.
+	 */
 	location: AssetLocationLike;
 
-	sendToAddress: string;
+	/**
+	 * EVM address to send to
+	 */
+	sendToAddress: HexString;
+
+	/**
+	 * Amount to send, as a string in the asset's smallest unit.
+	 */
 	value: string;
+
+	/**
+	 * The EVM token contract address to send.
+	 */
 	tokenAddress: HexString;
 } | {
+	/**
+	 * An EVM contract call instruction, used for assets that require contract interaction to transfer (ex: ERC20 contract deposit() method).
+	 */
 	type: 'EVM_CALL';
+
+	/**
+	 * The EVM location on which the contract call should be made.
+	 */
 	location: AssetLocationLike;
 
-	contractAddress: string;
+	/**
+	 * The EVM contract address to call.
+	 */
+	contractAddress: HexString;
+
+	/**
+	 * The method name to call on the contract. Should be either the full method signature (ex: deposit(uint256 value)), or the hashed method ID.
+	 */
 	contractMethodName: string;
+
+	/**
+	 * The arguments to pass to the contract method, as an array of strings.
+	 */
 	contractMethodArgs: string[];
 } | {
 	type: 'WIRE' | 'ACH' | 'SEPA_PUSH';
@@ -439,7 +546,15 @@ export type AssetTransferInstructions = ({
 	 * This can be a total value or a breakdown of line items for the executed transfer.
 	 */
 	assetFee: string | AssetFeeBreakdown;
+
+	/**
+	 * If provided, this is the total amount the recipient should expect to receive after fees are deducted, formatted in the destination asset's smallest unit.
+	 */
 	totalReceiveAmount?: string;
+
+	/**
+	 * If provided, this is the ID of a persistent address created/used for this transfer instruction.
+	 */
 	persistentAddressId?: string;
 });
 
@@ -476,29 +591,83 @@ type TransactionIds<T extends string> = {
 	[type in T]: TransactionId | null;
 };
 
+/**
+ * Representation of an asset movement transaction in the Asset Movement Anchor's system.
+ */
 export type KeetaAssetMovementTransaction = {
+	/**
+	 * The unique (per anchor) identifier for the asset movement transaction.
+	 * 
+	 * This ID is opaque and has no meaning outside of a specific anchor's system.
+	 */
 	id: string;
+
+	/**
+	 * The current status of the asset movement transaction.
+	 */
 	status: TransactionStatus;
+
+	/**
+	 * The asset being moved in the transaction.
+	 */
 	asset: AssetOrPair;
 
+	/**
+	 * Information about the source of the asset movement.
+	 */
 	from: {
+		/**
+		 * The location of the source of the movement.
+		 */
 		location: AssetLocationString;
+
+		/**
+		 * The value that was sent/to be sent on the source.
+		 */
 		value: string;
+
+		/**
+		 * A list of transaction IDs related to the source chain.
+		 */
 		transactions: TransactionIds<'persistentForwarding' | 'deposit' | 'finalization'>;
 	};
 
+	/**
+	 * Information about the destination of the asset movement.
+	 */
 	to: {
+		/**
+		 * The location of the destination of the movement.
+		 */
 		location: AssetLocationString;
+
+		/**
+		 * The value that was received/to be received on the destination.
+		 */
 		value: string;
+
+		/**
+		 * A list of transaction IDs related to the destination chain.
+		 */
 		transactions: TransactionIds<'withdraw'>;
 	};
 
+	/**
+	 * Information related to the fee charged for the asset movement.
+	 */
 	fee: {
 		asset: MovableAsset;
 		value: string;
 	} | null;
 
+	/**
+	 * Timestamp for when the transaction was created
+	 */
 	createdAt: string;
+
+	/**
+	 * Timestamp for when the transaction was last updated
+	 */
 	updatedAt: string;
 }
 
