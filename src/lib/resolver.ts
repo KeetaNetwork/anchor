@@ -496,7 +496,6 @@ const assertResolverLookupFXResult = async function(input: unknown): Promise<Res
 
 const assertResolverLookupOrderMatcherResult = async function(input: unknown): Promise<ResolverLookupServiceResults<'orderMatcher'>[string]> {
 	assertValidOperationsOrderMatcher(input);
-	// XXX:TODO: Perform deeper validation of the "pairs" structure
 	if (!('pairs' in input)) {
 		throw(new Error('Expected "pairs" key in order matcher service, but it was not found'));
 	}
@@ -508,7 +507,6 @@ const assertResolverLookupOrderMatcherResult = async function(input: unknown): P
 	}
 	// XXX:TODO: Perform deeper validation of the "pairs" structure
 	await pairsUnrealized('array');
-	// XXX:TODO: Perform deeper validation of the "pairs" structure
 	// @ts-ignore
 	return(input);
 }
@@ -1682,8 +1680,6 @@ class Resolver {
 				if (!acceptable) {
 					continue;
 				}
-
-				/* XXX: TODO: Apply criteria filtering here */
 
 				retval[checkOrderMatcherServiceID] = checkOrderMatcherService;
 			} catch (checkOrderMatcherServiceError) {

@@ -161,7 +161,7 @@ export class KeetaNetOrderMatcherHTTPServer extends KeetaAnchorHTTPServer.KeetaN
 			pairs: this.orderMatcher.pairs.map((pair) => ({
 				base: pair.base.map((token) => token.publicKeyString.get()),
 				quote: pair.quote.map((token) => token.publicKeyString.get()),
-				...(pair.fees !== undefined ? { fees: pair.fees } : {})
+				...(pair.fees ? { fees: pair.fees } : {})
 			}))
 		});
 	}

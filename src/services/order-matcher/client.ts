@@ -362,5 +362,4 @@ class KeetaOrderMatcherClient {
 	}
 }
 
-export type { KeetaOrderMatcherPairMetadataCanonical, KeetaOrderMatcherPairDepthResponse, KeetaOrderMatcherTokenPair };
 export default KeetaOrderMatcherClient;
