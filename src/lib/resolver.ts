@@ -170,15 +170,30 @@ type ServiceMetadata = {
 		 */
 		orderMatcher?: {
 			/**
-			 * Provider ID which identifies the FX provider
+			 * Provider ID which identifies the Order Matcher provider
 			 */
 			[id: string]: {
 				operations: {
+					/**
+					 * Path for retrieving price history for a token pair
+					 */
 					getPairHistory?: string;
+
+					/**
+					 * Path for retrieving price info/basic stats for a token pair
+					 */
 					getPairInfo?: string;
+
+					/**
+					 * Path for retrieving order book depth for a token pair, with a specified grouping
+					 */
 					getPairDepth?: string;
 				};
 
+				/**
+				 * A list of accounts which this Order Matcher can sign MATCH_SWAP blocks with
+				 * The user must grant permission to these accounts in order for the order matcher to be able to perform matches
+				 */
 				matchingAccounts: KeetaNetAccountPublicKeyString[];
 
 				/**
@@ -186,11 +201,32 @@ type ServiceMetadata = {
 				 * tokens this order matcher provider will operate on
 				 */
 				pairs: {
+					/**
+					 * Base token(s) for the pair
+					 * These will be combined with each quote token to form trading pairs
+					 */
 					base: KeetaNetAccountTokenPublicKeyString[];
+
+					/**
+					 * Quote token(s) for the pair
+					 * These will be combined with each base token to form trading pairs
+					 */
 					quote: KeetaNetAccountTokenPublicKeyString[];
 
+					/**
+					 * Fees structure for this trading pair (if any)
+					 * The provider can choose to not accept orders for this pair if the fee structure is not met
+					 */
 					fees?: {
+						/**
+						 * Type of fee structure applied to this trading pair
+						 * "sell-token-percentage" means that a percentage of the sold token's amount must be provided as a fee
+						 */
 						type: 'sell-token-percentage';
+
+						/**
+						 * The minimum percentage fee (in basis points) that must be given when creating swaps for this pair
+						 */
 						minPercentBasisPoints: number;
 					}
 				}[];
@@ -281,7 +317,14 @@ type ServiceSearchCriteria<T extends Services> = {
 		kycProviders?: string[];
 	};
 	'orderMatcher': {
+		/**
+		 * Search for providers which support the base token
+		 */
 		base?: KeetaNetAccountTokenPublicKeyString;
+
+		/**
+		 * Search for providers which support the specified quote token
+		 */
 		quote?: KeetaNetAccountTokenPublicKeyString;
 	};
 	'kyc': {

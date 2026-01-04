@@ -204,6 +204,11 @@ export class KeetaOrderMatcherProvider {
 		return(this.serviceInfo.pairs);
 	}
 
+	/**
+	 * Fetch price history for a given token pair
+	 * @param pair The pair fetch history for
+	 * @returns The price history of the pair, priced in pair[0] (the base token)
+	 */
 	async getPairHistory(pair: TokenPairInput): Promise<KeetaOrderMatcherPriceHistoryResponse> {
 		const operationFactory = await this.serviceInfo.operations.getPairHistory;
 		if (operationFactory === undefined) {
@@ -232,6 +237,11 @@ export class KeetaOrderMatcherProvider {
 		return(responseJSON);
 	}
 
+	/**
+	 * Fetch latest price info for a given token pair
+	 * @param pair The pair to fetch
+	 * @returns {@link KeetaOrderMatcherPriceInfoResponse} the latest price info for the pair, priced in pair[0] (the base token)
+	 */
 	async getPairInfo(pair: TokenPairInput): Promise<KeetaOrderMatcherPriceInfoResponse> {
 		const operationFactory = await this.serviceInfo.operations.getPairInfo;
 		if (operationFactory === undefined) {
@@ -260,6 +270,12 @@ export class KeetaOrderMatcherProvider {
 		return(responseJSON);
 	}
 
+	/**
+	 * Fetch price depth for a given token pair
+	 * @param pair The pair to fetch depth for
+	 * @param grouping The grouping to fetch the depth in, as an integer representing the price in pair[0] (the base token)
+	 * @returns The price depth buckets with volume for the pair, priced in pair[0] (the base token)
+	 */
 	async getPairDepth(pair: TokenPairInput, grouping: number): Promise<KeetaOrderMatcherPairDepthResponse> {
 		const operationFactory = await this.serviceInfo.operations.getPairDepth;
 		if (operationFactory === undefined) {
@@ -330,6 +346,10 @@ class KeetaOrderMatcherClient {
 		}));
 	}
 
+	/**
+	 * List all token pairs supported by all discovered Order Matcher providers
+	 * @returns {@link KeetaOrderMatcherTokenPair[]} List of all token pairs supported by all discovered Order Matcher providers
+	 */
 	async listAllPairs(): Promise<KeetaOrderMatcherTokenPair[]> {
 		const providerEndpoints = await getEndpoints(this.resolver, {});
 		if (providerEndpoints === null) {
@@ -357,6 +377,11 @@ class KeetaOrderMatcherClient {
 		return(pairs);
 	}
 
+	/**
+	 * List all providers that support a given pair
+	 * @param pair The pair to search
+	 * @returns A list of providers that support the given pair, or null if no providers were found
+	 */
 	async getProvidersForPair(pair: TokenPairInput): Promise<KeetaOrderMatcherProvider[] | null> {
 		return(await this.getProviders({ base: pair[0], quote: pair[1] }));
 	}
