@@ -1041,6 +1041,27 @@ test('Pipeline Basic Tests', async function() {
 	}
 });
 
+test('Errors', async function() {
+	const id1 = generateRequestID();
+	const id2 = generateRequestID();
+	{
+		const error = new Errors.IdempotentExistsError('Test idempotent exists error', new Set([id1, id2]));
+		expect(error.message).toBe('Test idempotent exists error');
+		expect(error.idempotentIDsFound).toEqual(new Set([id1, id2]));
+		expect(error.retryable).toBe(false);
+		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(false);
+	}
+
+	{
+		const error = new Errors.IncorrectStateAssertedError(id1, 'pending', 'processing', 'Test incorrect state asserted error');
+		expect(error.message).toBe('Test incorrect state asserted error');
+		expect(error.retryable).toBe(true);
+		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(true);
+		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
+	}
+});
+
 suite.sequential('Driver Tests', async function() {
 	for (const driver in drivers) {
 		const driverConfig = drivers[driver];
