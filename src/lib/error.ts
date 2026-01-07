@@ -230,7 +230,6 @@ export class KeetaAnchorError extends Error {
 				return(error);
 			}
 			const mapping = await getErrorClassMapping();
-
 			const deserializer = mapping[input.name];
 			if (deserializer) {
 				return(await deserializer(input));

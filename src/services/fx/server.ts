@@ -852,7 +852,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			if ('quote' in request && 'estimate' in request && request.quote && request.estimate) {
 				throw(new Error('Request cannot contain both quote and estimate'));
 			}
-
 			if (!('block' in request) || typeof request.block !== 'string') {
 				throw(new Error('Block was not provided in exchange request'));
 			}
