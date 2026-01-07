@@ -10,7 +10,7 @@ import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaFXInternalPriceQuote, KeetaNetToken } from './common.js';
 import type KeetaFXAnchorClient from './client.js';
 
-const DEBUG = true;
+const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -28,8 +28,6 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 
 	let exchangeStatus: Awaited<ReturnType<typeof exchangeInput.getExchangeStatus>>;
 	exchangeStatus = await exchangeInput.getExchangeStatus();
-
-	console.log('exchangeStatus', exchangeStatus);
 
 	while (exchangeStatus?.status !== 'completed') {
 		if (Date.now() > timeout) {
@@ -641,7 +639,7 @@ test('Swap Function Negative Tests', async function() {
 });
 
 
-test.only('FX Server Estimate to Exchange Test', async function() {
+test('FX Server Estimate to Exchange Test', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	await using nodeAndClient = await createNodeAndClient(userAccount);
 	const client = nodeAndClient.userClient;
@@ -869,17 +867,10 @@ test.only('FX Server Estimate to Exchange Test', async function() {
 
 		expect(singleEstimate['provider'].providerID).toBe('TestDoesNotRequireDoesNotIssueQuote');
 
-		console.log('balance of user before exchange:', await client.allBalances({ account: userAccount }));
-
-		console.log('testtokenusd', testCurrencyUSD.publicKeyString.get());
-		console.log('testcurrencyeur', testCurrencyEUR.publicKeyString.get());
-		console.log(Array.from(serverDoesNotRequireDoesNotIssueQuote.accounts.values()).map(a => a.publicKeyString.get()), 'server accounts');
-
 		expect(singleEstimate.estimate.convertedAmount).toBe(1001n);
 		expect(singleEstimate.estimate.convertedAmountBound).toBe(750n);
 
 		const exchange = await singleEstimate.createExchange();
-		console.log('Exchange from estimate created:', exchange.exchange);
 
 		const completedStatus = await waitForExchangeToComplete(serverDoesNotRequireDoesNotIssueQuote, exchange);
 

@@ -769,8 +769,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				requiresQuoteBody = { requiresQuote: false, account: rateAndFee.account };
 			}
 
-			console.log('requiresQuoteBody', requiresQuoteBody, 'config.requiresQuote', config.requiresQuote);
-
 			const estimateResponse: KeetaFXAnchorEstimateResponse = {
 				ok: true,
 				estimate: KeetaNet.lib.Utils.Conversion.toJSONSerializable({
@@ -785,8 +783,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					...requiresQuoteBody
 				})
 			};
-
-			console.log('estimateResponse', estimateResponse);
 
 			return({
 				output: JSON.stringify(estimateResponse)
@@ -950,7 +946,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 			}
 
-			console.log('liquidity account', KeetaNet.lib.Account.toPublicKeyString(liquidityAccount))
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({
 				account: KeetaNet.lib.Account.toAccount(liquidityAccount),
@@ -961,8 +956,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					amount: BigInt(expectedAmount)
 				}
 			});
-
-			console.log('ADDED EXCHANGE ID', exchangeID.toString());
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 				ok: true,
@@ -984,10 +977,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('Missing exchangeID in params'));
 			}
 
-			console.log('trying to get id', exchangeID);
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const queueEntryInfo = await instance.pipeline.get(exchangeID as unknown as KeetaAnchorQueueRequestID);
-			console.log('queueEntryInfo', queueEntryInfo);
 			const exchangeResponse = (function(): KeetaFXAnchorExchangeResponse {
 				const inputStatus = queueEntryInfo?.status;
 				switch (inputStatus) {

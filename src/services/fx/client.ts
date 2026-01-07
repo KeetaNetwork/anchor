@@ -382,7 +382,6 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			let convertedAmountBound: bigint;
 
 			if ('estimate' in input) {
-				console.log('input.estimate', input.estimate);
 				if (input.estimate.requiresQuote !== false) {
 					throw(new Error('Liquidity provider does not support skipping quote'));
 				}
