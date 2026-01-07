@@ -2,7 +2,6 @@ import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
-import type { KeetaFXAnchorQuoteJSON } from './common.js';
 
 test('FX Server Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -17,6 +16,7 @@ test('FX Server Tests', async function() {
 			signer: account,
 			client: client,
 			quoteSigner: account,
+			requiresQuote: true,
 			fx: {
 				from: [{
 					currencyCodes: [token1.publicKeyString.get()],
@@ -181,6 +181,7 @@ test('FX Server Quote Validation Tests', async function() {
 		account: account,
 		client: client,
 		quoteSigner: account,
+		requiresQuote: true,
 		fx: {
 			from: [{
 				currencyCodes: [token1.publicKeyString.get()],
@@ -196,7 +197,7 @@ test('FX Server Quote Validation Tests', async function() {
 					}
 				});
 			},
-			validateQuote: async function(quote: KeetaFXAnchorQuoteJSON) {
+			validateQuote: async function(quote) {
 				validateQuoteCalled = true;
 				/* Verify that the quote has the expected structure */
 				expect(quote).toHaveProperty('request');
@@ -303,6 +304,7 @@ test('FX Server Constructor Variation Tests', async function() {
 			...config,
 			client: client,
 			quoteSigner: quoteSigner,
+			requiresQuote: true,
 			fx: {
 				getConversionRateAndFee: async function() {
 					return({

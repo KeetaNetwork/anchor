@@ -43,9 +43,22 @@ export type ConversionInputCanonical = {
 export type ConversionInputCanonicalJSON = ToJSONSerializable<ConversionInputCanonical>;
 
 export type KeetaFXAnchorClientCreateExchangeRequest = {
-	quote: KeetaFXAnchorQuote;
 	block: InstanceType<typeof KeetaNetLib.Block>;
-};
+} & ({
+	quote: KeetaFXAnchorQuote;
+} | {
+	request: ConversionInputCanonical;
+});
+
+export type KeetaFXAnchorClientCreateExchangeRequestJSON = {
+	block: string;
+} & ({
+	quote: KeetaFXAnchorQuoteJSON;
+	request?: undefined;
+} | {
+	quote?: undefined;
+	request: ConversionInputCanonicalJSON;
+})
 
 export type KeetaFXAnchorEstimate = {
 	/**
@@ -59,6 +72,12 @@ export type KeetaFXAnchorEstimate = {
 	convertedAmount: bigint;
 
 	/**
+	 * Outer bound of the converted amount.
+	 * if affinity is 'from', this is the maximum amount the user would need to send, if its to, this is the minimum amount the user would receive.
+	 */
+	convertedAmountBound?: bigint;
+
+	/**
 	 * The expected cost of the fx request, in the form of a
 	 * token and a range of minimum and maximum expected costs
 	 */
@@ -67,7 +86,22 @@ export type KeetaFXAnchorEstimate = {
 		max: bigint;
 		token: KeetaNetToken;
 	};
-};
+} & ({
+	/**
+	 * Indicates that a quote is required before proceeding with the exchange
+	 */
+	requiresQuote: false;
+
+	/**
+	 * Liquidity provider account if the user is not going to request a quote before the exchange
+	 */
+	account: KeetaNetAccount | KeetaNetStorageAccount;
+} | {
+	/**
+	 * Indicates that a quote is required before proceeding with the exchange, defaults to true
+	 */
+	requiresQuote?: true;
+});
 
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
@@ -91,7 +125,6 @@ export type KeetaFXAnchorQuote = {
 	/**
 	 * Amount after the conversion as specified by either `from` or `to`, as specified by the `affinity` property in the request.
 	 */
-
 	convertedAmount: bigint;
 
 	/**
@@ -108,6 +141,8 @@ export type KeetaFXAnchorQuote = {
 	 */
 	signed: HTTPSignedField;
 };
+
+export type KeetaFXInternalPriceQuote = Omit<KeetaFXAnchorQuote, 'signed' | 'request'> & Pick<KeetaFXAnchorEstimate, 'convertedAmountBound'>;
 
 export type KeetaFXAnchorQuoteJSON = ToJSONSerializable<KeetaFXAnchorQuote>;
 
@@ -156,7 +191,7 @@ export const isKeetaFXAnchorQuoteResponse: (input: unknown) => input is KeetaFXA
 export const isKeetaFXAnchorExchangeResponse: (input: unknown) => input is KeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
 export const assertKeetaNetTokenPublicKeyString: (input: unknown)  => KeetaNetTokenPublicKeyString = createAssert<KeetaNetTokenPublicKeyString>();
 export const assertConversionInputCanonicalJSON: (input: unknown) => ConversionInputCanonicalJSON = createAssert<ConversionInputCanonicalJSON>();
-export const assertConversionQuoteJSON: (input: unknown) => KeetaFXAnchorQuoteJSON= createAssert<KeetaFXAnchorQuoteJSON>();
+export const assertKeetaFXAnchorClientCreateExchangeRequestJSON: (input: unknown) => KeetaFXAnchorClientCreateExchangeRequestJSON = createAssert<KeetaFXAnchorClientCreateExchangeRequestJSON>();
 
 class KeetaFXAnchorQuoteValidationFailedError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaFXAnchorQuoteValidationFailedError';
@@ -185,11 +220,77 @@ class KeetaFXAnchorQuoteValidationFailedError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaFXAnchorQuoteRequiredError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaFXAnchorQuoteRequiredError';
+	private readonly KeetaFXAnchorQuoteRequiredErrorObjectTypeID!: string;
+	private static readonly KeetaFXAnchorQuoteRequiredErrorObjectTypeID = '9f22067f-52b3-40f2-84c1-ad9285260980';
+
+	constructor(message?: string) {
+		super(message ?? 'Quote required to perform exchange');
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaFXAnchorQuoteRequiredErrorObjectTypeID', {
+			value: KeetaFXAnchorQuoteRequiredError.KeetaFXAnchorQuoteRequiredErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaFXAnchorQuoteRequiredError {
+		return(this.hasPropWithValue(input, 'KeetaFXAnchorQuoteRequiredErrorObjectTypeID', KeetaFXAnchorQuoteRequiredError.KeetaFXAnchorQuoteRequiredErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
+class KeetaFXAnchorQuoteIssuanceDisabledError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaFXAnchorQuoteIssuanceDisabledError';
+	private readonly KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID!: string;
+	private static readonly KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID = 'a0f70c0b-6e17-41f0-825a-d086983209e1';
+
+	constructor(message?: string) {
+		super(message ?? 'Anchor cannot issue quotes');
+		this.statusCode = 501;
+
+		Object.defineProperty(this, 'KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID', {
+			value: KeetaFXAnchorQuoteIssuanceDisabledError.KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaFXAnchorQuoteIssuanceDisabledError {
+		return(this.hasPropWithValue(input, 'KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID', KeetaFXAnchorQuoteIssuanceDisabledError.KeetaFXAnchorQuoteIssuanceDisabledErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	QuoteValidationFailed: typeof KeetaFXAnchorQuoteValidationFailedError;
+	QuoteRequired: typeof KeetaFXAnchorQuoteRequiredError;
+	QuoteIssuanceDisabled: typeof KeetaFXAnchorQuoteIssuanceDisabledError;
 } = {
 	/**
 	 * The quote validation failed
 	 */
-	QuoteValidationFailed: KeetaFXAnchorQuoteValidationFailedError
+	QuoteValidationFailed: KeetaFXAnchorQuoteValidationFailedError,
+
+	/**
+	 * Quote is required to perform the exchange
+	 */
+	QuoteRequired: KeetaFXAnchorQuoteRequiredError,
+
+	/**
+	 * The anchor cannot issue quotes
+	 */
+	QuoteIssuanceDisabled: KeetaFXAnchorQuoteIssuanceDisabledError
 };
