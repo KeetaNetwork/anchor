@@ -36,6 +36,7 @@ class KeetaAnchorQueueIncorrectStateAssertedError extends KeetaAnchorError {
 	constructor(id: KeetaAnchorQueueRequestID, expectedStatus: KeetaAnchorQueueStatus, actualStatus: KeetaAnchorQueueStatus, message?: string) {
 		super(message ?? `The entry (${String(id)}) is in an incorrect state. Expected: ${expectedStatus}, Actual: ${actualStatus}`);
 		this.statusCode = -1;
+		this.retryable = true;
 
 		Object.defineProperty(this, 'KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID', {
 			value: KeetaAnchorQueueIncorrectStateAssertedError.KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID,
