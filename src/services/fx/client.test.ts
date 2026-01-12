@@ -641,7 +641,7 @@ test('Swap Function Negative Tests', async function() {
 	}
 });
 
-async function ExpectKeetaAnchorError(errorName: string, method: () => (unknown | Promise<unknown>)): Promise<KeetaAnchorError | KeetaAnchorUserError> {
+async function ExpectKeetaAnchorError(errorName: string, method: () => unknown): Promise<KeetaAnchorError | KeetaAnchorUserError> {
 	try {
 		await method();
 		expect(errorName).toEqual('Function resolved and did not throw');
@@ -805,7 +805,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		});
 
 		const estimate = estimates?.[0];
-		
+
 		if (!estimate) {
 			throw(new Error('estimate should be defined'));
 		}

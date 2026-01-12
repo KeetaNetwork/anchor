@@ -28,7 +28,7 @@ import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
 import * as typia from 'typia';
-import { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { assertExchangeBlockParameters } from './util.js';
 
 /**
@@ -948,8 +948,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 			}
 
-			let expectedSendToken: TokenAddress = KeetaNet.lib.Account.fromPublicKeyString(conversionInput.to);
-			let expectedReceiveToken: TokenAddress = KeetaNet.lib.Account.fromPublicKeyString(conversionInput.from);
 			let expectedSendAmount: bigint;
 			let expectedReceiveAmount: bigint;
 
@@ -967,7 +965,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			if (BigInt(quote.cost.amount) > 0) {
 				const feeTokenPub = KeetaNet.lib.Account.toPublicKeyString(quote.cost.token);
-				
+
 				if (!userSendsMinimum[feeTokenPub]) {
 					userSendsMinimum[feeTokenPub] = 0n;
 				}
@@ -978,8 +976,10 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			let allowedLiquidityAccounts;
 			if (config.accounts) {
 				allowedLiquidityAccounts = config.accounts;
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
 			} else if (config.account) {
-				allowedLiquidityAccounts = new KeetaNet.lib.Account.Set([config.account]);
+				// eslint-disable-next-line @typescript-eslint/no-deprecated
+				allowedLiquidityAccounts = new KeetaNet.lib.Account.Set([ config.account ]);
 			} else {
 				throw(new Error('config.account or config.accounts must be provided'));
 			}
@@ -999,11 +999,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				request: conversionInput,
 				expected: {
 					receive: {
-						token: expectedReceiveToken,
+						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.from),
 						amount: expectedReceiveAmount
 					},
 					send: {
-						token: expectedSendToken,
+						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.to),
 						amount: expectedSendAmount
 					}
 				}
