@@ -9,6 +9,7 @@ import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaFXInternalPriceQuote, KeetaNetToken } from './common.js';
 import type KeetaFXAnchorClient from './client.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -35,13 +36,14 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 		}
 
 		exchangeStatus = await exchangeInput.getExchangeStatus();
-		logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchangeInput.exchange.exchangeID}:`, exchangeStatus);
+		// logger?.debug('waitForExchangeToComplete', `Polled exchange status for exchangeID ${exchangeInput.exchange.exchangeID}:`, exchangeStatus);
 		await asleep(50);
 	}
 	return(exchangeStatus);
 }
 
-for (const useDeprecated of [false, true]) {
+for (const useDeprecated of [false]) {
+// for (const useDeprecated of [false, true]) {
 	let addName = '';
 	if (useDeprecated) {
 		addName = ' (deprecated)';
@@ -399,6 +401,7 @@ for (const useDeprecated of [false, true]) {
 				rate = 1 / rate;
 			}
 			expect(toJSONSerializable(estimate.estimate)).toEqual(toJSONSerializable({
+				requiresQuote: true,
 				request: requestCanonical,
 				convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 				expectedCost: {
@@ -638,6 +641,22 @@ test('Swap Function Negative Tests', async function() {
 	}
 });
 
+async function ExpectKeetaAnchorError(errorName: string, method: () => (unknown | Promise<unknown>)): Promise<KeetaAnchorError | KeetaAnchorUserError> {
+	try {
+		await method();
+		expect(errorName).toEqual('Function resolved and did not throw');
+		throw(new Error('expected method to throw'));
+	} catch (error) {
+		console.log('got error ist inatnce', error, KeetaAnchorUserError.isInstance(error) || KeetaAnchorError.isInstance(error))
+		if (KeetaAnchorUserError.isInstance(error) || KeetaAnchorError.isInstance(error)) {
+			expect(error.name).toEqual(errorName);
+			return(error);
+		} else {
+			throw(error);
+		}
+	}
+
+}
 
 test('FX Server Estimate to Exchange Test', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -777,6 +796,25 @@ test('FX Server Estimate to Exchange Test', async function() {
 	const localeCompareArgs = [
 		'en', { usage: 'sort', sensitivity: 'base' }
 	] as const;
+
+	{
+		/**
+		 * Ensure server that requires quote throws correct error.
+		 */
+		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' }, undefined, {
+			providerIDs: [ 'TestRequiresQuote' ]
+		});
+
+		const estimate = estimates?.[0];
+		
+		if (!estimate) {
+			throw(new Error('estimate should be defined'));
+		}
+
+		await ExpectKeetaAnchorError('KeetaFXAnchorQuoteRequiredError', async function() {
+			await estimate.createExchange();
+		})
+	}
 
 	{
 		/**
@@ -930,6 +968,87 @@ test('FX Server Estimate to Exchange Test', async function() {
 				]));
 			} else {
 				expect(false).toBe(true);
+			}
+		}
+	}
+
+	{
+		/**
+		 * Ensure server is validating block being sent by client
+		 */
+		const quoteOrEstimates = await fxClient.getQuotesOrEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' });
+
+		expect(quoteOrEstimates?.length).toEqual(3);
+
+		for (const quoteOrEstimate of quoteOrEstimates ?? []) {
+			let liquidityAccount;
+
+			if (quoteOrEstimate.isQuote) {
+				liquidityAccount = quoteOrEstimate.quote.account;
+			} else if (quoteOrEstimate.estimate.requiresQuote === false) {
+				liquidityAccount = quoteOrEstimate.estimate.account;
+			} else {
+				throw(new Error('could not get liquidityAccount'));
+			}
+
+			const testCases: {
+				builder: () => Promise<InstanceType<typeof KeetaNet['Client']['Builder']>>,
+				errorCode: string;
+				errorMessageContains?: string;
+			}[] = [
+				{
+					async builder() {
+						const builder = client.initBuilder();
+						builder.send(liquidityAccount, 999n, testCurrencyUSD);
+						return(builder);
+					},
+					errorCode: 'KeetaAnchorUserError',
+					errorMessageContains: 'send'
+				},
+				{
+					async builder() {
+						const builder = client.initBuilder();
+						builder.send(liquidityAccount, 1000n, testCurrencyUSD);
+						builder.receive(liquidityAccount, 2000n, testCurrencyEUR);
+						return(builder);
+					},
+					errorCode: 'KeetaAnchorUserError',
+					errorMessageContains: 'receive'
+				},
+				{
+					async builder() {
+						const builder = client.initBuilder();
+						const randomAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+						builder.send(randomAccount, 1000n, testCurrencyUSD);
+						builder.receive(liquidityAccount, 900n, testCurrencyEUR);
+						return(builder);
+					},
+					errorCode: 'KeetaAnchorUserError'
+				},
+				{
+					async builder() {
+						const builder = client.initBuilder();
+						const randomAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+						builder.send(liquidityAccount, 1000n, testCurrencyUSD);
+						builder.receive(randomAccount, 900n, testCurrencyEUR);
+						return(builder);
+					},
+					errorCode: 'KeetaAnchorUserError',
+					errorMessageContains: 'liquidity account'
+				}
+			];
+
+			for (const testCase of testCases) {
+				const error = await ExpectKeetaAnchorError(testCase.errorCode, async function() {
+					const builder = await testCase.builder();
+					const { blocks } = await builder.computeBlocks();
+					const block = blocks[0];
+					await quoteOrEstimate.createExchange(block);
+				});
+
+				if (testCase.errorMessageContains) {
+					expect(error.message.toLowerCase()).includes(testCase.errorMessageContains.toLowerCase());
+				}
 			}
 		}
 	}

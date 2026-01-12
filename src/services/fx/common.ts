@@ -179,9 +179,9 @@ export type KeetaFXAnchorExchange = {
 	blockhash: string;
 });
 
-export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange & ({
+export type KeetaFXAnchorExchangeResponse = (KeetaFXAnchorExchange & {
 	ok: true;
-} | {
+}) | (Partial<KeetaFXAnchorExchange> & {
 	ok: false;
 	error: string;
 });

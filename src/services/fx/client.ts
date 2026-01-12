@@ -383,7 +383,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 			if ('estimate' in input) {
 				if (input.estimate.requiresQuote !== false) {
-					throw(new Error('Liquidity provider does not support skipping quote'));
+					throw(new FxErrors.QuoteRequired());
 				}
 
 				liquidityProvider = input.estimate.account;
