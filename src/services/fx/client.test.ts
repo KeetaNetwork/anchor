@@ -647,7 +647,6 @@ async function ExpectKeetaAnchorError(errorName: string, method: () => (unknown 
 		expect(errorName).toEqual('Function resolved and did not throw');
 		throw(new Error('expected method to throw'));
 	} catch (error) {
-		console.log('got error ist inatnce', error, KeetaAnchorUserError.isInstance(error) || KeetaAnchorError.isInstance(error))
 		if (KeetaAnchorUserError.isInstance(error) || KeetaAnchorError.isInstance(error)) {
 			expect(error.name).toEqual(errorName);
 			return(error);

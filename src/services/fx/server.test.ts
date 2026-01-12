@@ -245,9 +245,6 @@ test('FX Server Quote Validation Tests', async function() {
 	validateQuoteCalled = false;
 	shouldAcceptQuote = false;
 
-	console.log('quote', quote);
-
-	
 	const fakeBlock = await (async () => {
 		const builder = client.initBuilder();
 
@@ -291,7 +288,6 @@ test('FX Server Quote Validation Tests', async function() {
 		const errorData: unknown = await exchangeResponseRejected.json();
 		expect(errorData).toHaveProperty('ok', false);
 		expect(errorData).toHaveProperty('error');
-		console.log(errorData);
 		/* Verify we got the correct error type */
 		if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
 			expect(errorData.name).toBe('KeetaFXAnchorQuoteRequiredError');
