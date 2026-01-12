@@ -42,8 +42,7 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 	return(exchangeStatus);
 }
 
-for (const useDeprecated of [false]) {
-// for (const useDeprecated of [false, true]) {
+for (const useDeprecated of [false, true]) {
 	let addName = '';
 	if (useDeprecated) {
 		addName = ' (deprecated)';
@@ -687,7 +686,6 @@ test('FX Server Estimate to Exchange Test', async function() {
 			logger: logger,
 			accounts: new KeetaNet.lib.Account.Set([ signerLiquidityAccount ]),
 			signer: signerLiquidityAccount,
-			// client: client,
 			client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 			quoteSigner: signerLiquidityAccount,
 			...config,

@@ -534,6 +534,8 @@ class KeetaFXAnchorExchangeWithProvider {
 interface CanCreateExchange {
 	readonly isQuote: boolean;
 
+	get request(): ConversionInputCanonical;
+
 	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider>;
 }
 
@@ -545,6 +547,10 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 	constructor(provider: KeetaFXAnchorProviderBase, quote: KeetaFXAnchorQuote) {
 		this.provider = provider;
 		this.quote = quote;
+	}
+
+	get request(): ConversionInputCanonical {
+		return(this.quote.request);
 	}
 
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
@@ -561,6 +567,10 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 	constructor(provider: KeetaFXAnchorProviderBase, estimate: KeetaFXAnchorEstimate) {
 		this.provider = provider;
 		this.estimate = estimate;
+	}
+
+	get request(): ConversionInputCanonical {
+		return(this.estimate.request);
 	}
 
 	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
