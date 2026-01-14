@@ -385,9 +385,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		const requestInformationJSON: unknown = await requestInformation.json();
 
-		// Ensure status defaults to 'pending' if not provided (for backward compatibility)
+		// Ensure status defaults to 'completed' if not provided (for backward compatibility)
 		if (typeof requestInformationJSON === 'object' && requestInformationJSON !== null && !('status' in requestInformationJSON)) {
-			Object.assign(requestInformationJSON, { status: 'pending' });
+			Object.assign(requestInformationJSON, { status: 'completed' });
+			Object.assign(requestInformationJSON, { blockhash: swapBlock.hash.toString() });
 		}
 
 		// Validate response
@@ -417,9 +418,6 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
 		}
 
-		if (!requestInformationJSON.ok) {
-			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
-		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
 		return(requestInformationJSON);

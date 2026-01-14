@@ -695,7 +695,7 @@ test('createExchange handles missing status field', async function() {
 
 	expect(fetchIntercepted).toBe(true);
 	expect(exchange.exchange.exchangeID).toBe('test-exchange-123');
-	expect(exchange.exchange.status).toBe('pending');
+	expect(exchange.exchange.status).toBe('completed');
 }, 30_000);
 
 test('Swap Function Negative Tests', async function() {
