@@ -684,9 +684,9 @@ test('createExchange handles missing status field', async function() {
 
 	const request: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
 	const quotes = await fxClient.getQuotes(request);
-	
+
 	const quote = quotes?.[0];
-	
+
 	if (!quote) {
 		throw(new Error('No quotes available'));
 	}
