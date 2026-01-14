@@ -405,7 +405,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
-		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ id: exchangeID });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
 			headers: {

@@ -202,7 +202,7 @@ for (const useDeprecated of [false, true]) {
 								getEstimate: `${serverURL}/api/getEstimate`,
 								getQuote: `${serverURL}/api/getQuote`,
 								createExchange: `${serverURL}/api/createExchange`,
-								getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
+								getExchangeStatus: `${serverURL}/api/getExchangeStatus/{id}`
 							}
 						},
 						Test2: {
