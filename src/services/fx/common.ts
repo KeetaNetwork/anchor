@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
+import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
@@ -144,10 +144,12 @@ export type KeetaFXAnchorExchange = {
 	blockhash: string;
 });
 
-export type KeetaFXAnchorExchangeResponse =
-	| (KeetaFXAnchorExchange & { ok: true; })
-	| (KeetaFXAnchorExchange & { ok: false; error: string; })
-	| { ok: false; error: string; };
+export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange & ({
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+});
 
 export const isKeetaFXAnchorEstimateResponse: (input: unknown) => input is KeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
 export const isKeetaFXAnchorQuoteResponse: (input: unknown) => input is KeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
