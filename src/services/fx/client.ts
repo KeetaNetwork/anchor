@@ -384,6 +384,13 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 
 		const requestInformationJSON: unknown = await requestInformation.json();
+
+		// Ensure status defaults to 'pending' if not provided (for backward compatibility)
+		if (typeof requestInformationJSON === 'object' && requestInformationJSON !== null && !('status' in requestInformationJSON)) {
+			Object.assign(requestInformationJSON, { status: 'pending' });
+		}
+
+		// Validate response
 		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
 			throw(new Error(`Invalid response from FX exchange service: ${JSON.stringify(requestInformationJSON)}`));
 		}
