@@ -405,7 +405,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
-		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ id: exchangeID });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
 			headers: {
@@ -421,7 +421,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		if (!requestInformationJSON.ok) {
 			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
 		}
-		
+
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
 		return(requestInformationJSON);
 	}

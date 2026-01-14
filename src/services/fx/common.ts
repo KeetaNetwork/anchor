@@ -144,12 +144,10 @@ export type KeetaFXAnchorExchange = {
 	blockhash: string;
 });
 
-export type KeetaFXAnchorExchangeResponse = KeetaFXAnchorExchange & ({
-	ok: true;
-} | {
-	ok: false;
-	error: string;
-});
+export type KeetaFXAnchorExchangeResponse =
+	| (KeetaFXAnchorExchange & { ok: true; })
+	| (KeetaFXAnchorExchange & { ok: false; error: string; })
+	| { ok: false; error: string; };
 
 export const isKeetaFXAnchorEstimateResponse: (input: unknown) => input is KeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
 export const isKeetaFXAnchorQuoteResponse: (input: unknown) => input is KeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
