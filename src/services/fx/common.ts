@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib }  from '@keetanetwork/keetanet-client';
+import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';

@@ -4,9 +4,11 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
+import type { KeetaAnchorFXServerConfig } from './server.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
+import type { Routes } from '../../lib/http-server/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -579,6 +581,122 @@ for (const useDeprecated of [false, true]) {
 		}
 	}, 30_000);
 }
+
+test('createExchange handles missing status field', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
+	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 3);
+
+	await using nodeAndClient = await createNodeAndClient(account);
+	const client = nodeAndClient.userClient;
+	const baseToken = client.baseToken;
+	const giveTokens = nodeAndClient.give.bind(nodeAndClient);
+
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSD.isToken()) {
+		throw(new Error('USD is not a token'));
+	}
+	await client.modTokenSupplyAndBalance(500000n, testCurrencyUSD);
+
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyEUR.isToken()) {
+		throw(new Error('EUR is not a token'));
+	}
+
+	await giveTokens(client.account, 50n);
+	await client.modTokenSupplyAndBalance(100000n, testCurrencyEUR, { account: liquidityProvider });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
+	await client.send(liquidityProvider, 50n, baseToken);
+
+	let fetchIntercepted = false;
+
+	// Create a custom server that returns responses without status field
+	await using server = new (class MockedKeetaNetFXAnchorHTTPServer extends KeetaNetFXAnchorHTTPServer {
+		protected async initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
+			const routes = await super.initRoutes(config);
+
+			// Override the createExchange route to return response without status field
+			routes['POST /api/createExchange'] = async function() {
+				fetchIntercepted = true;
+				return({
+					output: JSON.stringify({
+						// Note: status field is intentionally missing
+						ok: true,
+						exchangeID: 'test-exchange-123'
+					})
+				});
+			};
+
+			return(routes);
+		}
+	})({
+		logger: logger,
+		account: liquidityProvider,
+		quoteSigner: quoteSigner,
+		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+		storage: {
+			queue: new KeetaAnchorQueueStorageDriverMemory({
+				logger: logger,
+				id: 'queue'
+			}),
+			autoRun: false
+		},
+		fx: {
+			from:  [{
+				currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+				to: [testCurrencyEUR.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function(request) {
+				return({
+					account: liquidityProvider,
+					convertedAmount: BigInt(request.amount) * 88n / 100n,
+					cost: {
+						amount: 5n,
+						token: baseToken
+					}
+				});
+			}
+		}
+	});
+
+	await server.start();
+
+	const results = await client.setInfo({
+		description: 'FX Anchor Test - Missing Status',
+		name: 'TEST',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				fx: { Test: await server.serviceMetadata() }
+			}
+		})
+	});
+	logger?.log('Set info results:', results);
+
+	const fxClient = new KeetaNetAnchor.FX.Client(client, {
+		root: account,
+		logger: logger
+	});
+
+	const request: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
+	const quotes = await fxClient.getQuotes(request);
+
+	const quote = quotes?.[0];
+
+	if (!quote) {
+		throw(new Error('No quotes available'));
+	}
+
+	const exchange = await quote.createExchange();
+
+	expect(fetchIntercepted).toBe(true);
+	expect(exchange.exchange.exchangeID).toBe('test-exchange-123');
+	expect(exchange.exchange.status).toBe('completed');
+}, 30_000);
 
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
