@@ -465,6 +465,14 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 
 		const requestInformationJSON: unknown = await requestInformation.json();
+
+		// Ensure status defaults to 'completed' if not provided (for backward compatibility)
+		if (typeof requestInformationJSON === 'object' && requestInformationJSON !== null && !('status' in requestInformationJSON)) {
+			Object.assign(requestInformationJSON, { status: 'completed' });
+			Object.assign(requestInformationJSON, { blockhash: swapBlock.hash.toString() });
+		}
+
+		// Validate response
 		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
 			throw(new Error(`Invalid response from FX exchange service: ${JSON.stringify(requestInformationJSON)}`));
 		}
@@ -478,7 +486,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
-		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ exchangeID });
+		const serviceURL = (await this.serviceInfo.operations.getExchangeStatus)({ id: exchangeID });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
 			headers: {
