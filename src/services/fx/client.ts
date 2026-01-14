@@ -418,7 +418,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
 		}
 
-
+		if (!requestInformationJSON.ok) {
+			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
+		}
+		
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
 		return(requestInformationJSON);
 	}
