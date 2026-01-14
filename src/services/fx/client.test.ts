@@ -4,9 +4,11 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
+import type { KeetaAnchorFXServerConfig } from './server.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
+import type { Routes } from '../../lib/http-server/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -606,8 +608,28 @@ test('createExchange handles missing status field', async function() {
 	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
 	await client.send(liquidityProvider, 50n, baseToken);
 
+	let fetchIntercepted = false;
+
 	// Create a custom server that returns responses without status field
-	await using server = new KeetaNetFXAnchorHTTPServer({
+	await using server = new (class MockedKeetaNetFXAnchorHTTPServer extends KeetaNetFXAnchorHTTPServer {
+		protected async initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
+			const routes = await super.initRoutes(config);
+
+			// Override the createExchange route to return response without status field
+			routes['POST /api/createExchange'] = async function() {
+				fetchIntercepted = true;
+				return({
+					output: JSON.stringify({
+						// Note: status field is intentionally missing
+						ok: true,
+						exchangeID: 'test-exchange-123'
+					})
+				});
+			};
+
+			return(routes);
+		}
+	})({
 		logger: logger,
 		account: liquidityProvider,
 		quoteSigner: quoteSigner,
@@ -620,6 +642,10 @@ test('createExchange handles missing status field', async function() {
 			autoRun: false
 		},
 		fx: {
+			from:  [{
+				currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+				to: [testCurrencyEUR.publicKeyString.get()]
+			}],
 			getConversionRateAndFee: async function(request) {
 				return({
 					account: liquidityProvider,
@@ -634,7 +660,6 @@ test('createExchange handles missing status field', async function() {
 	});
 
 	await server.start();
-	const serverURL = server.url;
 
 	const results = await client.setInfo({
 		description: 'FX Anchor Test - Missing Status',
@@ -646,20 +671,7 @@ test('createExchange handles missing status field', async function() {
 				EUR: testCurrencyEUR.publicKeyString.get()
 			},
 			services: {
-				fx: {
-					Test: {
-						from: [{
-							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-							to: [testCurrencyEUR.publicKeyString.get()]
-						}],
-						operations: {
-							getEstimate: `${serverURL}/api/getEstimate`,
-							getQuote: `${serverURL}/api/getQuote`,
-							createExchange: `${serverURL}/api/createExchange`,
-							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{exchangeID}`
-						}
-					}
-				}
+				fx: { Test: await server.serviceMetadata() }
 			}
 		})
 	});
@@ -672,49 +684,18 @@ test('createExchange handles missing status field', async function() {
 
 	const request: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
 	const quotes = await fxClient.getQuotes(request);
-	if (quotes === null || quotes[0] === undefined) {
+	
+	const quote = quotes?.[0];
+	
+	if (!quote) {
 		throw(new Error('No quotes available'));
 	}
 
-	const quote = quotes[0];
+	const exchange = await quote.createExchange();
 
-	// Mock fetch globally to intercept the createExchange call and return response without status
-	const originalFetch = globalThis.fetch;
-	let fetchIntercepted = false;
-
-	globalThis.fetch = async function(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-		const urlString = typeof url === 'string' ? url : url.toString();
-
-		if (urlString.includes('/api/createExchange')) {
-			fetchIntercepted = true;
-			// Return response without status field
-			return({
-				ok: true,
-				json: async function() {
-					return({
-						ok: true,
-						exchangeID: 'test-exchange-123'
-						// Note: status field is intentionally missing
-					});
-				}
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			} as Response);
-		}
-
-		return(originalFetch(url, init));
-	};
-
-	try {
-		// This should succeed because the client code adds default status='pending'
-		const exchange = await quote.createExchange();
-
-		expect(fetchIntercepted).toBe(true);
-		expect(exchange.exchange.exchangeID).toBe('test-exchange-123');
-		expect(exchange.exchange.status).toBe('pending');
-	} finally {
-		// Restore original fetch
-		globalThis.fetch = originalFetch;
-	}
+	expect(fetchIntercepted).toBe(true);
+	expect(exchange.exchange.exchangeID).toBe('test-exchange-123');
+	expect(exchange.exchange.status).toBe('pending');
 }, 30_000);
 
 test('Swap Function Negative Tests', async function() {
