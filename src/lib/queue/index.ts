@@ -684,7 +684,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	private async updateRunnerLockTimestamp(): Promise<void> {
-		const logger = this.methodLogger('updateRunnerLock');
+		const logger = this.methodLogger('updateRunnerLockTimestamp');
 
 		try {
 			logger?.debug('Updating sequential processing lock timestamp for worker ID', this.workerID);
