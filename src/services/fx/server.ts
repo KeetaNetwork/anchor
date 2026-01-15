@@ -26,6 +26,7 @@ import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '.
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
+import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
 
 /**
@@ -213,7 +214,7 @@ type KeetaFXAnchorQueueStage1Request = {
 	account: KeetaNetAccount;
 	block: Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['block'];
 	request: ConversionInputCanonicalJSON;
-	expected: Required<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>;
+	expected: Extract<DeepRequired<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>, { receive: unknown; }>;
 };
 type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Version of the request format */
@@ -226,8 +227,14 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	request: ConversionInputCanonicalJSON;
 	/** Expected exchange details for verification */
 	expected: {
-		token: string;
-		amount: string;
+		recieve: {
+			token: string;
+			amount: string;
+		};
+		send: {
+			token: string;
+			amount: string;
+		};
 	};
 };
 type KeetaFXAnchorQueueStage1Response = {
@@ -279,8 +286,6 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	 */
 	protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']>[0]): ReturnType<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']> {
 		const { block, expected, request } = entry.request;
-		const expectedToken = expected.token;
-		const expectedAmount = expected.amount;
 		const config = this.serverConfig;
 
 		let userClient: KeetaNet.UserClient;
@@ -383,7 +388,10 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		}
 
 		/* We are clear to attempt the swap now */
-		const swapBlocks = await userClient.acceptSwapRequest({ block, expected: { token: expectedToken, amount: BigInt(expectedAmount) }});
+		const swapBlocks = await userClient.acceptSwapRequest({
+			block: block,
+			expected: expected
+		});
 		const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
 		if (userClient.config.generateFeeBlock !== undefined) {
 			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
@@ -412,8 +420,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
-				token: request.expected.token.publicKeyString.get(),
-				amount: request.expected.amount.toString()
+				recieve: {
+					token: request.expected.receive.token.publicKeyString.get(),
+					amount: request.expected.receive.amount.toString()
+				},
+				send: {
+					token: request.expected.send.token.publicKeyString.get(),
+					amount: request.expected.send.amount.toString()
+				}
 			}
 		};
 
@@ -438,8 +452,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: new KeetaNet.lib.Block(reqJSON.block),
 			request: reqJSON.request,
 			expected: {
-				token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-				amount: BigInt(reqJSON.expected.amount)
+				send: {
+					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.send.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					amount: BigInt(reqJSON.expected.send.amount)
+				},
+				receive: {
+					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.recieve.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					amount: BigInt(reqJSON.expected.recieve.amount)
+				}
 			}
 		};
 
@@ -805,28 +825,36 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			const block = new KeetaNet.lib.Block(request.block);
 
 			/* Get Expected Amount and Token to Verify Swap */
-			const expectedToken = KeetaNet.lib.Account.fromPublicKeyString(quote.request.from);
-			let expectedAmount = quote.request.affinity === 'from' ? BigInt(quote.request.amount) : BigInt(quote.convertedAmount);
-			/* If cost is required verify the amounts and token. */
+			const expectedForSwap: KeetaFXAnchorQueueStage1Request['expected'] = {
+				/* What we are receiving -- what they are sending */
+				receive: {
+					amount: BigInt(quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount),
+					token: KeetaNet.lib.Account.fromPublicKeyString(quote.request.from)
+				},
+				/* What we are sending -- what they are receiving */
+				send: {
+					amount: BigInt(quote.request.affinity === 'to' ? quote.request.amount : quote.convertedAmount),
+					token: KeetaNet.lib.Account.fromPublicKeyString(quote.request.to)
+				}
+			};
+
 			if (BigInt(quote.cost.amount) > 0) {
-				/* If swap token matches the cost token the add the amount since they should be combined in one block and will be checked in `acceptSwapRequest` */
-				if (expectedToken.comparePublicKey(quote.cost.token)) {
-					expectedAmount += BigInt(quote.cost.amount);
-				/* If token is different then check block operations for matching amount and token */
+				if (expectedForSwap.receive.token.comparePublicKey(quote.cost.token)) {
+					expectedForSwap.receive.amount += BigInt(quote.cost.amount);
 				} else {
-					let requestIncludesCost = false;
+					let requestIncludesFXFee = false;
 					for (const operation of block.operations) {
 						if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
 							const recipientMatches = operation.to.comparePublicKey(quote.account);
 							const tokenMatches = operation.token.comparePublicKey(quote.cost.token);
 							const amountMatches = operation.amount === BigInt(quote.cost.amount);
 							if (recipientMatches && tokenMatches && amountMatches) {
-								requestIncludesCost = true;
+								requestIncludesFXFee = true;
 							}
 						}
 					}
-					if (!requestIncludesCost) {
-						throw(new Error('Exchange missing required cost'));
+					if (!requestIncludesFXFee) {
+						throw(new Error('Exchange missing FX fee (cost)'));
 					}
 				}
 			}
@@ -836,10 +864,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				account: KeetaNet.lib.Account.fromPublicKeyString(quote.account),
 				block: block,
 				request: quote.request,
-				expected: {
-					token: expectedToken,
-					amount: BigInt(expectedAmount)
-				}
+				expected: expectedForSwap
 			});
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
