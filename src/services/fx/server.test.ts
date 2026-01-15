@@ -48,7 +48,7 @@ test('FX Server Tests', async function() {
 				getEstimate: `${url}/api/getEstimate`,
 				getQuote: `${url}/api/getQuote`,
 				createExchange: `${url}/api/createExchange`,
-				getExchangeStatus: `${url}/api/getExchangeStatus/{exchangeID}`
+				getExchangeStatus: `${url}/api/getExchangeStatus/{id}`
 			}
 		});
 

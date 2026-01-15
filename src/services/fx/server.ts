@@ -917,7 +917,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				if (config.requiresQuote.validateQuoteBeforeExchange !== undefined) {
 					shouldValidateQuote = config.requiresQuote.validateQuoteBeforeExchange;
 				} else {
-					shouldValidateQuote = config.fx.validateQuote !== undefined
+					shouldValidateQuote = config.fx.validateQuote !== undefined;
 				}
 
 				for (const operation of block.operations) {
