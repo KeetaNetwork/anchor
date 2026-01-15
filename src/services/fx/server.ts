@@ -27,6 +27,7 @@ import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '.
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
+import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
 import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { assertExchangeBlockParameters } from './util.js';
