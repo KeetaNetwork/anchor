@@ -167,7 +167,7 @@ test('FX Server Tests', async function() {
 	}
 });
 
-test.only('FX Server Quote Validation Tests', async function() {
+test('FX Server Quote Validation Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
 	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
@@ -177,7 +177,6 @@ test.only('FX Server Quote Validation Tests', async function() {
 	let shouldAcceptQuote = true;
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
-		logger: console,
 		account: account,
 		client: client,
 		quoteSigner: account,
