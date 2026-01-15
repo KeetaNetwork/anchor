@@ -683,6 +683,22 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(false);
 	}
 
+	private async updateRunnerLockTimestamp(): Promise<void> {
+		const logger = this.methodLogger('updateRunnerLock');
+
+		try {
+			logger?.debug('Updating sequential processing lock timestamp for worker ID', this.workerID);
+			await this.queue.setStatus(this.runnerLockKey, 'processing', {
+				oldStatus: 'processing',
+				by: this.workerID
+			});
+			logger?.debug('Updated sequential processing lock timestamp for worker ID', this.workerID);
+		} catch (error: unknown) {
+			logger?.error('Failed to update sequential processing lock timestamp for worker ID', this.workerID, ':', error);
+			throw(error);
+		}
+	}
+
 	private async getRunnerLock(cleanup: InstanceType<typeof AsyncDisposableStack>): Promise<boolean> {
 		const logger = this.methodLogger('getRunnerLock');
 
@@ -791,6 +807,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					return(processJobTimeout);
 				}
 			}
+
+			await this.updateRunnerLockTimestamp();
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 

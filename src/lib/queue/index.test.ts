@@ -836,7 +836,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(10);
 			} else {
-				expect(processCallCountByKey.size).toBe(23);
+				expect(processCallCountByKey.size).toBe(17);
 			}
 
 			const id0 = ids[0];
