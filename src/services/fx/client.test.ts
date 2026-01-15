@@ -114,7 +114,6 @@ for (const useDeprecated of [false, true]) {
 			account: liquidityProviders[0],
 			client: client,
 			quoteSigner: quoteSigner,
-			requiresQuote: true,
 			fx: {
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				getConversionRateAndFee: async function() { return({} as Omit<KeetaFXAnchorQuote, 'request' | 'signed' >) }
@@ -149,7 +148,6 @@ for (const useDeprecated of [false, true]) {
 			...serverArgs,
 			quoteSigner: quoteSigner,
 			client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
-			requiresQuote: true,
 			storage: {
 				queue: new KeetaAnchorQueueStorageDriverMemory({
 					logger: logger,
@@ -643,7 +641,6 @@ test('createExchange handles missing status field', async function() {
 		account: liquidityProvider,
 		quoteSigner: quoteSigner,
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
-		requiresQuote: true,
 		storage: {
 			queue: new KeetaAnchorQueueStorageDriverMemory({
 				logger: logger,
@@ -792,7 +789,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 	allTokenRecipients.push(client.account);
 
 	async function makeServerConfig(
-		config: Pick<KeetaAnchorFXServerConfig, 'requiresQuote'>,
+		config: Pick<KeetaAnchorFXServerConfig, 'quoteConfiguration'>,
 		getRate: (request: ConversionInputCanonicalJSON) => Promise<Pick<KeetaFXInternalPriceQuote, 'convertedAmount' | 'convertedAmountBound' | 'cost'>>
 	): Promise<KeetaAnchorFXServerConfig> {
 		const signerLiquidityAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -823,9 +820,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		});
 	}
 
-	await using serverRequiresQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
-		requiresQuote: true
-	}, async function() {
+	await using serverRequiresQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({}, async function() {
 		return({
 			convertedAmount: 1003n,
 			convertedAmountBound: 900n,
@@ -837,7 +832,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 	}));
 
 	await using serverDoesNotRequireQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
-		requiresQuote: {
+		quoteConfiguration: {
 			requiresQuote: false,
 			validateQuoteBeforeExchange: false,
 			issueQuotes: true
@@ -854,7 +849,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 	}));
 
 	await using serverDoesNotRequireDoesNotIssueQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
-		requiresQuote: {
+		quoteConfiguration: {
 			requiresQuote: false,
 			validateQuoteBeforeExchange: false,
 			issueQuotes: false

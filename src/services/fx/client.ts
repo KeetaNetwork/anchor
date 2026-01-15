@@ -15,7 +15,7 @@ import {
 	isKeetaFXAnchorEstimateResponse,
 	isKeetaFXAnchorExchangeResponse,
 	isKeetaFXAnchorQuoteResponse,
-	Errors as FxErrors
+	Errors as FXErrors
 } from './common.js';
 import type {
 	ConversionInput,
@@ -383,7 +383,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 			if ('estimate' in input) {
 				if (input.estimate.requiresQuote !== false) {
-					throw(new FxErrors.QuoteRequired());
+					throw(new FXErrors.QuoteRequired());
 				}
 
 				liquidityProvider = input.estimate.account;
@@ -806,7 +806,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			if (provider.quote) {
 				return(provider.quote);
 			} else {
-				if (!(FxErrors.QuoteIssuanceDisabled.isInstance(provider.error))) {
+				if (!(FXErrors.QuoteIssuanceDisabled.isInstance(provider.error))) {
 					throw(provider.error);
 				}
 

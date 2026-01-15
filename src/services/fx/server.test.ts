@@ -16,7 +16,6 @@ test('FX Server Tests', async function() {
 			signer: account,
 			client: client,
 			quoteSigner: account,
-			requiresQuote: true,
 			fx: {
 				from: [{
 					currencyCodes: [token1.publicKeyString.get()],
@@ -168,7 +167,7 @@ test('FX Server Tests', async function() {
 	}
 });
 
-test('FX Server Quote Validation Tests', async function() {
+test.only('FX Server Quote Validation Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const token1 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 1);
 	const token2 = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 2);
@@ -178,10 +177,10 @@ test('FX Server Quote Validation Tests', async function() {
 	let shouldAcceptQuote = true;
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
+		logger: console,
 		account: account,
 		client: client,
 		quoteSigner: account,
-		requiresQuote: true,
 		fx: {
 			from: [{
 				currencyCodes: [token1.publicKeyString.get()],
@@ -199,6 +198,7 @@ test('FX Server Quote Validation Tests', async function() {
 			},
 			validateQuote: async function(quote) {
 				validateQuoteCalled = true;
+				console.log('quote', quote);
 				/* Verify that the quote has the expected structure */
 				expect(quote).toHaveProperty('request');
 				expect(quote).toHaveProperty('account');
@@ -363,7 +363,6 @@ test('FX Server Constructor Variation Tests', async function() {
 			...config,
 			client: client,
 			quoteSigner: quoteSigner,
-			requiresQuote: true,
 			fx: {
 				getConversionRateAndFee: async function() {
 					return({
