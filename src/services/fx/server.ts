@@ -7,19 +7,18 @@ import {
 import {
 	assertConversionInputCanonicalJSON,
 	assertKeetaFXAnchorClientCreateExchangeRequestJSON,
-	Errors,
-	toValidateQuoteInput
+	Errors
 } from './common.js';
 import type {
 	ConversionInputCanonicalJSON,
+	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
+	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteJSON,
 	KeetaFXAnchorQuoteResponse,
-	KeetaFXInternalPriceQuote,
 	KeetaNetAccount,
-	KeetaNetStorageAccount,
-	ValidateQuoteArguments
+	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
@@ -232,6 +231,40 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 		signer: signer
 	});
 }
+
+export type KeetaFXInternalPriceQuote = Omit<KeetaFXAnchorQuote, 'signed' | 'request'> & Pick<KeetaFXAnchorEstimate, 'convertedAmountBound'>;
+export type ValidateQuoteArguments = KeetaFXInternalPriceQuote & Partial<Omit<KeetaFXAnchorQuote, keyof KeetaFXInternalPriceQuote>>;
+
+export function toValidateQuoteInput(input: KeetaFXAnchorQuoteJSON | KeetaFXInternalPriceQuote | KeetaFXAnchorQuote): ValidateQuoteArguments {
+	const ret: ValidateQuoteArguments = {
+		account: KeetaNet.lib.Account.toAccount(input.account),
+		convertedAmount: BigInt(input.convertedAmount),
+		cost: {
+			amount: BigInt(input.cost.amount),
+			token: KeetaNet.lib.Account.toAccount(input.cost.token)
+		}
+	};
+
+	if ('convertedAmountBound' in input && input.convertedAmountBound !== undefined) {
+		ret.convertedAmountBound =  BigInt(input.convertedAmountBound);
+	}
+
+	if ('signed' in input && input.signed !== undefined) {
+		ret.signed = input.signed;
+	}
+
+	if ('request' in input && input.request !== undefined) {
+		ret.request = {
+			from: KeetaNet.lib.Account.toAccount(input.request.from),
+			to: KeetaNet.lib.Account.toAccount(input.request.to),
+			amount: BigInt(input.request.amount),
+			affinity: input.request.affinity
+		};
+	}
+
+	return(ret);
+}
+
 
 /* QUEUE PROCESSOR PIPELINE */
 type KeetaFXAnchorQueueStage1Request = {

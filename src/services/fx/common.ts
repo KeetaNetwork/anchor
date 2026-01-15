@@ -1,4 +1,4 @@
-import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
@@ -142,40 +142,7 @@ export type KeetaFXAnchorQuote = {
 	signed: HTTPSignedField;
 };
 
-export type KeetaFXInternalPriceQuote = Omit<KeetaFXAnchorQuote, 'signed' | 'request'> & Pick<KeetaFXAnchorEstimate, 'convertedAmountBound'>;
-export type ValidateQuoteArguments = KeetaFXInternalPriceQuote & Partial<Omit<KeetaFXAnchorQuote, keyof KeetaFXInternalPriceQuote>>;
-
 export type KeetaFXAnchorQuoteJSON = ToJSONSerializable<KeetaFXAnchorQuote>;
-
-export function toValidateQuoteInput(input: KeetaFXAnchorQuoteJSON | KeetaFXInternalPriceQuote | KeetaFXAnchorQuote): ValidateQuoteArguments {
-	const ret: ValidateQuoteArguments = {
-		account: KeetaNetLib.Account.toAccount(input.account),
-		convertedAmount: BigInt(input.convertedAmount),
-		cost: {
-			amount: BigInt(input.cost.amount),
-			token: KeetaNetLib.Account.toAccount(input.cost.token)
-		}
-	};
-
-	if ('convertedAmountBound' in input && input.convertedAmountBound !== undefined) {
-		ret.convertedAmountBound =  BigInt(input.convertedAmountBound);
-	}
-
-	if ('signed' in input && input.signed !== undefined) {
-		ret.signed = input.signed;
-	}
-
-	if ('request' in input && input.request !== undefined) {
-		ret.request = {
-			from: KeetaNetLib.Account.toAccount(input.request.from),
-			to: KeetaNetLib.Account.toAccount(input.request.to),
-			amount: BigInt(input.request.amount),
-			affinity: input.request.affinity
-		};
-	}
-
-	return(ret);
-}
 
 export type KeetaFXAnchorQuoteResponse = ({
 	ok: true;
