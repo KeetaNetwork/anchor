@@ -227,7 +227,7 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	request: ConversionInputCanonicalJSON;
 	/** Expected exchange details for verification */
 	expected: {
-		recieve: {
+		receive: {
 			token: string;
 			amount: string;
 		};
@@ -420,7 +420,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
-				recieve: {
+				receive: {
 					token: request.expected.receive.token.publicKeyString.get(),
 					amount: request.expected.receive.amount.toString()
 				},
@@ -457,8 +457,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 					amount: BigInt(reqJSON.expected.send.amount)
 				},
 				receive: {
-					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.recieve.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					amount: BigInt(reqJSON.expected.recieve.amount)
+					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.receive.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					amount: BigInt(reqJSON.expected.receive.amount)
 				}
 			}
 		};
