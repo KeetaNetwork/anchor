@@ -149,16 +149,17 @@ test('setAttribute overwrites existing values', async function() {
 	expect(store.getAttributeNames()).toEqual(['firstName']);
 });
 
-test('toSensitiveAttribute handles external attributes via JSON serialization', async function() {
+test('toSensitiveAttribute rejects external attributes with PIIError', async function() {
 	const store = createStore();
-	const externalData = { provider: 'test', score: 42, verified: true };
-	store.setAttribute('externalProvider.result', externalData);
+	const externalName = 'externalProvider.result';
 
-	const sensitiveAttr = await store.toSensitiveAttribute<typeof externalData>('externalProvider.result', testAccounts.subject);
-	expect(sensitiveAttr.publicKey).toBe(testAccounts.subject.publicKeyString.get());
+	store.setAttribute(externalName, { provider: 'test' });
 
-	const decrypted = await sensitiveAttr.getValue();
-	expect(decrypted).toEqual(externalData);
+	// @ts-expect-error Testing runtime rejection of external attributes
+	await expect(store.toSensitiveAttribute(externalName, testAccounts.subject))
+		.rejects.toSatisfy(function(error: unknown) {
+			return(PIIError.isInstance(error, 'PII_EXTERNAL_ATTRIBUTE'));
+		});
 });
 
 test('run provides scoped access to external attributes', function() {

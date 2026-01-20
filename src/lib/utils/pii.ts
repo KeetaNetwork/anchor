@@ -3,7 +3,6 @@ import { CertificateAttributeOIDDB, type CertificateAttributeValueMap, type Cert
 import type { CertificateBuilder, Certificate } from '../certificates.js';
 import { SensitiveAttribute, SensitiveAttributeBuilder } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
-import { Buffer } from '../utils/buffer.js';
 
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
@@ -21,7 +20,7 @@ const REDACTED = '[PII: REDACTED]';
 /**
  * PII error codes
  */
-export type PIIErrorCode = 'PII_ATTRIBUTE_NOT_FOUND';
+export type PIIErrorCode = 'PII_ATTRIBUTE_NOT_FOUND' | 'PII_EXTERNAL_ATTRIBUTE';
 
 /**
  * Error class for PII-related errors
@@ -173,46 +172,41 @@ export class PIIStore {
 	}
 
 	/**
-	 * Create a SensitiveAttribute
+	 * Create a SensitiveAttribute for a known certificate attribute
 	 *
-	 * @param name - The attribute name to convert
+	 * Only known certificate attributes are supported. External attributes
+	 * cannot be converted to SensitiveAttributes.
+	 *
+	 * @param name - The attribute name to convert (must be a known certificate attribute)
 	 * @param subjectKey - The account to encrypt the attribute for
 	 * @returns A SensitiveAttribute containing the encrypted value
 	 *
 	 * @throws PIIError with PII_ATTRIBUTE_NOT_FOUND if the attribute is not set
+	 * @throws Error if the attribute is not a known certificate attribute
 	 */
-	async toSensitiveAttribute<K extends PIIAttributeNames>(name: K,subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<CertificateAttributeValue<K>>>;
-	async toSensitiveAttribute<T>(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<T>>;
-	async toSensitiveAttribute(name: string, subjectKey: KeetaNetAccount): Promise<SensitiveAttribute<unknown>> {
+	async toSensitiveAttribute<K extends PIIAttributeNames>(
+		name: K,
+		subjectKey: KeetaNetAccount
+	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>> {
 		if (!this.hasAttribute(name)) {
 			throw(new PIIError('PII_ATTRIBUTE_NOT_FOUND', name, `Attribute '${name}' not found in PIIStore`));
+		}
+		if (!this.#isKnownAttribute(name)) {
+			throw(new PIIError('PII_EXTERNAL_ATTRIBUTE', name, `Cannot convert external attribute '${name}' to SensitiveAttribute`));
 		}
 
 		const stored = this.#attributes.get(name);
 		const storedValue = stored?.value;
 		if (SensitiveAttribute.isInstance(storedValue)) {
 			// If already a SensitiveAttribute, return it directly
-			return(storedValue);
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			return(storedValue as SensitiveAttribute<CertificateAttributeValue<K>>);
 		}
 
-		// Known attributes use schema-aware encoding
-		if (this.#isKnownAttribute(name)) {
-			const builder = new SensitiveAttributeBuilder(subjectKey);
-			// @ts-expect-error storedValue type is validated at setAttribute time
-			builder.set(name, storedValue);
-			return(await builder.build());
-		} else {
-			// External attributes are JSON-serialized with a JSON decoder
-			const jsonBytes = Buffer.from(JSON.stringify(storedValue), 'utf-8');
-			const jsonDecoder = function(data: Buffer | ArrayBuffer): unknown {
-				const bytes = data instanceof ArrayBuffer ? Buffer.from(data) : data;
-				return(JSON.parse(bytes.toString('utf-8')));
-			};
-
-			return(await new SensitiveAttributeBuilder(subjectKey)
-				.set(jsonBytes)
-				.build(jsonDecoder));
-		}
+		const builder = new SensitiveAttributeBuilder(subjectKey);
+		// @ts-expect-error storedValue type is validated at setAttribute time
+		builder.set(name, storedValue);
+		return(await builder.build());
 	}
 
 	/**
