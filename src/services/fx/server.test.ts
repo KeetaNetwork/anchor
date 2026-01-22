@@ -5,6 +5,9 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
+const DEBUG = false;
+const TestLogger = DEBUG ? console : undefined;
+
 /*
  * Helper functions for autoRun tests
  */
@@ -128,6 +131,7 @@ test('FX Server Tests', async function() {
 
 	for (const fxAccount of [account, storage]) {
 		await using server = new KeetaNetFXAnchorHTTPServer({
+			logger: TestLogger,
 			account: fxAccount,
 			signer: account,
 			client: client,
@@ -293,6 +297,7 @@ test('FX Server Quote Validation Tests', async function() {
 	let shouldAcceptQuote = true;
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
+		logger: TestLogger,
 		account: account,
 		client: client,
 		quoteSigner: account,
@@ -475,6 +480,7 @@ test('FX Server Constructor Variation Tests', async function() {
 	const performCheck = async function(config: Partial<ConstructorParameters<typeof KeetaNetFXAnchorHTTPServer>[0]>) {
 		await using server = new KeetaNetFXAnchorHTTPServer({
 			...config,
+			logger: TestLogger,
 			client: client,
 			quoteSigner: quoteSigner,
 			fx: {
@@ -569,6 +575,7 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 	const delayMs = 50;
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
+		logger: TestLogger,
 		account: serverAccount,
 		client: serverClient,
 		quoteSigner: serverAccount,
@@ -713,6 +720,7 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 
 	const createServer = async function() {
 		const server = new KeetaNetFXAnchorHTTPServer({
+			logger: TestLogger,
 			account: serverAccount,
 			client: serverClient,
 			quoteSigner: serverAccount,
