@@ -366,7 +366,6 @@ const drivers: {
 				},
 				id: key,
 				namespace: namespace,
-				path: [`key_${key}_${RunKey}`],
 				logger: logger
 			});
 
@@ -394,6 +393,8 @@ const drivers: {
 							/* Ignore */
 						}
 					}
+
+					await firestore?.terminate();
 				}
 			});
 		}
