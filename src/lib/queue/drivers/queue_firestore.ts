@@ -21,7 +21,7 @@ import type { Logger } from '../../log/index.ts';
 import type { JSONSerializable } from '../../utils/json.js';
 import { asleep } from '../../utils/asleep.js';
 
-import type { Firestore, DocumentData, DocumentReference, CollectionReference } from '@google-cloud/firestore';
+import type { Firestore, DocumentData, CollectionReference } from '@google-cloud/firestore';
 
 type QueueEntryDocument = {
 	id: string;
@@ -75,12 +75,12 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 	private async getCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return firestore.collection(`queue_entries_${this.pathStr}`);
+		return(firestore.collection(`queue_entries_${this.pathStr}`));
 	}
 
 	private async getIdempotentCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return firestore.collection(`queue_idempotent_keys_${this.pathStr}`);
+		return(firestore.collection(`queue_idempotent_keys_${this.pathStr}`));
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
@@ -128,7 +128,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 			if (docSnapshot.exists) {
 				logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
-				return entryID;
+				return(entryID);
 			}
 
 			// Check idempotent keys
@@ -161,10 +161,10 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 				}
 			}
 
-			return entryID;
+			return(entryID);
 		});
 
-		return result;
+		return(result);
 	}
 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
@@ -183,6 +183,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 			await this.toctouDelay?.();
 
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const currentEntry = docSnapshot.data() as QueueEntryDocument;
 			if (!currentEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
@@ -228,6 +229,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			return(null);
 		}
 
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const entry = docSnapshot.data() as QueueEntryDocument;
 		if (!entry) {
 			return(null);
@@ -239,7 +241,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			? undefined
 			: new Set(idempotentQuery.docs.map((doc) => {
 				const data = doc.data();
-				return ConvertStringToRequestID(data['idempotentId'] as string);
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				return(ConvertStringToRequestID(data['idempotentId'] as string));
 			}));
 
 		return({
@@ -269,14 +272,17 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		let query = collection.orderBy('updated');
 
 		if (filter?.status) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			query = query.where('status', '==', filter.status) as CollectionReference<DocumentData>;
 		}
 
 		if (filter?.updatedBefore) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			query = query.where('updated', '<', filter.updatedBefore.getTime()) as CollectionReference<DocumentData>;
 		}
 
 		if (filter?.limit !== undefined) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			query = query.limit(filter.limit) as CollectionReference<DocumentData>;
 		}
 
@@ -285,6 +291,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 		for (const doc of querySnapshot.docs) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const row = doc.data() as QueueEntryDocument;
 
 			// Get idempotent keys for this entry
@@ -293,7 +300,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 				? undefined
 				: new Set(idempotentQuery.docs.map((idempotentDoc) => {
 					const data = idempotentDoc.data();
-					return ConvertStringToRequestID(data['idempotentId'] as string);
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					return(ConvertStringToRequestID(data['idempotentId'] as string));
 				}));
 
 			entries.push({
