@@ -9,7 +9,13 @@ then
    echo "unset ANCHOR_TESTING_FIRESTORE_HOST"
    echo "unset ANCHOR_TESTING_FIRESTORE_PORT"
 else
-   id="$(docker run --detach --publish-all --rm google/cloud-sdk:emulators gcloud beta emulators firestore start --host-port=0.0.0.0:8080)"
+   # Find an available port starting from 8080
+   port=8080
+   while netstat -tuln 2>/dev/null | grep -q ":${port} " || ss -tuln 2>/dev/null | grep -q ":${port} "; do
+      port=$((port + 1))
+   done
+   
+   id="$(docker run --detach -p ${port}:8080 --rm google/cloud-sdk:emulators gcloud beta emulators firestore start --host-port=0.0.0.0:8080)"
    ALREADY_WAITED=0
    until docker logs $id 2>&1 | grep -q "Dev App Server is now running"
    do 
@@ -21,7 +27,6 @@ else
          exit 64
       fi 
    done
-   port="$(docker container inspect "${id}" | jq -crM --tab '.[0].NetworkSettings.Ports["8080/tcp"][] | select(.HostIp == "0.0.0.0") | .HostPort')"
 
    echo "export ANCHOR_TESTING_FIRESTORE_DOCKER_ID=${id}"
    echo "export ANCHOR_TESTING_FIRESTORE_HOST=127.0.0.1"
