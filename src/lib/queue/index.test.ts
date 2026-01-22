@@ -344,6 +344,7 @@ const drivers: {
 			}
 
 			let firestore: Firestore | undefined;
+			const namespace = `test_${key}_${RunKey}`;
 
 			const queue = new KeetaAnchorQueueStorageDriverFirestore({
 				firestore: async function(): Promise<Firestore> {
@@ -364,6 +365,7 @@ const drivers: {
 					return(firestore);
 				},
 				id: key,
+				namespace: namespace,
 				path: [`key_${key}_${RunKey}`],
 				logger: logger
 			});
@@ -374,13 +376,14 @@ const drivers: {
 					await queue[Symbol.asyncDispose]();
 					if (firestore && !options?.leave) {
 						// Clean up only the collections created by this test instance
-						// Uses the collectionPrefix pattern: {instanceId}_{pathStr}
+						// Uses the namespace pattern to isolate test data
 						try {
 							const collections = await firestore.listCollections();
-							const prefix = `${key}_`;
+							const prefix = `queue_entries_${namespace}_`;
+							const idempotentPrefix = `queue_idempotent_keys_${namespace}_`;
 							for (const collection of collections) {
-								// Only delete collections that match our test instance prefix
-								if (collection.id.startsWith(prefix)) {
+								// Only delete collections that match our test namespace
+								if (collection.id.startsWith(prefix) || collection.id.startsWith(idempotentPrefix)) {
 									const snapshot = await collection.get();
 									for (const doc of snapshot.docs) {
 										await doc.ref.delete();

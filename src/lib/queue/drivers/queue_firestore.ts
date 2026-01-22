@@ -44,16 +44,16 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	private readonly collectionPrefix: string;
+	private readonly namespace: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace?: string; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.firestoreInternal = options.firestore;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.collectionPrefix = `${this.id}_${this.pathStr}`;
+		this.namespace = options.namespace ?? 'default';
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -77,12 +77,12 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 	private async getCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return(firestore.collection(`queue_entries_${this.collectionPrefix}`));
+		return(firestore.collection(`queue_entries_${this.namespace}_${this.pathStr}`));
 	}
 
 	private async getIdempotentCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return(firestore.collection(`queue_idempotent_keys_${this.collectionPrefix}`));
+		return(firestore.collection(`queue_idempotent_keys_${this.namespace}_${this.pathStr}`));
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
@@ -336,6 +336,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			firestore: this.firestoreInternal,
+			namespace: this.namespace,
 			path: [...this.path, path]
 		});
 
