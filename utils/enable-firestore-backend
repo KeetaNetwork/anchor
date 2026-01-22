@@ -1,4 +1,4 @@
-#! /usr/bin/env bash
+#!/usr/bin/env bash
 if [[ "$1" = "off" ]]
 then
    if [[ -n $ANCHOR_TESTING_FIRESTORE_DOCKER_ID ]]

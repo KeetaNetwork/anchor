@@ -21,7 +21,7 @@ import type { Logger } from '../../log/index.ts';
 import type { JSONSerializable } from '../../utils/json.js';
 import { asleep } from '../../utils/asleep.js';
 
-import type { Firestore, DocumentData, CollectionReference } from '@google-cloud/firestore';
+import type { Firestore, DocumentData, CollectionReference, Query } from '@google-cloud/firestore';
 
 type QueueEntryDocument = {
 	id: string;
@@ -269,21 +269,18 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 		logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
-		let query = collection.orderBy('updated');
+		let query: Query<DocumentData> | CollectionReference<DocumentData> = collection.orderBy('updated');
 
 		if (filter?.status) {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			query = query.where('status', '==', filter.status) as CollectionReference<DocumentData>;
+			query = query.where('status', '==', filter.status);
 		}
 
 		if (filter?.updatedBefore) {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			query = query.where('updated', '<', filter.updatedBefore.getTime()) as CollectionReference<DocumentData>;
+			query = query.where('updated', '<', filter.updatedBefore.getTime());
 		}
 
 		if (filter?.limit !== undefined) {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			query = query.limit(filter.limit) as CollectionReference<DocumentData>;
+			query = query.limit(filter.limit);
 		}
 
 		const querySnapshot = await query.get();
