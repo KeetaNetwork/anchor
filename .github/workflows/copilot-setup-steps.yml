@@ -44,3 +44,9 @@ jobs:
         env:
           # Needed to fetch packages from GitHub Package Registry
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Services
+        run: |
+          ./utils/enable-postgres-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
+          ./utils/enable-redis-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
+          ./utils/enable-firestore-backend | grep '^export ' | sed 's/^export //g' >> $GITHUB_ENV
