@@ -1030,8 +1030,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				 * lock contention for the worker ID if multiple requests
 				 * are being served by the same instance
 				 */
-				await using cleanup = new AsyncDisposableStack();
 				instance.autoRunRunning = true;
+				await using cleanup = new AsyncDisposableStack();
 				cleanup.defer(async function() {
 					instance.autoRunRunning = false;
 				});
