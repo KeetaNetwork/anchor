@@ -697,7 +697,7 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	/*
 	 * Create clients for each account and fund them
 	 */
-	const clients: InstanceType<typeof KeetaNet.UserClient>[] = []
+	const clients: InstanceType<typeof KeetaNet.UserClient>[] = [];
 	for (const account of accounts) {
 		// Fund the account with token1
 		await serverClient.modTokenSupplyAndBalance(1000n, token1);
