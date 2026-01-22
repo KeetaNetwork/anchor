@@ -355,6 +355,8 @@ const drivers: {
 							ssl: false,
 							credentials: {
 								client_email: 'test@example.com',
+								// Hard-coded test private key for emulator only - not a security risk
+								// as it's only used with the local Firestore emulator and never in production
 								private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7W8jT9qqF0GNf\n-----END PRIVATE KEY-----'
 							}
 						});
@@ -371,13 +373,18 @@ const drivers: {
 				[Symbol.asyncDispose]: async function() {
 					await queue[Symbol.asyncDispose]();
 					if (firestore && !options?.leave) {
-						// Clean up collections
+						// Clean up only the collections created by this test instance
+						// Uses the collectionPrefix pattern: {instanceId}_{pathStr}
 						try {
 							const collections = await firestore.listCollections();
+							const prefix = `${key}_`;
 							for (const collection of collections) {
-								const snapshot = await collection.get();
-								for (const doc of snapshot.docs) {
-									await doc.ref.delete();
+								// Only delete collections that match our test instance prefix
+								if (collection.id.startsWith(prefix)) {
+									const snapshot = await collection.get();
+									for (const doc of snapshot.docs) {
+										await doc.ref.delete();
+									}
 								}
 							}
 						} catch {

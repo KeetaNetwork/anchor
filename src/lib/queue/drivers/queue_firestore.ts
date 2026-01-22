@@ -44,14 +44,16 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private readonly collectionPrefix: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
-		this.logger = options?.logger
+		this.logger = options?.logger;
 		this.firestoreInternal = options.firestore;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
+		this.collectionPrefix = `${this.id}_${this.pathStr}`;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -75,12 +77,12 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 	private async getCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return(firestore.collection(`queue_entries_${this.pathStr}`));
+		return(firestore.collection(`queue_entries_${this.collectionPrefix}`));
 	}
 
 	private async getIdempotentCollection(): Promise<CollectionReference<DocumentData>> {
 		const firestore = await this.getFirestore();
-		return(firestore.collection(`queue_idempotent_keys_${this.pathStr}`));
+		return(firestore.collection(`queue_idempotent_keys_${this.collectionPrefix}`));
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
