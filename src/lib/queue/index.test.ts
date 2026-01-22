@@ -353,7 +353,6 @@ const drivers: {
 							host: firestoreConfig.host,
 							port: firestoreConfig.port,
 							ssl: false,
-							keyFilename: undefined,
 							credentials: {
 								client_email: 'test@example.com',
 								private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7W8jT9qqF0GNf\n-----END PRIVATE KEY-----'
