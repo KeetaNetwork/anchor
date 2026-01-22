@@ -47,13 +47,13 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	private readonly namespace: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace?: string; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace: string; }) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.firestoreInternal = options.firestore;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.namespace = options.namespace ?? 'default';
+		this.namespace = options.namespace;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
