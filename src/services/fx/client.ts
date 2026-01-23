@@ -5,7 +5,7 @@ import type {
 } from '@keetanetwork/keetanet-client';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
-import type { ServiceMetadata, ServiceSearchCriteria } from '../../lib/resolver.ts';
+import type { ServiceMetadata, ServiceSearchCriteria, SharedLookupCriteria } from '../../lib/resolver.ts';
 import { Buffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
@@ -14,7 +14,8 @@ import {
 	assertKeetaNetTokenPublicKeyString,
 	isKeetaFXAnchorEstimateResponse,
 	isKeetaFXAnchorExchangeResponse,
-	isKeetaFXAnchorQuoteResponse
+	isKeetaFXAnchorQuoteResponse,
+	Errors as FXErrors
 } from './common.js';
 import type {
 	ConversionInput,
@@ -25,7 +26,7 @@ import type {
 	KeetaFXAnchorQuote,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -104,7 +105,7 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>, sharedCriteria?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
 	const criteria: ServiceSearchCriteria<'fx'> = {};
 	if (request.from !== undefined) {
 		criteria.inputCurrencyCode = request.from.publicKeyString.get();
@@ -115,7 +116,7 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 	const response = await resolver.lookup('fx', {
 		...criteria
 		// kycProviders: 'TODO' XXX:TODO
-	});
+	}, sharedCriteria);
 
 	if (response === undefined) {
 		return(null);
@@ -233,6 +234,32 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 	}
 
+	async #parseResponseError(data: { ok: false }) {
+		if (typeof data !== 'object' || data === null) {
+			throw(new Error('Response is not an error'));
+		}
+
+		if (!('ok' in data) || data.ok) {
+			throw(new Error('Response is not an error'));
+		}
+
+		let errorStr;
+
+		try {
+			return(await KeetaAnchorError.fromJSON(data));
+		} catch (error: unknown) {
+			this.logger?.debug('Failed to parse error response as KeetaAnchorError', error, data);
+		}
+
+		if ('error' in data && typeof data.error === 'string') {
+			errorStr = data.error;
+		} else {
+			errorStr = 'Unknown error';
+		}
+
+		return(new Error(`FX request failed: ${errorStr}`));
+	}
+
 	async getEstimate(): Promise<KeetaFXAnchorEstimate> {
 		const serviceURL = await this.serviceInfo.operations.getEstimate;
 		if (serviceURL !== undefined) {
@@ -254,7 +281,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			if (!requestInformationJSON.ok) {
-				throw(new Error(`FX estimate request failed: ${requestInformationJSON.error}`));
+				throw(await this.#parseResponseError(requestInformationJSON));
 			}
 
 			this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
@@ -266,7 +293,22 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 					min: BigInt(estimateJSON.expectedCost.min),
 					max: BigInt(estimateJSON.expectedCost.max),
 					token: KeetaNetLib.Account.fromPublicKeyString(estimateJSON.expectedCost.token)
-				}
+				},
+				...(estimateJSON.convertedAmountBound !== undefined ? { convertedAmountBound: BigInt(estimateJSON.convertedAmountBound) } : {}),
+				...(() => {
+					if (estimateJSON.requiresQuote === undefined) {
+						return({})
+					} else if (estimateJSON.requiresQuote) {
+						return({ requiresQuote: true });
+					// We have to disable this as doing !estimateJSON.requiresQuote breaks the compiler, and that is what eslint wants us to do
+					// eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
+					} else if (estimateJSON.requiresQuote === false) {
+						return({
+							requiresQuote: false,
+							account: KeetaNetLib.Account.fromPublicKeyString(estimateJSON.account)
+						});
+					}
+				})()
 			});
 		} else {
 			throw(new Error('Service getEstimate does not exist'));
@@ -304,7 +346,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		if (!requestInformationJSON.ok) {
-			throw(new Error(`FX quote request failed: ${requestInformationJSON.error}`));
+			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
 		if (estimate !== undefined && tolerance !== undefined) {
@@ -331,31 +373,62 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 	}
 
-	async createExchange(quote: KeetaFXAnchorQuote, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
+	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
 			/* Liquidity Provider that will complete the swap */
-			const liquidityProvider = quote.account;
+			let liquidityProvider;
+			let request;
+			let convertedAmountBound: bigint;
 
-			/* Assume affinity is 'from' and assign appropriate variables */
-			let sendAmount = quote.request.amount;
-			let receiveAmount = quote.convertedAmount;
+			if ('estimate' in input) {
+				if (input.estimate.requiresQuote !== false) {
+					throw(new FXErrors.QuoteRequired());
+				}
 
-			/* If affinity is 'to' then reverse amounts */
-			if (quote.request.affinity === 'to') {
-				sendAmount = quote.convertedAmount;
-				receiveAmount = quote.request.amount;
+				liquidityProvider = input.estimate.account;
+				request = input.estimate.request;
+				if (input.estimate.convertedAmountBound !== undefined) {
+					convertedAmountBound = input.estimate.convertedAmountBound;
+				} else {
+					convertedAmountBound = input.estimate.convertedAmount;
+				}
+			} else {
+				liquidityProvider = input.quote.account;
+				request = input.quote.request;
+				convertedAmountBound = input.quote.convertedAmount;
+			}
+
+
+			let sendAmount;
+			let receiveAmount;
+
+			if (request.affinity === 'to') {
+				sendAmount = convertedAmountBound;
+				receiveAmount = request.amount;
+			} else if (request.affinity === 'from') {
+				sendAmount = request.amount;
+				receiveAmount = convertedAmountBound;
+			} else {
+				throw(new Error('Invalid affinity in conversion request'));
 			}
 
 			/* Construct the required operations for the swap request */
 			const builder = this.client.initBuilder();
-			builder.send(liquidityProvider, sendAmount, quote.request.from);
-			builder.receive(liquidityProvider, receiveAmount, quote.request.to, true);
 
-			/* If cost is required then send the required amount as well */
-			if (quote.cost.amount > 0) {
-				builder.send(liquidityProvider, quote.cost.amount, quote.cost.token);
+			if ('quote' in input) {
+				/* If cost is required then send the required amount as well */
+				if (input.quote.cost.amount > 0) {
+					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token);
+				}
+			} else if ('estimate' in input) {
+				if (input.estimate.expectedCost.max > 0) {
+					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token);
+				}
 			}
+
+			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
+			builder.send(liquidityProvider, sendAmount, request.from);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {
@@ -368,6 +441,14 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(new Error('User Swap Block is undefined'));
 		}
 
+		let bodyAdditionalData: { quote: KeetaFXAnchorQuote; } | { request: ConversionInputCanonical; };
+
+		if ('quote' in input) {
+			bodyAdditionalData = { quote: input.quote };
+		} else {
+			bodyAdditionalData = { request: input.estimate.request };
+		}
+
 		const serviceURL = (await this.serviceInfo.operations.createExchange)();
 		const requestInformation = await fetch(serviceURL, {
 			method: 'POST',
@@ -377,7 +458,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			},
 			body: JSON.stringify({
 				request: {
-					quote: KeetaNetLib.Utils.Conversion.toJSONSerializable(quote),
+					...(KeetaNetLib.Utils.Conversion.toJSONSerializable(bodyAdditionalData)),
 					block: Buffer.from(swapBlock.toBytes()).toString('base64')
 				}
 			})
@@ -397,7 +478,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		if (!requestInformationJSON.ok) {
-			throw(new Error(`FX exchange request failed: ${requestInformationJSON.error}`));
+			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
 		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
@@ -419,7 +500,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		if (!requestInformationJSON.ok) {
-			throw(new Error(`FX exchange status failed: ${requestInformationJSON.error}`));
+			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
@@ -458,33 +539,56 @@ class KeetaFXAnchorExchangeWithProvider {
 	}
 }
 
-class KeetaFXAnchorQuoteWithProvider {
+interface CanCreateExchange {
+	readonly isQuote: boolean;
+
+	get request(): ConversionInputCanonical;
+
+	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider>;
+}
+
+class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 	private readonly provider: KeetaFXAnchorProviderBase;
 	readonly quote: KeetaFXAnchorQuote;
+	readonly isQuote = true as const;
 
 	constructor(provider: KeetaFXAnchorProviderBase, quote: KeetaFXAnchorQuote) {
 		this.provider = provider;
 		this.quote = quote;
 	}
 
+	get request(): ConversionInputCanonical {
+		return(this.quote.request);
+	}
+
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		const exchange = await this.provider.createExchange(this.quote, block);
+		const exchange = await this.provider.createExchange({ quote: this.quote }, block);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 }
 
-class KeetaFXAnchorEstimateWithProvider {
+class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 	private readonly provider: KeetaFXAnchorProviderBase;
 	readonly estimate: KeetaFXAnchorEstimate;
+	readonly isQuote = false as const;
 
 	constructor(provider: KeetaFXAnchorProviderBase, estimate: KeetaFXAnchorEstimate) {
 		this.provider = provider;
 		this.estimate = estimate;
 	}
 
+	get request(): ConversionInputCanonical {
+		return(this.estimate.request);
+	}
+
 	async getQuote(tolerance?: number): Promise<KeetaFXAnchorQuoteWithProvider> {
 		const quote = await this.provider.getQuote(this.estimate, tolerance);
 		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
+	}
+
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block);
+		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 }
 
@@ -573,7 +677,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 	}
 
-	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
+	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {
 		if (input.from !== undefined && input.to !== undefined) {
 			throw(new KeetaAnchorUserError('Only one of from or two should be provided'));
 		}
@@ -582,7 +686,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 		const conversion = await this.canonicalizeConversionTokens(input);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
 		if (providerEndpoints === null) {
 			return(null);
 		}
@@ -614,10 +718,10 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		return({ conversions: [...conversions] });
 	}
 
-	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorProviderBase[] | null> {
+	async getBaseProvidersForConversion(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
 		if (providerEndpoints === null) {
 			return(null);
 		}
@@ -629,8 +733,8 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		return(providers);
 	}
 
-	async getEstimates(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {
-		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
+	async getEstimates(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options, sharedCriteria);
 		if (estimateProviders === null) {
 			return(null);
 		}
@@ -654,29 +758,70 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		return(results);
 	}
 
-	async getQuotes(request: ConversionInput, options: AccountOptions = {}): Promise<KeetaFXAnchorQuoteWithProvider[] | null> {
-		const estimateProviders = await this.getBaseProvidersForConversion(request, options);
+	async #multiRequestQuotes(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<({
+		provider: KeetaFXAnchorProviderBase;
+	} & ({
+		quote: KeetaFXAnchorQuoteWithProvider;
+	} | {
+		quote: null;
+		error: unknown;
+	}))[]> {
+		const estimateProviders = await this.getBaseProvidersForConversion(request, options, sharedCriteria);
 		if (estimateProviders === null) {
-			return(null);
+			return([]);
 		}
 
-		const quotes = await Promise.allSettled(estimateProviders.map(async (provider) => {
-			const quote = await provider.getQuote();
+		return(await Promise.all(estimateProviders.map(async (provider) => {
+			try {
+				const quote = await provider.getQuote();
+				return({ provider, quote: new KeetaFXAnchorQuoteWithProvider(provider, quote) });
+			} catch (error) {
+				return({ provider, quote: null, error });
+			}
+		})));
+	}
 
-			return(new KeetaFXAnchorQuoteWithProvider(provider, quote));
-		}));
+	async getQuotes(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorQuoteWithProvider[] | null> {
+		const quotes = await this.#multiRequestQuotes(request, options, sharedCriteria);
 
-		const results = quotes.filter(function(result) {
-			return(result.status === 'fulfilled');
-		}).map(function(result) {
-			return(result.value);
-		});
+		const results = quotes
+			.map(function(quote) {
+				return(quote.quote);
+			})
+			.filter(function(quote): quote is KeetaFXAnchorQuoteWithProvider {
+				return(quote !== null);
+			});
 
 		if (results.length === 0) {
 			return(null);
 		}
 
 		return(results);
+	}
+
+	async getQuotesOrEstimates(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<(KeetaFXAnchorQuoteWithProvider | KeetaFXAnchorEstimateWithProvider)[] | null> {
+		const quotesAndEstimates = await this.#multiRequestQuotes(request, options, sharedCriteria);
+
+		const results = await Promise.allSettled(quotesAndEstimates.map(async (provider) => {
+			if (provider.quote) {
+				return(provider.quote);
+			} else {
+				if (!(FXErrors.QuoteIssuanceDisabled.isInstance(provider.error))) {
+					throw(provider.error);
+				}
+
+				const estimate = await provider.provider.getEstimate();
+				return(new KeetaFXAnchorEstimateWithProvider(provider.provider, estimate));
+			}
+		}));
+
+		const filtered = results.filter(function(result) {
+			return(result.status === 'fulfilled');
+		}).map(function(result) {
+			return(result.value);
+		});
+
+		return(filtered);
 	}
 
 	/** @internal */

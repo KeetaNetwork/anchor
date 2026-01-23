@@ -2,7 +2,6 @@ import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
-import type { KeetaFXAnchorQuoteJSON } from './common.js';
 
 test('FX Server Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -196,8 +195,9 @@ test('FX Server Quote Validation Tests', async function() {
 					}
 				});
 			},
-			validateQuote: async function(quote: KeetaFXAnchorQuoteJSON) {
+			validateQuote: async function(quote) {
 				validateQuoteCalled = true;
+				console.log('quote', quote);
 				/* Verify that the quote has the expected structure */
 				expect(quote).toHaveProperty('request');
 				expect(quote).toHaveProperty('account');
@@ -244,30 +244,89 @@ test('FX Server Quote Validation Tests', async function() {
 	validateQuoteCalled = false;
 	shouldAcceptQuote = false;
 
-	const exchangeResponseRejected = await fetch(`${url}/api/createExchange`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({
-			request: {
-				quote: quote,
-				block: 'AAAAAAAAAA==' // A minimal valid base64 string that will decode but fail later
-			}
-		})
-	});
+	const fakeBlock = await (async () => {
+		const builder = client.initBuilder();
 
-	/* The validation callback should have been called */
-	expect(validateQuoteCalled).toBe(true);
-	/* And since it returned false, the server should reject the request */
-	expect(exchangeResponseRejected.status).toBe(400);
-	const errorData: unknown = await exchangeResponseRejected.json();
-	expect(errorData).toHaveProperty('ok', false);
-	expect(errorData).toHaveProperty('error');
-	/* Verify we got the correct error type */
-	if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
-		expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
+		if (typeof quote !== 'object' || quote === null || !('account' in quote) || typeof quote.account !== 'string') {
+			throw(new Error('invalid quote'));
+		}
+
+		builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1);
+		const computed = await builder.computeBlocks();
+		const block = computed.blocks[0];
+		if (!block) {
+			throw(new Error('invariant, should have computed a block'));
+		}
+
+		return(block);
+	})();
+
+	{
+		shouldAcceptQuote = true;
+
+		const exchangeResponseRejected = await fetch(`${url}/api/createExchange`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				request: {
+					request: {
+						from: token1.publicKeyString.get(),
+						to: token2.publicKeyString.get(),
+						amount: '100',
+						affinity: 'from'
+					},
+					block: Buffer.from(fakeBlock.toBytes()).toString('base64')
+				}
+			})
+		});
+
+		expect(exchangeResponseRejected.status).toBe(400);
+		const errorData: unknown = await exchangeResponseRejected.json();
+		expect(errorData).toHaveProperty('ok', false);
+		expect(errorData).toHaveProperty('error');
+		/* Verify we got the correct error type */
+		if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
+			expect(errorData.name).toBe('KeetaFXAnchorQuoteRequiredError');
+		} else {
+			expect(false).toEqual(true);
+		}
+	}
+
+	{
+		shouldAcceptQuote = false;
+		validateQuoteCalled = false;
+
+		const exchangeResponseRejected = await fetch(`${url}/api/createExchange`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				request: {
+					quote: quote,
+					block: Buffer.from(fakeBlock.toBytes()).toString('base64')
+				}
+			})
+		});
+
+		/* The validation callback should have been called */
+		expect(validateQuoteCalled).toBe(true);
+		/* And since it returned false, the server should reject the request */
+		expect(exchangeResponseRejected.status).toBe(400);
+		const errorData: unknown = await exchangeResponseRejected.json();
+		expect(errorData).toHaveProperty('ok', false);
+		expect(errorData).toHaveProperty('error');
+		/* Verify we got the correct error type */
+		if (typeof errorData === 'object' && errorData !== null && 'name' in errorData) {
+			expect(errorData.name).toBe('KeetaFXAnchorQuoteValidationFailedError');
+		} else {
+			expect(false).toEqual(true);
+		}
+
 	}
 });
 

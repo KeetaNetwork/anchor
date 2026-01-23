@@ -25,12 +25,14 @@ import KeetaAnchorQueueStorageDriverFile from './drivers/queue_file.js';
 import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
 import KeetaAnchorQueueStorageDriverRedis from './drivers/queue_redis.js';
 import KeetaAnchorQueueStorageDriverPostgres from './drivers/queue_postgres.js';
+import KeetaAnchorQueueStorageDriverFirestore from './drivers/queue_firestore.js';
 
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import * as pg from 'pg';
+import { Firestore } from '@google-cloud/firestore';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
@@ -80,6 +82,22 @@ function getTestingPostgresConfig(): { host: string; port: number; user: string;
 	}
 
 	return({ host: host, port: port, user: user, password: password });
+}
+
+function getTestingFirestoreConfig(): { host: string; port: number; } | null {
+	const host = process.env['ANCHOR_TESTING_FIRESTORE_HOST'];
+	const portStr = process.env['ANCHOR_TESTING_FIRESTORE_PORT'];
+
+	if (!host || !portStr) {
+		return(null);
+	}
+
+	const port = Number(portStr);
+	if (isNaN(port) || port <= 0 || port >= 65536) {
+		return(null);
+	}
+
+	return({ host: host, port: port });
 }
 
 const drivers: {
@@ -312,6 +330,73 @@ const drivers: {
 				pool = undefined;
 				throw(error);
 			}
+		}
+	},
+	'Firestore': {
+		persistent: true,
+		skip: async function() {
+			return(getTestingFirestoreConfig() === null);
+		},
+		create: async function(key: string, options = { leave: false }) {
+			const firestoreConfig = getTestingFirestoreConfig();
+			if (!firestoreConfig) {
+				throw(new Error('Firestore configuration not available'));
+			}
+
+			let firestore: Firestore | undefined;
+			const namespace = `test_${key}_${RunKey}`;
+
+			const queue = new KeetaAnchorQueueStorageDriverFirestore({
+				firestore: async function(): Promise<Firestore> {
+					if (!firestore) {
+						firestore = new Firestore({
+							projectId: 'test-project',
+							host: firestoreConfig.host,
+							port: firestoreConfig.port,
+							ssl: false,
+							credentials: {
+								client_email: 'test@example.com',
+								// Hard-coded test private key for emulator only - not a security risk
+								// as it's only used with the local Firestore emulator and never in production
+								private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7W8jT9qqF0GNf\n-----END PRIVATE KEY-----'
+							}
+						});
+					}
+					return(firestore);
+				},
+				id: key,
+				namespace: namespace,
+				logger: logger
+			});
+
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (firestore && !options?.leave) {
+						// Clean up only the collections created by this test instance
+						// Uses the namespace pattern to isolate test data
+						try {
+							const collections = await firestore.listCollections();
+							const prefix = `queue_entries_${namespace}_`;
+							const idempotentPrefix = `queue_idempotent_keys_${namespace}_`;
+							for (const collection of collections) {
+								// Only delete collections that match our test namespace
+								if (collection.id.startsWith(prefix) || collection.id.startsWith(idempotentPrefix)) {
+									const snapshot = await collection.get();
+									for (const doc of snapshot.docs) {
+										await doc.ref.delete();
+									}
+								}
+							}
+						} catch {
+							/* Ignore */
+						}
+					}
+
+					await firestore?.terminate();
+				}
+			});
 		}
 	}
 };

@@ -1,6 +1,6 @@
 {
 	"name": "@keetanetwork/anchor",
-	"version": "0.0.37",
+	"version": "0.0.38",
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
@@ -25,6 +25,7 @@
 	"devDependencies": {
 		"@cspell/cspell-types": "9.6.0",
 		"@cspell/dict-typescript": "3.2.3",
+		"@google-cloud/firestore": "8.2.0",
 		"@keetanetwork/eslint-config-typescript": "1.4.7",
 		"@keetanetwork/keetanet-node": "0.14.14",
 		"@ryoppippi/unplugin-typia": "2.6.5",

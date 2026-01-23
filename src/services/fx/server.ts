@@ -1,15 +1,17 @@
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import { KeetaNet } from '../../client/index.js';
 import {
+	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import {
 	assertConversionInputCanonicalJSON,
-	assertConversionQuoteJSON,
+	assertKeetaFXAnchorClientCreateExchangeRequestJSON,
 	Errors
 } from './common.js';
 import type {
 	ConversionInputCanonicalJSON,
+	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
@@ -24,10 +26,11 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
-import type { JSONSerializable } from '../../lib/utils/json.ts';
+import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
+import { assertExchangeBlockParameters } from './util.js';
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.
@@ -74,9 +77,30 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	signer?: InstanceType<typeof KeetaNet.lib.Account> | ((request: ConversionInputCanonicalJSON) => Promise<InstanceType<typeof KeetaNet.lib.Account>> | InstanceType<typeof KeetaNet.lib.Account>);
 
 	/**
-	 * Account which performs the signing and validation of quotes
+	 * Account which performs the signing and validation of quotes,
+	 * This can be null but only if `quoteConfiguration.issueQuotes` is false.
 	 */
-	quoteSigner: Signing.SignableAccount;
+	quoteSigner: Signing.SignableAccount | null;
+
+	/**
+	 * Indicates whether the liquidity provider requires a quote before performing an exchange
+	 * defaults to requiresQuote: true
+	 */
+	quoteConfiguration?: {
+		requiresQuote: true;
+	} | {
+		requiresQuote: false;
+
+		/**
+		 * Indicates whether to call validateQuote before performing the exchange, defaults to true if validateQuote is provided
+		 */
+		validateQuoteBeforeExchange: boolean;
+
+		/**
+		 * Indicates if the server should issue quotes when requested, if not it will throw a
+		 */
+		issueQuotes: boolean;
+	};
 
 	/**
 	 * Configuration for FX handling
@@ -91,7 +115,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 *
 		 * This is used to handle quotes and estimates
 		 */
-		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<Omit<KeetaFXAnchorQuote, 'request' | 'signed' >>;
+		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<KeetaFXInternalPriceQuote>;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -102,8 +126,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 * @param quote The quote to validate
 		 * @returns true to accept the quote and proceed with the exchange, false to reject it
 		 */
-		validateQuote?: (quote: KeetaFXAnchorQuoteJSON) => Promise<boolean> | boolean;
-
+		validateQuote?: (quote: ValidateQuoteArguments) => Promise<boolean> | boolean;
 	};
 
 	/**
@@ -209,6 +232,40 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 	});
 }
 
+export type KeetaFXInternalPriceQuote = Omit<KeetaFXAnchorQuote, 'signed' | 'request'> & Pick<KeetaFXAnchorEstimate, 'convertedAmountBound'>;
+export type ValidateQuoteArguments = KeetaFXInternalPriceQuote & Partial<Omit<KeetaFXAnchorQuote, keyof KeetaFXInternalPriceQuote>>;
+
+export function toValidateQuoteInput(input: KeetaFXAnchorQuoteJSON | KeetaFXInternalPriceQuote | KeetaFXAnchorQuote): ValidateQuoteArguments {
+	const ret: ValidateQuoteArguments = {
+		account: KeetaNet.lib.Account.toAccount(input.account),
+		convertedAmount: BigInt(input.convertedAmount),
+		cost: {
+			amount: BigInt(input.cost.amount),
+			token: KeetaNet.lib.Account.toAccount(input.cost.token)
+		}
+	};
+
+	if ('convertedAmountBound' in input && input.convertedAmountBound !== undefined) {
+		ret.convertedAmountBound =  BigInt(input.convertedAmountBound);
+	}
+
+	if ('signed' in input && input.signed !== undefined) {
+		ret.signed = input.signed;
+	}
+
+	if ('request' in input && input.request !== undefined) {
+		ret.request = {
+			from: KeetaNet.lib.Account.toAccount(input.request.from),
+			to: KeetaNet.lib.Account.toAccount(input.request.to),
+			amount: BigInt(input.request.amount),
+			affinity: input.request.affinity
+		};
+	}
+
+	return(ret);
+}
+
+
 /* QUEUE PROCESSOR PIPELINE */
 type KeetaFXAnchorQueueStage1Request = {
 	account: KeetaNetAccount;
@@ -226,16 +283,7 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Original request */
 	request: ConversionInputCanonicalJSON;
 	/** Expected exchange details for verification */
-	expected: {
-		recieve: {
-			token: string;
-			amount: string;
-		};
-		send: {
-			token: string;
-			amount: string;
-		};
-	};
+	expected: ToJSONSerializable<KeetaFXAnchorQueueStage1Request['expected']>;
 };
 type KeetaFXAnchorQueueStage1Response = {
 	/**
@@ -292,6 +340,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 		if (KeetaNet.UserClient.isInstance(config.client)) {
 			userClient = config.client;
+
+			if (!(userClient.account.comparePublicKey(entry.request.account))) {
+				return({
+					status: 'failed_permanently',
+					output: null,
+					error: `Mismatched account for FX request with configured UserClient account`
+				});
+			}
 		} else {
 			const { signer, account: checkAccount } = await requestToAccounts(config, request);
 
@@ -388,10 +444,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		}
 
 		/* We are clear to attempt the swap now */
-		const swapBlocks = await userClient.acceptSwapRequest({
-			block: block,
-			expected: expected
-		});
+
+		const builder = userClient.initBuilder();
+		builder.send(block.account, expected.send.amount, expected.send.token);
+
+		const sendBlock = await builder.computeBlocks();
+
+		const swapBlocks = [ ...sendBlock.blocks, block ];
+
 		const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
 		if (userClient.config.generateFeeBlock !== undefined) {
 			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
@@ -420,7 +480,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: Buffer.from(request.block.toBytes()).toString('base64'),
 			request: request.request,
 			expected: {
-				recieve: {
+				receive: {
 					token: request.expected.receive.token.publicKeyString.get(),
 					amount: request.expected.receive.amount.toString()
 				},
@@ -452,13 +512,13 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			block: new KeetaNet.lib.Block(reqJSON.block),
 			request: reqJSON.request,
 			expected: {
+				receive: {
+					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.receive.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					amount: BigInt(reqJSON.expected.receive.amount)
+				},
 				send: {
 					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.send.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
 					amount: BigInt(reqJSON.expected.send.amount)
-				},
-				receive: {
-					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.recieve.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					amount: BigInt(reqJSON.expected.recieve.amount)
 				}
 			}
 		};
@@ -598,6 +658,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 	readonly quoteSigner: KeetaAnchorFXServerConfig['quoteSigner'];
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
 	readonly pipeline: KeetaFXAnchorQueuePipeline;
+	readonly quoteConfiguration: Exclude<KeetaAnchorFXServerConfig['quoteConfiguration'], undefined>;
+
 	protected pipelineAutoRunInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor(config: KeetaAnchorFXServerConfig) {
@@ -607,6 +669,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		this.client = config.client;
 		this.fx = config.fx;
 		this.quoteSigner = config.quoteSigner;
+		this.quoteConfiguration = config.quoteConfiguration ?? { requiresQuote: true };
 
 		/*
 		 * Setup the accounts
@@ -736,16 +799,38 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+
+			let requiresQuoteBody: { requiresQuote: true } | { requiresQuote: false; account: KeetaNetAccount | KeetaNetStorageAccount; };
+			if (instance.quoteConfiguration.requiresQuote) {
+				requiresQuoteBody = { requiresQuote: true };
+			} else {
+				if (rateAndFee.convertedAmountBound === undefined) {
+					instance.logger.warn('POST /api/getEstimate', 'FX configuration indicates quotes are not required, but "convertedAmountBound" was not provided in the rate and fee response');
+				} else {
+					if (conversion.affinity === 'to' && (BigInt(conversion.amount) > rateAndFee.convertedAmountBound)) {
+						throw(new KeetaAnchorError('Affinity is to, but bound is less than estimated sent amount'));
+					}
+
+					if (conversion.affinity === 'from' && (BigInt(conversion.amount) < rateAndFee.convertedAmountBound)) {
+						throw(new KeetaAnchorError('Affinity is from, but bound is greater than estimated received amount'));
+					}
+				}
+
+				requiresQuoteBody = { requiresQuote: false, account: rateAndFee.account };
+			}
+
 			const estimateResponse: KeetaFXAnchorEstimateResponse = {
 				ok: true,
 				estimate: KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 					request: conversion,
 					convertedAmount: rateAndFee.convertedAmount,
+					convertedAmountBound: rateAndFee.convertedAmountBound,
 					expectedCost: {
 						min: rateAndFee.cost.amount,
 						max: rateAndFee.cost.amount,
 						token: rateAndFee.cost.token
-					}
+					},
+					...requiresQuoteBody
 				})
 			};
 
@@ -754,15 +839,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			});
 		}
 
-		routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const conversion = assertConversionInputCanonicalJSON(postData.request);
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON) {
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
 
 			if (PARANOID) {
@@ -772,10 +849,33 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 			}
 
+			return(rateAndFee);
+		}
+
+		routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
+			if (!instance.quoteConfiguration.requiresQuote && !instance.quoteConfiguration.issueQuotes) {
+				throw(new Errors.QuoteIssuanceDisabled());
+			}
+
+			if (!postData || typeof postData !== 'object') {
+				throw(new Error('No POST data provided'));
+			}
+
+			if (!('request' in postData)) {
+				throw(new Error('POST data missing request'));
+			}
+
+			const conversion = assertConversionInputCanonicalJSON(postData.request);
+			const rateAndFee = await getUnsignedQuoteData(conversion);
+
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 				request: conversion,
 				...rateAndFee
 			});
+
+			if (config.quoteSigner === null) {
+				throw(new Error('Quote signer not configured, this is required when issuing quotes'));
+			}
 
 			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote);
 			const quoteResponse: KeetaFXAnchorQuoteResponse = {
@@ -796,75 +896,142 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			if (!('request' in postData)) {
 				throw(new Error('POST data missing request'));
 			}
-			const request = postData.request;
-			if (!request || typeof request !== 'object') {
-				throw(new Error('Request is not an object'));
-			}
 
-			if (!('quote' in request)) {
-				throw(new Error('Quote is missing from request'));
-			}
+			const request = assertKeetaFXAnchorClientCreateExchangeRequestJSON(postData.request);
+
 			if (!('block' in request) || typeof request.block !== 'string') {
 				throw(new Error('Block was not provided in exchange request'));
 			}
 
-			const quote = assertConversionQuoteJSON(request.quote);
-			const isValidQuote = await verifySignedData(config.quoteSigner, quote);
-			if (!isValidQuote) {
-				throw(new Error('Invalid quote signature'));
+			const block = new KeetaNet.lib.Block(request.block);
+
+			let quoteInput;
+			let conversionInput;
+			let shouldValidateQuote;
+			let liquidityAccount;
+			if ('quote' in request && 'estimate' in request && request.quote && request.estimate) {
+				throw(new Error('Request cannot contain both quote and estimate'));
+			} else if ('quote' in request && request.quote) {
+				shouldValidateQuote = true;
+				quoteInput = request.quote;
+				conversionInput = quoteInput.request;
+
+				const isValidQuote = await (async () => {
+					if (config.quoteSigner === null) {
+						return(false);
+					}
+
+					return(await verifySignedData(config.quoteSigner, quoteInput));
+				})();
+
+				if (!isValidQuote) {
+					throw(new Errors.QuoteValidationFailed());
+				}
+
+				liquidityAccount = quoteInput.account;
+			} else if ('request' in request && request.request) {
+				if (instance.quoteConfiguration.requiresQuote) {
+					throw(new Errors.QuoteRequired());
+				}
+
+				conversionInput = request.request;
+				quoteInput = await getUnsignedQuoteData(conversionInput);
+
+				if (instance.quoteConfiguration.validateQuoteBeforeExchange !== undefined) {
+					shouldValidateQuote = instance.quoteConfiguration.validateQuoteBeforeExchange;
+				} else {
+					shouldValidateQuote = config.fx.validateQuote !== undefined;
+				}
+
+				for (const operation of block.operations) {
+					if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
+						if (!config.accounts) {
+							throw(new Error('No accounts configured for FX server, cannot infer liquidity account from block'));
+						}
+
+						if (config.accounts.has(operation.to)) {
+							liquidityAccount = operation.to;
+							break;
+						}
+					}
+				}
+
+				if (!liquidityAccount) {
+					throw(new KeetaAnchorUserError('Could not determine liquidity account from exchange block'));
+				}
+			} else {
+				throw(new Error('Either quote or request must be provided (but not both) in exchange request'));
 			}
 
+			const parsedQuote = toValidateQuoteInput(quoteInput);
+
 			/* Validate the quote using the optional callback */
-			if (config.fx.validateQuote !== undefined) {
-				const isAcceptable = await config.fx.validateQuote(quote);
+			if (config.fx.validateQuote !== undefined && shouldValidateQuote) {
+				const isAcceptable = await config.fx.validateQuote(parsedQuote);
 				if (!isAcceptable) {
 					throw(new Errors.QuoteValidationFailed());
 				}
 			}
 
-			const block = new KeetaNet.lib.Block(request.block);
+			let expectedSendAmount: bigint;
+			let expectedReceiveAmount: bigint;
 
-			/* Get Expected Amount and Token to Verify Swap */
-			const expectedForSwap: KeetaFXAnchorQueueStage1Request['expected'] = {
-				/* What we are receiving -- what they are sending */
-				receive: {
-					amount: BigInt(quote.request.affinity === 'from' ? quote.request.amount : quote.convertedAmount),
-					token: KeetaNet.lib.Account.fromPublicKeyString(quote.request.from)
-				},
-				/* What we are sending -- what they are receiving */
-				send: {
-					amount: BigInt(quote.request.affinity === 'to' ? quote.request.amount : quote.convertedAmount),
-					token: KeetaNet.lib.Account.fromPublicKeyString(quote.request.to)
-				}
-			};
-
-			if (BigInt(quote.cost.amount) > 0) {
-				if (expectedForSwap.receive.token.comparePublicKey(quote.cost.token)) {
-					expectedForSwap.receive.amount += BigInt(quote.cost.amount);
-				} else {
-					let requestIncludesFXFee = false;
-					for (const operation of block.operations) {
-						if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
-							const recipientMatches = operation.to.comparePublicKey(quote.account);
-							const tokenMatches = operation.token.comparePublicKey(quote.cost.token);
-							const amountMatches = operation.amount === BigInt(quote.cost.amount);
-							if (recipientMatches && tokenMatches && amountMatches) {
-								requestIncludesFXFee = true;
-							}
-						}
-					}
-					if (!requestIncludesFXFee) {
-						throw(new Error('Exchange missing FX fee (cost)'));
-					}
-				}
+			if (conversionInput.affinity === 'to') {
+				expectedSendAmount = BigInt(conversionInput.amount);
+				expectedReceiveAmount = parsedQuote.convertedAmount;
+			} else {
+				expectedSendAmount = parsedQuote.convertedAmount;
+				expectedReceiveAmount = BigInt(conversionInput.amount);
 			}
+			const liquidityAccountInstance = KeetaNet.lib.Account.toAccount(liquidityAccount);
+
+			const userSendsMinimum = { [conversionInput.from]: expectedReceiveAmount };
+			const userWillReceiveMaximum = { [conversionInput.to]: expectedSendAmount };
+
+			if (parsedQuote.cost.amount > 0) {
+				const feeTokenPub = parsedQuote.cost.token.publicKeyString.get();
+
+				if (!userSendsMinimum[feeTokenPub]) {
+					userSendsMinimum[feeTokenPub] = 0n;
+				}
+
+				userSendsMinimum[feeTokenPub] += parsedQuote.cost.amount;
+			}
+
+			let allowedLiquidityAccounts;
+			if (config.accounts) {
+				allowedLiquidityAccounts = config.accounts;
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
+			} else if (config.account) {
+				// eslint-disable-next-line @typescript-eslint/no-deprecated
+				allowedLiquidityAccounts = new KeetaNet.lib.Account.Set([ config.account ]);
+			} else {
+				throw(new Error('config.account or config.accounts must be provided'));
+			}
+
+			assertExchangeBlockParameters({
+				block: block,
+				liquidityAccount: liquidityAccountInstance,
+				allowedLiquidityAccounts: allowedLiquidityAccounts,
+				userSendsMinimum: userSendsMinimum,
+				userWillReceiveMaximum: userWillReceiveMaximum
+			});
 
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({
-				account: KeetaNet.lib.Account.fromPublicKeyString(quote.account),
+				account: liquidityAccountInstance,
 				block: block,
-				request: quote.request,
-				expected: expectedForSwap
+				request: conversionInput,
+				expected: {
+					receive: {
+						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.from),
+						amount: expectedReceiveAmount
+					},
+					send: {
+						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.to),
+						amount: expectedSendAmount
+					}
+				}
 			});
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
