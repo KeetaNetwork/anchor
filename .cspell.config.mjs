@@ -17,9 +17,21 @@ try {
 	if (keetanetNodeConfig.default && keetanetNodeConfig.default.ignoreRegExpList) {
 		keetanetNodeIgnoreRegExpList = keetanetNodeConfig.default.ignoreRegExpList;
 	}
-} catch (e) {
-	// If import fails, we'll use the base configuration below
-	console.warn('Could not import cspell config from @keetanetwork/keetanet-node, using base configuration');
+} catch {
+	try {
+		const keetanetNodeConfig = await import('./.node.cspell.config.cjs');
+
+		console.warn('Could not import cspell config from @keetanetwork/keetanet-node, using local copy');
+		if (keetanetNodeConfig.default && keetanetNodeConfig.default.words) {
+			keetanetNodeWords = keetanetNodeConfig.default.words;
+		}
+		if (keetanetNodeConfig.default && keetanetNodeConfig.default.ignoreRegExpList) {
+			keetanetNodeIgnoreRegExpList = keetanetNodeConfig.default.ignoreRegExpList;
+		}
+	} catch (error) {
+		// If import fails, we'll use the base configuration below
+		console.warn('Could not import cspell config from @keetanetwork/keetanet-node, using base configuration:', error);
+	}
 }
 
 /** @type { import("@cspell/cspell-types").CSpellUserSettings } */
@@ -49,6 +61,7 @@ export default {
 		'EURC',
 		'Externalizable',
 		'FINALOUT',
+		'firestore',
 		'futoin',
 		'HTTPSURL',
 		'iban',
@@ -70,7 +83,6 @@ export default {
 		'OIDDB',
 		'oids',
 		'oldstatus',
-		'Oldsmar',
 		'postamble',
 		'promiseerror',
 		'Retryable',
@@ -126,7 +138,8 @@ export default {
 			words: [
 				'iso20022',
 				'ACCOUNTINFO',
-				'oids'
+				'oids',
+				'fcfg'
 			]
 		},
 		{
@@ -140,6 +153,7 @@ export default {
 			filename: '**/*.test.ts',
 			words: [
 				'Belgrave',
+				'Oldsmar',
 				'vitest'
 			]
 		}

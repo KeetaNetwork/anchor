@@ -1039,7 +1039,7 @@ test('Pipeline Basic Tests', async function() {
 	const id1 = await stage1.add('hello');
 	const id2 = await stage1.add('a');
 	const id3 = await stage1.add('abc');
-	const id4 = await stage1.add('defg');
+	const id4 = await stage1.add('def');
 	const id5 = await stage1.add('blah');
 
 	/*
