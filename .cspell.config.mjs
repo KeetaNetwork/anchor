@@ -115,7 +115,6 @@ export default {
 		'Valuizable',
 		'Valuize',
 		'VALUIZABLE',
-		'Verifable',
 		'wrongpath'
 	],
 	flagWords: [
