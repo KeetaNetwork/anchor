@@ -73,6 +73,7 @@ export default {
 		'keetanetwork',
 		'KEETATEST',
 		'KYCCA',
+		'lamports',
 		'localnode',
 		'Millis',
 		'multiworker',
