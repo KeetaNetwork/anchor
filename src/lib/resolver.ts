@@ -783,7 +783,7 @@ class Metadata implements ValuizableInstance {
 
 	/**
 	 * Format the supplied Metadata as appropriate to be included
-	 * within the Metadata field of a KeetaNet acccount to serve
+	 * within the Metadata field of a KeetaNet account to serve
 	 * as the Metadata for the Resolver.
 	 */
 	static formatMetadata(metadata: ToJSONValuizable<ServiceMetadata>): string;
