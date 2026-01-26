@@ -9,10 +9,10 @@ import crypto from '../../lib/utils/crypto.js';
 import { assertNever } from '../../lib/utils/never.js';
 
 export type SignableAccount = ReturnType<InstanceType<typeof KeetaNetLib.Account>['assertAccount']>;
-export type VerifableAccount = InstanceType<typeof KeetaNetLib.Account>;
+export type VerifiableAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type Signable = (string | number | bigint | InstanceType<typeof KeetaNetLib.Account>)[];
 
-export function FormatData(account: VerifableAccount, data: Signable, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
+export function FormatData(account: VerifiableAccount, data: Signable, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
 	nonce ??= crypto.randomUUID();
 	timestamp ??= new Date();
 
@@ -77,7 +77,7 @@ export async function SignData(account: SignableAccount, data: Signable): Promis
 	});
 }
 
-export async function VerifySignedData(account: VerifableAccount, data: Signable, signed: Awaited<ReturnType<typeof SignData>>): Promise<boolean> {
+export async function VerifySignedData(account: VerifiableAccount, data: Signable, signed: Awaited<ReturnType<typeof SignData>>): Promise<boolean> {
 	const nonce = signed.nonce;
 	const timestampString = signed.timestamp;
 	const signatureBuffer = Buffer.from(signed.signature, 'base64');

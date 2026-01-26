@@ -193,7 +193,7 @@ async function generateSignedQuote(signer: Signing.SignableAccount, unsignedQuot
 	});
 }
 
-async function verifySignedData(signedBy: Signing.VerifableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<boolean> {
+async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<boolean> {
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
