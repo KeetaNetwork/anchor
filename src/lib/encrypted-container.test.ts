@@ -447,10 +447,11 @@ describe('Encrypted Container Signing Tests (v3)', function() {
 	const testData = Buffer.from('Test content', 'utf-8');
 
 	describe('container creation', function() {
+		const accountArray: Account[] = [testAccount1];
 		const creationTestCases = [
 			{
 				description: 'signed encrypted container',
-				principals: [testAccount1] as Account[],
+				principals: accountArray,
 				options: { signer: testAccount1 },
 				expectedSigned: true,
 				expectedEncrypted: true
@@ -464,14 +465,14 @@ describe('Encrypted Container Signing Tests (v3)', function() {
 			},
 			{
 				description: 'unsigned container',
-				principals: [testAccount1] as Account[],
+				principals: accountArray,
 				options: undefined,
 				expectedSigned: false,
 				expectedEncrypted: true
 			},
 			{
 				description: 'backwards compatible boolean locked parameter',
-				principals: [testAccount1] as Account[],
+				principals: accountArray,
 				options: true,
 				expectedSigned: false,
 				expectedEncrypted: true

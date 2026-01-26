@@ -70,7 +70,8 @@ export class EncryptedContainerError extends KeetaAnchorError {
 	 * Check if a string is a valid EncryptedContainerErrorCode
 	 */
 	static isValidCode(code: string): code is EncryptedContainerErrorCode {
-		return EncryptedContainerErrorCodes.includes(code as EncryptedContainerErrorCode);
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(EncryptedContainerErrorCodes.includes(code as EncryptedContainerErrorCode));
 	}
 
 	constructor(code: EncryptedContainerErrorCode, message: string) {
@@ -205,15 +206,17 @@ function getSignatureAlgorithmOID(account: Account): string {
 	// ECDSA_SECP256K1 = 0, ED25519 = 1, ECDSA_SECP256R1 = 6
 	const keyType = account.keyType;
 
-	switch (keyType) {
-		case 0: // ECDSA_SECP256K1
-			return oidDB['ecdsa-secp256k1'];
-		case 1: // ED25519
-			return oidDB['ed25519'];
-		case 6: // ECDSA_SECP256R1
-			return oidDB['ecdsa-secp256r1'];
-		default:
-			throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+	if (keyType === 0) { // ECDSA_SECP256K1
+		return(oidDB['ecdsa-secp256k1']);
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+	} else if (keyType === 1) { // ED25519
+		return(oidDB['ed25519']);
+	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
+	} else if (keyType === 6) { // ECDSA_SECP256R1
+		return(oidDB['ecdsa-secp256r1']);
+	} else {
+		throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
 	}
 }
 

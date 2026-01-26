@@ -200,14 +200,9 @@ type ServiceMetadata = {
 		storage?: {
 			[id: string]: {
 				operations: {
-					// Legacy operations
-					store?: ServiceMetadataEndpoint;
-					retrieve?: ServiceMetadataEndpoint;
-					update?: ServiceMetadataEndpoint;
-					delete?: ServiceMetadataEndpoint;
-					// New v2 operations
 					put?: ServiceMetadataEndpoint;
 					get?: ServiceMetadataEndpoint;
+					delete?: ServiceMetadataEndpoint;
 					search?: ServiceMetadataEndpoint;
 					public?: ServiceMetadataEndpoint;
 					quota?: ServiceMetadataEndpoint;
@@ -304,8 +299,9 @@ type ServiceSearchCriteria<T extends Services> = {
 		/* XXX:TODO */
 		workInProgress: true;
 	};
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 	'storage': {
-		/* No search criteria - returns all storage providers */
+		/* No search criteria - TODO? */
 	};
 }[T];
 
