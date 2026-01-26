@@ -31,6 +31,8 @@ import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
 import { assertExchangeBlockParameters } from './util.js';
+import { AsyncDisposableStack } from '../../lib/utils/defer.js';
+import { asleep } from '../../lib/utils/asleep.js';
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.
@@ -660,7 +662,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 	readonly pipeline: KeetaFXAnchorQueuePipeline;
 	readonly quoteConfiguration: Exclude<KeetaAnchorFXServerConfig['quoteConfiguration'], undefined>;
 
-	protected pipelineAutoRunInterval: ReturnType<typeof setInterval> | null = null;
+	protected autoRun: boolean;
+	protected autoRunRunning = false;
 
 	constructor(config: KeetaAnchorFXServerConfig) {
 		super(config);
@@ -707,9 +710,9 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 		 * If no storage driver is provided, we default to an in-memory
 		 * that we auto-run
 		 */
-		let autorun = config.storage?.autoRun ?? false;
+		this.autoRun = config.storage?.autoRun ?? false;
 		if (config.storage === undefined) {
-			autorun = true;
+			this.autoRun = true;
 		}
 
 		/*
@@ -725,31 +728,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			logger: this.logger,
 			serverConfig: this
 		});
-
-		/*
-		 * If auto-run is enabled, setup the interval to run the pipeline
-		 */
-		if (autorun) {
-			let running = false;
-			this.pipelineAutoRunInterval = setInterval(async () => {
-				if (running) {
-					return;
-				}
-				running = true;
-				try {
-					await this.pipeline.maintain();
-				} catch (error) {
-					this.logger.error('KeetaNetFXAnchorHTTPServer::pipelineAutoRunInterval', 'Error maintaining pipeline:', error);
-				}
-				try {
-					await this.pipeline.run({ timeoutMs: 5000 });
-				} catch (error) {
-					this.logger.error('KeetaNetFXAnchorHTTPServer::pipelineAutoRunInterval', 'Error running pipeline:', error);
-				} finally {
-					running = false;
-				}
-			}, 1000);
-		}
 	}
 
 	protected async initRoutes(config: KeetaAnchorFXServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
@@ -1040,6 +1018,45 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				status: 'pending'
 			};
 
+			if (instance.autoRun && !instance.autoRunRunning) {
+				/*
+				 * Keep track of how many times, consecutively, the queue was empty when we
+				 * went to run it
+				 */
+				let noMoreJobsCount = 0;
+
+				/*
+				 * Create a mutex around the queue running so we don't have
+				 * lock contention for the worker ID if multiple requests
+				 * are being served by the same instance
+				 */
+				instance.autoRunRunning = true;
+				await using cleanup = new AsyncDisposableStack();
+				cleanup.defer(async function() {
+					instance.autoRunRunning = false;
+				});
+
+				/*
+				 * For up to 15s process the queue, stopping only when
+				 * we've had 2 consecutive runs that indicate there is
+				 * no more in the queue to process
+				 */
+				for (const startTime = Date.now(); Date.now() - startTime < 15000;) {
+					const more = await instance.pipeline.run({ timeoutMs: 1500 });
+					if (!more) {
+						noMoreJobsCount++;
+						if (noMoreJobsCount >= 2) {
+							break;
+						}
+					} else {
+						noMoreJobsCount = 0;
+					}
+
+					await instance.pipeline.maintain();
+					await asleep(100);
+				}
+			}
+
 			return({
 				output: JSON.stringify(exchangeResponse)
 			});
@@ -1132,11 +1149,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 	}
 
 	async stop(): Promise<void> {
-		if (this.pipelineAutoRunInterval !== null) {
-			clearInterval(this.pipelineAutoRunInterval);
-			this.pipelineAutoRunInterval = null;
-		}
-
 		await this.pipeline.destroy();
 
 		await super.stop();
