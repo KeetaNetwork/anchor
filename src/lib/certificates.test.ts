@@ -475,6 +475,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Add a document to be shared
 	 */
+	// cspell:disable-next-line
 	const mockDocumentContent = Buffer.from('Tk9UIFJFQUxMWSBBIFBORwo=', 'base64');
 	{
 		const mockDocumentContentEncrypted = EncryptedContainer.fromPlaintext(mockDocumentContent, [subjectAccount]);
