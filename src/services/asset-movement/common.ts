@@ -679,7 +679,7 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	error: string;
 });
 
-type PhysicalAddress = {
+export type PhysicalAddress = {
 	line1: string;
 	line2?: string;
 	country: ISOCountryCode;
