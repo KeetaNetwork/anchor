@@ -4,8 +4,119 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type {
 	ASN1OID
 } from '@keetanetwork/keetanet-client/lib/utils/asn1.js';
-import { Buffer, arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
+import { Buffer, arrayBufferToBuffer, arrayBufferLikeToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
 import { isArray } from './utils/array.js';
+import { KeetaAnchorError } from './error.js';
+
+// #region Error Handling
+
+/**
+ * Error codes for EncryptedContainer operations
+ */
+export const EncryptedContainerErrorCodes = [
+	// Parsing/Malformed data
+	'MALFORMED_BASE_FORMAT',
+	'MALFORMED_VERSION',
+	'MALFORMED_DATA_STRUCTURE',
+	'MALFORMED_KEY_INFO',
+	'MALFORMED_SIGNER_INFO',
+
+	// Algorithm issues
+	'UNSUPPORTED_VERSION',
+	'UNSUPPORTED_CIPHER_ALGORITHM',
+	'UNSUPPORTED_KEY_TYPE',
+
+	// Key/Decryption issues
+	'NO_KEYS_PROVIDED',
+	'NO_MATCHING_KEY',
+	'DECRYPTION_FAILED',
+
+	// Signing issues
+	'SIGNER_REQUIRES_PRIVATE_KEY',
+	'NOT_SIGNED',
+	'SIGNATURE_VERIFICATION_FAILED',
+
+	// State issues
+	'NO_PLAINTEXT_AVAILABLE',
+	'NO_ENCODED_DATA_AVAILABLE',
+	'PLAINTEXT_DISABLED',
+
+	// Access management
+	'ENCRYPTION_REQUIRED',
+	'INVALID_PRINCIPALS',
+	'ACCESS_MANAGEMENT_NOT_ALLOWED',
+
+	// Internal errors
+	'INTERNAL_ERROR'
+] as const;
+
+/**
+ * Error code type
+ */
+export type EncryptedContainerErrorCode = typeof EncryptedContainerErrorCodes[number];
+
+/**
+ * Error class for EncryptedContainer operations
+ */
+export class EncryptedContainerError extends KeetaAnchorError {
+	static override readonly name: string = 'EncryptedContainerError';
+
+	private readonly encryptedContainerErrorObjectTypeID!: string;
+	private static readonly encryptedContainerErrorObjectTypeID = 'f4a8c2e1-7b3d-4f9a-8c5e-2d1f0a9b8c7e';
+
+	readonly code: EncryptedContainerErrorCode;
+
+	/**
+	 * Check if a string is a valid EncryptedContainerErrorCode
+	 */
+	static isValidCode(code: string): code is EncryptedContainerErrorCode {
+		return EncryptedContainerErrorCodes.includes(code as EncryptedContainerErrorCode);
+	}
+
+	constructor(code: EncryptedContainerErrorCode, message: string) {
+		super(message);
+		this.code = code;
+		// EncryptedContainerError is not a user error
+		this.userError = false;
+
+		Object.defineProperty(this, 'encryptedContainerErrorObjectTypeID', {
+			value: EncryptedContainerError.encryptedContainerErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is EncryptedContainerError {
+		return(this.hasPropWithValue(input, 'encryptedContainerErrorObjectTypeID', EncryptedContainerError.encryptedContainerErrorObjectTypeID));
+	}
+
+	override toJSON(): ReturnType<KeetaAnchorError['toJSON']> & { code: EncryptedContainerErrorCode } {
+		return({
+			...super.toJSON(),
+			code: this.code
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<EncryptedContainerError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		// Extract and validate code
+		if (!('code' in other) || typeof other.code !== 'string') {
+			throw(new Error('Invalid EncryptedContainerError JSON: missing code property'));
+		}
+
+		// Validate code is a valid EncryptedContainerErrorCode
+		const code = other.code;
+		if (!this.isValidCode(code)) {
+			throw(new Error(`Invalid EncryptedContainerError JSON: unknown code ${code}`));
+		}
+
+		const error = new this(code, message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
+// #endregion
 
 const zlibDeflateAsync = KeetaNetLib.Utils.Buffer.ZlibDeflateAsync;
 const zlibInflateAsync = KeetaNetLib.Utils.Buffer.ZlibInflateAsync;
@@ -19,7 +130,7 @@ type Account = InstanceType<typeof KeetaNetLib.Account>;
  *
  * EncryptedContainer DEFINITIONS ::=
  * BEGIN
- *         Version        ::= INTEGER { v2(1) }
+ *         Version        ::= INTEGER { v2(1), v3(2) }
  *
  *         KeyStore ::= SEQUENCE {
  *                 publicKey              OCTET STRING,
@@ -40,10 +151,21 @@ type Account = InstanceType<typeof KeetaNetLib.Account>;
  *                 ...
  *         }
  *
+ *         -- RFC 5652 Section 5.3 SignerInfo (adapted for KeetaNet)
+ *         SignerInfo ::= SEQUENCE {
+ *                 version                CMSVersion,           -- INTEGER (3 for subjectKeyIdentifier)
+ *                 sid                    [0] SubjectKeyIdentifier,  -- OCTET STRING (publicKeyAndType)
+ *                 digestAlgorithm        OBJECT IDENTIFIER,    -- SHA3-256: 2.16.840.1.101.3.4.2.8
+ *                 signatureAlgorithm     OBJECT IDENTIFIER,    -- Derived from account type
+ *                 signature              OCTET STRING,
+ *                 ...
+ *         }
+ *
  *         ContainerPackage ::= SEQUENCE {
- *                 version                Version (v2),
+ *                 version                Version (v2 or v3),
  *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
  *                 plaintextContainer     [1] EXPLICIT PlaintextContainerBox OPTIONAL,
+ *                 signerInfo             [2] EXPLICIT SignerInfo OPTIONAL,  -- v3 only
  *                 ...
  *         } (WITH COMPONENTS {
  *                 encryptedContainer PRESENT,
@@ -57,48 +179,86 @@ type Account = InstanceType<typeof KeetaNetLib.Account>;
  *
  */
 
+/**
+ * OID constants for cryptographic algorithms
+ * // XXX:TODO: Are these already defined somewhere else?
+ */
+const oidDB = {
+	// Digest algorithms
+	'sha3-256': '2.16.840.1.101.3.4.2.8',
+
+	// Signature algorithms
+	'ed25519': '1.3.101.112',
+	'ecdsa-secp256k1': '1.3.132.0.10',
+	'ecdsa-secp256r1': '1.2.840.10045.3.1.7',
+
+	// Encryption algorithms
+	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
+} as const;
+
+
+/**
+ * Map account key algorithm to signature algorithm OID
+ */
+function getSignatureAlgorithmOID(account: Account): string {
+	// Account.AccountKeyAlgorithm values:
+	// ECDSA_SECP256K1 = 0, ED25519 = 1, ECDSA_SECP256R1 = 6
+	const keyType = account.keyType;
+
+	switch (keyType) {
+		case 0: // ECDSA_SECP256K1
+			return oidDB['ecdsa-secp256k1'];
+		case 1: // ED25519
+			return oidDB['ed25519'];
+		case 6: // ECDSA_SECP256R1
+			return oidDB['ecdsa-secp256r1'];
+		default:
+			throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
+	}
+}
+
+/**
+ * SignerInfo structure for RFC 5652 CMS compatibility
+ */
+type SignerInfoASN1 = [
+	/* version - CMSVersion (3 for subjectKeyIdentifier) */
+	number,
+
+	/* sid - SubjectKeyIdentifier wrapped in context tag [0] */
+	{
+		type: 'context',
+		value: 0,
+		kind: 'implicit',
+		contains: Buffer
+	},
+
+	/* digestAlgorithm */
+	ASN1OID,
+
+	/* signatureAlgorithm */
+	ASN1OID,
+
+	/* signature */
+	Buffer
+];
+
+/**
+ * Parsed SignerInfo data
+ */
+type ParsedSignerInfo = {
+	version: number;
+	signerPublicKeyAndType: Buffer;
+	digestAlgorithmOID: string;
+	signatureAlgorithmOID: string;
+	signature: Buffer;
+};
+
 type EncryptedContainerKeyStore = [
 	/* publicKey */
 	Buffer,
 
 	/* encryptedSymmetricKey */
 	Buffer
-];
-
-type EncryptedContainerBoxEncrypted = [
-	/* keys */
-	EncryptedContainerKeyStore[],
-
-	/* encryptionAlgorithm */
-	ASN1OID,
-
-	/* initializationVector */
-	Buffer,
-
-	/* value */
-	Buffer
-];
-
-type EncryptedContainerBoxPlaintext = [
-	/* value */
-	Buffer
-];
-
-type ContainerPackage = [
-	/* version */
-	number,
-
-	{
-		type: 'context'
-		value: 0,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxEncrypted
-	} | {
-		type: 'context',
-		value: 1,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxPlaintext
-	}
 ];
 
 type CipherOptions = {
@@ -123,24 +283,31 @@ type ASN1Options = Required<CipherOptions> & {
 	keys: Account[];
 }
 
-const oidDB = {
-	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
-} as const;
+type SigningOptions = {
+	/**
+	 * The account to sign the container with
+	 */
+	signer: Account;
+}
 
 /**
 * Compiles the ASN.1 for the container
 *
+* @param plaintext The plaintext data to encode
+* @param encryptionOptions Optional encryption options
+* @param signingOptions Optional signing options (will produce v3 container)
 * @returns The ASN.1 DER data
 */
-async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Promise<Buffer> {
-	const compressedPlaintext = Buffer.from(await zlibDeflateAsync(plaintext));
+async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, signingOptions?: SigningOptions): Promise<Buffer> {
+	const compressedPlaintext = Buffer.from(await zlibDeflateAsync(bufferToArrayBuffer(plaintext)));
 
-	const sequence: Partial<ContainerPackage> = [];
+	const sequence: unknown[] = [];
 
 	/*
-	 * Version v2 (1)
+	 * Version: v2 (1) if no signing, v3 (2) if signing
 	 */
-	sequence[0] = 1;
+	const version = signingOptions ? 2 : 1;
+	sequence[0] = version;
 
 	/*
 	 * Encrypted container box
@@ -149,11 +316,11 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 		const { keys, cipherKey, cipherIV, cipherAlgo } = encryptionOptions;
 
 		if (keys === undefined || keys.length === 0 || cipherKey === undefined || cipherIV === undefined || cipherAlgo === undefined) {
-			throw(new Error('internal error: Unsupported method invocation'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Unsupported method invocation'));
 		}
 
 		if (!(cipherAlgo in oidDB)) {
-			throw(new Error(`Unsupported algorithm: ${cipherAlgo}`));
+			throw(new EncryptedContainerError('UNSUPPORTED_CIPHER_ALGORITHM', `Unsupported algorithm: ${cipherAlgo}`));
 		}
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -175,8 +342,8 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 		const encryptionKeysSequence = await Promise.all(keys.map(async function(key) {
 			const encryptedSymmetricKey = Buffer.from(await key.encrypt(cipherKeyArrayBuffer));
 			const retval: EncryptedContainerKeyStore = [
-				key.publicKeyAndType,
-				encryptedSymmetricKey
+				Buffer.from(key.publicKeyAndType),
+				Buffer.from(encryptedSymmetricKey)
 			];
 
 			return(retval);
@@ -205,50 +372,102 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options): Pr
 		};
 	}
 
-	const outputASN1 = JStoASN1(sequence);
-	const outputDER = Buffer.from(outputASN1.toBER(false));
+	/*
+	 * SignerInfo (v3 only)
+	 * Sign the compressed plaintext (before encryption) so signature is verifiable after decryption
+	 */
+	if (signingOptions) {
+		const { signer } = signingOptions;
 
+		if (!signer.hasPrivateKey) {
+			throw(new EncryptedContainerError('SIGNER_REQUIRES_PRIVATE_KEY', 'Signer account must have a private key'));
+		}
+
+		// Hash the compressed plaintext with SHA3-256
+		const digestHash = crypto.createHash('sha3-256');
+		digestHash.update(compressedPlaintext);
+		const digest = digestHash.digest();
+
+		// Sign the digest
+		const signatureBuffer = await signer.sign(bufferToArrayBuffer(digest), { raw: true });
+
+		// Get signature as Buffer
+		let signature: Buffer;
+		if (Buffer.isBuffer(signatureBuffer)) {
+			signature = Buffer.from(signatureBuffer);
+		} else if ('get' in signatureBuffer && typeof signatureBuffer.get === 'function') {
+			signature = arrayBufferToBuffer(signatureBuffer.get());
+		} else {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			signature = arrayBufferToBuffer(signatureBuffer as unknown as ArrayBuffer);
+		}
+
+		const signerInfoASN1: SignerInfoASN1 = [
+			3, // CMSVersion 3 for subjectKeyIdentifier
+			{
+				type: 'context',
+				value: 0,
+				kind: 'implicit',
+				contains: Buffer.from(signer.publicKeyAndType)
+			},
+			{ type: 'oid', oid: oidDB['sha3-256'] },
+			{ type: 'oid', oid: getSignatureAlgorithmOID(signer) },
+			signature
+		];
+
+		sequence[2] = {
+			type: 'context',
+			value: 2,
+			kind: 'explicit',
+			contains: signerInfoASN1
+		};
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const outputASN1 = JStoASN1(sequence as Parameters<typeof JStoASN1>[0]);
+	const outputDER = arrayBufferToBuffer(outputASN1.toBER(false));
 	return(outputDER);
 }
 
 function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256-cbc', 'null']) {
 	const inputSequence = ASN1toJS(bufferToArrayBuffer(input));
-	if (!isArray(inputSequence, 2)) {
-		throw(new Error('Malformed data detected (incorrect base format)'));
+	if (!isArray(inputSequence) || inputSequence.length < 2) {
+		throw(new EncryptedContainerError('MALFORMED_BASE_FORMAT', 'Malformed data detected (incorrect base format)'));
 	}
 
 	const version = inputSequence[0];
 	if (typeof version !== 'bigint') {
-		throw(new Error('Malformed data detected (version expected at position 0)'));
+		throw(new EncryptedContainerError('MALFORMED_VERSION', 'Malformed data detected (version expected at position 0)'));
 	}
 
-	if (version !== 1n) {
-		throw(new Error('Malformed data detected (unsupported version)'));
+	// Support v2 (1) and v3 (2)
+	if (version !== 1n && version !== 2n) {
+		throw(new EncryptedContainerError('UNSUPPORTED_VERSION', 'Malformed data detected (unsupported version)'));
 	}
 
 	const valueBox = inputSequence[1];
 	if (typeof valueBox !== 'object' || valueBox === null) {
-		throw(new Error('Malformed data detected (data expected at position 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (data expected at position 1)'));
 	}
 
 	if (!('type' in valueBox) || typeof valueBox.type !== 'string') {
-		throw(new Error('Malformed data detected (expected type at position 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (expected type at position 1)'));
 	}
 
 	if (valueBox.type !== 'context') {
-		throw(new Error('Malformed data detected (expected context at position 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (expected context at position 1)'));
 	}
 
 	if (!('value' in valueBox) || typeof valueBox.value !== 'number') {
-		throw(new Error('Malformed data detected (expected context value at position 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (expected context value at position 1)'));
 	}
 
 	if (valueBox.value !== 0 && valueBox.value !== 1) {
-		throw(new Error('Malformed data detected (expected context value of 0 or 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (expected context value of 0 or 1)'));
 	}
 
 	if (!('contains' in valueBox) || typeof valueBox.contains !== 'object' || valueBox.contains === null) {
-		throw(new Error('Malformed data detected (expected contents at position 1)'));
+		throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data detected (expected contents at position 1)'));
 	}
 
 	let isEncrypted;
@@ -263,28 +482,28 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 	let cipherInfo;
 	if (isEncrypted) {
 		if (!isArray(value, 4)) {
-			throw(new Error('Malformed data (incorrect number of elements within position 1 -- expected 4)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (incorrect number of elements within position 1 -- expected 4)'));
 		}
 
 		const keyInfoUnchecked = value[0];
 		if (!isArray(keyInfoUnchecked)) {
-			throw(new Error('Malformed data (expected sequence at position 2.0)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (expected sequence at position 2.0)'));
 		}
 
 		const keyInfo = keyInfoUnchecked.map(function(checkKeyInfo) {
 			if (!isArray(checkKeyInfo, 2)) {
-				throw(new Error('Malformed key information (expected sequence of 2 at position 1.0.x)'));
+				throw(new EncryptedContainerError('MALFORMED_KEY_INFO', 'Malformed key information (expected sequence of 2 at position 1.0.x)'));
 			}
 
 			const publicKeyBuffer = checkKeyInfo[0];
 			if (!Buffer.isBuffer(publicKeyBuffer)) {
-				throw(new Error('Malformed key information (expected octet string for public key at position 1.0.x)'));
+				throw(new EncryptedContainerError('MALFORMED_KEY_INFO', 'Malformed key information (expected octet string for public key at position 1.0.x)'));
 			}
 			const publicKey = Account.fromPublicKeyAndType(publicKeyBuffer);
 
 			const encryptedSymmetricKey = checkKeyInfo[1];
 			if (!Buffer.isBuffer(encryptedSymmetricKey)) {
-				throw(new Error('Malformed key information (expected octet string for cipher key at position 1.0.x)'));
+				throw(new EncryptedContainerError('MALFORMED_KEY_INFO', 'Malformed key information (expected octet string for cipher key at position 1.0.x)'));
 			}
 
 			return({
@@ -300,12 +519,12 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 
 		const cipherIV = value[2];
 		if (!Buffer.isBuffer(cipherIV)) {
-			throw(new Error('Malformed data (cipher IV expected at position 1.2)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (cipher IV expected at position 1.2)'));
 		}
 
 		const encryptedCompressedValue = value[3];
 		if (!Buffer.isBuffer(encryptedCompressedValue)) {
-			throw(new Error('Malformed data (encrypted compressed buffer expected at position 1.3)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (encrypted compressed buffer expected at position 1.3)'));
 		}
 
 		cipherInfo = {
@@ -315,28 +534,99 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 			encryptionAlgorithm: encryptionAlgorithm
 		};
 
-		containedCompressed = encryptedCompressedValue;
+		containedCompressed = Buffer.from(encryptedCompressedValue);
 	} else {
 		if (!isArray(value, 1)) {
-			throw(new Error('Malformed data (incorrect number of elements within position 1 -- expected 1)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (incorrect number of elements within position 1 -- expected 1)'));
 		}
 
 		const containedCompressedUnchecked = value[0];
 		if (!Buffer.isBuffer(containedCompressedUnchecked)) {
-			throw(new Error('Malformed data (compressed buffer expected at position 1.0)'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Malformed data (compressed buffer expected at position 1.0)'));
 		}
 
 		if (!acceptableEncryptionAlgorithms.includes('null')) {
-			throw(new Error('Malformed data (plaintext found but the null encryption algorithm is not acceptable)'));
+			throw(new EncryptedContainerError('ENCRYPTION_REQUIRED', 'Malformed data (plaintext found but the null encryption algorithm is not acceptable)'));
 		}
 
-		containedCompressed = containedCompressedUnchecked;
+		containedCompressed = Buffer.from(containedCompressedUnchecked);
+	}
+
+	// Parse SignerInfo if present (v3 containers)
+	let signerInfo: ParsedSignerInfo | undefined;
+	if (version === 2n && inputSequence.length >= 3) {
+		const signerInfoBox = inputSequence[2];
+		if (typeof signerInfoBox === 'object' && signerInfoBox !== null &&
+			'type' in signerInfoBox && signerInfoBox.type === 'context' &&
+			'value' in signerInfoBox && signerInfoBox.value === 2 &&
+			'contains' in signerInfoBox && isArray(signerInfoBox.contains, 5)) {
+
+			const signerInfoData = signerInfoBox.contains;
+
+			// Parse version
+			const signerVersion = signerInfoData[0];
+			if (typeof signerVersion !== 'bigint') {
+				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (version expected at position 0)'));
+			}
+
+			// Parse sid (subjectKeyIdentifier in context tag [0])
+			const sidBox = signerInfoData[1];
+			let signerPublicKeyAndType: Buffer;
+			if (typeof sidBox === 'object' && sidBox !== null &&
+				'type' in sidBox && sidBox.type === 'context' &&
+				'value' in sidBox && sidBox.value === 0 &&
+				'contains' in sidBox && (Buffer.isBuffer(sidBox.contains) || sidBox.contains instanceof ArrayBuffer)) {
+				signerPublicKeyAndType = arrayBufferLikeToBuffer(sidBox.contains);
+			} else if (Buffer.isBuffer(sidBox)) {
+				// Handle case where ASN.1 parser unwraps the context tag
+				signerPublicKeyAndType = Buffer.from(sidBox);
+			} else {
+				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (sid expected at position 1)'));
+			}
+
+			// Parse digestAlgorithm
+			const digestAlgoRaw = signerInfoData[2];
+			let digestAlgorithmOID: string;
+			if (typeof digestAlgoRaw === 'object' && digestAlgoRaw !== null &&
+				'type' in digestAlgoRaw && digestAlgoRaw.type === 'oid' &&
+				'oid' in digestAlgoRaw && typeof digestAlgoRaw.oid === 'string') {
+				digestAlgorithmOID = digestAlgoRaw.oid;
+			} else {
+				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (digestAlgorithm expected at position 2)'));
+			}
+
+			// Parse signatureAlgorithm
+			const sigAlgoRaw = signerInfoData[3];
+			let signatureAlgorithmOID: string;
+			if (typeof sigAlgoRaw === 'object' && sigAlgoRaw !== null &&
+				'type' in sigAlgoRaw && sigAlgoRaw.type === 'oid' &&
+				'oid' in sigAlgoRaw && typeof sigAlgoRaw.oid === 'string') {
+				signatureAlgorithmOID = sigAlgoRaw.oid;
+			} else {
+				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (signatureAlgorithm expected at position 3)'));
+			}
+
+			// Parse signature
+			const signatureRaw = signerInfoData[4];
+			if (!Buffer.isBuffer(signatureRaw)) {
+				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (signature expected at position 4)'));
+			}
+
+			signerInfo = {
+				version: Number(signerVersion),
+				signerPublicKeyAndType,
+				digestAlgorithmOID,
+				signatureAlgorithmOID,
+				signature: Buffer.from(signatureRaw)
+			};
+		}
 	}
 
 	return({
 		version: version,
 		isEncrypted: isEncrypted,
 		innerValue: containedCompressed,
+		signerInfo,
 		...cipherInfo
 	});
 }
@@ -346,17 +636,17 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 	let cipherInfo;
 	if (inputInfo.isEncrypted) {
 		if (keys === undefined || keys.length === 0) {
-			throw(new Error('Encrypted Container found with encryption but no keys for decryption supplied'));
+			throw(new EncryptedContainerError('NO_KEYS_PROVIDED', 'Encrypted Container found with encryption but no keys for decryption supplied'));
 		}
 
 		const algorithm = inputInfo.encryptionAlgorithm;
 		if (algorithm === undefined) {
-			throw(new Error('Encrypted Container found with encryption but no algorithm supplied'));
+			throw(new EncryptedContainerError('MALFORMED_DATA_STRUCTURE', 'Encrypted Container found with encryption but no algorithm supplied'));
 		}
 
 		const keyInfo = inputInfo.keys;
 		if (keyInfo === undefined) {
-			throw(new Error('internal error: Encrypted container found with missing keys'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Encrypted container found with missing keys'));
 		}
 
 		let decryptionKeyInfo;
@@ -378,14 +668,14 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 		}
 
 		if (decryptionKeyInfo === undefined) {
-			throw(new Error('No keys found which can perform decryption on the supplied encryption box'));
+			throw(new EncryptedContainerError('NO_MATCHING_KEY', 'No keys found which can perform decryption on the supplied encryption box'));
 		}
 
 		const cipherKey = Buffer.from(await decryptionKeyInfo.privateKey.decrypt(bufferToArrayBuffer(decryptionKeyInfo.encryptedSymmetricKey)));
 
 		const cipherIV = inputInfo.cipherIV;
 		if (cipherIV === undefined) {
-			throw(new Error('internal error: No Cipher IV found'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'No Cipher IV found'));
 		}
 
 		const encryptedCompressedValue = inputInfo.innerValue;
@@ -409,7 +699,7 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 		};
 	}
 
-	const plaintext = Buffer.from(await zlibInflateAsync(containedCompressed));
+	const plaintext = Buffer.from(await zlibInflateAsync(bufferToArrayBuffer(containedCompressed)));
 
 	return({
 		version: inputInfo.version,
@@ -450,6 +740,18 @@ type UnencryptedContainerInfo = {
 	principals: null;
 }
 
+type ContainerSigningInfo = {
+	/**
+	 * The account to sign the container with (for new containers)
+	 */
+	signer?: Account;
+
+	/**
+	 * Parsed signer info from an existing container
+	 */
+	parsedSignerInfo?: ParsedSignerInfo;
+}
+
 export class EncryptedContainer {
 	private static readonly algorithm = 'aes-256-cbc';
 
@@ -464,6 +766,11 @@ export class EncryptedContainer {
 	protected _internalState: EncryptedContainerInfo | UnencryptedContainerInfo;
 
 	/**
+	 * Signing information
+	 */
+	#signingInfo: ContainerSigningInfo = {};
+
+	/**
 	 * The plaintext or encoded (and possibly encrypted) data
 	 */
 	#data:
@@ -471,7 +778,7 @@ export class EncryptedContainer {
 		{ encoded: Buffer } |
 		{ plaintext: Buffer, encoded: Buffer };
 
-	constructor(principals: Account[] | null) {
+	constructor(principals: Account[] | null, signer?: Account) {
 		if (principals === null) {
 			this._internalState = {
 				principals: null
@@ -483,6 +790,10 @@ export class EncryptedContainer {
 			}
 		};
 		this.#data = { plaintext: Buffer.alloc(0) };
+
+		if (signer) {
+			this.#signingInfo.signer = signer;
+		}
 	}
 
 	get encrypted(): boolean {
@@ -520,18 +831,38 @@ export class EncryptedContainer {
 	}
 
 	/**
+	 * Options for creating an EncryptedContainer from plaintext
+	 */
+	static readonly FromPlaintextOptions: {
+		locked?: boolean;
+		signer?: Account;
+	};
+
+	/**
 	 * Create an instance of the EncryptedContainer from a plaintext.
 	 *
 	 * It will be decryptable by any one of the specified principals
 	 *
 	 * @param data The plaintext data to encrypt or encode
 	 * @param principals The list of principals who can access the data if it is null then the data is not encrypted
-	 * @param locked If true, the plaintext data will not be accessible from this instance; otherwise it will be -- default depends on principals
+	 * @param options Options including locked (plaintext accessibility) and signer (for RFC 5652 signing). For backward compatibility, can also be a boolean for locked.
 	 * @returns The EncryptedContainer instance with the plaintext data and principals set
 	 */
-	static fromPlaintext(data: string | ArrayBuffer | Buffer, principals: Account[] | null, locked?: boolean): EncryptedContainer {
-		const retval = new EncryptedContainer(principals);
+	static fromPlaintext(data: string | ArrayBuffer | Buffer, principals: Account[] | null, options?: boolean | typeof EncryptedContainer.FromPlaintextOptions): EncryptedContainer {
+		// Handle backward compatibility - if options is a boolean, treat it as the locked flag
+		let lockedOpt: boolean | undefined;
+		let signer: Account | undefined;
 
+		if (typeof options === 'boolean') {
+			lockedOpt = options;
+		} else if (options !== undefined) {
+			lockedOpt = options.locked;
+			signer = options.signer;
+		}
+
+		const retval = new EncryptedContainer(principals, signer);
+
+		let locked = lockedOpt;
 		if (locked === undefined) {
 			locked = true;
 			if (principals === null) {
@@ -584,19 +915,19 @@ export class EncryptedContainer {
 	 */
 	#computeAndSetKeyInfo(mustBeEncrypted: boolean) {
 		if (this._encoded === undefined) {
-			throw(new Error('No encoded data available'));
+			throw(new EncryptedContainerError('NO_ENCODED_DATA_AVAILABLE', 'No encoded data available'));
 		}
 
 		const plaintextWrapper = parseASN1Bare(this._encoded);
 
 		if (mustBeEncrypted && !plaintextWrapper.isEncrypted) {
-			throw(new Error('Unable to set key information from plaintext -- it is not encrypted but that was required'));
+			throw(new EncryptedContainerError('ENCRYPTION_REQUIRED', 'Unable to set key information from plaintext -- it is not encrypted but that was required'));
 		}
 
 		if (plaintextWrapper.isEncrypted) {
 			const principals = this._internalState.principals;
 			if (principals === null) {
-				throw(new Error('May not encrypt data with a null set of principals'));
+				throw(new EncryptedContainerError('INVALID_PRINCIPALS', 'May not encrypt data with a null set of principals'));
 			}
 
 			/*
@@ -610,7 +941,7 @@ export class EncryptedContainer {
 			const blobPrincipals = (plaintextWrapper.keys ?? []).map((keyInfo) => {
 				const currentPublicKey = keyInfo.publicKey;
 				if (!currentPublicKey.isAccount()) {
-					throw(new Error('internal error: Non-account found within the encryption key list'));
+					throw(new EncryptedContainerError('INTERNAL_ERROR', 'Non-account found within the encryption key list'));
 				}
 
 				for (const checkExistingKey of principals) {
@@ -626,14 +957,19 @@ export class EncryptedContainer {
 
 			// Confirm updated principals are populated correctly which sets container to encrypted
 			if (!this.encrypted) {
-				throw(new Error('internal error: Encrypted data found but not marked as encrypted'));
+				throw(new EncryptedContainerError('INTERNAL_ERROR', 'Encrypted data found but not marked as encrypted'));
 			}
 		} else {
 			this._internalState.principals = null;
 
 			if (this.encrypted) {
-				throw(new Error('internal error: Plaintext data found but marked as encrypted'));
+				throw(new EncryptedContainerError('INTERNAL_ERROR', 'Plaintext data found but marked as encrypted'));
 			}
+		}
+
+		// Store parsed signer info if present
+		if (plaintextWrapper.signerInfo) {
+			this.#signingInfo.parsedSignerInfo = plaintextWrapper.signerInfo;
 		}
 
 		return(plaintextWrapper);
@@ -649,7 +985,7 @@ export class EncryptedContainer {
 		}
 
 		if (this._encoded === undefined) {
-			throw(new Error('No plaintext or encoded data available'));
+			throw(new EncryptedContainerError('NO_ENCODED_DATA_AVAILABLE', 'No plaintext or encoded data available'));
 		}
 
 
@@ -658,14 +994,14 @@ export class EncryptedContainer {
 		let principals = this._internalState.principals;
 		if (info.isEncrypted) {
 			if (principals === null) {
-				throw(new Error('May not decrypt data with a null set of principals'));
+				throw(new EncryptedContainerError('INVALID_PRINCIPALS', 'May not decrypt data with a null set of principals'));
 			}
 		} else {
 			principals = [];
 		}
 
 		const plaintextWrapper = await parseASN1Decrypt(info, principals);
-		const plaintext = plaintextWrapper.plaintext;
+		const plaintext = Buffer.from(plaintextWrapper.plaintext);
 
 		this.#data = { ...this.#data, plaintext };
 
@@ -677,11 +1013,17 @@ export class EncryptedContainer {
 	 */
 	async #computePlaintextEncoded() {
 		if (this._plaintext === undefined) {
-			throw(new Error('No plaintext data available'));
+			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'No plaintext data available'));
 		}
 
+		const signingOptions = this.#signingInfo.signer
+			? { signer: this.#signingInfo.signer }
+			: undefined;
+
 		const structuredData = await buildASN1(
-			this._plaintext
+			this._plaintext,
+			undefined,
+			signingOptions
 		);
 
 		return(structuredData);
@@ -694,12 +1036,16 @@ export class EncryptedContainer {
 	 */
 	async #computeEncryptedEncoded() {
 		if (this._plaintext === undefined) {
-			throw(new Error('No encrypted nor plaintext data available'));
+			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'No encrypted nor plaintext data available'));
 		}
 
 		if (!this.#isEncrypted()) {
-			throw(new Error('internal error: Asked to encrypt a plaintext buffer'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Asked to encrypt a plaintext buffer'));
 		}
+
+		const signingOptions = this.#signingInfo.signer
+			? { signer: this.#signingInfo.signer }
+			: undefined;
 
 		/**
 		 * structured data is the ASN.1 encoded structure
@@ -708,10 +1054,11 @@ export class EncryptedContainer {
 			this._plaintext,
 			{
 				keys: this._internalState.principals,
-				cipherKey: crypto.randomBytes(32),
-				cipherIV: crypto.randomBytes(16),
+				cipherKey: Buffer.from(crypto.randomBytes(32)),
+				cipherIV: Buffer.from(crypto.randomBytes(16)),
 				cipherAlgo: this._internalState.cipherAlgo
-			}
+			},
+			signingOptions
 		);
 
 		return(structuredData);
@@ -741,11 +1088,11 @@ export class EncryptedContainer {
 	 */
 	grantAccessSync(accounts: Account[] | Account): this {
 		if (this._plaintext === undefined) {
-			throw(new Error('Unable to grant access, plaintext not available'));
+			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'Unable to grant access, plaintext not available'));
 		}
 
 		if (!this.#isEncrypted()) {
-			throw(new Error('May not manage access to a plaintext container'));
+			throw(new EncryptedContainerError('ACCESS_MANAGEMENT_NOT_ALLOWED', 'May not manage access to a plaintext container'));
 		}
 
 		if (!Array.isArray(accounts)) {
@@ -778,11 +1125,11 @@ export class EncryptedContainer {
 	 */
 	revokeAccessSync(account: Account): this {
 		if (this._plaintext === undefined) {
-			throw(new Error('Unable to revoke access, plaintext not available'));
+			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'Unable to revoke access, plaintext not available'));
 		}
 
 		if (!this.#isEncrypted()) {
-			throw(new Error('May not manage access to a plaintext container'));
+			throw(new EncryptedContainerError('ACCESS_MANAGEMENT_NOT_ALLOWED', 'May not manage access to a plaintext container'));
 		}
 
 		// Encoded data is invalidated with the new permissions so set only the plaintext data
@@ -820,13 +1167,13 @@ export class EncryptedContainer {
 	 */
 	async getPlaintext(): Promise<ArrayBuffer> {
 		if (!this.#mayAccessPlaintext) {
-			throw(new Error('May not access plaintext'));
+			throw(new EncryptedContainerError('PLAINTEXT_DISABLED', 'May not access plaintext'));
 		}
 
 		const plaintext = await this.#computePlaintext();
 
 		if (plaintext === undefined) {
-			throw(new Error('internal error: Plaintext could not be decoded'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Plaintext could not be decoded'));
 		}
 
 		/*
@@ -844,7 +1191,7 @@ export class EncryptedContainer {
 		const serialized = await this.#computeEncoded();
 
 		if (serialized === undefined) {
-			throw(new Error('internal error: Could not encode data'));
+			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Could not encode data'));
 		}
 
 		/*
@@ -861,10 +1208,74 @@ export class EncryptedContainer {
 	 */
 	get principals(): Account[] {
 		if (!this.#isEncrypted()) {
-			throw(new Error('May not manage access to a plaintext container'));
+			throw(new EncryptedContainerError('ACCESS_MANAGEMENT_NOT_ALLOWED', 'May not manage access to a plaintext container'));
 		}
 
 		return(this._internalState.principals);
+	}
+
+	/**
+	 * Check if this container is signed
+	 */
+	get signed(): boolean {
+		return(this.#signingInfo.signer !== undefined || this.#signingInfo.parsedSignerInfo !== undefined);
+	}
+
+	/**
+	 * Get the signing account of this container.
+	 */
+	getSigningAccount(): Account | undefined {
+		// If we have a signer account set (for new containers), return it
+		if (this.#signingInfo.signer) {
+			return(this.#signingInfo.signer);
+		}
+
+		// If we have parsed signer info (from encoded container), construct account from it
+		if (this.#signingInfo.parsedSignerInfo) {
+			const { signerPublicKeyAndType } = this.#signingInfo.parsedSignerInfo;
+			return(Account.fromPublicKeyAndType(signerPublicKeyAndType));
+		}
+
+		return(undefined);
+	}
+
+	/**
+	 * Verify the signature on this container.
+	 * This requires decrypting the container first to access the compressed plaintext.
+	 *
+	 * @returns true if signature is valid, false if invalid, or throws if not signed or plaintext unavailable
+	 */
+	async verifySignature(): Promise<boolean> {
+		if (!this.#signingInfo.parsedSignerInfo) {
+			throw(new EncryptedContainerError('NOT_SIGNED', 'Container is not signed'));
+		}
+
+		// We need the plaintext to verify the signature
+		const plaintext = await this.#computePlaintext();
+		if (!plaintext) {
+			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'Unable to compute plaintext for signature verification'));
+		}
+
+		// Recompute the digest of the compressed plaintext
+		const compressedPlaintext = Buffer.from(await zlibDeflateAsync(bufferToArrayBuffer(plaintext)));
+		const digestHash = crypto.createHash('sha3-256');
+		digestHash.update(compressedPlaintext);
+		const digest = digestHash.digest();
+
+		// Get the signer's account (public key only)
+		const signerAccount = Account.fromPublicKeyAndType(
+			this.#signingInfo.parsedSignerInfo.signerPublicKeyAndType
+		);
+
+		// Verify the signature
+		const signature = this.#signingInfo.parsedSignerInfo.signature;
+		const isValid = signerAccount.verify(
+			bufferToArrayBuffer(digest),
+			bufferToArrayBuffer(signature),
+			{ raw: true }
+		);
+
+		return(isValid);
 	}
 }
 
