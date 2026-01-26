@@ -30,7 +30,7 @@ import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
-import { assertExchangeBlockParameters } from './util.js';
+import { assertExchangeBlockParameters, convertQuoteToExpectedSwap } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
@@ -273,7 +273,7 @@ type KeetaFXAnchorQueueStage1Request = {
 	account: KeetaNetAccount;
 	block: Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['block'];
 	request: ConversionInputCanonicalJSON;
-	expected: Extract<DeepRequired<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>, { receive: unknown; }>;
+	expected: Extract<DeepRequired<NonNullable<Parameters<typeof KeetaNet.UserClient['acceptSwapRequest']>[0]['expected']>>, { receive: unknown; }> | null;
 };
 type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Version of the request format */
@@ -285,7 +285,7 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Original request */
 	request: ConversionInputCanonicalJSON;
 	/** Expected exchange details for verification */
-	expected: ToJSONSerializable<KeetaFXAnchorQueueStage1Request['expected']>;
+	expected: ToJSONSerializable<KeetaFXAnchorQueueStage1Request['expected']> | null;
 };
 type KeetaFXAnchorQueueStage1Response = {
 	/**
@@ -335,7 +335,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	 * on the network and marks the job as completed if so.
 	 */
 	protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']>[0]): ReturnType<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']> {
-		const { block, expected, request } = entry.request;
+		const { block, request } = entry.request;
 		const config = this.serverConfig;
 
 		let userClient: KeetaNet.UserClient;
@@ -446,6 +446,19 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		}
 
 		/* We are clear to attempt the swap now */
+		let expected = entry.request.expected;
+		if (expected === null) {
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request);
+
+			assertExchangeBlockParameters({
+				block: block,
+				liquidityAccount: entry.request.account,
+				allowedLiquidityAccounts: null,
+				checks: { quote, request }
+			});
+
+			expected = convertQuoteToExpectedSwap({ quote, request });
+		}
 
 		const builder = userClient.initBuilder();
 		builder.send(block.account, expected.send.amount, expected.send.token);
@@ -476,12 +489,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 
 	protected encodeRequest(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
-		const retval: KeetaFXAnchorQueueStage1RequestJSON = {
-			version: 1,
-			account: request.account.publicKeyString.get(),
-			block: Buffer.from(request.block.toBytes()).toString('base64'),
-			request: request.request,
-			expected: {
+		let expected: KeetaFXAnchorQueueStage1RequestJSON['expected'];
+
+		if (request.expected === null) {
+			expected = null;
+		} else {
+			expected = {
 				receive: {
 					token: request.expected.receive.token.publicKeyString.get(),
 					amount: request.expected.receive.amount.toString()
@@ -490,7 +503,15 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 					token: request.expected.send.token.publicKeyString.get(),
 					amount: request.expected.send.amount.toString()
 				}
-			}
+			};
+		};
+
+		const retval: KeetaFXAnchorQueueStage1RequestJSON = {
+			version: 1,
+			account: request.account.publicKeyString.get(),
+			block: Buffer.from(request.block.toBytes()).toString('base64'),
+			request: request.request,
+			expected: expected
 		};
 
 		return(retval);
@@ -509,11 +530,11 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			throw(new Error(`Unsupported KeetaFXAnchorQueueStage1Request version ${reqJSON.version}`));
 		}
 
-		const retval: KeetaFXAnchorQueueStage1Request = {
-			account: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.account),
-			block: new KeetaNet.lib.Block(reqJSON.block),
-			request: reqJSON.request,
-			expected: {
+		let expected: KeetaFXAnchorQueueStage1Request['expected'];
+		if (reqJSON.expected === null) {
+			expected = null;
+		} else {
+			expected = {
 				receive: {
 					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.receive.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
 					amount: BigInt(reqJSON.expected.receive.amount)
@@ -522,7 +543,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.send.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
 					amount: BigInt(reqJSON.expected.send.amount)
 				}
-			}
+			};
+		}
+
+		const retval: KeetaFXAnchorQueueStage1Request = {
+			account: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.account),
+			block: new KeetaNet.lib.Block(reqJSON.block),
+			request: reqJSON.request,
+			expected: expected
 		};
 
 		return(retval);
@@ -887,6 +915,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			let conversionInput;
 			let shouldValidateQuote;
 			let liquidityAccount;
+			let expectedConversion: KeetaFXAnchorQueueStage1Request['expected'];
 			if ('quote' in request && 'estimate' in request && request.quote && request.estimate) {
 				throw(new Error('Request cannot contain both quote and estimate'));
 			} else if ('quote' in request && request.quote) {
@@ -907,6 +936,10 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 
 				liquidityAccount = quoteInput.account;
+				expectedConversion = convertQuoteToExpectedSwap({
+					quote: toValidateQuoteInput(quoteInput),
+					request: conversionInput
+				});
 			} else if ('request' in request && request.request) {
 				if (instance.quoteConfiguration.requiresQuote) {
 					throw(new Errors.QuoteRequired());
@@ -937,6 +970,9 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				if (!liquidityAccount) {
 					throw(new KeetaAnchorUserError('Could not determine liquidity account from exchange block'));
 				}
+
+				// No expected conversion provided when using estimate, we determine the rate when processing the exchange
+				expectedConversion = null;
 			} else {
 				throw(new Error('Either quote or request must be provided (but not both) in exchange request'));
 			}
@@ -951,30 +987,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 			}
 
-			let expectedSendAmount: bigint;
-			let expectedReceiveAmount: bigint;
-
-			if (conversionInput.affinity === 'to') {
-				expectedSendAmount = BigInt(conversionInput.amount);
-				expectedReceiveAmount = parsedQuote.convertedAmount;
-			} else {
-				expectedSendAmount = parsedQuote.convertedAmount;
-				expectedReceiveAmount = BigInt(conversionInput.amount);
-			}
 			const liquidityAccountInstance = KeetaNet.lib.Account.toAccount(liquidityAccount);
-
-			const userSendsMinimum = { [conversionInput.from]: expectedReceiveAmount };
-			const userWillReceiveMaximum = { [conversionInput.to]: expectedSendAmount };
-
-			if (parsedQuote.cost.amount > 0) {
-				const feeTokenPub = parsedQuote.cost.token.publicKeyString.get();
-
-				if (!userSendsMinimum[feeTokenPub]) {
-					userSendsMinimum[feeTokenPub] = 0n;
-				}
-
-				userSendsMinimum[feeTokenPub] += parsedQuote.cost.amount;
-			}
 
 			let allowedLiquidityAccounts;
 			if (config.accounts) {
@@ -991,8 +1004,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				block: block,
 				liquidityAccount: liquidityAccountInstance,
 				allowedLiquidityAccounts: allowedLiquidityAccounts,
-				userSendsMinimum: userSendsMinimum,
-				userWillReceiveMaximum: userWillReceiveMaximum
+				checks: { quote: parsedQuote, request: conversionInput }
 			});
 
 			/* Enqueue the exchange request */
@@ -1000,16 +1012,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				account: liquidityAccountInstance,
 				block: block,
 				request: conversionInput,
-				expected: {
-					receive: {
-						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.from),
-						amount: expectedReceiveAmount
-					},
-					send: {
-						token: KeetaNet.lib.Account.fromPublicKeyString(conversionInput.to),
-						amount: expectedSendAmount
-					}
-				}
+				expected: expectedConversion
 			});
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
