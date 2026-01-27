@@ -208,11 +208,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			// Validate encrypted container if needed
 			if (needsAnchorDecryption) {
-				if (!anchorAccount) {
+				if (!anchorAccount?.hasPrivateKey) {
 					throw(new KeetaAnchorUserError(
 						needsValidation
-							? 'Anchor account not configured for namespace validation'
-							: 'Anchor account not configured; cannot accept public objects'
+							? 'Anchor account with private key required for namespace validation'
+							: 'Anchor account with private key required for public objects'
 					));
 				}
 

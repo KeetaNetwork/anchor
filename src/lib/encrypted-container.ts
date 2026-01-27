@@ -126,6 +126,14 @@ const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
 const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;
 type Account = InstanceType<typeof KeetaNetLib.Account>;
 
+/**
+ * Options for creating an EncryptedContainer from plaintext
+ */
+export type FromPlaintextOptions = {
+	locked?: boolean;
+	signer?: Account;
+};
+
 /*
  * ASN.1 Schema
  *
@@ -834,14 +842,6 @@ export class EncryptedContainer {
 	}
 
 	/**
-	 * Options for creating an EncryptedContainer from plaintext
-	 */
-	static readonly FromPlaintextOptions: {
-		locked?: boolean;
-		signer?: Account;
-	};
-
-	/**
 	 * Create an instance of the EncryptedContainer from a plaintext.
 	 *
 	 * It will be decryptable by any one of the specified principals
@@ -851,7 +851,7 @@ export class EncryptedContainer {
 	 * @param options Options including locked (plaintext accessibility) and signer (for RFC 5652 signing). For backward compatibility, can also be a boolean for locked.
 	 * @returns The EncryptedContainer instance with the plaintext data and principals set
 	 */
-	static fromPlaintext(data: string | ArrayBuffer | Buffer, principals: Account[] | null, options?: boolean | typeof EncryptedContainer.FromPlaintextOptions): EncryptedContainer {
+	static fromPlaintext(data: string | ArrayBuffer | Buffer, principals: Account[] | null, options?: boolean | FromPlaintextOptions): EncryptedContainer {
 		// Handle backward compatibility - if options is a boolean, treat it as the locked flag
 		let lockedOpt: boolean | undefined;
 		let signer: Account | undefined;
