@@ -27,6 +27,7 @@ import {
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
 	makeStoragePath,
+	parseContainerPayload,
 	Errors
 } from './common.js';
 import { getDefaultResolver } from '../../config.js';
@@ -409,32 +410,8 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			// Decrypt the container
 			const container = EncryptedContainer.fromEncryptedBuffer(encodedData, [signerAccount]);
 			const plaintext = await container.getPlaintext();
-
 			// Parse the payload to extract mime-type and content
-			const payloadStr = Buffer.from(plaintext).toString('utf-8');
-			let mimeType = 'application/octet-stream';
-
-			let data: Buffer;
-			try {
-				const payload: unknown = JSON.parse(payloadStr);
-				if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-					const payloadMime = 'mimeType' in payload ? payload.mimeType : undefined;
-					const payloadData = 'data' in payload ? payload.data : undefined;
-					if (typeof payloadMime === 'string') {
-						mimeType = payloadMime;
-					}
-					if (typeof payloadData === 'string') {
-						data = arrayBufferLikeToBuffer(Buffer.from(payloadData, 'base64'));
-					} else {
-						data = arrayBufferLikeToBuffer(plaintext);
-					}
-				} else {
-					data = arrayBufferLikeToBuffer(plaintext);
-				}
-			} catch {
-				// If not JSON, return raw plaintext as content
-				data = arrayBufferLikeToBuffer(plaintext);
-			}
+			const { mimeType, content: data } = parseContainerPayload(plaintext);
 
 			this.logger?.debug(`Get request successful for path: ${path}`);
 
@@ -486,9 +463,12 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			data: data.toString('base64')
 		};
 
-		// Create EncryptedContainer
+		// Create EncryptedContainer with appropriate principals
 		const principals: InstanceType<typeof KeetaNetLib.Account>[] = [signerAccount];
-		if (options.visibility === 'public' && anchorAccount) {
+		if (options.visibility === 'public') {
+			if (!anchorAccount) {
+				throw(new Errors.AccountRequired('anchorAccount is required for public visibility so the server can decrypt and serve the object'));
+			}
 			principals.push(anchorAccount);
 		}
 

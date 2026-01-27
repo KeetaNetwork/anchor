@@ -32,13 +32,14 @@ import {
 	getKeetaStorageAnchorQuotaRequestSigningData,
 	validateStoragePath,
 	isValidStoragePath,
+	parseContainerPayload,
 	Errors
 } from './common.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators, defaultValidators } from './lib/validators.js';
-import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
 
@@ -162,40 +163,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			return(parsed.account);
 		}
 
-		/**
-		 * Parse an encrypted container payload to extract mime-type and content.
-		 * The payload structure is: { mimeType: string, data: base64 string }
-		 */
-		function parseContainerPayload(plaintext: ArrayBuffer): { mimeType: string; content: Buffer } {
-			const payloadStr = Buffer.from(plaintext).toString('utf-8');
-			try {
-				const payload: unknown = JSON.parse(payloadStr);
-				let mimeType = 'application/octet-stream';
-				let content: Buffer;
-				if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-					const payloadMime = 'mimeType' in payload ? payload.mimeType : undefined;
-					const payloadData = 'data' in payload ? payload.data : undefined;
-					if (typeof payloadMime === 'string') {
-						mimeType = payloadMime;
-					}
-					if (typeof payloadData === 'string') {
-						content = arrayBufferLikeToBuffer(Buffer.from(payloadData, 'base64'));
-					} else {
-						content = arrayBufferLikeToBuffer(plaintext);
-					}
-				} else {
-					content = arrayBufferLikeToBuffer(plaintext);
-				}
-				return({ mimeType, content });
-			} catch {
-				// If not JSON, return raw plaintext as content
-				return({
-					mimeType: 'application/octet-stream',
-					content: arrayBufferLikeToBuffer(plaintext)
-				});
-			}
-		}
-
 		// #endregion
 
 		/**
@@ -245,39 +212,53 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.QuotaExceeded('Storage quota exceeded'));
 			}
 
-
-			// Namespace validation for special paths
-			if (requiresValidation(request.path, validators)) {
-				// Check if anchor is a principal (required for validated paths)
+			const visibility: StorageObjectVisibility = request.visibility ?? 'private';
+			const needsValidation = requiresValidation(request.path, validators);
+			const needsAnchorDecryption = needsValidation || visibility === 'public';
+			if (needsAnchorDecryption) {
 				if (!anchorAccount) {
-					throw(new KeetaAnchorUserError('Anchor account not configured for namespace validation'));
+					throw(new KeetaAnchorUserError(
+						needsValidation
+							? 'Anchor account not configured for namespace validation'
+							: 'Anchor account not configured; cannot accept public objects'
+					));
 				}
 
-				// Try to decrypt and validate
 				try {
 					const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 					const plaintext = await container.getPlaintext();
-					const { mimeType, content } = parseContainerPayload(plaintext);
 
-					// Run validators
-					const matchingValidators = findMatchingValidators(request.path, validators);
-					for (const validator of matchingValidators) {
-						const result = await validator.validate(request.path, content, mimeType);
-						if (!result.valid) {
-							throw(new Errors.ValidationFailed(result.error));
+					// Run validators for special paths
+					if (needsValidation) {
+						const { mimeType, content } = parseContainerPayload(plaintext);
+						const matchingValidators = findMatchingValidators(request.path, validators);
+						for (const validator of matchingValidators) {
+							const result = await validator.validate(request.path, content, mimeType);
+							if (!result.valid) {
+								throw(new Errors.ValidationFailed(result.error));
+							}
 						}
 					}
 				} catch (e) {
+					// Re-throw validation errors as-is
 					if (Errors.ValidationFailed.isInstance(e)) {
 						throw(e);
 					}
 
-					// If we can't decrypt, anchor is not a principal
-					throw(new Errors.AnchorPrincipalRequired());
+					// Handle EncryptedContainerError specifically
+					if (EncryptedContainerError.isInstance(e)) {
+						if (e.code.startsWith('MALFORMED_')) {
+							throw(new Errors.ValidationFailed(`Invalid encrypted container: ${e.message}`));
+						}
+						if (e.code === 'NO_MATCHING_KEY' || e.code === 'DECRYPTION_FAILED') {
+							throw(new Errors.AnchorPrincipalRequired());
+						}
+					}
+
+					// Unknown errors
+					throw(e);
 				}
 			}
-
-			const visibility: StorageObjectVisibility = request.visibility ?? 'private';
 			const objectMetadata = await backend.put(pathInfo.path, data, {
 				owner: pathInfo.owner,
 				tags: request.tags ?? [],

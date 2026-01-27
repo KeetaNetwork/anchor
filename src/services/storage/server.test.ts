@@ -1,13 +1,45 @@
 import { expect, test, describe } from 'vitest';
+import type { UserPath, KeetaStorageAnchorPutRequest } from './common.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './common.test.js';
 import { KeetaNet } from '../../client/index.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
-import type { UserPath } from './common.js';
-import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData } from './common.js';
+import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData } from './common.js';
+import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 // #region Test Harness
+
+/** Type guard for JSON response objects */
+function isJsonObject(val: unknown): val is { [key: string]: unknown } {
+	return(typeof val === 'object' && val !== null && !Array.isArray(val));
+}
+
+/** Assert response has expected ok value */
+function expectOkStatus(json: unknown, expected: boolean): void {
+	expect(isJsonObject(json)).toBe(true);
+	if (!isJsonObject(json)) {
+		return;
+	}
+	expect(json.ok).toBe(expected);
+}
+
+const expectOk = (json: unknown): void => expectOkStatus(json, true);
+const expectNotOk = (json: unknown): void => expectOkStatus(json, false);
+
+/** Assert response error contains substring (case-insensitive) */
+function expectErrorContains(json: unknown, substring: string): void {
+	expect(isJsonObject(json)).toBe(true);
+	if (!isJsonObject(json)) {
+		return;
+	}
+	expect(typeof json.error).toBe('string');
+	const error = json.error;
+	if (typeof error === 'string') {
+		expect(error.toLowerCase()).toContain(substring.toLowerCase());
+	}
+}
 
 type ServerTestFn = (ctx: { server: KeetaNetStorageAnchorHTTPServer; backend: MemoryStorageBackend; url: string }) => Promise<void>;
 
@@ -19,6 +51,24 @@ async function withServer(fn: ServerTestFn): Promise<void> {
 	await using server = new KeetaNetStorageAnchorHTTPServer({ backend });
 	await server.start();
 	await fn({ server, backend, url: server.url });
+}
+
+type ServerWithAnchorTestFn = (ctx: {
+	server: KeetaNetStorageAnchorHTTPServer;
+	backend: MemoryStorageBackend;
+	url: string;
+	anchorAccount: InstanceType<typeof KeetaNet.lib.Account>;
+}) => Promise<void>;
+
+/**
+ * Helper to run a test with a fresh server instance that has an anchor account
+ */
+async function withServerAndAnchor(fn: ServerWithAnchorTestFn): Promise<void> {
+	const backend = new MemoryStorageBackend();
+	const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using server = new KeetaNetStorageAnchorHTTPServer({ backend, anchorAccount });
+	await server.start();
+	await fn({ server, backend, url: server.url, anchorAccount });
 }
 
 // #endregion
@@ -139,8 +189,8 @@ describe('Storage Server', () => {
 		expect(response.status).toBe(403);
 
 		const json: unknown = await response.json();
-		expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(false);
-		expect(typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' && json.error.includes('namespace')).toBe(true);
+		expectNotOk(json);
+		expectErrorContains(json, 'namespace');
 	}));
 
 	// Data-driven SEARCH authorization rejection tests
@@ -189,8 +239,8 @@ describe('Storage Server', () => {
 			expect(response.status).toBe(403);
 
 			const json: unknown = await response.json();
-			expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(false);
-			expect(typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' && json.error.includes('namespace')).toBe(true);
+			expectNotOk(json);
+			expectErrorContains(json, 'namespace');
 		}));
 	}
 
@@ -233,14 +283,49 @@ describe('Storage Server', () => {
 		expect(response.status).toBe(200);
 
 		const json: unknown = await response.json();
-		expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(true);
+		expectOk(json);
 
 		// Should only find user's own file, not other user's file
-		if (typeof json === 'object' && json !== null && 'results' in json && Array.isArray(json.results)) {
+		if (isJsonObject(json) && Array.isArray(json.results)) {
 			expect(json.results).toHaveLength(1);
 			const firstResult: unknown = json.results[0];
-			expect(typeof firstResult === 'object' && firstResult !== null && 'owner' in firstResult && firstResult.owner).toBe(userPubKey);
+			if (isJsonObject(firstResult)) {
+				expect(firstResult.owner).toBe(userPubKey);
+			}
 		}
+	}));
+
+	test('PUT rejects public object when anchor is not a principal', () => withServerAndAnchor(async ({ url }) => {
+		const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const userPubKey = userAccount.publicKeyString.get();
+		const objectPath: UserPath = `/user/${userPubKey}/public-file.txt`;
+
+		// Create encrypted container with ONLY the user as principal (NOT the anchor)
+		const payload = { mimeType: 'text/plain', data: Buffer.from('public data').toString('base64') };
+		const container = EncryptedContainer.fromPlaintext(
+			JSON.stringify(payload),
+			[userAccount], // Missing anchorAccount as principal
+			{ signer: userAccount }
+		);
+		const encodedData = Buffer.from(await container.getEncodedBuffer()).toString('base64');
+		const putRequest: KeetaStorageAnchorPutRequest = {
+			path: objectPath,
+			data: encodedData,
+			visibility: 'public',
+			account: userPubKey
+		};
+
+		const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData(putRequest));
+		const response = await fetch(`${url}/api/object`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ ...putRequest, signed: signedField })
+		});
+		expect(response.status).toBe(400);
+
+		const json: unknown = await response.json();
+		expectNotOk(json);
+		expectErrorContains(json, 'principal');
 	}));
 });
 

@@ -3,6 +3,7 @@ import { createIs, createAssert } from 'typia';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
+import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 
@@ -1001,6 +1002,48 @@ export function isValidStoragePath(path: string): path is StoragePath {
 export function makeStoragePath(owner: string, relativePath: string): StoragePath {
 
 	return(`/user/${owner}/${relativePath}`);
+}
+
+// #endregion
+
+// #region Container Payload Utilities
+
+/**
+ * Parse an encrypted container payload to extract mime-type and content.
+ * The expected payload structure is: { mimeType: string, data: base64 string }
+ * Falls back to raw plaintext with application/octet-stream if not valid JSON.
+ *
+ * @param plaintext - The decrypted plaintext from an EncryptedContainer
+ * @returns The parsed mimeType and content
+ */
+export function parseContainerPayload(plaintext: ArrayBuffer): { mimeType: string; content: Buffer } {
+	const payloadStr = Buffer.from(plaintext).toString('utf-8');
+	try {
+		const payload: unknown = JSON.parse(payloadStr);
+		let mimeType = 'application/octet-stream';
+		let content: Buffer;
+		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+			const payloadMime = 'mimeType' in payload ? payload.mimeType : undefined;
+			const payloadData = 'data' in payload ? payload.data : undefined;
+			if (typeof payloadMime === 'string') {
+				mimeType = payloadMime;
+			}
+			if (typeof payloadData === 'string') {
+				content = arrayBufferLikeToBuffer(Buffer.from(payloadData, 'base64'));
+			} else {
+				content = arrayBufferLikeToBuffer(plaintext);
+			}
+		} else {
+			content = arrayBufferLikeToBuffer(plaintext);
+		}
+		return({ mimeType, content });
+	} catch {
+		// If not JSON, return raw plaintext as content
+		return({
+			mimeType: 'application/octet-stream',
+			content: arrayBufferLikeToBuffer(plaintext)
+		});
+	}
 }
 
 // #endregion

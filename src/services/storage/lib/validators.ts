@@ -37,6 +37,8 @@ export interface NamespaceValidator {
  */
 export function matchesPattern(path: string, pattern: string | RegExp): boolean {
 	if (pattern instanceof RegExp) {
+		// Reset lastIndex to handle RegExps with global/sticky flags
+		pattern.lastIndex = 0;
 		return(pattern.test(path));
 	}
 
