@@ -1,21 +1,21 @@
 import { KeetaNet } from "../../client/index.js";
 import { KeetaAnchorUserError } from "../../lib/error.js";
-import { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
-import { ValidateQuoteArguments } from "./server.js";
+import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
+import type { ValidateQuoteArguments } from "./server.js";
 
 export  function convertQuoteToExpectedSwap(input: {
 	quote: ValidateQuoteArguments,
 	request: ConversionInputCanonical | ConversionInputCanonicalJSON,
 }): NonNullable<{
-	receive: {
-		token: KeetaNetToken;
-		amount: bigint;
-	};
-	send: {
-		token: KeetaNetToken;
-		amount: bigint;
-	};
-}> {
+		receive: {
+			token: KeetaNetToken;
+			amount: bigint;
+		};
+		send: {
+			token: KeetaNetToken;
+			amount: bigint;
+		};
+	}> {
 	let expectedSendAmount: bigint;
 	let expectedReceiveAmount: bigint;
 
@@ -49,7 +49,7 @@ export function assertExchangeBlockParameters(args: {
 		userSendsMinimum: {
 			[tokenPublicKey: string]: bigint;
 		};
-	
+
 		userWillReceiveMaximum: {
 			[tokenPublicKey: string]: bigint;
 		};
