@@ -215,7 +215,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// #region API Routes
 
 		// PUT /api/object - Create or update an object
-		routes['PUT /api/object'] = async function(_params, postData, headers) {
+		routes['PUT /api/object'] = async function(_params, postData) {
 			const request = assertKeetaStorageAnchorPutRequest(postData);
 			const account = await verifyBodyAuth(request, getKeetaStorageAnchorPutRequestSigningData);
 
@@ -225,23 +225,26 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.AccessDenied('Can only write to your own namespace'));
 			}
 
-			// Check quota before accepting upload
-			const contentLengthHeader = headers['content-length'];
-			const contentLength = parseInt(contentLengthHeader ?? '0', 10);
-			if (contentLength > quotas.maxObjectSize) {
-				throw(new Errors.QuotaExceeded(`Object too large: ${contentLength} bytes exceeds limit of ${quotas.maxObjectSize}`));
+			// Decode base64 data to get actual stored object size
+			const data = Buffer.from(request.data, 'base64');
+			const objectSize = data.byteLength;
+
+			// Check quota using actual stored object size
+			if (objectSize > quotas.maxObjectSize) {
+				throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${quotas.maxObjectSize}`));
 			}
 
+			// Get current usage from backend and compute remaining using server's quota config
 			const quotaStatus = await backend.getQuotaStatus(pathInfo.owner);
-			if (quotaStatus.remainingObjects <= 0) {
+			const remainingObjects = quotas.maxObjectsPerUser - quotaStatus.objectCount;
+			const remainingSize = quotas.maxStoragePerUser - quotaStatus.totalSize;
+			if (remainingObjects <= 0) {
 				throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
 			}
-			if (quotaStatus.remainingSize < contentLength) {
+			if (remainingSize < objectSize) {
 				throw(new Errors.QuotaExceeded('Storage quota exceeded'));
 			}
 
-			const data = Buffer.from(request.data, 'base64');
-			const visibility: StorageObjectVisibility = request.visibility ?? 'private';
 
 			// Namespace validation for special paths
 			if (requiresValidation(request.path, validators)) {
@@ -274,6 +277,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 			}
 
+			const visibility: StorageObjectVisibility = request.visibility ?? 'private';
 			const objectMetadata = await backend.put(pathInfo.path, data, {
 				owner: pathInfo.owner,
 				tags: request.tags ?? [],
@@ -300,12 +304,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			const pathInfo = validateStoragePath(objectPath);
 
-			// Handle authentication via URL
-			await verifyURLAuth(
+			// Handle authentication and verify ownership
+			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorGetRequestSigningData,
 				(accountPubKey) => assertKeetaStorageAnchorGetRequest({ path: pathInfo.path, account: accountPubKey })
 			);
+
+			if (pathInfo.owner !== account.publicKeyString.get()) {
+				throw(new Errors.AccessDenied('Can only read objects in your own namespace'));
+			}
 
 			const result = await backend.get(pathInfo.path);
 			if (!result) {
@@ -357,10 +365,29 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// POST /api/search - Search for objects
 		routes['POST /api/search'] = async function(_params, postData) {
 			const request = assertKeetaStorageAnchorSearchRequest(postData);
-			await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
+			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
+
+			const accountPubKey = account.publicKeyString.get();
+			const userNamespacePrefix = `/user/${accountPubKey}/`;
+
+			// Validate owner: default if omitted, reject if mismatched
+			if (request.criteria.owner !== undefined && request.criteria.owner !== accountPubKey) {
+				throw(new Errors.AccessDenied('Can only search your own namespace'));
+			}
+
+			// Validate pathPrefix is within caller's namespace (if provided)
+			if (request.criteria.pathPrefix !== undefined && !request.criteria.pathPrefix.startsWith(userNamespacePrefix)) {
+				throw(new Errors.AccessDenied('Can only search within your own namespace'));
+			}
+
+			// Scope criteria to authenticated account
+			const scopedCriteria = {
+				...request.criteria,
+				owner: accountPubKey
+			};
 
 			const results = await backend.search(
-				request.criteria,
+				scopedCriteria,
 				request.pagination ?? {}
 			);
 
@@ -383,10 +410,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				() => ({})
 			);
 
-			const quotaStatus = await backend.getQuotaStatus(account.publicKeyString.get());
+			// Get current usage from backend and compute remaining using server's quota config
+			const backendStatus = await backend.getQuotaStatus(account.publicKeyString.get());
 			const response: KeetaStorageAnchorQuotaResponse = {
 				ok: true,
-				quota: quotaStatus
+				quota: {
+					objectCount: backendStatus.objectCount,
+					totalSize: backendStatus.totalSize,
+					remainingObjects: quotas.maxObjectsPerUser - backendStatus.objectCount,
+					remainingSize: quotas.maxStoragePerUser - backendStatus.totalSize
+				}
 			};
 
 			return({

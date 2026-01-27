@@ -1,6 +1,11 @@
 import { expect, test, describe } from 'vitest';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './common.test.js';
+import { KeetaNet } from '../../client/index.js';
+import { SignData } from '../../lib/utils/signing.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
+import type { UserPath } from './common.js';
+import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData } from './common.js';
 
 // #region Test Harness
 
@@ -99,6 +104,144 @@ describe('Storage Server', () => {
 			}
 		}));
 	}
+
+	test('GET rejects cross-user read attempts', () => withServer(async ({ backend, url }) => {
+		// Create two accounts
+		const seed = KeetaNet.lib.Account.generateRandomSeed();
+		const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+		const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+		const ownerPubKey = ownerAccount.publicKeyString.get();
+		const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
+
+		// Store an object for the owner directly in backend
+		await backend.put(objectPath, Buffer.from('secret data'), {
+			owner: ownerPubKey,
+			tags: ['private'],
+			visibility: 'private'
+		});
+
+		// Sign a GET request as the attacker for the owner's object
+		const signedField = await SignData(
+			attackerAccount,
+			getKeetaStorageAnchorGetRequestSigningData({ path: objectPath, account: attackerAccount.publicKeyString.get() })
+		);
+
+		const requestUrl = addSignatureToURL(
+			`${url}/api/object?path=${encodeURIComponent(objectPath)}`,
+			{ signedField, account: attackerAccount }
+		);
+
+		const response = await fetch(requestUrl.toString(), {
+			method: 'GET',
+			headers: { 'Accept': 'application/json' }
+		});
+		expect(response.status).toBe(403);
+
+		const json: unknown = await response.json();
+		expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(false);
+		expect(typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' && json.error.includes('namespace')).toBe(true);
+	}));
+
+	// Data-driven SEARCH authorization rejection tests
+	const searchAuthzRejectionCases = [
+		{
+			name: 'rejects mismatched criteria.owner',
+			makeCriteria: (ownerPubKey: string) => ({ owner: ownerPubKey })
+		},
+		{
+			name: 'rejects mismatched criteria.pathPrefix',
+			makeCriteria: (ownerPubKey: string) => ({ pathPrefix: `/user/${ownerPubKey}/` })
+		}
+	] as const;
+
+	for (const testCase of searchAuthzRejectionCases) {
+		test(`SEARCH ${testCase.name}`, () => withServer(async ({ backend, url }) => {
+			const seed = KeetaNet.lib.Account.generateRandomSeed();
+			const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+			const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+			const ownerPubKey = ownerAccount.publicKeyString.get();
+			const attackerPubKey = attackerAccount.publicKeyString.get();
+			const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
+
+			await backend.put(objectPath, Buffer.from('secret data'), {
+				owner: ownerPubKey,
+				tags: ['private'],
+				visibility: 'private'
+			});
+
+			const searchRequest = {
+				account: attackerPubKey,
+				criteria: testCase.makeCriteria(ownerPubKey)
+			};
+
+			const signedField = await SignData(
+				attackerAccount,
+				getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
+			);
+
+			const response = await fetch(`${url}/api/search`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({ ...searchRequest, signed: signedField })
+			});
+			expect(response.status).toBe(403);
+
+			const json: unknown = await response.json();
+			expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(false);
+			expect(typeof json === 'object' && json !== null && 'error' in json && typeof json.error === 'string' && json.error.includes('namespace')).toBe(true);
+		}));
+	}
+
+	test('SEARCH with omitted owner defaults to authenticated user', () => withServer(async ({ backend, url }) => {
+		const seed = KeetaNet.lib.Account.generateRandomSeed();
+		const userAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+		const otherAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+		const userPubKey = userAccount.publicKeyString.get();
+		const otherPubKey = otherAccount.publicKeyString.get();
+
+		// Store objects for both users
+		await backend.put(`/user/${userPubKey}/my-file.txt`, Buffer.from('my data'), {
+			owner: userPubKey,
+			tags: ['mine'],
+			visibility: 'private'
+		});
+		await backend.put(`/user/${otherPubKey}/other-file.txt`, Buffer.from('other data'), {
+			owner: otherPubKey,
+			tags: ['theirs'],
+			visibility: 'private'
+		});
+
+		// User searches without specifying owner
+		const searchRequest = {
+			account: userPubKey,
+			criteria: {}
+		};
+
+		const signedField = await SignData(
+			userAccount,
+			getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
+		);
+
+		const response = await fetch(`${url}/api/search`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ ...searchRequest, signed: signedField })
+		});
+		expect(response.status).toBe(200);
+
+		const json: unknown = await response.json();
+		expect(typeof json === 'object' && json !== null && 'ok' in json && json.ok).toBe(true);
+
+		// Should only find user's own file, not other user's file
+		if (typeof json === 'object' && json !== null && 'results' in json && Array.isArray(json.results)) {
+			expect(json.results).toHaveLength(1);
+			const firstResult: unknown = json.results[0];
+			expect(typeof firstResult === 'object' && firstResult !== null && 'owner' in firstResult && firstResult.owner).toBe(userPubKey);
+		}
+	}));
 });
 
 describe('MemoryStorageBackend', () => {

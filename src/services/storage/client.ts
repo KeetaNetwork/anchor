@@ -695,9 +695,8 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			throw(new Errors.ServiceUnavailable());
 		}
 
-		// Construct the public URL with path as query param
-		const baseUrl = operationInfo.url().origin;
-		const publicUrl = new URL('/api/public', baseUrl);
+		// Construct the public URL using the full operation URL, appending query params
+		const publicUrl = new URL(operationInfo.url().href);
 		publicUrl.searchParams.set('path', path);
 		publicUrl.searchParams.set('signature', signature.toString('base64'));
 		publicUrl.searchParams.set('expires', String(expiresAt));

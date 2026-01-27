@@ -407,7 +407,7 @@ export const assertKeetaStorageAnchorQuotaResponse: (input: unknown) => KeetaSto
 class KeetaStorageAnchorDocumentNotFoundError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorDocumentNotFoundError';
 	private readonly KeetaStorageAnchorDocumentNotFoundErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorDocumentNotFoundErrorObjectTypeID = 'b8f3e7a2-4d91-4c8b-9e6a-3f5d2c1b0a98';
+	private static readonly KeetaStorageAnchorDocumentNotFoundErrorObjectTypeID = 'ac137e18-2827-4542-a852-c650610899b5';
 
 	constructor(message?: string) {
 		super(message ?? 'Document not found');
@@ -434,7 +434,7 @@ class KeetaStorageAnchorDocumentNotFoundError extends KeetaAnchorUserError {
 class KeetaStorageAnchorAccessDeniedError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorAccessDeniedError';
 	private readonly KeetaStorageAnchorAccessDeniedErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorAccessDeniedErrorObjectTypeID = 'c9d4f8b3-5e02-4d9c-af7b-4g6e3d2c1b09';
+	private static readonly KeetaStorageAnchorAccessDeniedErrorObjectTypeID = 'fb75fa8c-6ef0-47cb-b767-3c2cfbb73617';
 
 	constructor(message?: string) {
 		super(message ?? 'Access denied');
@@ -461,7 +461,7 @@ class KeetaStorageAnchorAccessDeniedError extends KeetaAnchorUserError {
 class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorInvalidPathError';
 	private readonly KeetaStorageAnchorInvalidPathErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorInvalidPathErrorObjectTypeID = 'd0e5f9c4-6f13-4e0d-b08c-5h7f4e3d2c10';
+	private static readonly KeetaStorageAnchorInvalidPathErrorObjectTypeID = 'eb0e1c0d-2281-4b93-9f78-87bf166a4829';
 
 	constructor(message?: string) {
 		super(message ?? 'Invalid path format');
@@ -488,7 +488,7 @@ class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserError {
 class KeetaStorageAnchorQuotaExceededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorQuotaExceededError';
 	private readonly KeetaStorageAnchorQuotaExceededErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorQuotaExceededErrorObjectTypeID = 'e1f6g0d5-7g24-5f1e-c19d-6i8g5f4e3d21';
+	private static readonly KeetaStorageAnchorQuotaExceededErrorObjectTypeID = 'c0b75028-644a-472b-8df4-b0a856814f99';
 
 	constructor(message?: string) {
 		super(message ?? 'Quota exceeded');
@@ -515,7 +515,7 @@ class KeetaStorageAnchorQuotaExceededError extends KeetaAnchorUserError {
 class KeetaStorageAnchorAnchorPrincipalRequiredError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorAnchorPrincipalRequiredError';
 	private readonly KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID = 'f2g7h1e6-8h35-6g2f-d20e-7j9h6g5f4e32';
+	private static readonly KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID = '12e42092-d4db-435e-8a01-798e26f653b4';
 
 	constructor(message?: string) {
 		super(message ?? 'Validated path requires anchor as principal');
@@ -542,7 +542,7 @@ class KeetaStorageAnchorAnchorPrincipalRequiredError extends KeetaAnchorUserErro
 class KeetaStorageAnchorValidationFailedError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorValidationFailedError';
 	private readonly KeetaStorageAnchorValidationFailedErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorValidationFailedErrorObjectTypeID = 'g3h8i2f7-9i46-7h3g-e31f-8k0i7h6g5f43';
+	private static readonly KeetaStorageAnchorValidationFailedErrorObjectTypeID = '73cadd95-cf39-466b-b9b6-484e1ae1ca9c';
 
 	constructor(message?: string) {
 		super(message ?? 'Content validation failed');
@@ -569,7 +569,7 @@ class KeetaStorageAnchorValidationFailedError extends KeetaAnchorUserError {
 class KeetaStorageAnchorSignatureExpiredError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorSignatureExpiredError';
 	private readonly KeetaStorageAnchorSignatureExpiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorSignatureExpiredErrorObjectTypeID = 'h4i9j3g8-0j57-8i4h-f42g-9l1j8i7h6g54';
+	private static readonly KeetaStorageAnchorSignatureExpiredErrorObjectTypeID = '3a676e44-882b-4925-bf5f-bc5123cc0b20';
 
 	constructor(message?: string) {
 		super(message ?? 'Pre-signed URL has expired');
@@ -596,7 +596,7 @@ class KeetaStorageAnchorSignatureExpiredError extends KeetaAnchorUserError {
 class KeetaStorageAnchorSignatureInvalidError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorSignatureInvalidError';
 	private readonly KeetaStorageAnchorSignatureInvalidErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorSignatureInvalidErrorObjectTypeID = 'i5j0k4h9-1k68-9j5i-g53h-0m2k9j8i7h65';
+	private static readonly KeetaStorageAnchorSignatureInvalidErrorObjectTypeID = '91831c73-31e2-4f27-a9d1-4ab9a5ed5663';
 
 	constructor(message?: string) {
 		super(message ?? 'Pre-signed URL signature verification failed');
@@ -623,7 +623,7 @@ class KeetaStorageAnchorSignatureInvalidError extends KeetaAnchorUserError {
 class KeetaStorageAnchorPrivateKeyRequiredError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorPrivateKeyRequiredError';
 	private readonly KeetaStorageAnchorPrivateKeyRequiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorPrivateKeyRequiredErrorObjectTypeID = 'j6k1l5i0-2l79-0k6j-h64i-1n3l0k9j8i76';
+	private static readonly KeetaStorageAnchorPrivateKeyRequiredErrorObjectTypeID = '36eaae98-1b1e-412b-ba5b-b9293cc37156';
 
 	constructor(message?: string) {
 		super(message ?? 'Account with private key required for this operation');
@@ -650,7 +650,7 @@ class KeetaStorageAnchorPrivateKeyRequiredError extends KeetaAnchorUserError {
 class KeetaStorageAnchorServiceUnavailableError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorServiceUnavailableError';
 	private readonly KeetaStorageAnchorServiceUnavailableErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorServiceUnavailableErrorObjectTypeID = 'a7b2c3d4-5e6f-7g8h-9i0j-1k2l3m4n5o6p';
+	private static readonly KeetaStorageAnchorServiceUnavailableErrorObjectTypeID = 'b2671cd1-6abb-4bd4-9be2-d8d111c17bcf';
 
 	constructor(message?: string) {
 		super(message ?? 'Storage service not available');
@@ -677,7 +677,7 @@ class KeetaStorageAnchorServiceUnavailableError extends KeetaAnchorUserError {
 class KeetaStorageAnchorSignerRequiredError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorSignerRequiredError';
 	private readonly KeetaStorageAnchorSignerRequiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorSignerRequiredErrorObjectTypeID = 'b8c3d4e5-6f7g-8h9i-0j1k-2l3m4n5o6p7q';
+	private static readonly KeetaStorageAnchorSignerRequiredErrorObjectTypeID = 'ce4a5581-1869-4656-88c6-63f0a29b46ca';
 
 	constructor(message?: string) {
 		super(message ?? 'A Signer or UserClient with an associated Signer is required');
@@ -704,7 +704,7 @@ class KeetaStorageAnchorSignerRequiredError extends KeetaAnchorUserError {
 class KeetaStorageAnchorAccountRequiredError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorAccountRequiredError';
 	private readonly KeetaStorageAnchorAccountRequiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorAccountRequiredErrorObjectTypeID = 'c9d4e5f6-7g8h-9i0j-1k2l-3m4n5o6p7q8r';
+	private static readonly KeetaStorageAnchorAccountRequiredErrorObjectTypeID = '496e5dbe-535f-4f24-acf4-a44d9d93fb75';
 
 	constructor(message?: string) {
 		super(message ?? 'An Account or UserClient with an associated Account is required');
@@ -731,7 +731,7 @@ class KeetaStorageAnchorAccountRequiredError extends KeetaAnchorUserError {
 class KeetaStorageAnchorOperationNotSupportedError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorOperationNotSupportedError';
 	private readonly KeetaStorageAnchorOperationNotSupportedErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorOperationNotSupportedErrorObjectTypeID = 'd0e1f2a3-4b5c-6d7e-8f9a-0b1c2d3e4f5a';
+	private static readonly KeetaStorageAnchorOperationNotSupportedErrorObjectTypeID = 'ac491ea6-f656-4eab-a430-051a0f201fff';
 
 	constructor(operation?: string) {
 		super(operation ? `Storage service does not support '${operation}' operation` : 'Operation not supported');
@@ -758,7 +758,7 @@ class KeetaStorageAnchorOperationNotSupportedError extends KeetaAnchorUserError 
 class KeetaStorageAnchorUnsupportedAuthMethodError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorUnsupportedAuthMethodError';
 	private readonly KeetaStorageAnchorUnsupportedAuthMethodErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorUnsupportedAuthMethodErrorObjectTypeID = 'e1f2a3b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b';
+	private static readonly KeetaStorageAnchorUnsupportedAuthMethodErrorObjectTypeID = '46cfbab9-934f-44b0-9216-03d397fdd6b6';
 
 	constructor(method?: string) {
 		super(method ? `Unsupported authentication method: ${method}` : 'Unsupported authentication method');
@@ -785,7 +785,7 @@ class KeetaStorageAnchorUnsupportedAuthMethodError extends KeetaAnchorUserError 
 class KeetaStorageAnchorInvalidResponseError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorInvalidResponseError';
 	private readonly KeetaStorageAnchorInvalidResponseErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorInvalidResponseErrorObjectTypeID = 'f2a3b4c5-6d7e-8f9a-0b1c-2d3e4f5a6b7c';
+	private static readonly KeetaStorageAnchorInvalidResponseErrorObjectTypeID = '02480186-7bc3-4a80-b6a9-23c3a9f606c9';
 
 	constructor(details?: string) {
 		super(details ? `Invalid response from storage service: ${details}` : 'Invalid response from storage service');
