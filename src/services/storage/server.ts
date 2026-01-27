@@ -81,7 +81,8 @@ const DEFAULT_QUOTAS: QuotaConfig = {
 	maxObjectSize: 10 * 1024 * 1024, // 10MB
 	maxObjectsPerUser: 1000,
 	maxStoragePerUser: 100 * 1024 * 1024, // 100MB
-	maxSearchLimit: 100
+	maxSearchLimit: 100,
+	maxSignedUrlTTL: 86400 // 24 hours
 };
 
 export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
@@ -193,11 +194,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.AccessDenied('Can only write to your own namespace'));
 			}
 
+			// Quick size check before decoding (prevents unnecessary allocations)
+			const estimatedSize = Math.floor(request.data.length * 3 / 4);
+			if (estimatedSize > quotas.maxObjectSize) {
+				throw(new Errors.QuotaExceeded(`Object too large: estimated ${estimatedSize} bytes exceeds limit of ${quotas.maxObjectSize}`));
+			}
+
 			// Decode base64 data to get actual stored object size
 			const data = Buffer.from(request.data, 'base64');
 			const objectSize = data.byteLength;
 
-			// Check max object size
+			// Check max object size (exact check after decoding)
 			if (objectSize > quotas.maxObjectSize) {
 				throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${quotas.maxObjectSize}`));
 			}
@@ -209,7 +216,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			// Validate encrypted container if needed
 			if (needsAnchorDecryption) {
 				if (!anchorAccount?.hasPrivateKey) {
-					throw(new KeetaAnchorUserError(
+					throw(new Errors.ServiceUnavailable(
 						needsValidation
 							? 'Anchor account with private key required for namespace validation'
 							: 'Anchor account with private key required for public objects'
@@ -410,8 +417,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				quota: {
 					objectCount: backendStatus.objectCount,
 					totalSize: backendStatus.totalSize,
-					remainingObjects: quotas.maxObjectsPerUser - backendStatus.objectCount,
-					remainingSize: quotas.maxStoragePerUser - backendStatus.totalSize
+					remainingObjects: Math.max(0, quotas.maxObjectsPerUser - backendStatus.objectCount),
+					remainingSize: Math.max(0, quotas.maxStoragePerUser - backendStatus.totalSize)
 				}
 			};
 
@@ -438,8 +445,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			// Check expiry
 			const expiresAt = parseInt(expires, 10);
+			if (!Number.isFinite(expiresAt)) {
+				throw(new Errors.SignatureInvalid('Invalid expires parameter'));
+			}
 			if (Date.now() > expiresAt * 1000) {
 				throw(new Errors.SignatureExpired());
+			}
+
+			// Enforce maximum TTL
+			const maxExpiresAt = Math.floor(Date.now() / 1000) + quotas.maxSignedUrlTTL;
+			if (expiresAt > maxExpiresAt) {
+				throw(new Errors.SignatureExpired('Signed URL TTL exceeds maximum allowed'));
 			}
 
 			// Verify signature
@@ -470,7 +486,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			// Decrypt using anchor account
 			if (!anchorAccount?.hasPrivateKey) {
-				throw(new KeetaAnchorUserError('Anchor account not configured for public object serving'));
+				throw(new Errors.ServiceUnavailable('Anchor account not configured for public object serving'));
 			}
 
 			const data = arrayBufferLikeToBuffer(result.data);

@@ -144,8 +144,8 @@ function computeQuotaStatus(
 	return({
 		objectCount,
 		totalSize,
-		remainingObjects: quotaConfig.maxObjectsPerUser - objectCount,
-		remainingSize: quotaConfig.maxStoragePerUser - totalSize
+		remainingObjects: Math.max(0, quotaConfig.maxObjectsPerUser - objectCount),
+		remainingSize: Math.max(0, quotaConfig.maxStoragePerUser - totalSize)
 	});
 }
 

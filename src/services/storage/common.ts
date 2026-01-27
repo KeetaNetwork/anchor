@@ -162,6 +162,11 @@ export type QuotaConfig = {
 	 * Maximum number of results per search request
 	 */
 	maxSearchLimit: number;
+
+	/**
+	 * Maximum TTL in seconds for signed URLs
+	 */
+	maxSignedUrlTTL: number;
 };
 
 /**

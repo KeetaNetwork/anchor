@@ -7,7 +7,7 @@ import { SignData } from '../../lib/utils/signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData } from './common.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
-import { Buffer } from '../../lib/utils/buffer.js';
+import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
 
 // #region Test Harness
 
@@ -327,6 +327,62 @@ describe('Storage Server', () => {
 		expectNotOk(json);
 		expectErrorContains(json, 'principal');
 	}));
+
+	// Signed URL validation tests for GET /api/public
+	const signedUrlValidationCases = [
+		{
+			name: 'rejects non-numeric expires',
+			getExpires: () => 'abc',
+			expectedStatus: 401,
+			expectedError: 'invalid'
+		},
+		{
+			name: 'rejects expired signature',
+			getExpires: () => String(Math.floor(Date.now() / 1000) - 100),
+			expectedStatus: 401,
+			expectedError: 'expired'
+		},
+		{
+			name: 'rejects TTL exceeding maximum',
+			getExpires: () => String(Math.floor(Date.now() / 1000) + 200000), // ~2.3 days, exceeds 24h default
+			expectedStatus: 401,
+			expectedError: 'ttl exceeds'
+		}
+	];
+
+	for (const testCase of signedUrlValidationCases) {
+		test(`GET /api/public ${testCase.name}`, () => withServer(async ({ backend, url }) => {
+			const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const ownerPubKey = ownerAccount.publicKeyString.get();
+			const objectPath: UserPath = `/user/${ownerPubKey}/public.txt`;
+
+			// Store an object
+			await backend.put(objectPath, Buffer.from('test'), {
+				owner: ownerPubKey,
+				tags: [],
+				visibility: 'public'
+			});
+
+			// Create signed URL with test-specific expires
+			const expires = testCase.getExpires();
+			const message = `${objectPath}:${expires}`;
+			const messageBuffer = Buffer.from(message, 'utf-8');
+			const signatureResult = await ownerAccount.sign(bufferToArrayBuffer(messageBuffer));
+			const signature = signatureResult.getBuffer().toString('base64');
+
+			const requestUrl = new URL('/api/public', url);
+			requestUrl.searchParams.set('path', objectPath);
+			requestUrl.searchParams.set('expires', expires);
+			requestUrl.searchParams.set('signature', signature);
+
+			const response = await fetch(requestUrl);
+			expect(response.status).toBe(testCase.expectedStatus);
+
+			const json: unknown = await response.json();
+			expectNotOk(json);
+			expectErrorContains(json, testCase.expectedError);
+		}));
+	}
 });
 
 describe('MemoryStorageBackend', () => {
