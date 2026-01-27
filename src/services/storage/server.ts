@@ -74,6 +74,14 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	 * Default TTL in seconds for pre-signed URLs (default: 3600)
 	 */
 	signedUrlDefaultTTL?: number;
+
+	/**
+	 * CORS origin for public endpoints (default: false).
+	 * - '*' allows all origins
+	 * - specific origin string restricts to that origin
+	 * - false (default) disables CORS headers on public responses
+	 */
+	publicCorsOrigin?: string | false;
 }
 
 // Default quota configuration
@@ -92,6 +100,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly quotas: QuotaConfig;
 	readonly validators: NamespaceValidator[];
 	readonly signedUrlDefaultTTL: number;
+	readonly publicCorsOrigin: string | false;
 
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
@@ -102,6 +111,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
 		this.validators = config.validators ?? defaultValidators;
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
+		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
 	}
 
 	// Note: We use this.* properties instead of config.*.
@@ -112,6 +122,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const anchorAccount = this.anchorAccount;
 		const quotas = this.quotas;
 		const validators = this.validators;
+		const publicCorsOrigin = this.publicCorsOrigin;
 
 		// #region Authentication Helpers
 
@@ -494,9 +505,15 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const plaintext = await container.getPlaintext();
 			const { mimeType, content } = parseContainerPayload(plaintext);
 
+			const headers: { [key: string]: string } = {};
+			if (publicCorsOrigin) {
+				headers['Access-Control-Allow-Origin'] = publicCorsOrigin;
+			}
+
 			return({
 				output: content,
-				contentType: mimeType
+				contentType: mimeType,
+				headers
 			});
 		};
 
