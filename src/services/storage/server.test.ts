@@ -1,7 +1,7 @@
 import { expect, test, describe } from 'vitest';
 import type { UserPath, KeetaStorageAnchorPutRequest } from './common.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
-import { MemoryStorageBackend } from './common.test.js';
+import { MemoryStorageBackend } from './drivers/memory.js';
 import { KeetaNet } from '../../client/index.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
@@ -395,15 +395,60 @@ describe('MemoryStorageBackend', () => {
 	test('quota tracking', async () => {
 		const backend = new MemoryStorageBackend();
 		const owner = 'quota-test-owner';
+		const path = `/user/${owner}/file.txt`;
 
+		// Initial state
 		const initialQuota = await backend.getQuotaStatus(owner);
 		expect(initialQuota.objectCount).toBe(0);
 		expect(initialQuota.totalSize).toBe(0);
 
-		await backend.put(`/user/${owner}/file.txt`, Buffer.from('12345'), { owner, tags: [], visibility: 'private' });
-
+		// After first put
+		await backend.put(path, Buffer.from('12345'), { owner, tags: [], visibility: 'private' });
 		const afterPut = await backend.getQuotaStatus(owner);
 		expect(afterPut.objectCount).toBe(1);
 		expect(afterPut.totalSize).toBe(5);
+
+		// Update same path - object count stays same, size changes
+		await backend.put(path, Buffer.from('1234567890'), { owner, tags: [], visibility: 'private' });
+		const afterUpdate = await backend.getQuotaStatus(owner);
+		expect(afterUpdate.objectCount).toBe(1);
+		expect(afterUpdate.totalSize).toBe(10);
+
+		// Shrink object - size decreases
+		await backend.put(path, Buffer.from('xy'), { owner, tags: [], visibility: 'private' });
+		const afterShrink = await backend.getQuotaStatus(owner);
+		expect(afterShrink.objectCount).toBe(1);
+		expect(afterShrink.totalSize).toBe(2);
+	});
+
+	test('atomic operations', async () => {
+		const backend = new MemoryStorageBackend();
+		const owner = 'atomic-test-owner';
+		const path = `/user/${owner}/file.txt`;
+
+		// Commit applies changes
+		await backend.withAtomic(async (atomic) => {
+			await atomic.put(path, Buffer.from('committed'), { owner, tags: [], visibility: 'private' });
+		});
+		expect((await backend.get(path))?.data.toString()).toBe('committed');
+
+		// Rollback discards changes
+		const path2 = `/user/${owner}/file2.txt`;
+		try {
+			await backend.withAtomic(async (atomic) => {
+				await atomic.put(path2, Buffer.from('should-not-exist'), { owner, tags: [], visibility: 'private' });
+				throw(new Error('intentional'));
+			});
+		} catch {
+			// Expected
+		}
+		expect(await backend.get(path2)).toBeNull();
+
+		// Atomic reads see uncommitted writes within same scope
+		await backend.withAtomic(async (atomic) => {
+			await atomic.put(path, Buffer.from('updated'), { owner, tags: [], visibility: 'private' });
+			const read = await atomic.get(path);
+			expect(read?.data.toString()).toBe('updated');
+		});
 	});
 });

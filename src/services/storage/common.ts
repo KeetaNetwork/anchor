@@ -157,6 +157,11 @@ export type QuotaConfig = {
 	 * Maximum total storage in bytes per user
 	 */
 	maxStoragePerUser: number;
+
+	/**
+	 * Maximum number of results per search request
+	 */
+	maxSearchLimit: number;
 };
 
 /**
@@ -222,7 +227,10 @@ export type KeetaStorageAnchorPutResponse = {
 export function getKeetaStorageAnchorPutRequestSigningData(
 	input: KeetaStorageAnchorPutRequest
 ): Signable {
-	return(['put', input.path, input.data]);
+	const visibility = input.visibility ?? 'private';
+	const tags: string[] = input.tags ?? [];
+	const sortedTags = [...tags].sort();
+	return(['put', input.path, input.data, visibility, ...sortedTags]);
 }
 
 // #endregion
@@ -337,7 +345,9 @@ export type KeetaStorageAnchorSearchResponse = {
 export function getKeetaStorageAnchorSearchRequestSigningData(
 	input: KeetaStorageAnchorSearchRequest
 ): Signable {
-	return(['search', JSON.stringify(input.criteria)]);
+	const limit = input.pagination?.limit ?? 0;
+	const cursor = input.pagination?.cursor ?? '';
+	return(['search', JSON.stringify(input.criteria), limit, cursor]);
 }
 
 // #endregion
@@ -908,25 +918,36 @@ export const Errors: {
 // #region Storage Backend Interface
 
 /**
- * Storage backend interface for the path-based API.
+ * Metadata input for put operations
  */
-export interface StorageBackend {
+export type StoragePutMetadata = {
+	owner: string;
+	tags: string[];
+	visibility: StorageObjectVisibility;
+};
+
+/**
+ * Result of a get operation
+ */
+export type StorageGetResult = {
+	data: Buffer;
+	metadata: StorageObjectMetadata;
+};
+
+/**
+ * Interface for atomic storage operations.
+ * Provides the same operations as StorageBackend but within an atomic scope.
+ */
+export interface StorageAtomicInterface {
 	/**
 	 * Store/update an object at the given path
 	 */
-	put(path: StoragePath, data: Buffer, metadata: {
-		owner: string;
-		tags: string[];
-		visibility: StorageObjectVisibility;
-	}): Promise<StorageObjectMetadata>;
+	put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
 
 	/**
 	 * Retrieve an object by path
 	 */
-	get(path: StoragePath): Promise<{
-		data: Buffer;
-		metadata: StorageObjectMetadata;
-	} | null>;
+	get(path: StoragePath): Promise<StorageGetResult | null>;
 
 	/**
 	 * Delete an object by path
@@ -942,6 +963,58 @@ export interface StorageBackend {
 	 * Get quota status for a user
 	 */
 	getQuotaStatus(owner: string): Promise<QuotaStatus>;
+
+	/**
+	 * Commit the atomic operation - applies all changes
+	 */
+	commit(): Promise<void>;
+
+	/**
+	 * Rollback the atomic operation - discards all changes
+	 */
+	rollback(): Promise<void>;
+}
+
+/**
+ * Storage backend interface for the path-based API.
+ */
+export interface StorageBackend {
+	/**
+	 * Store/update an object at the given path
+	 */
+	put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
+
+	/**
+	 * Retrieve an object by path
+	 */
+	get(path: StoragePath): Promise<StorageGetResult | null>;
+
+	/**
+	 * Delete an object by path
+	 */
+	delete(path: StoragePath): Promise<boolean>;
+
+	/**
+	 * Search for objects matching criteria
+	 */
+	search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults>;
+
+	/**
+	 * Get quota status for a user
+	 */
+	getQuotaStatus(owner: string): Promise<QuotaStatus>;
+
+	/**
+	 * Begin an atomic operation scope.
+	 * All operations within the scope are isolated until commit() is called.
+	 */
+	beginAtomic(): Promise<StorageAtomicInterface>;
+
+	/**
+	 * Execute a function within an atomic scope.
+	 * Auto-commits on success, auto-rollbacks on error.
+	 */
+	withAtomic<T>(fn: (atomic: StorageAtomicInterface) => Promise<T>): Promise<T>;
 }
 
 // #endregion

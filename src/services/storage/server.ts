@@ -80,7 +80,8 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 const DEFAULT_QUOTAS: QuotaConfig = {
 	maxObjectSize: 10 * 1024 * 1024, // 10MB
 	maxObjectsPerUser: 1000,
-	maxStoragePerUser: 100 * 1024 * 1024 // 100MB
+	maxStoragePerUser: 100 * 1024 * 1024, // 100MB
+	maxSearchLimit: 100
 };
 
 export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
@@ -196,25 +197,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const data = Buffer.from(request.data, 'base64');
 			const objectSize = data.byteLength;
 
-			// Check quota using actual stored object size
+			// Check max object size
 			if (objectSize > quotas.maxObjectSize) {
 				throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${quotas.maxObjectSize}`));
-			}
-
-			// Get current usage from backend and compute remaining using server's quota config
-			const quotaStatus = await backend.getQuotaStatus(pathInfo.owner);
-			const remainingObjects = quotas.maxObjectsPerUser - quotaStatus.objectCount;
-			const remainingSize = quotas.maxStoragePerUser - quotaStatus.totalSize;
-			if (remainingObjects <= 0) {
-				throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
-			}
-			if (remainingSize < objectSize) {
-				throw(new Errors.QuotaExceeded('Storage quota exceeded'));
 			}
 
 			const visibility: StorageObjectVisibility = request.visibility ?? 'private';
 			const needsValidation = requiresValidation(request.path, validators);
 			const needsAnchorDecryption = needsValidation || visibility === 'public';
+
+			// Validate encrypted container if needed
 			if (needsAnchorDecryption) {
 				if (!anchorAccount) {
 					throw(new KeetaAnchorUserError(
@@ -228,7 +220,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 					const plaintext = await container.getPlaintext();
 
-					// Run validators for special paths
 					if (needsValidation) {
 						const { mimeType, content } = parseContainerPayload(plaintext);
 						const matchingValidators = findMatchingValidators(request.path, validators);
@@ -240,12 +231,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 						}
 					}
 				} catch (e) {
-					// Re-throw validation errors as-is
 					if (Errors.ValidationFailed.isInstance(e)) {
 						throw(e);
 					}
-
-					// Handle EncryptedContainerError specifically
 					if (EncryptedContainerError.isInstance(e)) {
 						if (e.code.startsWith('MALFORMED_')) {
 							throw(new Errors.ValidationFailed(`Invalid encrypted container: ${e.message}`));
@@ -254,15 +242,35 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 							throw(new Errors.AnchorPrincipalRequired());
 						}
 					}
-
-					// Unknown errors
 					throw(e);
 				}
 			}
-			const objectMetadata = await backend.put(pathInfo.path, data, {
-				owner: pathInfo.owner,
-				tags: request.tags ?? [],
-				visibility
+
+			const objectMetadata = await backend.withAtomic(async (atomic) => {
+				// Check if object already exists
+				const existing = await atomic.get(pathInfo.path);
+				const existingSize = existing ? parseInt(existing.metadata.size, 10) : 0;
+				const isNewObject = !existing;
+
+				// Get quota status
+				const quotaStatus = await atomic.getQuotaStatus(pathInfo.owner);
+
+				// Object count check - only reject for new objects
+				if (isNewObject && quotaStatus.objectCount >= quotas.maxObjectsPerUser) {
+					throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
+				}
+
+				// Size check - use delta for updates
+				const sizeDelta = objectSize - existingSize;
+				if (quotaStatus.totalSize + sizeDelta > quotas.maxStoragePerUser) {
+					throw(new Errors.QuotaExceeded('Storage quota exceeded'));
+				}
+
+				return(await atomic.put(pathInfo.path, data, {
+					owner: pathInfo.owner,
+					tags: request.tags ?? [],
+					visibility
+				}));
 			});
 
 			const response: KeetaStorageAnchorPutResponse = {
@@ -367,9 +375,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				owner: accountPubKey
 			};
 
+			// Enforce server-side limit cap
+			const requestedLimit = request.pagination?.limit ?? quotas.maxSearchLimit;
+			const effectiveLimit = Math.min(requestedLimit, quotas.maxSearchLimit);
+
 			const results = await backend.search(
 				scopedCriteria,
-				request.pagination ?? {}
+				{ ...request.pagination, limit: effectiveLimit }
 			);
 
 			const response: KeetaStorageAnchorSearchResponse = {

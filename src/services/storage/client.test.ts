@@ -4,7 +4,7 @@ import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
-import { MemoryStorageBackend } from './common.test.js';
+import { MemoryStorageBackend } from './drivers/memory.js';
 import { makeStoragePath, type StoragePath, type StorageObjectMetadata, type StorageObjectVisibility } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 
@@ -81,7 +81,6 @@ async function withClient(seed: string | ArrayBuffer, fn: ClientTestFn, options:
 
 	const storageClient = new KeetaStorageAnchorClient(userClient, { resolver });
 	const provider = await storageClient.getProviderByID(providerName);
-
 	if (!provider) {
 		throw(new Error('Provider not found'));
 	}

@@ -112,7 +112,7 @@ type GetEndpointsResult = {
 
 function validateURL(url: string | undefined): URL {
 	if (url === undefined || url === null) {
-		throw(new Error('Invalid URL: null or undefined'));
+		throw(new Errors.InvalidPath('Invalid URL: null or undefined'));
 	}
 
 	const parsedURL = new URL(url);
@@ -238,11 +238,11 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	async #parseResponseError(data: unknown) {
 		if (typeof data !== 'object' || data === null) {
-			throw(new Error('Response is not an error'));
+			throw(new Error('invariant: expected error response object'));
 		}
 
 		if (!('ok' in data) || data.ok !== false) {
-			throw(new Error('Response is not an error'));
+			throw(new Error('invariant: expected error response with ok=false'));
 		}
 
 		let parsedError: KeetaAnchorError | null = null;
@@ -304,7 +304,7 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 
 			if (!input.getSignedData) {
-				throw(new Error('getSignedData function is required for signing the request'));
+				throw(new Error('invariant: getSignedData required for signed requests'));
 			}
 
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -330,7 +330,7 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 
 			if (input.body) {
-				throw(new Error('Body cannot be sent with GET/DELETE requests'));
+				throw(new Error('invariant: body cannot be sent with GET/DELETE requests'));
 			}
 		}
 
@@ -751,7 +751,7 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 	/** @internal */
 	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaStorageAnchorClientAccessToken) {
-			throw(new Error('invalid access token'));
+			throw(new Error('invariant: invalid internal access token'));
 		}
 
 		return({
