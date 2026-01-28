@@ -52,10 +52,9 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	backend: StorageBackend;
 
 	/**
-	 * The anchor's account WITH PRIVATE KEY for decrypting public objects.
-	 * This account must have hasPrivateKey=true.
+	 * The anchor's account for decrypting objects.
 	 */
-	anchorAccount?: Account;
+	anchorAccount: Account;
 
 	/**
 	 * Quota configuration for storage limits
@@ -93,7 +92,7 @@ const DEFAULT_QUOTAS: QuotaConfig = {
 export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorStorageServerConfig['homepage']>;
 	readonly backend: StorageBackend;
-	readonly anchorAccount: Account | undefined;
+	readonly anchorAccount: Account;
 	readonly quotas: QuotaConfig;
 	readonly validators: NamespaceValidator[];
 	readonly signedUrlDefaultTTL: number;
@@ -110,9 +109,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
 
-		// Fail if validators require decryption but anchor can't decrypt
-		if (this.validators.length > 0 && !this.anchorAccount?.hasPrivateKey) {
-			throw(new Error('anchorAccount with private key required when validators are configured'));
+		// Validate anchorAccount has private key
+		if (!this.anchorAccount.hasPrivateKey) {
+			throw(new Error('anchorAccount must have a private key'));
 		}
 	}
 
@@ -248,14 +247,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const needsValidation = requiresValidation(objectPath, validators);
 				const needsAnchorDecryption = needsValidation || visibility === 'public';
 				if (needsAnchorDecryption) {
-					if (!anchorAccount?.hasPrivateKey) {
-						throw(new Errors.ServiceUnavailable(
-							needsValidation
-								? 'Anchor account with private key required for namespace validation'
-								: 'Anchor account with private key required for public objects'
-						));
-					}
-
 					try {
 						const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 						const plaintext = await container.getPlaintext();
@@ -595,10 +586,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Decrypt using anchor account
-			if (!anchorAccount?.hasPrivateKey) {
-				throw(new Errors.ServiceUnavailable('Anchor account not configured for public object serving'));
-			}
-
 			const data = arrayBufferLikeToBuffer(result.data);
 			const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 			const plaintext = await container.getPlaintext();
@@ -629,13 +616,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			delete: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			metadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
 			search: { url: (new URL('/api/search', this.url)).toString(), ...authRequired },
-			public: (new URL('/api/public', this.url)).toString(),  // No auth for public access
+			public: (new URL('/api/public', this.url)).toString(),
 			quota: { url: (new URL('/api/quota', this.url)).toString(), ...authRequired }
 		};
 
 		return({
 			operations,
-			...(this.anchorAccount ? { anchorAccount: this.anchorAccount.publicKeyString.get() } : {}),
+			anchorAccount: this.anchorAccount.publicKeyString.get(),
 			quotas: this.quotas,
 			signedUrlDefaultTTL: this.signedUrlDefaultTTL
 		});
