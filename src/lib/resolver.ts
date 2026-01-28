@@ -203,6 +203,7 @@ type ServiceMetadata = {
 					put?: ServiceMetadataEndpoint;
 					get?: ServiceMetadataEndpoint;
 					delete?: ServiceMetadataEndpoint;
+					metadata?: ServiceMetadataEndpoint;
 					search?: ServiceMetadataEndpoint;
 					public?: ServiceMetadataEndpoint;
 					quota?: ServiceMetadataEndpoint;

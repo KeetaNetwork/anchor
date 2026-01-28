@@ -1,5 +1,5 @@
 import { expect, test, describe } from 'vitest';
-import type { UserPath, KeetaStorageAnchorPutRequest } from './common.js';
+import type { UserPath, KeetaStorageAnchorSearchRequest } from './common.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './drivers/memory.js';
 import { KeetaNet } from '../../client/index.js';
@@ -79,173 +79,234 @@ async function withServerAndAnchor(fn: ServerWithAnchorTestFn): Promise<void> {
 // #endregion
 
 describe('Storage Server', function() {
-	test('serviceMetadata exposes all operations with valid URLs', function() {
-		return(withServer(async function({ server, url }) {
-			const metadata = await server.serviceMetadata();
+	describe('Service Metadata', function() {
+		test('exposes all operations with valid URLs', function() {
+			return(withServer(async function({ server, url }) {
+				const metadata = await server.serviceMetadata();
 
-			// Verify metadata structure using type-driven assertions
-			/* eslint-disable @typescript-eslint/no-unsafe-assignment */
-			const expectedShape = {
-				operations: {
-					put: expect.objectContaining({ url: expect.stringContaining(url) }),
-					get: expect.objectContaining({ url: expect.stringContaining(url) }),
-					delete: expect.objectContaining({ url: expect.stringContaining(url) }),
-					search: expect.objectContaining({ url: expect.stringContaining(url) }),
-					public: expect.stringContaining(url), // Public is just a string URL, no auth required
-					quota: expect.objectContaining({ url: expect.stringContaining(url) })
-				},
-				quotas: expect.objectContaining({
-					maxObjectSize: expect.any(Number),
-					maxObjectsPerUser: expect.any(Number),
-					maxStoragePerUser: expect.any(Number)
-				})
-			};
-			/* eslint-enable @typescript-eslint/no-unsafe-assignment */
-			expect(metadata).toMatchObject(expectedShape);
-		}));
-	});
-
-	// HTTP error tests
-	const httpErrorCases = [
-		{
-			name: 'SEARCH endpoint rejects malformed requests',
-			path: '/api/search',
-			method: 'POST' as const,
-			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-			body: JSON.stringify({}),
-			expectedStatus: 500,
-			verifyOkIsFalse: true
-		},
-		{
-			name: 'invalid JSON body returns error',
-			path: '/api/search',
-			method: 'POST' as const,
-			headers: { 'Content-Type': 'application/json' },
-			body: 'not valid json',
-			expectedStatus: 500,
-			verifyOkIsFalse: false
-		},
-		{
-			name: 'non-existent endpoint returns 404',
-			path: '/api/nonexistent',
-			method: 'GET' as const,
-			headers: {},
-			body: undefined,
-			expectedStatus: 404,
-			verifyOkIsFalse: false
-		},
-		{
-			name: 'quota endpoint rejects unsigned requests',
-			path: '/api/quota',
-			method: 'GET' as const,
-			headers: { 'Accept': 'application/json' },
-			body: undefined,
-			expectedStatus: { min: 400 },
-			verifyOkIsFalse: false
-		}
-	] as const;
-
-	for (const testCase of httpErrorCases) {
-		test(testCase.name, function() {
-			return(withServer(async function({ url }) {
-				const response = await fetch(`${url}${testCase.path}`, {
-					method: testCase.method,
-					headers: testCase.headers,
-					...(testCase.body !== undefined && { body: testCase.body })
-				});
-
-				if (typeof testCase.expectedStatus === 'number') {
-					expect(response.status).toBe(testCase.expectedStatus);
-				} else {
-					expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
-				}
-
-				if (testCase.verifyOkIsFalse) {
-					const json: unknown = await response.json();
-					if (typeof json === 'object' && json !== null && 'ok' in json) {
-						expect(json.ok).toBe(false);
-					}
-				}
+				/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+				const expectedShape = {
+					operations: {
+						put: expect.objectContaining({ url: expect.stringContaining(url) }),
+						get: expect.objectContaining({ url: expect.stringContaining(url) }),
+						delete: expect.objectContaining({ url: expect.stringContaining(url) }),
+						search: expect.objectContaining({ url: expect.stringContaining(url) }),
+						public: expect.stringContaining(url),
+						quota: expect.objectContaining({ url: expect.stringContaining(url) })
+					},
+					quotas: expect.objectContaining({
+						maxObjectSize: expect.any(Number),
+						maxObjectsPerUser: expect.any(Number),
+						maxStoragePerUser: expect.any(Number)
+					})
+				};
+				/* eslint-enable @typescript-eslint/no-unsafe-assignment */
+				expect(metadata).toMatchObject(expectedShape);
 			}));
 		});
-	}
-
-	test('GET rejects cross-user read attempts', function() {
-		return(withServer(async function({ backend, url }) {
-			// Create two accounts
-			const seed = KeetaNet.lib.Account.generateRandomSeed();
-			const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
-			const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
-
-			const ownerPubKey = ownerAccount.publicKeyString.get();
-			const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
-
-			// Store an object for the owner directly in backend
-			await backend.put(objectPath, Buffer.from('secret data'), {
-				owner: ownerPubKey,
-				tags: ['private'],
-				visibility: 'private'
-			});
-
-			// Sign a GET request as the attacker for the owner's object
-			const signedField = await SignData(
-				attackerAccount,
-				getKeetaStorageAnchorGetRequestSigningData({ path: objectPath, account: attackerAccount.publicKeyString.get() })
-			);
-
-			const requestUrl = addSignatureToURL(
-				`${url}/api/object?path=${encodeURIComponent(objectPath)}`,
-				{ signedField, account: attackerAccount }
-			);
-
-			const response = await fetch(requestUrl.toString(), {
-				method: 'GET',
-				headers: { 'Accept': 'application/json' }
-			});
-			expect(response.status).toBe(403);
-
-			const json: unknown = await response.json();
-			expectNotOk(json);
-			expectErrorContains(json, 'namespace');
-		}));
 	});
 
-	// SEARCH authorization rejection tests
-	const searchAuthzRejectionCases = [
-		{
-			name: 'rejects mismatched criteria.owner',
-			makeCriteria: function(ownerPubKey: string) { return({ owner: ownerPubKey }); }
-		},
-		{
-			name: 'rejects mismatched criteria.pathPrefix',
-			makeCriteria: function(ownerPubKey: string) { return({ pathPrefix: `/user/${ownerPubKey}/` }); }
-		}
-	] as const;
+	describe('HTTP Error Handling', function() {
+		const cases = [
+			{
+				name: 'SEARCH endpoint rejects malformed requests',
+				path: '/api/search',
+				method: 'POST' as const,
+				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({}),
+				expectedStatus: 500,
+				verifyOkIsFalse: true
+			},
+			{
+				name: 'invalid JSON body returns error',
+				path: '/api/search',
+				method: 'POST' as const,
+				headers: { 'Content-Type': 'application/json' },
+				body: 'not valid json',
+				expectedStatus: 500,
+				verifyOkIsFalse: false
+			},
+			{
+				name: 'non-existent endpoint returns 404',
+				path: '/api/nonexistent',
+				method: 'GET' as const,
+				headers: {},
+				body: undefined,
+				expectedStatus: 404,
+				verifyOkIsFalse: false
+			},
+			{
+				name: 'quota endpoint rejects unsigned requests',
+				path: '/api/quota',
+				method: 'GET' as const,
+				headers: { 'Accept': 'application/json' },
+				body: undefined,
+				expectedStatus: { min: 400 },
+				verifyOkIsFalse: false
+			}
+		] as const;
 
-	for (const testCase of searchAuthzRejectionCases) {
-		test(`SEARCH ${testCase.name}`, function() {
+		for (const testCase of cases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ url }) {
+					const response = await fetch(`${url}${testCase.path}`, {
+						method: testCase.method,
+						headers: testCase.headers,
+						...(testCase.body !== undefined && { body: testCase.body })
+					});
+
+					if (typeof testCase.expectedStatus === 'number') {
+						expect(response.status).toBe(testCase.expectedStatus);
+					} else {
+						expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
+					}
+
+					if (testCase.verifyOkIsFalse) {
+						const json: unknown = await response.json();
+						if (typeof json === 'object' && json !== null && 'ok' in json) {
+							expect(json.ok).toBe(false);
+						}
+					}
+				}));
+			});
+		}
+	});
+
+	describe('GET Authorization', function() {
+		const cases = [
+			{
+				name: 'rejects cross-user read attempts',
+				expectedStatus: 403,
+				expectedError: 'namespace'
+			}
+			// Add more GET authorization cases here
+		];
+
+		for (const testCase of cases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ backend, url }) {
+					const seed = KeetaNet.lib.Account.generateRandomSeed();
+					const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+					const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+					const ownerPubKey = ownerAccount.publicKeyString.get();
+					const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
+
+					await backend.put(objectPath, Buffer.from('secret data'), {
+						owner: ownerPubKey,
+						tags: ['private'],
+						visibility: 'private'
+					});
+
+					const signedField = await SignData(
+						attackerAccount,
+						getKeetaStorageAnchorGetRequestSigningData({ path: objectPath, account: attackerAccount.publicKeyString.get() })
+					);
+
+					const requestUrl = addSignatureToURL(
+						`${url}/api/object${objectPath}`,
+						{ signedField, account: attackerAccount }
+					);
+
+					const response = await fetch(requestUrl.toString(), {
+						method: 'GET',
+						headers: { 'Accept': 'application/json' }
+					});
+					expect(response.status).toBe(testCase.expectedStatus);
+
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}));
+			});
+		}
+	});
+
+	describe('SEARCH Authorization', function() {
+		const rejectionCases = [
+			{
+				name: 'rejects mismatched criteria.owner',
+				makeCriteria: function(ownerPubKey: string) { return({ owner: ownerPubKey }); },
+				expectedStatus: 403,
+				expectedError: 'namespace'
+			},
+			{
+				name: 'rejects mismatched criteria.pathPrefix',
+				makeCriteria: function(ownerPubKey: string) { return({ pathPrefix: `/user/${ownerPubKey}/` }); },
+				expectedStatus: 403,
+				expectedError: 'namespace'
+			}
+			// Add more SEARCH rejection cases here
+		];
+
+		for (const testCase of rejectionCases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ backend, url }) {
+					const seed = KeetaNet.lib.Account.generateRandomSeed();
+					const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+					const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+					const ownerPubKey = ownerAccount.publicKeyString.get();
+					const attackerPubKey = attackerAccount.publicKeyString.get();
+					const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
+
+					await backend.put(objectPath, Buffer.from('secret data'), {
+						owner: ownerPubKey,
+						tags: ['private'],
+						visibility: 'private'
+					});
+
+					const searchRequest = {
+						account: attackerPubKey,
+						criteria: testCase.makeCriteria(ownerPubKey)
+					};
+
+					const signedField = await SignData(
+						attackerAccount,
+						getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
+					);
+
+					const response = await fetch(`${url}/api/search`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+						body: JSON.stringify({ ...searchRequest, signed: signedField })
+					});
+					expect(response.status).toBe(testCase.expectedStatus);
+
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}));
+			});
+		}
+
+		test('omitted owner defaults to authenticated user', function() {
 			return(withServer(async function({ backend, url }) {
 				const seed = KeetaNet.lib.Account.generateRandomSeed();
-				const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
-				const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+				const userAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+				const otherAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
 
-				const ownerPubKey = ownerAccount.publicKeyString.get();
-				const attackerPubKey = attackerAccount.publicKeyString.get();
-				const objectPath: UserPath = `/user/${ownerPubKey}/secret.txt`;
+				const userPubKey = userAccount.publicKeyString.get();
+				const otherPubKey = otherAccount.publicKeyString.get();
 
-				await backend.put(objectPath, Buffer.from('secret data'), {
-					owner: ownerPubKey,
-					tags: ['private'],
+				await backend.put(`/user/${userPubKey}/my-file.txt`, Buffer.from('my data'), {
+					owner: userPubKey,
+					tags: ['mine'],
+					visibility: 'private'
+				});
+				await backend.put(`/user/${otherPubKey}/other-file.txt`, Buffer.from('other data'), {
+					owner: otherPubKey,
+					tags: ['theirs'],
 					visibility: 'private'
 				});
 
 				const searchRequest = {
-					account: attackerPubKey,
-					criteria: testCase.makeCriteria(ownerPubKey)
+					account: userPubKey,
+					criteria: {}
 				};
 
 				const signedField = await SignData(
-					attackerAccount,
+					userAccount,
 					getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
 				);
 
@@ -254,162 +315,190 @@ describe('Storage Server', function() {
 					headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
 					body: JSON.stringify({ ...searchRequest, signed: signedField })
 				});
-				expect(response.status).toBe(403);
+				expect(response.status).toBe(200);
 
 				const json: unknown = await response.json();
-				expectNotOk(json);
-				expectErrorContains(json, 'namespace');
+				expectOk(json);
+
+				if (isJsonObject(json) && Array.isArray(json.results)) {
+					expect(json.results).toHaveLength(1);
+					const firstResult: unknown = json.results[0];
+					if (isJsonObject(firstResult)) {
+						expect(firstResult.owner).toBe(userPubKey);
+					}
+				}
 			}));
 		});
-	}
 
-	test('SEARCH with omitted owner defaults to authenticated user', function() {
-		return(withServer(async function({ backend, url }) {
-			const seed = KeetaNet.lib.Account.generateRandomSeed();
-			const userAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
-			const otherAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
-
-			const userPubKey = userAccount.publicKeyString.get();
-			const otherPubKey = otherAccount.publicKeyString.get();
-
-			// Store objects for both users
-			await backend.put(`/user/${userPubKey}/my-file.txt`, Buffer.from('my data'), {
-				owner: userPubKey,
-				tags: ['mine'],
-				visibility: 'private'
-			});
-			await backend.put(`/user/${otherPubKey}/other-file.txt`, Buffer.from('other data'), {
-				owner: otherPubKey,
-				tags: ['theirs'],
-				visibility: 'private'
-			});
-
-			// User searches without specifying owner
-			const searchRequest = {
-				account: userPubKey,
-				criteria: {}
-			};
-
-			const signedField = await SignData(
-				userAccount,
-				getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
-			);
-
-			const response = await fetch(`${url}/api/search`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-				body: JSON.stringify({ ...searchRequest, signed: signedField })
-			});
-			expect(response.status).toBe(200);
-
-			const json: unknown = await response.json();
-			expectOk(json);
-
-			// Should only find user's own file, not other user's file
-			if (isJsonObject(json) && Array.isArray(json.results)) {
-				expect(json.results).toHaveLength(1);
-				const firstResult: unknown = json.results[0];
-				if (isJsonObject(firstResult)) {
-					expect(firstResult.owner).toBe(userPubKey);
-				}
-			}
-		}));
-	});
-
-	test('PUT rejects public object when anchor is not a principal', function() {
-		return(withServerAndAnchor(async function({ url }) {
-			const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-			const userPubKey = userAccount.publicKeyString.get();
-			const objectPath: UserPath = `/user/${userPubKey}/public-file.txt`;
-
-			// Create encrypted container with only the user as principal
-			const payload = { mimeType: 'text/plain', data: Buffer.from('public data').toString('base64') };
-			const container = EncryptedContainer.fromPlaintext(
-				JSON.stringify(payload),
-				[userAccount], // Missing anchorAccount as principal
-				{ signer: userAccount }
-			);
-			const encodedData = Buffer.from(await container.getEncodedBuffer()).toString('base64');
-			const putRequest: KeetaStorageAnchorPutRequest = {
-				path: objectPath,
-				data: encodedData,
-				visibility: 'public',
-				account: userPubKey
-			};
-
-			const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData(putRequest));
-			const response = await fetch(`${url}/api/object`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-				body: JSON.stringify({ ...putRequest, signed: signedField })
-			});
-			expect(response.status).toBe(400);
-
-			const json: unknown = await response.json();
-			expectNotOk(json);
-			expectErrorContains(json, 'principal');
-		}));
-	});
-
-	// Signed URL validation tests for GET /api/public
-	const signedUrlValidationCases = [
-		{
-			name: 'rejects non-numeric expires',
-			getExpires: function() { return('abc'); },
-			expectedStatus: 401,
-			expectedError: 'invalid'
-		},
-		{
-			name: 'rejects expired signature',
-			getExpires: function() { return(String(Math.floor(Date.now() / 1000) - 100)); },
-			expectedStatus: 401,
-			expectedError: 'expired'
-		},
-		{
-			name: 'rejects TTL exceeding maximum',
-			getExpires: function() { return(String(Math.floor(Date.now() / 1000) + 200000)); }, // ~2.3 days, exceeds 24h default
-			expectedStatus: 401,
-			expectedError: 'ttl exceeds'
-		}
-	];
-
-	for (const testCase of signedUrlValidationCases) {
-		test(`GET /api/public ${testCase.name}`, function() {
+		test('visibility:public finds public objects from any namespace', function() {
 			return(withServer(async function({ backend, url }) {
-				const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-				const ownerPubKey = ownerAccount.publicKeyString.get();
-				const objectPath: UserPath = `/user/${ownerPubKey}/public.txt`;
+				const seed = KeetaNet.lib.Account.generateRandomSeed();
+				const userAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+				const otherAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
 
-				// Store an object
-				await backend.put(objectPath, Buffer.from('test'), {
-					owner: ownerPubKey,
+				const userPubKey = userAccount.publicKeyString.get();
+				const otherPubKey = otherAccount.publicKeyString.get();
+
+				await backend.put(`/user/${userPubKey}/private.txt`, Buffer.from('private'), {
+					owner: userPubKey,
+					tags: [],
+					visibility: 'private'
+				});
+				await backend.put(`/user/${userPubKey}/public.txt`, Buffer.from('public'), {
+					owner: userPubKey,
+					tags: [],
+					visibility: 'public'
+				});
+				await backend.put(`/user/${otherPubKey}/other-public.txt`, Buffer.from('other'), {
+					owner: otherPubKey,
 					tags: [],
 					visibility: 'public'
 				});
 
-				// Create signed URL with test-specific expires
-				const expires = testCase.getExpires();
-				const expiresNum = parseInt(expires, 10) || 0;
-				const { nonce, timestamp, verificationData } = FormatData(ownerAccount, [objectPath, expiresNum]);
-				const signatureResult = await ownerAccount.sign(bufferToArrayBuffer(verificationData));
-				const signature = signatureResult.getBuffer().toString('base64');
+				const searchRequest: KeetaStorageAnchorSearchRequest = {
+					account: userPubKey,
+					criteria: { visibility: 'public' }
+				};
 
-				const requestUrl = new URL('/api/public', url);
-				requestUrl.searchParams.set('path', objectPath);
-				requestUrl.searchParams.set('expires', expires);
-				requestUrl.searchParams.set('nonce', nonce);
-				requestUrl.searchParams.set('timestamp', timestamp);
-				requestUrl.searchParams.set('signature', signature);
+				const signedField = await SignData(
+					userAccount,
+					getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
+				);
 
-				const response = await fetch(requestUrl);
-				expect(response.status).toBe(testCase.expectedStatus);
+				const response = await fetch(`${url}/api/search`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+					body: JSON.stringify({ ...searchRequest, signed: signedField })
+				});
+				expect(response.status).toBe(200);
 
 				const json: unknown = await response.json();
-				expectNotOk(json);
-				expectErrorContains(json, testCase.expectedError);
+				expectOk(json);
+
+				if (isJsonObject(json) && Array.isArray(json.results)) {
+					expect(json.results).toHaveLength(2);
+					const paths = json.results.map(function(r: unknown) {
+						return(isJsonObject(r) ? r.path : null);
+					});
+					expect(paths).toContain(`/user/${userPubKey}/public.txt`);
+					expect(paths).toContain(`/user/${otherPubKey}/other-public.txt`);
+				}
 			}));
 		});
-	}
+	});
+
+	describe('PUT Validation', function() {
+		const cases = [
+			{
+				name: 'rejects public object when anchor is not a principal',
+				visibility: 'public' as const,
+				includeAnchorAsPrincipal: false,
+				expectedStatus: 400,
+				expectedError: 'principal'
+			}
+			// Add more PUT validation cases here (e.g., size limits, path validation)
+		];
+
+		for (const testCase of cases) {
+			test(testCase.name, function() {
+				return(withServerAndAnchor(async function({ url, anchorAccount }) {
+					const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+					const userPubKey = userAccount.publicKeyString.get();
+					const objectPath: UserPath = `/user/${userPubKey}/test-file.txt`;
+
+					const payload = { mimeType: 'text/plain', data: Buffer.from('test data').toString('base64') };
+					const principals = testCase.includeAnchorAsPrincipal
+						? [userAccount, anchorAccount]
+						: [userAccount];
+					const container = EncryptedContainer.fromPlaintext(
+						JSON.stringify(payload),
+						principals,
+						{ signer: userAccount }
+					);
+					const binaryData = Buffer.from(await container.getEncodedBuffer());
+
+					const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData({
+						path: objectPath,
+						visibility: testCase.visibility
+					}));
+
+					const baseUrl = new URL(`/api/object${objectPath}`, url);
+					const requestUrl = addSignatureToURL(baseUrl, { signedField, account: userAccount });
+					requestUrl.searchParams.set('visibility', testCase.visibility);
+
+					const response = await fetch(requestUrl, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
+						body: bufferToArrayBuffer(binaryData)
+					});
+					expect(response.status).toBe(testCase.expectedStatus);
+
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}));
+			});
+		}
+	});
+
+	describe('Signed URL (Public Access)', function() {
+		const validationCases = [
+			{
+				name: 'rejects non-numeric expires',
+				getExpires: function() { return('abc'); },
+				expectedStatus: 401,
+				expectedError: 'invalid'
+			},
+			{
+				name: 'rejects expired signature',
+				getExpires: function() { return(String(Math.floor(Date.now() / 1000) - 100)); },
+				expectedStatus: 401,
+				expectedError: 'expired'
+			},
+			{
+				name: 'rejects TTL exceeding maximum',
+				getExpires: function() { return(String(Math.floor(Date.now() / 1000) + 200000)); },
+				expectedStatus: 401,
+				expectedError: 'ttl exceeds'
+			}
+			// Add more signed URL validation cases here
+		];
+
+		for (const testCase of validationCases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ backend, url }) {
+					const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+					const ownerPubKey = ownerAccount.publicKeyString.get();
+					const objectPath: UserPath = `/user/${ownerPubKey}/public.txt`;
+
+					await backend.put(objectPath, Buffer.from('test'), {
+						owner: ownerPubKey,
+						tags: [],
+						visibility: 'public'
+					});
+
+					const expires = testCase.getExpires();
+					const expiresNum = parseInt(expires, 10) || 0;
+					const { nonce, timestamp, verificationData } = FormatData(ownerAccount, [objectPath, expiresNum]);
+					const signatureResult = await ownerAccount.sign(bufferToArrayBuffer(verificationData));
+					const signature = signatureResult.getBuffer().toString('base64');
+
+					const requestUrl = new URL(`/api/public${objectPath}`, url);
+					requestUrl.searchParams.set('expires', expires);
+					requestUrl.searchParams.set('nonce', nonce);
+					requestUrl.searchParams.set('timestamp', timestamp);
+					requestUrl.searchParams.set('signature', signature);
+
+					const response = await fetch(requestUrl);
+					expect(response.status).toBe(testCase.expectedStatus);
+
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}));
+			});
+		}
+	});
 });
 
 describe('MemoryStorageBackend', function() {

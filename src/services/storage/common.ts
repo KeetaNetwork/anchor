@@ -103,6 +103,12 @@ export type SearchCriteria = {
 	 * Include objects in nested paths (default: false)
 	 */
 	recursive?: boolean;
+
+	/**
+	 * Filter by visibility.
+	 * When 'public', allows searching public objects outside caller's namespace.
+	 */
+	visibility?: StorageObjectVisibility;
 };
 
 /**
@@ -230,12 +236,12 @@ export type KeetaStorageAnchorPutResponse = {
 };
 
 export function getKeetaStorageAnchorPutRequestSigningData(
-	input: KeetaStorageAnchorPutRequest
+	input: { path: string; visibility?: StorageObjectVisibility; tags?: string[] }
 ): Signable {
 	const visibility = input.visibility ?? 'private';
 	const tags: string[] = input.tags ?? [];
 	const sortedTags = [...tags].sort();
-	return(['put', input.path, input.data, visibility, ...sortedTags]);
+	return(['put', input.path, visibility, ...sortedTags]);
 }
 
 // #endregion

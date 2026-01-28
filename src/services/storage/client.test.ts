@@ -149,7 +149,6 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Hello, World!');
 			expect(getResult?.mimeType).toBe('text/plain');
-			expect(getResult?.metadata.path).toBe(path);
 		}));
 	});
 

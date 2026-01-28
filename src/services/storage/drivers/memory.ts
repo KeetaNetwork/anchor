@@ -120,6 +120,10 @@ function searchStorage(
 			}
 		}
 
+		if (criteria.visibility && metadata.visibility !== criteria.visibility) {
+			continue;
+		}
+
 		results.push(metadata);
 
 		if (results.length >= limit) {
