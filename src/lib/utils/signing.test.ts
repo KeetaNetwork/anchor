@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as Signing from './signing.js';
-import { Buffer } from '../../lib/utils/buffer.js';
+import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
 
 const genericAccount = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
 const TestVectors = [
@@ -83,3 +83,65 @@ test('Basic Tests (Sign and Verify Data)', async function() {
 		expect(isAlteredNonceValid).toBe(false);
 	}
 });
+
+// Data-driven tests for VerifySignedData options
+const verifyOptionsCases = [
+	// maxSkewMs tests
+	{
+		name: '10-min-old signature fails with default skew',
+		timestampOffsetMs: -10 * 60 * 1000,
+		options: undefined,
+		expected: false
+	},
+	{
+		name: '10-min-old signature succeeds with 1-hour skew',
+		timestampOffsetMs: -10 * 60 * 1000,
+		options: { maxSkewMs: 60 * 60 * 1000 },
+		expected: true
+	},
+	{
+		name: '6-min-old signature fails with default 5-min skew',
+		timestampOffsetMs: -6 * 60 * 1000,
+		options: undefined,
+		expected: false
+	},
+	{
+		name: '4-min-old signature succeeds with default 5-min skew',
+		timestampOffsetMs: -4 * 60 * 1000,
+		options: undefined,
+		expected: true
+	},
+	// referenceTime tests
+	{
+		name: 'current signature fails with future reference time',
+		timestampOffsetMs: 0,
+		options: { referenceTime: new Date(Date.now() + 10 * 60 * 1000) },
+		expected: false
+	},
+	{
+		name: 'current signature succeeds with future reference time and extended skew',
+		timestampOffsetMs: 0,
+		options: { referenceTime: new Date(Date.now() + 10 * 60 * 1000), maxSkewMs: 15 * 60 * 1000 },
+		expected: true
+	}
+];
+
+for (const testCase of verifyOptionsCases) {
+	test(`VerifySignedData: ${testCase.name}`, async function() {
+		const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
+		const data = ['test-data'];
+
+		// Create signature with offset timestamp
+		const signTime = new Date(Date.now() + testCase.timestampOffsetMs);
+		const { nonce, timestamp, verificationData } = Signing.FormatData(account, data, undefined, signTime);
+		const signature = await account.sign(bufferToArrayBuffer(verificationData));
+		const signedData = {
+			nonce,
+			timestamp,
+			signature: signature.getBuffer().toString('base64')
+		};
+
+		const result = await Signing.VerifySignedData(account, data, signedData, testCase.options);
+		expect(result).toBe(testCase.expected);
+	});
+}

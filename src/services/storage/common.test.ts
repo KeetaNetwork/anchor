@@ -17,32 +17,32 @@ const invalidPaths = [
 	''
 ] as const;
 
-describe('Storage Path Utilities', () => {
-	describe.each(validPaths)('parseStoragePath($input)', ({ input, path, owner, relativePath }) => {
-		test('returns parsed path', () => {
+describe('Storage Path Utilities', function() {
+	describe.each(validPaths)('parseStoragePath($input)', function({ input, path, owner, relativePath }) {
+		test('returns parsed path', function() {
 			expect(parseStoragePath(input)).toEqual({ path, owner, relativePath });
 		});
 
-		test('isValidStoragePath returns true', () => {
+		test('isValidStoragePath returns true', function() {
 			expect(isValidStoragePath(input)).toBe(true);
 		});
 
-		test('validateStoragePath returns parsed path', () => {
+		test('validateStoragePath returns parsed path', function() {
 			expect(validateStoragePath(input)).toEqual({ path, owner, relativePath });
 		});
 	});
 
-	describe.each(invalidPaths)('invalid path: %s', (input) => {
-		test('parseStoragePath returns null', () => {
+	describe.each(invalidPaths)('invalid path: %s', function(input) {
+		test('parseStoragePath returns null', function() {
 			expect(parseStoragePath(input)).toBeNull();
 		});
 
-		test('isValidStoragePath returns false', () => {
+		test('isValidStoragePath returns false', function() {
 			expect(isValidStoragePath(input)).toBe(false);
 		});
 
-		test('validateStoragePath throws InvalidPath', () => {
-			expect(() => validateStoragePath(input)).toThrow(Errors.InvalidPath);
+		test('validateStoragePath throws InvalidPath', function() {
+			expect(function() { validateStoragePath(input); }).toThrow(Errors.InvalidPath);
 		});
 	});
 
@@ -51,8 +51,8 @@ describe('Storage Path Utilities', () => {
 		{ owner: 'abc123', relativePath: 'docs/file.txt', expected: '/user/abc123/docs/file.txt' }
 	] as const;
 
-	describe.each(makePathCases)('makeStoragePath($owner, $relativePath)', ({ owner, relativePath, expected }) => {
-		test(`returns ${expected}`, () => {
+	describe.each(makePathCases)('makeStoragePath($owner, $relativePath)', function({ owner, relativePath, expected }) {
+		test(`returns ${expected}`, function() {
 			expect(makeStoragePath(owner, relativePath)).toBe(expected);
 		});
 	});
@@ -102,18 +102,18 @@ const parseContainerPayloadCases: {
 	}
 ];
 
-describe('parseContainerPayload', () => {
-	parseContainerPayloadCases.forEach(({ name, input, expectedMimeType, expectedContent }) => {
-		test(name, () => {
-			const plaintext = Buffer.from(typeof input === 'string' ? input : JSON.stringify(input));
+describe('parseContainerPayload', function() {
+	for (const testCase of parseContainerPayloadCases) {
+		test(testCase.name, function() {
+			const plaintext = Buffer.from(typeof testCase.input === 'string' ? testCase.input : JSON.stringify(testCase.input));
 			const result = parseContainerPayload(bufferToArrayBuffer(plaintext));
-			expect(result.mimeType).toBe(expectedMimeType);
+			expect(result.mimeType).toBe(testCase.expectedMimeType);
 
-			if (Array.isArray(expectedContent)) {
-				expect(result.content).toEqual(Buffer.from(expectedContent));
+			if (Array.isArray(testCase.expectedContent)) {
+				expect(result.content).toEqual(Buffer.from(testCase.expectedContent));
 			} else {
-				expect(result.content.toString()).toBe(expectedContent);
+				expect(result.content.toString()).toBe(testCase.expectedContent);
 			}
 		});
-	});
+	}
 });

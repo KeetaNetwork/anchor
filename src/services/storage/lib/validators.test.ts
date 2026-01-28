@@ -3,119 +3,142 @@ import {
 	matchesPattern,
 	findMatchingValidators,
 	requiresValidation,
-	IconValidator,
-	defaultValidators,
-	createValidatorRegistry
+	ContentValidator,
+	type ValidationResult
 } from './validators.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 
-describe('Validator Pattern Matching', () => {
+describe('Validator Pattern Matching', function() {
 	const patternTestCases = [
 		{ path: '/user/abc123/icon', pattern: '/user/*/icon', expected: true },
 		{ path: '/user/xyz789/icon', pattern: '/user/*/icon', expected: true },
 		{ path: '/user/abc123/other', pattern: '/user/*/icon', expected: false },
 		{ path: '/user/abc123/icon', pattern: /^\/user\/[^/]+\/icon$/, expected: true },
-		{ path: '/user/abc123/other', pattern: /^\/user\/[^/]+\/icon$/, expected: false }
+		{ path: '/user/abc123/other', pattern: /^\/user\/[^/]+\/icon$/, expected: false },
+		{ path: '/some/deep/path', pattern: '/some/*/path', expected: true },
+		{ path: '/some/path', pattern: '/some/*/path', expected: false }
 	];
 
 	for (const { path, pattern, expected } of patternTestCases) {
 		const patternStr = pattern instanceof RegExp ? pattern.toString() : pattern;
-		test(`matchesPattern('${path}', ${patternStr}) = ${expected}`, () => {
+		test(`matchesPattern('${path}', ${patternStr}) = ${expected}`, function() {
 			expect(matchesPattern(path, pattern)).toBe(expected);
 		});
 	}
 
-	test('findMatchingValidators returns IconValidator for icon path', () => {
-		const matches = findMatchingValidators('/user/abc123/icon', defaultValidators);
+	test('findMatchingValidators with custom validators', function() {
+		class TestValidator extends ContentValidator {
+			readonly pathPattern = '/user/*/test';
+			readonly maxSize = 1024;
+			readonly allowedMimeTypes = ['text/plain'] as const;
+		}
+
+		const validators = [new TestValidator()];
+		const matches = findMatchingValidators('/user/abc123/test', validators);
 		expect(matches).toHaveLength(1);
-		expect(matches[0]).toBeInstanceOf(IconValidator);
+		expect(matches[0]).toBeInstanceOf(TestValidator);
 	});
 
-	test('findMatchingValidators returns empty for unvalidated paths', () => {
-		expect(findMatchingValidators('/user/abc123/random', defaultValidators)).toHaveLength(0);
+	test('findMatchingValidators returns empty for unmatched paths', function() {
+		class TestValidator extends ContentValidator {
+			readonly pathPattern = '/user/*/test';
+			readonly maxSize = 1024;
+			readonly allowedMimeTypes = ['text/plain'] as const;
+		}
+
+		const validators = [new TestValidator()];
+		expect(findMatchingValidators('/user/abc123/other', validators)).toHaveLength(0);
 	});
 
-	test('requiresValidation returns correct values', () => {
-		expect(requiresValidation('/user/abc123/icon', defaultValidators)).toBe(true);
-		expect(requiresValidation('/user/abc123/random', defaultValidators)).toBe(false);
+	test('requiresValidation returns correct values', function() {
+		class TestValidator extends ContentValidator {
+			readonly pathPattern = '/user/*/icon';
+			readonly maxSize = 1024;
+			readonly allowedMimeTypes = ['image/png'] as const;
+		}
+
+		const validators = [new TestValidator()];
+		expect(requiresValidation('/user/abc123/icon', validators)).toBe(true);
+		expect(requiresValidation('/user/abc123/random', validators)).toBe(false);
 	});
 });
 
-describe('IconValidator', () => {
-	const validator = new IconValidator();
-	const testPath = '/user/abc123/icon';
-
-	// Valid image test cases
-	const validImageCases = [
-		{ mime: 'image/png', bytes: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] },
-		{ mime: 'image/jpeg', bytes: [0xFF, 0xD8, 0xFF, 0xE0] },
-		{ mime: 'image/jpg', bytes: [0xFF, 0xD8, 0xFF, 0xE0] },
-		{ mime: 'image/webp', bytes: [0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50] }
-	];
-
-	const padding = new Array<number>(100).fill(0);
-	for (const { mime, bytes } of validImageCases) {
-		test(`accepts valid ${mime}`, async () => {
-			const content = Buffer.from([...bytes, ...padding]);
-			const result = await validator.validate(testPath, content, mime);
-			expect(result.valid).toBe(true);
-		});
+describe('ContentValidator Base Class', function() {
+	// Create a concrete implementation for testing
+	class TestContentValidator extends ContentValidator {
+		readonly pathPattern = '/test/*';
+		readonly maxSize = 1000;
+		readonly allowedMimeTypes = ['text/plain', 'application/json'] as const;
 	}
 
-	// Rejection test cases
-	const rejectionCases = [
-		{
-			description: 'invalid mime type',
-			content: Buffer.from([0x89, 0x50, 0x4E, 0x47, ...padding]),
-			mime: 'application/json',
-			errorContains: 'Invalid mime type'
-		},
-		{
-			description: 'mismatched magic bytes (JPEG content declared as PNG)',
-			content: Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, ...padding]),
-			mime: 'image/png',
-			errorContains: 'invalid magic bytes'
+	const validator = new TestContentValidator();
+	const testPath = '/test/file.txt';
+
+	test('accepts valid content within size and mime type', async function() {
+		const content = Buffer.from('Hello, World!');
+		const result = await validator.validate(testPath, content, 'text/plain');
+		expect(result.valid).toBe(true);
+	});
+
+	test('rejects invalid mime type', async function() {
+		const content = Buffer.from('Hello');
+		const result = await validator.validate(testPath, content, 'image/png');
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain('Invalid mime type');
+			expect(result.error).toContain('image/png');
 		}
-	];
+	});
 
-	for (const { description, content, mime, errorContains } of rejectionCases) {
-		test(`rejects ${description}`, async () => {
-			const result = await validator.validate(testPath, content, mime);
-			expect(result.valid).toBe(false);
-			if (!result.valid) {
-				expect(result.error).toContain(errorContains);
-			}
-		});
-	}
-
-	test('rejects oversized image (>1MB)', async () => {
-		const largeContent = Buffer.alloc(1024 * 1024 + 1);
-		// Set PNG magic bytes
-		[0x89, 0x50, 0x4E, 0x47].forEach((b, i) => largeContent[i] = b);
-
-		const result = await validator.validate(testPath, largeContent, 'image/png');
+	test('rejects oversized content', async function() {
+		const largeContent = Buffer.alloc(1001); // Just over maxSize
+		const result = await validator.validate(testPath, largeContent, 'text/plain');
 		expect(result.valid).toBe(false);
 		if (!result.valid) {
 			expect(result.error).toContain('too large');
 		}
 	});
-});
 
-describe('Validator Registry', () => {
-	test('createValidatorRegistry includes default validators', () => {
-		const registry = createValidatorRegistry();
-		expect(registry).toHaveLength(1);
-		expect(registry[0]).toBeInstanceOf(IconValidator);
+	test('accepts content at exact max size', async function() {
+		const exactContent = Buffer.alloc(1000); // Exactly maxSize
+		const result = await validator.validate(testPath, exactContent, 'text/plain');
+		expect(result.valid).toBe(true);
 	});
 
-	test('createValidatorRegistry merges custom validators', () => {
-		const customValidator = {
-			pathPattern: '/user/*/custom/*',
-			validate: async () => ({ valid: true as const })
-		};
-		const registry = createValidatorRegistry([customValidator]);
-		expect(registry).toHaveLength(2);
-		expect(registry[0]).toBeInstanceOf(IconValidator);
-		expect(registry[1]).toBe(customValidator);
+	test('validateContent can be overridden for custom logic', async function() {
+		class CustomValidator extends ContentValidator {
+			readonly pathPattern = '/custom/*';
+			readonly maxSize = 1000;
+			readonly allowedMimeTypes = ['text/plain'] as const;
+
+			protected override validateContent(
+				_ignorePath: string,
+				content: Buffer,
+				_ignoreMimeType: string
+			): Promise<ValidationResult> {
+				// Custom rule: content must start with "VALID:"
+				if (!content.toString().startsWith('VALID:')) {
+					return(Promise.resolve({
+						valid: false,
+						error: 'Content must start with VALID:'
+					}));
+				}
+				return(Promise.resolve({ valid: true }));
+			}
+		}
+
+		const customValidator = new CustomValidator();
+
+		const validContent = Buffer.from('VALID: This is valid');
+		const validResult = await customValidator.validate('/custom/file', validContent, 'text/plain');
+		expect(validResult.valid).toBe(true);
+
+		const invalidContent = Buffer.from('This is invalid');
+		const invalidResult = await customValidator.validate('/custom/file', invalidContent, 'text/plain');
+		expect(invalidResult.valid).toBe(false);
+
+		if (!invalidResult.valid) {
+			expect(invalidResult.error).toContain('VALID:');
+		}
 	});
 });

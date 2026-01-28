@@ -38,7 +38,7 @@ import {
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
-import { requiresValidation, findMatchingValidators, defaultValidators } from './lib/validators.js';
+import { requiresValidation, findMatchingValidators } from './lib/validators.js';
 import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
@@ -109,11 +109,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.backend = config.backend;
 		this.anchorAccount = config.anchorAccount;
 		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
-		this.validators = config.validators
-			? [...defaultValidators, ...config.validators]
-			: defaultValidators;
+		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
+
+		// Fail if validators require decryption but anchor can't decrypt
+		if (this.validators.length > 0 && !this.anchorAccount?.hasPrivateKey) {
+			throw(new Error('anchorAccount with private key required when validators are configured'));
+		}
 	}
 
 	// Note: We use this.* properties instead of config.*.
@@ -266,7 +269,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 			}
 
-			const objectMetadata = await backend.withAtomic(async (atomic) => {
+			const objectMetadata = await backend.withAtomic(async function(atomic) {
 				// Check if object already exists
 				const existing = await atomic.get(pathInfo.path);
 				const existingSize = existing ? parseInt(existing.metadata.size, 10) : 0;
@@ -448,12 +451,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.InvalidPath());
 			}
 
-			// Get signature and expiry from query params
+			// Get signature parameters from query params
 			const signature = parsedUrl.searchParams.get('signature');
 			const expires = parsedUrl.searchParams.get('expires');
-
-			if (!signature || !expires) {
-				throw(new Errors.SignatureInvalid('Missing signature or expires parameter'));
+			const nonce = parsedUrl.searchParams.get('nonce');
+			const timestamp = parsedUrl.searchParams.get('timestamp');
+			if (!signature || !expires || !nonce || !timestamp) {
+				throw(new Errors.SignatureInvalid('Missing required signature parameters'));
 			}
 
 			// Check expiry
@@ -471,20 +475,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureExpired('Signed URL TTL exceeds maximum allowed'));
 			}
 
-			// Verify signature
+			// Verify signature using the signing library
 			const pathInfo = validateStoragePath(objectPath);
 			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(pathInfo.owner).assertAccount();
-			const message = `${objectPath}:${expires}`;
 
 			try {
-				const signatureBuffer = Buffer.from(signature, 'base64');
-				const messageBuffer = Buffer.from(message, 'utf-8');
-
-				const validSig = ownerAccount.verify(
-					messageBuffer.buffer.slice(messageBuffer.byteOffset, messageBuffer.byteOffset + messageBuffer.byteLength),
-					signatureBuffer.buffer.slice(signatureBuffer.byteOffset, signatureBuffer.byteOffset + signatureBuffer.byteLength)
-				);
-				if (!validSig) {
+				const signedData = { nonce, timestamp, signature };
+				// Allow skew up to maxSignedUrlTTL to cover the entire validity period
+				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt], signedData, {
+					maxSkewMs: quotas.maxSignedUrlTTL * 1000
+				});
+				if (!valid) {
 					throw(new Errors.SignatureInvalid());
 				}
 			} catch (e) {

@@ -38,7 +38,7 @@ import { createAssertEquals } from 'typia';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
-import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 /**
  * The configuration options for the Storage Anchor client.
@@ -650,24 +650,8 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const ttl = options?.ttl ?? 3600; // Default 1 hour
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
-		// Create signature message
-		const message = `${path}:${expiresAt}`;
-		const messageBuffer = Buffer.from(message, 'utf-8');
-
 		// Sign the message
-		const signatureResult = await signerAccount.sign(
-			messageBuffer.buffer.slice(messageBuffer.byteOffset, messageBuffer.byteOffset + messageBuffer.byteLength)
-		);
-
-		let signature: Buffer;
-		if (Buffer.isBuffer(signatureResult)) {
-			signature = arrayBufferLikeToBuffer(signatureResult);
-		} else if ('get' in signatureResult && typeof signatureResult.get === 'function') {
-			signature = arrayBufferLikeToBuffer(signatureResult.get());
-		} else {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			signature = arrayBufferLikeToBuffer(signatureResult as unknown as ArrayBuffer);
-		}
+		const signed = await SignData(signerAccount.assertAccount(), [path, expiresAt]);
 
 		// Get base URL from service info
 		const operationInfo = await this.serviceInfo.operations.public;
@@ -678,8 +662,10 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		// Construct the public URL using the full operation URL, appending query params
 		const publicUrl = new URL(operationInfo.url().href);
 		publicUrl.searchParams.set('path', path);
-		publicUrl.searchParams.set('signature', signature.toString('base64'));
 		publicUrl.searchParams.set('expires', String(expiresAt));
+		publicUrl.searchParams.set('nonce', signed.nonce);
+		publicUrl.searchParams.set('timestamp', signed.timestamp);
+		publicUrl.searchParams.set('signature', signed.signature);
 
 		return(publicUrl.toString());
 	}
