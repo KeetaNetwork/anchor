@@ -109,7 +109,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.backend = config.backend;
 		this.anchorAccount = config.anchorAccount;
 		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
-		this.validators = config.validators ?? defaultValidators;
+		this.validators = config.validators
+			? [...defaultValidators, ...config.validators]
+			: defaultValidators;
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
 	}
@@ -473,15 +475,23 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const pathInfo = validateStoragePath(objectPath);
 			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(pathInfo.owner).assertAccount();
 			const message = `${objectPath}:${expires}`;
-			const signatureBuffer = Buffer.from(signature, 'base64');
-			const messageBuffer = Buffer.from(message, 'utf-8');
 
-			const validSig = ownerAccount.verify(
-				messageBuffer.buffer.slice(messageBuffer.byteOffset, messageBuffer.byteOffset + messageBuffer.byteLength),
-				signatureBuffer.buffer.slice(signatureBuffer.byteOffset, signatureBuffer.byteOffset + signatureBuffer.byteLength)
-			);
-			if (!validSig) {
-				throw(new Errors.SignatureInvalid());
+			try {
+				const signatureBuffer = Buffer.from(signature, 'base64');
+				const messageBuffer = Buffer.from(message, 'utf-8');
+
+				const validSig = ownerAccount.verify(
+					messageBuffer.buffer.slice(messageBuffer.byteOffset, messageBuffer.byteOffset + messageBuffer.byteLength),
+					signatureBuffer.buffer.slice(signatureBuffer.byteOffset, signatureBuffer.byteOffset + signatureBuffer.byteLength)
+				);
+				if (!validSig) {
+					throw(new Errors.SignatureInvalid());
+				}
+			} catch (e) {
+				if (Errors.SignatureInvalid.isInstance(e)) {
+					throw(e);
+				}
+				throw(new Errors.SignatureInvalid('Invalid signature format'));
 			}
 
 			// Get the object

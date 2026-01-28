@@ -193,7 +193,7 @@ describe('Storage Server', () => {
 		expectErrorContains(json, 'namespace');
 	}));
 
-	// Data-driven SEARCH authorization rejection tests
+	// SEARCH authorization rejection tests
 	const searchAuthzRejectionCases = [
 		{
 			name: 'rejects mismatched criteria.owner',
@@ -300,7 +300,7 @@ describe('Storage Server', () => {
 		const userPubKey = userAccount.publicKeyString.get();
 		const objectPath: UserPath = `/user/${userPubKey}/public-file.txt`;
 
-		// Create encrypted container with ONLY the user as principal (NOT the anchor)
+		// Create encrypted container with only the user as principal
 		const payload = { mimeType: 'text/plain', data: Buffer.from('public data').toString('base64') };
 		const container = EncryptedContainer.fromPlaintext(
 			JSON.stringify(payload),

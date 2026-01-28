@@ -620,7 +620,7 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 			endpoint: 'quota',
 			account: signerAccount,
-			getSignedData: getKeetaStorageAnchorQuotaRequestSigningData,
+			getSignedData: () => getKeetaStorageAnchorQuotaRequestSigningData({}),
 			isResponse: isKeetaStorageAnchorQuotaResponse
 		});
 

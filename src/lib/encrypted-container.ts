@@ -205,27 +205,66 @@ const oidDB = {
 	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
 } as const;
 
+/**
+ * Supported algorithms
+ * These are the canonical names as defined in oidDB
+ */
+const SUPPORTED_DIGEST_ALGORITHMS = ['sha3-256'] as const;
+const SUPPORTED_SIGNATURE_ALGORITHMS = ['ed25519', 'ecdsa-secp256k1', 'ecdsa-secp256r1'] as const;
+
+/**
+ * Known OID aliases that ASN1 parsers may return instead of our canonical names
+ */
+const OID_ALIASES: { [alias: string]: keyof typeof oidDB } = {
+	'secp256k1': 'ecdsa-secp256k1',
+	'secp256r1': 'ecdsa-secp256r1',
+	'prime256v1': 'ecdsa-secp256r1'
+};
+
+/**
+ * Build reverse lookup: name/alias -> numeric OID
+ */
+const nameToNumericOID: { [name: string]: string } = {};
+for (const [name, numericOID] of Object.entries(oidDB)) {
+	nameToNumericOID[name] = numericOID;
+}
+for (const [alias, canonicalName] of Object.entries(OID_ALIASES)) {
+	nameToNumericOID[alias] = oidDB[canonicalName];
+}
+
+/**
+ * Normalize an OID (name, alias, or already numeric) to its numeric form.
+ * Returns undefined if the OID is not recognized.
+ */
+function normalizeToNumericOID(oid: string): string | undefined {
+	// If it's already a numeric OID (starts with digit), return as-is
+	if (/^\d/.test(oid)) {
+		return(oid);
+	}
+	// Otherwise look up the name/alias
+	return(nameToNumericOID[oid]);
+}
+
+// Pre-compute supported numeric OIDs for validation
+const supportedDigestOIDs = new Set<string>(SUPPORTED_DIGEST_ALGORITHMS.map(name => oidDB[name]));
+const supportedSignatureOIDs = new Set<string>(SUPPORTED_SIGNATURE_ALGORITHMS.map(name => oidDB[name]));
 
 /**
  * Map account key algorithm to signature algorithm OID
  */
 function getSignatureAlgorithmOID(account: Account): string {
-	// Account.AccountKeyAlgorithm values:
-	// ECDSA_SECP256K1 = 0, ED25519 = 1, ECDSA_SECP256R1 = 6
 	const keyType = account.keyType;
+	const KeyAlgo = Account.AccountKeyAlgorithm;
 
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-	if (keyType === 0) { // ECDSA_SECP256K1
+	if (keyType === KeyAlgo.ECDSA_SECP256K1) {
 		return(oidDB['ecdsa-secp256k1']);
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-	} else if (keyType === 1) { // ED25519
+	} else if (keyType === KeyAlgo.ED25519) {
 		return(oidDB['ed25519']);
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-	} else if (keyType === 6) { // ECDSA_SECP256R1
+	} else if (keyType === KeyAlgo.ECDSA_SECP256R1) {
 		return(oidDB['ecdsa-secp256r1']);
-	} else {
-		throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
 	}
+
+	throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
 }
 
 /**
@@ -601,7 +640,11 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 			if (typeof digestAlgoRaw === 'object' && digestAlgoRaw !== null &&
 				'type' in digestAlgoRaw && digestAlgoRaw.type === 'oid' &&
 				'oid' in digestAlgoRaw && typeof digestAlgoRaw.oid === 'string') {
-				digestAlgorithmOID = digestAlgoRaw.oid;
+				const normalized = normalizeToNumericOID(digestAlgoRaw.oid);
+				if (!normalized) {
+					throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', `Unknown digest algorithm: ${digestAlgoRaw.oid}`));
+				}
+				digestAlgorithmOID = normalized;
 			} else {
 				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (digestAlgorithm expected at position 2)'));
 			}
@@ -612,7 +655,11 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 			if (typeof sigAlgoRaw === 'object' && sigAlgoRaw !== null &&
 				'type' in sigAlgoRaw && sigAlgoRaw.type === 'oid' &&
 				'oid' in sigAlgoRaw && typeof sigAlgoRaw.oid === 'string') {
-				signatureAlgorithmOID = sigAlgoRaw.oid;
+				const normalized = normalizeToNumericOID(sigAlgoRaw.oid);
+				if (!normalized) {
+					throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', `Unknown signature algorithm: ${sigAlgoRaw.oid}`));
+				}
+				signatureAlgorithmOID = normalized;
 			} else {
 				throw(new EncryptedContainerError('MALFORMED_SIGNER_INFO', 'Malformed SignerInfo (signatureAlgorithm expected at position 3)'));
 			}
@@ -1220,7 +1267,7 @@ export class EncryptedContainer {
 	/**
 	 * Check if this container is signed
 	 */
-	get signed(): boolean {
+	get isSigned(): boolean {
 		return(this.#signingInfo.signer !== undefined || this.#signingInfo.parsedSignerInfo !== undefined);
 	}
 
@@ -1253,6 +1300,24 @@ export class EncryptedContainer {
 			throw(new EncryptedContainerError('NOT_SIGNED', 'Container is not signed'));
 		}
 
+		const signerInfo = this.#signingInfo.parsedSignerInfo;
+
+		// Validate digest algorithm OID
+		if (!supportedDigestOIDs.has(signerInfo.digestAlgorithmOID)) {
+			throw(new EncryptedContainerError(
+				'UNSUPPORTED_CIPHER_ALGORITHM',
+				`Unsupported digest algorithm OID: ${signerInfo.digestAlgorithmOID}`
+			));
+		}
+
+		// Validate signature algorithm OID
+		if (!supportedSignatureOIDs.has(signerInfo.signatureAlgorithmOID)) {
+			throw(new EncryptedContainerError(
+				'UNSUPPORTED_CIPHER_ALGORITHM',
+				`Unsupported signature algorithm OID: ${signerInfo.signatureAlgorithmOID}`
+			));
+		}
+
 		// We need the plaintext to verify the signature
 		const plaintext = await this.#computePlaintext();
 		if (!plaintext) {
@@ -1266,12 +1331,10 @@ export class EncryptedContainer {
 		const digest = digestHash.digest();
 
 		// Get the signer's account (public key only)
-		const signerAccount = Account.fromPublicKeyAndType(
-			this.#signingInfo.parsedSignerInfo.signerPublicKeyAndType
-		);
+		const signerAccount = Account.fromPublicKeyAndType(signerInfo.signerPublicKeyAndType);
 
 		// Verify the signature
-		const signature = this.#signingInfo.parsedSignerInfo.signature;
+		const signature = signerInfo.signature;
 		const isValid = signerAccount.verify(
 			bufferToArrayBuffer(digest),
 			bufferToArrayBuffer(signature),

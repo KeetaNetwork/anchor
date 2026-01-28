@@ -486,7 +486,7 @@ describe('Encrypted Container Signing Tests (v3)', function() {
 		for (const { description, principals, options, expectedSigned, expectedEncrypted } of creationTestCases) {
 			test(description, function() {
 				const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, principals, options);
-				expect(container.signed).toBe(expectedSigned);
+				expect(container.isSigned).toBe(expectedSigned);
 				expect(container.encrypted).toBe(expectedEncrypted);
 
 				if (expectedSigned) {
@@ -504,7 +504,7 @@ describe('Encrypted Container Signing Tests (v3)', function() {
 			const encoded = await container.getEncodedBuffer();
 
 			const decoded = EncryptedContainer.EncryptedContainer.fromEncryptedBuffer(encoded, [testAccount1]);
-			expect(decoded.signed).toBe(true);
+			expect(decoded.isSigned).toBe(true);
 			expect(decoded.getSigningAccount()?.comparePublicKey(testAccount1)).toBe(true);
 			expect(await decoded.verifySignature()).toBe(true);
 		});

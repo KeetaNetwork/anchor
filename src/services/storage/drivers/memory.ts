@@ -10,7 +10,7 @@ import type {
 	SearchResults,
 	QuotaStatus
 } from '../common.js';
-import type { Buffer } from '../../../lib/utils/buffer.js';
+import { Buffer } from '../../../lib/utils/buffer.js';
 
 // #region Types
 
@@ -59,7 +59,10 @@ function getFromStorage(
 		return(null);
 	}
 
-	return({ data: entry.data, metadata: entry.metadata });
+	return({
+		data: Buffer.from(entry.data),
+		metadata: { ...entry.metadata }
+	});
 }
 
 function searchStorage(

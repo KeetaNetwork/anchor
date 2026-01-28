@@ -218,6 +218,8 @@ type ServiceMetadata = {
 					maxObjectSize: number;
 					maxObjectsPerUser: number;
 					maxStoragePerUser: number;
+					maxSearchLimit: number;
+					maxSignedUrlTTL: number;
 				};
 				/**
 				 * Default TTL in seconds for pre-signed URLs
