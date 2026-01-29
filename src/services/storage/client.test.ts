@@ -300,3 +300,120 @@ describe('Storage Client - Error Cases', function() {
 		}));
 	});
 });
+
+describe('Storage Client - Session API', function() {
+	test('beginSession creates session with defaults', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const session = provider.beginSession({ account });
+
+			expect(session.account).toBe(account);
+			expect(session.provider).toBe(provider);
+			expect(session.workingDirectory).toBe(`/user/${account.publicKeyString.get()}/`);
+		}));
+	});
+
+	test('session put/get with relative paths', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const session = provider.beginSession({ account });
+
+			// Put using relative path
+			const metadata = await session.put('session-test.txt', Buffer.from('session content'), {
+				mimeType: 'text/plain'
+			});
+			expect(metadata.path).toBe(`/user/${account.publicKeyString.get()}/session-test.txt`);
+
+			// Get using relative path
+			const result = await session.get('session-test.txt');
+			expect(result).not.toBeNull();
+			expect(result?.data.toString()).toBe('session content');
+			expect(result?.mimeType).toBe('text/plain');
+		}));
+	});
+
+	test('session delete with relative paths', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const session = provider.beginSession({ account });
+
+			// Create file
+			await session.put('to-delete.txt', Buffer.from('delete me'), { mimeType: 'text/plain' });
+
+			// Delete using relative path
+			const deleted = await session.delete('to-delete.txt');
+			expect(deleted).toBe(true);
+
+			// Verify deleted
+			const result = await session.get('to-delete.txt');
+			expect(result).toBeNull();
+		}));
+	});
+
+	test('session search scopes to account', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const session = provider.beginSession({ account });
+
+			// Create files with tags
+			await session.put('tagged.txt', Buffer.from('tagged'), { mimeType: 'text/plain', tags: ['searchable'] });
+
+			// Search using session (owner is automatic)
+			const results = await session.search({ tags: ['searchable'] });
+			expect(results.results).toHaveLength(1);
+			expect(results.results[0]?.tags).toContain('searchable');
+		}));
+	});
+
+	test('session with custom working directory', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const pubKey = account.publicKeyString.get();
+			const session = provider.beginSession({
+				account,
+				workingDirectory: `/user/${pubKey}/docs/`
+			});
+
+			expect(session.workingDirectory).toBe(`/user/${pubKey}/docs/`);
+
+			// Put using relative path
+			const metadata = await session.put('nested.txt', Buffer.from('nested'), { mimeType: 'text/plain' });
+			expect(metadata.path).toBe(`/user/${pubKey}/docs/nested.txt`);
+		}));
+	});
+
+	test('session respects absolute paths', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const pubKey = account.publicKeyString.get();
+			const session = provider.beginSession({
+				account,
+				workingDirectory: `/user/${pubKey}/docs/`
+			});
+
+			// Using absolute path ignores working directory
+			const absolutePath = `/user/${pubKey}/absolute.txt`;
+			const metadata = await session.put(absolutePath, Buffer.from('absolute'), { mimeType: 'text/plain' });
+			expect(metadata.path).toBe(absolutePath);
+		}));
+	});
+
+	test('session default visibility', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const session = provider.beginSession({
+				account,
+				defaultVisibility: 'public'
+			});
+
+			// Anchor account is automatically fetched from provider for public objects
+			const metadata = await session.put('default-public.txt', Buffer.from('public'), { mimeType: 'text/plain' });
+			expect(metadata.visibility).toBe('public');
+		}));
+	});
+
+	test('withSession helper', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const result = await provider.withSession({ account }, async function(session) {
+				await session.put('with-session.txt', Buffer.from('via withSession'), { mimeType: 'text/plain' });
+				const data = await session.get('with-session.txt');
+				return(data?.data.toString());
+			});
+
+			expect(result).toBe('via withSession');
+		}));
+	});
+});

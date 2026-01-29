@@ -831,6 +831,33 @@ class KeetaStorageAnchorInvalidResponseError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaStorageAnchorInvalidAnchorAccountError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaStorageAnchorInvalidAnchorAccountError';
+	private readonly KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID!: string;
+	private static readonly KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID = '82bb0a94-0a5e-4e0a-b5c1-7532bbe09cd6';
+
+	constructor(publicKey?: string) {
+		super(publicKey ? `Invalid anchor account public key: ${publicKey}` : 'Invalid anchor account public key');
+		this.statusCode = 502;
+
+		Object.defineProperty(this, 'KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID', {
+			value: KeetaStorageAnchorInvalidAnchorAccountError.KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidAnchorAccountError {
+		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID', KeetaStorageAnchorInvalidAnchorAccountError.KeetaStorageAnchorInvalidAnchorAccountErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidAnchorAccountError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	DocumentNotFound: typeof KeetaStorageAnchorDocumentNotFoundError;
 	AccessDenied: typeof KeetaStorageAnchorAccessDeniedError;
@@ -847,6 +874,7 @@ export const Errors: {
 	OperationNotSupported: typeof KeetaStorageAnchorOperationNotSupportedError;
 	UnsupportedAuthMethod: typeof KeetaStorageAnchorUnsupportedAuthMethodError;
 	InvalidResponse: typeof KeetaStorageAnchorInvalidResponseError;
+	InvalidAnchorAccount: typeof KeetaStorageAnchorInvalidAnchorAccountError;
 } = {
 	/**
 	 * The requested document/object was not found
@@ -921,7 +949,12 @@ export const Errors: {
 	/**
 	 * Invalid response received from storage service
 	 */
-	InvalidResponse: KeetaStorageAnchorInvalidResponseError
+	InvalidResponse: KeetaStorageAnchorInvalidResponseError,
+
+	/**
+	 * Anchor account public key from service metadata is invalid
+	 */
+	InvalidAnchorAccount: KeetaStorageAnchorInvalidAnchorAccountError
 };
 
 // #endregion

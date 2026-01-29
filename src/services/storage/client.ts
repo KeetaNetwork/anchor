@@ -1,5 +1,6 @@
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { KeetaNet } from '../../client/index.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint } from '../../lib/resolver.ts';
@@ -72,6 +73,26 @@ export type KeetaStorageAnchorClientConfig = {
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'>;
 
 /**
+ * Configuration for a storage session.
+ * Sessions provide a simplified API with default account, working directory, and visibility.
+ */
+export type SessionConfig = {
+	/**
+	 * The account to use for all operations in this session.
+	 */
+	account: InstanceType<typeof KeetaNetLib.Account>;
+	/**
+	 * Optional working directory prefix for relative paths.
+	 * e.g., '/user/pubkey/docs/' - relative paths will be appended to this.
+	 */
+	workingDirectory?: string;
+	/**
+	 * Default visibility for put operations (defaults to 'private').
+	 */
+	defaultVisibility?: StorageObjectVisibility;
+};
+
+/**
  * An opaque type that represents a provider ID.
  */
 type ProviderID = string;
@@ -99,6 +120,10 @@ type KeetaStorageServiceInfo = {
 	operations: {
 		[operation in keyof KeetaStorageAnchorOperations]: Promise<KeetaStorageAnchorOperations[operation]>;
 	};
+	/**
+	 * The anchor's public key string (for converting to Account object).
+	 */
+	anchorAccountPublicKey?: string;
 };
 
 /**
@@ -176,12 +201,19 @@ async function getEndpoints(resolver: Resolver, logger?: Logger): Promise<GetEnd
 			});
 		}
 
+		// Extract anchor account public key from service metadata
+		const result: KeetaStorageServiceInfo = { operations: operationsFunctions };
+		if ('anchorAccount' in serviceInfo && typeof serviceInfo.anchorAccount === 'function') {
+			const anchorAccountValue = await serviceInfo.anchorAccount('primitive');
+			if (typeof anchorAccountValue === 'string') {
+				result.anchorAccountPublicKey = anchorAccountValue;
+			}
+		}
+
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
-			{
-				operations: operationsFunctions
-			}
+			result
 		]);
 	});
 
@@ -205,11 +237,116 @@ class KeetaStorageAnchorBase {
 }
 
 /**
+ * A session provides a simplified API for storage operations with default account,
+ * working directory, and visibility settings.
+ */
+export class KeetaStorageAnchorSession {
+	readonly provider: KeetaStorageAnchorProvider;
+	readonly account: InstanceType<typeof KeetaNetLib.Account>;
+	readonly workingDirectory: string;
+	readonly #defaultVisibility: StorageObjectVisibility;
+
+	constructor(provider: KeetaStorageAnchorProvider, config: SessionConfig) {
+		this.provider = provider;
+		this.account = config.account;
+		this.workingDirectory = config.workingDirectory ?? defaultPathPolicy.getNamespacePrefix(config.account.publicKeyString.get());
+		this.#defaultVisibility = config.defaultVisibility ?? 'private';
+	}
+
+	/**
+	 * Resolve a relative path to a full storage path.
+	 */
+	#resolvePath(relativePath: string): string {
+		// If path is already absolute (starts with /), use it as-is
+		if (relativePath.startsWith('/')) {
+			return(relativePath);
+		}
+
+		// Otherwise, prepend working directory
+		return(this.workingDirectory + relativePath);
+	}
+
+	/**
+	 * Store data at a relative path.
+	 * For public visibility, the anchor account is automatically fetched from the provider.
+	 */
+	async put(
+		relativePath: string,
+		data: Buffer,
+		options: {
+			mimeType: string;
+			tags?: string[];
+			visibility?: StorageObjectVisibility;
+		}
+	): Promise<StorageObjectMetadata> {
+		const fullPath = this.#resolvePath(relativePath);
+		const visibility = options.visibility ?? this.#defaultVisibility;
+		const anchorAccount = visibility === 'public' ? this.provider.anchorAccount ?? undefined : undefined;
+		return(await this.provider.put(
+			fullPath,
+			data,
+			{ ...options, visibility },
+			this.account,
+			anchorAccount
+		));
+	}
+
+	/**
+	 * Get data from a relative path.
+	 */
+	async get(relativePath: string): Promise<{ data: Buffer; mimeType: string } | null> {
+		const fullPath = this.#resolvePath(relativePath);
+		return(await this.provider.get(fullPath, this.account));
+	}
+
+	/**
+	 * Delete data at a relative path.
+	 */
+	async delete(relativePath: string): Promise<boolean> {
+		const fullPath = this.#resolvePath(relativePath);
+		return(await this.provider.delete({ path: fullPath, account: this.account }));
+	}
+
+	/**
+	 * Search for objects. Owner is automatically set to the session account.
+	 */
+	async search(
+		criteria?: Omit<SearchCriteria, 'owner'>,
+		pagination?: SearchPagination
+	): Promise<{ results: StorageObjectMetadata[]; nextCursor?: string }> {
+		const fullCriteria: SearchCriteria = {
+			...criteria,
+			owner: this.account.publicKeyString.get()
+		};
+
+		return(await this.provider.search(fullCriteria, pagination, this.account));
+	}
+
+	/**
+	 * Get a pre-signed public URL for a relative path.
+	 */
+	async getPublicUrl(relativePath: string, options?: { ttl?: number }): Promise<string> {
+		const fullPath = this.#resolvePath(relativePath);
+		return(await this.provider.getPublicUrl(fullPath, options, this.account));
+	}
+}
+
+/**
  * Represents a Storage Anchor provider for performing storage operations.
  */
-class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
+export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
+	/**
+	 * Service information including available operations and endpoints.
+	 */
 	readonly serviceInfo: KeetaStorageServiceInfo;
+	/**
+	 * Unique identifier for this provider.
+	 */
 	readonly providerID: ProviderID;
+	/**
+	 * The anchor account for this provider.
+	 */
+	readonly anchorAccount: InstanceType<typeof KeetaNetLib.Account> | null;
 
 	constructor(serviceInfo: KeetaStorageServiceInfo, providerID: ProviderID, parent: KeetaStorageAnchorClient) {
 		const parentPrivate = parent._internals(KeetaStorageAnchorClientAccessToken);
@@ -217,6 +354,17 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
+
+		// Convert anchor account public key string to Account
+		if (serviceInfo.anchorAccountPublicKey) {
+			try {
+				this.anchorAccount = KeetaNet.lib.Account.fromPublicKeyString(serviceInfo.anchorAccountPublicKey).assertAccount();
+			} catch {
+				throw(new Errors.InvalidAnchorAccount(serviceInfo.anchorAccountPublicKey));
+			}
+		} else {
+			this.anchorAccount = null;
+		}
 	}
 
 	async #getOperationData(operationName: keyof KeetaStorageAnchorOperations, params?: { [key: string]: string; }) {
@@ -731,6 +879,7 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				if (body.account !== undefined) {
 					serialized.account = body.account.assertAccount().publicKeyString.get();
 				}
+
 				return(serialized);
 			},
 			body: bodyToSend,
@@ -815,6 +964,21 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		return(publicUrl.toString());
 	}
+
+	/**
+	 * Create a session.
+	 */
+	beginSession(config: SessionConfig): KeetaStorageAnchorSession {
+		return(new KeetaStorageAnchorSession(this, config));
+	}
+
+	/**
+	 * Execute a function within a session scope.
+	 */
+	async withSession<T>(config: SessionConfig, fn: (session: KeetaStorageAnchorSession) => Promise<T>): Promise<T> {
+		const session = this.beginSession(config);
+		return(await fn(session));
+	}
 }
 
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
@@ -897,4 +1061,3 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 }
 
 export default KeetaStorageAnchorClient;
-export { KeetaStorageAnchorProvider };
