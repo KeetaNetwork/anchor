@@ -22,6 +22,7 @@ function expectOkStatus(json: unknown, expected: boolean): void {
 	if (!isJsonObject(json)) {
 		return;
 	}
+
 	expect(json.ok).toBe(expected);
 }
 
@@ -40,6 +41,7 @@ function expectErrorContains(json: unknown, substring: string): void {
 		return;
 	}
 	expect(typeof json.error).toBe('string');
+
 	const error = json.error;
 	if (typeof error === 'string') {
 		expect(error.toLowerCase()).toContain(substring.toLowerCase());
@@ -53,7 +55,8 @@ type ServerTestFn = (ctx: { server: KeetaNetStorageAnchorHTTPServer; backend: Me
  */
 async function withServer(fn: ServerTestFn): Promise<void> {
 	const backend = new MemoryStorageBackend();
-	await using server = new KeetaNetStorageAnchorHTTPServer({ backend, validators: [] });
+	const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using server = new KeetaNetStorageAnchorHTTPServer({ backend, anchorAccount });
 	await server.start();
 	await fn({ server, backend, url: server.url });
 }
@@ -66,7 +69,7 @@ type ServerWithAnchorTestFn = (ctx: {
 }) => Promise<void>;
 
 /**
- * Helper to run a test with a fresh server instance that has an anchor account
+ * Helper to run a test with a fresh server instance, exposing the anchor account
  */
 async function withServerAndAnchor(fn: ServerWithAnchorTestFn): Promise<void> {
 	const backend = new MemoryStorageBackend();
@@ -466,7 +469,7 @@ describe('Storage Server', function() {
 
 		for (const testCase of validationCases) {
 			test(testCase.name, function() {
-				return(withServer(async function({ backend, url }) {
+				return(withServerAndAnchor(async function({ backend, url }) {
 					const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 					const ownerPubKey = ownerAccount.publicKeyString.get();
 					const objectPath: UserPath = `/user/${ownerPubKey}/public.txt`;

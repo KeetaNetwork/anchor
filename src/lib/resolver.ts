@@ -226,6 +226,10 @@ type ServiceMetadata = {
 				 * Default TTL in seconds for pre-signed URLs
 				 */
 				signedUrlDefaultTTL?: number;
+				/**
+				 * Fields that can be used in search criteria
+				 */
+				searchableFields?: ('owner' | 'tags' | 'visibility' | 'pathPrefix')[];
 			};
 		};
 	};

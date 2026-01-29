@@ -5,7 +5,7 @@ import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './drivers/memory.js';
-import { makeStoragePath, type StoragePath, type StorageObjectMetadata, type StorageObjectVisibility } from './common.js';
+import { defaultPathPolicy, type StoragePath, type StorageObjectMetadata, type StorageObjectVisibility } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 
 // #region Test Harness
@@ -88,7 +88,7 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 
 	// Helper to create paths from relative paths
 	function makePath(relativePath: string): StoragePath {
-		return(makeStoragePath(account.publicKeyString.get(), relativePath));
+		return(defaultPathPolicy.makePath(account.publicKeyString.get(), relativePath));
 	}
 
 	// Helper to put text files with defaults

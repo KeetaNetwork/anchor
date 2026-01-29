@@ -13,7 +13,8 @@ import type {
 	KeetaStorageAnchorQuotaResponse,
 	StorageBackend,
 	QuotaConfig,
-	StorageObjectVisibility
+	StorageObjectVisibility,
+	PathPolicy
 } from './common.ts';
 import {
 	assertKeetaStorageAnchorDeleteResponse,
@@ -27,8 +28,7 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
-	validateStoragePath,
-	isValidStoragePath,
+	defaultPathPolicy,
 	parseContainerPayload,
 	Errors
 } from './common.js';
@@ -52,10 +52,9 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	backend: StorageBackend;
 
 	/**
-	 * The anchor's account WITH PRIVATE KEY for decrypting public objects.
-	 * This account must have hasPrivateKey=true.
+	 * The anchor's account for decrypting objects.
 	 */
-	anchorAccount?: Account;
+	anchorAccount: Account;
 
 	/**
 	 * Quota configuration for storage limits
@@ -79,6 +78,12 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	 * - false (default) disables CORS headers on public responses
 	 */
 	publicCorsOrigin?: string | false;
+
+	/**
+	 * Path policy for parsing and validating storage paths.
+	 * Defaults to the standard /user/<pubkey>/<path> format.
+	 */
+	pathPolicy?: PathPolicy;
 }
 
 // Default quota configuration
@@ -93,11 +98,12 @@ const DEFAULT_QUOTAS: QuotaConfig = {
 export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorStorageServerConfig['homepage']>;
 	readonly backend: StorageBackend;
-	readonly anchorAccount: Account | undefined;
+	readonly anchorAccount: Account;
 	readonly quotas: QuotaConfig;
 	readonly validators: NamespaceValidator[];
 	readonly signedUrlDefaultTTL: number;
 	readonly publicCorsOrigin: string | false;
+	readonly pathPolicy: PathPolicy;
 
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
@@ -109,10 +115,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
+		this.pathPolicy = config.pathPolicy ?? defaultPathPolicy;
 
-		// Fail if validators require decryption but anchor can't decrypt
-		if (this.validators.length > 0 && !this.anchorAccount?.hasPrivateKey) {
-			throw(new Error('anchorAccount with private key required when validators are configured'));
+		// Validate anchorAccount has private key
+		if (!this.anchorAccount.hasPrivateKey) {
+			throw(new Error('anchorAccount must have a private key'));
 		}
 	}
 
@@ -125,6 +132,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const quotas = this.quotas;
 		const validators = this.validators;
 		const publicCorsOrigin = this.publicCorsOrigin;
+		const pathPolicy = this.pathPolicy;
 
 		// #region Authentication Helpers
 
@@ -232,11 +240,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				);
 
 				// Validate path format and ownership
-				const pathInfo = validateStoragePath(objectPath);
-				if (pathInfo.owner !== account.publicKeyString.get()) {
-					throw(new Errors.AccessDenied('Can only write to your own namespace'));
-				}
-
+				const pathInfo = pathPolicy.assertAccess(account, objectPath, 'put');
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
 
@@ -248,14 +252,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const needsValidation = requiresValidation(objectPath, validators);
 				const needsAnchorDecryption = needsValidation || visibility === 'public';
 				if (needsAnchorDecryption) {
-					if (!anchorAccount?.hasPrivateKey) {
-						throw(new Errors.ServiceUnavailable(
-							needsValidation
-								? 'Anchor account with private key required for namespace validation'
-								: 'Anchor account with private key required for public objects'
-						));
-					}
-
 					try {
 						const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 						const plaintext = await container.getPlaintext();
@@ -333,18 +329,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			const objectPath = '/' + wildcardPath;
-			const pathInfo = validateStoragePath(objectPath);
+			const pathInfo = pathPolicy.validate(objectPath);
 
-			// Handle authentication and verify ownership
+			// Handle authentication
 			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorGetRequestSigningData,
 				(accountPubKey) => assertKeetaStorageAnchorGetRequest({ path: pathInfo.path, account: accountPubKey })
 			);
 
-			if (pathInfo.owner !== account.publicKeyString.get()) {
-				throw(new Errors.AccessDenied('Can only read objects in your own namespace'));
-			}
+			// Verify ownership
+			pathPolicy.assertAccess(account, objectPath, 'get');
 
 			const result = await backend.get(pathInfo.path);
 			if (!result) {
@@ -367,21 +362,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			const objectPath = '/' + wildcardPath;
-			if (!isValidStoragePath(objectPath)) {
-				throw(new Errors.InvalidPath());
-			}
+			const pathInfo = pathPolicy.validate(objectPath);
 
-			// Handle authentication and verify ownership
-			const pathInfo = validateStoragePath(objectPath);
+			// Handle authentication
 			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorDeleteRequestSigningData,
 				(accountPubKey) => ({ path: objectPath, account: accountPubKey })
 			);
 
-			if (pathInfo.owner !== account.publicKeyString.get()) {
-				throw(new Errors.AccessDenied('Can only delete objects in your own namespace'));
-			}
+			// Verify ownership
+			pathPolicy.assertAccess(account, objectPath, 'delete');
 
 			const deleted = await backend.delete(pathInfo.path);
 			const response: KeetaStorageAnchorDeleteResponse = {
@@ -403,18 +394,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			const objectPath = '/' + wildcardPath;
-			const pathInfo = validateStoragePath(objectPath);
+			const pathInfo = pathPolicy.validate(objectPath);
 
-			// Handle authentication and verify ownership
+			// Handle authentication
 			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorGetRequestSigningData,
 				(accountPubKey) => assertKeetaStorageAnchorGetRequest({ path: pathInfo.path, account: accountPubKey })
 			);
 
-			if (pathInfo.owner !== account.publicKeyString.get()) {
-				throw(new Errors.AccessDenied('Can only read metadata for objects in your own namespace'));
-			}
+			// Verify ownership
+			pathPolicy.assertAccess(account, objectPath, 'metadata');
 
 			const result = await backend.get(pathInfo.path);
 			if (!result) {
@@ -431,7 +421,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const request = assertKeetaStorageAnchorSearchRequest(postData);
 			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
 			const accountPubKey = account.publicKeyString.get();
-			const userNamespacePrefix = `/user/${accountPubKey}/`;
 
 			// Check if searching for public objects outside namespace
 			const searchingPublic = request.criteria.visibility === 'public';
@@ -464,15 +453,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Standard search: restricted to caller's namespace
-			// Validate owner: default if omitted, reject if mismatched
-			if (request.criteria.owner !== undefined && request.criteria.owner !== accountPubKey) {
-				throw(new Errors.AccessDenied('Can only search your own namespace'));
-			}
-
-			// Validate pathPrefix is within caller's namespace (if provided)
-			if (request.criteria.pathPrefix !== undefined && !request.criteria.pathPrefix.startsWith(userNamespacePrefix)) {
-				throw(new Errors.AccessDenied('Can only search within your own namespace'));
-			}
+			pathPolicy.assertSearchAccess(account, request.criteria);
 
 			// Scope criteria to authenticated account
 			const scopedCriteria = {
@@ -534,9 +515,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			const objectPath = '/' + wildcardPath;
-			if (!isValidStoragePath(objectPath)) {
-				throw(new Errors.InvalidPath());
-			}
+			const pathInfo = pathPolicy.validate(objectPath);
 
 			// Get signature parameters from query params
 			const parsedUrl = new URL(url);
@@ -564,7 +543,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Verify signature using the signing library
-			const pathInfo = validateStoragePath(objectPath);
 			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(pathInfo.owner).assertAccount();
 
 			try {
@@ -595,10 +573,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Decrypt using anchor account
-			if (!anchorAccount?.hasPrivateKey) {
-				throw(new Errors.ServiceUnavailable('Anchor account not configured for public object serving'));
-			}
-
 			const data = arrayBufferLikeToBuffer(result.data);
 			const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 			const plaintext = await container.getPlaintext();
@@ -629,15 +603,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			delete: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			metadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
 			search: { url: (new URL('/api/search', this.url)).toString(), ...authRequired },
-			public: (new URL('/api/public', this.url)).toString(),  // No auth for public access
+			public: (new URL('/api/public', this.url)).toString(),
 			quota: { url: (new URL('/api/quota', this.url)).toString(), ...authRequired }
 		};
 
 		return({
 			operations,
-			...(this.anchorAccount ? { anchorAccount: this.anchorAccount.publicKeyString.get() } : {}),
+			anchorAccount: this.anchorAccount.publicKeyString.get(),
 			quotas: this.quotas,
-			signedUrlDefaultTTL: this.signedUrlDefaultTTL
+			signedUrlDefaultTTL: this.signedUrlDefaultTTL,
+			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix']
 		});
 	}
 }

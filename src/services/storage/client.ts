@@ -25,7 +25,7 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
-	makeStoragePath,
+	defaultPathPolicy,
 	parseContainerPayload,
 	Errors
 } from './common.js';
@@ -690,7 +690,7 @@ class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const signerAccount = account ?? this.client.account;
 		const ownerPublicKey = signerAccount.publicKeyString.get();
 
-		const fullPath = makeStoragePath(ownerPublicKey, relativePath);
+		const fullPath = defaultPathPolicy.makePath(ownerPublicKey, relativePath);
 		return(await this.put(fullPath, data, options, account, anchorAccount));
 	}
 

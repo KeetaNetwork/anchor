@@ -1,5 +1,6 @@
 import { test, expect, describe } from 'vitest';
-import { parseStoragePath, validateStoragePath, isValidStoragePath, makeStoragePath, parseContainerPayload, Errors } from './common.js';
+import KeetaNet from '@keetanetwork/keetanet-client';
+import { defaultPathPolicy, PathPolicy, parseContainerPayload, Errors, type AccessEvent } from './common.js';
 import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
 
 const validPaths = [
@@ -17,32 +18,32 @@ const invalidPaths = [
 	''
 ] as const;
 
-describe('Storage Path Utilities', function() {
-	describe.each(validPaths)('parseStoragePath($input)', function({ input, path, owner, relativePath }) {
+describe('PathPolicy', function() {
+	describe.each(validPaths)('parse($input)', function({ input, path, owner, relativePath }) {
 		test('returns parsed path', function() {
-			expect(parseStoragePath(input)).toEqual({ path, owner, relativePath });
+			expect(defaultPathPolicy.parse(input)).toEqual({ path, owner, relativePath });
 		});
 
-		test('isValidStoragePath returns true', function() {
-			expect(isValidStoragePath(input)).toBe(true);
+		test('isValid returns true', function() {
+			expect(defaultPathPolicy.isValid(input)).toBe(true);
 		});
 
-		test('validateStoragePath returns parsed path', function() {
-			expect(validateStoragePath(input)).toEqual({ path, owner, relativePath });
+		test('validate returns parsed path', function() {
+			expect(defaultPathPolicy.validate(input)).toEqual({ path, owner, relativePath });
 		});
 	});
 
 	describe.each(invalidPaths)('invalid path: %s', function(input) {
-		test('parseStoragePath returns null', function() {
-			expect(parseStoragePath(input)).toBeNull();
+		test('parse returns null', function() {
+			expect(defaultPathPolicy.parse(input)).toBeNull();
 		});
 
-		test('isValidStoragePath returns false', function() {
-			expect(isValidStoragePath(input)).toBe(false);
+		test('isValid returns false', function() {
+			expect(defaultPathPolicy.isValid(input)).toBe(false);
 		});
 
-		test('validateStoragePath throws InvalidPath', function() {
-			expect(function() { validateStoragePath(input); }).toThrow(Errors.InvalidPath);
+		test('validate throws InvalidPath', function() {
+			expect(function() { defaultPathPolicy.validate(input); }).toThrow(Errors.InvalidPath);
 		});
 	});
 
@@ -51,10 +52,104 @@ describe('Storage Path Utilities', function() {
 		{ owner: 'abc123', relativePath: 'docs/file.txt', expected: '/user/abc123/docs/file.txt' }
 	] as const;
 
-	describe.each(makePathCases)('makeStoragePath($owner, $relativePath)', function({ owner, relativePath, expected }) {
+	describe.each(makePathCases)('makePath($owner, $relativePath)', function({ owner, relativePath, expected }) {
 		test(`returns ${expected}`, function() {
-			expect(makeStoragePath(owner, relativePath)).toBe(expected);
+			expect(defaultPathPolicy.makePath(owner, relativePath)).toBe(expected);
 		});
+	});
+
+	test('getNamespacePrefix returns correct prefix', function() {
+		expect(defaultPathPolicy.getNamespacePrefix('abc123')).toBe('/user/abc123/');
+	});
+
+	test('custom pattern configuration', function() {
+		const customPolicy = new PathPolicy({
+			pattern: /^\/files\/([^/]+)\/(.+)$/,
+			namespacePrefix: function(owner) { return(`/files/${owner}/`); }
+		});
+		expect(customPolicy.parse('/files/user1/doc.txt')).toEqual({
+			path: '/files/user1/doc.txt',
+			owner: 'user1',
+			relativePath: 'doc.txt'
+		});
+		expect(customPolicy.getNamespacePrefix('user1')).toBe('/files/user1/');
+	});
+
+	describe('assertAccess', function() {
+		const seed = KeetaNet.lib.Account.generateRandomSeed();
+		const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+		const otherAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+		const ownerPubKey = ownerAccount.publicKeyString.get();
+		const testPath = `/user/${ownerPubKey}/file.txt`;
+
+		const accessCases = [
+			{ name: 'owner account succeeds', account: ownerAccount, allowed: true },
+			{ name: 'other account denied', account: otherAccount, allowed: false }
+		];
+
+		for (const { name, account, allowed } of accessCases) {
+			test(name, function() {
+				if (allowed) {
+					const result = defaultPathPolicy.assertAccess(account, testPath, 'get');
+					expect(result).toEqual({ path: testPath, owner: ownerPubKey, relativePath: 'file.txt' });
+				} else {
+					expect(function() { defaultPathPolicy.assertAccess(account, testPath, 'get'); }).toThrow(Errors.AccessDenied);
+				}
+			});
+
+			test(`${name} - logs allowed=${allowed}`, function() {
+				const events: AccessEvent[] = [];
+				const policy = new PathPolicy({ logger: function(e) { events.push(e); } });
+
+				if (allowed) {
+					policy.assertAccess(account, testPath, 'put');
+				} else {
+					expect(function() { policy.assertAccess(account, testPath, 'put'); }).toThrow(Errors.AccessDenied);
+				}
+
+				expect(events).toHaveLength(1);
+				expect(events[0]?.operation).toBe('put');
+				expect(events[0]?.allowed).toBe(allowed);
+			});
+		}
+	});
+
+	describe('assertSearchAccess', function() {
+		const seed = KeetaNet.lib.Account.generateRandomSeed();
+		const userAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+		const userPubKey = userAccount.publicKeyString.get();
+
+		const searchCases = [
+			{ name: 'owner matches', criteria: { owner: userPubKey }, allowed: true },
+			{ name: 'pathPrefix within namespace', criteria: { pathPrefix: `/user/${userPubKey}/docs/` }, allowed: true },
+			{ name: 'owner mismatch', criteria: { owner: 'other-user' }, allowed: false },
+			{ name: 'pathPrefix outside namespace', criteria: { pathPrefix: '/user/other-user/docs/' }, allowed: false }
+		];
+
+		for (const { name, criteria, allowed } of searchCases) {
+			test(name, function() {
+				if (allowed) {
+					expect(function() { defaultPathPolicy.assertSearchAccess(userAccount, criteria); }).not.toThrow();
+				} else {
+					expect(function() { defaultPathPolicy.assertSearchAccess(userAccount, criteria); }).toThrow(Errors.AccessDenied);
+				}
+			});
+
+			test(`${name} - logs allowed=${allowed}`, function() {
+				const events: AccessEvent[] = [];
+				const policy = new PathPolicy({ logger: function(e) { events.push(e); } });
+
+				if (allowed) {
+					policy.assertSearchAccess(userAccount, criteria);
+				} else {
+					expect(function() { policy.assertSearchAccess(userAccount, criteria); }).toThrow(Errors.AccessDenied);
+				}
+
+				expect(events).toHaveLength(1);
+				expect(events[0]?.operation).toBe('search');
+				expect(events[0]?.allowed).toBe(allowed);
+			});
+		}
 	});
 });
 
