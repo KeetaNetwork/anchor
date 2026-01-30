@@ -589,7 +589,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		pathSuffix?: string | undefined;
 		body?: Request | undefined;
 		serializeRequest?: (body: Request) => Omit<SerializedRequest, 'signed'> | Promise<Omit<SerializedRequest, 'signed'>>;
-		getSignedData?: (request: Omit<SerializedRequest, 'signed'>) => Signable;
+		getSignedData?: (request?: Omit<SerializedRequest, 'signed'>) => Signable;
 		isResponse: (data: unknown) => data is Response;
 	}): Promise<Extract<Response, { ok: true }>> {
 		const { url, auth } = await this.#getOperationData(input.endpoint, input.params);
@@ -622,10 +622,6 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 			if (!input.getSignedData) {
 				throw(new Errors.InvariantViolation('getSignedData required for signed requests'));
-			}
-
-			if (serializedBody === undefined) {
-				throw(new Errors.InvariantViolation('serializedBody required for signed requests'));
 			}
 
 			const signable = input.getSignedData(serializedBody);
@@ -1026,7 +1022,10 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				return(serialized);
 			},
 			body: bodyToSend,
-			getSignedData: getKeetaStorageAnchorSearchRequestSigningData,
+			getSignedData: () => getKeetaStorageAnchorSearchRequestSigningData({
+				criteria,
+				...(pagination !== undefined ? { pagination } : {})
+			}),
 			isResponse: isKeetaStorageAnchorSearchResponse
 		});
 
