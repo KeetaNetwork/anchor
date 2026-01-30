@@ -2,7 +2,6 @@ import type {
 	StorageBackend,
 	StorageAtomicInterface,
 	StorageObjectMetadata,
-	StoragePath,
 	StoragePutMetadata,
 	StorageGetResult,
 	SearchCriteria,
@@ -29,8 +28,8 @@ type QuotaConfig = {
 // #region Shared Storage Operations
 
 function putToStorage(
-	storage: Map<StoragePath, StorageEntry>,
-	path: StoragePath,
+	storage: Map<string, StorageEntry>,
+	path: string,
 	data: Buffer,
 	metadata: StoragePutMetadata
 ): StorageObjectMetadata {
@@ -51,8 +50,8 @@ function putToStorage(
 }
 
 function getFromStorage(
-	storage: Map<StoragePath, StorageEntry>,
-	path: StoragePath
+	storage: Map<string, StorageEntry>,
+	path: string
 ): StorageGetResult | null {
 	const entry = storage.get(path);
 	if (!entry) {
@@ -66,7 +65,7 @@ function getFromStorage(
 }
 
 function searchStorage(
-	storage: Map<StoragePath, StorageEntry>,
+	storage: Map<string, StorageEntry>,
 	criteria: SearchCriteria,
 	pagination: SearchPagination
 ): SearchResults {
@@ -135,7 +134,7 @@ function searchStorage(
 }
 
 function computeQuotaStatus(
-	storage: Map<StoragePath, StorageEntry>,
+	storage: Map<string, StorageEntry>,
 	owner: string,
 	quotaConfig: QuotaConfig
 ): QuotaStatus {
@@ -164,7 +163,7 @@ function computeQuotaStatus(
  * Cow Atomic scope for MemoryStorageBackend
  */
 class MemoryAtomicScope implements StorageAtomicInterface {
-	private readonly snapshot: Map<StoragePath, StorageEntry>;
+	private readonly snapshot: Map<string, StorageEntry>;
 	private committed = false;
 	private rolledBack = false;
 
@@ -175,17 +174,17 @@ class MemoryAtomicScope implements StorageAtomicInterface {
 		this.snapshot = new Map(backend.getStorageSnapshot());
 	}
 
-	async put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
+	async put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
 		this.ensureActive();
 		return(putToStorage(this.snapshot, path, data, metadata));
 	}
 
-	async get(path: StoragePath): Promise<StorageGetResult | null> {
+	async get(path: string): Promise<StorageGetResult | null> {
 		this.ensureActive();
 		return(getFromStorage(this.snapshot, path));
 	}
 
-	async delete(path: StoragePath): Promise<boolean> {
+	async delete(path: string): Promise<boolean> {
 		this.ensureActive();
 		return(this.snapshot.delete(path));
 	}
@@ -229,22 +228,22 @@ class MemoryAtomicScope implements StorageAtomicInterface {
  * In-memory storage backend
  */
 export class MemoryStorageBackend implements StorageBackend {
-	private storage = new Map<StoragePath, StorageEntry>();
+	private storage = new Map<string, StorageEntry>();
 
 	private readonly quotaConfig: QuotaConfig = {
 		maxObjectsPerUser: 1000,
 		maxStoragePerUser: 100 * 1024 * 1024 // 100MB
 	};
 
-	async put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
+	async put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
 		return(putToStorage(this.storage, path, data, metadata));
 	}
 
-	async get(path: StoragePath): Promise<StorageGetResult | null> {
+	async get(path: string): Promise<StorageGetResult | null> {
 		return(getFromStorage(this.storage, path));
 	}
 
-	async delete(path: StoragePath): Promise<boolean> {
+	async delete(path: string): Promise<boolean> {
 		return(this.storage.delete(path));
 	}
 
@@ -272,11 +271,11 @@ export class MemoryStorageBackend implements StorageBackend {
 		}
 	}
 
-	getStorageSnapshot(): Map<StoragePath, StorageEntry> {
+	getStorageSnapshot(): Map<string, StorageEntry> {
 		return(new Map(this.storage));
 	}
 
-	replaceStorage(newStorage: Map<StoragePath, StorageEntry>): void {
+	replaceStorage(newStorage: Map<string, StorageEntry>): void {
 		this.storage = new Map(newStorage);
 	}
 

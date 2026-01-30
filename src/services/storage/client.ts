@@ -26,7 +26,6 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
-	defaultPathPolicy,
 	parseContainerPayload,
 	Errors
 } from './common.js';
@@ -249,7 +248,7 @@ export class KeetaStorageAnchorSession {
 	constructor(provider: KeetaStorageAnchorProvider, config: SessionConfig) {
 		this.provider = provider;
 		this.account = config.account;
-		this.workingDirectory = config.workingDirectory ?? defaultPathPolicy.getNamespacePrefix(config.account.publicKeyString.get());
+		this.workingDirectory = config.workingDirectory ?? '/';
 		this.#defaultVisibility = config.defaultVisibility ?? 'private';
 	}
 
@@ -818,28 +817,6 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		this.logger?.debug(`Put request successful for path: ${path}`);
 
 		return(response.object);
-	}
-
-	/**
-	 * Put data directly using owner's public key and relative path.
-	 * Constructs the full path automatically.
-	 */
-	async putData(
-		relativePath: string,
-		data: Buffer,
-		options: {
-			mimeType: string;
-			tags?: string[];
-			visibility?: StorageObjectVisibility;
-		},
-		account?: InstanceType<typeof KeetaNetLib.Account>,
-		anchorAccount?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<StorageObjectMetadata> {
-		const signerAccount = account ?? this.client.account;
-		const ownerPublicKey = signerAccount.publicKeyString.get();
-
-		const fullPath = defaultPathPolicy.makePath(ownerPublicKey, relativePath);
-		return(await this.put(fullPath, data, options, account, anchorAccount));
 	}
 
 	/**

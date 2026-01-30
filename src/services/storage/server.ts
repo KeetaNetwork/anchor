@@ -28,7 +28,6 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
-	defaultPathPolicy,
 	parseContainerPayload,
 	Errors
 } from './common.js';
@@ -80,10 +79,10 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	publicCorsOrigin?: string | false;
 
 	/**
-	 * Path policy for parsing and validating storage paths.
-	 * Defaults to the standard /user/<pubkey>/<path> format.
+	 * Path policies for parsing, validating, and access control of storage paths.
+	 * Each policy handles a specific path pattern. First matching policy wins.
 	 */
-	pathPolicy?: PathPolicy;
+	pathPolicies: PathPolicy<unknown>[];
 }
 
 // Default quota configuration
@@ -103,7 +102,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly validators: NamespaceValidator[];
 	readonly signedUrlDefaultTTL: number;
 	readonly publicCorsOrigin: string | false;
-	readonly pathPolicy: PathPolicy;
+	readonly pathPolicies: PathPolicy<unknown>[];
 
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
@@ -115,11 +114,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
-		this.pathPolicy = config.pathPolicy ?? defaultPathPolicy;
+		this.pathPolicies = config.pathPolicies;
 
 		// Validate anchorAccount has private key
 		if (!this.anchorAccount.hasPrivateKey) {
 			throw(new Error('anchorAccount must have a private key'));
+		}
+
+		// Validate at least one path policy is provided
+		if (this.pathPolicies.length === 0) {
+			throw(new Error('At least one path policy must be provided'));
 		}
 	}
 
@@ -132,7 +136,41 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const quotas = this.quotas;
 		const validators = this.validators;
 		const publicCorsOrigin = this.publicCorsOrigin;
-		const pathPolicy = this.pathPolicy;
+		const pathPolicies = this.pathPolicies;
+
+		/**
+		 * Find a matching policy for a path, validate it, and check access.
+		 */
+		function assertPathAccess(
+			account: Account,
+			path: string,
+			operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+		): { policy: PathPolicy<unknown>; parsed: unknown } {
+			for (const policy of pathPolicies) {
+				const parsed = policy.parse(path);
+				if (parsed !== null) {
+					if (!policy.checkAccess(account, parsed, operation)) {
+						throw(new Errors.AccessDenied('Can only access your own namespace'));
+					}
+					return({ policy, parsed });
+				}
+			}
+			throw(new Errors.InvalidPath('Path does not match any policy'));
+		}
+
+		/**
+		 * Find a matching policy and parse a path.
+		 * Used for public endpoints where auth is optional.
+		 */
+		function parsePath(path: string): { policy: PathPolicy<unknown>; parsed: unknown } {
+			for (const policy of pathPolicies) {
+				const parsed = policy.parse(path);
+				if (parsed !== null) {
+					return({ policy, parsed });
+				}
+			}
+			throw(new Errors.InvalidPath('Path does not match any policy'));
+		}
 
 		// #region Authentication Helpers
 
@@ -188,6 +226,47 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// #endregion
 
+		// #region Path Extraction Helpers
+
+		/**
+		 * Extract object path from wildcard route parameter.
+		 */
+		function extractObjectPath(params: Map<string, string>): string {
+			const wildcardPath = params.get('*');
+			if (!wildcardPath) {
+				throw(new Errors.InvalidPath());
+			}
+
+			return('/' + wildcardPath);
+		}
+
+		/**
+		 * Authorize access to an object path via URL-signed request.
+		 * Validates path, verifies signature, and checks access.
+		 */
+		async function authorizeURLAccess<T>(
+			params: Map<string, string>,
+			url: URL | string,
+			operation: 'get' | 'put' | 'delete' | 'metadata',
+			getSigningData: (req: T) => Signable,
+			buildRequest: (path: string, accountPubKey: string) => T
+		): Promise<{ account: Account; objectPath: string }> {
+			const objectPath = extractObjectPath(params);
+			parsePath(objectPath);
+
+			const account = await verifyURLAuth(
+				url,
+				getSigningData,
+				(pubKey) => buildRequest(objectPath, pubKey)
+			);
+
+			assertPathAccess(account, objectPath, operation);
+
+			return({ account, objectPath });
+		}
+
+		// #endregion
+
 		/**
 		 * If a homepage is provided, setup the route for it
 		 */
@@ -208,13 +287,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		routes['PUT /api/object/*'] = {
 			bodyType: 'raw',
 			handler: async function(params, postData, _headers, url) {
-				// Extract path from URL pathname
-				const wildcardPath = params.get('*');
-				if (!wildcardPath) {
-					throw(new Errors.InvalidPath());
-				}
-
-				const objectPath = '/' + wildcardPath;
+				const objectPath = extractObjectPath(params);
 
 				// Get metadata from query params
 				const parsedUrl = new URL(url);
@@ -240,7 +313,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				);
 
 				// Validate path format and ownership
-				const pathInfo = pathPolicy.assertAccess(account, objectPath, 'put');
+				assertPathAccess(account, objectPath, 'put');
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
 
@@ -282,14 +355,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					}
 				}
 
+				const storagePath = objectPath;
+				const owner = account.publicKeyString.get();
+
 				const objectMetadata = await backend.withAtomic(async function(atomic) {
 					// Check if object already exists
-					const existing = await atomic.get(pathInfo.path);
+					const existing = await atomic.get(storagePath);
 					const existingSize = existing ? parseInt(existing.metadata.size, 10) : 0;
 					const isNewObject = !existing;
 
 					// Get quota status
-					const quotaStatus = await atomic.getQuotaStatus(pathInfo.owner);
+					const quotaStatus = await atomic.getQuotaStatus(owner);
 
 					// Object count check - only reject for new objects
 					if (isNewObject && quotaStatus.objectCount >= quotas.maxObjectsPerUser) {
@@ -302,8 +378,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 						throw(new Errors.QuotaExceeded('Storage quota exceeded'));
 					}
 
-					return(await atomic.put(pathInfo.path, data, {
-						owner: pathInfo.owner,
+					return(await atomic.put(storagePath, data, {
+						owner,
 						tags,
 						visibility
 					}));
@@ -322,26 +398,15 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/object/* - Retrieve an object (returns raw binary)
 		routes['GET /api/object/*'] = async function(params, _postData, _headers, url) {
-			// Extract path from URL pathname
-			const wildcardPath = params.get('*');
-			if (!wildcardPath) {
-				throw(new Errors.InvalidPath());
-			}
-
-			const objectPath = '/' + wildcardPath;
-			const pathInfo = pathPolicy.validate(objectPath);
-
-			// Handle authentication
-			const account = await verifyURLAuth(
+			const { objectPath } = await authorizeURLAccess(
+				params,
 				url,
+				'get',
 				getKeetaStorageAnchorGetRequestSigningData,
-				(accountPubKey) => assertKeetaStorageAnchorGetRequest({ path: pathInfo.path, account: accountPubKey })
+				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
 			);
 
-			// Verify ownership
-			pathPolicy.assertAccess(account, objectPath, 'get');
-
-			const result = await backend.get(pathInfo.path);
+			const result = await backend.get(objectPath);
 			if (!result) {
 				throw(new Errors.DocumentNotFound());
 			}
@@ -355,26 +420,15 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// DELETE /api/object/* - Delete an object
 		routes['DELETE /api/object/*'] = async function(params, _postData, _headers, url) {
-			// Extract path from URL pathname
-			const wildcardPath = params.get('*');
-			if (!wildcardPath) {
-				throw(new Errors.InvalidPath());
-			}
-
-			const objectPath = '/' + wildcardPath;
-			const pathInfo = pathPolicy.validate(objectPath);
-
-			// Handle authentication
-			const account = await verifyURLAuth(
+			const { objectPath } = await authorizeURLAccess(
+				params,
 				url,
+				'delete',
 				getKeetaStorageAnchorDeleteRequestSigningData,
-				(accountPubKey) => ({ path: objectPath, account: accountPubKey })
+				(path, pubKey) => ({ path, account: pubKey })
 			);
 
-			// Verify ownership
-			pathPolicy.assertAccess(account, objectPath, 'delete');
-
-			const deleted = await backend.delete(pathInfo.path);
+			const deleted = await backend.delete(objectPath);
 			const response: KeetaStorageAnchorDeleteResponse = {
 				ok: true,
 				deleted
@@ -387,26 +441,15 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/metadata/* - Get object metadata
 		routes['GET /api/metadata/*'] = async function(params, _postData, _headers, url) {
-			// Extract path from URL pathname
-			const wildcardPath = params.get('*');
-			if (!wildcardPath) {
-				throw(new Errors.InvalidPath());
-			}
-
-			const objectPath = '/' + wildcardPath;
-			const pathInfo = pathPolicy.validate(objectPath);
-
-			// Handle authentication
-			const account = await verifyURLAuth(
+			const { objectPath } = await authorizeURLAccess(
+				params,
 				url,
+				'metadata',
 				getKeetaStorageAnchorGetRequestSigningData,
-				(accountPubKey) => assertKeetaStorageAnchorGetRequest({ path: pathInfo.path, account: accountPubKey })
+				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
 			);
 
-			// Verify ownership
-			pathPolicy.assertAccess(account, objectPath, 'metadata');
-
-			const result = await backend.get(pathInfo.path);
+			const result = await backend.get(objectPath);
 			if (!result) {
 				throw(new Errors.DocumentNotFound());
 			}
@@ -452,10 +495,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				});
 			}
 
-			// Standard search: restricted to caller's namespace
-			pathPolicy.assertSearchAccess(account, request.criteria);
-
-			// Scope criteria to authenticated account
+			// Scope search to authenticated account's namespace
 			const scopedCriteria = {
 				...request.criteria,
 				owner: accountPubKey
@@ -508,14 +548,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/public/* - Public object access via pre-signed URL
 		routes['GET /api/public/*'] = async function(params, _postData, _headers, url) {
-			// Extract path from URL pathname
-			const wildcardPath = params.get('*');
-			if (!wildcardPath) {
-				throw(new Errors.InvalidPath());
-			}
+			const objectPath = extractObjectPath(params);
+			const { policy, parsed } = parsePath(objectPath);
 
-			const objectPath = '/' + wildcardPath;
-			const pathInfo = pathPolicy.validate(objectPath);
+			// Get the authorized signer for this path
+			const signerPubKey = policy.getAuthorizedSigner(parsed);
+			if (!signerPubKey) {
+				throw(new Errors.AccessDenied('Pre-signed URLs not supported for this path'));
+			}
 
 			// Get signature parameters from query params
 			const parsedUrl = new URL(url);
@@ -543,7 +583,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Verify signature using the signing library
-			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(pathInfo.owner).assertAccount();
+			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
 
 			try {
 				const signedData = { nonce, timestamp, signature };
@@ -558,11 +598,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				if (Errors.SignatureInvalid.isInstance(e)) {
 					throw(e);
 				}
+
 				throw(new Errors.SignatureInvalid('Invalid signature format'));
 			}
 
 			// Get the object
-			const result = await backend.get(pathInfo.path);
+			const result = await backend.get(objectPath);
 			if (!result) {
 				throw(new Errors.DocumentNotFound());
 			}

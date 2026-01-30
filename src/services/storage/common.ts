@@ -7,18 +7,7 @@ import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 
-// #region Path Types
-
-/**
- * User path format: /user/<keeta_publicKey>/<...path>
- * The full path (including filename) is the unique ID, like S3.
- */
-export type UserPath = `/user/${string}/${string}`;
-
-/**
- * All storage paths (currently only user paths are supported)
- */
-export type StoragePath = UserPath;
+// #region Common Types
 
 /**
  * Visibility of a storage object
@@ -36,10 +25,10 @@ export type StorageObjectMetadata = {
 	/**
 	 * Full path (the unique ID)
 	 */
-	path: StoragePath;
+	path: string;
 
 	/**
-	 * Owner's public key string (extracted from path)
+	 * Owner's public key string
 	 */
 	owner: string;
 
@@ -986,17 +975,17 @@ export interface StorageAtomicInterface {
 	/**
 	 * Store/update an object at the given path
 	 */
-	put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
+	put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
 
 	/**
 	 * Retrieve an object by path
 	 */
-	get(path: StoragePath): Promise<StorageGetResult | null>;
+	get(path: string): Promise<StorageGetResult | null>;
 
 	/**
 	 * Delete an object by path
 	 */
-	delete(path: StoragePath): Promise<boolean>;
+	delete(path: string): Promise<boolean>;
 
 	/**
 	 * Search for objects matching criteria
@@ -1026,17 +1015,17 @@ export interface StorageBackend {
 	/**
 	 * Store/update an object at the given path
 	 */
-	put(path: StoragePath, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
+	put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
 
 	/**
 	 * Retrieve an object by path
 	 */
-	get(path: StoragePath): Promise<StorageGetResult | null>;
+	get(path: string): Promise<StorageGetResult | null>;
 
 	/**
 	 * Delete an object by path
 	 */
-	delete(path: StoragePath): Promise<boolean>;
+	delete(path: string): Promise<boolean>;
 
 	/**
 	 * Search for objects matching criteria
@@ -1066,199 +1055,41 @@ export interface StorageBackend {
 // #region Path Policy
 
 /**
- * Parsed components of a storage path
+ * Generic interface for path policies.
+ * Each implementation defines its own parsed type and access control logic.
+ * Storage Anchors are free to implement whatever pathname structure they wish.
  */
-export type ParsedStoragePath = {
-	path: StoragePath;
-	owner: string;
-	relativePath: string;
-};
-
-/**
- * Access event for audit logging
- */
-export interface AccessEvent {
-	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata';
-	account: string;
-	path: string;
-	allowed: boolean;
-	timestamp: number;
-}
-
-/**
- * Configuration for PathPolicy
- */
-export interface PathPolicyConfig {
-	/**
-	 * Pattern for valid storage paths.
-	 * Default: /^\/user\/([^/]+)\/(.+)$/ (matches /user/<pubkey>/<path>)
-	 */
-	pattern?: RegExp;
-
-	/**
-	 * Extract owner from regex match.
-	 * Default: match[1]
-	 */
-	extractOwner?: (match: RegExpMatchArray) => string;
-
-	/**
-	 * Extract relative path from regex match.
-	 * Default: match[2]
-	 */
-	extractRelativePath?: (match: RegExpMatchArray) => string;
-
-	/**
-	 * Get namespace prefix for an owner.
-	 * Default: `/user/${owner}/`
-	 */
-	namespacePrefix?: (owner: string) => string;
-
-	/**
-	 * Optional logger for access events
-	 */
-	logger?: (event: AccessEvent) => void;
-}
-
-/**
- * PathPolicy handles path parsing, validation, access control, and optional audit logging.
- * Replaces standalone parseStoragePath, validateStoragePath, isValidStoragePath functions.
- */
-export class PathPolicy {
-	readonly #pattern: RegExp;
-	readonly #extractOwner: (match: RegExpMatchArray) => string;
-	readonly #extractRelativePath: (match: RegExpMatchArray) => string;
-	readonly #namespacePrefix: (owner: string) => string;
-	readonly #logger: ((event: AccessEvent) => void) | undefined;
-
-	constructor(config?: PathPolicyConfig) {
-		this.#pattern = config?.pattern ?? /^\/user\/([^/]+)\/(.+)$/;
-		this.#extractOwner = config?.extractOwner ?? function(match) { return(match[1] ?? ''); };
-		this.#extractRelativePath = config?.extractRelativePath ?? function(match) { return(match[2] ?? ''); };
-		this.#namespacePrefix = config?.namespacePrefix ?? function(owner) { return(`/user/${owner}/`); };
-		this.#logger = config?.logger;
-	}
-
+export interface PathPolicy<TPathInfo> {
 	/**
 	 * Parse a path into its components.
-	 * @returns ParsedStoragePath if valid, null otherwise
+	 * @returns TPathInfo if valid, null otherwise
 	 */
-	parse(path: string): ParsedStoragePath | null {
-		const match = path.match(this.#pattern);
-		if (!match) {
-			return(null);
-		}
-
-		const owner = this.#extractOwner(match);
-		const relativePath = this.#extractRelativePath(match);
-		if (!owner || !relativePath) {
-			return(null);
-		}
-
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return({ path: path as StoragePath, owner, relativePath });
-	}
+	parse(path: string): TPathInfo | null;
 
 	/**
 	 * Validate a path and return its components.
 	 * @throws Errors.InvalidPath if the path is invalid
 	 */
-	validate(path: string): ParsedStoragePath {
-		const parsed = this.parse(path);
-		if (!parsed) {
-			throw(new Errors.InvalidPath('Path must match the required format'));
-		}
-
-		return(parsed);
-	}
+	validate(path: string): TPathInfo;
 
 	/**
 	 * Check if a path is valid.
 	 */
-	isValid(path: string): path is StoragePath {
-		return(this.parse(path) !== null);
-	}
+	isValid(path: string): boolean;
 
 	/**
-	 * Get the namespace prefix for an owner.
+	 * Check if the account has access to perform the operation on the parsed path.
+	 * @returns true if access is allowed, false otherwise
 	 */
-	getNamespacePrefix(owner: string): string {
-		return(this.#namespacePrefix(owner));
-	}
+	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'): boolean;
 
 	/**
-	 * Validate path and check that the account owns the namespace.
-	 * Logs the access event if a logger is configured.
-	 * @throws Errors.InvalidPath if path is invalid
-	 * @throws Errors.AccessDenied if account doesn't own the namespace
+	 * Get the public key of the account authorized to sign pre-signed URLs for this path.
+	 * Used for public object access verification.
+	 * @returns The public key string, or null if pre-signed URLs are not supported for this path
 	 */
-	assertAccess(account: KeetaNetAccount, path: string, operation?: AccessEvent['operation']): ParsedStoragePath {
-		const parsed = this.validate(path);
-		const accountPubKey = account.publicKeyString.get();
-		const allowed = parsed.owner === accountPubKey;
-
-		if (this.#logger && operation) {
-			this.#logger({
-				operation,
-				account: accountPubKey,
-				path,
-				allowed,
-				timestamp: Date.now()
-			});
-		}
-
-		if (!allowed) {
-			throw(new Errors.AccessDenied('Can only access your own namespace'));
-		}
-
-		return(parsed);
-	}
-
-	/**
-	 * Validate that search criteria is within the account's namespace.
-	 * Logs the access event if a logger is configured.
-	 * @throws Errors.AccessDenied if criteria targets another user's namespace
-	 */
-	assertSearchAccess(account: KeetaNetAccount, criteria: SearchCriteria): void {
-		const accountPubKey = account.publicKeyString.get();
-		const namespacePrefix = this.getNamespacePrefix(accountPubKey);
-
-		// Determine if access is allowed
-		const ownerMismatch = criteria.owner !== undefined && criteria.owner !== accountPubKey;
-		const prefixMismatch = criteria.pathPrefix !== undefined && !criteria.pathPrefix.startsWith(namespacePrefix);
-		const allowed = !ownerMismatch && !prefixMismatch;
-
-		// Log before throwing (so denied attempts are also logged)
-		if (this.#logger) {
-			this.#logger({
-				operation: 'search',
-				account: accountPubKey,
-				path: criteria.pathPrefix ?? namespacePrefix,
-				allowed,
-				timestamp: Date.now()
-			});
-		}
-
-		// Throw if denied
-		if (ownerMismatch) {
-			throw(new Errors.AccessDenied('Can only search your own namespace'));
-		}
-		if (prefixMismatch) {
-			throw(new Errors.AccessDenied('Can only search within your own namespace'));
-		}
-	}
-
-	/**
-	 * Constructs a StoragePath from owner and relative path
-	 */
-	makePath(owner: string, relativePath: string): StoragePath {
-		return(`/user/${owner}/${relativePath}`);
-	}
+	getAuthorizedSigner(parsed: TPathInfo): string | null;
 }
-
-/**
- * Default PathPolicy instance with standard /user/<pubkey>/<path> format
- */
-export const defaultPathPolicy: PathPolicy = new PathPolicy();
 
 // #endregion
 

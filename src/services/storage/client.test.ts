@@ -5,8 +5,72 @@ import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './drivers/memory.js';
-import { defaultPathPolicy, type StoragePath, type StorageObjectMetadata, type StorageObjectVisibility } from './common.js';
+import type { StorageObjectMetadata, StorageObjectVisibility, PathPolicy } from './common.js';
+import { Errors } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+
+// #region Test Path Policy
+
+/**
+ * Parsed path for the test path policy: /user/<pubkey>/<relativePath>
+ */
+type TestParsedPath = {
+	path: string;
+	owner: string;
+	relativePath: string;
+};
+
+/**
+ * Test path policy implementing the /user/<pubkey>/<path> pattern.
+ */
+class TestPathPolicy implements PathPolicy<TestParsedPath> {
+	// Matches /user/<owner> or /user/<owner>/ or /user/<owner>/<path>
+	readonly #pattern = /^\/user\/([^/]+)(\/(.*))?$/;
+
+	parse(path: string): TestParsedPath | null {
+		const match = path.match(this.#pattern);
+		if (!match?.[1]) {
+			return(null);
+		}
+		return({ path, owner: match[1], relativePath: match[3] ?? '' });
+	}
+
+	validate(path: string): TestParsedPath {
+		const parsed = this.parse(path);
+		if (!parsed) {
+			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
+		}
+		return(parsed);
+	}
+
+	isValid(path: string): boolean {
+		return(this.parse(path) !== null);
+	}
+
+	checkAccess(
+		account: InstanceType<typeof KeetaNet.lib.Account>,
+		parsed: TestParsedPath,
+		_ignoreOperation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+	): boolean {
+		return(parsed.owner === account.publicKeyString.get());
+	}
+
+	getAuthorizedSigner(parsed: TestParsedPath): string | null {
+		return(parsed.owner);
+	}
+
+	makePath(owner: string, relativePath: string): string {
+		return(`/user/${owner}/${relativePath}`);
+	}
+
+	getNamespacePrefix(owner: string): string {
+		return(`/user/${owner}/`);
+	}
+}
+
+const testPathPolicy = new TestPathPolicy();
+
+// #endregion
 
 // #region Test Harness
 
@@ -25,7 +89,7 @@ interface ClientTestContext {
 	backend: MemoryStorageBackend;
 	storageClient: KeetaStorageAnchorClient;
 	/** Create a storage path from a relative path */
-	makePath: (relativePath: string) => StoragePath;
+	makePath: (relativePath: string) => string;
 	/** Put a text file with sensible defaults */
 	putText: (relativePath: string, content: string, options?: {
 		tags?: string[];
@@ -55,7 +119,8 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 
 	await using server = new KeetaNetStorageAnchorHTTPServer({
 		backend,
-		anchorAccount
+		anchorAccount,
+		pathPolicies: [testPathPolicy]
 	});
 
 	await server.start();
@@ -87,8 +152,8 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 	const provider = maybeProvider;
 
 	// Helper to create paths from relative paths
-	function makePath(relativePath: string): StoragePath {
-		return(defaultPathPolicy.makePath(account.publicKeyString.get(), relativePath));
+	function makePath(relativePath: string): string {
+		return(testPathPolicy.makePath(account.publicKeyString.get(), relativePath));
 	}
 
 	// Helper to put text files with defaults
@@ -149,26 +214,6 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Hello, World!');
 			expect(getResult?.mimeType).toBe('text/plain');
-		}));
-	});
-
-	test('putData constructs path automatically', function() {
-		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
-			const testData = Buffer.from('putData test');
-
-			// Use putData with relative path
-			const putResult = await provider.putData('nested/file.txt', testData, {
-				mimeType: 'text/plain'
-			}, account);
-
-			// Verify path was constructed correctly
-			const expectedPath = makePath('nested/file.txt');
-			expect(putResult.path).toBe(expectedPath);
-
-			// Verify data can be retrieved
-			const getResult = await provider.get(expectedPath, account);
-			expect(getResult).not.toBeNull();
-			expect(getResult?.data.toString()).toBe('putData test');
 		}));
 	});
 
@@ -302,25 +347,27 @@ describe('Storage Client - Error Cases', function() {
 });
 
 describe('Storage Client - Session API', function() {
-	test('beginSession creates session with defaults', function() {
+	test('beginSession creates session with working directory', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
-			const session = provider.beginSession({ account });
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory });
 
 			expect(session.account).toBe(account);
 			expect(session.provider).toBe(provider);
-			expect(session.workingDirectory).toBe(`/user/${account.publicKeyString.get()}/`);
+			expect(session.workingDirectory).toBe(workingDirectory);
 		}));
 	});
 
 	test('session put/get with relative paths', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
-			const session = provider.beginSession({ account });
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory });
 
 			// Put using relative path
 			const metadata = await session.put('session-test.txt', Buffer.from('session content'), {
 				mimeType: 'text/plain'
 			});
-			expect(metadata.path).toBe(`/user/${account.publicKeyString.get()}/session-test.txt`);
+			expect(metadata.path).toBe(`${workingDirectory}session-test.txt`);
 
 			// Get using relative path
 			const result = await session.get('session-test.txt');
@@ -332,7 +379,8 @@ describe('Storage Client - Session API', function() {
 
 	test('session delete with relative paths', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
-			const session = provider.beginSession({ account });
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory });
 
 			// Create file
 			await session.put('to-delete.txt', Buffer.from('delete me'), { mimeType: 'text/plain' });
@@ -349,7 +397,8 @@ describe('Storage Client - Session API', function() {
 
 	test('session search scopes to account', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
-			const session = provider.beginSession({ account });
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory });
 
 			// Create files with tags
 			await session.put('tagged.txt', Buffer.from('tagged'), { mimeType: 'text/plain', tags: ['searchable'] });
@@ -394,8 +443,10 @@ describe('Storage Client - Session API', function() {
 
 	test('session default visibility', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
+			const workingDir = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
 			const session = provider.beginSession({
 				account,
+				workingDirectory: workingDir,
 				defaultVisibility: 'public'
 			});
 
@@ -407,7 +458,8 @@ describe('Storage Client - Session API', function() {
 
 	test('withSession helper', function() {
 		return(withClient(randomSeed(), async function({ provider, account }) {
-			const result = await provider.withSession({ account }, async function(session) {
+			const workingDir = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const result = await provider.withSession({ account, workingDirectory: workingDir }, async function(session) {
 				await session.put('with-session.txt', Buffer.from('via withSession'), { mimeType: 'text/plain' });
 				const data = await session.get('with-session.txt');
 				return(data?.data.toString());
