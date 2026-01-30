@@ -7,6 +7,19 @@ import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 
+// #region Shared Constants
+
+/** Content type for JSON payloads */
+export const CONTENT_TYPE_JSON = 'application/json';
+
+/** Content type for binary/octet-stream payloads */
+export const CONTENT_TYPE_OCTET_STREAM = 'application/octet-stream';
+
+/** Default TTL for signed URLs in seconds (1 hour) */
+export const DEFAULT_SIGNED_URL_TTL_SECONDS = 3600;
+
+// #endregion
+
 // #region Common Types
 
 /**

@@ -16,7 +16,9 @@ import type {
 	StorageObjectVisibility,
 	StorageObjectMetadata,
 	PathPolicy,
-	SearchResults
+	SearchResults,
+	StorageGetResult,
+	SearchPagination
 } from './common.ts';
 import {
 	assertKeetaStorageAnchorDeleteResponse,
@@ -31,7 +33,9 @@ import {
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
 	parseContainerPayload,
-	Errors
+	Errors,
+	CONTENT_TYPE_OCTET_STREAM,
+	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
@@ -337,7 +341,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.anchorAccount = config.anchorAccount;
 		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
 		this.validators = config.validators ?? [];
-		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? 3600;
+		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
 		this.pathPolicies = config.pathPolicies;
 		this.tagValidation = {
@@ -393,6 +397,33 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const publicCorsOrigin = this.publicCorsOrigin;
 		const pathPolicies = this.pathPolicies;
 		const tagValidation = this.tagValidation;
+
+		/**
+		 * Build a JSON response with assertion.
+		 */
+		function jsonResponse<T>(response: T, assertionHandler: (input: unknown) => T): { output: string } {
+			return({ output: JSON.stringify(assertionHandler(response)) });
+		}
+
+		/**
+		 * Get an object or throw DocumentNotFound.
+		 */
+		async function requireObject(path: string): Promise<StorageGetResult> {
+			const result = await backend.get(path);
+			if (!result) {
+				throw(new Errors.DocumentNotFound());
+			}
+
+			return(result);
+		}
+
+		/**
+		 * Enforce server-side search limit cap.
+		 */
+		function enforceSearchLimit(pagination: SearchPagination | undefined): SearchPagination {
+			const requestedLimit = pagination?.limit ?? quotas.maxSearchLimit;
+			return({ ...pagination, limit: Math.min(requestedLimit, quotas.maxSearchLimit) });
+		}
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -527,9 +558,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					object: objectMetadata
 				};
 
-				return({
-					output: JSON.stringify(assertKeetaStorageAnchorPutResponse(response))
-				});
+				return(jsonResponse(response, assertKeetaStorageAnchorPutResponse));
 			}
 		};
 
@@ -544,15 +573,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
 			);
 
-			const result = await backend.get(objectPath);
-			if (!result) {
-				throw(new Errors.DocumentNotFound());
-			}
-
-			// Return raw binary data (EncryptedContainer)
+			const result = await requireObject(objectPath);
 			return({
 				output: result.data,
-				contentType: 'application/octet-stream'
+				contentType: CONTENT_TYPE_OCTET_STREAM
 			});
 		};
 
@@ -573,9 +597,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				deleted
 			};
 
-			return({
-				output: JSON.stringify(assertKeetaStorageAnchorDeleteResponse(response))
-			});
+			return(jsonResponse(response, assertKeetaStorageAnchorDeleteResponse));
 		};
 
 		// GET /api/metadata/* - Get object metadata
@@ -589,11 +611,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
 			);
 
-			const result = await backend.get(objectPath);
-			if (!result) {
-				throw(new Errors.DocumentNotFound());
-			}
-
+			const result = await requireObject(objectPath);
 			return({
 				output: JSON.stringify({ ok: true, object: result.metadata })
 			});
@@ -615,18 +633,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					visibility: 'public' as const
 				};
 
-				// Enforce server-side limit cap
-				const requestedLimit = request.pagination?.limit ?? quotas.maxSearchLimit;
-				const effectiveLimit = Math.min(requestedLimit, quotas.maxSearchLimit);
-
 				const results = await backend.search(
 					scopedCriteria,
-					{ ...request.pagination, limit: effectiveLimit }
+					enforceSearchLimit(request.pagination)
 				);
 
-				return({
-					output: JSON.stringify(assertKeetaStorageAnchorSearchResponse(buildSearchResponse(results)))
-				});
+				return(jsonResponse(buildSearchResponse(results), assertKeetaStorageAnchorSearchResponse));
 			}
 
 			// Scope search to authenticated account's namespace
@@ -635,18 +647,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				owner: accountPubKey
 			};
 
-			// Enforce server-side limit cap
-			const requestedLimit = request.pagination?.limit ?? quotas.maxSearchLimit;
-			const effectiveLimit = Math.min(requestedLimit, quotas.maxSearchLimit);
-
 			const results = await backend.search(
 				scopedCriteria,
-				{ ...request.pagination, limit: effectiveLimit }
+				enforceSearchLimit(request.pagination)
 			);
-
-			return({
-				output: JSON.stringify(assertKeetaStorageAnchorSearchResponse(buildSearchResponse(results)))
-			});
+			return(jsonResponse(buildSearchResponse(results), assertKeetaStorageAnchorSearchResponse));
 		};
 
 		// GET /api/quota - Get quota status
@@ -669,9 +674,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 			};
 
-			return({
-				output: JSON.stringify(assertKeetaStorageAnchorQuotaResponse(response))
-			});
+			return(jsonResponse(response, assertKeetaStorageAnchorQuotaResponse));
 		};
 
 		// GET /api/public/* - Public object access via pre-signed URL
@@ -742,10 +745,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Get the object
-			const result = await backend.get(objectPath);
-			if (!result) {
-				throw(new Errors.DocumentNotFound());
-			}
+			const result = await requireObject(objectPath);
 
 			// Check visibility
 			if (result.metadata.visibility !== 'public') {

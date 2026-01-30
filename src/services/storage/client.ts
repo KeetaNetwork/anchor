@@ -27,7 +27,10 @@ import {
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
 	parseContainerPayload,
-	Errors
+	Errors,
+	CONTENT_TYPE_JSON,
+	CONTENT_TYPE_OCTET_STREAM,
+	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
 import { getDefaultResolver } from '../../config.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
@@ -596,9 +599,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		// Append path suffix to URL pathname if provided
 		if (input.pathSuffix) {
-			// Remove leading slash from suffix if URL already ends with one
-			const suffix = input.pathSuffix.startsWith('/') ? input.pathSuffix.slice(1) : input.pathSuffix;
-			url.pathname = url.pathname.replace(/\/$/, '') + '/' + suffix;
+			this.#appendPathToUrl(url, input.pathSuffix);
 		}
 
 		// Add query parameters to URL if provided
@@ -628,13 +629,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			signed = await SignData(input.account.assertAccount(), signable);
 		}
 
-		const headers: { [key: string]: string } = {
-			'Accept': 'application/json'
-		};
+		const headers: { [key: string]: string } = { 'Accept': CONTENT_TYPE_JSON };
+
 		let usingUrl = url;
 		let body: BodyInit | null = null;
 		if (input.method === 'POST' || input.method === 'PUT') {
-			headers['Content-Type'] = 'application/json';
+			headers['Content-Type'] = CONTENT_TYPE_JSON;
 			body = JSON.stringify({ ...serializedBody, signed });
 		} else {
 			if (signed) {
@@ -712,7 +712,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const response = await fetch(signedUrl, {
 			method: 'PUT',
-			headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
+			headers: { 'Content-Type': CONTENT_TYPE_OCTET_STREAM, 'Accept': CONTENT_TYPE_JSON },
 			body: input.data
 		});
 
@@ -764,7 +764,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const signedUrl = addSignatureToURL(url, { signedField: signed, account: input.account.assertAccount() });
 		const response = await fetch(signedUrl, {
 			method: 'GET',
-			headers: { 'Accept': 'application/octet-stream' }
+			headers: { 'Accept': CONTENT_TYPE_OCTET_STREAM }
 		});
 
 		if (!response.ok) {
@@ -1089,7 +1089,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const { path } = options;
 		const signerAccount = this.#resolveSignerAccount(options.account);
 
-		const ttl = options.ttl ?? 3600; // Default 1 hour
+		const ttl = options.ttl ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
 		// Sign the message
