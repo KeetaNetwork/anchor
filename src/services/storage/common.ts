@@ -866,6 +866,33 @@ class KeetaStorageAnchorInvariantViolationError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaStorageAnchorInvalidTagError';
+	private readonly KeetaStorageAnchorInvalidTagErrorObjectTypeID!: string;
+	private static readonly KeetaStorageAnchorInvalidTagErrorObjectTypeID = 'b8d6e4f2-9c0a-5d3b-c4e5-f6a7b8c9d0e1';
+
+	constructor(message?: string) {
+		super(message ?? 'Invalid tag');
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaStorageAnchorInvalidTagErrorObjectTypeID', {
+			value: KeetaStorageAnchorInvalidTagError.KeetaStorageAnchorInvalidTagErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidTagError {
+		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidTagErrorObjectTypeID', KeetaStorageAnchorInvalidTagError.KeetaStorageAnchorInvalidTagErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidTagError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	DocumentNotFound: typeof KeetaStorageAnchorDocumentNotFoundError;
 	AccessDenied: typeof KeetaStorageAnchorAccessDeniedError;
@@ -884,6 +911,7 @@ export const Errors: {
 	InvalidResponse: typeof KeetaStorageAnchorInvalidResponseError;
 	InvalidAnchorAccount: typeof KeetaStorageAnchorInvalidAnchorAccountError;
 	InvariantViolation: typeof KeetaStorageAnchorInvariantViolationError;
+	InvalidTag: typeof KeetaStorageAnchorInvalidTagError;
 } = {
 	/**
 	 * The requested document/object was not found
@@ -968,7 +996,12 @@ export const Errors: {
 	/**
 	 * Internal invariant violation - indicates a bug in the code
 	 */
-	InvariantViolation: KeetaStorageAnchorInvariantViolationError
+	InvariantViolation: KeetaStorageAnchorInvariantViolationError,
+
+	/**
+	 * Tag validation failed (invalid format, too long, or too many tags)
+	 */
+	InvalidTag: KeetaStorageAnchorInvalidTagError
 };
 
 // #endregion

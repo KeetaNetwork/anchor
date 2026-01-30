@@ -421,31 +421,44 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const visibilityParam = parsedUrl.searchParams.get('visibility');
 				const tagsParam = parsedUrl.searchParams.get('tags');
 
-				// Parse visibility and tags with validation
+				// Parse visibility and raw tags
 				const visibility: StorageObjectVisibility = visibilityParam === 'public' ? 'public' : 'private';
-				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
-				const tags: string[] = (tagsParam ?? '')
+				const rawTags: string[] = (tagsParam ?? '')
 					.split(',')
 					.map(function(t) {
 						return(t.trim());
 					})
 					.filter(function(t) {
-						return(t.length > 0 && t.length <= maxTagLength && tagPattern.test(t));
-					})
-					.slice(0, maxTags);
+						return(t.length > 0);
+					});
 
-				// Verify signature using verifyURLAuth (consistent with GET/DELETE)
+				// Verify signature
 				const account = await verifyURLAuth(
 					url,
 					getKeetaStorageAnchorPutRequestSigningData,
-					() => ({ path: objectPath, visibility, tags })
+					() => ({ path: objectPath, visibility, tags: rawTags })
 				);
+
+				// Validate tags
+				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
+				for (const tag of rawTags) {
+					if (tag.length > maxTagLength) {
+						throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
+					}
+					if (!tagPattern.test(tag)) {
+						throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
+					}
+				}
+				if (rawTags.length > maxTags) {
+					throw(new Errors.InvalidTag(`Too many tags: ${rawTags.length} exceeds maximum of ${maxTags}`));
+				}
+				const tags = rawTags;
 
 				// Validate path format and ownership
 				assertPathAccess(pathPolicies, account, objectPath, 'put');
+
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
-
 				const objectSize = data.byteLength;
 				if (objectSize > quotas.maxObjectSize) {
 					throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${quotas.maxObjectSize}`));

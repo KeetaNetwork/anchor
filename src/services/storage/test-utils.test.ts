@@ -192,5 +192,33 @@ describe('MemoryStorageBackend', function() {
 			expect(afterRelease.objectCount).toBe(2);
 			expect(afterRelease.totalSize).toBe(400);
 		});
+
+		test('overwrite with smaller data does not inflate remainingSize', async function() {
+			const backend = new MemoryStorageBackend();
+			const owner = 'overwrite-test-owner';
+			const path = `/user/${owner}/file.txt`;
+
+			// Store a 100-byte file
+			await backend.put(path, Buffer.from('x'.repeat(100)), { owner, tags: [], visibility: 'private' });
+			const quotaAfterPut = await backend.getQuotaStatus(owner);
+			expect(quotaAfterPut.totalSize).toBe(100);
+			const initialRemaining = quotaAfterPut.remainingSize;
+
+			// Reserve for overwrite with 50-byte file (smaller)
+			const reservation = await backend.reserveUpload(owner, path, 50);
+
+			// Reservation size should be clamped
+			const quotaDuring = await backend.getQuotaStatus(owner);
+			expect(quotaDuring.totalSize).toBe(100); // Still 100, reservation adds 0
+			expect(quotaDuring.remainingSize).toBe(initialRemaining); // Not inflated
+
+			// Complete the overwrite
+			await backend.put(path, Buffer.from('y'.repeat(50)), { owner, tags: [], visibility: 'private' });
+			await backend.commitUpload(reservation.id);
+
+			const quotaAfter = await backend.getQuotaStatus(owner);
+			expect(quotaAfter.totalSize).toBe(50);
+			expect(quotaAfter.objectCount).toBe(1);
+		});
 	});
 });

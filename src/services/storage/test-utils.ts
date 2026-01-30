@@ -317,7 +317,7 @@ export class MemoryStorageBackend implements FullStorageBackend {
 			id: `res_${++this.reservationCounter}`,
 			owner,
 			path,
-			size: sizeDelta, // Reserve only the delta
+			size: Math.max(0, sizeDelta),
 			createdAt: now.toISOString(),
 			expiresAt: new Date(now.getTime() + ttl).toISOString()
 		};

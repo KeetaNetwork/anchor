@@ -935,10 +935,11 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		// Create EncryptedContainer with appropriate principals
 		const principals: InstanceType<typeof KeetaNetLib.Account>[] = [signerAccount];
 		if (visibility === 'public') {
-			if (!anchorAccount) {
-				throw(new Errors.AccountRequired('anchorAccount is required for public visibility so the server can decrypt and serve the object'));
+			const effectiveAnchor = anchorAccount ?? this.anchorAccount;
+			if (!effectiveAnchor) {
+				throw(new Errors.AccountRequired('anchorAccount is required for public visibility and no provider anchor account is available'));
 			}
-			principals.push(anchorAccount);
+			principals.push(effectiveAnchor);
 		}
 
 		const container = EncryptedContainer.fromPlaintext(

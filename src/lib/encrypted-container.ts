@@ -24,6 +24,8 @@ export const EncryptedContainerErrorCodes = [
 	// Algorithm issues
 	'UNSUPPORTED_VERSION',
 	'UNSUPPORTED_CIPHER_ALGORITHM',
+	'UNSUPPORTED_DIGEST_ALGORITHM',
+	'UNSUPPORTED_SIGNATURE_ALGORITHM',
 	'UNSUPPORTED_KEY_TYPE',
 
 	// Key/Decryption issues
@@ -1305,7 +1307,7 @@ export class EncryptedContainer {
 		// Validate digest algorithm OID
 		if (!supportedDigestOIDs.has(signerInfo.digestAlgorithmOID)) {
 			throw(new EncryptedContainerError(
-				'UNSUPPORTED_CIPHER_ALGORITHM',
+				'UNSUPPORTED_DIGEST_ALGORITHM',
 				`Unsupported digest algorithm OID: ${signerInfo.digestAlgorithmOID}`
 			));
 		}
@@ -1313,7 +1315,7 @@ export class EncryptedContainer {
 		// Validate signature algorithm OID
 		if (!supportedSignatureOIDs.has(signerInfo.signatureAlgorithmOID)) {
 			throw(new EncryptedContainerError(
-				'UNSUPPORTED_CIPHER_ALGORITHM',
+				'UNSUPPORTED_SIGNATURE_ALGORITHM',
 				`Unsupported signature algorithm OID: ${signerInfo.signatureAlgorithmOID}`
 			));
 		}
