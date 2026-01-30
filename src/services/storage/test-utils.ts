@@ -38,6 +38,7 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		if (!match?.[1]) {
 			return(null);
 		}
+
 		return({ path, owner: match[1], relativePath: match[3] ?? '' });
 	}
 
@@ -46,6 +47,18 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		if (!parsed) {
 			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
 		}
+
+		// Reject path traversal attempts
+		const segments = parsed.relativePath.split('/');
+		for (const seg of segments) {
+			if (seg === '..' || seg === '.') {
+				throw(new Errors.InvalidPath('Path contains relative segments'));
+			}
+		}
+		if (parsed.relativePath.includes('//')) {
+			throw(new Errors.InvalidPath('Path contains empty segments'));
+		}
+
 		return(parsed);
 	}
 
@@ -244,6 +257,7 @@ function computeQuotaStatus(
 export class MemoryStorageBackend implements FullStorageBackend {
 	private storage = new Map<string, StorageEntry>();
 	private reservations = new Map<string, UploadReservation>();
+	readonly #reservationsByPath = new Map<string, string>(); // "owner:path" -> reservationId
 	private reservationCounter = 0;
 
 	private readonly quotaConfig: QuotaConfig = {
@@ -259,6 +273,7 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		for (const [id, reservation] of this.reservations) {
 			if (new Date(reservation.expiresAt).getTime() <= now) {
 				this.reservations.delete(id);
+				this.#reservationsByPath.delete(`${reservation.owner}:${reservation.path}`);
 			}
 		}
 	}
@@ -340,6 +355,20 @@ export class MemoryStorageBackend implements FullStorageBackend {
 			throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
 		}
 
+		// Check for existing reservation for this (owner, path)
+		const pathKey = `${owner}:${path}`;
+		const existingId = this.#reservationsByPath.get(pathKey);
+		if (existingId) {
+			const existing = this.reservations.get(existingId);
+			if (existing) {
+				// Update to max size, extend expiry
+				const clampedSizeDelta = Math.max(0, sizeDelta);
+				existing.size = Math.max(existing.size, clampedSizeDelta);
+				existing.expiresAt = new Date(Date.now() + ttl).toISOString();
+				return(existing);
+			}
+		}
+
 		const now = new Date();
 		const reservation: UploadReservation = {
 			id: `res_${++this.reservationCounter}`,
@@ -351,22 +380,34 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		};
 
 		this.reservations.set(reservation.id, reservation);
+		this.#reservationsByPath.set(pathKey, reservation.id);
 		return(reservation);
 	}
 
 	async commitUpload(reservationId: string): Promise<void> {
 		// Simply remove the reservation - the actual storage was already updated via put()
+		const reservation = this.reservations.get(reservationId);
+		if (reservation) {
+			this.#reservationsByPath.delete(`${reservation.owner}:${reservation.path}`);
+		}
+
 		this.reservations.delete(reservationId);
 	}
 
 	async releaseUpload(reservationId: string): Promise<void> {
 		// Remove the reservation, freeing the reserved quota
+		const reservation = this.reservations.get(reservationId);
+		if (reservation) {
+			this.#reservationsByPath.delete(`${reservation.owner}:${reservation.path}`);
+		}
+
 		this.reservations.delete(reservationId);
 	}
 
 	clear(): void {
 		this.storage.clear();
 		this.reservations.clear();
+		this.#reservationsByPath.clear();
 	}
 
 	get size(): number {

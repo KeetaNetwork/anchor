@@ -879,7 +879,17 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				pathSuffix: path,
 				getSignedData: () => getKeetaStorageAnchorGetRequestSigningData({ path, account: signerAccount.publicKeyString.get() }),
 				isResponse: function(data: unknown): data is ({ ok: true; object: StorageObjectMetadata } | { ok: false; error: string }) {
-					return(typeof data === 'object' && data !== null && 'ok' in data);
+					if (typeof data !== 'object' || data === null || !('ok' in data)) {
+						return(false);
+					}
+					if ('object' in data && typeof data.object === 'object' && data.object !== null) {
+						return(data.ok === true);
+					}
+					if ('error' in data && typeof data.error === 'string') {
+						return(data.ok === false);
+					}
+
+					return(false);
 				}
 			});
 

@@ -426,6 +426,27 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		}
 
 		/**
+		 * Validate search results match expected constraints.
+		 */
+		function assertSearchResults(
+			results: SearchResults,
+			constraint: { visibility?: 'public'; owner?: string }
+		): void {
+			for (const obj of results.results) {
+				if (constraint.visibility && obj.visibility !== constraint.visibility) {
+					throw(new Errors.InvariantViolation(
+						`Backend returned ${obj.visibility} object in ${constraint.visibility} search`
+					));
+				}
+				if (constraint.owner && obj.owner !== constraint.owner) {
+					throw(new Errors.InvariantViolation(
+						`Backend returned object owned by ${obj.owner} in search for ${constraint.owner}`
+					));
+				}
+			}
+		}
+
+		/**
 		 * If a homepage is provided, setup the route for it
 		 */
 		const homepage = this.homepage;
@@ -638,6 +659,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					enforceSearchLimit(request.pagination)
 				);
 
+				assertSearchResults(results, { visibility: 'public' });
+
 				return(jsonResponse(buildSearchResponse(results), assertKeetaStorageAnchorSearchResponse));
 			}
 
@@ -651,6 +674,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				scopedCriteria,
 				enforceSearchLimit(request.pagination)
 			);
+
+			assertSearchResults(results, { owner: accountPubKey });
+
 			return(jsonResponse(buildSearchResponse(results), assertKeetaStorageAnchorSearchResponse));
 		};
 

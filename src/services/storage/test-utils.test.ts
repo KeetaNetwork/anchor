@@ -1,6 +1,7 @@
 import { expect, test, describe } from 'vitest';
-import { MemoryStorageBackend } from './test-utils.js';
+import { MemoryStorageBackend, testPathPolicy } from './test-utils.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+import { Errors } from './common.js';
 
 /**
  * Helper to reduce boilerplate in backend tests.
@@ -263,5 +264,36 @@ describe('MemoryStorageBackend', function() {
 			expect(quotaWithNew.objectCount).toBe(1);
 			expect(quotaWithNew.totalSize).toBe(100);
 		});
+	});
+});
+
+describe('TestPathPolicy path traversal', function() {
+	const invalidPaths: [string, string][] = [
+		['/user/pk123/../other/file', 'parent traversal'],
+		['/user/pk123/./file', 'current dir'],
+		['/user/pk123/foo//bar', 'empty segment'],
+		['/user/pk123/foo/..', 'trailing parent'],
+		['/user/pk123/foo/./bar', 'embedded current dir'],
+		['/user/pk123/../pk123/file', 'escape and re-enter']
+	];
+
+	test.each(invalidPaths)('rejects %s (%s)', function(path) {
+		expect(function() {
+			testPathPolicy.validate(path);
+		}).toThrow(Errors.InvalidPath);
+	});
+
+	const validPaths: [string, string][] = [
+		['/user/pk123/file.txt', 'simple file'],
+		['/user/pk123/dir/file.txt', 'nested file'],
+		['/user/pk123/dir/subdir/file', 'deeply nested'],
+		['/user/pk123/', 'root with trailing slash'],
+		['/user/pk123', 'root without trailing slash']
+	];
+
+	test.each(validPaths)('accepts %s (%s)', function(path) {
+		expect(function() {
+			testPathPolicy.validate(path);
+		}).not.toThrow();
 	});
 });
