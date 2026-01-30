@@ -308,13 +308,19 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		});
 	}
 
-	async reserveUpload(owner: string, path: string, size: number, ttlMs?: number): Promise<UploadReservation> {
+	async reserveUpload(owner: string, path: string, size: number, options?: {
+		ttlMs?: number;
+		quotaLimits?: { maxObjectsPerUser: number; maxStoragePerUser: number };
+	}): Promise<UploadReservation> {
 		// Prune expired reservations first
 		this.#pruneExpiredReservations();
 
 		// Default TTL: 5 minutes
 		const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1000;
-		const ttl = ttlMs ?? DEFAULT_RESERVATION_TTL_MS;
+		const ttl = options?.ttlMs ?? DEFAULT_RESERVATION_TTL_MS;
+
+		// Use provided quota limits or fall back to backend defaults
+		const limits = options?.quotaLimits ?? this.quotaConfig;
 
 		// Check if this would exceed quota
 		const quotaStatus = await this.getQuotaStatus(owner);
@@ -322,12 +328,16 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		const existingSize = this.storage.get(path)?.data.length ?? 0;
 		const sizeDelta = size - existingSize;
 
-		if (isNewObject && quotaStatus.remainingObjects <= 0) {
-			throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
+		// Calculate remaining based on provided limits
+		const remainingObjects = limits.maxObjectsPerUser - quotaStatus.objectCount;
+		const remainingSize = limits.maxStoragePerUser - quotaStatus.totalSize;
+
+		if (isNewObject && remainingObjects <= 0) {
+			throw(new Errors.QuotaExceeded(`Maximum objects (${limits.maxObjectsPerUser}) exceeded`));
 		}
 
-		if (sizeDelta > 0 && quotaStatus.remainingSize < sizeDelta) {
-			throw(new Errors.QuotaExceeded('Storage quota exceeded'));
+		if (sizeDelta > 0 && remainingSize < sizeDelta) {
+			throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
 		}
 
 		const now = new Date();

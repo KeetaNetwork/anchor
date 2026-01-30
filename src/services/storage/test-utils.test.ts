@@ -243,7 +243,7 @@ describe('MemoryStorageBackend', function() {
 			const path = makePath('file.txt');
 
 			// Create a reservation with a very short TTL (1ms)
-			await backend.reserveUpload(owner, path, 500, 1);
+			await backend.reserveUpload(owner, path, 500, { ttlMs: 1 });
 
 			// Wait for the reservation to expire
 			await new Promise(function(resolve) {

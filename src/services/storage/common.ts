@@ -1093,12 +1093,17 @@ export interface QuotaManagedStorage {
 	 * @param owner - Owner's public key string
 	 * @param path - Target path for the upload
 	 * @param size - Size in bytes to reserve
-	 * @param ttlMs - Optional TTL in milliseconds for the reservation (default: implementation-defined)
+	 * @param options.ttlMs - Optional TTL in milliseconds for the reservation
+	 * @param options.quotaLimits - Optional quota limits to enforce (overrides backend defaults)
+	 *
+	 * @returns Reservation that must be committed or released
 	 *
 	 * @throws QuotaExceeded if reservation would exceed limits
-	 * @returns Reservation that must be committed or released
 	 */
-	reserveUpload(owner: string, path: string, size: number, ttlMs?: number): Promise<UploadReservation>;
+	reserveUpload(owner: string, path: string, size: number, options?: {
+		ttlMs?: number;
+		quotaLimits?: Pick<QuotaConfig, 'maxObjectsPerUser' | 'maxStoragePerUser'>;
+	}): Promise<UploadReservation>;
 
 	/**
 	 * Commit a reservation after successful upload.

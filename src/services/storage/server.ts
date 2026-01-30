@@ -500,25 +500,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const storagePath = objectPath;
 				const owner = account.publicKeyString.get();
 
-				// Check server-level quotas before reserving
-				const currentQuota = await backend.getQuotaStatus(owner);
-				const existingObject = await backend.get(storagePath);
-				const isNewObject = existingObject === null;
-				const existingSize = existingObject?.data.length ?? 0;
-
-				// Check object count limit for new objects
-				if (isNewObject && currentQuota.objectCount >= quotas.maxObjectsPerUser) {
-					throw(new Errors.QuotaExceeded(`Maximum objects (${quotas.maxObjectsPerUser}) exceeded`));
-				}
-
-				// Check storage size limit
-				const sizeDelta = objectSize - existingSize;
-				if (sizeDelta > 0 && currentQuota.totalSize + sizeDelta > quotas.maxStoragePerUser) {
-					throw(new Errors.QuotaExceeded(`Storage quota (${quotas.maxStoragePerUser} bytes) exceeded`));
-				}
-
 				// Reserve quota before upload
-				const reservation = await backend.reserveUpload(owner, storagePath, objectSize);
+				const reservation = await backend.reserveUpload(owner, storagePath, objectSize, {
+					quotaLimits: {
+						maxObjectsPerUser: quotas.maxObjectsPerUser,
+						maxStoragePerUser: quotas.maxStoragePerUser
+					}
+				});
+
 				let objectMetadata: StorageObjectMetadata;
 				try {
 					objectMetadata = await backend.put(storagePath, data, {
