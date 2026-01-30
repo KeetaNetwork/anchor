@@ -191,6 +191,19 @@ export type QuotaStatus = {
 
 // #endregion
 
+// #region Request Type Helpers
+
+/**
+ * Helper type to convert a client request type to a server request type.
+ * Transforms the account field from KeetaNetAccount to string and adds the signed field.
+ */
+export type ServerRequest<T> = Omit<T, 'account'> & {
+	account?: string;
+	signed?: HTTPSignedField;
+};
+
+// #endregion
+
 // #region PUT Object
 
 /**
@@ -826,6 +839,33 @@ class KeetaStorageAnchorInvalidAnchorAccountError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaStorageAnchorInvariantViolationError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaStorageAnchorInvariantViolationError';
+	private readonly KeetaStorageAnchorInvariantViolationErrorObjectTypeID!: string;
+	private static readonly KeetaStorageAnchorInvariantViolationErrorObjectTypeID = 'a7c5d3e1-8b9f-4c2a-b3d4-e5f6a7b8c9d0';
+
+	constructor(message?: string) {
+		super(message ?? 'Internal invariant violation');
+		this.statusCode = 500;
+
+		Object.defineProperty(this, 'KeetaStorageAnchorInvariantViolationErrorObjectTypeID', {
+			value: KeetaStorageAnchorInvariantViolationError.KeetaStorageAnchorInvariantViolationErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaStorageAnchorInvariantViolationError {
+		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvariantViolationErrorObjectTypeID', KeetaStorageAnchorInvariantViolationError.KeetaStorageAnchorInvariantViolationErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvariantViolationError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	DocumentNotFound: typeof KeetaStorageAnchorDocumentNotFoundError;
 	AccessDenied: typeof KeetaStorageAnchorAccessDeniedError;
@@ -843,6 +883,7 @@ export const Errors: {
 	UnsupportedAuthMethod: typeof KeetaStorageAnchorUnsupportedAuthMethodError;
 	InvalidResponse: typeof KeetaStorageAnchorInvalidResponseError;
 	InvalidAnchorAccount: typeof KeetaStorageAnchorInvalidAnchorAccountError;
+	InvariantViolation: typeof KeetaStorageAnchorInvariantViolationError;
 } = {
 	/**
 	 * The requested document/object was not found
@@ -922,7 +963,12 @@ export const Errors: {
 	/**
 	 * Anchor account public key from service metadata is invalid
 	 */
-	InvalidAnchorAccount: KeetaStorageAnchorInvalidAnchorAccountError
+	InvalidAnchorAccount: KeetaStorageAnchorInvalidAnchorAccountError,
+
+	/**
+	 * Internal invariant violation - indicates a bug in the code
+	 */
+	InvariantViolation: KeetaStorageAnchorInvariantViolationError
 };
 
 // #endregion
@@ -966,7 +1012,8 @@ export interface UploadReservation {
 }
 
 /**
- * Storage backend interface for the path-based API.
+ * Core CRUD operations for storage.
+ * All backends must implement these operations.
  */
 export interface StorageBackend {
 	/**
@@ -983,12 +1030,24 @@ export interface StorageBackend {
 	 * Delete an object by path
 	 */
 	delete(path: string): Promise<boolean>;
+}
 
+/**
+ * Search capability interface.
+ * Optional for backends that don't support indexing (e.g., simple S3-only backends).
+ */
+export interface SearchableStorage {
 	/**
 	 * Search for objects matching criteria
 	 */
 	search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults>;
+}
 
+/**
+ * Quota management with upload reservations.
+ * Handles quota tracking and reservation-based upload flow.
+ */
+export interface QuotaManagedStorage {
 	/**
 	 * Get quota status for a user.
 	 * Includes both actual usage and pending reservations.
@@ -1022,6 +1081,12 @@ export interface StorageBackend {
 	 */
 	releaseUpload(reservationId: string): Promise<void>;
 }
+
+/**
+ * Full storage backend combining all capabilities.
+ * Use this type when a backend supports CRUD, search, and quota management.
+ */
+export type FullStorageBackend = StorageBackend & SearchableStorage & QuotaManagedStorage;
 
 // #endregion
 

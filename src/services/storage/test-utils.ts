@@ -1,5 +1,7 @@
+import type { KeetaNet } from '../../client/index.js';
 import type {
-	StorageBackend,
+	PathPolicy,
+	FullStorageBackend,
 	StorageObjectMetadata,
 	StoragePutMetadata,
 	StorageGetResult,
@@ -8,9 +10,84 @@ import type {
 	SearchResults,
 	QuotaStatus,
 	UploadReservation
-} from '../common.js';
-import { Errors } from '../common.js';
-import { Buffer } from '../../../lib/utils/buffer.js';
+} from './common.js';
+import { Errors } from './common.js';
+import { Buffer } from '../../lib/utils/buffer.js';
+
+// #region Test Path Policy
+
+/**
+ * Parsed path for the test path policy: /user/<pubkey>/<relativePath>
+ */
+export type TestParsedPath = {
+	path: string;
+	owner: string;
+	relativePath: string;
+};
+
+/**
+ * Test path policy implementing the /user/<pubkey>/<path> pattern.
+ * Owner-based access control: only the owner can access their namespace.
+ */
+export class TestPathPolicy implements PathPolicy<TestParsedPath> {
+	// Matches /user/<owner> or /user/<owner>/ or /user/<owner>/<path>
+	readonly #pattern = /^\/user\/([^/]+)(\/(.*))?$/;
+
+	parse(path: string): TestParsedPath | null {
+		const match = path.match(this.#pattern);
+		if (!match?.[1]) {
+			return(null);
+		}
+		return({ path, owner: match[1], relativePath: match[3] ?? '' });
+	}
+
+	validate(path: string): TestParsedPath {
+		const parsed = this.parse(path);
+		if (!parsed) {
+			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
+		}
+		return(parsed);
+	}
+
+	isValid(path: string): boolean {
+		return(this.parse(path) !== null);
+	}
+
+	checkAccess(
+		account: InstanceType<typeof KeetaNet.lib.Account>,
+		parsed: TestParsedPath,
+		_ignoreOperation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+	): boolean {
+		// Owner-based access: account must match the path owner
+		return(parsed.owner === account.publicKeyString.get());
+	}
+
+	getAuthorizedSigner(parsed: TestParsedPath): string | null {
+		// The owner is the authorized signer for pre-signed URLs
+		return(parsed.owner);
+	}
+
+	/**
+	 * Helper to construct a path for a given owner and relative path.
+	 */
+	makePath(owner: string, relativePath: string): string {
+		return(`/user/${owner}/${relativePath}`);
+	}
+
+	/**
+	 * Helper to get the namespace prefix for an owner.
+	 */
+	getNamespacePrefix(owner: string): string {
+		return(`/user/${owner}/`);
+	}
+}
+
+/**
+ * Shared instance of TestPathPolicy for use in tests.
+ */
+export const testPathPolicy: TestPathPolicy = new TestPathPolicy();
+
+// #endregion
 
 // #region Types
 
@@ -161,9 +238,10 @@ function computeQuotaStatus(
 // #region Memory Storage Backend
 
 /**
- * In-memory storage backend with quota reservation support
+ * In-memory storage backend with full capabilities: CRUD, search, and quota management.
+ * Intended for testing and development purposes.
  */
-export class MemoryStorageBackend implements StorageBackend {
+export class MemoryStorageBackend implements FullStorageBackend {
 	private storage = new Map<string, StorageEntry>();
 	private reservations = new Map<string, UploadReservation>();
 	private reservationCounter = 0;

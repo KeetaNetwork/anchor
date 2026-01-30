@@ -4,73 +4,10 @@ import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
-import { MemoryStorageBackend } from './drivers/memory.js';
-import type { StorageObjectMetadata, StorageObjectVisibility, PathPolicy } from './common.js';
-import { Errors } from './common.js';
+import { MemoryStorageBackend } from './test-utils.js';
+import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
-
-// #region Test Path Policy
-
-/**
- * Parsed path for the test path policy: /user/<pubkey>/<relativePath>
- */
-type TestParsedPath = {
-	path: string;
-	owner: string;
-	relativePath: string;
-};
-
-/**
- * Test path policy implementing the /user/<pubkey>/<path> pattern.
- */
-class TestPathPolicy implements PathPolicy<TestParsedPath> {
-	// Matches /user/<owner> or /user/<owner>/ or /user/<owner>/<path>
-	readonly #pattern = /^\/user\/([^/]+)(\/(.*))?$/;
-
-	parse(path: string): TestParsedPath | null {
-		const match = path.match(this.#pattern);
-		if (!match?.[1]) {
-			return(null);
-		}
-		return({ path, owner: match[1], relativePath: match[3] ?? '' });
-	}
-
-	validate(path: string): TestParsedPath {
-		const parsed = this.parse(path);
-		if (!parsed) {
-			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
-		}
-		return(parsed);
-	}
-
-	isValid(path: string): boolean {
-		return(this.parse(path) !== null);
-	}
-
-	checkAccess(
-		account: InstanceType<typeof KeetaNet.lib.Account>,
-		parsed: TestParsedPath,
-		_ignoreOperation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
-	): boolean {
-		return(parsed.owner === account.publicKeyString.get());
-	}
-
-	getAuthorizedSigner(parsed: TestParsedPath): string | null {
-		return(parsed.owner);
-	}
-
-	makePath(owner: string, relativePath: string): string {
-		return(`/user/${owner}/${relativePath}`);
-	}
-
-	getNamespacePrefix(owner: string): string {
-		return(`/user/${owner}/`);
-	}
-}
-
-const testPathPolicy = new TestPathPolicy();
-
-// #endregion
+import { testPathPolicy } from './test-utils.js';
 
 // #region Test Harness
 

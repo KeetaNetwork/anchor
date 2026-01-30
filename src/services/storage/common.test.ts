@@ -1,72 +1,8 @@
 import { test, expect, describe } from 'vitest';
 import KeetaNet from '@keetanetwork/keetanet-client';
-import type { PathPolicy } from './common.js';
 import { parseContainerPayload, Errors } from './common.js';
 import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
-
-// #region Test Path Policy
-
-/**
- * Parsed path for the test path policy: /user/<pubkey>/<relativePath>
- */
-type TestParsedPath = {
-	path: string;
-	owner: string;
-	relativePath: string;
-};
-
-/**
- * Test path policy implementing the /user/<pubkey>/<path> pattern.
- * Owner-based access control: only the owner can access their namespace.
- */
-class TestPathPolicy implements PathPolicy<TestParsedPath> {
-	// Matches /user/<owner> or /user/<owner>/ or /user/<owner>/<path>
-	readonly #pattern = /^\/user\/([^/]+)(\/(.*))?$/;
-
-	parse(path: string): TestParsedPath | null {
-		const match = path.match(this.#pattern);
-		if (!match?.[1]) {
-			return(null);
-		}
-		return({ path, owner: match[1], relativePath: match[3] ?? '' });
-	}
-
-	validate(path: string): TestParsedPath {
-		const parsed = this.parse(path);
-		if (!parsed) {
-			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
-		}
-		return(parsed);
-	}
-
-	isValid(path: string): boolean {
-		return(this.parse(path) !== null);
-	}
-
-	checkAccess(
-		account: InstanceType<typeof KeetaNet.lib.Account>,
-		parsed: TestParsedPath,
-		_ignoreOperation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
-	): boolean {
-		return(parsed.owner === account.publicKeyString.get());
-	}
-
-	getAuthorizedSigner(parsed: TestParsedPath): string | null {
-		return(parsed.owner);
-	}
-
-	makePath(owner: string, relativePath: string): string {
-		return(`/user/${owner}/${relativePath}`);
-	}
-
-	getNamespacePrefix(owner: string): string {
-		return(`/user/${owner}/`);
-	}
-}
-
-const testPathPolicy = new TestPathPolicy();
-
-// #endregion
+import { testPathPolicy } from './test-utils.js';
 
 const validPaths = [
 	{ input: '/user/abc123/file.txt', path: '/user/abc123/file.txt', owner: 'abc123', relativePath: 'file.txt' },

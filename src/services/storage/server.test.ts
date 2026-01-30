@@ -1,86 +1,14 @@
 import { expect, test, describe } from 'vitest';
-import type { KeetaStorageAnchorSearchRequest, PathPolicy } from './common.js';
-import { Errors } from './common.js';
+import type { KeetaStorageAnchorSearchRequest } from './common.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
-import { MemoryStorageBackend } from './drivers/memory.js';
+import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
 import { SignData, FormatData } from '../../lib/utils/signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData, getKeetaStorageAnchorDeleteRequestSigningData } from './common.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
-import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
-
-// #region Test Path Policy
-
-/**
- * Parsed path for the test path policy: /user/<pubkey>/<relativePath>
- */
-type TestParsedPath = {
-	path: string;
-	owner: string;
-	relativePath: string;
-};
-
-/**
- * Test path policy implementing the /user/<pubkey>/<path> pattern.
- * Owner-based access control: only the owner can access their namespace.
- */
-class TestPathPolicy implements PathPolicy<TestParsedPath> {
-	// Matches /user/<owner> or /user/<owner>/ or /user/<owner>/<path>
-	readonly #pattern = /^\/user\/([^/]+)(\/(.*))?$/;
-
-	parse(path: string): TestParsedPath | null {
-		const match = path.match(this.#pattern);
-		if (!match?.[1]) {
-			return(null);
-		}
-		return({ path, owner: match[1], relativePath: match[3] ?? '' });
-	}
-
-	validate(path: string): TestParsedPath {
-		const parsed = this.parse(path);
-		if (!parsed) {
-			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
-		}
-		return(parsed);
-	}
-
-	isValid(path: string): boolean {
-		return(this.parse(path) !== null);
-	}
-
-	checkAccess(
-		account: InstanceType<typeof KeetaNet.lib.Account>,
-		parsed: TestParsedPath,
-		_ignoreOperation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
-	): boolean {
-		// Owner-based access: account must match the path owner
-		return(parsed.owner === account.publicKeyString.get());
-	}
-
-	getAuthorizedSigner(parsed: TestParsedPath): string | null {
-		// The owner is the authorized signer for pre-signed URLs
-		return(parsed.owner);
-	}
-
-	/**
-	 * Helper to construct a path for a given owner and relative path.
-	 */
-	makePath(owner: string, relativePath: string): string {
-		return(`/user/${owner}/${relativePath}`);
-	}
-
-	/**
-	 * Helper to get the namespace prefix for an owner.
-	 */
-	getNamespacePrefix(owner: string): string {
-		return(`/user/${owner}/`);
-	}
-}
-
-const testPathPolicy = new TestPathPolicy();
-
-// #endregion
+import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
+import { testPathPolicy } from './test-utils.js';
 
 // #region Test Harness
 
@@ -817,6 +745,148 @@ describe('Storage Server', function() {
 				}));
 			});
 		}
+	});
+
+	describe('Metadata and Quota Operations', function() {
+		test('GET /api/metadata returns 404 for non-existent object', function() {
+			return(withServer(async function({ url }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const path = `/user/${account.publicKeyString.get()}/nonexistent.txt`;
+
+				const signable = getKeetaStorageAnchorGetRequestSigningData({ path, account: account.publicKeyString.get() });
+				const signed = await SignData(account.assertAccount(), signable);
+				const signedUrl = addSignatureToURL(new URL(`${url}/api/metadata${path}`), { signedField: signed, account: account.assertAccount() });
+
+				const response = await fetch(signedUrl, {
+					method: 'GET',
+					headers: { 'Accept': 'application/json' }
+				});
+
+				expect(response.status).toBe(404);
+			}));
+		});
+
+		test('GET /api/quota returns success with quota info', function() {
+			return(withServer(async function({ url, backend }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+				// Add some data to the backend
+				const testPath = `/user/${account.publicKeyString.get()}/test.txt`;
+				await backend.put(testPath, Buffer.from('test data'), {
+					owner: account.publicKeyString.get(),
+					tags: [],
+					visibility: 'private'
+				});
+
+				const signable: [string] = ['quota'];
+				const signed = await SignData(account.assertAccount(), signable);
+				const signedUrl = addSignatureToURL(new URL(`${url}/api/quota`), { signedField: signed, account: account.assertAccount() });
+
+				const response = await fetch(signedUrl, {
+					method: 'GET',
+					headers: { 'Accept': 'application/json' }
+				});
+
+				expect(response.status).toBe(200);
+				const json: unknown = await response.json();
+				expectOk(json);
+				if (isJsonObject(json) && 'quota' in json && isJsonObject(json.quota)) {
+					expect(json.quota.objectCount).toBe(1);
+					expect(json.quota.totalSize).toBeGreaterThan(0);
+					expect(json.quota.remainingObjects).toBeGreaterThan(0);
+					expect(json.quota.remainingSize).toBeGreaterThan(0);
+				}
+			}));
+		});
+	});
+
+	describe('Search Operations', function() {
+		test('POST /api/search with pagination', function() {
+			return(withServer(async function({ url, backend, anchorAccount }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const owner = account.publicKeyString.get();
+
+				// Create encrypted test data
+				const container = EncryptedContainer.fromPlaintext(
+					JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('test').toString('base64') }),
+					[account, anchorAccount]
+				);
+				const encryptedData = arrayBufferLikeToBuffer(await container.getEncodedBuffer());
+
+				// Add 5 files
+				for (let i = 0; i < 5; i++) {
+					await backend.put(`/user/${owner}/file${i}.txt`, encryptedData, {
+						owner,
+						tags: ['test'],
+						visibility: 'private'
+					});
+				}
+
+				// Search with limit 2
+				const request: KeetaStorageAnchorSearchRequest = {
+					criteria: { pathPrefix: `/user/${owner}/` },
+					pagination: { limit: 2 },
+					account: owner
+				};
+				const signable = getKeetaStorageAnchorSearchRequestSigningData(request);
+				const signed = await SignData(account.assertAccount(), signable);
+
+				const response = await fetch(`${url}/api/search`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+					body: JSON.stringify({ ...request, signed })
+				});
+
+				expect(response.status).toBe(200);
+				const json: unknown = await response.json();
+				expectOk(json);
+				if (isJsonObject(json) && 'results' in json && Array.isArray(json.results)) {
+					expect(json.results.length).toBe(2);
+					expect('nextCursor' in json).toBe(true);
+				}
+			}));
+		});
+
+		test('POST /api/search with name and recursive criteria', function() {
+			return(withServer(async function({ url, backend, anchorAccount }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const owner = account.publicKeyString.get();
+
+				// Create encrypted test data
+				const container = EncryptedContainer.fromPlaintext(
+					JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('test').toString('base64') }),
+					[account, anchorAccount]
+				);
+				const encryptedData = arrayBufferLikeToBuffer(await container.getEncodedBuffer());
+
+				// Create files at different depths
+				await backend.put(`/user/${owner}/doc.txt`, encryptedData, { owner, tags: [], visibility: 'private' });
+				await backend.put(`/user/${owner}/sub/doc.txt`, encryptedData, { owner, tags: [], visibility: 'private' });
+				await backend.put(`/user/${owner}/sub/other.txt`, encryptedData, { owner, tags: [], visibility: 'private' });
+
+				// Search for 'doc' with recursive
+				const request: KeetaStorageAnchorSearchRequest = {
+					criteria: { pathPrefix: `/user/${owner}/`, name: 'doc', recursive: true },
+					account: owner
+				};
+				const signable = getKeetaStorageAnchorSearchRequestSigningData(request);
+				const signed = await SignData(account.assertAccount(), signable);
+
+				const response = await fetch(`${url}/api/search`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+					body: JSON.stringify({ ...request, signed })
+				});
+
+				expect(response.status).toBe(200);
+				const json: unknown = await response.json();
+				expectOk(json);
+				if (isJsonObject(json) && 'results' in json && Array.isArray(json.results)) {
+					// Should find both doc.txt files
+					expect(json.results.length).toBe(2);
+				}
+			}));
+		});
 	});
 });
 

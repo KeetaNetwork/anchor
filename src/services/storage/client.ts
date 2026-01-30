@@ -254,6 +254,10 @@ export class KeetaStorageAnchorSession {
 
 	/**
 	 * Resolve a relative path to a full storage path.
+	 *
+	 * @param relativePath - Path to resolve (absolute paths returned as-is)
+	 *
+	 * @returns The full storage path with working directory prepended if relative
 	 */
 	#resolvePath(relativePath: string): string {
 		// If path is already absolute (starts with /), use it as-is
@@ -268,6 +272,14 @@ export class KeetaStorageAnchorSession {
 	/**
 	 * Store data at a relative path.
 	 * For public visibility, the anchor account is automatically fetched from the provider.
+	 *
+	 * @param relativePath - The relative path
+	 * @param data - The binary data to store
+	 * @param options.mimeType - MIME type of the data
+	 * @param options.tags - Optional plaintext tags
+	 * @param options.visibility - Object visibility
+	 *
+	 * @returns The created/updated object metadata
 	 */
 	async put(
 		relativePath: string,
@@ -293,11 +305,16 @@ export class KeetaStorageAnchorSession {
 		if (visibility === 'public' && this.provider.anchorAccount) {
 			putOpts.anchorAccount = this.provider.anchorAccount;
 		}
+
 		return(await this.provider.put(putOpts));
 	}
 
 	/**
 	 * Get data from a relative path.
+	 *
+	 * @param relativePath - The relative path
+	 *
+	 * @returns The decrypted data and mime-type, or null if not found
 	 */
 	async get(relativePath: string): Promise<{ data: Buffer; mimeType: string } | null> {
 		const fullPath = this.#resolvePath(relativePath);
@@ -306,6 +323,10 @@ export class KeetaStorageAnchorSession {
 
 	/**
 	 * Delete data at a relative path.
+	 *
+	 * @param relativePath - The relative path
+	 *
+	 * @returns True if the object was deleted, false if it didn't exist
 	 */
 	async delete(relativePath: string): Promise<boolean> {
 		const fullPath = this.#resolvePath(relativePath);
@@ -314,6 +335,11 @@ export class KeetaStorageAnchorSession {
 
 	/**
 	 * Search for objects. Owner is automatically set to the session account.
+	 *
+	 * @param criteria - Optional search criteria (owner is set automatically)
+	 * @param pagination - Optional pagination settings
+	 *
+	 * @returns Search results with optional nextCursor for pagination
 	 */
 	async search(
 		criteria?: Omit<SearchCriteria, 'owner'>,
@@ -337,6 +363,11 @@ export class KeetaStorageAnchorSession {
 
 	/**
 	 * Get a pre-signed public URL for a relative path.
+	 *
+	 * @param relativePath - The relative path
+	 * @param options.ttl - Optional TTL in seconds
+	 *
+	 * @returns The pre-signed URL for public access
 	 */
 	async getPublicUrl(relativePath: string, options?: { ttl?: number }): Promise<string> {
 		const fullPath = this.#resolvePath(relativePath);
@@ -388,6 +419,17 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 	}
 
+	/**
+	 * Get operation endpoint data for a given operation.
+	 *
+	 * @param operationName - The operation to get endpoint data for
+	 * @param params - Optional URL template parameters to substitute
+	 *
+	 * @returns The endpoint URL and authentication configuration
+	 *
+	 * @throws OperationNotSupported if the operation is not available
+	 * @throws UnsupportedAuthMethod if the authentication method is not supported
+	 */
 	async #getOperationData(operationName: keyof KeetaStorageAnchorOperations, params?: { [key: string]: string; }) {
 		const endpoint = await this.serviceInfo.operations[operationName];
 		if (endpoint === undefined) {
@@ -404,13 +446,23 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		});
 	}
 
+	/**
+	 * Parse an error response from the server.
+	 * Attempts to restore structured error types from JSON.
+	 *
+	 * @param data - The error response data
+	 *
+	 * @returns A KeetaAnchorError or generic Error with the error message
+	 *
+	 * @throws InvariantViolation if the response is not a valid error object
+	 */
 	async #parseResponseError(data: unknown) {
 		if (typeof data !== 'object' || data === null) {
-			throw(new Error('invariant: expected error response object'));
+			throw(new Errors.InvariantViolation('expected error response object'));
 		}
 
 		if (!('ok' in data) || data.ok !== false) {
-			throw(new Error('invariant: expected error response with ok=false'));
+			throw(new Errors.InvariantViolation('expected error response with ok=false'));
 		}
 
 		let parsedError: KeetaAnchorError | null = null;
@@ -436,9 +488,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Resolve account to use for signing, with private key validation.
-	 * @param account - Optional account override
-	 * @param requirePrivateKey - Whether private key is required (default: true)
-	 * @returns Resolved account
+	 *
+	 * @param account - Optional account override (falls back to client account)
+	 * @param requirePrivateKey - Whether private key is required
+	 *
+	 * @returns The resolved account with optional private key validation
+	 *
 	 * @throws PrivateKeyRequired if private key is needed but not available
 	 */
 	#resolveSignerAccount(
@@ -456,6 +511,71 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		return(resolved);
 	}
 
+	/**
+	 * Handle error responses from binary PUT/GET requests.
+	 * Attempts to parse JSON error response, otherwise throws generic error.
+	 *
+	 * @param response - The failed HTTP response to handle
+	 *
+	 * @throws The parsed error from the response body, or a generic ServiceUnavailable error
+	 */
+	async #handleBinaryResponseError(response: Response): Promise<never> {
+		try {
+			const errorJSON: unknown = await response.json();
+			if (typeof errorJSON === 'object' && errorJSON !== null && 'ok' in errorJSON && errorJSON.ok === false) {
+				throw(await this.#parseResponseError(errorJSON));
+			}
+		} catch (e) {
+			// Re-throw if it's already a parsed error
+			if (KeetaAnchorError.isInstance(e)) {
+				throw(e);
+			}
+
+			// If JSON parsing fails, throw generic error
+			throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
+		}
+
+		// If we got here, JSON parsed but didn't have expected error format
+		throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
+	}
+
+	/**
+	 * Normalize a path suffix and append it to a URL pathname.
+	 * Handles leading slashes and trailing slashes consistently.
+	 *
+	 * @param url - The URL object to modify (mutated in place)
+	 * @param path - The path suffix to append
+	 */
+	#appendPathToUrl(url: URL, path: string): void {
+		const pathSuffix = path.startsWith('/') ? path.slice(1) : path;
+		url.pathname = url.pathname.replace(/\/$/, '') + '/' + pathSuffix;
+	}
+
+	/**
+	 * Make a JSON API request to the storage service.
+	 * Handles authentication, serialization, and response parsing.
+	 *
+	 * @typeParam Response - The expected response type
+	 * @typeParam Request - The request body type
+	 * @typeParam SerializedRequest - The serialized request type
+	 *
+	 * @param input.method - HTTP method
+	 * @param input.endpoint - Operation endpoint name
+	 * @param input.account - Account for signing the request
+	 * @param input.params - URL template parameters
+	 * @param input.queryParams - Query string parameters
+	 * @param input.pathSuffix - Path to append to the endpoint URL
+	 * @param input.body - Request body
+	 * @param input.serializeRequest - Function to serialize the request body
+	 * @param input.getSignedData - Function to get signing data from request
+	 * @param input.isResponse - Type guard for the response
+	 *
+	 * @returns The successful response
+	 *
+	 * @throws AccountRequired if account is required but not provided
+	 * @throws InvariantViolation if getSignedData is required but not provided
+	 * @throws InvalidResponse if the response is invalid
+	 */
 	async #makeRequest<
 		Response extends { ok: true } | { ok: false; error: string; },
 		Request = undefined,
@@ -468,8 +588,8 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		queryParams?: { [key: string]: string; } | undefined;
 		pathSuffix?: string | undefined;
 		body?: Request | undefined;
-		serializeRequest?: (body: Request) => (SerializedRequest | Promise<Omit<SerializedRequest, 'signed'>>);
-		getSignedData?: (request: SerializedRequest) => Signable;
+		serializeRequest?: (body: Request) => Omit<SerializedRequest, 'signed'> | Promise<Omit<SerializedRequest, 'signed'>>;
+		getSignedData?: (request: Omit<SerializedRequest, 'signed'>) => Signable;
 		isResponse: (data: unknown) => data is Response;
 	}): Promise<Extract<Response, { ok: true }>> {
 		const { url, auth } = await this.#getOperationData(input.endpoint, input.params);
@@ -488,12 +608,11 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 		}
 
-		let serializedRequest;
-		if (input.body && input.serializeRequest) {
-			serializedRequest = await input.serializeRequest(input.body);
-		} else {
-			serializedRequest = input.body;
-		}
+		// Serialize the request body if provided.
+		const serializedBody: Omit<SerializedRequest, 'signed'> | undefined =
+			(input.body !== undefined && input.serializeRequest)
+				? await input.serializeRequest(input.body)
+				: undefined;
 
 		let signed: HTTPSignedField | undefined;
 		if (auth.type === 'required' || (auth.type === 'optional' && input.account)) {
@@ -502,11 +621,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 
 			if (!input.getSignedData) {
-				throw(new Error('invariant: getSignedData required for signed requests'));
+				throw(new Errors.InvariantViolation('getSignedData required for signed requests'));
 			}
 
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const signable = input.getSignedData(serializedRequest as SerializedRequest);
+			if (serializedBody === undefined) {
+				throw(new Errors.InvariantViolation('serializedBody required for signed requests'));
+			}
+
+			const signable = input.getSignedData(serializedBody);
 			signed = await SignData(input.account.assertAccount(), signable);
 		}
 
@@ -517,18 +639,18 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		let body: BodyInit | null = null;
 		if (input.method === 'POST' || input.method === 'PUT') {
 			headers['Content-Type'] = 'application/json';
-			body = JSON.stringify({ ...serializedRequest, signed });
+			body = JSON.stringify({ ...serializedBody, signed });
 		} else {
 			if (signed) {
 				if (!input.account) {
-					throw(new Error('invariant: Account information is required for this operation'));
+					throw(new Errors.InvariantViolation('Account information is required for this operation'));
 				}
 
 				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account.assertAccount() });
 			}
 
 			if (input.body) {
-				throw(new Error('invariant: body cannot be sent with GET/DELETE requests'));
+				throw(new Errors.InvariantViolation('body cannot be sent with GET/DELETE requests'));
 			}
 		}
 
@@ -550,7 +672,19 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}
 
 	/**
-	 * Make a PUT request with raw binary body
+	 * Make a PUT request with raw binary body.
+	 * Used for uploading encrypted container data to storage.
+	 *
+	 * @param input.path - The storage path for the object
+	 * @param input.data - The binary data (encrypted container) to upload
+	 * @param input.visibility - Object visibility (public or private)
+	 * @param input.tags - Optional tags to associate with the object
+	 * @param input.account - Account for signing the request
+	 *
+	 * @returns The created/updated object metadata
+	 *
+	 * @throws AccountRequired if authentication is required but no account provided
+	 * @throws ServiceUnavailable if the request fails
 	 */
 	async #makeBinaryPutRequest(input: {
 		path: string;
@@ -561,9 +695,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}): Promise<{ ok: true; object: StorageObjectMetadata }> {
 		const { url, auth } = await this.#getOperationData('put');
 
-		// Append path to URL pathname
-		const pathSuffix = input.path.startsWith('/') ? input.path.slice(1) : input.path;
-		url.pathname = url.pathname.replace(/\/$/, '') + '/' + pathSuffix;
+		this.#appendPathToUrl(url, input.path);
 
 		if (auth.type === 'required' && !input.account) {
 			throw(new Errors.AccountRequired());
@@ -575,7 +707,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const signable = getKeetaStorageAnchorPutRequestSigningData({ path: input.path, visibility, tags });
 		const signed = await SignData(input.account.assertAccount(), signable);
 
-		// Add auth to query params using helper (consistent with GET)
+		// Add auth to query params using helper
 		const signedUrl = addSignatureToURL(url, { signedField: signed, account: input.account.assertAccount() });
 		signedUrl.searchParams.set('visibility', visibility);
 		if (tags.length > 0) {
@@ -589,24 +721,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		});
 
 		if (!response.ok) {
-			// Try to parse error as JSON (consistent with GET error handling)
-			try {
-				const errorJSON: unknown = await response.json();
-				if (typeof errorJSON === 'object' && errorJSON !== null && 'ok' in errorJSON && errorJSON.ok === false) {
-					throw(await this.#parseResponseError(errorJSON));
-				}
-			} catch (e) {
-				// Re-throw if it's already a parsed error
-				if (KeetaAnchorError.isInstance(e)) {
-					throw(e);
-				}
-
-				// If JSON parsing fails, throw generic error
-				throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
-			}
-
-			// If we got here, JSON parsed but didn't have expected error format
-			throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
+			await this.#handleBinaryResponseError(response);
 		}
 
 		const responseJSON: unknown = await response.json();
@@ -622,7 +737,16 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}
 
 	/**
-	 * Make a GET request that returns raw binary data
+	 * Make a GET request that returns raw binary data.
+	 * Used for downloading encrypted container data from storage.
+	 *
+	 * @param input.path - The storage path to retrieve
+	 * @param input.account - Account for signing the request
+	 *
+	 * @returns The raw binary data (encrypted container)
+	 *
+	 * @throws AccountRequired if authentication is required but no account provided
+	 * @throws ServiceUnavailable if the request fails
 	 */
 	async #makeBinaryGetRequest(input: {
 		path: string;
@@ -630,9 +754,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}): Promise<Buffer> {
 		const { url, auth } = await this.#getOperationData('get');
 
-		// Append path to URL pathname
-		const pathSuffix = input.path.startsWith('/') ? input.path.slice(1) : input.path;
-		url.pathname = url.pathname.replace(/\/$/, '') + '/' + pathSuffix;
+		this.#appendPathToUrl(url, input.path);
 
 		if (auth.type === 'required' && !input.account) {
 			throw(new Errors.AccountRequired());
@@ -650,24 +772,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		});
 
 		if (!response.ok) {
-			// Try to parse error as JSON
-			try {
-				const errorJSON: unknown = await response.json();
-				if (typeof errorJSON === 'object' && errorJSON !== null && 'ok' in errorJSON && errorJSON.ok === false) {
-					throw(await this.#parseResponseError(errorJSON));
-				}
-			} catch (e) {
-				// Re-throw if it's already a parsed error
-				if (KeetaAnchorError.isInstance(e)) {
-					throw(e);
-				}
-
-				// If JSON parsing fails, throw generic error
-				throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
-			}
-
-			// If we got here, JSON parsed but didn't have expected error format
-			throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
+			await this.#handleBinaryResponseError(response);
 		}
 
 		const arrayBuffer = await response.arrayBuffer();
@@ -676,6 +781,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Delete an object by path.
+	 *
+	 * @param request - The delete request parameters
+	 * @param request.path - The storage path to delete
+	 * @param request.account - Optional account for signing (falls back to client account)
+	 *
+	 * @returns True if the object was deleted, false if it didn't exist
 	 */
 	async delete(request: KeetaStorageAnchorDeleteClientRequest): Promise<boolean> {
 		this.logger?.debug(`Deleting object at ${request.path} for provider ID: ${String(this.providerID)}`);
@@ -701,9 +812,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Data is automatically decrypted from the EncryptedContainer.
 	 *
 	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param options.account - Optional account to use (for signing and decryption)
+	 * @param options.account - Optional account for signing and decryption (falls back to client account)
 	 *
 	 * @returns The decrypted data and mime-type, or null if not found
+	 *
+	 * @throws PrivateKeyRequired if no account with private key is available
+	 * @throws InvalidResponse if the stored data cannot be decrypted
 	 */
 	async get(options: {
 		path: string;
@@ -714,7 +828,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
 		try {
-			// Get raw binary data (EncryptedContainer)
+			// Get raw binary data
 			const encodedData = await this.#makeBinaryGetRequest({
 				path,
 				account: signerAccount
@@ -745,8 +859,11 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Get metadata for an object by path.
 	 *
 	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param options.account - Optional account to use (for signing)
+	 * @param options.account - Optional account for signing (falls back to client account)
+	 *
 	 * @returns The object metadata, or null if not found
+	 *
+	 * @throws PrivateKeyRequired if no account with private key is available
 	 */
 	async getMetadata(options: {
 		path: string;
@@ -787,12 +904,17 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Data is automatically wrapped in an EncryptedContainer.
 	 *
 	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param options.data - The data to store
-	 * @param options.mimeType - MIME type of the data
-	 * @param options.tags - Optional tags for the object
-	 * @param options.visibility - Optional visibility ('private' or 'public')
-	 * @param options.account - Optional account to use (for signing)
-	 * @param options.anchorAccount - Optional anchor account (required for public objects)
+	 * @param options.data - The binary data to store
+	 * @param options.mimeType - MIME type of the data (stored encrypted in the container)
+	 * @param options.tags - Optional plaintext tags for the object
+	 * @param options.visibility - Object visibility
+	 * @param options.account - Optional account for signing (falls back to client account)
+	 * @param options.anchorAccount - Anchor account for public object encryption (falls back to provider's anchor)
+	 *
+	 * @returns The created/updated object metadata
+	 *
+	 * @throws PrivateKeyRequired if no account with private key is available
+	 * @throws InvalidAnchorAccount if public visibility requires an anchor account that's not available
 	 */
 	async put(options: {
 		path: string;
@@ -861,7 +983,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 *
 	 * @param options.criteria - Search criteria
 	 * @param options.pagination - Optional pagination settings
-	 * @param options.account - Optional account to use
+	 * @param options.account - Optional account for signing (falls back to client account)
+	 *
+	 * @returns Search results with optional nextCursor for pagination
 	 */
 	async search(options: {
 		criteria: SearchCriteria;
@@ -917,7 +1041,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	/**
 	 * Get quota status for the authenticated user.
 	 *
-	 * @param options.account - Optional account to use
+	 * @param options.account - Optional account for signing (falls back to client account)
+	 *
+	 * @returns Current quota status
 	 */
 	async getQuotaStatus(options?: {
 		account?: InstanceType<typeof KeetaNetLib.Account>;
@@ -947,9 +1073,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Generate a pre-signed URL for public access to an object.
 	 * The URL is signed by the owner and has a limited lifetime.
 	 *
-	 * @param options.path - The path to the public object
-	 * @param options.ttl - TTL (time-to-live in seconds), defaults to 1 hour
-	 * @param options.account - The owner account (must have private key for signing)
+	 * @param options.path - The storage path to the public object
+	 * @param options.ttl - TTL in seconds
+	 * @param options.account - Owner account for signing (falls back to client account, must have private key)
+	 *
+	 * @returns The pre-signed URL for unauthenticated access
+	 *
+	 * @throws PrivateKeyRequired if no account with private key is available
+	 * @throws OperationNotSupported if the public endpoint is not available
 	 */
 	async getPublicUrl(options: {
 		path: string;
@@ -973,9 +1104,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		// Construct the public URL with path in pathname
 		const publicUrl = new URL(operationInfo.url().href);
-		// Append path to URL pathname (remove leading slash from path if URL already ends with one)
-		const pathSuffix = path.startsWith('/') ? path.slice(1) : path;
-		publicUrl.pathname = publicUrl.pathname.replace(/\/$/, '') + '/' + pathSuffix;
+		this.#appendPathToUrl(publicUrl, path);
 		publicUrl.searchParams.set('expires', String(expiresAt));
 		publicUrl.searchParams.set('nonce', signed.nonce);
 		publicUrl.searchParams.set('timestamp', signed.timestamp);
@@ -1066,7 +1195,7 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 	/** @internal */
 	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaStorageAnchorClientAccessToken) {
-			throw(new Error('invariant: invalid internal access token'));
+			throw(new Errors.InvariantViolation('invalid internal access token'));
 		}
 
 		return({
