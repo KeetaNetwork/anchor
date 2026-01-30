@@ -992,7 +992,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const { criteria, pagination } = options;
 		this.logger?.debug('Searching for objects');
 
-		const signerAccount = this.#resolveSignerAccount(options.account, false);
+		const signerAccount = this.#resolveSignerAccount(options.account);
 		const bodyToSend: { criteria: SearchCriteria; pagination?: SearchPagination; account?: InstanceType<typeof KeetaNetLib.Account> } = {
 			criteria,
 			account: signerAccount
@@ -1050,14 +1050,13 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}): Promise<QuotaStatus> {
 		this.logger?.debug('Getting quota status');
 
-		const signerAccount = this.#resolveSignerAccount(options?.account, false);
+		const signerAccount = this.#resolveSignerAccount(options?.account);
 		const response = await this.#makeRequest<
 			{ ok: true; quota: QuotaStatus } | { ok: false; error: string },
 			{ account?: InstanceType<typeof KeetaNetLib.Account> },
 			KeetaStorageAnchorQuotaRequest
 		>({
 			method: 'GET',
-
 			endpoint: 'quota',
 			account: signerAccount,
 			getSignedData: () => getKeetaStorageAnchorQuotaRequestSigningData({}),

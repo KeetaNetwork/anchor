@@ -2,6 +2,25 @@ import { expect, test, describe } from 'vitest';
 import { MemoryStorageBackend } from './test-utils.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 
+/**
+ * Helper to reduce boilerplate in backend tests.
+ */
+function createTestBackend(ownerSuffix: string): {
+	backend: MemoryStorageBackend;
+	owner: string;
+	makePath: (filename: string) => string;
+} {
+	const backend = new MemoryStorageBackend();
+	const owner = `${ownerSuffix}-owner`;
+	return({
+		backend,
+		owner,
+		makePath: function(filename: string) {
+			return(`/user/${owner}/${filename}`);
+		}
+	});
+}
+
 describe('MemoryStorageBackend', function() {
 	test('CRUD operations', async function() {
 		const backend = new MemoryStorageBackend();
@@ -168,14 +187,13 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('concurrent reservations accumulate', async function() {
-			const backend = new MemoryStorageBackend();
-			const owner = 'concurrent-owner';
+			const { backend, owner, makePath } = createTestBackend('concurrent');
 			const sizes = [100, 200, 300];
 
 			// Create reservations
 			const reservations = await Promise.all(
 				sizes.map(function(size, i) {
-					return(backend.reserveUpload(owner, `/user/${owner}/file${i}.txt`, size));
+					return(backend.reserveUpload(owner, makePath(`file${i}.txt`), size));
 				})
 			);
 
@@ -194,9 +212,8 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('overwrite with smaller data does not inflate remainingSize', async function() {
-			const backend = new MemoryStorageBackend();
-			const owner = 'overwrite-test-owner';
-			const path = `/user/${owner}/file.txt`;
+			const { backend, owner, makePath } = createTestBackend('overwrite-test');
+			const path = makePath('file.txt');
 
 			// Store a 100-byte file
 			await backend.put(path, Buffer.from('x'.repeat(100)), { owner, tags: [], visibility: 'private' });
@@ -219,6 +236,32 @@ describe('MemoryStorageBackend', function() {
 			const quotaAfter = await backend.getQuotaStatus(owner);
 			expect(quotaAfter.totalSize).toBe(50);
 			expect(quotaAfter.objectCount).toBe(1);
+		});
+
+		test('expired reservations are pruned from quota', async function() {
+			const { backend, owner, makePath } = createTestBackend('expiry-test');
+			const path = makePath('file.txt');
+
+			// Create a reservation with a very short TTL (1ms)
+			await backend.reserveUpload(owner, path, 500, 1);
+
+			// Wait for the reservation to expire
+			await new Promise(function(resolve) {
+				setTimeout(resolve, 10);
+			});
+
+			// After expiry, quota should not include the expired reservation
+			const quotaAfterExpiry = await backend.getQuotaStatus(owner);
+			expect(quotaAfterExpiry.objectCount).toBe(0);
+			expect(quotaAfterExpiry.totalSize).toBe(0);
+
+			// Can create a new reservation for the same path (no duplicate)
+			const newReservation = await backend.reserveUpload(owner, path, 100);
+			expect(newReservation.id).toBeDefined();
+
+			const quotaWithNew = await backend.getQuotaStatus(owner);
+			expect(quotaWithNew.objectCount).toBe(1);
+			expect(quotaWithNew.totalSize).toBe(100);
 		});
 	});
 });

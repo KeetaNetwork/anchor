@@ -32,6 +32,7 @@ export const EncryptedContainerErrorCodes = [
 	'NO_KEYS_PROVIDED',
 	'NO_MATCHING_KEY',
 	'DECRYPTION_FAILED',
+	'DECOMPRESSION_FAILED',
 
 	// Signing issues
 	'SIGNER_REQUIRES_PRIVATE_KEY',
@@ -731,7 +732,13 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 			throw(new EncryptedContainerError('NO_MATCHING_KEY', 'No keys found which can perform decryption on the supplied encryption box'));
 		}
 
-		const cipherKey = Buffer.from(await decryptionKeyInfo.privateKey.decrypt(bufferToArrayBuffer(decryptionKeyInfo.encryptedSymmetricKey)));
+		let cipherKey: Buffer;
+		try {
+			const dataToDecrypt = bufferToArrayBuffer(decryptionKeyInfo.encryptedSymmetricKey);
+			cipherKey = arrayBufferLikeToBuffer(await decryptionKeyInfo.privateKey.decrypt(dataToDecrypt));
+		} catch (err) {
+			throw(new EncryptedContainerError('DECRYPTION_FAILED', `Key decryption failed: ${err instanceof Error ? err.message : String(err)}`));
+		}
 
 		const cipherIV = inputInfo.cipherIV;
 		if (cipherIV === undefined) {
@@ -740,10 +747,14 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 
 		const encryptedCompressedValue = inputInfo.innerValue;
 		const decipher = crypto.createDecipheriv(algorithm, cipherKey, cipherIV);
-		containedCompressed = Buffer.concat([
-			decipher.update(encryptedCompressedValue),
-			decipher.final()
-		]);
+		try {
+			containedCompressed = Buffer.concat([
+				decipher.update(encryptedCompressedValue),
+				decipher.final()
+			]);
+		} catch (err) {
+			throw(new EncryptedContainerError('DECRYPTION_FAILED', `Cipher decryption failed: ${err instanceof Error ? err.message : String(err)}`));
+		}
 
 		cipherInfo = {
 			isEncrypted: true,
@@ -759,7 +770,13 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 		};
 	}
 
-	const plaintext = Buffer.from(await zlibInflateAsync(bufferToArrayBuffer(containedCompressed)));
+	let plaintext: Buffer;
+	try {
+		const inflated = await zlibInflateAsync(bufferToArrayBuffer(containedCompressed));
+		plaintext = arrayBufferLikeToBuffer(inflated);
+	} catch (err) {
+		throw(new EncryptedContainerError('DECOMPRESSION_FAILED', `Inflate failed: ${err instanceof Error ? err.message : String(err)}`));
+	}
 
 	return({
 		version: inputInfo.version,

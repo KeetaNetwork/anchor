@@ -251,6 +251,18 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		maxStoragePerUser: 100 * 1024 * 1024 // 100MB
 	};
 
+	/**
+	 * Prune expired reservations to keep quota accounting accurate.
+	 */
+	#pruneExpiredReservations(): void {
+		const now = Date.now();
+		for (const [id, reservation] of this.reservations) {
+			if (new Date(reservation.expiresAt).getTime() <= now) {
+				this.reservations.delete(id);
+			}
+		}
+	}
+
 	async put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
 		return(putToStorage(this.storage, path, data, metadata));
 	}
@@ -268,6 +280,9 @@ export class MemoryStorageBackend implements FullStorageBackend {
 	}
 
 	async getQuotaStatus(owner: string): Promise<QuotaStatus> {
+		// Prune expired reservations first
+		this.#pruneExpiredReservations();
+
 		// Get base quota from actual storage
 		const baseQuota = computeQuotaStatus(this.storage, owner, this.quotaConfig);
 
@@ -294,6 +309,9 @@ export class MemoryStorageBackend implements FullStorageBackend {
 	}
 
 	async reserveUpload(owner: string, path: string, size: number, ttlMs?: number): Promise<UploadReservation> {
+		// Prune expired reservations first
+		this.#pruneExpiredReservations();
+
 		// Default TTL: 5 minutes
 		const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1000;
 		const ttl = ttlMs ?? DEFAULT_RESERVATION_TTL_MS;
