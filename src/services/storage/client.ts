@@ -280,14 +280,20 @@ export class KeetaStorageAnchorSession {
 	): Promise<StorageObjectMetadata> {
 		const fullPath = this.#resolvePath(relativePath);
 		const visibility = options.visibility ?? this.#defaultVisibility;
-		const anchorAccount = visibility === 'public' ? this.provider.anchorAccount ?? undefined : undefined;
-		return(await this.provider.put(
-			fullPath,
+		const putOpts: Parameters<typeof this.provider.put>[0] = {
+			path: fullPath,
 			data,
-			{ ...options, visibility },
-			this.account,
-			anchorAccount
-		));
+			mimeType: options.mimeType,
+			visibility,
+			account: this.account
+		};
+		if (options.tags) {
+			putOpts.tags = options.tags;
+		}
+		if (visibility === 'public' && this.provider.anchorAccount) {
+			putOpts.anchorAccount = this.provider.anchorAccount;
+		}
+		return(await this.provider.put(putOpts));
 	}
 
 	/**
@@ -295,7 +301,7 @@ export class KeetaStorageAnchorSession {
 	 */
 	async get(relativePath: string): Promise<{ data: Buffer; mimeType: string } | null> {
 		const fullPath = this.#resolvePath(relativePath);
-		return(await this.provider.get(fullPath, this.account));
+		return(await this.provider.get({ path: fullPath, account: this.account }));
 	}
 
 	/**
@@ -318,7 +324,15 @@ export class KeetaStorageAnchorSession {
 			owner: this.account.publicKeyString.get()
 		};
 
-		return(await this.provider.search(fullCriteria, pagination, this.account));
+		const searchOpts: Parameters<typeof this.provider.search>[0] = {
+			criteria: fullCriteria,
+			account: this.account
+		};
+		if (pagination) {
+			searchOpts.pagination = pagination;
+		}
+
+		return(await this.provider.search(searchOpts));
 	}
 
 	/**
@@ -326,7 +340,15 @@ export class KeetaStorageAnchorSession {
 	 */
 	async getPublicUrl(relativePath: string, options?: { ttl?: number }): Promise<string> {
 		const fullPath = this.#resolvePath(relativePath);
-		return(await this.provider.getPublicUrl(fullPath, options, this.account));
+		const urlOpts: Parameters<typeof this.provider.getPublicUrl>[0] = {
+			path: fullPath,
+			account: this.account
+		};
+		if (options?.ttl) {
+			urlOpts.ttl = options.ttl;
+		}
+
+		return(await this.provider.getPublicUrl(urlOpts));
 	}
 }
 
@@ -410,6 +432,28 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 			return(new Error(`storage request failed: ${errorStr}`));
 		}
+	}
+
+	/**
+	 * Resolve account to use for signing, with private key validation.
+	 * @param account - Optional account override
+	 * @param requirePrivateKey - Whether private key is required (default: true)
+	 * @returns Resolved account
+	 * @throws PrivateKeyRequired if private key is needed but not available
+	 */
+	#resolveSignerAccount(
+		account: InstanceType<typeof KeetaNetLib.Account> | undefined,
+		requirePrivateKey = true
+	): InstanceType<typeof KeetaNetLib.Account> {
+		const resolved = account ?? this.client.account;
+		if (requirePrivateKey && !resolved?.hasPrivateKey) {
+			throw(new Errors.PrivateKeyRequired());
+		}
+		if (!resolved) {
+			throw(new Errors.AccountRequired());
+		}
+
+		return(resolved);
 	}
 
 	async #makeRequest<
@@ -656,21 +700,19 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Get (retrieve) an object by path.
 	 * Data is automatically decrypted from the EncryptedContainer.
 	 *
-	 * @param path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param account - Optional account to use (for signing and decryption)
+	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
+	 * @param options.account - Optional account to use (for signing and decryption)
+	 *
 	 * @returns The decrypted data and mime-type, or null if not found
 	 */
-	async get(
-		path: string,
-		account?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<{ data: Buffer; mimeType: string } | null> {
+	async get(options: {
+		path: string;
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<{ data: Buffer; mimeType: string } | null> {
+		const { path } = options;
 		this.logger?.debug(`Getting object at path: ${path}`);
 
-		const signerAccount = account ?? this.client.account;
-		if (!signerAccount?.hasPrivateKey) {
-			throw(new Errors.PrivateKeyRequired());
-		}
-
+		const signerAccount = this.#resolveSignerAccount(options.account);
 		try {
 			// Get raw binary data (EncryptedContainer)
 			const encodedData = await this.#makeBinaryGetRequest({
@@ -702,21 +744,18 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	/**
 	 * Get metadata for an object by path.
 	 *
-	 * @param path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param account - Optional account to use (for signing)
+	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
+	 * @param options.account - Optional account to use (for signing)
 	 * @returns The object metadata, or null if not found
 	 */
-	async getMetadata(
-		path: string,
-		account?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<StorageObjectMetadata | null> {
+	async getMetadata(options: {
+		path: string;
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<StorageObjectMetadata | null> {
+		const { path } = options;
 		this.logger?.debug(`Getting metadata at path: ${path}`);
 
-		const signerAccount = account ?? this.client.account;
-		if (!signerAccount?.hasPrivateKey) {
-			throw(new Errors.PrivateKeyRequired());
-		}
-
+		const signerAccount = this.#resolveSignerAccount(options.account);
 		try {
 			const response = await this.#makeRequest<
 				{ ok: true; object: StorageObjectMetadata } | { ok: false; error: string }
@@ -747,39 +786,37 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Put (create/update) an object.
 	 * Data is automatically wrapped in an EncryptedContainer.
 	 *
-	 * @param path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
-	 * @param data - The data to store
-	 * @param options - Options including mimeType, tags, visibility
-	 * @param account - Optional account to use (for signing)
-	 * @param anchorAccount - Optional anchor account (required for public objects)
+	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
+	 * @param options.data - The data to store
+	 * @param options.mimeType - MIME type of the data
+	 * @param options.tags - Optional tags for the object
+	 * @param options.visibility - Optional visibility ('private' or 'public')
+	 * @param options.account - Optional account to use (for signing)
+	 * @param options.anchorAccount - Optional anchor account (required for public objects)
 	 */
-	async put(
-		path: string,
-		data: Buffer,
-		options: {
-			mimeType: string;
-			tags?: string[];
-			visibility?: StorageObjectVisibility;
-		},
-		account?: InstanceType<typeof KeetaNetLib.Account>,
-		anchorAccount?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<StorageObjectMetadata> {
+	async put(options: {
+		path: string;
+		data: Buffer;
+		mimeType: string;
+		tags?: string[];
+		visibility?: StorageObjectVisibility;
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+		anchorAccount?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<StorageObjectMetadata> {
+		const { path, data, mimeType, tags, visibility, anchorAccount } = options;
 		this.logger?.debug(`Putting object at path: ${path}`);
 
-		const signerAccount = account ?? this.client.account;
-		if (!signerAccount?.hasPrivateKey) {
-			throw(new Errors.PrivateKeyRequired());
-		}
+		const signerAccount = this.#resolveSignerAccount(options.account);
 
 		// Create payload with mime-type inside
 		const payload = {
-			mimeType: options.mimeType,
+			mimeType,
 			data: data.toString('base64')
 		};
 
 		// Create EncryptedContainer with appropriate principals
 		const principals: InstanceType<typeof KeetaNetLib.Account>[] = [signerAccount];
-		if (options.visibility === 'public') {
+		if (visibility === 'public') {
 			if (!anchorAccount) {
 				throw(new Errors.AccountRequired('anchorAccount is required for public visibility so the server can decrypt and serve the object'));
 			}
@@ -805,11 +842,11 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			data: binaryData,
 			account: signerAccount
 		};
-		if (options.visibility !== undefined) {
-			putInput.visibility = options.visibility;
+		if (visibility !== undefined) {
+			putInput.visibility = visibility;
 		}
-		if (options.tags !== undefined) {
-			putInput.tags = options.tags;
+		if (tags !== undefined) {
+			putInput.tags = tags;
 		}
 
 		const response = await this.#makeBinaryPutRequest(putInput);
@@ -821,15 +858,20 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Search for objects matching criteria.
+	 *
+	 * @param options.criteria - Search criteria
+	 * @param options.pagination - Optional pagination settings
+	 * @param options.account - Optional account to use
 	 */
-	async search(
-		criteria: SearchCriteria,
-		pagination?: SearchPagination,
-		account?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<{ results: StorageObjectMetadata[]; nextCursor?: string }> {
+	async search(options: {
+		criteria: SearchCriteria;
+		pagination?: SearchPagination;
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<{ results: StorageObjectMetadata[]; nextCursor?: string }> {
+		const { criteria, pagination } = options;
 		this.logger?.debug('Searching for objects');
 
-		const signerAccount = account ?? this.client.account;
+		const signerAccount = this.#resolveSignerAccount(options.account, false);
 		const bodyToSend: { criteria: SearchCriteria; pagination?: SearchPagination; account?: InstanceType<typeof KeetaNetLib.Account> } = {
 			criteria,
 			account: signerAccount
@@ -874,13 +916,15 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Get quota status for the authenticated user.
+	 *
+	 * @param options.account - Optional account to use
 	 */
-	async getQuotaStatus(
-		account?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<QuotaStatus> {
+	async getQuotaStatus(options?: {
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<QuotaStatus> {
 		this.logger?.debug('Getting quota status');
 
-		const signerAccount = account ?? this.client.account;
+		const signerAccount = this.#resolveSignerAccount(options?.account, false);
 		const response = await this.#makeRequest<
 			{ ok: true; quota: QuotaStatus } | { ok: false; error: string },
 			{ account?: InstanceType<typeof KeetaNetLib.Account> },
@@ -903,21 +947,19 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Generate a pre-signed URL for public access to an object.
 	 * The URL is signed by the owner and has a limited lifetime.
 	 *
-	 * @param path - The path to the public object
-	 * @param options - Options including TTL (time-to-live in seconds)
-	 * @param account - The owner account (must have private key for signing)
+	 * @param options.path - The path to the public object
+	 * @param options.ttl - TTL (time-to-live in seconds), defaults to 1 hour
+	 * @param options.account - The owner account (must have private key for signing)
 	 */
-	async getPublicUrl(
-		path: string,
-		options?: { ttl?: number },
-		account?: InstanceType<typeof KeetaNetLib.Account>
-	): Promise<string> {
-		const signerAccount = account ?? this.client.account;
-		if (!signerAccount?.hasPrivateKey) {
-			throw(new Errors.PrivateKeyRequired());
-		}
+	async getPublicUrl(options: {
+		path: string;
+		ttl?: number;
+		account?: InstanceType<typeof KeetaNetLib.Account>;
+	}): Promise<string> {
+		const { path } = options;
+		const signerAccount = this.#resolveSignerAccount(options.account);
 
-		const ttl = options?.ttl ?? 3600; // Default 1 hour
+		const ttl = options.ttl ?? 3600; // Default 1 hour
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
 		// Sign the message

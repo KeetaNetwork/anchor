@@ -14,6 +14,7 @@ import type {
 	StorageBackend,
 	QuotaConfig,
 	StorageObjectVisibility,
+	StorageObjectMetadata,
 	PathPolicy
 } from './common.ts';
 import {
@@ -39,6 +40,60 @@ import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
 
+/**
+ * Configuration for the Storage Anchor
+ *
+ * The Storage Anchor provides encrypted object storage with the following operations:
+ *
+ * PUT (Create/Update):
+ *   1. Client creates EncryptedContainer with data, shares with anchor for public objects
+ *   2. Client signs request (path, visibility, tags) and sends to server
+ *   3. Server reserves quota, validates, stores object, commits reservation
+ *
+ * GET (Retrieve):
+ *   1. Client signs request (path) and sends to server
+ *   2. Server verifies access, returns EncryptedContainer
+ *   3. Client decrypts with their private key
+ *
+ * DELETE:
+ *   1. Client signs request (path) and sends to server
+ *   2. Server verifies ownership, removes object
+ *
+ * SEARCH:
+ *   1. Client signs request with criteria (tags, prefix, etc.)
+ *   2. Server returns matching metadata (scoped to user's namespace)
+ *
+ * PUBLIC ACCESS (Pre-signed URLs):
+ *   1. Client generates pre-signed URL with expiry, signed by owner
+ *   2. Anyone can fetch via URL (no auth headers)
+ *   3. Server verifies signature, expiry, and visibility
+ *   4. Server decrypts and returns plaintext content
+ *
+ *
+ *   +-------------------+            +---------------------+             +------------------+
+ *   |       Client      |            |  Storage Anchor     |             |  Storage Backend |
+ *   +-------------------+            +---------------------+             +------------------+
+ *         |                                   |                                  |
+ *   (PUT) Create EncryptedContainer           |                                  |
+ *         | Sign(path, visibility, tags)      |                                  |
+ *         |---------------------------------->|                                  |
+ *         |                                   | reserveUpload() ---------------->|
+ *         |                                   | validate, put() ---------------->|
+ *         |                                   | commitUpload() ----------------->|
+ *         |<--------------------------------- | { ok: true, object: metadata }   |
+ *         |                                   |                                  |
+ *   (GET) Sign(path) ------------------------>|                                  |
+ *         |                                   | get() -------------------------->|
+ *         |<--------------------------------- | EncryptedContainer (binary)      |
+ *         | Decrypt with private key          |                                  |
+ *         |                                   |                                  |
+ *   (PUBLIC) Generate pre-signed URL          |                                  |
+ *         | URL with expires, signature       |                                  |
+ *   (Anyone) Fetch URL ---------------------->|                                  |
+ *         |                                   | verify signature, expiry         |
+ *         |                                   | get(), decrypt ----------------->|
+ *         |<--------------------------------- | Plaintext content                |
+ */
 export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -358,32 +413,21 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const storagePath = objectPath;
 				const owner = account.publicKeyString.get();
 
-				const objectMetadata = await backend.withAtomic(async function(atomic) {
-					// Check if object already exists
-					const existing = await atomic.get(storagePath);
-					const existingSize = existing ? parseInt(existing.metadata.size, 10) : 0;
-					const isNewObject = !existing;
-
-					// Get quota status
-					const quotaStatus = await atomic.getQuotaStatus(owner);
-
-					// Object count check - only reject for new objects
-					if (isNewObject && quotaStatus.objectCount >= quotas.maxObjectsPerUser) {
-						throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
-					}
-
-					// Size check - use delta for updates
-					const sizeDelta = objectSize - existingSize;
-					if (quotaStatus.totalSize + sizeDelta > quotas.maxStoragePerUser) {
-						throw(new Errors.QuotaExceeded('Storage quota exceeded'));
-					}
-
-					return(await atomic.put(storagePath, data, {
+				// Reserve quota before upload
+				const reservation = await backend.reserveUpload(owner, storagePath, objectSize);
+				let objectMetadata: StorageObjectMetadata;
+				try {
+					objectMetadata = await backend.put(storagePath, data, {
 						owner,
 						tags,
 						visibility
-					}));
-				});
+					});
+
+					await backend.commitUpload(reservation.id);
+				} catch (e) {
+					await backend.releaseUpload(reservation.id);
+					throw(e);
+				}
 
 				const response: KeetaStorageAnchorPutResponse = {
 					ok: true,

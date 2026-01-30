@@ -305,6 +305,54 @@ describe('Storage Server', function() {
 		}
 	});
 
+	describe('Cross-User PUT Authorization', function() {
+		test('PUT rejects cross-user overwrite', function() {
+			return(withServer(async function({ backend, url }) {
+				const seed = KeetaNet.lib.Account.generateRandomSeed();
+				const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+				const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+				const ownerPubKey = ownerAccount.publicKeyString.get();
+				const objectPath = `/user/${ownerPubKey}/secret.txt`;
+
+				// Owner creates an object
+				await backend.put(objectPath, Buffer.from('original data'), {
+					owner: ownerPubKey,
+					tags: ['private'],
+					visibility: 'private'
+				});
+
+				// Attacker tries to overwrite it
+				const visibility = 'private';
+				const tags: string[] = [];
+				const signedField = await SignData(
+					attackerAccount,
+					getKeetaStorageAnchorPutRequestSigningData({ path: objectPath, visibility, tags })
+				);
+
+				const requestUrl = addSignatureToURL(
+					`${url}/api/object${objectPath}?visibility=${visibility}`,
+					{ signedField, account: attackerAccount }
+				);
+
+				const response = await fetch(requestUrl.toString(), {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
+					body: bufferToArrayBuffer(Buffer.from('malicious data'))
+				});
+				expect(response.status).toBe(403);
+
+				const json: unknown = await response.json();
+				expectNotOk(json);
+				expectErrorContains(json, 'namespace');
+
+				// Verify original data is unchanged
+				const stored = await backend.get(objectPath);
+				expect(stored?.data.toString()).toBe('original data');
+			}));
+		});
+	});
+
 	describe('SEARCH Authorization', function() {
 		// Mismatched owner/pathPrefix returns empty results (no info leakage)
 		const emptyResultCases = [
@@ -613,6 +661,163 @@ describe('Storage Server', function() {
 			});
 		}
 	});
+
+	describe('Replay Attack Prevention', function() {
+		const replayCases = [
+			{
+				name: 'rejects request with stale timestamp (too old)',
+				getTimestamp: function() {
+					// 10 minutes in the past (beyond default 5 min skew)
+					return(new Date(Date.now() - 10 * 60 * 1000).toISOString());
+				}
+			},
+			{
+				name: 'rejects request with future timestamp (too far ahead)',
+				getTimestamp: function() {
+					// 10 minutes in the future (beyond default 5 min skew)
+					return(new Date(Date.now() + 10 * 60 * 1000).toISOString());
+				}
+			}
+		];
+
+		for (const testCase of replayCases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ backend, url }) {
+					const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+					const userPubKey = userAccount.publicKeyString.get();
+					const objectPath = `/user/${userPubKey}/test.txt`;
+
+					await backend.put(objectPath, Buffer.from('test data'), {
+						owner: userPubKey,
+						tags: [],
+						visibility: 'private'
+					});
+
+					// Create signed data with manipulated timestamp
+					const nonce = crypto.randomUUID();
+					const timestamp = testCase.getTimestamp();
+					const { verificationData } = FormatData(userAccount,
+						getKeetaStorageAnchorGetRequestSigningData({ path: objectPath, account: userPubKey }),
+						nonce,
+						timestamp
+					);
+					const signatureResult = await userAccount.sign(bufferToArrayBuffer(verificationData));
+					const signature = signatureResult.getBuffer().toString('base64');
+
+					const requestUrl = addSignatureToURL(
+						`${url}/api/object${objectPath}`,
+						{
+							signedField: { nonce, timestamp, signature },
+							account: userAccount
+						}
+					);
+
+					const response = await fetch(requestUrl.toString(), {
+						method: 'GET',
+						headers: { 'Accept': 'application/json' }
+					});
+
+					// Request should be rejected (4xx error)
+					expect(response.status).toBeGreaterThanOrEqual(400);
+					expect(response.status).toBeLessThan(500);
+				}));
+			});
+		}
+	});
+
+	describe('Public Endpoint Access Control', function() {
+		const accessControlCases = [
+			{
+				name: 'private object returns 403 on public endpoint',
+				visibility: 'private' as const,
+				objectExists: true,
+				expectedStatus: 403,
+				expectedError: 'not public'
+			},
+			{
+				name: 'non-existent object returns 404',
+				visibility: 'public' as const,
+				objectExists: false,
+				expectedStatus: 404,
+				expectedError: 'not found'
+			}
+		];
+
+		for (const testCase of accessControlCases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ backend, url }) {
+					const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+					const ownerPubKey = ownerAccount.publicKeyString.get();
+					const objectPath = `/user/${ownerPubKey}/test-file.txt`;
+
+					if (testCase.objectExists) {
+						await backend.put(objectPath, Buffer.from('test content'), {
+							owner: ownerPubKey,
+							tags: [],
+							visibility: testCase.visibility
+						});
+					}
+
+					// Create a valid signed URL
+					const expires = String(Math.floor(Date.now() / 1000) + 3600);
+					const expiresNum = parseInt(expires, 10);
+					const { nonce, timestamp, verificationData } = FormatData(ownerAccount, [objectPath, expiresNum]);
+					const signatureResult = await ownerAccount.sign(bufferToArrayBuffer(verificationData));
+					const signature = signatureResult.getBuffer().toString('base64');
+
+					const requestUrl = new URL(`/api/public${objectPath}`, url);
+					requestUrl.searchParams.set('expires', expires);
+					requestUrl.searchParams.set('nonce', nonce);
+					requestUrl.searchParams.set('timestamp', timestamp);
+					requestUrl.searchParams.set('signature', signature);
+
+					const response = await fetch(requestUrl);
+					expect(response.status).toBe(testCase.expectedStatus);
+
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}));
+			});
+		}
+	});
+
+	describe('Path Traversal Prevention', function() {
+		const traversalCases = [
+			{ name: 'rejects ../ traversal', path: '/user/abc/../other/file.txt' },
+			{ name: 'rejects /../ in middle', path: '/user/abc/docs/../../../etc/passwd' },
+			{ name: 'rejects /. prefix', path: '/./user/abc/file.txt' },
+			{ name: 'rejects // normalization', path: '/user//abc//file.txt' },
+			{ name: 'rejects trailing /..', path: '/user/abc/..' }
+		];
+
+		for (const testCase of traversalCases) {
+			test(testCase.name, function() {
+				return(withServer(async function({ url }) {
+					const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+					const signedField = await SignData(
+						userAccount,
+						getKeetaStorageAnchorGetRequestSigningData({ path: testCase.path, account: userAccount.publicKeyString.get() })
+					);
+
+					const requestUrl = addSignatureToURL(
+						`${url}/api/object${testCase.path}`,
+						{ signedField, account: userAccount }
+					);
+
+					const response = await fetch(requestUrl.toString(), {
+						method: 'GET',
+						headers: { 'Accept': 'application/json' }
+					});
+
+					// Should reject with 400 (invalid path) or 403 (access denied)
+					expect(response.status).toBeGreaterThanOrEqual(400);
+					expect(response.status).toBeLessThan(500);
+				}));
+			});
+		}
+	});
 });
 
 describe('MemoryStorageBackend', function() {
@@ -707,34 +912,103 @@ describe('MemoryStorageBackend', function() {
 		expect(afterShrink.totalSize).toBe(2);
 	});
 
-	test('atomic operations', async function() {
-		const backend = new MemoryStorageBackend();
-		const owner = 'atomic-test-owner';
-		const path = `/user/${owner}/file.txt`;
+	describe('upload reservations', function() {
+		const reservationCases = [
+			{
+				name: 'reserves quota and reflects in status',
+				reserveSize: 100,
+				commitAfterPut: false,
+				releaseAfterReserve: false,
+				expectedDuringCount: 1,
+				expectedDuringSize: 100,
+				expectedAfterCount: 1,
+				expectedAfterSize: 100
+			},
+			{
+				name: 'commit after put reflects actual storage',
+				reserveSize: 9, // 'test data'.length
+				commitAfterPut: true,
+				releaseAfterReserve: false,
+				expectedDuringCount: 1,
+				expectedDuringSize: 9,
+				expectedAfterCount: 1,
+				expectedAfterSize: 9,
+				putData: 'test data'
+			},
+			{
+				name: 'release frees reserved quota',
+				reserveSize: 1000,
+				commitAfterPut: false,
+				releaseAfterReserve: true,
+				expectedDuringCount: 1,
+				expectedDuringSize: 1000,
+				expectedAfterCount: 0,
+				expectedAfterSize: 0
+			}
+		];
 
-		// Commit applies changes
-		await backend.withAtomic(async function(atomic) {
-			await atomic.put(path, Buffer.from('committed'), { owner, tags: [], visibility: 'private' });
-		});
-		expect((await backend.get(path))?.data.toString()).toBe('committed');
+		for (const testCase of reservationCases) {
+			test(testCase.name, async function() {
+				const backend = new MemoryStorageBackend();
+				const owner = 'reservation-test-owner';
+				const path = `/user/${owner}/file.txt`;
 
-		// Rollback discards changes
-		const path2 = `/user/${owner}/file2.txt`;
-		try {
-			await backend.withAtomic(async function(atomic) {
-				await atomic.put(path2, Buffer.from('should-not-exist'), { owner, tags: [], visibility: 'private' });
-				throw(new Error('intentional'));
+				// Reserve quota
+				const reservation = await backend.reserveUpload(owner, path, testCase.reserveSize);
+				expect(reservation.id).toBeDefined();
+				expect(reservation.owner).toBe(owner);
+
+				// Check quota during reservation
+				const duringQuota = await backend.getQuotaStatus(owner);
+				expect(duringQuota.objectCount).toBe(testCase.expectedDuringCount);
+				expect(duringQuota.totalSize).toBe(testCase.expectedDuringSize);
+
+				// Perform action
+				if (testCase.commitAfterPut && testCase.putData) {
+					const data = Buffer.from(testCase.putData);
+					await backend.put(path, data, { owner, tags: [], visibility: 'private' });
+					await backend.commitUpload(reservation.id);
+				} else if (testCase.releaseAfterReserve) {
+					await backend.releaseUpload(reservation.id);
+				}
+
+				// Check final quota
+				const afterQuota = await backend.getQuotaStatus(owner);
+				expect(afterQuota.objectCount).toBe(testCase.expectedAfterCount);
+				expect(afterQuota.totalSize).toBe(testCase.expectedAfterSize);
 			});
-		} catch {
-			// Expected
 		}
-		expect(await backend.get(path2)).toBeNull();
 
-		// Atomic reads see uncommitted writes within same scope
-		await backend.withAtomic(async function(atomic) {
-			await atomic.put(path, Buffer.from('updated'), { owner, tags: [], visibility: 'private' });
-			const read = await atomic.get(path);
-			expect(read?.data.toString()).toBe('updated');
+		test('throws when quota exceeded', async function() {
+			const backend = new MemoryStorageBackend();
+			await expect(backend.reserveUpload('x', '/user/x/big.bin', 200 * 1024 * 1024))
+				.rejects.toThrow('quota');
+		});
+
+		test('concurrent reservations accumulate', async function() {
+			const backend = new MemoryStorageBackend();
+			const owner = 'concurrent-owner';
+			const sizes = [100, 200, 300];
+
+			// Create reservations
+			const reservations = await Promise.all(
+				sizes.map(function(size, i) {
+					return(backend.reserveUpload(owner, `/user/${owner}/file${i}.txt`, size));
+				})
+			);
+
+			// Verify accumulated quota
+			const quota = await backend.getQuotaStatus(owner);
+			expect(quota.objectCount).toBe(3);
+			expect(quota.totalSize).toBe(600);
+
+			// Release middle reservation
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			await backend.releaseUpload(reservations[1]!.id);
+
+			const afterRelease = await backend.getQuotaStatus(owner);
+			expect(afterRelease.objectCount).toBe(2);
+			expect(afterRelease.totalSize).toBe(400);
 		});
 	});
 });

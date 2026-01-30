@@ -1,14 +1,15 @@
 import type {
 	StorageBackend,
-	StorageAtomicInterface,
 	StorageObjectMetadata,
 	StoragePutMetadata,
 	StorageGetResult,
 	SearchCriteria,
 	SearchPagination,
 	SearchResults,
-	QuotaStatus
+	QuotaStatus,
+	UploadReservation
 } from '../common.js';
+import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 
 // #region Types
@@ -157,78 +158,15 @@ function computeQuotaStatus(
 
 // #endregion
 
-// #region Atomic Scope
-
-/**
- * Cow Atomic scope for MemoryStorageBackend
- */
-class MemoryAtomicScope implements StorageAtomicInterface {
-	private readonly snapshot: Map<string, StorageEntry>;
-	private committed = false;
-	private rolledBack = false;
-
-	constructor(
-		private readonly backend: MemoryStorageBackend,
-		private readonly quotaConfig: QuotaConfig
-	) {
-		this.snapshot = new Map(backend.getStorageSnapshot());
-	}
-
-	async put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata> {
-		this.ensureActive();
-		return(putToStorage(this.snapshot, path, data, metadata));
-	}
-
-	async get(path: string): Promise<StorageGetResult | null> {
-		this.ensureActive();
-		return(getFromStorage(this.snapshot, path));
-	}
-
-	async delete(path: string): Promise<boolean> {
-		this.ensureActive();
-		return(this.snapshot.delete(path));
-	}
-
-	async search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults> {
-		this.ensureActive();
-		return(searchStorage(this.snapshot, criteria, pagination));
-	}
-
-	async getQuotaStatus(owner: string): Promise<QuotaStatus> {
-		this.ensureActive();
-		return(computeQuotaStatus(this.snapshot, owner, this.quotaConfig));
-	}
-
-	async commit(): Promise<void> {
-		this.ensureActive();
-		this.backend.replaceStorage(this.snapshot);
-		this.committed = true;
-	}
-
-	async rollback(): Promise<void> {
-		this.ensureActive();
-		this.rolledBack = true;
-	}
-
-	private ensureActive(): void {
-		if (this.committed) {
-			throw(new Error('invariant: atomic scope already committed'));
-		}
-		if (this.rolledBack) {
-			throw(new Error('invariant: atomic scope already rolled back'));
-		}
-	}
-}
-
-// #endregion
-
 // #region Memory Storage Backend
 
 /**
- * In-memory storage backend
+ * In-memory storage backend with quota reservation support
  */
 export class MemoryStorageBackend implements StorageBackend {
 	private storage = new Map<string, StorageEntry>();
+	private reservations = new Map<string, UploadReservation>();
+	private reservationCounter = 0;
 
 	private readonly quotaConfig: QuotaConfig = {
 		maxObjectsPerUser: 1000,
@@ -252,35 +190,77 @@ export class MemoryStorageBackend implements StorageBackend {
 	}
 
 	async getQuotaStatus(owner: string): Promise<QuotaStatus> {
-		return(computeQuotaStatus(this.storage, owner, this.quotaConfig));
-	}
+		// Get base quota from actual storage
+		const baseQuota = computeQuotaStatus(this.storage, owner, this.quotaConfig);
 
-	async beginAtomic(): Promise<StorageAtomicInterface> {
-		return(new MemoryAtomicScope(this, this.quotaConfig));
-	}
+		// Add pending reservations for this owner
+		let reservedObjects = 0;
+		let reservedSize = 0;
+		for (const reservation of this.reservations.values()) {
+			if (reservation.owner === owner) {
+				// Only count as new object if path doesn't exist
+				if (!this.storage.has(reservation.path)) {
+					reservedObjects++;
+				}
 
-	async withAtomic<T>(fn: (atomic: StorageAtomicInterface) => Promise<T>): Promise<T> {
-		const atomic = await this.beginAtomic();
-		try {
-			const result = await fn(atomic);
-			await atomic.commit();
-			return(result);
-		} catch (e) {
-			await atomic.rollback();
-			throw(e);
+				reservedSize += reservation.size;
+			}
 		}
+
+		return({
+			objectCount: baseQuota.objectCount + reservedObjects,
+			totalSize: baseQuota.totalSize + reservedSize,
+			remainingObjects: Math.max(0, baseQuota.remainingObjects - reservedObjects),
+			remainingSize: Math.max(0, baseQuota.remainingSize - reservedSize)
+		});
 	}
 
-	getStorageSnapshot(): Map<string, StorageEntry> {
-		return(new Map(this.storage));
+	async reserveUpload(owner: string, path: string, size: number, ttlMs?: number): Promise<UploadReservation> {
+		// Default TTL: 5 minutes
+		const DEFAULT_RESERVATION_TTL_MS = 5 * 60 * 1000;
+		const ttl = ttlMs ?? DEFAULT_RESERVATION_TTL_MS;
+
+		// Check if this would exceed quota
+		const quotaStatus = await this.getQuotaStatus(owner);
+		const isNewObject = !this.storage.has(path);
+		const existingSize = this.storage.get(path)?.data.length ?? 0;
+		const sizeDelta = size - existingSize;
+
+		if (isNewObject && quotaStatus.remainingObjects <= 0) {
+			throw(new Errors.QuotaExceeded('Maximum number of objects reached'));
+		}
+
+		if (sizeDelta > 0 && quotaStatus.remainingSize < sizeDelta) {
+			throw(new Errors.QuotaExceeded('Storage quota exceeded'));
+		}
+
+		const now = new Date();
+		const reservation: UploadReservation = {
+			id: `res_${++this.reservationCounter}`,
+			owner,
+			path,
+			size: sizeDelta, // Reserve only the delta
+			createdAt: now.toISOString(),
+			expiresAt: new Date(now.getTime() + ttl).toISOString()
+		};
+
+		this.reservations.set(reservation.id, reservation);
+		return(reservation);
 	}
 
-	replaceStorage(newStorage: Map<string, StorageEntry>): void {
-		this.storage = new Map(newStorage);
+	async commitUpload(reservationId: string): Promise<void> {
+		// Simply remove the reservation - the actual storage was already updated via put()
+		this.reservations.delete(reservationId);
+	}
+
+	async releaseUpload(reservationId: string): Promise<void> {
+		// Remove the reservation, freeing the reserved quota
+		this.reservations.delete(reservationId);
 	}
 
 	clear(): void {
 		this.storage.clear();
+		this.reservations.clear();
 	}
 
 	get size(): number {

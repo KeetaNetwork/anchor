@@ -161,10 +161,19 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 		tags?: string[];
 		visibility?: StorageObjectVisibility;
 	}): Promise<StorageObjectMetadata> {
-		return(provider.put(makePath(relativePath), Buffer.from(content), {
+		const putOpts: Parameters<typeof provider.put>[0] = {
+			path: makePath(relativePath),
+			data: Buffer.from(content),
 			mimeType: 'text/plain',
-			...opts
-		}, account));
+			account
+		};
+		if (opts?.tags) {
+			putOpts.tags = opts.tags;
+		}
+		if (opts?.visibility) {
+			putOpts.visibility = opts.visibility;
+		}
+		return(provider.put(putOpts));
 	}
 
 	await testFunction({ provider, account, anchorAccount, userClient, backend, storageClient, makePath, putText });
@@ -199,18 +208,21 @@ describe('Storage Client - Private Object CRUD', function() {
 			const path = makePath('test.txt');
 
 			// PUT
-			const putResult = await provider.put(path, testData, {
+			const putResult = await provider.put({
+				path,
+				data: testData,
 				mimeType: 'text/plain',
 				tags: ['test', 'hello'],
-				visibility: 'private'
-			}, account);
+				visibility: 'private',
+				account
+			});
 
 			expect(putResult.path).toBe(path);
 			expect(putResult.visibility).toBe('private');
 			expect(putResult.tags).toEqual(['test', 'hello']);
 
 			// GET
-			const getResult = await provider.get(path, account);
+			const getResult = await provider.get({ path, account });
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Hello, World!');
 			expect(getResult?.mimeType).toBe('text/plain');
@@ -225,7 +237,7 @@ describe('Storage Client - Private Object CRUD', function() {
 			await putText('to-delete.txt', 'delete me');
 
 			// Verify exists
-			const before = await provider.get(path, account);
+			const before = await provider.get({ path, account });
 			expect(before).not.toBeNull();
 
 			// DELETE
@@ -233,7 +245,7 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(deleted).toBe(true);
 
 			// Verify gone
-			const after = await provider.get(path, account);
+			const after = await provider.get({ path, account });
 			expect(after).toBeNull();
 		}));
 	});
@@ -246,15 +258,19 @@ describe('Storage Client - Public Objects', function() {
 			const path = makePath('public.txt');
 
 			// PUT with visibility: public and anchor account
-			const putResult = await provider.put(path, testData, {
+			const putResult = await provider.put({
+				path,
+				data: testData,
 				mimeType: 'text/plain',
-				visibility: 'public'
-			}, account, anchorAccount);
+				visibility: 'public',
+				account,
+				anchorAccount
+			});
 
 			expect(putResult.visibility).toBe('public');
 
 			// GET still works for owner
-			const getResult = await provider.get(path, account);
+			const getResult = await provider.get({ path, account });
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Public content');
 		}));
@@ -266,13 +282,17 @@ describe('Storage Client - Public Objects', function() {
 			const path = makePath('signed-url.txt');
 
 			// PUT public object
-			await provider.put(path, testData, {
+			await provider.put({
+				path,
+				data: testData,
 				mimeType: 'text/plain',
-				visibility: 'public'
-			}, account, anchorAccount);
+				visibility: 'public',
+				account,
+				anchorAccount
+			});
 
 			// Generate pre-signed URL
-			const publicUrl = await provider.getPublicUrl(path, { ttl: 3600 }, account);
+			const publicUrl = await provider.getPublicUrl({ path, ttl: 3600, account });
 			expect(publicUrl).toContain('/api/public');
 			expect(publicUrl).toContain('signature=');
 			expect(publicUrl).toContain('expires=');
@@ -298,8 +318,9 @@ describe('Storage Client - Search', function() {
 
 			// Search by prefix
 			const results = await provider.search({
-				pathPrefix: makePath('docs/')
-			}, undefined, account);
+				criteria: { pathPrefix: makePath('docs/') },
+				account
+			});
 
 			expect(results.results).toHaveLength(2);
 		}));
@@ -311,7 +332,7 @@ describe('Storage Client - Search', function() {
 			await putText('tagged2.txt', '2', { tags: ['important', 'urgent'] });
 			await putText('tagged3.txt', '3', { tags: ['other'] });
 
-			const results = await provider.search({ tags: ['important'] }, undefined, account);
+			const results = await provider.search({ criteria: { tags: ['important'] }, account });
 			expect(results.results).toHaveLength(2);
 		}));
 	});
@@ -321,7 +342,7 @@ describe('Storage Client - Quota', function() {
 	test('quota tracking updates after put', function() {
 		return(withClient(randomSeed(), async function({ provider, account, putText }) {
 			// Check initial quota
-			const before = await provider.getQuotaStatus(account);
+			const before = await provider.getQuotaStatus({ account });
 			expect(before.objectCount).toBe(0);
 			expect(before.totalSize).toBe(0);
 
@@ -329,7 +350,7 @@ describe('Storage Client - Quota', function() {
 			await putText('quota-test.txt', '12345');
 
 			// Check updated quota
-			const after = await provider.getQuotaStatus(account);
+			const after = await provider.getQuotaStatus({ account });
 			expect(after.objectCount).toBe(1);
 			expect(after.totalSize).toBeGreaterThan(0);
 		}));
@@ -340,7 +361,7 @@ describe('Storage Client - Error Cases', function() {
 	test('get non-existent object returns null', function() {
 		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
 			const path = makePath('does-not-exist.txt');
-			const result = await provider.get(path, account);
+			const result = await provider.get({ path, account });
 			expect(result).toBeNull();
 		}));
 	});

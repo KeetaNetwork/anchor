@@ -216,13 +216,12 @@ export type KeetaStorageAnchorPutRequest = {
 	visibility?: StorageObjectVisibility;
 };
 
-export type KeetaStorageAnchorPutResponse = {
-	ok: true;
-	object: StorageObjectMetadata;
-} | {
-	ok: false;
-	error: string;
-};
+/**
+ * Generic response type for storage operations.
+ */
+export type StorageResponse<T> = { ok: true } & T | { ok: false; error: string };
+
+export type KeetaStorageAnchorPutResponse = StorageResponse<{ object: StorageObjectMetadata }>;
 
 export function getKeetaStorageAnchorPutRequestSigningData(
 	input: { path: string; visibility?: StorageObjectVisibility; tags?: string[] }
@@ -254,14 +253,10 @@ export type KeetaStorageAnchorGetRequest = {
 	path: string;
 };
 
-export type KeetaStorageAnchorGetResponse = {
-	ok: true;
+export type KeetaStorageAnchorGetResponse = StorageResponse<{
 	data: string;  // Base64-encoded EncryptedContainer
 	object: StorageObjectMetadata;
-} | {
-	ok: false;
-	error: string;
-};
+}>;
 
 export function getKeetaStorageAnchorGetRequestSigningData(
 	input: KeetaStorageAnchorGetRequest
@@ -296,13 +291,7 @@ export type KeetaStorageAnchorDeleteRequest = {
 	path: string;
 };
 
-export type KeetaStorageAnchorDeleteResponse = {
-	ok: true;
-	deleted: boolean;
-} | {
-	ok: false;
-	error: string;
-};
+export type KeetaStorageAnchorDeleteResponse = StorageResponse<{ deleted: boolean }>;
 
 export function getKeetaStorageAnchorDeleteRequestSigningData(
 	input: KeetaStorageAnchorDeleteRequest
@@ -333,14 +322,10 @@ export type KeetaStorageAnchorSearchRequest = {
 	pagination?: SearchPagination;
 };
 
-export type KeetaStorageAnchorSearchResponse = {
-	ok: true;
+export type KeetaStorageAnchorSearchResponse = StorageResponse<{
 	results: StorageObjectMetadata[];
 	nextCursor?: string;
-} | {
-	ok: false;
-	error: string;
-};
+}>;
 
 export function getKeetaStorageAnchorSearchRequestSigningData(
 	input: KeetaStorageAnchorSearchRequest
@@ -369,13 +354,7 @@ export type KeetaStorageAnchorQuotaRequest = {
 	signed?: HTTPSignedField;
 };
 
-export type KeetaStorageAnchorQuotaResponse = {
-	ok: true;
-	quota: QuotaStatus;
-} | {
-	ok: false;
-	error: string;
-};
+export type KeetaStorageAnchorQuotaResponse = StorageResponse<{ quota: QuotaStatus }>;
 
 /**
  * Get signing data for quota requests.
@@ -523,26 +502,26 @@ class KeetaStorageAnchorQuotaExceededError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaStorageAnchorAnchorPrincipalRequiredError extends KeetaAnchorUserError {
-	static override readonly name: string = 'KeetaStorageAnchorAnchorPrincipalRequiredError';
-	private readonly KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID!: string;
-	private static readonly KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID = '12e42092-d4db-435e-8a01-798e26f653b4';
+class KeetaStorageAnchorPrincipalRequiredError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaStorageAnchorPrincipalRequiredError';
+	private readonly KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID!: string;
+	private static readonly KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID = '12e42092-d4db-435e-8a01-798e26f653b4';
 
 	constructor(message?: string) {
 		super(message ?? 'Validated path requires anchor as principal');
 		this.statusCode = 400;
 
-		Object.defineProperty(this, 'KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID', {
-			value: KeetaStorageAnchorAnchorPrincipalRequiredError.KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID,
+		Object.defineProperty(this, 'KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID', {
+			value: KeetaStorageAnchorPrincipalRequiredError.KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID,
 			enumerable: false
 		});
 	}
 
-	static isInstance(input: unknown): input is KeetaStorageAnchorAnchorPrincipalRequiredError {
-		return(this.hasPropWithValue(input, 'KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID', KeetaStorageAnchorAnchorPrincipalRequiredError.KeetaStorageAnchorAnchorPrincipalRequiredErrorObjectTypeID));
+	static isInstance(input: unknown): input is KeetaStorageAnchorPrincipalRequiredError {
+		return(this.hasPropWithValue(input, 'KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID', KeetaStorageAnchorPrincipalRequiredError.KeetaStorageAnchorPrincipalRequiredErrorObjectTypeID));
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorAnchorPrincipalRequiredError> {
+	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorPrincipalRequiredError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -852,7 +831,7 @@ export const Errors: {
 	AccessDenied: typeof KeetaStorageAnchorAccessDeniedError;
 	InvalidPath: typeof KeetaStorageAnchorInvalidPathError;
 	QuotaExceeded: typeof KeetaStorageAnchorQuotaExceededError;
-	AnchorPrincipalRequired: typeof KeetaStorageAnchorAnchorPrincipalRequiredError;
+	AnchorPrincipalRequired: typeof KeetaStorageAnchorPrincipalRequiredError;
 	ValidationFailed: typeof KeetaStorageAnchorValidationFailedError;
 	SignatureExpired: typeof KeetaStorageAnchorSignatureExpiredError;
 	SignatureInvalid: typeof KeetaStorageAnchorSignatureInvalidError;
@@ -888,7 +867,7 @@ export const Errors: {
 	/**
 	 * Validated path requires anchor as principal
 	 */
-	AnchorPrincipalRequired: KeetaStorageAnchorAnchorPrincipalRequiredError,
+	AnchorPrincipalRequired: KeetaStorageAnchorPrincipalRequiredError,
 
 	/**
 	 * Namespace validator rejected content
@@ -968,44 +947,22 @@ export type StorageGetResult = {
 };
 
 /**
- * Interface for atomic storage operations.
- * Provides the same operations as StorageBackend but within an atomic scope.
+ * Represents a pending upload quota reservation.
+ * Used to reserve quota before an upload and track in-flight uploads.
  */
-export interface StorageAtomicInterface {
-	/**
-	 * Store/update an object at the given path
-	 */
-	put(path: string, data: Buffer, metadata: StoragePutMetadata): Promise<StorageObjectMetadata>;
-
-	/**
-	 * Retrieve an object by path
-	 */
-	get(path: string): Promise<StorageGetResult | null>;
-
-	/**
-	 * Delete an object by path
-	 */
-	delete(path: string): Promise<boolean>;
-
-	/**
-	 * Search for objects matching criteria
-	 */
-	search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults>;
-
-	/**
-	 * Get quota status for a user
-	 */
-	getQuotaStatus(owner: string): Promise<QuotaStatus>;
-
-	/**
-	 * Commit the atomic operation - applies all changes
-	 */
-	commit(): Promise<void>;
-
-	/**
-	 * Rollback the atomic operation - discards all changes
-	 */
-	rollback(): Promise<void>;
+export interface UploadReservation {
+	/** Unique identifier for this reservation */
+	id: string;
+	/** Owner's public key string */
+	owner: string;
+	/** Target path for the upload */
+	path: string;
+	/** Reserved size in bytes */
+	size: number;
+	/** When the reservation was created */
+	createdAt: string;
+	/** When the reservation expires - hint for stale cleanup */
+	expiresAt: string;
 }
 
 /**
@@ -1033,21 +990,37 @@ export interface StorageBackend {
 	search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults>;
 
 	/**
-	 * Get quota status for a user
+	 * Get quota status for a user.
+	 * Includes both actual usage and pending reservations.
 	 */
 	getQuotaStatus(owner: string): Promise<QuotaStatus>;
 
 	/**
-	 * Begin an atomic operation scope.
-	 * All operations within the scope are isolated until commit() is called.
+	 * Reserve quota for an upcoming upload.
+	 *
+	 * @param owner - Owner's public key string
+	 * @param path - Target path for the upload
+	 * @param size - Size in bytes to reserve
+	 * @param ttlMs - Optional TTL in milliseconds for the reservation (default: implementation-defined)
+	 *
+	 * @throws QuotaExceeded if reservation would exceed limits
+	 * @returns Reservation that must be committed or released
 	 */
-	beginAtomic(): Promise<StorageAtomicInterface>;
+	reserveUpload(owner: string, path: string, size: number, ttlMs?: number): Promise<UploadReservation>;
 
 	/**
-	 * Execute a function within an atomic scope.
-	 * Auto-commits on success, auto-rollbacks on error.
+	 * Commit a reservation after successful upload.
+	 * Call after put() succeeds to finalize the quota usage.
+	 * @param reservationId - ID of the reservation to commit
 	 */
-	withAtomic<T>(fn: (atomic: StorageAtomicInterface) => Promise<T>): Promise<T>;
+	commitUpload(reservationId: string): Promise<void>;
+
+	/**
+	 * Release a reservation (upload failed or cancelled).
+	 * Frees the reserved quota.
+	 * @param reservationId - ID of the reservation to release
+	 */
+	releaseUpload(reservationId: string): Promise<void>;
 }
 
 // #endregion
