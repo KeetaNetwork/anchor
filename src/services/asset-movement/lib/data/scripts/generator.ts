@@ -66,9 +66,6 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 	};
 
 	for (const [ name, schema ] of Object.entries(definitions)) {
-		// const filePath = path.join(fileList.basePath, `${name}.js`);
-		// const schema: BankAccountAddressSchema = (await import(filePath)).default;
-
 		for (const value of [ 'resolved', 'obfuscated' ] as const) {
 			const interfaceName = toCamelCase(`${name}_${value}`);
 
