@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-set -e pipefail
+set -eo pipefail
 
 # Directory containing address schema sources
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

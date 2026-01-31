@@ -5,6 +5,7 @@ export type Schema =
   | StringSchema
   | NumberSchema
   | IntegerSchema
+  | ArraySchema
   | ReferenceSchema;
 
 /** Common metadata/annotations supported by JSON Schema (subset) */
@@ -73,4 +74,12 @@ export interface IntegerSchema extends SchemaMeta, NumericValidation {
 
 	const?: number;
 	enum?: number[];
+}
+
+/** Array schema */
+export interface ArraySchema extends SchemaMeta {
+	type: "array";
+	
+	/** Item schema */
+	items: Schema;
 }

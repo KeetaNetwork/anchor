@@ -24,7 +24,10 @@ const ibanSwiftSchema: BankAccountAddressSchema = {
 					properties: {
 						category: { type: "string" },
 						// Represent array of strings until array schema support lands.
-						purposeOfFunds: { type: "object", description: "Array of strings" },
+						purposeOfFunds: {
+							type: "array",
+							items: { type: "string" }
+						},
 						businessDescription: { type: "string" }
 					}
 				}

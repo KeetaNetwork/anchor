@@ -11,7 +11,7 @@ import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
-import type { PhysicalAddress, BankAccountAddressObfuscated, BankAccountAddressResolved } from './lib/data/addresses/types.generated.js';
+import type { BankAccountAddressObfuscated, BankAccountAddressResolved, PhysicalAddress } from './lib/data/addresses/types.generated.js';
 
 export * from './lib/data/addresses/types.generated.js';
 export * as generatedAddressSchema from './lib/data/addresses/index.generated.js';
@@ -190,8 +190,15 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
-// type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
-type SignableObjectInput = PhysicalAddress | { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
+type SignableObjectInput =
+	// Physical address should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
+	PhysicalAddress |
+	{ [key: string | number | symbol]: SignableObjectInput } |
+	SignableObjectInput[] |
+	Signable[number] |
+	undefined |
+	null |
+	boolean;
 
 /**
  * The maximum queue length for the commonToSignable function to prevent DoS attacks
