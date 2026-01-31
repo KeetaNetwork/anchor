@@ -1,5 +1,43 @@
 import { KeetaNet } from "../../client/index.js";
 import { KeetaAnchorUserError } from "../../lib/error.js";
+import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
+import type { ValidateQuoteArguments } from "./server.js";
+
+export function convertQuoteToExpectedSwapWithoutCost(input: {
+	quote: Omit<ValidateQuoteArguments, 'account'>,
+	request: ConversionInputCanonical | ConversionInputCanonicalJSON,
+}): NonNullable<{
+		receive: {
+			token: KeetaNetToken;
+			amount: bigint;
+		};
+		send: {
+			token: KeetaNetToken;
+			amount: bigint;
+		};
+	}> {
+	let expectedSendAmount: bigint;
+	let expectedReceiveAmount: bigint;
+
+	if (input.request.affinity === 'to') {
+		expectedSendAmount = BigInt(input.request.amount);
+		expectedReceiveAmount = input.quote.convertedAmount;
+	} else {
+		expectedSendAmount = input.quote.convertedAmount;
+		expectedReceiveAmount = BigInt(input.request.amount);
+	}
+
+	return({
+		receive: {
+			token: KeetaNet.lib.Account.toAccount(input.request.from),
+			amount: expectedReceiveAmount
+		},
+		send: {
+			token: KeetaNet.lib.Account.toAccount(input.request.to),
+			amount: expectedSendAmount
+		}
+	})
+}
 
 export function assertExchangeBlockParameters(args: {
 	block: InstanceType<typeof KeetaNet['lib']['Block']>;
@@ -7,13 +45,7 @@ export function assertExchangeBlockParameters(args: {
 
 	allowedLiquidityAccounts: null | InstanceType<typeof KeetaNet['lib']['Account']['Set']>;
 
-	userSendsMinimum: {
-		[tokenPublicKey: string]: bigint;
-	};
-
-	userWillReceiveMaximum: {
-		[tokenPublicKey: string]: bigint;
-	};
+	checks: Parameters<typeof convertQuoteToExpectedSwapWithoutCost>[0];
 }): void {
 	if (args.allowedLiquidityAccounts !== null && !(args.allowedLiquidityAccounts.has(args.liquidityAccount))) {
 		throw(new KeetaAnchorUserError(`Invalid liquidity account provided ${args.liquidityAccount.publicKeyString.get()}`));
@@ -24,7 +56,7 @@ export function assertExchangeBlockParameters(args: {
 	for (const operation of args.block.operations) {
 		if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
 			if (!(operation.to.comparePublicKey(args.liquidityAccount))) {
-				continue;
+				throw(new KeetaAnchorUserError('Send operations in exchange block must be made sending to liquidity account'));
 			}
 
 			const tokenPub = operation.token.publicKeyString.get();
@@ -46,10 +78,33 @@ export function assertExchangeBlockParameters(args: {
 			}
 
 			userExpectsReceive[tokenPub] += operation.amount;
+		} else {
+			throw(new KeetaAnchorUserError(`Invalid operation type in exchange block: ${operation.type}`));
 		}
 	}
 
-	for (const [ tokenPub, amount ] of Object.entries(args.userSendsMinimum)) {
+	const expected = convertQuoteToExpectedSwapWithoutCost(args.checks);
+
+	const userSendsMinimum = {
+		[expected.receive.token.publicKeyString.get()]: expected.receive.amount
+	};
+
+	const userWillReceiveMaximum = {
+		[expected.send.token.publicKeyString.get()]: expected.send.amount
+	};
+
+	const feeValue = args.checks.quote.cost;
+	if (feeValue.amount > 0n) {
+		const feeTokenPub = feeValue.token.publicKeyString.get();
+
+		if (!userSendsMinimum[feeTokenPub]) {
+			userSendsMinimum[feeTokenPub] = 0n;
+		}
+
+		userSendsMinimum[feeTokenPub] += feeValue.amount;
+	}
+
+	for (const [ tokenPub, amount ] of Object.entries(userSendsMinimum)) {
 		const userDidSend = userSent[tokenPub] ?? 0n;
 
 		if (userDidSend < amount) {
@@ -57,7 +112,7 @@ export function assertExchangeBlockParameters(args: {
 		}
 	}
 
-	for (const [ tokenPub, amount ] of Object.entries(args.userWillReceiveMaximum)) {
+	for (const [ tokenPub, amount ] of Object.entries(userWillReceiveMaximum)) {
 		const userAskedReceive = userExpectsReceive[tokenPub] ?? 0n;
 
 		if (userAskedReceive > amount) {
