@@ -523,22 +523,20 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * @throws The parsed error from the response body, or a generic ServiceUnavailable error
 	 */
 	async #handleBinaryResponseError(response: Response): Promise<never> {
+		let errorJSON: unknown;
 		try {
-			const errorJSON: unknown = await response.json();
-			if (typeof errorJSON === 'object' && errorJSON !== null && 'ok' in errorJSON && errorJSON.ok === false) {
-				throw(await this.#parseResponseError(errorJSON));
-			}
-		} catch (e) {
-			// Re-throw if it's already a parsed error
-			if (KeetaAnchorError.isInstance(e)) {
-				throw(e);
-			}
-
-			// If JSON parsing fails, throw generic error
+			errorJSON = await response.json();
+		} catch {
+			// JSON parsing failed - throw generic error
 			throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
 		}
 
-		// If we got here, JSON parsed but didn't have expected error format
+		// JSON parsed successfully - attempt to extract error
+		if (typeof errorJSON === 'object' && errorJSON !== null && 'ok' in errorJSON && errorJSON.ok === false) {
+			throw(await this.#parseResponseError(errorJSON));
+		}
+
+		// Unexpected response shape
 		throw(new Errors.InvalidResponse(`HTTP ${response.status}: ${response.statusText}`));
 	}
 

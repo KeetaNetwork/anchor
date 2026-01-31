@@ -39,7 +39,7 @@ import {
 } from './common.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
-import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
+import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators } from './lib/validators.js';
 import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
 
@@ -74,9 +74,12 @@ function assertPathAccess(
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
 		if (parsed !== null) {
+			policy.validate(path);
+
 			if (!policy.checkAccess(account, parsed, operation)) {
 				throw(new Errors.AccessDenied('Can only access your own namespace'));
 			}
+
 			return({ policy, parsed });
 		}
 	}
@@ -96,6 +99,7 @@ function parsePath(
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
 		if (parsed !== null) {
+			policy.validate(path);
 			return({ policy, parsed });
 		}
 	}
@@ -753,6 +757,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			// Verify signature using the signing library
 			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
 
+			// Pre-validate signature is valid base64 with reasonable length
+			const signatureBuffer = Buffer.from(signature, 'base64');
+			if (signatureBuffer.length < 64 || signatureBuffer.length > 256) {
+				throw(new Errors.SignatureInvalid('Invalid signature format'));
+			}
+
 			try {
 				const signedData = { nonce, timestamp, signature };
 				// Allow skew up to maxSignedUrlTTL to cover the entire validity period
@@ -767,13 +777,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					throw(e);
 				}
 
-				throw(new Errors.SignatureInvalid('Invalid signature format'));
+				throw(new Errors.SignatureInvalid('Signature verification failed'));
 			}
 
-			// Get the object
 			const result = await requireObject(objectPath);
-
-			// Check visibility
 			if (result.metadata.visibility !== 'public') {
 				throw(new Errors.AccessDenied('Object is not public'));
 			}

@@ -74,9 +74,10 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		// Check if route ends with wildcard /*
 		const isWildcard = routeURLPaths.length > 0 && routeURLPaths[routeURLPaths.length - 1] === '*';
 		if (isWildcard) {
-			// For wildcard routes, request must have at least as many segments as route prefix (minus the *)
+			// For wildcard routes, request must have more segments than route prefix (minus the *)
+			// This ensures at least one segment is captured by the wildcard
 			const prefixLength = routeURLPaths.length - 1;
-			if (requestURLPaths.length < prefixLength) {
+			if (requestURLPaths.length <= prefixLength) {
 				return({ match: false });
 			}
 

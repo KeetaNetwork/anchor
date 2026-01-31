@@ -361,8 +361,15 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		if (existingId) {
 			const existing = this.reservations.get(existingId);
 			if (existing) {
-				// Update to max size, extend expiry
 				const clampedSizeDelta = Math.max(0, sizeDelta);
+				const additionalSize = clampedSizeDelta - existing.size;
+
+				// Re-check quota if size is increasing
+				if (additionalSize > 0 && remainingSize < additionalSize) {
+					throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
+				}
+
+				// Update to max size, extend expiry
 				existing.size = Math.max(existing.size, clampedSizeDelta);
 				existing.expiresAt = new Date(Date.now() + ttl).toISOString();
 				return(existing);
