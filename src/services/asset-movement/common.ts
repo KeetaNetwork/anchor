@@ -11,6 +11,10 @@ import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
+import type { PhysicalAddress, BankAccountAddressObfuscated, BankAccountAddressResolved } from './lib/data/addresses/types.generated.js';
+
+export * from './lib/data/addresses/types.generated.js';
+export * as generatedAddressSchema from './lib/data/addresses/index.generated.js';
 
 export * from './lib/location.js';
 
@@ -124,7 +128,7 @@ export interface Asset {
 	id: string;
 }
 
-type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'WIRE_RECEIVE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'CLABE_PUSH' | 'SEPA_PUSH';
+type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH';
 type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
 
@@ -186,7 +190,8 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
-type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
+// type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
+type SignableObjectInput = PhysicalAddress | { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
 
 /**
  * The maximum queue length for the commonToSignable function to prevent DoS attacks
@@ -678,104 +683,6 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	ok: false;
 	error: string;
 });
-
-export type PhysicalAddress = {
-	line1: string;
-	line2?: string;
-	country: ISOCountryCode;
-	postalCode: string;
-	subdivision: string;
-	city: string;
-};
-
-type USBankAccountType = 'checking' | 'savings';
-
-export type BankAccountAddressResolved = {
-	type: 'bank-account';
-	accountAddress?: PhysicalAddress | string;
-	obfuscated?: false;
-
-	bankName?: string;
-
-	accountOwner: {
-		type: 'individual';
-		firstName: string;
-		lastName: string;
-	} | {
-		type: 'business';
-		businessName: string;
-	} | {
-		type: 'unknown';
-		beneficiaryName: string;
-	}
-} & ({
-	accountType: 'us';
-
-	accountNumber: string;
-	routingNumber: string;
-	accountTypeDetail: USBankAccountType;
-} | {
-	accountType: 'iban-swift';
-
-
-	country?: ISOCountryCode;
-
-	accountNumber?: string;
-	bic?: string;
-
-	iban?: string;
-
-	bankAddress?: PhysicalAddress;
-
-	swift?: {
-		category: string;
-		purposeOfFunds: string[];
-		businessDescription: string;
-	}
-} | {
-	accountType: 'clabe';
-
-	accountNumber: string;
-} | ({
-	accountType: 'pix';
-	document?: {
-		type?: 'cpf' | 'cnpj';
-		number: string;
-	}
-} & ({
-	brCode: string;
-} | {
-	pixKey: string;
-})));
-
-export type BankAccountAddressObfuscated = {
-	type: 'bank-account';
-	obfuscated: true;
-
-	accountOwner?: {
-		type?: 'individual' | 'business';
-		name?: string;
-		businessName?: string;
-	}
-
-	bankName?: string;
-
-	accountNumberEnding?: string;
-} & ({
-	accountType: 'us';
-
-	routingNumber: string;
-	accountTypeDetail?: USBankAccountType;
-
-} | {
-	accountType: 'iban-swift';
-	country?: ISOCountryCode;
-	bic?: string;
-} | {
-	accountType: 'clabe';
-} | {
-	accountType: 'pix';
-})
 
 type CryptoAddress = string;
 type AddressResolved = BankAccountAddressResolved | CryptoAddress;
