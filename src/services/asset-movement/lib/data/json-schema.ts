@@ -79,7 +79,7 @@ export interface IntegerSchema extends SchemaMeta, NumericValidation {
 /** Array schema */
 export interface ArraySchema extends SchemaMeta {
 	type: "array";
-	
+
 	/** Item schema */
 	items: Schema;
 }
