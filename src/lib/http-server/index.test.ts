@@ -118,8 +118,30 @@ test('Basic Functionality', async function() {
 							throw(new Error('Hash does not match'));
 						}
 
-						return({ output: 'true' })
+						return({ output: 'true' });
 					}
+				};
+
+				// Wildcard route - captures variable-depth paths
+				routes['GET /api/files/*'] = async function(params) {
+					const wildcardPath = params.get('*');
+					return({
+						output: JSON.stringify({
+							message: 'Wildcard route works!',
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
+				};
+
+				// Exact route that should take priority over wildcard
+				routes['GET /api/files/special'] = async function() {
+					return({
+						output: JSON.stringify({
+							message: 'Exact route takes priority!'
+						}),
+						statusCode: 200
+					});
 				};
 
 				return(routes);
@@ -219,6 +241,31 @@ test('Basic Functionality', async function() {
 			path: `/api/test-raw/${testRawPostHash}`,
 			body: `${testRawPostBody} `,
 			statusCode: 500
+		},
+		// Wildcard route tests
+		{
+			method: 'GET',
+			path: '/api/files/user/abc123/documents/report.pdf',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'user/abc123/documents/report.pdf'
+			}
+		},
+		{
+			method: 'GET',
+			path: '/api/files/simple.txt',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'simple.txt'
+			}
+		},
+		// Exact route takes priority over wildcard
+		{
+			method: 'GET',
+			path: '/api/files/special',
+			responseMatch: {
+				message: 'Exact route takes priority!'
+			}
 		}] as const;
 
 		for (const check of checks) {
