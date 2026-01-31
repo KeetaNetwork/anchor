@@ -135,18 +135,15 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 	const compiled = await compileToString({
 		...jsonSchemaDefinitions,
 		oneOf: Object.keys(allDefinitions).map((name) => ({ $ref: `#/definitions/${name}` }))
-	}, 'Tempalltypes');
+	}, 'TempType');
 
-	const compiledWithoutTemp = compiled.replaceAll(/export type (Tempalltypes|ISOCountryCode) =([\w\n |'"]+);\n/gm, '');
+	const compiledWithoutTemp = compiled.replaceAll(/export type (TempType|ISOCountryCode) =([\w\n |'"]+);\n/gm, '');
 	out.push(compiledWithoutTemp);
 
 	const schema = JSON.stringify(jsonSchemaDefinitions, null, 2);
 	out.push(`export const accountJSONSchema = ${schema} as const;`);
 
 	fs.writeFileSync(config.typesOutput, out.join('\n'));
-
-	console.log(`Wrote ${config.typesOutput}`);
-
 })().catch(function(err: unknown) {
 	console.error(err);
 	process.exit(1);

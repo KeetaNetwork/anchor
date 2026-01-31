@@ -16,6 +16,14 @@ export interface BankAccountAddressSchema {
 	}
 }
 
+export const sharedSchemaReferences: { [K in keyof typeof sharedJSONSchemaTypes]: { $ref: string }} = {
+	ISOCountryCode: { $ref: '#/definitions/ISOCountryCode' },
+	PhysicalAddress: { $ref: '#/definitions/PhysicalAddress' },
+	ResolvedAccountOwner: { $ref: '#/definitions/ResolvedAccountOwner' },
+	ObfuscatedAccountOwner: { $ref: '#/definitions/ObfuscatedAccountOwner' },
+	PhoneNumber: { $ref: '#/definitions/PhoneNumber' }
+}
+
 export const sharedJSONSchemaTypes: {
 	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber']: Schema;
 } = {
@@ -89,7 +97,7 @@ export const sharedJSONSchemaTypes: {
 		properties: {
 			line1: { type: "string" },
 			line2: { type: "string" },
-			country: { $id: 'ISOCountryCode' },
+			country: sharedSchemaReferences.ISOCountryCode,
 			postalCode: { type: "string" },
 			subdivision: { type: "string" },
 			city: { type: "string" }
@@ -104,11 +112,3 @@ export const sharedJSONSchemaTypes: {
 		pattern: "^\\d{1,80}$"
 	}
 };
-
-export const sharedSchemaReferences: { [K in keyof typeof sharedJSONSchemaTypes]: { $ref: string }} = {
-	ISOCountryCode: { $ref: '#/definitions/ISOCountryCode' },
-	PhysicalAddress: { $ref: '#/definitions/PhysicalAddress' },
-	ResolvedAccountOwner: { $ref: '#/definitions/ResolvedAccountOwner' },
-	ObfuscatedAccountOwner: { $ref: '#/definitions/ObfuscatedAccountOwner' },
-	PhoneNumber: { $ref: '#/definitions/PhoneNumber' }
-}
