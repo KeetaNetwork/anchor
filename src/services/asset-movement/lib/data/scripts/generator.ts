@@ -88,6 +88,15 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 				});
 			}
 
+			if (schema.includeFields.accountNumberEnding && value === 'obfuscated') {
+				allOfIncludes.push({
+					type: 'object',
+					properties: {
+						accountNumberEnding: { type: 'string' }
+					}
+				});
+			}
+
 			allDefinitions[interfaceName] = {
 				allOf: [
 					schema.additionalProperties[value],
