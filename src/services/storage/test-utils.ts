@@ -48,15 +48,17 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 			throw(new Errors.InvalidPath('Path must match /user/<pubkey>/<path>'));
 		}
 
+		// Reject empty segments in original path
+		if (path.includes('//')) {
+			throw(new Errors.InvalidPath('Path contains empty segments'));
+		}
+
 		// Reject path traversal attempts
 		const segments = parsed.relativePath.split('/');
 		for (const seg of segments) {
 			if (seg === '..' || seg === '.') {
 				throw(new Errors.InvalidPath('Path contains relative segments'));
 			}
-		}
-		if (parsed.relativePath.includes('//')) {
-			throw(new Errors.InvalidPath('Path contains empty segments'));
 		}
 
 		return(parsed);

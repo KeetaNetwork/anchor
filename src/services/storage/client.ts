@@ -141,8 +141,11 @@ function validateURL(url: string | undefined): URL {
 		throw(new Errors.InvalidPath('Invalid URL: null or undefined'));
 	}
 
-	const parsedURL = new URL(url);
-	return(parsedURL);
+	try {
+		return(new URL(url));
+	} catch {
+		throw(new Errors.InvalidResponse(`Invalid URL in service metadata: ${url}`));
+	}
 }
 
 async function getEndpoints(resolver: Resolver, logger?: Logger): Promise<GetEndpointsResult | null> {

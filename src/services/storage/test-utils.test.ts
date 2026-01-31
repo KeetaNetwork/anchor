@@ -271,7 +271,8 @@ describe('TestPathPolicy path traversal', function() {
 	const invalidPaths: [string, string][] = [
 		['/user/pk123/../other/file', 'parent traversal'],
 		['/user/pk123/./file', 'current dir'],
-		['/user/pk123/foo//bar', 'empty segment'],
+		['/user/pk123/foo//bar', 'empty segment in path'],
+		['/user/pk123//file', 'double slash after owner'],
 		['/user/pk123/foo/..', 'trailing parent'],
 		['/user/pk123/foo/./bar', 'embedded current dir'],
 		['/user/pk123/../pk123/file', 'escape and re-enter']
