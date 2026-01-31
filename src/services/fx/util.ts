@@ -3,8 +3,8 @@ import { KeetaAnchorUserError } from "../../lib/error.js";
 import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
 import type { ValidateQuoteArguments } from "./server.js";
 
-export  function convertQuoteToExpectedSwap(input: {
-	quote: ValidateQuoteArguments,
+export function convertQuoteToExpectedSwapWithoutCost(input: {
+	quote: Omit<ValidateQuoteArguments, 'account'>,
 	request: ConversionInputCanonical | ConversionInputCanonicalJSON,
 }): NonNullable<{
 		receive: {
@@ -45,15 +45,7 @@ export function assertExchangeBlockParameters(args: {
 
 	allowedLiquidityAccounts: null | InstanceType<typeof KeetaNet['lib']['Account']['Set']>;
 
-	checks: {
-		userSendsMinimum: {
-			[tokenPublicKey: string]: bigint;
-		};
-
-		userWillReceiveMaximum: {
-			[tokenPublicKey: string]: bigint;
-		};
-	} | Parameters<typeof convertQuoteToExpectedSwap>[0];
+	checks: Parameters<typeof convertQuoteToExpectedSwapWithoutCost>[0];
 }): void {
 	if (args.allowedLiquidityAccounts !== null && !(args.allowedLiquidityAccounts.has(args.liquidityAccount))) {
 		throw(new KeetaAnchorUserError(`Invalid liquidity account provided ${args.liquidityAccount.publicKeyString.get()}`));
@@ -64,7 +56,7 @@ export function assertExchangeBlockParameters(args: {
 	for (const operation of args.block.operations) {
 		if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
 			if (!(operation.to.comparePublicKey(args.liquidityAccount))) {
-				continue;
+				throw(new KeetaAnchorUserError('Send operations in exchange block must be made sending to liquidity account'));
 			}
 
 			const tokenPub = operation.token.publicKeyString.get();
@@ -86,36 +78,30 @@ export function assertExchangeBlockParameters(args: {
 			}
 
 			userExpectsReceive[tokenPub] += operation.amount;
+		} else {
+			throw(new KeetaAnchorUserError(`Invalid operation type in exchange block: ${operation.type}`));
 		}
 	}
 
-	let userSendsMinimum;
-	let userWillReceiveMaximum;
+	const expected = convertQuoteToExpectedSwapWithoutCost(args.checks);
 
-	if ('userSendsMinimum' in args.checks && 'userWillReceiveMaximum' in args.checks) {
-		userSendsMinimum = args.checks.userSendsMinimum;
-		userWillReceiveMaximum = args.checks.userWillReceiveMaximum;
-	} else {
-		const expected = convertQuoteToExpectedSwap(args.checks);
+	const userSendsMinimum = {
+		[expected.receive.token.publicKeyString.get()]: expected.receive.amount
+	};
 
-		userSendsMinimum = {
-			[expected.receive.token.publicKeyString.get()]: expected.receive.amount
-		};
+	const userWillReceiveMaximum = {
+		[expected.send.token.publicKeyString.get()]: expected.send.amount
+	};
 
-		userWillReceiveMaximum = {
-			[expected.send.token.publicKeyString.get()]: expected.send.amount
-		};
+	const feeValue = args.checks.quote.cost;
+	if (feeValue.amount > 0n) {
+		const feeTokenPub = feeValue.token.publicKeyString.get();
 
-		const feeValue = args.checks.quote.cost;
-		if (feeValue.amount > 0n) {
-			const feeTokenPub = feeValue.token.publicKeyString.get();
-
-			if (!userSendsMinimum[feeTokenPub]) {
-				userSendsMinimum[feeTokenPub] = 0n;
-			}
-
-			userSendsMinimum[feeTokenPub] += feeValue.amount;
+		if (!userSendsMinimum[feeTokenPub]) {
+			userSendsMinimum[feeTokenPub] = 0n;
 		}
+
+		userSendsMinimum[feeTokenPub] += feeValue.amount;
 	}
 
 	for (const [ tokenPub, amount ] of Object.entries(userSendsMinimum)) {

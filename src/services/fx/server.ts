@@ -30,7 +30,7 @@ import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
-import { assertExchangeBlockParameters, convertQuoteToExpectedSwap } from './util.js';
+import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
@@ -457,7 +457,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				checks: { quote, request }
 			});
 
-			expected = convertQuoteToExpectedSwap({ quote, request });
+			expected = convertQuoteToExpectedSwapWithoutCost({ quote, request });
 		}
 
 		const builder = userClient.initBuilder();
@@ -936,7 +936,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 
 				liquidityAccount = quoteInput.account;
-				expectedConversion = convertQuoteToExpectedSwap({
+				expectedConversion = convertQuoteToExpectedSwapWithoutCost({
 					quote: toValidateQuoteInput(quoteInput),
 					request: conversionInput
 				});
