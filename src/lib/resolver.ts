@@ -9,7 +9,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets, convertAssetOrPairSearchInputToCanonical } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type Rail, type SupportedAssetsMetadata, convertAssetOrPairSearchInputToCanonical, RailOrRailWithExtendedDetails, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -175,20 +175,7 @@ type ServiceMetadata = {
 					shareKYC?: ServiceMetadataEndpoint;
 				};
 
-				supportedAssets: {
-					asset: KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical | ([ KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical, KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical ]);
-
-					paths: {
-						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
-
-						/**
-						 * KYC providers which this Asset Movement Provider
-						 * supports (DN) -- if not specified,
-						 * then it does not require KYC.
-						 */
-						kycProviders?: string[];
-					}[];
-				}[];
+				supportedAssets: SupportedAssetsMetadata[];
 			}
 		};
 		cards?: {
@@ -719,7 +706,6 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
-const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -1547,15 +1533,15 @@ class Resolver {
 		return(retval);
 	}
 
-	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
+	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
+		const supportedAssets = assertKeetaSupportedAssetsMetadata(resolvedService);
 
-		const filteredAssetMovement: SupportedAssets[] = [];
+		const filteredAssetMovement: SupportedAssetsMetadata[] = [];
 		for (const supportedAsset of supportedAssets) {
 			let matchFound = false;
 
@@ -1608,23 +1594,38 @@ class Resolver {
 					continue;
 				}
 
-				if (criteria.rail !== undefined) {
-					if (typeof criteria.rail === 'string') {
-						if (!supportedRails.includes(criteria.rail)) {
-							continue;
+				const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+					for (const checkRail of searchIn) {
+						if (typeof checkRail === 'string') {
+							if (checkRail === searchFor) {
+								return(true);
+							}
+						} else {
+							if (checkRail.rail === searchFor) {
+								return(true);
+							}
 						}
+					}
+
+					return(false);
+				}
+
+				if (criteria.rail !== undefined) {
+					let railMatchFound = false;
+					if (typeof criteria.rail === 'string') {
+						railMatchFound = checkSupportedRailIncludes(criteria.rail, supportedRails);
 					} else {
-						let railMatchFound = false;
 						for (const checkRail of criteria.rail) {
-							if (supportedRails.includes(checkRail)) {
-								railMatchFound = true;
+							railMatchFound = checkSupportedRailIncludes(checkRail, supportedRails);
+
+							if (railMatchFound) {
 								break;
 							}
 						}
+					}
 
-						if (!railMatchFound) {
-							continue;
-						}
+					if (!railMatchFound) {
+						continue;
 					}
 				}
 

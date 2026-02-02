@@ -9,7 +9,7 @@ import type {
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingResponse,
-	SupportedAssets,
+	SupportedAssetsMetadata,
 	ProviderSearchInput,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
@@ -29,7 +29,7 @@ import type {
 	KeetaAssetMovementAnchorShareKYCResponse
 } from './common.js';
 import {
-	assertKeetaSupportedAssets,
+	assertKeetaSupportedAssetsMetadata,
 	convertAssetLocationToString,
 	convertAssetOrPairSearchInputToCanonical,
 	convertAssetSearchInputToCanonical,
@@ -137,7 +137,7 @@ type KeetaAssetMovementServiceInfo = {
 		[operation in keyof KeetaAssetMovementAnchorOperations]: Promise<KeetaAssetMovementAnchorOperations[operation]>;
 	};
 
-	supportedAssets: SupportedAssets[];
+	supportedAssets: SupportedAssetsMetadata[];
 };
 
 /**
@@ -176,7 +176,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
 		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssets(supportedAssetsMetadata);
+		const supportedAssets = assertKeetaSupportedAssetsMetadata(supportedAssetsMetadata);
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};

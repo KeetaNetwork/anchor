@@ -131,47 +131,87 @@ export type Rail = FiatRails | CryptoRails;
 // Rails can be inbound, outbound or common (inbound and outbound)
 export interface AssetWithRails extends Asset {
 	rails: (({
-		inbound: Rail[];
-		outbound?: Rail[];
+		inbound: RailOrRailWithExtendedDetails[];
+		outbound?: RailOrRailWithExtendedDetails[];
 	} | {
-		inbound?: Rail[];
-		outbound: Rail[];
+		inbound?: RailOrRailWithExtendedDetails[];
+		outbound: RailOrRailWithExtendedDetails[];
 	} | {
 		inbound?: never;
 		outbound?: never;
 	}) & {
-		common?: Rail[];
+		common?: RailOrRailWithExtendedDetails[];
 	});
 };
 
 // A given asset path should consist of exactly one tuple of locations
 export interface AssetPath {
+	/**
+	 * The asset or asset pair for this path, with from and to locations supporting the assets in the pair
+	 */
 	pair: [ AssetWithRails, AssetWithRails ];
+
+	/**
+	 * KYC providers which this Asset Movement Provider
+	 * supports (DN) -- if not specified,
+	 * then it does not require KYC.
+	 */
 	kycProviders?: string[];
 };
 
 export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
-export interface SupportedAssets {
+export interface SupportedAssetsMetadata {
 	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
 }
 
-export interface AssetWithRailsMetadata {
-	location: string;
-	id: string;
-	rails: (({
-		inbound: Rail[];
-		outbound?: Rail[];
-	} | {
-		inbound?: Rail[];
-		outbound: Rail[];
-	} | {
-		inbound?: never;
-		outbound?: never;
-	}) & {
-		common?: Rail[];
-	})
+export interface RailWithExtendedDetails {
+	rail: Rail;
+
+	/**
+	 * An estimate of the time it will take for a transfer using this rail to complete, in milliseconds. This can be a single number or a tuple representing an estimated range [min, max].
+	 */
+	estimatedTransferTimeMs?: number | [ minEstimateMs: number, maxEstimateMs: number ];
+
+	/**
+	 * Minimum/Maximum transfer value details for this rail, if applicable.
+	 */
+	transferValueRange?: {
+		/**
+		 * Min/max transfer value range, as a string in the asset's smallest unit (e.g. cents for USD).
+		 */
+		value: [ string | undefined, string | undefined ];
+
+		/**
+		 * The asset in which the min transfer value is denominated. If omitted, it is assumed to be the same as the source asset being transferred.
+		 */
+		asset?: MovableAssetSearchCanonical;
+	}
+
+	/**
+	 * Fee estimate details for this rail, if applicable.
+	 */
+	feeEstimate?: {
+		fixedFee?: {
+			/**
+			 * Transfer fixed fee, as a string in the asset's smallest unit (e.g. cents for USD).
+			 */
+			value: string;
+
+			/**
+			 * The asset in which the fixed fee is denominated. If omitted, it is assumed to be the same as the source asset being transferred.
+			 */
+			asset?: MovableAssetSearchCanonical;
+		}
+
+		/**
+		 * Estimated transfer variable fee in basis points (bps). 1 bps = 0.01%
+		 */
+		variableFeeBps?: number;
+	}
 }
+
+export type RailOrRailWithExtendedDetails = Rail | RailWithExtendedDetails;
 
 
 export function commonJSONStringify(input: unknown): string {
@@ -279,6 +319,9 @@ export function toAssetPair(input: AssetOrPair): AssetPair {
 }
 
 
+export function convertAssetOrPairSearchInputToCanonical(input: MovableAsset): MovableAssetSearchCanonical;
+export function convertAssetOrPairSearchInputToCanonical(input: AssetPair): AssetPairCanonical;
+export function convertAssetOrPairSearchInputToCanonical(input: AssetOrPair): AssetOrPairCanonical;
 export function convertAssetOrPairSearchInputToCanonical(input: AssetOrPair): AssetOrPairCanonical {
 	if (isAssetPairLike(input)) {
 		return({
@@ -1007,7 +1050,7 @@ export type KeetaAssetMovementAnchorShareKYCResponse = (({
 	error: string;
 });
 
-export const assertKeetaSupportedAssets: (input: unknown) => SupportedAssets[] = createAssert<SupportedAssets[]>();
+export const assertKeetaSupportedAssetsMetadata: (input: unknown) => SupportedAssetsMetadata[] = createAssert<SupportedAssetsMetadata[]>();
 export const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
 export const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
 export const assertKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => KeetaAssetMovementAnchorInitiateTransferRequest = createAssert<KeetaAssetMovementAnchorInitiateTransferRequest>();
