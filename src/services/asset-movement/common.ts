@@ -209,6 +209,21 @@ export interface RailWithExtendedDetails {
 		 */
 		variableFeeBps?: number;
 	}
+
+	/**
+	 * Supported operations for this rail
+	 */
+	supportedOperations?: {
+		/**
+		 * Whether this rail supports creating persistent forwarding addresses for (unmanaged) transfers
+		 */
+		createPersistentForwarding?: boolean;
+
+		/**
+		 * Whether this rail supports initiating (managed) transfers
+		 */
+		initiateTransfer?: boolean;
+	}
 }
 
 export type RailOrRailWithExtendedDetails = Rail | RailWithExtendedDetails;
@@ -1274,9 +1289,101 @@ class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserEr
 	}
 }
 
+
+export interface KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
+	operationName?: OperationNames | undefined;
+	forAsset?: AssetOrPair | undefined;
+	forRail?: Rail | undefined;
+}
+
+export const assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties>();
+
+type KeetaAssetMovementAnchorOperationNotSupportedErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties;
+
+class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUserError implements KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
+	static override readonly name: string = 'KeetaAssetMovementAnchorOperationNotSupportedError';
+	private readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID = 'b613cd80-57ac-4be5-ad4a-bb8644d50de6';
+
+	readonly operationName: OperationNames | undefined;
+	readonly forAsset: AssetOrPair | undefined;
+	readonly forRail: Rail | undefined;
+
+	constructor(args: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, message?: string) {
+		super(message ?? `Operation ${args.operationName ? `"${args.operationName}" ` : ''}not supported`);
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorOperationNotSupportedError.KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.operationName = args.operationName;
+		this.forAsset = args.forAsset;
+		this.forRail = args.forRail;
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorOperationNotSupportedError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', KeetaAssetMovementAnchorOperationNotSupportedError.KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID));
+	}
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { operationName, forAsset, forRail } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED',
+				data: { operationName, forAsset, forRail },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	toJSON(): KeetaAssetMovementAnchorOperationNotSupportedErrorJSON {
+		return({
+			...super.toJSON(),
+			operationName: this.operationName,
+			forRail: this.forRail,
+			forAsset: this.forAsset ? convertAssetOrPairSearchInputToCanonical(this.forAsset) : undefined
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorOperationNotSupportedError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorOperationNotSupportedError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties(other.data);
+
+		const error = new this(
+			{
+				forAsset: parsed.forAsset,
+				forRail: parsed.forRail,
+				operationName: parsed.operationName
+			},
+			message
+		);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
 	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
+	OperationNotSupported: typeof KeetaAssetMovementAnchorOperationNotSupportedError;
 } = {
 	/**
 	 * The user is required to share KYC details
@@ -1286,5 +1393,10 @@ export const Errors: {
 	/**
 	 * The user is required to complete additional KYC steps
 	 */
-	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError
+	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError,
+
+	/**
+	 * The requested operation is not supported
+	 */
+	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError
 };
