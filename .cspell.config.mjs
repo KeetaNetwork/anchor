@@ -115,8 +115,7 @@ export default {
 		'Valuizable',
 		'Valuize',
 		'VALUIZABLE',
-		'wrongpath',
-		'interac'
+		'wrongpath'
 	],
 	flagWords: [
 		'recieve'
@@ -157,7 +156,19 @@ export default {
 				'Oldsmar',
 				'vitest'
 			]
-		}
+		},
+		{
+			filename: 'src/services/asset-movement/lib/data/**/*.ts',
+			words: [
+				'interac',
+				'airtel',
+				'kash',
+				'finja',
+				'nagad',
+				'naya',
+				'sada'
+			]
+		},
 	],
 	useGitignore: true
 };
