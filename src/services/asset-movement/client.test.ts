@@ -150,7 +150,6 @@ test('Asset Movement Anchor Client Test', async function() {
 
 				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
 					throw(new Errors.OperationNotSupported({
-						operationName: 'createPersistentForwarding',
 						forAsset: request.asset,
 						forRail: extendedKeetaSendDetails.rail
 					}));
@@ -171,7 +170,6 @@ test('Asset Movement Anchor Client Test', async function() {
 
 				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
 					throw(new Errors.OperationNotSupported({
-						operationName: 'initiateTransfer',
 						forAsset: 'USD',
 						forRail: extendedKeetaSendDetails.rail
 					}));
@@ -454,7 +452,6 @@ test('Asset Movement Anchor Client Test', async function() {
 					sourceLocation: 'bank-account:us'
 				}),
 				{
-					operationName: 'createPersistentForwarding',
 					forAsset: { from: testCurrencyUSDC, to: 'USD' },
 					forRail: 'KEETA_SEND'
 				}
@@ -467,7 +464,6 @@ test('Asset Movement Anchor Client Test', async function() {
 					value: '1000'
 				}),
 				{
-					operationName: 'initiateTransfer',
 					forAsset: 'USD',
 					forRail: 'KEETA_SEND'
 				}
@@ -485,14 +481,9 @@ test('Asset Movement Anchor Client Test', async function() {
 			}
 
 			expect(toJSONSerializable({
-				operationName: error.operationName,
 				forAsset: error.forAsset,
 				forRail: error.forRail
-			})).toEqual(toJSONSerializable(({
-				operationName: expectedArguments.operationName,
-				forAsset: expectedArguments.forAsset,
-				forRail: expectedArguments.forRail
-			})));
+			})).toEqual(toJSONSerializable(expectedArguments));
 		}
 	}
 });

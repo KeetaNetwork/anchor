@@ -1291,7 +1291,6 @@ class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserEr
 
 
 export interface KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
-	operationName?: OperationNames | undefined;
 	forAsset?: AssetOrPair | undefined;
 	forRail?: Rail | undefined;
 }
@@ -1305,12 +1304,11 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	private readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID!: string;
 	private static readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID = 'b613cd80-57ac-4be5-ad4a-bb8644d50de6';
 
-	readonly operationName: OperationNames | undefined;
 	readonly forAsset: AssetOrPair | undefined;
 	readonly forRail: Rail | undefined;
 
 	constructor(args: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, message?: string) {
-		super(message ?? `Operation ${args.operationName ? `"${args.operationName}" ` : ''}not supported`);
+		super(message ?? `Operatio not supported`);
 		this.statusCode = 400;
 
 		Object.defineProperty(this, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', {
@@ -1318,7 +1316,6 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 			enumerable: false
 		});
 
-		this.operationName = args.operationName;
 		this.forAsset = args.forAsset;
 		this.forRail = args.forRail;
 	}
@@ -1328,7 +1325,7 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	}
 
 	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
-		const { operationName, forAsset, forRail } = this.toJSON();
+		const { forAsset, forRail } = this.toJSON();
 
 		let message = this.message;
 		if (contentType === 'application/json') {
@@ -1336,7 +1333,7 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 				ok: false,
 				name: this.name,
 				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED',
-				data: { operationName, forAsset, forRail },
+				data: { forAsset, forRail },
 				error: this.message
 			});
 		}
@@ -1351,7 +1348,6 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	toJSON(): KeetaAssetMovementAnchorOperationNotSupportedErrorJSON {
 		return({
 			...super.toJSON(),
-			operationName: this.operationName,
 			forRail: this.forRail,
 			forAsset: this.forAsset ? convertAssetOrPairSearchInputToCanonical(this.forAsset) : undefined
 		});
@@ -1369,8 +1365,7 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 		const error = new this(
 			{
 				forAsset: parsed.forAsset,
-				forRail: parsed.forRail,
-				operationName: parsed.operationName
+				forRail: parsed.forRail
 			},
 			message
 		);
