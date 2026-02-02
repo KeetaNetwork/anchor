@@ -176,9 +176,9 @@ export interface RailWithExtendedDetails {
 	/**
 	 * Minimum/Maximum transfer value details for this rail, if applicable.
 	 */
-	transferValueRange?: {
+	estimatedTransferValueRange?: {
 		/**
-		 * Min/max transfer value range, as a string in the asset's smallest unit (e.g. cents for USD).
+		 * Min/max transfer value range, as a string in the asset's smallest unit (e.g. cents for USD, or 1/(10**6) for USDC).
 		 */
 		value: [ string | undefined, string | undefined ];
 
@@ -191,10 +191,10 @@ export interface RailWithExtendedDetails {
 	/**
 	 * Fee estimate details for this rail, if applicable.
 	 */
-	feeEstimate?: {
+	estimatedFee?: {
 		fixedFee?: {
 			/**
-			 * Transfer fixed fee, as a string in the asset's smallest unit (e.g. cents for USD).
+			 * Transfer fixed fee, as a string in the asset's smallest unit (e.g. cents for USD, or 1/(10**6) for USDC).
 			 */
 			value: string;
 
