@@ -240,10 +240,10 @@ for (const [alias, canonicalName] of Object.entries(OID_ALIASES)) {
  * Returns undefined if the OID is not recognized.
  */
 function normalizeToNumericOID(oid: string): string | undefined {
-	// If it's already a numeric OID (starts with digit), return as-is
-	if (/^\d/.test(oid)) {
+	if (/^\d+(\.\d+)*$/.test(oid)) {
 		return(oid);
 	}
+
 	// Otherwise look up the name/alias
 	return(nameToNumericOID[oid]);
 }
