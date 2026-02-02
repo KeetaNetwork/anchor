@@ -1,10 +1,10 @@
 import { expect, test, describe } from 'vitest';
-import { MemoryStorageBackend, testPathPolicy } from './test-utils.js';
+import { MemoryStorageBackend, testPathPolicy, testMetadata } from './test-utils.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 import { Errors } from './common.js';
 
 /**
- * Helper to reduce boilerplate in backend tests.
+ * Test helper to create a MemoryStorageBackend with a specific owner.
  */
 function createTestBackend(ownerSuffix: string): {
 	backend: MemoryStorageBackend;
@@ -62,9 +62,9 @@ describe('MemoryStorageBackend', function() {
 		const backend = new MemoryStorageBackend();
 		const owner = 'test-owner';
 
-		await backend.put(`/user/${owner}/a.txt`, Buffer.from('a'), { owner, tags: [], visibility: 'private' });
-		await backend.put(`/user/${owner}/b.txt`, Buffer.from('b'), { owner, tags: [], visibility: 'private' });
-		await backend.put('/user/other/c.txt', Buffer.from('c'), { owner: 'other', tags: [], visibility: 'private' });
+		await backend.put(`/user/${owner}/a.txt`, Buffer.from('a'), testMetadata(owner));
+		await backend.put(`/user/${owner}/b.txt`, Buffer.from('b'), testMetadata(owner));
+		await backend.put('/user/other/c.txt', Buffer.from('c'), testMetadata('other'));
 
 		const results = await backend.search({ pathPrefix: `/user/${owner}/` }, { limit: 10 });
 		expect(results.results).toHaveLength(2);
@@ -74,9 +74,9 @@ describe('MemoryStorageBackend', function() {
 		const backend = new MemoryStorageBackend();
 		const owner = 'test-owner';
 
-		await backend.put('/user/x/a.txt', Buffer.from('a'), { owner, tags: ['foo'], visibility: 'private' });
-		await backend.put('/user/x/b.txt', Buffer.from('b'), { owner, tags: ['bar'], visibility: 'private' });
-		await backend.put('/user/x/c.txt', Buffer.from('c'), { owner, tags: ['foo', 'bar'], visibility: 'private' });
+		await backend.put('/user/x/a.txt', Buffer.from('a'), testMetadata(owner, { tags: ['foo'] }));
+		await backend.put('/user/x/b.txt', Buffer.from('b'), testMetadata(owner, { tags: ['bar'] }));
+		await backend.put('/user/x/c.txt', Buffer.from('c'), testMetadata(owner, { tags: ['foo', 'bar'] }));
 
 		const fooResults = await backend.search({ tags: ['foo'] }, { limit: 10 });
 		expect(fooResults.results).toHaveLength(2);
@@ -96,19 +96,19 @@ describe('MemoryStorageBackend', function() {
 		expect(initialQuota.totalSize).toBe(0);
 
 		// After first put
-		await backend.put(path, Buffer.from('12345'), { owner, tags: [], visibility: 'private' });
+		await backend.put(path, Buffer.from('12345'), testMetadata(owner));
 		const afterPut = await backend.getQuotaStatus(owner);
 		expect(afterPut.objectCount).toBe(1);
 		expect(afterPut.totalSize).toBe(5);
 
 		// Update same path - object count stays same, size changes
-		await backend.put(path, Buffer.from('1234567890'), { owner, tags: [], visibility: 'private' });
+		await backend.put(path, Buffer.from('1234567890'), testMetadata(owner));
 		const afterUpdate = await backend.getQuotaStatus(owner);
 		expect(afterUpdate.objectCount).toBe(1);
 		expect(afterUpdate.totalSize).toBe(10);
 
 		// Shrink object - size decreases
-		await backend.put(path, Buffer.from('xy'), { owner, tags: [], visibility: 'private' });
+		await backend.put(path, Buffer.from('xy'), testMetadata(owner));
 		const afterShrink = await backend.getQuotaStatus(owner);
 		expect(afterShrink.objectCount).toBe(1);
 		expect(afterShrink.totalSize).toBe(2);
@@ -168,7 +168,7 @@ describe('MemoryStorageBackend', function() {
 				// Perform action
 				if (testCase.commitAfterPut && testCase.putData) {
 					const data = Buffer.from(testCase.putData);
-					await backend.put(path, data, { owner, tags: [], visibility: 'private' });
+					await backend.put(path, data, testMetadata(owner));
 					await backend.commitUpload(reservation.id);
 				} else if (testCase.releaseAfterReserve) {
 					await backend.releaseUpload(reservation.id);
@@ -217,11 +217,11 @@ describe('MemoryStorageBackend', function() {
 			const path = makePath('file.txt');
 
 			// Store a 100-byte file
-			await backend.put(path, Buffer.from('x'.repeat(100)), { owner, tags: [], visibility: 'private' });
+			await backend.put(path, Buffer.from('x'.repeat(100)), testMetadata(owner));
 			const quotaAfterPut = await backend.getQuotaStatus(owner);
 			expect(quotaAfterPut.totalSize).toBe(100);
-			const initialRemaining = quotaAfterPut.remainingSize;
 
+			const initialRemaining = quotaAfterPut.remainingSize;
 			// Reserve for overwrite with 50-byte file (smaller)
 			const reservation = await backend.reserveUpload(owner, path, 50);
 
@@ -231,7 +231,7 @@ describe('MemoryStorageBackend', function() {
 			expect(quotaDuring.remainingSize).toBe(initialRemaining); // Not inflated
 
 			// Complete the overwrite
-			await backend.put(path, Buffer.from('y'.repeat(50)), { owner, tags: [], visibility: 'private' });
+			await backend.put(path, Buffer.from('y'.repeat(50)), testMetadata(owner));
 			await backend.commitUpload(reservation.id);
 
 			const quotaAfter = await backend.getQuotaStatus(owner);
@@ -263,6 +263,45 @@ describe('MemoryStorageBackend', function() {
 			const quotaWithNew = await backend.getQuotaStatus(owner);
 			expect(quotaWithNew.objectCount).toBe(1);
 			expect(quotaWithNew.totalSize).toBe(100);
+		});
+
+		test('rejects negative size reservation', async function() {
+			const { backend, owner, makePath } = createTestBackend('negative-size');
+			const path = makePath('file.txt');
+
+			await expect(backend.reserveUpload(owner, path, -100)).rejects.toThrow(
+				/cannot be negative/i
+			);
+		});
+
+		test('concurrent reservations for same path are deduplicated', async function() {
+			const { backend, owner, makePath } = createTestBackend('dedupe-test');
+			const path = makePath('file.txt');
+
+			// Create first reservation
+			const reservation1 = await backend.reserveUpload(owner, path, 100);
+			// Create second reservation for same path with larger size
+			const reservation2 = await backend.reserveUpload(owner, path, 200);
+			// Should return the same reservation ID (or updated reservation)
+			expect(reservation2.id).toBe(reservation1.id);
+
+			// Quota should only count the larger size, not sum of both
+			const quota = await backend.getQuotaStatus(owner);
+			expect(quota.objectCount).toBe(1);
+			expect(quota.totalSize).toBe(200);
+		});
+
+		test('handles zero-size reservations', async function() {
+			const { backend, owner, makePath } = createTestBackend('zero-size');
+			const path = makePath('file.txt');
+
+			const reservation = await backend.reserveUpload(owner, path, 0);
+			expect(reservation.id).toBeDefined();
+			expect(reservation.size).toBe(0);
+
+			const quota = await backend.getQuotaStatus(owner);
+			expect(quota.objectCount).toBe(1);
+			expect(quota.totalSize).toBe(0);
 		});
 	});
 });

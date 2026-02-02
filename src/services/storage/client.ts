@@ -546,11 +546,23 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	/**
 	 * Normalize a path suffix and append it to a URL pathname.
 	 * Handles leading slashes and trailing slashes consistently.
+	 * Validates against path traversal attacks.
 	 *
 	 * @param url - The URL object to modify (mutated in place)
 	 * @param path - The path suffix to append
+	 *
+	 * @throws InvalidPath if path contains traversal patterns
 	 */
 	#appendPathToUrl(url: URL, path: string): void {
+		// Validate path is not empty
+		if (!path || path.trim().length === 0) {
+			throw(new Errors.InvalidPath('Path cannot be empty'));
+		}
+		// Validate against path traversal attacks
+		if (path.includes('..') || path.includes('//')) {
+			throw(new Errors.InvalidPath('Path contains invalid segments'));
+		}
+
 		const pathSuffix = path.startsWith('/') ? path.slice(1) : path;
 		url.pathname = url.pathname.replace(/\/$/, '') + '/' + pathSuffix;
 	}
@@ -611,10 +623,10 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 
 		// Serialize the request body if provided.
-		const serializedBody: Omit<SerializedRequest, 'signed'> | undefined =
-			(input.body !== undefined && input.serializeRequest)
-				? await input.serializeRequest(input.body)
-				: undefined;
+		let serializedBody: Omit<SerializedRequest, 'signed'> | undefined;
+		if (input.body !== undefined && input.serializeRequest) {
+			serializedBody = await input.serializeRequest(input.body);
+		}
 
 		let signed: HTTPSignedField | undefined;
 		if (auth.type === 'required' || (auth.type === 'optional' && input.account)) {
@@ -651,11 +663,16 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 		}
 
-		const requestInformation = await fetch(usingUrl, {
-			method: input.method, headers, body
-		});
+		let httpResponse: globalThis.Response;
+		try {
+			httpResponse = await fetch(usingUrl, {
+				method: input.method, headers, body
+			});
+		} catch (e) {
+			throw(new Errors.ServiceUnavailable(`Network error: ${e instanceof Error ? e.message : String(e)}`));
+		}
 
-		const requestInformationJSON: unknown = await requestInformation.json();
+		const requestInformationJSON: unknown = await httpResponse.json();
 		if (!input.isResponse(requestInformationJSON)) {
 			throw(new Errors.InvalidResponse(JSON.stringify(requestInformationJSON)));
 		}
@@ -691,6 +708,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		account: InstanceType<typeof KeetaNetLib.Account>;
 	}): Promise<{ ok: true; object: StorageObjectMetadata }> {
 		const { url, auth } = await this.#getOperationData('put');
+		const visibility = input.visibility ?? 'private';
 
 		this.#appendPathToUrl(url, input.path);
 
@@ -698,9 +716,18 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			throw(new Errors.AccountRequired());
 		}
 
-		// Sign the request
-		const visibility = input.visibility ?? 'private';
 		const tags = input.tags ?? [];
+		for (const tag of tags) {
+			// Validate tags are not empty
+			if (!tag || tag.trim().length === 0) {
+				throw(new Errors.InvalidTag('Tags cannot be empty'));
+			}
+			// Validate tags don't contain commas (used as delimiter in query params)
+			if (tag.includes(',')) {
+				throw(new Errors.InvalidTag('Tags cannot contain commas'));
+			}
+		}
+
 		const signable = getKeetaStorageAnchorPutRequestSigningData({ path: input.path, visibility, tags });
 		const signed = await SignData(input.account.assertAccount(), signable);
 
@@ -711,11 +738,16 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			signedUrl.searchParams.set('tags', tags.join(','));
 		}
 
-		const response = await fetch(signedUrl, {
-			method: 'PUT',
-			headers: { 'Content-Type': CONTENT_TYPE_OCTET_STREAM, 'Accept': CONTENT_TYPE_JSON },
-			body: input.data
-		});
+		let response: Response;
+		try {
+			response = await fetch(signedUrl, {
+				method: 'PUT',
+				headers: { 'Content-Type': CONTENT_TYPE_OCTET_STREAM, 'Accept': CONTENT_TYPE_JSON },
+				body: input.data
+			});
+		} catch (e) {
+			throw(new Errors.ServiceUnavailable(`Network error: ${e instanceof Error ? e.message : String(e)}`));
+		}
 
 		if (!response.ok) {
 			await this.#handleBinaryResponseError(response);
@@ -763,10 +795,15 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		// Add auth to query params
 		const signedUrl = addSignatureToURL(url, { signedField: signed, account: input.account.assertAccount() });
-		const response = await fetch(signedUrl, {
-			method: 'GET',
-			headers: { 'Accept': CONTENT_TYPE_OCTET_STREAM }
-		});
+		let response: Response;
+		try {
+			response = await fetch(signedUrl, {
+				method: 'GET',
+				headers: { 'Accept': CONTENT_TYPE_OCTET_STREAM }
+			});
+		} catch (e) {
+			throw(new Errors.ServiceUnavailable(`Network error: ${e instanceof Error ? e.message : String(e)}`));
+		}
 
 		if (!response.ok) {
 			await this.#handleBinaryResponseError(response);
@@ -825,16 +862,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
 		try {
-			// Get raw binary data
 			const encodedData = await this.#makeBinaryGetRequest({
 				path,
 				account: signerAccount
 			});
 
-			// Decrypt the container
+			// Decrypt the container and extract mimeType from encrypted payload
 			const container = EncryptedContainer.fromEncryptedBuffer(encodedData, [signerAccount]);
 			const plaintext = await container.getPlaintext();
-			// Parse the payload to extract mime-type and content
 			const { mimeType, content: data } = parseContainerPayload(plaintext);
 
 			this.logger?.debug(`Get request successful for path: ${path}`);
@@ -844,7 +879,6 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				mimeType
 			});
 		} catch (e) {
-			// Check if it's a "not found" error
 			if (Errors.DocumentNotFound.isInstance(e)) {
 				return(null);
 			}
@@ -936,22 +970,22 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		this.logger?.debug(`Putting object at path: ${path}`);
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
-
-		// Create payload with mime-type inside
-		const payload = {
-			mimeType,
-			data: data.toString('base64')
-		};
-
-		// Create EncryptedContainer with appropriate principals
 		const principals: InstanceType<typeof KeetaNetLib.Account>[] = [signerAccount];
+
 		if (visibility === 'public') {
 			const effectiveAnchor = anchorAccount ?? this.anchorAccount;
 			if (!effectiveAnchor) {
 				throw(new Errors.AccountRequired('anchorAccount is required for public visibility and no provider anchor account is available'));
 			}
+
 			principals.push(effectiveAnchor);
 		}
+
+		// Create payload with mimeType inside (encrypted)
+		const payload = {
+			mimeType,
+			data: data.toString('base64')
+		};
 
 		const container = EncryptedContainer.fromPlaintext(
 			JSON.stringify(payload),
@@ -961,25 +995,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const encodedBuffer = await container.getEncodedBuffer();
 		const binaryData = arrayBufferLikeToBuffer(encodedBuffer);
-		const putInput: {
-			path: string;
-			data: Buffer;
-			visibility?: StorageObjectVisibility;
-			tags?: string[];
-			account: InstanceType<typeof KeetaNetLib.Account>;
-		} = {
+
+		const response = await this.#makeBinaryPutRequest({
 			path,
 			data: binaryData,
-			account: signerAccount
-		};
-		if (visibility !== undefined) {
-			putInput.visibility = visibility;
-		}
-		if (tags !== undefined) {
-			putInput.tags = tags;
-		}
-
-		const response = await this.#makeBinaryPutRequest(putInput);
+			account: signerAccount,
+			...(visibility !== undefined && { visibility }),
+			...(tags !== undefined && { tags })
+		});
 
 		this.logger?.debug(`Put request successful for path: ${path}`);
 
@@ -1101,6 +1124,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const signerAccount = this.#resolveSignerAccount(options.account);
 
 		const ttl = options.ttl ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
+		if (ttl <= 0) {
+			throw(new Errors.InvariantViolation('TTL must be positive'));
+		}
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
 		// Sign the message
@@ -1109,7 +1135,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		// Get base URL from service info
 		const operationInfo = await this.serviceInfo.operations.public;
 		if (!operationInfo) {
-			throw(new Errors.ServiceUnavailable());
+			throw(new Errors.OperationNotSupported('public'));
 		}
 
 		// Construct the public URL with path in pathname

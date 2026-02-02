@@ -102,6 +102,21 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
  */
 export const testPathPolicy: TestPathPolicy = new TestPathPolicy();
 
+/**
+ * Create test metadata with sensible defaults.
+ */
+export function testMetadata(
+	owner: string,
+	overrides?: Partial<StoragePutMetadata>
+): StoragePutMetadata {
+	return({
+		owner,
+		tags: [],
+		visibility: 'private',
+		...overrides
+	});
+}
+
 // #endregion
 
 // #region Types
@@ -236,7 +251,9 @@ function computeQuotaStatus(
 	for (const entry of storage.values()) {
 		if (entry.metadata.owner === owner) {
 			objectCount++;
-			totalSize += parseInt(entry.metadata.size, 10);
+
+			const entrySize = parseInt(entry.metadata.size, 10);
+			totalSize += Number.isNaN(entrySize) ? 0 : entrySize;
 		}
 	}
 
@@ -329,6 +346,11 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		ttlMs?: number;
 		quotaLimits?: { maxObjectsPerUser: number; maxStoragePerUser: number };
 	}): Promise<UploadReservation> {
+		// Validate size parameter
+		if (size < 0) {
+			throw(new Errors.InvariantViolation('Reservation size cannot be negative'));
+		}
+
 		// Prune expired reservations first
 		this.#pruneExpiredReservations();
 
@@ -358,6 +380,8 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		}
 
 		// Check for existing reservation for this (owner, path)
+		// If a reservation already exists, we calculate the additional quota needed
+		// by comparing the new sizeDelta with the existing reservation's reserved size.
 		const pathKey = `${owner}:${path}`;
 		const existingId = this.#reservationsByPath.get(pathKey);
 		if (existingId) {
@@ -366,7 +390,7 @@ export class MemoryStorageBackend implements FullStorageBackend {
 				const clampedSizeDelta = Math.max(0, sizeDelta);
 				const additionalSize = clampedSizeDelta - existing.size;
 
-				// Re-check quota if size is increasing
+				// Re-check quota if size is increasing beyond current reservation
 				if (additionalSize > 0 && remainingSize < additionalSize) {
 					throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
 				}

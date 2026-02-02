@@ -1,7 +1,6 @@
 import { test, expect, describe } from 'vitest';
 import KeetaNet from '@keetanetwork/keetanet-client';
-import { parseContainerPayload, Errors } from './common.js';
-import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
+import { Errors } from './common.js';
 import { testPathPolicy } from './test-utils.js';
 
 const validPaths = [
@@ -96,64 +95,4 @@ describe('PathPolicy (TestPathPolicy implementation)', function() {
 			}
 		});
 	});
-});
-
-const parseContainerPayloadCases: {
-	name: string;
-	input: string | { mimeType?: string; data?: string };
-	expectedMimeType: string;
-	expectedContent: string | number[];
-}[] = [
-	{
-		name: 'valid JSON with mimeType and base64 data',
-		input: { mimeType: 'text/plain', data: Buffer.from('Hello, World!').toString('base64') },
-		expectedMimeType: 'text/plain',
-		expectedContent: 'Hello, World!'
-	},
-	{
-		name: 'missing mimeType defaults to octet-stream',
-		input: { data: Buffer.from('Some data').toString('base64') },
-		expectedMimeType: 'application/octet-stream',
-		expectedContent: 'Some data'
-	},
-	{
-		name: 'missing data returns raw plaintext',
-		input: { mimeType: 'text/plain' },
-		expectedMimeType: 'text/plain',
-		expectedContent: '{"mimeType":"text/plain"}'
-	},
-	{
-		name: 'non-object JSON returns raw plaintext',
-		input: '["array","values"]',
-		expectedMimeType: 'application/octet-stream',
-		expectedContent: '["array","values"]'
-	},
-	{
-		name: 'invalid JSON returns raw plaintext',
-		input: 'not valid json',
-		expectedMimeType: 'application/octet-stream',
-		expectedContent: 'not valid json'
-	},
-	{
-		name: 'binary data',
-		input: { mimeType: 'application/octet-stream', data: Buffer.from([0x00, 0x01, 0x02, 0xFF, 0xFE]).toString('base64') },
-		expectedMimeType: 'application/octet-stream',
-		expectedContent: [0x00, 0x01, 0x02, 0xFF, 0xFE]
-	}
-];
-
-describe('parseContainerPayload', function() {
-	for (const testCase of parseContainerPayloadCases) {
-		test(testCase.name, function() {
-			const plaintext = Buffer.from(typeof testCase.input === 'string' ? testCase.input : JSON.stringify(testCase.input));
-			const result = parseContainerPayload(bufferToArrayBuffer(plaintext));
-			expect(result.mimeType).toBe(testCase.expectedMimeType);
-
-			if (Array.isArray(testCase.expectedContent)) {
-				expect(result.content).toEqual(Buffer.from(testCase.expectedContent));
-			} else {
-				expect(result.content.toString()).toBe(testCase.expectedContent);
-			}
-		});
-	}
 });

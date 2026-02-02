@@ -5,6 +5,10 @@ import type { Signable } from '../../lib/utils/signing.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
+/**
+ * Type alias for a KeetaNet Account instance.
+ * Used throughout the storage service for account authentication and signing.
+ */
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 
 // #region Shared Constants
@@ -206,15 +210,6 @@ export type QuotaStatus = {
 
 // #region Request Type Helpers
 
-/**
- * Helper type to convert a client request type to a server request type.
- * Transforms the account field from KeetaNetAccount to string and adds the signed field.
- */
-export type ServerRequest<T> = Omit<T, 'account'> & {
-	account?: string;
-	signed?: HTTPSignedField;
-};
-
 // #endregion
 
 // #region PUT Object
@@ -245,7 +240,7 @@ export type KeetaStorageAnchorPutRequest = {
 /**
  * Generic response type for storage operations.
  */
-export type StorageResponse<T> = { ok: true } & T | { ok: false; error: string };
+export type StorageResponse<T> = ({ ok: true } & T) | { ok: false; error: string };
 
 export type KeetaStorageAnchorPutResponse = StorageResponse<{ object: StorageObjectMetadata }>;
 
@@ -1022,19 +1017,26 @@ export const Errors: {
 // #region Storage Backend Interface
 
 /**
- * Metadata input for put operations
+ * Metadata input for put operations.
+ * Provided by the client when storing an object.
  */
 export type StoragePutMetadata = {
+	/** Owner's public key string */
 	owner: string;
+	/** Tags for categorization and search */
 	tags: string[];
+	/** Access visibility setting */
 	visibility: StorageObjectVisibility;
 };
 
 /**
- * Result of a get operation
+ * Result of a get operation.
+ * Contains both the raw encrypted data and the object metadata.
  */
 export type StorageGetResult = {
+	/** Raw encrypted data (EncryptedContainer) */
 	data: Buffer;
+	/** Object metadata */
 	metadata: StorageObjectMetadata;
 };
 
@@ -1185,18 +1187,19 @@ export interface PathPolicy<TPathInfo> {
 // #region Container Payload Utilities
 
 /**
- * Parse an encrypted container payload to extract mime-type and content.
- * The expected payload structure is: { mimeType: string, data: base64 string }
- * Falls back to raw plaintext with application/octet-stream if not valid JSON.
+ * Parse the decrypted plaintext from an EncryptedContainer.
+ * The payload is expected to be JSON with mimeType and base64-encoded data,
+ * keeping the mimeType encrypted along with the content.
  *
  * @param plaintext - The decrypted plaintext from an EncryptedContainer
- * @returns The parsed mimeType and content
+ *
+ * @returns Object containing mimeType and content Buffer
  */
 export function parseContainerPayload(plaintext: ArrayBuffer): { mimeType: string; content: Buffer } {
 	const payloadStr = Buffer.from(plaintext).toString('utf-8');
 	try {
 		const payload: unknown = JSON.parse(payloadStr);
-		let mimeType = 'application/octet-stream';
+		let mimeType = CONTENT_TYPE_OCTET_STREAM;
 		let content: Buffer;
 		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
 			const payloadMime = 'mimeType' in payload ? payload.mimeType : undefined;
@@ -1214,9 +1217,8 @@ export function parseContainerPayload(plaintext: ArrayBuffer): { mimeType: strin
 		}
 		return({ mimeType, content });
 	} catch {
-		// If not JSON, return raw plaintext as content
 		return({
-			mimeType: 'application/octet-stream',
+			mimeType: CONTENT_TYPE_OCTET_STREAM,
 			content: arrayBufferLikeToBuffer(plaintext)
 		});
 	}
