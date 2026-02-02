@@ -13,7 +13,7 @@ function firstCharUpper(str: string): string {
 	return(str.charAt(0).toUpperCase() + str.slice(1));
 }
 
-function toCamelCase(str: string): string {
+function toPascalCase(str: string): string {
 	const split = str.split(/[-_]/g);
 
 	const mapped = split.map(function(part) {
@@ -66,7 +66,7 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 	] as const) {
 		for (const [ name, schema ] of Object.entries(schemas)) {
 			for (const value of [ 'resolved', 'obfuscated' ] as const) {
-				const interfaceName = toCamelCase(`${name}_${schemaType}_${value}`);
+				const interfaceName = toPascalCase(`${name}_${schemaType}_${value}`);
 
 				const allOfIncludes: JSONSchema4[] = [];
 
