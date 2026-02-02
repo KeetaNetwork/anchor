@@ -314,6 +314,132 @@ type EncryptedContainerKeyStore = [
 	Buffer
 ];
 
+type EncryptedContainerBoxEncrypted = [
+	/* keys */
+	EncryptedContainerKeyStore[],
+
+	/* encryptionAlgorithm */
+	ASN1OID,
+
+	/* initializationVector */
+	Buffer,
+
+	/* value */
+	Buffer
+];
+
+type EncryptedContainerBoxPlaintext = [
+	/* value */
+	Buffer
+];
+
+type ContainerPackageV2 = [
+	/* version */
+	number,
+
+	/* container */
+	{
+		type: 'context',
+		value: 0,
+		kind: 'explicit',
+		contains: EncryptedContainerBoxEncrypted
+	} | {
+		type: 'context',
+		value: 1,
+		kind: 'explicit',
+		contains: EncryptedContainerBoxPlaintext
+	}
+];
+
+type ContainerPackageV3 = [
+	/* version */
+	number,
+
+	/* container */
+	{
+		type: 'context',
+		value: 0,
+		kind: 'explicit',
+		contains: EncryptedContainerBoxEncrypted
+	} | {
+		type: 'context',
+		value: 1,
+		kind: 'explicit',
+		contains: EncryptedContainerBoxPlaintext
+	},
+
+	/* signerInfo */
+	{
+		type: 'context',
+		value: 2,
+		kind: 'explicit',
+		contains: SignerInfoASN1
+	}
+];
+
+type ContainerPackage = ContainerPackageV2 | ContainerPackageV3;
+
+type EncryptedBoxContext = {
+	type: 'context',
+	value: 0,
+	kind: 'explicit',
+	contains: EncryptedContainerBoxEncrypted
+};
+
+type PlaintextBoxContext = {
+	type: 'context',
+	value: 1,
+	kind: 'explicit',
+	contains: EncryptedContainerBoxPlaintext
+};
+
+type ContainerBox = EncryptedBoxContext | PlaintextBoxContext;
+
+/**
+ * Build a typed encrypted container box with context tag [0].
+ */
+function buildEncryptedBox(
+	keys: EncryptedContainerKeyStore[],
+	algorithmOID: string,
+	iv: Buffer,
+	encryptedData: Buffer
+): EncryptedBoxContext {
+	return({
+		type: 'context',
+		value: 0,
+		kind: 'explicit',
+		contains: [keys, { type: 'oid', oid: algorithmOID }, iv, encryptedData]
+	});
+}
+
+/**
+ * Build a typed plaintext container box with context tag [1].
+ */
+function buildPlaintextBox(
+	data: Buffer
+): PlaintextBoxContext {
+	return({
+		type: 'context',
+		value: 1,
+		kind: 'explicit',
+		contains: [data]
+	});
+}
+
+/**
+ * Build a typed signer info box with context tag [2].
+ */
+function buildSignerInfoBox(
+	signerInfo: SignerInfoASN1
+): { type: 'context', value: 2, kind: 'explicit', contains: SignerInfoASN1 } {
+	return({
+		type: 'context',
+		value: 2,
+		kind: 'explicit',
+		contains: signerInfo
+	});
+}
+
 type CipherOptions = {
 	/**
 	 * The symmetric cipher key (if any)
@@ -354,31 +480,21 @@ type SigningOptions = {
 async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, signingOptions?: SigningOptions): Promise<Buffer> {
 	const compressedPlaintext = Buffer.from(await zlibDeflateAsync(bufferToArrayBuffer(plaintext)));
 
-	const sequence: unknown[] = [];
-
 	/*
-	 * Version: v2 (1) if no signing, v3 (2) if signing
+	 * Build the container box (encrypted or plaintext)
 	 */
-	const version = signingOptions ? 2 : 1;
-	sequence[0] = version;
-
-	/*
-	 * Encrypted container box
-	 */
+	let containerBox: ContainerBox;
 	if (encryptionOptions) {
 		const { keys, cipherKey, cipherIV, cipherAlgo } = encryptionOptions;
-
 		if (keys === undefined || keys.length === 0 || cipherKey === undefined || cipherIV === undefined || cipherAlgo === undefined) {
 			throw(new EncryptedContainerError('INTERNAL_ERROR', 'Unsupported method invocation'));
 		}
-
 		if (!(cipherAlgo in oidDB)) {
 			throw(new EncryptedContainerError('UNSUPPORTED_CIPHER_ALGORITHM', `Unsupported algorithm: ${cipherAlgo}`));
 		}
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const algorithmOID = oidDB[cipherAlgo as keyof typeof oidDB];
-
 		const cipher = crypto.createCipheriv(
 			cipherAlgo,
 			cipherKey,
@@ -391,7 +507,6 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, sig
 		]);
 
 		const cipherKeyArrayBuffer = bufferToArrayBuffer(cipherKey);
-
 		const encryptionKeysSequence = await Promise.all(keys.map(async function(key) {
 			const encryptedSymmetricKey = Buffer.from(await key.encrypt(cipherKeyArrayBuffer));
 			const retval: EncryptedContainerKeyStore = [
@@ -402,34 +517,23 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, sig
 			return(retval);
 		}));
 
-		sequence[1] = {
-			type: 'context',
-			value: 0,
-			kind: 'explicit',
-			contains: [
-				encryptionKeysSequence,
-				{ type: 'oid', oid: algorithmOID },
-				cipherIV,
-				encryptedData
-			]
-		};
+		containerBox = buildEncryptedBox(encryptionKeysSequence, algorithmOID, cipherIV, encryptedData);
 	} else {
 		/*
 		 * Otherwise we simply pass in the compressed data
 		 */
-		sequence[1] = {
-			type: 'context',
-			value: 1,
-			kind: 'explicit',
-			contains: [compressedPlaintext]
-		};
+		containerBox = buildPlaintextBox(Buffer.from(compressedPlaintext));
 	}
 
 	/*
-	 * SignerInfo (v3 only)
-	 * Sign the compressed plaintext (before encryption) so signature is verifiable after decryption
+	 * Build the typed container package
 	 */
+	let container: ContainerPackage;
 	if (signingOptions) {
+		/*
+		 * V3 container with SignerInfo
+		 * Sign the compressed plaintext (before encryption) so signature is verifiable after decryption
+		 */
 		const { signer } = signingOptions;
 
 		if (!signer.hasPrivateKey) {
@@ -468,16 +572,24 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, sig
 			signature
 		];
 
-		sequence[2] = {
-			type: 'context',
-			value: 2,
-			kind: 'explicit',
-			contains: signerInfoASN1
-		};
+		const containerV3: ContainerPackageV3 = [
+			2, // version
+			containerBox,
+			buildSignerInfoBox(signerInfoASN1)
+		];
+		container = containerV3;
+	} else {
+		/*
+		 * V2 container without SignerInfo
+		 */
+		const containerV2: ContainerPackageV2 = [
+			1, // version
+			containerBox
+		];
+		container = containerV2;
 	}
 
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	const outputASN1 = JStoASN1(sequence as Parameters<typeof JStoASN1>[0]);
+	const outputASN1 = JStoASN1(container);
 	const outputDER = arrayBufferToBuffer(outputASN1.toBER(false));
 	return(outputDER);
 }
