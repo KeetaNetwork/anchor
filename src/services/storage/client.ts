@@ -832,7 +832,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			endpoint: 'delete',
 			account: request.account,
 			pathSuffix: request.path,
-			getSignedData: () => getKeetaStorageAnchorDeleteRequestSigningData({ path: request.path }),
+			getSignedData: function() {
+				return(getKeetaStorageAnchorDeleteRequestSigningData({ path: request.path }));
+			},
 			isResponse: isKeetaStorageAnchorDeleteResponse
 		});
 
@@ -912,7 +914,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				endpoint: 'metadata',
 				account: signerAccount,
 				pathSuffix: path,
-				getSignedData: () => getKeetaStorageAnchorGetRequestSigningData({ path, account: signerAccount.publicKeyString.get() }),
+				getSignedData: function() {
+					return(getKeetaStorageAnchorGetRequestSigningData({
+						path,
+						account: signerAccount.publicKeyString.get()
+					}));
+				},
 				isResponse: function(data: unknown): data is ({ ok: true; object: StorageObjectMetadata } | { ok: false; error: string }) {
 					if (typeof data !== 'object' || data === null || !('ok' in data)) {
 						return(false);
@@ -1057,10 +1064,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				return(serialized);
 			},
 			body: bodyToSend,
-			getSignedData: () => getKeetaStorageAnchorSearchRequestSigningData({
-				criteria,
-				...(pagination !== undefined ? { pagination } : {})
-			}),
+			getSignedData: function() {
+				return(getKeetaStorageAnchorSearchRequestSigningData({
+					criteria,
+					...(pagination !== undefined ? { pagination } : {})
+				}));
+			},
 			isResponse: isKeetaStorageAnchorSearchResponse
 		});
 
@@ -1093,7 +1102,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			method: 'GET',
 			endpoint: 'quota',
 			account: signerAccount,
-			getSignedData: () => getKeetaStorageAnchorQuotaRequestSigningData({}),
+			getSignedData: function() {
+				return(getKeetaStorageAnchorQuotaRequestSigningData({}));
+			},
 			isResponse: isKeetaStorageAnchorQuotaResponse
 		});
 
@@ -1224,7 +1235,9 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 			return(null);
 		}
 
-		const provider = providers.find(p => p.providerID === providerID);
+		const provider = providers.find(function(p) {
+			return(p.providerID === providerID);
+		});
 		return(provider ?? null);
 	}
 

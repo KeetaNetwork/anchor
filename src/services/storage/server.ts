@@ -230,11 +230,9 @@ async function authorizeURLAccess<T>(
 	const objectPath = extractObjectPath(params);
 	parsePath(pathPolicies, objectPath);
 
-	const account = await verifyURLAuth(
-		url,
-		getSigningData,
-		(pubKey) => buildRequest(objectPath, pubKey)
-	);
+	const account = await verifyURLAuth(url, getSigningData, function(pubKey) {
+		return(buildRequest(objectPath, pubKey));
+	});
 
 	assertPathAccess(pathPolicies, account, objectPath, operation);
 
@@ -536,11 +534,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					});
 
 				// Verify signature
-				const account = await verifyURLAuth(
-					url,
-					getKeetaStorageAnchorPutRequestSigningData,
-					() => ({ path: objectPath, visibility, tags: rawTags })
-				);
+				const account = await verifyURLAuth(url, getKeetaStorageAnchorPutRequestSigningData, function() {
+					return({ path: objectPath, visibility, tags: rawTags });
+				});
 
 				// Validate tags
 				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
@@ -649,7 +645,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				url,
 				'get',
 				getKeetaStorageAnchorGetRequestSigningData,
-				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
+				function(path, pubKey) {
+					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
+				}
 			);
 
 			const result = await requireObject(objectPath);
@@ -667,7 +665,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				url,
 				'delete',
 				getKeetaStorageAnchorDeleteRequestSigningData,
-				(path, pubKey) => ({ path, account: pubKey })
+				function(path, pubKey) {
+					return({ path, account: pubKey });
+				}
 			);
 
 			const deleted = await backend.delete(objectPath);
@@ -687,7 +687,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				url,
 				'metadata',
 				getKeetaStorageAnchorGetRequestSigningData,
-				(path, pubKey) => assertKeetaStorageAnchorGetRequest({ path, account: pubKey })
+				function(path, pubKey) {
+					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
+				}
 			);
 
 			const result = await requireObject(objectPath);
@@ -741,7 +743,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorQuotaRequestSigningData,
-				() => ({})
+				function() { return({}); }
 			);
 
 			// Get current usage from backend and compute remaining using server's quota config
