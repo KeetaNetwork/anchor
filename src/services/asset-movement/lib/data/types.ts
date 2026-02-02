@@ -1,18 +1,19 @@
 import { Country } from "@keetanetwork/currency-info";
 import type { ObjectSchema, Schema } from "./json-schema.js";
 
-export interface BankAccountAddressSchema {
-	type: 'bank-account';
+export interface AccountAddressSchema {
+	type: 'bank-account' | 'mobile-wallet';
 
 	includeFields: {
-		accountOwner: boolean;
-		bankName: boolean;
-		accountNumberEnding: boolean;
+		accountOwner?: boolean;
+		bankName?: boolean;
+		accountNumberEnding?: boolean;
+		phoneNumber?: boolean;
 	}
 
 	additionalProperties: {
-		resolved: ObjectSchema;
-		obfuscated: ObjectSchema;
+		resolved?: ObjectSchema;
+		obfuscated?: ObjectSchema;
 	}
 }
 
@@ -21,11 +22,12 @@ export const sharedSchemaReferences: { [K in keyof typeof sharedJSONSchemaTypes]
 	PhysicalAddress: { $ref: '#/definitions/PhysicalAddress' },
 	ResolvedAccountOwner: { $ref: '#/definitions/ResolvedAccountOwner' },
 	ObfuscatedAccountOwner: { $ref: '#/definitions/ObfuscatedAccountOwner' },
-	PhoneNumber: { $ref: '#/definitions/PhoneNumber' }
+	PhoneNumber: { $ref: '#/definitions/PhoneNumber' },
+	PhoneNumberObjectExtends: { $ref: '#/definitions/PhoneNumberObjectExtends' }
 }
 
 export const sharedJSONSchemaTypes: {
-	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber']: Schema;
+	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber' | 'PhoneNumberObjectExtends']: Schema;
 } = {
 	ResolvedAccountOwner: {
 		$id: 'ResolvedAccountOwner',
@@ -110,5 +112,13 @@ export const sharedJSONSchemaTypes: {
 		maxLength: 80,
 		minLength: 1,
 		pattern: "^\\d{1,80}$"
+	},
+	PhoneNumberObjectExtends: {
+		$id: 'PhoneNumberObjectExtends',
+		type: "object",
+		properties: {
+			phoneNumber: sharedSchemaReferences.PhoneNumber
+		},
+		required: ['phoneNumber']
 	}
 };

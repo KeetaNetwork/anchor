@@ -52,12 +52,17 @@ src/services/kyc/iso20022.generated.ts: utils/run-ts src/services/kyc/utils/gene
 
 # Generated files for asset movement service
 
-src/services/asset-movement/lib/data/addresses/index.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/scripts/generate-index.sh
-	./src/services/asset-movement/lib/data/scripts/generate-index.sh > ./src/services/asset-movement/lib/data/addresses/index.generated.ts.tmp
-	rm -f ./src/services/asset-movement/lib/data/addresses/index.generated.ts
-	mv ./src/services/asset-movement/lib/data/addresses/index.generated.ts.tmp ./src/services/asset-movement/lib/data/addresses/index.generated.ts
+src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data/addresses/bank-account/ -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/scripts/generate-index.sh
+	./src/services/asset-movement/lib/data/scripts/generate-index.sh src/services/asset-movement/lib/data/addresses/bank-account > ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts.tmp
+	rm -f ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts
+	mv ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts.tmp ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts
 
-src/services/asset-movement/lib/data/addresses/types.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/addresses/index.generated.ts ./src/services/asset-movement/lib/data/scripts/generator.ts
+src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data/addresses/mobile-wallet/ -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/scripts/generate-index.sh
+	./src/services/asset-movement/lib/data/scripts/generate-index.sh src/services/asset-movement/lib/data/addresses/mobile-wallet > ./src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts.tmp
+	rm -f ./src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts
+	mv ./src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts.tmp ./src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts
+
+src/services/asset-movement/lib/data/addresses/types.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts ./src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts ./src/services/asset-movement/lib/data/scripts/generator.ts
 	./utils/run-ts ./src/services/asset-movement/lib/data/scripts/generator.ts --types-output=./src/services/asset-movement/lib/data/addresses/types.generated.ts
 
 # This target creates the distribution directory.

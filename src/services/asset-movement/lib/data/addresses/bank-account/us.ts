@@ -1,6 +1,6 @@
-import type { BankAccountAddressSchema } from "../types.js";
+import type { AccountAddressSchema } from "../../types.js";
 
-const usSchema: BankAccountAddressSchema = {
+const usSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {

@@ -1,7 +1,7 @@
-import type { BankAccountAddressSchema } from "../types.js";
-import { sharedSchemaReferences } from "../types.js";
+import type { AccountAddressSchema } from "../../types.js";
+import { sharedSchemaReferences } from "../../types.js";
 
-const ibanSwiftSchema: BankAccountAddressSchema = {
+const ibanSwiftSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {

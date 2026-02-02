@@ -2,7 +2,8 @@ import { compile } from 'json-schema-to-typescript';
 import type { JSONSchema4 } from 'json-schema';
 import { sharedJSONSchemaTypes, sharedSchemaReferences } from '../types.js';
 import fs from 'fs';
-import { definitions } from '../addresses/index.generated.js';
+import { definitions as bankAccountDefinitions } from '../addresses/bank-account/index.generated.js';
+import { definitions as mobileWalletAccountDefinitions } from '../addresses/mobile-wallet/index.generated.js';
 
 function firstCharUpper(str: string): string {
 	if (str.length === 0) {
@@ -57,70 +58,74 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 	const allObfuscatedNames = [];
 	const allResolvedNames = [];
 
-	const allDefinitions: { [key: string]: JSONSchema4 } = {
-		ISOCountryCode: sharedJSONSchemaTypes.ISOCountryCode,
-		ObfuscatedAccountOwner: sharedJSONSchemaTypes.ObfuscatedAccountOwner,
-		ResolvedAccountOwner: sharedJSONSchemaTypes.ResolvedAccountOwner,
-		PhysicalAddress: sharedJSONSchemaTypes.PhysicalAddress,
-		PhoneNumber: sharedJSONSchemaTypes.PhoneNumber
-	};
+	const allDefinitions: { [key: string]: JSONSchema4 } = { ...sharedJSONSchemaTypes };
 
-	for (const [ name, schema ] of Object.entries(definitions)) {
-		for (const value of [ 'resolved', 'obfuscated' ] as const) {
-			const interfaceName = toCamelCase(`${name}_${value}`);
+	for (const [ schemaType, schemas ] of [
+		[ 'mobile-wallet', mobileWalletAccountDefinitions ],
+		[ 'bank-account', bankAccountDefinitions ]
+	] as const) {
+		for (const [ name, schema ] of Object.entries(schemas)) {
+			for (const value of [ 'resolved', 'obfuscated' ] as const) {
+				const interfaceName = toCamelCase(`${name}_${schemaType}_${value}`);
 
-			const allOfIncludes: JSONSchema4[] = [];
+				const allOfIncludes: JSONSchema4[] = [];
 
-			if (schema.includeFields.accountOwner) {
-				if (value === 'resolved') {
-					allOfIncludes.push(sharedSchemaReferences.ResolvedAccountOwner);
-				} else {
-					allOfIncludes.push(sharedSchemaReferences.ObfuscatedAccountOwner);
+				if (schema.includeFields.accountOwner) {
+					if (value === 'resolved') {
+						allOfIncludes.push(sharedSchemaReferences.ResolvedAccountOwner);
+					} else {
+						allOfIncludes.push(sharedSchemaReferences.ObfuscatedAccountOwner);
+					}
 				}
-			}
 
-			if (schema.includeFields.bankName) {
-				allOfIncludes.push({
-					type: 'object',
-					properties: {
-						bankName: { type: 'string' }
-					}
-				});
-			}
+				if (schema.includeFields.phoneNumber) {
+					allOfIncludes.push(sharedSchemaReferences.PhoneNumberObjectExtends);
+				}
 
-			if (schema.includeFields.accountNumberEnding && value === 'obfuscated') {
-				allOfIncludes.push({
-					type: 'object',
-					properties: {
-						accountNumberEnding: { type: 'string' }
-					}
-				});
-			}
-
-			allDefinitions[interfaceName] = {
-				allOf: [
-					schema.additionalProperties[value],
-					{
+				if (schema.includeFields.bankName) {
+					allOfIncludes.push({
 						type: 'object',
 						properties: {
-							type: { const: 'bank-account' },
-							accountType: { const: name },
-							obfuscated: { const: value === 'obfuscated' }
+							bankName: { type: 'string' }
+						}
+					});
+				}
 
+				if (schema.includeFields.accountNumberEnding && value === 'obfuscated') {
+					allOfIncludes.push({
+						type: 'object',
+						properties: {
+							accountNumberEnding: { type: 'string' }
+						}
+					});
+				}
+
+				allDefinitions[interfaceName] = {
+					allOf: [
+						...(
+							schema.additionalProperties?.[value] ? [ schema.additionalProperties[value] ] : []
+						),
+						{
+							type: 'object',
+							properties: {
+								type: { const: schemaType },
+								accountType: { const: name },
+								obfuscated: { const: value === 'obfuscated' }
+							},
+							required: [
+								'type', 'accountType',
+								...(value === 'resolved' ? [] : ['obfuscated'])
+							]
 						},
-						required: [
-							'type', 'accountType',
-							...(value === 'resolved' ? [] : ['obfuscated'])
-						]
-					},
-					...allOfIncludes
-				]
-			};
+						...allOfIncludes
+					]
+				};
 
-			if (value === 'resolved') {
-				allResolvedNames.push(interfaceName);
-			} else {
-				allObfuscatedNames.push(interfaceName);
+				if (value === 'resolved') {
+					allResolvedNames.push(interfaceName);
+				} else {
+					allObfuscatedNames.push(interfaceName);
+				}
 			}
 		}
 	}

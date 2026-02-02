@@ -3,10 +3,7 @@
 set -eo pipefail
 
 # Directory containing address schema sources
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-
-addresses_dir="${script_dir}/../addresses"
-output_file="${addresses_dir}/index.generated.ts"
+addresses_dir=$1
 
 if [ ! -d "${addresses_dir}" ]; then
 	echo "Directory not found: ${addresses_dir}" >&2
