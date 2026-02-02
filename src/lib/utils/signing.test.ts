@@ -84,7 +84,7 @@ test('Basic Tests (Sign and Verify Data)', async function() {
 	}
 });
 
-// Data-driven tests for VerifySignedData options
+// Tests for VerifySignedData options
 const verifyOptionsCases = [
 	// maxSkewMs tests
 	{

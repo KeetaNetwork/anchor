@@ -15,8 +15,8 @@ const testCipherIV = Buffer.from('94DE12D10B4455148E92A77BAFEC7D94', 'hex');
 const cipherAlgorithm = 'aes-256-cbc';
 
 /*
-	* Create a container encrypted with a single public key
-	*/
+ * Create a container encrypted with a single public key
+ */
 const defaultEncryptionOptions = {
 	keys: [testAccount1],
 	cipherKey: testCipherKey,
