@@ -266,6 +266,27 @@ test('Basic Functionality', async function() {
 			responseMatch: {
 				message: 'Exact route takes priority!'
 			}
+		},
+		// Trailing slash should NOT match wildcard
+		{
+			method: 'GET',
+			path: '/api/files/',
+			statusCode: 404
+		},
+		// Multiple trailing slashes should NOT match
+		{
+			method: 'GET',
+			path: '/api/files///',
+			statusCode: 404
+		},
+		// Path with trailing slash after content should work
+		{
+			method: 'GET',
+			path: '/api/files/folder/',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'folder'
+			}
 		}] as const;
 
 		for (const check of checks) {

@@ -99,7 +99,18 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			// Capture the remainder as the wildcard param
-			const remainder = requestURLPaths.slice(prefixLength).join('/');
+			// Filter empty segments to handle trailing slashes correctly
+			const remainder = requestURLPaths.slice(prefixLength)
+				.filter(function(s) {
+					return(s !== '');
+				})
+				.join('/');
+
+			if (remainder === '') {
+				// Reject if wildcard would capture nothing
+				return({ match: false });
+			}
+
 			params.set('*', remainder);
 
 			return({ match: true, params: params, isWildcard: true });
