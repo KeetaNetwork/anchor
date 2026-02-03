@@ -66,11 +66,11 @@ test('Asset Movement Anchor Client Test', async function() {
 	const extendedKeetaSendDetails: RailWithExtendedDetails = {
 		rail: 'KEETA_SEND',
 		estimatedTransferTimeMs: [ 1000, 2000 ],
-		transferValueRange: {
+		estimatedTransferValueRange: {
 			value: [ '100', '10000' ],
 			asset: 'USD'
 		},
-		feeEstimate: {
+		estimatedFee: {
 			fixedFee: {
 				value: '2',
 				asset: 'USD'
