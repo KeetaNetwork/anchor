@@ -144,6 +144,32 @@ test('Basic Functionality', async function() {
 					});
 				};
 
+				// Wildcard with path parameter (defined before /api/* for priority)
+				routes['GET /api/users/:id/*'] = async function(params) {
+					const userId = params.get('id');
+					const wildcardPath = params.get('*');
+					return({
+						output: JSON.stringify({
+							message: 'Wildcard with param!',
+							id: userId,
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
+				};
+
+				// Fallback wildcard
+				routes['GET /api/*'] = async function(params) {
+					const wildcardPath = params.get('*');
+					return({
+						output: JSON.stringify({
+							message: 'Less specific wildcard!',
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
+				};
+
 				return(routes);
 			}
 		})({ port: 0, attr: 'test-attribute' });
@@ -208,6 +234,13 @@ test('Basic Functionality', async function() {
 		}, {
 			method: 'GET',
 			path: '/api/does-not-exist',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'does-not-exist'
+			}
+		}, {
+			method: 'GET',
+			path: '/other/does-not-exist',
 			statusCode: 404
 		}, {
 			method: 'GET',
@@ -267,25 +300,69 @@ test('Basic Functionality', async function() {
 				message: 'Exact route takes priority!'
 			}
 		},
-		// Trailing slash should NOT match wildcard
+		// Trailing slash falls through to /api/*
 		{
 			method: 'GET',
 			path: '/api/files/',
-			statusCode: 404
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'files'
+			}
 		},
-		// Multiple trailing slashes should NOT match
+		// Multiple trailing slashes fall through to /api/*
 		{
 			method: 'GET',
 			path: '/api/files///',
-			statusCode: 404
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'files'
+			}
 		},
-		// Path with trailing slash after content should work
+		// Trailing slash after content is stripped
 		{
 			method: 'GET',
 			path: '/api/files/folder/',
 			responseMatch: {
 				message: 'Wildcard route works!',
 				path: 'folder'
+			}
+		},
+		// Falls through to /api/*
+		{
+			method: 'GET',
+			path: '/api/other/something',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'other/something'
+			}
+		},
+		// More specific wildcard takes priority
+		{
+			method: 'GET',
+			path: '/api/files/doc.txt',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'doc.txt'
+			}
+		},
+		// Wildcard with path parameter
+		{
+			method: 'GET',
+			path: '/api/users/abc123/documents/report.pdf',
+			responseMatch: {
+				message: 'Wildcard with param!',
+				id: 'abc123',
+				path: 'documents/report.pdf'
+			}
+		},
+		// Wildcard with path parameter (single segment)
+		{
+			method: 'GET',
+			path: '/api/users/user42/file.txt',
+			responseMatch: {
+				message: 'Wildcard with param!',
+				id: 'user42',
+				path: 'file.txt'
 			}
 		}] as const;
 
