@@ -1308,7 +1308,7 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	readonly forRail: Rail | undefined;
 
 	constructor(args: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, message?: string) {
-		super(message ?? `Operatio not supported`);
+		super(message ?? `Operation not supported`);
 		this.statusCode = 400;
 
 		Object.defineProperty(this, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', {
