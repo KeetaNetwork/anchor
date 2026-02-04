@@ -167,7 +167,8 @@ export default {
 				'finja',
 				'nagad',
 				'naya',
-				'sada'
+				'sada',
+				'venmo'
 			]
 		},
 	],
