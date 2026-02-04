@@ -831,6 +831,15 @@ test('FX Server Estimate to Exchange Test', async function() {
 		});
 	}));
 
+	const serverDoesNotRequireQuoteReturnValue = {
+		convertedAmount: 1002n,
+		convertedAmountBound: 850n,
+		cost: {
+			amount: 0n,
+			token: testCurrencyUSD
+		}
+	};
+
 	await using serverDoesNotRequireQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
 		quoteConfiguration: {
 			requiresQuote: false,
@@ -838,14 +847,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 			issueQuotes: true
 		}
 	}, async function() {
-		return({
-			convertedAmount: 1002n,
-			convertedAmountBound: 850n,
-			cost: {
-				amount: 0n,
-				token: testCurrencyUSD
-			}
-		});
+		return(serverDoesNotRequireQuoteReturnValue);
 	}));
 
 	await using serverDoesNotRequireDoesNotIssueQuote = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
@@ -979,9 +981,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		}
 
 		const sortedQuotes = quotes.sort(function(a, b) {
-			// @ts-ignore
-			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-			return(String(a['provider'].providerID).localeCompare(String(b['provider'].providerID), ...localeCompareArgs));
+			return(String(a.provider.providerID).localeCompare(String(b.provider.providerID), ...localeCompareArgs));
 		});
 
 		expect(sortedQuotes.map(function(entry) {
@@ -1160,6 +1160,35 @@ test('FX Server Estimate to Exchange Test', async function() {
 					expect(error.message.toLowerCase()).includes(testCase.errorMessageContains.toLowerCase());
 				}
 			}
+		}
+
+		{
+			/**
+			 * Check refetching quotes
+			 */
+
+			const quotes = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' }, undefined, {
+				providerIDs: [ 'TestDoesNotRequireQuote' ]
+			});
+
+			const singleEstimate = quotes?.[0];
+			if (singleEstimate === undefined) {
+				throw(new Error('Could not get quote from TestDoesNotRequireQuote'));
+			}
+
+			expect(singleEstimate.estimate.convertedAmount).toBe(1002n);
+
+			serverDoesNotRequireQuoteReturnValue.convertedAmount = 999n;
+
+			const refetchedEstimate = await singleEstimate.refetch();
+			expect(refetchedEstimate.estimate.convertedAmount).toBe(999n);
+
+			const singleQuote = await singleEstimate.getQuote();
+			expect(singleQuote.quote.convertedAmount).toBe(999n);
+
+			serverDoesNotRequireQuoteReturnValue.convertedAmount = 1002n;
+			const refetchedQuote = await singleQuote.refetch();
+			expect(refetchedQuote.quote.convertedAmount).toBe(1002n);
 		}
 	}
 });
