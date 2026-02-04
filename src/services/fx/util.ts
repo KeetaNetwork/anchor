@@ -1,3 +1,4 @@
+import type { TokenAddress } from "@keetanetwork/keetanet-client/lib/account.js";
 import { KeetaNet } from "../../client/index.js";
 import { KeetaAnchorUserError } from "../../lib/error.js";
 import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
@@ -39,6 +40,7 @@ export function convertQuoteToExpectedSwapWithoutCost(input: {
 	})
 }
 
+export type RefundValue = { token: TokenAddress; amount: bigint; };
 export function assertExchangeBlockParameters(args: {
 	block: InstanceType<typeof KeetaNet['lib']['Block']>;
 	liquidityAccount: InstanceType<typeof KeetaNet['lib']['Account']>;
@@ -46,7 +48,9 @@ export function assertExchangeBlockParameters(args: {
 	allowedLiquidityAccounts: null | InstanceType<typeof KeetaNet['lib']['Account']['Set']>;
 
 	checks: Parameters<typeof convertQuoteToExpectedSwapWithoutCost>[0];
-}): void {
+}): {
+		refunds: RefundValue[];
+	} {
 	if (args.allowedLiquidityAccounts !== null && !(args.allowedLiquidityAccounts.has(args.liquidityAccount))) {
 		throw(new KeetaAnchorUserError(`Invalid liquidity account provided ${args.liquidityAccount.publicKeyString.get()}`));
 	}
@@ -93,22 +97,45 @@ export function assertExchangeBlockParameters(args: {
 		[expected.send.token.publicKeyString.get()]: expected.send.amount
 	};
 
-	const feeValue = args.checks.quote.cost;
-	if (feeValue.amount > 0n) {
-		const feeTokenPub = feeValue.token.publicKeyString.get();
+	const costValue = args.checks.quote.cost;
+	if (costValue.amount > 0n) {
+		const feeTokenPub = costValue.token.publicKeyString.get();
 
 		if (!userSendsMinimum[feeTokenPub]) {
 			userSendsMinimum[feeTokenPub] = 0n;
 		}
 
-		userSendsMinimum[feeTokenPub] += feeValue.amount;
+		userSendsMinimum[feeTokenPub] += costValue.amount;
 	}
+
+	const refunds: RefundValue[] = [];
 
 	for (const [ tokenPub, amount ] of Object.entries(userSendsMinimum)) {
 		const userDidSend = userSent[tokenPub] ?? 0n;
 
 		if (userDidSend < amount) {
 			throw(new KeetaAnchorUserError(`Expected send of ${amount}, only saw ${userDidSend} for token ${tokenPub}`));
+		}
+
+		// If the user sent more than the minimum, does not have an affinity on the sent token, and the excess is in the expected receive token, consider it a refund. This allows users to send more than the minimum if they want to receive more than the expected amount, but still ensures that if they do so by mistake they will get a refund of the excess.
+		if (userDidSend > amount) {
+			let isRefundable = false;
+
+			const excessToken = KeetaNet.lib.Account.toAccount(tokenPub).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+			if (excessToken.comparePublicKey(expected.receive.token)) {
+				isRefundable = true;
+			} else if (costValue.amount > 0n && excessToken.comparePublicKey(costValue.token)) {
+				isRefundable = true;
+			}
+
+			const excessAmount = userDidSend - amount;
+			if (isRefundable && excessAmount > 0n) {
+				refunds.push({
+					token: excessToken,
+					amount: excessAmount
+				});
+			}
 		}
 	}
 
@@ -119,4 +146,6 @@ export function assertExchangeBlockParameters(args: {
 			throw(new KeetaAnchorUserError(`Expected to receive maximum of ${amount}, user asked for ${userAskedReceive} for token ${tokenPub}`));
 		}
 	}
+
+	return({ refunds });
 }
