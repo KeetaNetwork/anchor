@@ -572,8 +572,8 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 	 * @returns a new KeetaFXAnchorQuoteWithProvider with the updated quote
 	 */
 	async refetch(): Promise<KeetaFXAnchorQuoteWithProvider> {
-		const estimate = await this.provider.getQuote();
-		return(new KeetaFXAnchorQuoteWithProvider(this.provider, estimate));
+		const quote = await this.provider.getQuote();
+		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
 	}
 }
 
