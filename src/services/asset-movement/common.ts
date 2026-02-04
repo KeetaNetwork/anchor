@@ -11,10 +11,9 @@ import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
-import type { BankAccountAddressObfuscated, BankAccountAddressResolved, PhysicalAddress } from './lib/data/addresses/types.generated.js';
+import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
 
 export * from './lib/data/addresses/types.generated.js';
-export * as generatedAddressSchema from './lib/data/addresses/index.generated.js';
 
 export * from './lib/location.js';
 
@@ -231,8 +230,8 @@ export function commonJSONStringify(input: unknown): string {
 }
 
 type SignableObjectInput =
-	// Physical address should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
-	PhysicalAddress |
+	// PhysicalAddress/MonthYearDateInput/RecipientResolved should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
+	PhysicalAddress | MonthYearDateInput | RecipientResolved |
 	{ [key: string | number | symbol]: SignableObjectInput } |
 	SignableObjectInput[] |
 	Signable[number] |
@@ -735,8 +734,8 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 });
 
 type CryptoAddress = string;
-type AddressResolved = BankAccountAddressResolved | CryptoAddress;
-type AddressObfuscated = BankAccountAddressObfuscated | CryptoAddress;
+type AddressResolved = BankAccountAddressResolved | MobileWalletAddressResolved | CryptoAddress;
+type AddressObfuscated = BankAccountAddressObfuscated | MobileWalletAddressObfuscated | CryptoAddress;
 
 export type PersistentAddressTemplateData = {
 	id: string;

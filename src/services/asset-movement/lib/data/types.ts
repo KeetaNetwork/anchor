@@ -23,11 +23,13 @@ export const sharedSchemaReferences: { [K in keyof typeof sharedJSONSchemaTypes]
 	ResolvedAccountOwner: { $ref: '#/definitions/ResolvedAccountOwner' },
 	ObfuscatedAccountOwner: { $ref: '#/definitions/ObfuscatedAccountOwner' },
 	PhoneNumber: { $ref: '#/definitions/PhoneNumber' },
-	PhoneNumberObjectExtends: { $ref: '#/definitions/PhoneNumberObjectExtends' }
+	PhoneNumberObjectExtends: { $ref: '#/definitions/PhoneNumberObjectExtends' },
+	MonthYearDateInput: { $ref: '#/definitions/MonthYearDateInput' },
+	CardType: { $ref: '#/definitions/CardType' }
 }
 
 export const sharedJSONSchemaTypes: {
-	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber' | 'PhoneNumberObjectExtends']: Schema;
+	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber' | 'PhoneNumberObjectExtends' | 'MonthYearDateInput' | 'CardType']: Schema;
 } = {
 	ResolvedAccountOwner: {
 		$id: 'ResolvedAccountOwner',
@@ -105,6 +107,20 @@ export const sharedJSONSchemaTypes: {
 			city: { type: "string" }
 		},
 		required: ['line1', 'country', 'postalCode', 'subdivision', 'city']
+	},
+	MonthYearDateInput: {
+		$id: 'MonthYearDateInput',
+		type: "object",
+		properties: {
+			month: { type: "string", pattern: "^(0[1-9]|1[0-2])$" },
+			year: { type: "string", pattern: "^\\d{4}$" }
+		},
+		required: ['month', 'year']
+	},
+	CardType: {
+		$id: 'CardType',
+		type: "string",
+		enum: ['DEBIT', 'CREDIT', 'PREPAID', 'UNKNOWN']
 	},
 	PhoneNumber: {
 		$id: 'PhoneNumber',

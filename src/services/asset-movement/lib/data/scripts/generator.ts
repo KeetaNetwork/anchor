@@ -55,8 +55,15 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 
 	out.push('import type { ISOCountryCode } from "@keetanetwork/currency-info";');
 
-	const allObfuscatedNames = [];
-	const allResolvedNames = [];
+	const obfuscatedNames: { [K in 'mobile-wallet' | 'bank-account']: string[] } = {
+		'mobile-wallet': [],
+		'bank-account': []
+	};
+
+	const resolvedNames: { [K in 'mobile-wallet' | 'bank-account']: string[] } = {
+		'mobile-wallet': [],
+		'bank-account': []
+	};
 
 	const allDefinitions: { [key: string]: JSONSchema4 } = { ...sharedJSONSchemaTypes };
 
@@ -122,22 +129,27 @@ function parseArgs(argv: string[]): { typesOutput: string } {
 				};
 
 				if (value === 'resolved') {
-					allResolvedNames.push(interfaceName);
+					resolvedNames[schemaType].push(interfaceName);
 				} else {
-					allObfuscatedNames.push(interfaceName);
+					obfuscatedNames[schemaType].push(interfaceName);
 				}
 			}
 		}
 	}
 
-	allDefinitions['BankAccountAddressResolved'] = {
-		oneOf: allResolvedNames.map((name) => ({ $ref: `#/definitions/${name}` }))
-	};
+	const unionsToMake: [ string, string[] ][] = [
+		[ 'BankAccountAddressResolved', resolvedNames['bank-account'] ],
+		[ 'BankAccountAddressObfuscated', obfuscatedNames['bank-account'] ],
+		[ 'MobileWalletAddressResolved', resolvedNames['mobile-wallet'] ],
+		[ 'MobileWalletAddressObfuscated', obfuscatedNames['mobile-wallet'] ],
 
-	allDefinitions['BankAccountAddressObfuscated'] = {
-		oneOf: allObfuscatedNames.map((name) => ({ $ref: `#/definitions/${name}` }))
-	};
+		[ 'GeneratedAddressResolved', [ 'BankAccountAddressResolved', 'MobileWalletAddressResolved' ] ],
+		[ 'GeneratedAddressObfuscated', [ 'BankAccountAddressObfuscated', 'MobileWalletAddressObfuscated' ] ]
+	];
 
+	for (const [ unionName, memberNames ] of unionsToMake) {
+		allDefinitions[unionName] = { oneOf: memberNames.map((name) => ({ $ref: `#/definitions/${name}` })) };
+	}
 
 	const jsonSchemaDefinitions = { definitions: allDefinitions };
 
