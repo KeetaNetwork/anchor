@@ -18,11 +18,11 @@ test('FX Server Tests', async function() {
 				paths: [{
 					pair: [{
 						id: 'foo',
-						location: 'xxx',
+						location: 'chain:evm:123',
 						rails: { inbound: [ 'KEETA_SEND' ] }
 					}, {
 						id: 'bar',
-						location: 'yyy',
+						location: 'chain:keeta:123',
 						rails: { outbound: [ 'KEETA_SEND' ] }
 					}]
 				}]
