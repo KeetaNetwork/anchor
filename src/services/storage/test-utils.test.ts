@@ -2,31 +2,39 @@ import { expect, test, describe } from 'vitest';
 import { MemoryStorageBackend, testPathPolicy, testMetadata } from './test-utils.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 import { Errors } from './common.js';
+import { KeetaNet } from '../../client/index.js';
 
 /**
- * Test helper to create a MemoryStorageBackend with a specific owner.
+ * Create a real account for testing.
  */
-function createTestBackend(ownerSuffix: string): {
+function createTestAccount(): { account: InstanceType<typeof KeetaNet.lib.Account>; owner: string } {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	return({ account, owner: account.publicKeyString.get() });
+}
+
+/**
+ * Test helper to create a MemoryStorageBackend with a real account owner.
+ */
+function createTestBackend(): {
 	backend: MemoryStorageBackend;
 	owner: string;
 	makePath: (filename: string) => string;
 } {
 	const backend = new MemoryStorageBackend();
-	const owner = `${ownerSuffix}-owner`;
+	const { owner } = createTestAccount();
 	return({
 		backend,
 		owner,
 		makePath: function(filename: string) {
-			return(`/user/${owner}/${filename}`);
+			return(testPathPolicy.makePath(owner, filename));
 		}
 	});
 }
 
 describe('MemoryStorageBackend', function() {
 	test('CRUD operations', async function() {
-		const backend = new MemoryStorageBackend();
-		const owner = 'test-owner-pubkey';
-		const path = `/user/${owner}/test.txt`;
+		const { backend, owner, makePath } = createTestBackend();
+		const path = makePath('test.txt');
 
 		// Initially empty
 		expect(backend.size).toBe(0);
@@ -50,7 +58,8 @@ describe('MemoryStorageBackend', function() {
 		expect(getResult?.metadata.path).toBe(path);
 
 		// GET non-existent
-		expect(await backend.get('/user/other/missing.txt')).toBeNull();
+		const { makePath: otherMakePath } = createTestBackend();
+		expect(await backend.get(otherMakePath('missing.txt'))).toBeNull();
 
 		// DELETE
 		expect(await backend.delete(path)).toBe(true);
@@ -59,24 +68,23 @@ describe('MemoryStorageBackend', function() {
 	});
 
 	test('search by path prefix', async function() {
-		const backend = new MemoryStorageBackend();
-		const owner = 'test-owner';
+		const { backend, owner, makePath } = createTestBackend();
+		const { owner: otherOwner, makePath: otherMakePath } = createTestBackend();
 
-		await backend.put(`/user/${owner}/a.txt`, Buffer.from('a'), testMetadata(owner));
-		await backend.put(`/user/${owner}/b.txt`, Buffer.from('b'), testMetadata(owner));
-		await backend.put('/user/other/c.txt', Buffer.from('c'), testMetadata('other'));
+		await backend.put(makePath('a.txt'), Buffer.from('a'), testMetadata(owner));
+		await backend.put(makePath('b.txt'), Buffer.from('b'), testMetadata(owner));
+		await backend.put(otherMakePath('c.txt'), Buffer.from('c'), testMetadata(otherOwner));
 
-		const results = await backend.search({ pathPrefix: `/user/${owner}/` }, { limit: 10 });
+		const results = await backend.search({ pathPrefix: testPathPolicy.getNamespacePrefix(owner) }, { limit: 10 });
 		expect(results.results).toHaveLength(2);
 	});
 
 	test('search by tags', async function() {
-		const backend = new MemoryStorageBackend();
-		const owner = 'test-owner';
+		const { backend, owner, makePath } = createTestBackend();
 
-		await backend.put('/user/x/a.txt', Buffer.from('a'), testMetadata(owner, { tags: ['foo'] }));
-		await backend.put('/user/x/b.txt', Buffer.from('b'), testMetadata(owner, { tags: ['bar'] }));
-		await backend.put('/user/x/c.txt', Buffer.from('c'), testMetadata(owner, { tags: ['foo', 'bar'] }));
+		await backend.put(makePath('a.txt'), Buffer.from('a'), testMetadata(owner, { tags: ['foo'] }));
+		await backend.put(makePath('b.txt'), Buffer.from('b'), testMetadata(owner, { tags: ['bar'] }));
+		await backend.put(makePath('c.txt'), Buffer.from('c'), testMetadata(owner, { tags: ['foo', 'bar'] }));
 
 		const fooResults = await backend.search({ tags: ['foo'] }, { limit: 10 });
 		expect(fooResults.results).toHaveLength(2);
@@ -86,9 +94,8 @@ describe('MemoryStorageBackend', function() {
 	});
 
 	test('quota tracking', async function() {
-		const backend = new MemoryStorageBackend();
-		const owner = 'quota-test-owner';
-		const path = `/user/${owner}/file.txt`;
+		const { backend, owner, makePath } = createTestBackend();
+		const path = makePath('file.txt');
 
 		// Initial state
 		const initialQuota = await backend.getQuotaStatus(owner);
@@ -151,9 +158,8 @@ describe('MemoryStorageBackend', function() {
 
 		for (const testCase of reservationCases) {
 			test(testCase.name, async function() {
-				const backend = new MemoryStorageBackend();
-				const owner = 'reservation-test-owner';
-				const path = `/user/${owner}/file.txt`;
+				const { backend, owner, makePath } = createTestBackend();
+				const path = makePath('file.txt');
 
 				// Reserve quota
 				const reservation = await backend.reserveUpload(owner, path, testCase.reserveSize);
@@ -182,13 +188,13 @@ describe('MemoryStorageBackend', function() {
 		}
 
 		test('throws when quota exceeded', async function() {
-			const backend = new MemoryStorageBackend();
-			await expect(backend.reserveUpload('x', '/user/x/big.bin', 200 * 1024 * 1024))
+			const { backend, owner, makePath } = createTestBackend();
+			await expect(backend.reserveUpload(owner, makePath('big.bin'), 200 * 1024 * 1024))
 				.rejects.toThrow('quota');
 		});
 
 		test('concurrent reservations accumulate', async function() {
-			const { backend, owner, makePath } = createTestBackend('concurrent');
+			const { backend, owner, makePath } = createTestBackend();
 			const sizes = [100, 200, 300];
 
 			// Create reservations
@@ -213,7 +219,7 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('overwrite with smaller data does not inflate remainingSize', async function() {
-			const { backend, owner, makePath } = createTestBackend('overwrite-test');
+			const { backend, owner, makePath } = createTestBackend();
 			const path = makePath('file.txt');
 
 			// Store a 100-byte file
@@ -240,7 +246,7 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('expired reservations are pruned from quota', async function() {
-			const { backend, owner, makePath } = createTestBackend('expiry-test');
+			const { backend, owner, makePath } = createTestBackend();
 			const path = makePath('file.txt');
 
 			// Create a reservation with a very short TTL (1ms)
@@ -266,7 +272,7 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('rejects negative size reservation', async function() {
-			const { backend, owner, makePath } = createTestBackend('negative-size');
+			const { backend, owner, makePath } = createTestBackend();
 			const path = makePath('file.txt');
 
 			await expect(backend.reserveUpload(owner, path, -100)).rejects.toThrow(
@@ -275,7 +281,7 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('concurrent reservations for same path are deduplicated', async function() {
-			const { backend, owner, makePath } = createTestBackend('dedupe-test');
+			const { backend, owner, makePath } = createTestBackend();
 			const path = makePath('file.txt');
 
 			// Create first reservation
@@ -292,7 +298,7 @@ describe('MemoryStorageBackend', function() {
 		});
 
 		test('handles zero-size reservations', async function() {
-			const { backend, owner, makePath } = createTestBackend('zero-size');
+			const { backend, owner, makePath } = createTestBackend();
 			const path = makePath('file.txt');
 
 			const reservation = await backend.reserveUpload(owner, path, 0);
@@ -307,33 +313,59 @@ describe('MemoryStorageBackend', function() {
 });
 
 describe('TestPathPolicy path traversal', function() {
-	const invalidPaths: [string, string][] = [
-		['/user/pk123/../other/file', 'parent traversal'],
-		['/user/pk123/./file', 'current dir'],
-		['/user/pk123/foo//bar', 'empty segment in path'],
-		['/user/pk123//file', 'double slash after owner'],
-		['/user/pk123/foo/..', 'trailing parent'],
-		['/user/pk123/foo/./bar', 'embedded current dir'],
-		['/user/pk123/../pk123/file', 'escape and re-enter']
+	const { owner } = createTestAccount();
+	const cases: [string, boolean, string][] = [
+		// Invalid paths
+		[`/user/${owner}/../other/file`, false, 'parent traversal'],
+		[`/user/${owner}/./file`, false, 'current dir'],
+		[`/user/${owner}/foo//bar`, false, 'empty segment in path'],
+		[`/user/${owner}//file`, false, 'double slash after owner'],
+		[`/user/${owner}/foo/..`, false, 'trailing parent'],
+		[`/user/${owner}/foo/./bar`, false, 'embedded current dir'],
+		[`/user/${owner}/../${owner}/file`, false, 'escape and re-enter'],
+		// Valid paths
+		[testPathPolicy.makePath(owner, 'file.txt'), true, 'simple file'],
+		[testPathPolicy.makePath(owner, 'dir/file.txt'), true, 'nested file'],
+		[testPathPolicy.makePath(owner, 'dir/subdir/file'), true, 'deeply nested'],
+		[`/user/${owner}/`, true, 'root with trailing slash'],
+		[`/user/${owner}`, true, 'root without trailing slash']
 	];
 
-	test.each(invalidPaths)('rejects %s (%s)', function(path) {
-		expect(function() {
+	test.each(cases)('%s valid=%s (%s)', function(path, valid) {
+		const validate = function() {
 			testPathPolicy.validate(path);
-		}).toThrow(Errors.InvalidPath);
+		};
+
+		if (valid) {
+			expect(validate).not.toThrow();
+		} else {
+			expect(validate).toThrow(Errors.InvalidPath);
+		}
 	});
+});
 
-	const validPaths: [string, string][] = [
-		['/user/pk123/file.txt', 'simple file'],
-		['/user/pk123/dir/file.txt', 'nested file'],
-		['/user/pk123/dir/subdir/file', 'deeply nested'],
-		['/user/pk123/', 'root with trailing slash'],
-		['/user/pk123', 'root without trailing slash']
+describe('TestPathPolicy validateMetadata', function() {
+	const { owner } = createTestAccount();
+	const cases: [string, 'public' | 'private', boolean, string][] = [
+		['documents/file.txt', 'private', true, 'non-public path with private'],
+		['documents/file.txt', 'public', true, 'non-public path with public'],
+		['public/avatar.png', 'public', true, 'public path with public'],
+		['public/images/photo.jpg', 'public', true, 'nested public path with public'],
+		['public/avatar.png', 'private', false, 'public path with private'],
+		['public/images/photo.jpg', 'private', false, 'nested public path with private']
 	];
 
-	test.each(validPaths)('accepts %s (%s)', function(path) {
-		expect(function() {
-			testPathPolicy.validate(path);
-		}).not.toThrow();
+	test.each(cases)('%s visibility=%s valid=%s (%s)', function(relativePath, visibility, valid) {
+		const path = testPathPolicy.makePath(owner, relativePath);
+		const parsed = testPathPolicy.validate(path);
+		const validate = function() {
+			testPathPolicy.validateMetadata(parsed, testMetadata(owner, { visibility }));
+		};
+
+		if (valid) {
+			expect(validate).not.toThrow();
+		} else {
+			expect(validate).toThrow(Errors.InvalidMetadata);
+		}
 	});
 });

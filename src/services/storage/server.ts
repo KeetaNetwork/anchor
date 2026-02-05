@@ -553,8 +553,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 				const tags = rawTags;
 
-				// Validate path format and ownership
-				assertPathAccess(pathPolicies, account, objectPath, 'put');
+				// Validate path format, metadata, and ownership
+				const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
+				if (policy.validateMetadata) {
+					const owner = account.publicKeyString.get();
+					policy.validateMetadata(parsed, { owner, tags, visibility });
+				}
 
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);

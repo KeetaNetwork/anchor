@@ -82,6 +82,13 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(parsed.owner);
 	}
 
+	validateMetadata(parsed: TestParsedPath, metadata: StoragePutMetadata): void {
+		// Require public visibility for paths under public/
+		if (parsed.relativePath.startsWith('public/') && metadata.visibility !== 'public') {
+			throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+		}
+	}
+
 	/**
 	 * Helper to construct a path for a given owner and relative path.
 	 */
