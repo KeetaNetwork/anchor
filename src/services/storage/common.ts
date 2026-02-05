@@ -901,6 +901,33 @@ class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaStorageAnchorInvalidMetadataError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaStorageAnchorInvalidMetadataError';
+	private readonly KeetaStorageAnchorInvalidMetadataErrorObjectTypeID!: string;
+	private static readonly KeetaStorageAnchorInvalidMetadataErrorObjectTypeID = 'c9e7f5a3-0d1b-6e4c-d5f6-a7b8c9d0e1f2';
+
+	constructor(reason?: string) {
+		super(reason ? `Invalid metadata: ${reason}` : 'Invalid metadata');
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaStorageAnchorInvalidMetadataErrorObjectTypeID', {
+			value: KeetaStorageAnchorInvalidMetadataError.KeetaStorageAnchorInvalidMetadataErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidMetadataError {
+		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidMetadataErrorObjectTypeID', KeetaStorageAnchorInvalidMetadataError.KeetaStorageAnchorInvalidMetadataErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidMetadataError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	DocumentNotFound: typeof KeetaStorageAnchorDocumentNotFoundError;
 	AccessDenied: typeof KeetaStorageAnchorAccessDeniedError;
@@ -920,6 +947,7 @@ export const Errors: {
 	InvalidAnchorAccount: typeof KeetaStorageAnchorInvalidAnchorAccountError;
 	InvariantViolation: typeof KeetaStorageAnchorInvariantViolationError;
 	InvalidTag: typeof KeetaStorageAnchorInvalidTagError;
+	InvalidMetadata: typeof KeetaStorageAnchorInvalidMetadataError;
 } = {
 	/**
 	 * The requested document/object was not found
@@ -1009,7 +1037,12 @@ export const Errors: {
 	/**
 	 * Tag validation failed (invalid format, too long, or too many tags)
 	 */
-	InvalidTag: KeetaStorageAnchorInvalidTagError
+	InvalidTag: KeetaStorageAnchorInvalidTagError,
+
+	/**
+	 * Metadata validation failed against path policy constraints
+	 */
+	InvalidMetadata: KeetaStorageAnchorInvalidMetadataError
 };
 
 // #endregion
@@ -1180,6 +1213,15 @@ export interface PathPolicy<TPathInfo> {
 	 * @returns The public key string, or null if pre-signed URLs are not supported for this path
 	 */
 	getAuthorizedSigner(parsed: TPathInfo): string | null;
+
+	/**
+	 * Validate metadata for a path.
+	 * Called during PUT and metadata update operations.
+	 * @param parsed - The parsed path info
+	 * @param metadata - The metadata to validate
+	 * @throws Errors.InvalidMetadata if metadata violates path constraints
+	 */
+	validateMetadata?(parsed: TPathInfo, metadata: StoragePutMetadata): void;
 }
 
 // #endregion
