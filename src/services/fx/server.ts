@@ -30,7 +30,7 @@ import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
-import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost, type RefundValue } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
@@ -447,21 +447,28 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
+		let refunds: RefundValue[] = [];
 		if (expected === null) {
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request);
 
-			assertExchangeBlockParameters({
+			const assertResponse = assertExchangeBlockParameters({
 				block: block,
 				liquidityAccount: entry.request.account,
 				allowedLiquidityAccounts: null,
 				checks: { quote, request }
 			});
 
+			refunds = assertResponse.refunds;
+
 			expected = convertQuoteToExpectedSwapWithoutCost({ quote, request });
 		}
 
 		const builder = userClient.initBuilder();
 		builder.send(block.account, expected.send.amount, expected.send.token);
+
+		for (const refund of refunds) {
+			builder.send(block.account, refund.amount, refund.token);
+		}
 
 		const sendBlock = await builder.computeBlocks();
 
