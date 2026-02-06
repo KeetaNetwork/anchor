@@ -157,7 +157,20 @@ export default {
 				'Oldsmar',
 				'vitest'
 			]
-		}
+		},
+		{
+			filename: 'src/services/asset-movement/lib/data/**/*.ts',
+			words: [
+				'interac',
+				'airtel',
+				'kash',
+				'finja',
+				'nagad',
+				'naya',
+				'sada',
+				'venmo'
+			]
+		},
 	],
 	useGitignore: true
 };
