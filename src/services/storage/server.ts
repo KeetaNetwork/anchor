@@ -785,11 +785,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			// Compute remaining from config limits
 			let remainingObjects = Math.max(0, effectiveLimits.maxObjectsPerUser - backendStatus.objectCount);
 			let remainingSize = Math.max(0, effectiveLimits.maxStoragePerUser - backendStatus.totalSize);
+
 			// If backend reports its own remaining values, use the tighter constraint
-			if (backendStatus.remainingObjects > 0) {
+			if (backendStatus.remainingObjects !== undefined && backendStatus.remainingObjects > 0) {
 				remainingObjects = Math.min(backendStatus.remainingObjects, remainingObjects);
 			}
-			if (backendStatus.remainingSize > 0) {
+			if (backendStatus.remainingSize !== undefined && backendStatus.remainingSize > 0) {
 				remainingSize = Math.min(backendStatus.remainingSize, remainingSize);
 			}
 
