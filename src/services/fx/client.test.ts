@@ -585,6 +585,47 @@ for (const useDeprecated of [false, true]) {
 				console.error('Expected Balances:', [{ token: testCurrencyUSD.publicKeyString.get(), balance: cumulativeUSDChange, tokenName: 'USD' }, { token: testCurrencyEUR.publicKeyString.get(), balance: (initialLiquidityProviderEURBalanceTotal - cumulativeEURChange), tokenName: 'EUR' }]);
 				throw(balanceCheckError);
 			}
+
+		}
+
+		{
+			/**
+			 * Check sending blocks that are able to get to the queue but fail later mark the queue as failed
+			 */
+
+			const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
+
+			const quote = quotes?.[0];
+
+			if (!quote) {
+				throw(new Error('could not get single quote in test'));
+			}
+
+			const userBalanceUSD = await client.balance(testCurrencyUSD);
+			const negativeBalanceSwapBlockBuilder = client.initBuilder();
+			negativeBalanceSwapBlockBuilder.send(quote.quote.account, userBalanceUSD + 1n, quote.quote.request.from);
+			negativeBalanceSwapBlockBuilder.send(quote.quote.account, quote.quote.cost.amount, quote.quote.cost.token);
+			const computeResult = await negativeBalanceSwapBlockBuilder.computeBlocks();
+			const computedBlock = computeResult.blocks[0];
+			if (!computedBlock) {
+				throw(new Error('No computed block'));
+			}
+
+			const exchange = await quote.createExchange(computedBlock);
+
+			let gotError;
+
+			try {
+				await waitForExchangeToComplete(server, exchange);
+			} catch (error) {
+				gotError = error;
+			}
+
+			if (!gotError || !(gotError instanceof Error)) {
+				throw(new Error('expected queue to fail'));
+			}
+
+			expect(gotError.message.includes('FX request failed: Exchange failed')).toEqual(true);
 		}
 	}, 30_000);
 }

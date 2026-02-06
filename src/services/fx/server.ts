@@ -471,9 +471,27 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		if (userClient.config.generateFeeBlock !== undefined) {
 			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
 		}
-		const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
-		if (!publishResult.publish) {
-			throw(new Error('Exchange Publish Failed'));
+
+		try {
+			const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
+			if (!publishResult.publish) {
+				throw(new Error('Exchange Publish Failed'));
+			}
+		} catch (error) {
+			if (
+				KeetaNet.lib.Error.isInstance(error) &&
+				'shouldRetry' in error &&
+				error.shouldRetry !== undefined &&
+				!error.shouldRetry
+			) {
+				return({
+					status: 'failed_permanently',
+					output: null,
+					error: `${error.code} ${error.message}`
+				});
+			}
+
+			throw(error);
 		}
 
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
