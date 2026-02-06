@@ -343,11 +343,15 @@ export class MemoryStorageBackend implements FullStorageBackend {
 			}
 		}
 
+		const objectCount = baseQuota.objectCount + reservedObjects;
+		const totalSize = baseQuota.totalSize + reservedSize;
+		const remainingObjects = Math.max(0, (baseQuota.remainingObjects ?? 0) - reservedObjects);
+		const remainingSize = Math.max(0, (baseQuota.remainingSize ?? 0) - reservedSize);
 		return({
-			objectCount: baseQuota.objectCount + reservedObjects,
-			totalSize: baseQuota.totalSize + reservedSize,
-			remainingObjects: Math.max(0, baseQuota.remainingObjects - reservedObjects),
-			remainingSize: Math.max(0, baseQuota.remainingSize - reservedSize)
+			objectCount,
+			totalSize,
+			remainingObjects,
+			remainingSize
 		});
 	}
 

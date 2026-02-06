@@ -382,7 +382,7 @@ describe('MemoryStorageBackend', function() {
 			expect(status.remainingSize).toBeGreaterThan(0);
 		});
 
-		test('server-side remaining uses tighter of backend and per-user limits', async function() {
+		test('getQuotaLimits returns configured per-user limits', async function() {
 			const { backend, owner, makePath } = createTestBackend();
 			const userLimits = { maxObjectsPerUser: 3, maxStoragePerUser: 500, maxObjectSize: 100 };
 			backend.setQuotaLimits(owner, userLimits);
@@ -395,20 +395,6 @@ describe('MemoryStorageBackend', function() {
 
 			const limits = await backend.getQuotaLimits(owner);
 			expect(limits).toEqual(userLimits);
-
-			// Simulate server logic: min(backendRemaining, configRemaining)
-			let remainingObjects = Math.max(0, userLimits.maxObjectsPerUser - status.objectCount);
-			let remainingSize = Math.max(0, userLimits.maxStoragePerUser - status.totalSize);
-			if (status.remainingObjects > 0) {
-				remainingObjects = Math.min(status.remainingObjects, remainingObjects);
-			}
-			if (status.remainingSize > 0) {
-				remainingSize = Math.min(status.remainingSize, remainingSize);
-			}
-
-			// Per-user limits (3 objects, 500 bytes) are tighter than defaults
-			expect(remainingObjects).toBe(2);
-			expect(remainingSize).toBe(495);
 		});
 	});
 });

@@ -188,7 +188,8 @@ export type QuotaConfig = {
 export type QuotaLimits = Pick<QuotaConfig, 'maxObjectsPerUser' | 'maxStoragePerUser' | 'maxObjectSize'>;
 
 /**
- * Current quota status for a user
+ * Current quota status for a user.
+ * Backends must provide objectCount and totalSize.
  */
 export type QuotaStatus = {
 	/**
@@ -202,14 +203,14 @@ export type QuotaStatus = {
 	totalSize: number;
 
 	/**
-	 * Remaining objects allowed
+	 * Remaining objects allowed (optional, server computes if absent)
 	 */
-	remainingObjects: number;
+	remainingObjects?: number;
 
 	/**
-	 * Remaining storage in bytes
+	 * Remaining storage in bytes (optional, server computes if absent)
 	 */
-	remainingSize: number;
+	remainingSize?: number;
 };
 
 // #endregion
