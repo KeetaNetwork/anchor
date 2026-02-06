@@ -24,36 +24,18 @@ tmpdir="${workdir}/.__tmp_ts_run_${RANDOM}${RANDOM}${RANDOM}__"
 mkdir -p "${tmpdir}" || exit 1
 
 npm run --silent tsc -- --module NodeNext --moduleResolution NodeNext --isolatedModules false --outDir "${tmpdir}" "${script}"
-
-script_dir="$(cd "$(dirname "${script}")" && pwd -P)"
-script_abs="${script_dir}/$(basename "${script}")"
-script_rel="${script_abs#${workdir}/}"
-script_rel="${script_rel#./}"
-script_stem="${script_rel%.ts}"
-
-bin=""
-candidate="${tmpdir}/${script_stem}.js"
-if [ -f "${candidate}" ]; then
-	bin="${candidate}"
-else
-	stripped_stem="${script_stem#src/}"
-	if [ "${stripped_stem}" != "${script_stem}" ]; then
-		stripped_candidate="${tmpdir}/${stripped_stem}.js"
-		if [ -f "${stripped_candidate}" ]; then
-			bin="${stripped_candidate}"
-		fi
-	fi
+bin="$(find "${tmpdir}" -name '*.js')"
+if [ ! -f "${bin}" ]; then
+	canonicalScript="$(realpath "${script}")"
+	# Trim the length of ${workdir} from the canonical path
+	relativeScript="${canonicalScript#"${workdir}"}"
+	# Trim the "/src/" prefix if it exists
+	relativeScript="${relativeScript#/src/}"
+	# Prepend tmpdir
+	bin="${tmpdir}/${relativeScript%.ts}.js"
 fi
 
-if [ -z "${bin}" ]; then
-	base_name="$(basename "${script_stem}")"
-	while IFS= read -r path; do
-		bin="${path}"
-		break
-	done < <(find "${tmpdir}" -type f -name "${base_name}.js" -print)
-fi
-
-if [ -z "${bin}" ] || [ ! -f "${bin}" ]; then
+if [ ! -f "${bin}" ]; then
 	echo "Compiled file not found"
 	exit 1
 fi
