@@ -185,6 +185,41 @@ type ServiceMetadata = {
 				workInProgress?: true;
 			};
 		};
+		storage?: {
+			[id: string]: {
+				operations: {
+					put?: ServiceMetadataEndpoint;
+					get?: ServiceMetadataEndpoint;
+					delete?: ServiceMetadataEndpoint;
+					metadata?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+					public?: ServiceMetadataEndpoint;
+					quota?: ServiceMetadataEndpoint;
+				};
+				/**
+				 * Anchor's public key for sharing encrypted containers
+				 */
+				anchorAccount?: string;
+				/**
+				 * Published quota limits
+				 */
+				quotas?: {
+					maxObjectSize: number;
+					maxObjectsPerUser: number;
+					maxStoragePerUser: number;
+					maxSearchLimit: number;
+					maxSignedUrlTTL: number;
+				};
+				/**
+				 * Default TTL in seconds for pre-signed URLs
+				 */
+				signedUrlDefaultTTL?: number;
+				/**
+				 * Fields that can be used in search criteria
+				 */
+				searchableFields?: ('owner' | 'tags' | 'visibility' | 'pathPrefix')[];
+			};
+		};
 	};
 };
 
@@ -258,6 +293,10 @@ type ServiceSearchCriteria<T extends Services> = {
 	'cards': {
 		/* XXX:TODO */
 		workInProgress: true;
+	};
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'storage': {
+		/* No search criteria - TODO? */
 	};
 }[T];
 
@@ -1271,6 +1310,9 @@ class Resolver {
 			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'cards'>) => {
 				throw(new Error('not implemented'));
 			}
+		},
+		'storage': {
+			search: this.lookupStorageServices.bind(this)
 		}
 	};
 
@@ -1675,6 +1717,33 @@ class Resolver {
 			 * If we didn't find any asset movement services, then we return
 			 * undefined to indicate that no services were found.
 			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	// eslint-disable-next-line @typescript-eslint/no-unused-vars
+	private async lookupStorageServices(storageServices: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'storage'>): Promise<ResolverLookupServiceResults<'storage'> | undefined> {
+		if (storageServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'storage'> = {};
+		for (const checkStorageServiceID in storageServices) {
+			try {
+				const checkStorageService = await isValidOperations(await storageServices[checkStorageServiceID]?.('object'));
+				if (!checkStorageService) {
+					continue;
+				}
+
+				retval[checkStorageServiceID] = checkStorageService;
+			} catch (checkStorageServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking storage service', checkStorageServiceID, ':', checkStorageServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
 			return(undefined);
 		}
 
