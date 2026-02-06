@@ -49,11 +49,14 @@ type Account = InstanceType<typeof KeetaNet.lib.Account>;
  * Build a standardized search response from search results.
  */
 function buildSearchResponse(results: SearchResults): KeetaStorageAnchorSearchResponse {
-	return({
+	const response: KeetaStorageAnchorSearchResponse = {
 		ok: true,
-		results: results.results,
-		...(results.nextCursor !== undefined ? { nextCursor: results.nextCursor } : {})
-	});
+		results: results.results
+	};
+	if (results.nextCursor !== undefined) {
+		response.nextCursor = results.nextCursor;
+	}
+	return(response);
 }
 
 // #region Module-Level Helpers
@@ -164,7 +167,13 @@ async function verifyURLAuth<T>(
 	getSigningData: (req: T) => Signable,
 	buildRequest: (accountPubKey: string) => T
 ): Promise<Account> {
-	const urlString = typeof url === 'string' ? url : url.href;
+	let urlString: string;
+	if (typeof url === 'string') {
+		urlString = url;
+	} else {
+		urlString = url.href;
+	}
+
 	const parsed = parseSignatureFromURL(urlString);
 	if (!parsed.account || !parsed.signedField) {
 		throw(new KeetaAnchorUserError('Authentication required'));
@@ -501,7 +510,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const homepage = this.homepage;
 		if (homepage) {
 			routes['GET /'] = async function() {
-				const homepageData = typeof homepage === 'string' ? homepage : await homepage();
+				let homepageData: string;
+				if (typeof homepage === 'string') {
+					homepageData = homepage;
+				} else {
+					homepageData = await homepage();
+				}
+
 				return({
 					output: homepageData,
 					contentType: 'text/html'
@@ -523,7 +538,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const tagsParam = parsedUrl.searchParams.get('tags');
 
 				// Parse visibility and raw tags
-				const visibility: StorageObjectVisibility = visibilityParam === 'public' ? 'public' : 'private';
+				let visibility: StorageObjectVisibility = 'private';
+				if (visibilityParam === 'public') {
+					visibility = 'public';
+				}
+
 				const rawTags: string[] = (tagsParam ?? '')
 					.split(',')
 					.map(function(t) {
@@ -762,13 +781,25 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const effectiveLimits = userLimits ?? quotas;
 
 			const backendStatus = await backend.getQuotaStatus(owner);
+
+			// Compute remaining from config limits
+			let remainingObjects = Math.max(0, effectiveLimits.maxObjectsPerUser - backendStatus.objectCount);
+			let remainingSize = Math.max(0, effectiveLimits.maxStoragePerUser - backendStatus.totalSize);
+			// If backend reports its own remaining values, use the tighter constraint
+			if (backendStatus.remainingObjects > 0) {
+				remainingObjects = Math.min(backendStatus.remainingObjects, remainingObjects);
+			}
+			if (backendStatus.remainingSize > 0) {
+				remainingSize = Math.min(backendStatus.remainingSize, remainingSize);
+			}
+
 			const response: KeetaStorageAnchorQuotaResponse = {
 				ok: true,
 				quota: {
 					objectCount: backendStatus.objectCount,
 					totalSize: backendStatus.totalSize,
-					remainingObjects: Math.max(0, effectiveLimits.maxObjectsPerUser - backendStatus.objectCount),
-					remainingSize: Math.max(0, effectiveLimits.maxStoragePerUser - backendStatus.totalSize)
+					remainingObjects,
+					remainingSize
 				}
 			};
 

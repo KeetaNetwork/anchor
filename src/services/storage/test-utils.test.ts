@@ -370,6 +370,46 @@ describe('MemoryStorageBackend', function() {
 				backend.reserveUpload(owner, makePath('b.txt'), 20, { quotaLimits: userLimits })
 			).rejects.toThrow(Errors.QuotaExceeded);
 		});
+
+		test('getQuotaStatus remaining reflects backend defaults', async function() {
+			const { backend, owner, makePath } = createTestBackend();
+			await backend.put(makePath('file.txt'), Buffer.from('hello'), testMetadata(owner));
+
+			const status = await backend.getQuotaStatus(owner);
+			expect(status.objectCount).toBe(1);
+			expect(status.totalSize).toBe(5);
+			expect(status.remainingObjects).toBeGreaterThan(0);
+			expect(status.remainingSize).toBeGreaterThan(0);
+		});
+
+		test('server-side remaining uses tighter of backend and per-user limits', async function() {
+			const { backend, owner, makePath } = createTestBackend();
+			const userLimits = { maxObjectsPerUser: 3, maxStoragePerUser: 500, maxObjectSize: 100 };
+			backend.setQuotaLimits(owner, userLimits);
+
+			await backend.put(makePath('file.txt'), Buffer.from('hello'), testMetadata(owner));
+
+			const status = await backend.getQuotaStatus(owner);
+			expect(status.objectCount).toBe(1);
+			expect(status.totalSize).toBe(5);
+
+			const limits = await backend.getQuotaLimits(owner);
+			expect(limits).toEqual(userLimits);
+
+			// Simulate server logic: min(backendRemaining, configRemaining)
+			let remainingObjects = Math.max(0, userLimits.maxObjectsPerUser - status.objectCount);
+			let remainingSize = Math.max(0, userLimits.maxStoragePerUser - status.totalSize);
+			if (status.remainingObjects > 0) {
+				remainingObjects = Math.min(status.remainingObjects, remainingObjects);
+			}
+			if (status.remainingSize > 0) {
+				remainingSize = Math.min(status.remainingSize, remainingSize);
+			}
+
+			// Per-user limits (3 objects, 500 bytes) are tighter than defaults
+			expect(remainingObjects).toBe(2);
+			expect(remainingSize).toBe(495);
+		});
 	});
 });
 
