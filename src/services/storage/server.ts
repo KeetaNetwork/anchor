@@ -555,16 +555,22 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 				// Validate path format, metadata, and ownership
 				const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
+				const owner = account.publicKeyString.get();
 				if (policy.validateMetadata) {
-					const owner = account.publicKeyString.get();
 					policy.validateMetadata(parsed, { owner, tags, visibility });
 				}
+
+				// Resolve per-user quota limits, falling back to global config
+				const userLimits = backend.getQuotaLimits
+					? await backend.getQuotaLimits(owner)
+					: null;
+				const effectiveLimits = userLimits ?? quotas;
 
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
 				const objectSize = data.byteLength;
-				if (objectSize > quotas.maxObjectSize) {
-					throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${quotas.maxObjectSize}`));
+				if (objectSize > effectiveLimits.maxObjectSize) {
+					throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${effectiveLimits.maxObjectSize}`));
 				}
 
 				const needsValidation = requiresValidation(objectPath, validators);
@@ -601,13 +607,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					}
 				}
 
-				const owner = account.publicKeyString.get();
-
 				// Reserve quota before upload
 				const reservation = await backend.reserveUpload(owner, objectPath, objectSize, {
 					quotaLimits: {
-						maxObjectsPerUser: quotas.maxObjectsPerUser,
-						maxStoragePerUser: quotas.maxStoragePerUser
+						maxObjectsPerUser: effectiveLimits.maxObjectsPerUser,
+						maxStoragePerUser: effectiveLimits.maxStoragePerUser
 					}
 				});
 
@@ -750,15 +754,21 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				function() { return({}); }
 			);
 
-			// Get current usage from backend and compute remaining using server's quota config
-			const backendStatus = await backend.getQuotaStatus(account.publicKeyString.get());
+			// Get current usage from backend and compute remaining using per-user or global limits
+			const owner = account.publicKeyString.get();
+			const userLimits = backend.getQuotaLimits
+				? await backend.getQuotaLimits(owner)
+				: null;
+			const effectiveLimits = userLimits ?? quotas;
+
+			const backendStatus = await backend.getQuotaStatus(owner);
 			const response: KeetaStorageAnchorQuotaResponse = {
 				ok: true,
 				quota: {
 					objectCount: backendStatus.objectCount,
 					totalSize: backendStatus.totalSize,
-					remainingObjects: Math.max(0, quotas.maxObjectsPerUser - backendStatus.objectCount),
-					remainingSize: Math.max(0, quotas.maxStoragePerUser - backendStatus.totalSize)
+					remainingObjects: Math.max(0, effectiveLimits.maxObjectsPerUser - backendStatus.objectCount),
+					remainingSize: Math.max(0, effectiveLimits.maxStoragePerUser - backendStatus.totalSize)
 				}
 			};
 

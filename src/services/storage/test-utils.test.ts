@@ -310,6 +310,67 @@ describe('MemoryStorageBackend', function() {
 			expect(quota.totalSize).toBe(0);
 		});
 	});
+
+	describe('per-user quota limits', function() {
+		const quotaLimitCases: [string, { maxObjectsPerUser: number; maxStoragePerUser: number; maxObjectSize: number } | null, boolean, string][] = [
+			['a.txt', null, true, 'no limits set returns null'],
+			['a.txt', { maxObjectsPerUser: 5, maxStoragePerUser: 1024, maxObjectSize: 512 }, true, 'returns limits after set'],
+			['a.txt', { maxObjectsPerUser: 1, maxStoragePerUser: 100, maxObjectSize: 50 }, true, 'first reservation within limit succeeds']
+		];
+
+		test.each(quotaLimitCases)('path=%s limits=%j success=%s (%s)', async function(_ignorePath, limits, _ignoreSuccess) {
+			const { backend, owner } = createTestBackend();
+			if (limits) {
+				backend.setQuotaLimits(owner, limits);
+			}
+
+			const result = await backend.getQuotaLimits(owner);
+			if (limits) {
+				expect(result).toEqual(limits);
+			} else {
+				expect(result).toBeNull();
+			}
+		});
+
+		test('per-user limits are isolated between users', async function() {
+			const backend = new MemoryStorageBackend();
+			const { owner: ownerA } = createTestAccount();
+			const { owner: ownerB } = createTestAccount();
+
+			backend.setQuotaLimits(ownerA, { maxObjectsPerUser: 10, maxStoragePerUser: 2048, maxObjectSize: 256 });
+
+			expect(await backend.getQuotaLimits(ownerA)).not.toBeNull();
+			expect(await backend.getQuotaLimits(ownerB)).toBeNull();
+		});
+
+		test('reserveUpload enforces per-user object limit', async function() {
+			const { backend, owner, makePath } = createTestBackend();
+			const userLimits = { maxObjectsPerUser: 1, maxStoragePerUser: 100, maxObjectSize: 50 };
+			backend.setQuotaLimits(owner, userLimits);
+
+			// First reservation succeeds
+			await backend.reserveUpload(owner, makePath('a.txt'), 50, { quotaLimits: userLimits });
+
+			// Second reservation exceeds per-user object limit
+			await expect(
+				backend.reserveUpload(owner, makePath('b.txt'), 10, { quotaLimits: userLimits })
+			).rejects.toThrow(Errors.QuotaExceeded);
+		});
+
+		test('reserveUpload enforces per-user storage limit', async function() {
+			const { backend, owner, makePath } = createTestBackend();
+			const userLimits = { maxObjectsPerUser: 10, maxStoragePerUser: 100, maxObjectSize: 200 };
+			backend.setQuotaLimits(owner, userLimits);
+
+			// First reservation takes most of the storage budget
+			await backend.reserveUpload(owner, makePath('a.txt'), 90, { quotaLimits: userLimits });
+
+			// Second reservation exceeds per-user storage limit
+			await expect(
+				backend.reserveUpload(owner, makePath('b.txt'), 20, { quotaLimits: userLimits })
+			).rejects.toThrow(Errors.QuotaExceeded);
+		});
+	});
 });
 
 describe('TestPathPolicy path traversal', function() {

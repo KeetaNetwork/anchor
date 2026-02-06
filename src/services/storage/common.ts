@@ -182,6 +182,12 @@ export type QuotaConfig = {
 };
 
 /**
+ * Per-user quota limits.
+ * Subset of QuotaConfig that can be overridden on a per-user basis.
+ */
+export type QuotaLimits = Pick<QuotaConfig, 'maxObjectsPerUser' | 'maxStoragePerUser' | 'maxObjectSize'>;
+
+/**
  * Current quota status for a user
  */
 export type QuotaStatus = {
@@ -1134,6 +1140,13 @@ export interface QuotaManagedStorage {
 	 * Includes both actual usage and pending reservations.
 	 */
 	getQuotaStatus(owner: string): Promise<QuotaStatus>;
+
+	/**
+	 * Get per-user quota limits.
+	 * Return null to use global defaults.
+	 * @param owner - Owner's public key string
+	 */
+	getQuotaLimits?(owner: string): Promise<QuotaLimits | null>;
 
 	/**
 	 * Reserve quota for an upcoming upload.
