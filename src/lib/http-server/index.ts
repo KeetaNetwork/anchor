@@ -67,10 +67,56 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
 
-	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string> } | { match: false }) {
+	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; isWildcard: boolean } | { match: false }) {
 		const requestURLPaths = requestURL.pathname.split('/');
 		const routeURLPaths = routeURL.pathname.split('/');
 
+		// Check if route ends with wildcard /*
+		const isWildcard = routeURLPaths.length > 0 && routeURLPaths[routeURLPaths.length - 1] === '*';
+		if (isWildcard) {
+			// For wildcard routes, request must have more segments than route prefix (minus the *)
+			// This ensures at least one segment is captured by the wildcard
+			const prefixLength = routeURLPaths.length - 1;
+			if (requestURLPaths.length <= prefixLength) {
+				return({ match: false });
+			}
+
+			// Check that prefix segments match
+			const params = new Map<string, string>();
+			for (let partIndex = 0; partIndex < prefixLength; partIndex++) {
+				const requestPath = requestURLPaths[partIndex];
+
+				const routePath = routeURLPaths[partIndex];
+				if (routePath === undefined || requestPath === undefined) {
+					return({ match: false });
+				}
+
+				if (routePath.startsWith(':')) {
+					params.set(routePath.slice(1), requestPath);
+				} else if (requestPath !== routePath) {
+					return({ match: false });
+				}
+			}
+
+			// Capture the remainder as the wildcard param
+			// Filter empty segments to handle trailing slashes correctly
+			const remainder = requestURLPaths.slice(prefixLength)
+				.filter(function(s) {
+					return(s !== '');
+				})
+				.join('/');
+
+			if (remainder === '') {
+				// Reject if wildcard would capture nothing
+				return({ match: false });
+			}
+
+			params.set('*', remainder);
+
+			return({ match: true, params: params, isWildcard: true });
+		}
+
+		// Non-wildcard: require exact segment count
 		if (requestURLPaths.length !== routeURLPaths.length) {
 			return({ match: false });
 		}
@@ -91,10 +137,12 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 		}
 
-		return({ match: true, params: params });
+		return({ match: true, params: params, isWildcard: false });
 	}
 
 	private static routeFind(method: string, requestURL: URL, routes: Routes): { route: Routes[keyof Routes]; params: Map<string, string> } | null {
+		let wildcardMatch: { route: Routes[keyof Routes]; params: Map<string, string> } | null = null;
+
 		for (const routeKey in routes) {
 			const route = routes[routeKey];
 			if (route === undefined) {
@@ -111,14 +159,26 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const routeURL = new URL(routePath, 'http://localhost');
 			const matchResult = this.routeMatch(requestURL, routeURL);
 			if (matchResult.match) {
-				return({
-					route: route,
-					params: matchResult.params
-				});
+				// Exact matches take priority over wildcard matches
+				if (!matchResult.isWildcard) {
+					return({
+						route: route,
+						params: matchResult.params
+					});
+				}
+
+				// Save wildcard match but continue looking for exact match
+				if (wildcardMatch === null) {
+					wildcardMatch = {
+						route: route,
+						params: matchResult.params
+					};
+				}
 			}
 		}
 
-		return(null);
+		// Return wildcard match if no exact match found
+		return(wildcardMatch);
 	}
 
 	private static addCORS(routes: Routes): RoutesWithConfigs {
