@@ -9,6 +9,7 @@ import type {
 	SearchPagination,
 	SearchResults,
 	QuotaStatus,
+	QuotaLimits,
 	UploadReservation
 } from './common.js';
 import { Errors } from './common.js';
@@ -285,6 +286,7 @@ export class MemoryStorageBackend implements FullStorageBackend {
 	private reservations = new Map<string, UploadReservation>();
 	readonly #reservationsByPath = new Map<string, string>(); // "owner:path" -> reservationId
 	private reservationCounter = 0;
+	readonly #quotaLimitsPerUser = new Map<string, QuotaLimits>();
 
 	private readonly quotaConfig: QuotaConfig = {
 		maxObjectsPerUser: 1000,
@@ -347,6 +349,14 @@ export class MemoryStorageBackend implements FullStorageBackend {
 			remainingObjects: Math.max(0, baseQuota.remainingObjects - reservedObjects),
 			remainingSize: Math.max(0, baseQuota.remainingSize - reservedSize)
 		});
+	}
+
+	async getQuotaLimits(owner: string): Promise<QuotaLimits | null> {
+		return(this.#quotaLimitsPerUser.get(owner) ?? null);
+	}
+
+	setQuotaLimits(owner: string, limits: QuotaLimits): void {
+		this.#quotaLimitsPerUser.set(owner, limits);
 	}
 
 	async reserveUpload(owner: string, path: string, size: number, options?: {
