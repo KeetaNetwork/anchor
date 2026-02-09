@@ -448,6 +448,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		let refunds: RefundValue[] = [];
+		/**
+		 * We only want to refund excess for cost/paying token if it is not a fixed rate
+		 * as if it is a fixed rate transfer, you can assume the client did not send unintentionally
+		 *
+		 * Additionally, other FX anchors are not forced to refund any, so there is no guarentee to client that refunds will occur
+		 */
 		if (expected === null) {
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request);
 

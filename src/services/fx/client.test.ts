@@ -1209,19 +1209,26 @@ test('FX Server Estimate to Exchange Test', async function() {
 					request: { amount: 1000n, affinity: 'from' },
 					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
 					send: { sendValue: 2000n, costValue: 0n },
-					expectedChange: { sendToken: 1000n }
+					// No expected additional refund as affinity is from
+					expectedChange: { sendToken: 2000n }
 				},
 				{
-					request: { amount: 1000n, affinity: 'from' },
+					request: { amount: 1000n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
+					send: { sendValue: 2000n, costValue: 0n },
+					expectedChange: { sendToken: 1002n }
+				},
+				{
+					request: { amount: 1000n, affinity: 'to' },
 					quote: { cost: { token: testCurrencyUSD, amount: 5n }, convertedAmount: 1002n },
 					send: { sendValue: 2000n, costValue: 1000n },
-					expectedChange: { sendToken: 1005n }
+					expectedChange: { sendToken: 1007n }
 				},
 				{
-					request: { amount: 100n, affinity: 'from' },
+					request: { amount: 100n, affinity: 'to' },
 					quote: { cost: { token: testCurrencyEUR, amount: 5n }, convertedAmount: 105n },
-					send: { sendValue: 100n, costValue: 100n },
-					expectedChange: { sendToken: 100n, costToken: -100n }
+					send: { sendValue: 200n, costValue: 100n },
+					expectedChange: { sendToken: 105n, costToken: -95n }
 				},
 				{
 					request: { amount: 100n, affinity: 'to' },
@@ -1236,10 +1243,10 @@ test('FX Server Estimate to Exchange Test', async function() {
 					expectedChange: { sendToken: 205n }
 				},
 				{
-					request: { amount: 100n, affinity: 'from' },
+					request: { amount: 100n, affinity: 'to' },
 					quote: { cost: { token: testCurrencyGBP, amount: 5n }, convertedAmount: 200n },
 					send: { sendValue: 300n, costValue: 10n },
-					expectedChange: { sendToken: 100n, costToken: 5n }
+					expectedChange: { sendToken: 200n, costToken: 5n }
 				}
 			];
 
