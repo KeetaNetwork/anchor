@@ -117,7 +117,7 @@ export function assertExchangeBlockParameters(args: {
 			throw(new KeetaAnchorUserError(`Expected send of ${amount}, only saw ${userDidSend} for token ${tokenPub}`));
 		}
 
-		// If the user sent more than the minimum, does not have an affinity on the sent token, and the excess is in the expected receive token, consider it a refund. This allows users to send more than the minimum if they want to receive more than the expected amount, but still ensures that if they do so by mistake they will get a refund of the excess.
+		// If the user sent more than the minimum and the excess is in the expected receive token or the cost token, consider it a refund. This allows users to send more than the minimum if they want to receive more than the expected amount, but still ensures that if they do so by mistake they will get a refund of the excess.
 		if (userDidSend > amount) {
 			let isRefundable = false;
 
