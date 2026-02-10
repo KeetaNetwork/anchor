@@ -1140,8 +1140,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
-		// Sign the message
-		const signed = await SignData(signerAccount.assertAccount(), [path, expiresAt]);
+		// Sign the message with signer pubkey
+		const signerPubKey = signerAccount.publicKeyString.get();
+		const signed = await SignData(signerAccount.assertAccount(), [path, expiresAt, signerPubKey]);
 
 		// Get base URL from service info
 		const operationInfo = await this.serviceInfo.operations.public;
@@ -1153,6 +1154,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const publicUrl = new URL(operationInfo.url().href);
 		this.#appendPathToUrl(publicUrl, path);
 		publicUrl.searchParams.set('expires', String(expiresAt));
+		publicUrl.searchParams.set('signer', signerPubKey);
 		publicUrl.searchParams.set('nonce', signed.nonce);
 		publicUrl.searchParams.set('timestamp', signed.timestamp);
 		publicUrl.searchParams.set('signature', signed.signature);

@@ -812,12 +812,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const objectPath = extractObjectPath(params);
 			const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
-			// Get the authorized signer for this path
-			const signerPubKey = policy.getAuthorizedSigner(parsed);
-			if (!signerPubKey) {
-				throw(new Errors.AccessDenied('Pre-signed URLs not supported for this path'));
-			}
-
 			// Get signature parameters from query params
 			const parsedUrl = new URL(url);
 			const signature = parsedUrl.searchParams.get('signature');
@@ -826,6 +820,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const timestamp = parsedUrl.searchParams.get('timestamp');
 			if (!signature || !expires || !nonce || !timestamp) {
 				throw(new Errors.SignatureInvalid('Missing required signature parameters'));
+			}
+
+			// Resolve signer: policy-specified or from URL
+			const policySignerPubKey = policy.getAuthorizedSigner(parsed);
+			const signerPubKey = policySignerPubKey ?? parsedUrl.searchParams.get('signer');
+			if (!signerPubKey) {
+				throw(new Errors.SignatureInvalid('Missing signer'));
 			}
 
 			// Validate nonce format
@@ -866,7 +867,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			try {
 				const signedData = { nonce, timestamp, signature };
 				// Allow 5 minutes of clock skew for signature verification
-				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt], signedData, {
+				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt, signerPubKey], signedData, {
 					maxSkewMs: 5 * 60 * 1000
 				});
 				if (!valid) {
