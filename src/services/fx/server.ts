@@ -481,7 +481,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			if (
 				KeetaNet.lib.Error.isInstance(error) &&
 				'shouldRetry' in error &&
-				error.shouldRetry === false
+				error.shouldRetry !== undefined &&
+				!error.shouldRetry
 			) {
 				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Non-retryable error publishing swap blocks:', error);
 
