@@ -8,7 +8,8 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData, getKeetaStorageAnchorDeleteRequestSigningData } from './common.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
-import { testPathPolicy, testMetadata } from './test-utils.js';
+import { TestPathPolicy, testPathPolicy, testMetadata } from './test-utils.js';
+import type { TestParsedPath } from './test-utils.js';
 
 // #region Test Harness
 
@@ -524,12 +525,14 @@ describe('Storage Server', function() {
 
 				// Use wrong signer if specified, otherwise use owner
 				const signerAccount = testCase.useWrongSigner ? wrongAccount : ownerAccount;
-				const { nonce, timestamp, verificationData } = FormatData(signerAccount, [objectPath, expiresNum]);
+				const signerPubKey = signerAccount.publicKeyString.get();
+				const { nonce, timestamp, verificationData } = FormatData(signerAccount, [objectPath, expiresNum, signerPubKey]);
 				const signatureResult = await signerAccount.sign(bufferToArrayBuffer(verificationData));
 				const signature = testCase.signatureOverride ?? signatureResult.getBuffer().toString('base64');
 
 				const requestUrl = new URL(`/api/public${objectPath}`, url);
 				requestUrl.searchParams.set('expires', expires);
+				requestUrl.searchParams.set('signer', signerPubKey);
 				requestUrl.searchParams.set('nonce', nonce);
 				requestUrl.searchParams.set('timestamp', timestamp);
 				requestUrl.searchParams.set('signature', signature);
@@ -632,12 +635,14 @@ describe('Storage Server', function() {
 				// Create a valid signed URL
 				const expires = String(Math.floor(Date.now() / 1000) + 3600);
 				const expiresNum = parseInt(expires, 10);
-				const { nonce, timestamp, verificationData } = FormatData(ownerAccount, [objectPath, expiresNum]);
+				const signerPubKey = ownerPubKey;
+				const { nonce, timestamp, verificationData } = FormatData(ownerAccount, [objectPath, expiresNum, signerPubKey]);
 				const signatureResult = await ownerAccount.sign(bufferToArrayBuffer(verificationData));
 				const signature = signatureResult.getBuffer().toString('base64');
 
 				const requestUrl = new URL(`/api/public${objectPath}`, url);
 				requestUrl.searchParams.set('expires', expires);
+				requestUrl.searchParams.set('signer', signerPubKey);
 				requestUrl.searchParams.set('nonce', nonce);
 				requestUrl.searchParams.set('timestamp', timestamp);
 				requestUrl.searchParams.set('signature', signature);
@@ -648,6 +653,127 @@ describe('Storage Server', function() {
 				const json: unknown = await response.json();
 				expectNotOk(json);
 				expectErrorContains(json, testCase.expectedError);
+			}));
+		});
+	});
+
+	describe('Any-Signer Public URL', function() {
+		/**
+		 * Path policy that returns null from getAuthorizedSigner,
+		 * allowing any account to sign pre-signed URLs for public objects.
+		 */
+		class AnySignerPathPolicy extends TestPathPolicy {
+			getAuthorizedSigner(_ignoreParsed: TestParsedPath): string | null {
+				return(null);
+			}
+		}
+
+		const anySignerPolicy = new AnySignerPathPolicy();
+		async function withAnySignerServer(fn: (ctx: ServerTestContext) => Promise<void>): Promise<void> {
+			const backend = new MemoryStorageBackend();
+			const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const pathPolicies = [anySignerPolicy];
+
+			await using server = new KeetaNetStorageAnchorHTTPServer({ backend, anchorAccount, pathPolicies });
+			await server.start();
+			await fn({ server, backend, url: server.url, anchorAccount });
+		}
+
+		type AnySignerTestCase = {
+			name: string;
+			useDifferentSigner: boolean;
+			omitSignerParam: boolean;
+			swapSignerParam: boolean;
+			useEncryptedData: boolean;
+			expectedStatus: number;
+			expectedError?: string;
+		};
+
+		const cases: AnySignerTestCase[] = [
+			{
+				name: 'allows a different account to sign public URL',
+				useDifferentSigner: true,
+				omitSignerParam: false,
+				swapSignerParam: false,
+				useEncryptedData: true,
+				expectedStatus: 200
+			},
+			{
+				name: 'rejects when signer param is missing and policy returns null',
+				useDifferentSigner: false,
+				omitSignerParam: true,
+				swapSignerParam: false,
+				useEncryptedData: false,
+				expectedStatus: 401,
+				expectedError: 'missing signer'
+			},
+			{
+				name: 'rejects when signer param is swapped (signature mismatch)',
+				useDifferentSigner: false,
+				omitSignerParam: false,
+				swapSignerParam: true,
+				useEncryptedData: false,
+				expectedStatus: 401
+			}
+		];
+
+		test.each(cases)('$name', function(testCase) {
+			return(withAnySignerServer(async function({ backend, url, anchorAccount }) {
+				const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const ownerPubKey = ownerAccount.publicKeyString.get();
+				const objectPath = `/user/${ownerPubKey}/public-file.txt`;
+
+				if (testCase.useEncryptedData) {
+					const payload = { mimeType: 'text/plain', data: Buffer.from('public content').toString('base64') };
+					const container = EncryptedContainer.fromPlaintext(
+						JSON.stringify(payload),
+						[ownerAccount, anchorAccount],
+						{ signer: ownerAccount }
+					);
+
+					const binaryData = arrayBufferLikeToBuffer(await container.getEncodedBuffer());
+					await backend.put(objectPath, binaryData, testMetadata(ownerPubKey, { visibility: 'public' }));
+				} else {
+					await backend.put(objectPath, Buffer.from('test'), testMetadata(ownerPubKey, { visibility: 'public' }));
+				}
+
+				// Resolve signer account
+				let signerAccount;
+				if (testCase.useDifferentSigner) {
+					signerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				} else {
+					signerAccount = ownerAccount;
+				}
+
+				const signerPubKey = signerAccount.publicKeyString.get();
+				const expires = String(Math.floor(Date.now() / 1000) + 3600);
+				const expiresNum = parseInt(expires, 10);
+				const { nonce, timestamp, verificationData } = FormatData(signerAccount, [objectPath, expiresNum, signerPubKey]);
+				const signatureResult = await signerAccount.sign(bufferToArrayBuffer(verificationData));
+				const signature = signatureResult.getBuffer().toString('base64');
+
+				const requestUrl = new URL(`/api/public${objectPath}`, url);
+				requestUrl.searchParams.set('expires', expires);
+				if (!testCase.omitSignerParam) {
+					if (testCase.swapSignerParam) {
+						const swappedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+						requestUrl.searchParams.set('signer', swappedAccount.publicKeyString.get());
+					} else {
+						requestUrl.searchParams.set('signer', signerPubKey);
+					}
+				}
+				requestUrl.searchParams.set('nonce', nonce);
+				requestUrl.searchParams.set('timestamp', timestamp);
+				requestUrl.searchParams.set('signature', signature);
+
+				const response = await fetch(requestUrl);
+				expect(response.status).toBe(testCase.expectedStatus);
+
+				if (testCase.expectedError) {
+					const json: unknown = await response.json();
+					expectNotOk(json);
+					expectErrorContains(json, testCase.expectedError);
+				}
 			}));
 		});
 	});
