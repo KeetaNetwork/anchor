@@ -124,7 +124,7 @@ export function assertExchangeBlockParameters(args: {
 			const excessToken = KeetaNet.lib.Account.toAccount(tokenPub).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 			if (excessToken.comparePublicKey(expected.receive.token)) {
-				// If the affinity is from, and the user choose to send excesss they should not be refunded
+				// If the affinity is from, and the user choose to send excess they should not be refunded
 				if (args.checks.request.affinity === 'to') {
 					isRefundable = true;
 				}
