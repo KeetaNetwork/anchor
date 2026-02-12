@@ -17,7 +17,8 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
-export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, 'completed' | 'failed_permanently'>;
+export const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const;
+export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
@@ -1009,18 +1010,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	private async moveCompletedToNextStage(statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
-		const pipes = (() => {
-			const filteredPipes = [];
-
-			for (const pipe of this.pipes) {
-				if (pipe.acceptStatus === statusTarget) {
-					filteredPipes.push(pipe);
-				}
-			}
-
-			return(filteredPipes);
-		})();
-
+		const pipes = [...this.pipes].filter(function(pipe) {
+			return(pipe.acceptStatus === statusTarget);
+		});
 
 		if (pipes.length === 0) {
 			return;
@@ -1250,7 +1242,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
-		for (const pipeStatus of ['completed', 'failed_permanently'] as const) {
+		for (const pipeStatus of keetaAnchorPipeableQueueStatuses) {
 			try {
 				await this.moveCompletedToNextStage(pipeStatus);
 			} catch (error: unknown) {

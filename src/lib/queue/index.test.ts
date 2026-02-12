@@ -1129,10 +1129,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Validate that failed jobs can be piped to another stage as well
 	 */
-	const failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
+	await using failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
 		return({ status: 'failed_permanently', output: `failed:${entry.request}` });
 	});
-	const failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
+	await using failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
 		return({ status: 'completed', output: `handled:${entry.request}` });
 	});
 
@@ -1175,9 +1175,6 @@ test('Pipeline Basic Tests', async function() {
 	}
 	expect(completedFailedEntry.status).toBe('completed');
 	expect(completedFailedEntry.output).toBe('handled:failed:job-fail');
-
-	await failedStage1[Symbol.asyncDispose]();
-	await failedStage2[Symbol.asyncDispose]();
 });
 
 test('Errors', async function() {
