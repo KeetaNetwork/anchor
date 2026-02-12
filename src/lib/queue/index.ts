@@ -17,8 +17,8 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
-export const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const;
-export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
+const keetaAnchorPipeableQueueStatuses: [ 'completed', 'failed_permanently' ] = [ 'completed', 'failed_permanently' ] as const satisfies KeetaAnchorQueueStatus[];
+export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, 'completed' | 'invalid'>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
