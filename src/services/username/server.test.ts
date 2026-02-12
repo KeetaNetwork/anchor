@@ -14,9 +14,16 @@ test('username server resolves account and nulls', async () => {
 		logger: logger,
 		providerID,
 		usernames: {
-			async resolve({ username }) {
+			async resolveUsername({ username }) {
 				if (username === 'alice') {
-					return(knownAccount);
+					return({ account: knownAccount });
+				}
+
+				return(null);
+			},
+			async resolveAccount({ account }) {
+				if (account.comparePublicKey(knownAccount)) {
+					return({ username: 'alice' });
 				}
 
 				return(null);
@@ -27,35 +34,25 @@ test('username server resolves account and nulls', async () => {
 	await server.start();
 
 	const baseURL = new URL(server.url);
-	const resolveURL = new URL('/api/resolve', baseURL);
 
-	const response = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: 'alice' })
-	});
+	const response = await fetch(new URL('/api/resolve/alice', baseURL));
 
 	expect(response.status).toBe(200);
-	expect(await response.json()).toEqual({ ok: true, account: knownAccount.publicKeyString.get() });
+	expect(await response.json()).toEqual({ ok: true, account: knownAccount.publicKeyString.get(), username: 'alice' });
 
-	const unknownResponse = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: 'bob' })
-	});
+	const accountResolutionResponse = await fetch(new URL(`/api/resolve/${encodeURIComponent(knownAccount.publicKeyString.get())}`, baseURL));
 
-	expect(unknownResponse.status).toBe(200);
+	expect(accountResolutionResponse.status).toBe(200);
+	expect(await accountResolutionResponse.json()).toEqual({ ok: true, account: knownAccount.publicKeyString.get(), username: 'alice' });
 
-	expect(await unknownResponse.json()).toEqual({
-		ok: true,
-		account: null
-	});
+	const unknownResponse = await fetch(new URL('/api/resolve/bob', baseURL));
+
+	expect(unknownResponse.status).toBe(404);
+
+	const unknownAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const unknownAccountResponse = await fetch(new URL(`/api/resolve/${encodeURIComponent(unknownAccount.publicKeyString.get())}`, baseURL));
+
+	expect(unknownAccountResponse.status).toBe(404);
 }, 10_000);
 
 test('username server enforces usernamePattern when provided', async () => {
@@ -64,11 +61,16 @@ test('username server enforces usernamePattern when provided', async () => {
 		providerID,
 		usernamePattern: '^[a-z]+$',
 		usernames: {
-			async resolve({ username }) {
+			async resolveUsername({ username }) {
 				if (username === 'valid') {
-					return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
+					return({
+						account: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0)
+					});
 				}
 
+				return(null);
+			},
+			async resolveAccount() {
 				return(null);
 			}
 		}
@@ -77,16 +79,8 @@ test('username server enforces usernamePattern when provided', async () => {
 	await server.start();
 
 	const baseURL = new URL(server.url);
-	const resolveURL = new URL('/api/resolve', baseURL);
 
-	const invalidResponse = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: 'INVALID123' })
-	});
+	const invalidResponse = await fetch(new URL('/api/resolve/INVALID123', baseURL));
 
 	expect(invalidResponse.status).toBe(400);
 	expect(await invalidResponse.json()).toMatchObject({
@@ -99,14 +93,7 @@ test('username server enforces usernamePattern when provided', async () => {
 		}
 	});
 
-	const validResponse = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: 'valid' })
-	});
+	const validResponse = await fetch(new URL('/api/resolve/valid', baseURL));
 
 	expect(validResponse.status).toBe(200);
 	expect(await validResponse.json()).toMatchObject({ ok: true });
@@ -120,25 +107,16 @@ test('username server enforces default validation rules', async () => {
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
 		providerID,
 		usernames: {
-			async resolve() {
-				return(null);
-			}
+			async resolveAccount() { return(null); },
+			async resolveUsername() { return(null); }
 		}
 	});
 
 	await server.start();
 
 	const baseURL = new URL(server.url);
-	const resolveURL = new URL('/api/resolve', baseURL);
 
-	const invalidCharResponse = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: '漢' })
-	});
+	const invalidCharResponse = await fetch(new URL('/api/resolve/漢', baseURL));
 
 	expect(invalidCharResponse.status).toBe(400);
 	expect(await invalidCharResponse.json()).toMatchObject({
@@ -155,14 +133,7 @@ test('username server enforces default validation rules', async () => {
 	});
 
 	const longUsername = 'a'.repeat(USERNAME_MAX_LENGTH + 1);
-	const invalidLengthResponse = await fetch(resolveURL, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({ username: longUsername })
-	});
+	const invalidLengthResponse = await fetch(new URL(`/api/resolve/${longUsername}`, baseURL));
 
 	expect(invalidLengthResponse.status).toBe(400);
 	expect(await invalidLengthResponse.json()).toMatchObject({

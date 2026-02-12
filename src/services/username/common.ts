@@ -84,17 +84,24 @@ export type KeetaUsernameAnchorResolveRequest = {
 
 export type KeetaUsernameAnchorResolveResponse = ({
 	ok: true;
-	account: string | null;
+	account: string;
+	username: string;
 }) | ({
 	ok: false;
 	error: string;
 });
 
-export type KeetaUsernameAnchorResolutionContext = {
+
+export type KeetaUsernameAnchorAccountResolutionContext = {
+	account: KeetaNetAccount;
+};
+
+export type KeetaUsernameAnchorUsernameResolutionContext = {
 	username: string;
 };
 
-export type KeetaUsernameAnchorClaimContext = KeetaUsernameAnchorResolutionContext & {
+export type KeetaUsernameAnchorClaimContext = {
+	username: string;
 	account: KeetaNetAccount;
 	signed: HTTPSignedField;
 };

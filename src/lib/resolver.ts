@@ -269,12 +269,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		kycProviders?: string[];
 	};
-	'username': {
-		/**
-		 * Optionally restrict the search to a specific provider ID
-		 */
-		providerID?: string;
-	};
+	/**
+	 * There are currently no additional filters for searching a username provider
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'username': {};
 	'cards': {
 		/* XXX:TODO */
 		workInProgress: true;
@@ -1727,19 +1726,13 @@ class Resolver {
 		return(retval);
 	}
 
-	private async lookupUsernameServices(usernameServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'username'>) {
+	private async lookupUsernameServices(usernameServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'username'>) {
 		if (usernameServices === undefined) {
 			return(undefined);
 		}
 
-		const requiredProviderID = criteria.providerID;
-
 		const retval: ResolverLookupServiceResults<'username'> = {};
 		for (const checkUsernameServiceID in usernameServices) {
-			if (requiredProviderID !== undefined && checkUsernameServiceID !== requiredProviderID) {
-				continue;
-			}
-
 			try {
 				const checkUsernameService = await usernameServices[checkUsernameServiceID]?.('object');
 				if (checkUsernameService === undefined) {

@@ -18,7 +18,8 @@ import {
 	validateUsernameDefault,
 	type KeetaNetAccount,
 	type GloballyIdentifiableUsername,
-	isGloballyIdentifiableUsername
+	isGloballyIdentifiableUsername,
+	isKeetaNetPublicKeyString
 } from './common.js';
 
 export type KeetaUsernameAnchorClientConfig = {
@@ -208,6 +209,11 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		return(this.#usernamePattern?.source);
 	}
 
+	/**
+	 * Check if a username is valid according to the provider's username pattern if set and default validation.
+	 * @param username The username to check
+	 * @returns True if the username is valid, false otherwise
+	 */
 	isUsernameValid(username: string): boolean {
 		try {
 			validateUsernameDefault(username, {
@@ -221,19 +227,6 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			}
 
 			throw(error);
-		}
-	}
-
-	isGloballyIdentifiableUsernameValid(usernameInput: GloballyIdentifiableUsername): boolean {
-		try {
-			const { username, providerID } = parseGloballyIdentifiableUsername(usernameInput);
-			if (providerID !== String(this.providerID)) {
-				return(false);
-			}
-
-			return(this.isUsernameValid(username));
-		} catch {
-			return(false);
 		}
 	}
 
@@ -276,23 +269,33 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		}
 	}
 
-	async resolveUsername(username: string): Promise<KeetaNetAccount | null> {
-		this.#assertProviderIssuedNameValid(username);
+	/**
+	 * Resolve a username for a specific provider
+	 * @param input The value to lookup, can be a username, PublicKeyString, or an account
+	 * @returns The resolved account and username, or null if not found
+	 */
+	async resolve(input: string | KeetaNetAccount): Promise<{ account: KeetaNetAccount; username: string; } | null> {
+		let toResolveString;
+		if (typeof input === 'string') {
+			toResolveString = input;
+		} else {
+			toResolveString = input.publicKeyString.get();
+		}
+		if (!(isKeetaNetPublicKeyString(toResolveString))) {
+			this.#assertProviderIssuedNameValid(toResolveString);
+		}
 
 		const endpoint = await this.#getOperation('resolve');
 		if (endpoint.options.authentication.type === 'required') {
 			throw(new Error('Username provider requires authentication which is not supported by the client'));
 		}
 
-		const serviceURL = endpoint.url();
-		const response = await fetch(serviceURL, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json'
-			},
-			body: JSON.stringify({ username })
-		});
+		const serviceURL = endpoint.url({ toResolve: toResolveString });
+		const response = await fetch(serviceURL);
+
+		if (response.status === 404) {
+			return(null);
+		}
 
 		let responseJSON: unknown;
 		try {
@@ -309,9 +312,30 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(await this.#parseResponseError(responseJSON));
 		}
 
-		return(KeetaNetLib.Account.toAccount(responseJSON.account));
+		const retval = {
+			account: KeetaNetLib.Account.toAccount(responseJSON.account),
+			username: responseJSON.username
+		};
+
+		if (isKeetaNetPublicKeyString(toResolveString)) {
+			if (!(retval.account.comparePublicKey(toResolveString))) {
+				throw(new Error('Resolved account does not match the requested account'));
+			}
+		} else {
+			if (retval.username !== toResolveString) {
+				throw(new Error('Resolved username does not match the requested username'));
+			}
+		}
+
+		return(retval);
 	}
 
+	/**
+	 * Claim a username for a specific provider
+	 * @param usernameInput The username to claim
+	 * @param account The account to claim for
+	 * @returns True if the claim was successful, false otherwise
+	 */
 	async claimUsername(usernameInput: string, account?: KeetaNetAccount): Promise<boolean> {
 		let username: string;
 		if (isGloballyIdentifiableUsername(usernameInput)) {
@@ -405,7 +429,7 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 			...shared,
 			providerIDs: shared?.providerIDs !== undefined ? Array.from(new Set([...shared.providerIDs, providerID])) : [providerID]
 		};
-		const providers = await this.#lookup({ providerID }, mergedSharedCriteria);
+		const providers = await this.#lookup({}, mergedSharedCriteria);
 		return(providers?.[0] ?? null);
 	}
 
@@ -418,13 +442,78 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 		return(provider);
 	}
 
-	async resolveAccount(username: GloballyIdentifiableUsername, shared?: SharedLookupCriteria): Promise<KeetaNetAccount | null> {
+	/**
+	 * Resolve a globally identifiable username via the appropriate provider.
+	 * @param username The globally identifiable username to resolve
+	 * @param shared Shared resolver lookup criteria
+	 * @returns The resolution result, or null if not found
+	 */
+	async resolve(username: GloballyIdentifiableUsername, shared?: SharedLookupCriteria): ReturnType<KeetaUsernameAnchorProvider['resolve']> {
 		const { username: normalizedUsername, providerID } = parseGloballyIdentifiableUsername(username);
 		const provider = await this.#requireProvider(providerID, shared);
 
-		return(await provider.resolveUsername(normalizedUsername));
+		return(await provider.resolve(normalizedUsername));
 	}
 
+	/**
+	 * Search all username providers for the given input.
+	 * @param input The value to search for, either a globally identifiable username, a username, or an account
+	 * @param shared Shared lookup criteria
+	 * @returns A mapping of provider IDs to their resolution results, or null if no providers found a match
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
+	async search(input: string | KeetaNetAccount | GloballyIdentifiableUsername, shared?: SharedLookupCriteria): Promise<({
+		[providerId: ProviderID]: Awaited<ReturnType<KeetaUsernameAnchorProvider['resolve']>>;
+	}) | null> {
+		if (isGloballyIdentifiableUsername(input)) {
+			const { providerID } = parseGloballyIdentifiableUsername(input);
+			const resolved = await this.resolve(input, shared);
+			if (!resolved) {
+				return(null);
+			}
+
+			return({
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				[providerID as unknown as ProviderID]: resolved
+			});
+		}
+
+		const providers = await this.#lookup({}, shared);
+
+		if (!providers) {
+			return(null);
+		}
+
+		let foundOne = false;
+		const response: {
+			[providerId: ProviderID]: NonNullable<Awaited<ReturnType<KeetaUsernameAnchorProvider['resolve']>>>;
+		} = {};
+
+		await Promise.all(providers.map(async (provider) => {
+			try {
+				const result = await provider.resolve(input);
+				if (result !== null) {
+					foundOne = true;
+					response[provider.providerID] = result;
+				}
+			} catch (error) {
+				this.logger?.debug('UsernameAnchor:search', `Error resolving username with provider ${String(provider.providerID)}`, error);
+			}
+		}));
+
+		if (!foundOne) {
+			return(null);
+		}
+
+		return(response);
+	}
+
+	/**
+	 * Claim a globally identifiable username from the appropriate provider.
+	 * @param input The globally identifiable username to claim
+	 * @param options Claim options
+	 * @returns True if the claim was successful, false otherwise
+	 */
 	async claimUsername(input: GloballyIdentifiableUsername, options: ClaimUsernameOptions = {}): ReturnType<KeetaUsernameAnchorProvider['claimUsername']> {
 		const { username, providerID } = parseGloballyIdentifiableUsername(input);
 		const provider = await this.#requireProvider(providerID, options.shared);

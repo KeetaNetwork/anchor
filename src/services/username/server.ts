@@ -1,13 +1,15 @@
 import { KeetaNet } from '../../client/index.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type {
+	KeetaUsernameAnchorUsernameResolutionContext,
+	KeetaUsernameAnchorAccountResolutionContext } from './common.js';
 import {
-	assertKeetaUsernameAnchorResolveRequest,
 	assertKeetaUsernameAnchorClaimRequest,
 	getUsernameClaimSignable,
 	validateUsernameDefault,
-	type KeetaUsernameAnchorResolutionContext,
 	type KeetaUsernameAnchorClaimContext,
-	Errors
+	Errors,
+	isKeetaNetPublicKeyString
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
@@ -36,7 +38,8 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 	homepage?: string | (() => Promise<string> | string);
 	providerID: string;
 	usernames: {
-		resolve: (input: KeetaUsernameAnchorResolutionContext) => Promise<InstanceType<typeof KeetaNet.lib.Account> | null> | null;
+		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
+		resolveAccount: (input: KeetaUsernameAnchorAccountResolutionContext) => Promise<{ username: string; } | null>;
 		claim?: ((input: KeetaUsernameAnchorClaimContext) => Promise<ClaimHandlerResponse>) | undefined;
 	};
 	routes?: Routes;
@@ -92,23 +95,70 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			};
 		}
 
-		routes['POST /api/resolve'] = async (_params, body) => {
-			const request = assertKeetaUsernameAnchorResolveRequest(body);
+		routes['GET /api/resolve/:toResolve'] = async (params) => {
+			let toResolve = params.get('toResolve');
+			if (!toResolve) {
+				throw(new KeetaAnchorUserError('Missing toResolve parameter'));
+			}
 
-			this.#assertProviderIssuedNameValid(request.username);
+			let resolution;
+			let account = null;
+			let username = null;
+			if (isKeetaNetPublicKeyString(toResolve)) {
+				account = KeetaNet.lib.Account.fromPublicKeyString(toResolve);
+				resolution = await this.usernames.resolveAccount({ account });
+			} else {
+				try {
+					toResolve = decodeURIComponent(toResolve);
+				} catch {
+					/* ignore */
+				}
 
-			const resolvedAccount = await this.usernames.resolve({ username: request.username });
+				this.#assertProviderIssuedNameValid(toResolve);
+				username = toResolve;
+				resolution = await this.usernames.resolveUsername({ username });
+			}
+
+			if (!resolution) {
+				return({
+					statusCode: 404,
+					output: JSON.stringify({ ok: true }),
+					contentType: 'application/json'
+				});
+			}
+
+			if ('account' in resolution) {
+				if (account !== null && !(account.comparePublicKey(resolution.account))) {
+					throw(new Error('internal: Resolved account does not match requested account'));
+				}
+
+				account = resolution.account;
+			}
+
+			if ('username' in resolution) {
+				if (username !== null && username !== resolution.username) {
+					throw(new Error('internal: Resolved username does not match requested username'));
+				}
+
+				username = resolution.username;
+			}
+
+			if (!account || !username) {
+				throw(new Error('internal: We should know both the account and username here'));
+			}
 
 			return({
 				output: JSON.stringify({
 					ok: true,
-					account: KeetaNet.lib.Account.toPublicKeyString(resolvedAccount)
+					account: KeetaNet.lib.Account.toPublicKeyString(account),
+					username: username
 				}),
 				contentType: 'application/json'
 			});
 		};
 
-		if (this.usernames.claim) {
+		const claimHandler = this.usernames.claim;
+		if (claimHandler) {
 			routes['POST /api/claim'] = async (_params, body) => {
 				const request = assertKeetaUsernameAnchorClaimRequest(body);
 
@@ -121,11 +171,6 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 				const verified = await Signing.VerifySignedData(account, signable, request.signed);
 				if (!verified) {
 					throw(new KeetaAnchorUserError('Invalid username claim signature'));
-				}
-
-				const claimHandler = this.usernames.claim;
-				if (!claimHandler) {
-					throw(new Error('Invariant: claim handler missing'));
 				}
 
 				const claimResponse = await claimHandler({
@@ -153,7 +198,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 	}
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
-		const resolveURL = (new URL('/api/resolve', this.url)).toString();
+		const resolveURL = (new URL('/api/resolve/{toResolve}', this.url)).toString();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
 			resolve: resolveURL
 		};
