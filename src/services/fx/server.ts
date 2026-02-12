@@ -24,7 +24,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
-import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
+import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueEntry } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
@@ -46,15 +46,24 @@ import { asleep } from '../../lib/utils/asleep.js';
  */
 const PARANOID = true;
 
-/**
- * The purpose for why getConversionRateAndFee is being called
- *   estimate means it is being called to get an estimate for a swap
- *   quote means it is being called to get a firm quote for a swap that will be executed
- *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
- */
-type GetConversionRateAndFeePurpose = 'estimate' | 'quote' | 'exchange';
-export interface GetConversionRateAndFeeContext {
-	purpose: GetConversionRateAndFeePurpose;
+export type GetConversionRateAndFeeContext = {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   estimate means it is being called to get an estimate for a swap
+	 *   quote means it is being called to get a firm quote for a swap that will be executed
+	 */
+	purpose: 'quote' | 'estimate';
+} | {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
+	 */
+	purpose: 'exchange';
+
+	/**
+	 * The queue job that requested the conversion rate and fee.
+	 */
+	job: KeetaFXAnchorQueuePipelineStage1Job;
 }
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -309,6 +318,7 @@ type KeetaFXAnchorQueueStage1Response = {
 	blockhash: string;
 };
 
+type KeetaFXAnchorQueuePipelineStage1Job = KeetaAnchorQueueEntry<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>;
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
 	protected sequential = true;
@@ -332,7 +342,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	 * We just put the job back into pending because the processor
 	 * will check the network state again.
 	 */
-	protected async processorStuck(entry: Parameters<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>>[0]): ReturnType<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>> {
+	protected async processorStuck(entry: KeetaFXAnchorQueuePipelineStage1Job): ReturnType<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>> {
 		return({
 			status: 'pending',
 			output: entry.output
@@ -459,7 +469,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange' });
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', job: entry });
 
 			assertExchangeBlockParameters({
 				block: block,
@@ -824,7 +834,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			};
 		}
 
-		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: GetConversionRateAndFeeContext['purpose']): Promise<KeetaFXInternalPriceQuote> {
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: Exclude<GetConversionRateAndFeeContext['purpose'], 'exchange'>): Promise<KeetaFXInternalPriceQuote> {
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion, { purpose });
 
 			if (PARANOID) {
