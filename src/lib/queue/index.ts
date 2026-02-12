@@ -17,7 +17,8 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
-const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const satisfies KeetaAnchorQueueStatus[];
+// The type annotation is needed here because it is used in KeetaAnchorPipeableQueueStatus which is exported, and isolatedDeclarations is true in tsconfig
+const keetaAnchorPipeableQueueStatuses: [ 'completed', 'failed_permanently' ] = [ 'completed', 'failed_permanently' ] as const satisfies KeetaAnchorQueueStatus[];
 export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
