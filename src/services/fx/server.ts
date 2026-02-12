@@ -61,9 +61,9 @@ export type GetConversionRateAndFeeContext = {
 	purpose: 'exchange';
 
 	/**
-	 * The job information related to this exchange
+	 * The request information related to this exchange
 	 */
-	job: KeetaFXAnchorQueueStage1Request;
+	request: KeetaFXAnchorQueueStage1Request;
 }
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -468,7 +468,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', job: entry.request });
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
 
 			assertExchangeBlockParameters({
 				block: block,
