@@ -156,7 +156,7 @@ function putToStorage(
 		owner: metadata.owner,
 		tags: metadata.tags,
 		visibility: metadata.visibility,
-		size: String(data.length),
+		size: data.length,
 		createdAt: existing?.metadata.createdAt ?? now,
 		...(existing ? { updatedAt: now } : {})
 	};
@@ -260,8 +260,7 @@ function computeQuotaStatus(
 		if (entry.metadata.owner === owner) {
 			objectCount++;
 
-			const entrySize = parseInt(entry.metadata.size, 10);
-			totalSize += Number.isNaN(entrySize) ? 0 : entrySize;
+			totalSize += entry.metadata.size;
 		}
 	}
 
@@ -393,11 +392,19 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		const remainingSize = limits.maxStoragePerUser - quotaStatus.totalSize;
 
 		if (isNewObject && remainingObjects <= 0) {
-			throw(new Errors.QuotaExceeded(`Maximum objects (${limits.maxObjectsPerUser}) exceeded`));
+			throw(new Errors.QuotaExceeded({
+				quotaType: 'maxObjectsPerUser',
+				limit: limits.maxObjectsPerUser,
+				current: quotaStatus.objectCount
+			}));
 		}
 
 		if (sizeDelta > 0 && remainingSize < sizeDelta) {
-			throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
+			throw(new Errors.QuotaExceeded({
+				quotaType: 'maxStoragePerUser',
+				limit: limits.maxStoragePerUser,
+				current: quotaStatus.totalSize + sizeDelta
+			}));
 		}
 
 		// Check for existing reservation for this (owner, path)
@@ -413,7 +420,11 @@ export class MemoryStorageBackend implements FullStorageBackend {
 
 				// Re-check quota if size is increasing beyond current reservation
 				if (additionalSize > 0 && remainingSize < additionalSize) {
-					throw(new Errors.QuotaExceeded(`Storage quota (${limits.maxStoragePerUser} bytes) exceeded`));
+					throw(new Errors.QuotaExceeded({
+						quotaType: 'maxStoragePerUser',
+						limit: limits.maxStoragePerUser,
+						current: quotaStatus.totalSize + additionalSize
+					}));
 				}
 
 				// Update to max size, extend expiry

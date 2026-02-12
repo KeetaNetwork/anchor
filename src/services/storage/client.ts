@@ -1140,7 +1140,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 		const expiresAt = Math.floor(Date.now() / 1000) + ttl;
 
-		// Sign the message with signer pubkey
+		// Sign the message with signer pubkey cryptographically bound
 		const signerPubKey = signerAccount.publicKeyString.get();
 		const signed = await SignData(signerAccount.assertAccount(), [path, expiresAt, signerPubKey]);
 
@@ -1150,16 +1150,13 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			throw(new Errors.OperationNotSupported('public'));
 		}
 
-		// Construct the public URL with path in pathname
+		// Construct the public URL using standard signed field convention
 		const publicUrl = new URL(operationInfo.url().href);
 		this.#appendPathToUrl(publicUrl, path);
 		publicUrl.searchParams.set('expires', String(expiresAt));
-		publicUrl.searchParams.set('signer', signerPubKey);
-		publicUrl.searchParams.set('nonce', signed.nonce);
-		publicUrl.searchParams.set('timestamp', signed.timestamp);
-		publicUrl.searchParams.set('signature', signed.signature);
 
-		return(publicUrl.toString());
+		const finalUrl = addSignatureToURL(publicUrl, { signedField: signed, account: signerAccount.assertAccount() });
+		return(finalUrl.toString());
 	}
 
 	/**

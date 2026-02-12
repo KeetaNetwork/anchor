@@ -532,10 +532,10 @@ describe('Storage Server', function() {
 
 				const requestUrl = new URL(`/api/public${objectPath}`, url);
 				requestUrl.searchParams.set('expires', expires);
-				requestUrl.searchParams.set('signer', signerPubKey);
-				requestUrl.searchParams.set('nonce', nonce);
-				requestUrl.searchParams.set('timestamp', timestamp);
-				requestUrl.searchParams.set('signature', signature);
+				requestUrl.searchParams.set('account', signerPubKey);
+				requestUrl.searchParams.set('signed.nonce', nonce);
+				requestUrl.searchParams.set('signed.timestamp', timestamp);
+				requestUrl.searchParams.set('signed.signature', signature);
 
 				const response = await fetch(requestUrl);
 				expect(response.status).toBe(testCase.expectedStatus);
@@ -642,10 +642,10 @@ describe('Storage Server', function() {
 
 				const requestUrl = new URL(`/api/public${objectPath}`, url);
 				requestUrl.searchParams.set('expires', expires);
-				requestUrl.searchParams.set('signer', signerPubKey);
-				requestUrl.searchParams.set('nonce', nonce);
-				requestUrl.searchParams.set('timestamp', timestamp);
-				requestUrl.searchParams.set('signature', signature);
+				requestUrl.searchParams.set('account', signerPubKey);
+				requestUrl.searchParams.set('signed.nonce', nonce);
+				requestUrl.searchParams.set('signed.timestamp', timestamp);
+				requestUrl.searchParams.set('signed.signature', signature);
 
 				const response = await fetch(requestUrl);
 				expect(response.status).toBe(testCase.expectedStatus);
@@ -699,7 +699,7 @@ describe('Storage Server', function() {
 				expectedStatus: 200
 			},
 			{
-				name: 'rejects when signer param is missing and policy returns null',
+				name: 'rejects when account param is missing and policy returns null',
 				useDifferentSigner: false,
 				omitSignerParam: true,
 				swapSignerParam: false,
@@ -708,7 +708,7 @@ describe('Storage Server', function() {
 				expectedError: 'missing signer'
 			},
 			{
-				name: 'rejects when signer param is swapped (signature mismatch)',
+				name: 'rejects when account param is swapped (signature mismatch)',
 				useDifferentSigner: false,
 				omitSignerParam: false,
 				swapSignerParam: true,
@@ -757,14 +757,14 @@ describe('Storage Server', function() {
 				if (!testCase.omitSignerParam) {
 					if (testCase.swapSignerParam) {
 						const swappedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-						requestUrl.searchParams.set('signer', swappedAccount.publicKeyString.get());
+						requestUrl.searchParams.set('account', swappedAccount.publicKeyString.get());
 					} else {
-						requestUrl.searchParams.set('signer', signerPubKey);
+						requestUrl.searchParams.set('account', signerPubKey);
 					}
 				}
-				requestUrl.searchParams.set('nonce', nonce);
-				requestUrl.searchParams.set('timestamp', timestamp);
-				requestUrl.searchParams.set('signature', signature);
+				requestUrl.searchParams.set('signed.nonce', nonce);
+				requestUrl.searchParams.set('signed.timestamp', timestamp);
+				requestUrl.searchParams.set('signed.signature', signature);
 
 				const response = await fetch(requestUrl);
 				expect(response.status).toBe(testCase.expectedStatus);
