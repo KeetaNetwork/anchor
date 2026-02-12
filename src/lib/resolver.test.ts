@@ -4,24 +4,7 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { createAssert } from 'typia';
 import Resolver from './resolver.js';
 import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
-import { createNodeAndClient } from './utils/tests/node.js';
-
-async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
-	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
-		client: userClient.client,
-		signer: account,
-		usePublishAid: false,
-		network: userClient.network,
-		/* XXX:TODO: Need to be able to get this from the UserClient/Client */
-		networkAlias: 'test'
-	});
-
-	await testAccountExternalUserClient.setInfo({
-		name: '',
-		description: '',
-		metadata: Resolver.Metadata.formatMetadata(value)
-	});
-}
+import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
 
 async function setupForResolverTests() {
 	const testAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
