@@ -198,9 +198,8 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 	}
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
-		const resolveURL = (new URL('/api/resolve/{toResolve}', this.url)).toString();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
-			resolve: resolveURL
+			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()
 		};
 
 		if (this.usernames.claim) {
