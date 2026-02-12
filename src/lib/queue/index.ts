@@ -18,14 +18,13 @@ export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
 const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const;
-{
-	/**
-	 * This is a type-level assertion to ensure that all values in keetaAnchorPipeableQueueStatuses are valid KeetaAnchorQueueStatus values.
-	 * If this assertion fails, it means that there is a value in keetaAnchorPipeableQueueStatuses that is not a valid KeetaAnchorQueueStatus, and the code will not compile.
-	 */
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	type __check_keetaAnchorPipeableQueueStatuses_valid = AssertNever<typeof keetaAnchorPipeableQueueStatuses[number] extends KeetaAnchorQueueStatus ? never : true>;
-}
+/**
+ * This is a type-level assertion to ensure that all values in keetaAnchorPipeableQueueStatuses are valid KeetaAnchorQueueStatus values.
+ * If this assertion fails, it means that there is a value in keetaAnchorPipeableQueueStatuses that is not a valid KeetaAnchorQueueStatus, and the code will not compile.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type __check_keetaAnchorPipeableQueueStatuses_valid = AssertNever<typeof keetaAnchorPipeableQueueStatuses[number] extends KeetaAnchorQueueStatus ? never : true>;
+
 export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
