@@ -17,6 +17,7 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
+export type KeetaAnchorPipableQueueStatus = Extract<KeetaAnchorQueueStatus, 'completed' | 'failed_permanently'>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
@@ -457,7 +458,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipes to other runners we have registered
 	 */
-	private readonly pipes: ({
+	private readonly pipes: (({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
@@ -467,6 +468,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
 		minBatchSize: number;
 		maxBatchSize: number;
+	}) & {
+		acceptStatus: KeetaAnchorPipableQueueStatus;
 	})[] = [];
 
 	/**
@@ -1003,15 +1006,27 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	private async moveCompletedToNextStage(): Promise<void> {
+	private async moveCompletedToNextStage(toMoveStatus: KeetaAnchorPipableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
-		const pipes = [...this.pipes];
+		const pipes = (() => {
+			const filteredPipes = [];
+
+			for (const pipe of this.pipes) {
+				if (pipe.acceptStatus === toMoveStatus) {
+					filteredPipes.push(pipe);
+				}
+			}
+
+			return(filteredPipes);
+		})();
+
+
 		if (pipes.length === 0) {
 			return;
 		}
 
-		const allRequests = await this.queue.query({ status: 'completed', limit: 100 });
+		const allRequests = await this.queue.query({ status: toMoveStatus, limit: 100 });
 		let requests = allRequests;
 
 		const RequestSentToPipes = new Map<KeetaAnchorQueueRequestID, number>();
@@ -1235,10 +1250,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
-		try {
-			await this.moveCompletedToNextStage();
-		} catch (error: unknown) {
-			logger?.debug('Failed to move completed requests to next stage:', error);
+		for (const pipeStatus of ['completed', 'failed_permanently'] as const) {
+			try {
+				await this.moveCompletedToNextStage(pipeStatus);
+			} catch (error: unknown) {
+				logger?.debug(`Failed to move ${pipeStatus} requests to next stage:`, error);
+			}
 		}
 
 		for (const pipe of this.pipes) {
@@ -1264,7 +1281,17 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
 		this.pipes.push({
 			isBatchPipe: false,
-			target: target
+			target: target,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+		this.pipes.push({
+			isBatchPipe: false,
+			target: target,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}
@@ -1277,7 +1304,19 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			isBatchPipe: true,
 			target: target,
 			minBatchSize: minBatchSize,
-			maxBatchSize: maxBatchSize
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+		this.pipes.push({
+			isBatchPipe: true,
+			target: target,
+			minBatchSize: minBatchSize,
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}
