@@ -174,7 +174,7 @@ export type FromPlaintextOptions = {
  *         }
  *
  *         ContainerPackage ::= SEQUENCE {
- *                 version                Version (v2 or v3),
+ *                 version                Version (v2 | v3),
  *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
  *                 plaintextContainer     [1] EXPLICIT PlaintextContainerBox OPTIONAL,
  *                 signerInfo             [2] EXPLICIT SignerInfo OPTIONAL,  -- v3 only
@@ -193,7 +193,7 @@ export type FromPlaintextOptions = {
 
 /**
  * OID constants for cryptographic algorithms
- * // XXX:TODO: Are these already defined somewhere else?
+ * // XXX:TODO: We should standardize this somewhere centralized
  */
 const oidDB = {
 	// Digest algorithms
@@ -201,8 +201,8 @@ const oidDB = {
 
 	// Signature algorithms
 	'ed25519': '1.3.101.112',
-	'ecdsa-secp256k1': '1.3.132.0.10',
-	'ecdsa-secp256r1': '1.2.840.10045.3.1.7',
+	'secp256k1': '1.3.132.0.10',
+	'secp256r1': '1.2.840.10045.3.1.7',
 
 	// Encryption algorithms
 	'aes-256-cbc': '2.16.840.1.101.3.4.1.42'
@@ -213,15 +213,13 @@ const oidDB = {
  * These are the canonical names as defined in oidDB
  */
 const SUPPORTED_DIGEST_ALGORITHMS = ['sha3-256'] as const;
-const SUPPORTED_SIGNATURE_ALGORITHMS = ['ed25519', 'ecdsa-secp256k1', 'ecdsa-secp256r1'] as const;
+const SUPPORTED_SIGNATURE_ALGORITHMS = ['ed25519', 'secp256k1', 'secp256r1'] as const;
 
 /**
  * Known OID aliases that ASN1 parsers may return instead of our canonical names
  */
 const OID_ALIASES: { [alias: string]: keyof typeof oidDB } = {
-	'secp256k1': 'ecdsa-secp256k1',
-	'secp256r1': 'ecdsa-secp256r1',
-	'prime256v1': 'ecdsa-secp256r1'
+	'prime256v1': 'secp256r1'
 };
 
 /**
@@ -260,11 +258,11 @@ function getSignatureAlgorithmOID(account: Account): string {
 	const KeyAlgo = Account.AccountKeyAlgorithm;
 
 	if (keyType === KeyAlgo.ECDSA_SECP256K1) {
-		return(oidDB['ecdsa-secp256k1']);
+		return(oidDB['secp256k1']);
 	} else if (keyType === KeyAlgo.ED25519) {
 		return(oidDB['ed25519']);
 	} else if (keyType === KeyAlgo.ECDSA_SECP256R1) {
-		return(oidDB['ecdsa-secp256r1']);
+		return(oidDB['secp256r1']);
 	}
 
 	throw(new EncryptedContainerError('UNSUPPORTED_KEY_TYPE', `Unsupported key type for signing: ${keyType}`));
