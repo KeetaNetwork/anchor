@@ -17,7 +17,7 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
-export type KeetaAnchorPipableQueueStatus = Extract<KeetaAnchorQueueStatus, 'completed' | 'failed_permanently'>;
+export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, 'completed' | 'failed_permanently'>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
@@ -469,7 +469,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		minBatchSize: number;
 		maxBatchSize: number;
 	}) & {
-		acceptStatus: KeetaAnchorPipableQueueStatus;
+		acceptStatus: KeetaAnchorPipeableQueueStatus;
 	})[] = [];
 
 	/**
@@ -1006,7 +1006,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	private async moveCompletedToNextStage(toMoveStatus: KeetaAnchorPipableQueueStatus): Promise<void> {
+	private async moveCompletedToNextStage(toMoveStatus: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
 		const pipes = (() => {
