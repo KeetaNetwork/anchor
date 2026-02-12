@@ -61,7 +61,7 @@ export type GetConversionRateAndFeeContext = {
 	purpose: 'exchange';
 
 	/**
-	 * The queue job that requested the conversion rate and fee.
+	 * The job information related to this exchange
 	 */
 	job: KeetaFXAnchorQueueStage1Request;
 }
