@@ -46,6 +46,17 @@ import { asleep } from '../../lib/utils/asleep.js';
  */
 const PARANOID = true;
 
+/**
+ * The purpose for why getConversionRateAndFee is being called
+ *   estimate means it is being called to get an estimate for a swap
+ *   quote means it is being called to get a firm quote for a swap that will be executed
+ *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
+ */
+type GetConversionRateAndFeePurpose = 'estimate' | 'quote' | 'exchange';
+export interface GetConversionRateAndFeeContext {
+	purpose: GetConversionRateAndFeePurpose;
+}
+
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -117,7 +128,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 *
 		 * This is used to handle quotes and estimates
 		 */
-		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<KeetaFXInternalPriceQuote>;
+		getConversionRateAndFee: (request: ConversionInputCanonicalJSON, context: GetConversionRateAndFeeContext) => Promise<KeetaFXInternalPriceQuote>;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -205,7 +216,7 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 	let account: KeetaNetAccount | KeetaNetStorageAccount | null;
 	// eslint-disable-next-line @typescript-eslint/no-deprecated
 	if (config.account !== undefined) {
-		const rateFee = await config.fx.getConversionRateAndFee(request);
+		const rateFee = await config.fx.getConversionRateAndFee(request, { purpose: 'estimate' });
 		account = rateFee.account;
 	} else {
 		account = null;
@@ -448,7 +459,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request);
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange' });
 
 			assertExchangeBlockParameters({
 				block: block,
@@ -813,6 +824,19 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			};
 		}
 
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: GetConversionRateAndFeeContext['purpose']): Promise<KeetaFXInternalPriceQuote> {
+			const rateAndFee = await config.fx.getConversionRateAndFee(conversion, { purpose });
+
+			if (PARANOID) {
+				const quoteAccount = rateAndFee.account;
+				if (!instance.accounts.has(quoteAccount)) {
+					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
+				}
+			}
+
+			return(rateAndFee);
+		}
+
 		/**
 		 * Setup the request handler for an estimate request
 		 */
@@ -825,7 +849,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			}
 
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
-			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+			const rateAndFee = await getUnsignedQuoteData(conversion, 'estimate');
 
 			let requiresQuoteBody: { requiresQuote: true } | { requiresQuote: false; account: KeetaNetAccount | KeetaNetStorageAccount; };
 			if (instance.quoteConfiguration.requiresQuote) {
@@ -866,18 +890,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			});
 		}
 
-		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON) {
-			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
-
-			if (PARANOID) {
-				const quoteAccount = rateAndFee.account;
-				if (!instance.accounts.has(quoteAccount)) {
-					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
-				}
-			}
-
-			return(rateAndFee);
-		}
 
 		routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
 			if (!instance.quoteConfiguration.requiresQuote && !instance.quoteConfiguration.issueQuotes) {
@@ -893,7 +905,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			}
 
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
-			const rateAndFee = await getUnsignedQuoteData(conversion);
+			const rateAndFee = await getUnsignedQuoteData(conversion, 'quote');
 
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 				request: conversion,
@@ -967,7 +979,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				}
 
 				conversionInput = request.request;
-				quoteInput = await getUnsignedQuoteData(conversionInput);
+				quoteInput = await getUnsignedQuoteData(conversionInput, 'estimate');
 
 				if (instance.quoteConfiguration.validateQuoteBeforeExchange !== undefined) {
 					shouldValidateQuote = instance.quoteConfiguration.validateQuoteBeforeExchange;
