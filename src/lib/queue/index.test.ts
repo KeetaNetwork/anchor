@@ -13,7 +13,8 @@ import type {
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
-	KeetaAnchorQueueRequestID
+	KeetaAnchorQueueRequestID,
+	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
 
@@ -949,7 +950,7 @@ test('Pipeline Basic Tests', async function() {
 		vi.useRealTimers();
 	});
 
-	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorPipeableQueueStatus; output: OUTPUT; }>) {
 		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
 			id: `${name}_runner`,
 			processor: processor,
@@ -1124,6 +1125,56 @@ test('Pipeline Basic Tests', async function() {
 		expect(finalEntryIDs).toContain(finalLeftoverID);
 		expect(finalEntryIDs).toContain(id6);
 	}
+
+	/*
+	 * Validate that failed jobs can be piped to another stage as well
+	 */
+	await using failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
+		return({ status: 'failed_permanently', output: `failed:${entry.request}` });
+	});
+	await using failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
+		return({ status: 'completed', output: `handled:${entry.request}` });
+	});
+
+	failedStage1._Testing(TestingKey).setParams(10, 100, 0);
+	failedStage2._Testing(TestingKey).setParams(10, 100, 0);
+
+	failedStage1.pipeFailed(failedStage2);
+
+	const failedId = await failedStage1.add('job-fail');
+
+	await failedStage1.run();
+
+	const failedEntry = await failedStage1.get(failedId);
+	if (!failedEntry) {
+		throw(new Error('internal error: failed entry not found'));
+	}
+	expect(failedEntry.status).toBe('failed_permanently');
+	expect(failedEntry.output).toBe('failed:job-fail');
+
+	await failedStage1.maintain();
+
+	const movedFailedEntry = await failedStage1.get(failedId);
+	if (!movedFailedEntry) {
+		throw(new Error('internal error: failed entry missing after maintain'));
+	}
+	expect(movedFailedEntry.status).toBe('moved');
+
+	const pendingFailedEntry = await failedStage2.get(failedId);
+	if (!pendingFailedEntry) {
+		throw(new Error('internal error: failed pipe entry not found in next stage'));
+	}
+	expect(pendingFailedEntry.status).toBe('pending');
+	expect(pendingFailedEntry.request).toBe('failed:job-fail');
+
+	await failedStage2.run();
+
+	const completedFailedEntry = await failedStage2.get(failedId);
+	if (!completedFailedEntry) {
+		throw(new Error('internal error: completed pipe entry not found in next stage'));
+	}
+	expect(completedFailedEntry.status).toBe('completed');
+	expect(completedFailedEntry.output).toBe('handled:failed:job-fail');
 });
 
 test('Errors', async function() {
