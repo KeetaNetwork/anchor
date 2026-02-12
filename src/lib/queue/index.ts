@@ -469,11 +469,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	private readonly pipes: (({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
+		target: KeetaAnchorQueueRunner<(UserResult | UserRequest), any, QueueResult, any>
 	} | {
 		isBatchPipe: true;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
+		target: KeetaAnchorQueueRunner<(UserResult | UserRequest)[], any, JSONSerializable, any>;
 		minBatchSize: number;
 		maxBatchSize: number;
 	}) & {
@@ -1034,6 +1034,15 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			RequestSentToPipes.set(requestID, sentCount + 1);
 		}
 
+		const getNextPipeRequestOutput = (entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>) => {
+			if (statusTarget === 'completed') {
+				return(this.decodeResponse(entry.output));
+			} else if (statusTarget === 'failed_permanently') {
+				return(this.decodeRequest(entry.request));
+			} else {
+				throw(new Error(`Unsupported status target ${statusTarget}`));
+			}
+		}
 
 		for (const pipe of pipes) {
 			logger?.debug('Processing pipe to target', pipe.target.id, pipe.isBatchPipe ? '(batch pipe)' : '(single item pipe)');
@@ -1089,7 +1098,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					 * the entries which have non-null outputs
 					 */
 					const batchRaw = requests.map((entry) => {
-						return({ output: this.decodeResponse(entry.output), id: entry.id });
+						return({ output: getNextPipeRequestOutput(entry), id: entry.id });
 					}).filter(function(entry): entry is { output: UserResult; id: KeetaAnchorQueueRequestID; } {
 						if (entry === null) {
 							return(false);
@@ -1182,7 +1191,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				for (const request of requests) {
 					let shouldMarkAsMoved = true;
 					try {
-						const output = this.decodeResponse(request.output);
+						const output = getNextPipeRequestOutput(request);
+
 						if (output === null) {
 							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
@@ -1286,7 +1296,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(target);
 	}
 
-	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>): typeof target {
 		this.pipes.push({
 			isBatchPipe: false,
 			target: target,
@@ -1309,7 +1319,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(target);
 	}
 
-	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
 		this.pipes.push({
 			isBatchPipe: true,
 			target: target,
