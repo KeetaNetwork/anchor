@@ -48,7 +48,7 @@ describe('MemoryStorageBackend', function() {
 		expect(putResult.path).toBe(path);
 		expect(putResult.owner).toBe(owner);
 		expect(putResult.tags).toEqual(['test', 'example']);
-		expect(putResult.size).toBe('11');
+		expect(putResult.size).toBe(11);
 		expect(backend.size).toBe(1);
 
 		// GET
@@ -190,7 +190,7 @@ describe('MemoryStorageBackend', function() {
 		test('throws when quota exceeded', async function() {
 			const { backend, owner, makePath } = createTestBackend();
 			await expect(backend.reserveUpload(owner, makePath('big.bin'), 200 * 1024 * 1024))
-				.rejects.toThrow('quota');
+				.rejects.toThrow(Errors.QuotaExceeded);
 		});
 
 		test('concurrent reservations accumulate', async function() {

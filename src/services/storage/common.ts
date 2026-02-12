@@ -2,7 +2,7 @@ import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { createIs, createAssert } from 'typia';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 /**
@@ -45,7 +45,7 @@ export type StorageObjectMetadata = {
 	path: string;
 
 	/**
-	 * Owner's public key string
+	 * Owner's identifier
 	 */
 	owner: string;
 
@@ -60,9 +60,9 @@ export type StorageObjectMetadata = {
 	visibility: StorageObjectVisibility;
 
 	/**
-	 * Size in bytes (string for JSON serialization of large values)
+	 * Size in bytes
 	 */
-	size: string;
+	size: number;
 
 	/**
 	 * ISO timestamp of creation
@@ -476,14 +476,13 @@ class KeetaStorageAnchorAccessDeniedError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserError {
+class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserValidationError {
 	static override readonly name: string = 'KeetaStorageAnchorInvalidPathError';
 	private readonly KeetaStorageAnchorInvalidPathErrorObjectTypeID!: string;
 	private static readonly KeetaStorageAnchorInvalidPathErrorObjectTypeID = 'eb0e1c0d-2281-4b93-9f78-87bf166a4829';
 
 	constructor(message?: string) {
-		super(message ?? 'Invalid path format');
-		this.statusCode = 400;
+		super({ fields: [{ path: 'path', message: message ?? 'Invalid path format' }] }, message ?? 'Invalid path format');
 
 		Object.defineProperty(this, 'KeetaStorageAnchorInvalidPathErrorObjectTypeID', {
 			value: KeetaStorageAnchorInvalidPathError.KeetaStorageAnchorInvalidPathErrorObjectTypeID,
@@ -491,11 +490,11 @@ class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserError {
 		});
 	}
 
-	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidPathError {
+	static override isInstance(input: unknown): input is KeetaStorageAnchorInvalidPathError {
 		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidPathErrorObjectTypeID', KeetaStorageAnchorInvalidPathError.KeetaStorageAnchorInvalidPathErrorObjectTypeID));
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidPathError> {
+	static override async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidPathError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -503,14 +502,28 @@ class KeetaStorageAnchorInvalidPathError extends KeetaAnchorUserError {
 	}
 }
 
+type QuotaExceededType = 'maxObjectSize' | 'maxObjectsPerUser' | 'maxStoragePerUser';
+
 class KeetaStorageAnchorQuotaExceededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaStorageAnchorQuotaExceededError';
 	private readonly KeetaStorageAnchorQuotaExceededErrorObjectTypeID!: string;
 	private static readonly KeetaStorageAnchorQuotaExceededErrorObjectTypeID = 'c0b75028-644a-472b-8df4-b0a856814f99';
 
-	constructor(message?: string) {
-		super(message ?? 'Quota exceeded');
+	/** Which quota limit was exceeded */
+	readonly quotaType: QuotaExceededType;
+
+	/** The configured maximum for the exceeded quota */
+	readonly limit: number;
+
+	/** The current or attempted value that exceeded the limit */
+	readonly current: number;
+
+	constructor(options: { quotaType: QuotaExceededType; limit: number; current: number; message?: string }) {
+		super(options.message ?? `Quota exceeded: ${options.quotaType} (${options.current} exceeds limit of ${options.limit})`);
 		this.statusCode = 413;
+		this.quotaType = options.quotaType;
+		this.limit = options.limit;
+		this.current = options.current;
 
 		Object.defineProperty(this, 'KeetaStorageAnchorQuotaExceededErrorObjectTypeID', {
 			value: KeetaStorageAnchorQuotaExceededError.KeetaStorageAnchorQuotaExceededErrorObjectTypeID,
@@ -524,7 +537,7 @@ class KeetaStorageAnchorQuotaExceededError extends KeetaAnchorUserError {
 
 	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorQuotaExceededError> {
 		const { message, other } = this.extractErrorProperties(input, this);
-		const error = new this(message);
+		const error = new this({ quotaType: 'maxObjectSize', limit: 0, current: 0, message });
 		error.restoreFromJSON(other);
 		return(error);
 	}
@@ -557,14 +570,14 @@ class KeetaStorageAnchorPrincipalRequiredError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaStorageAnchorValidationFailedError extends KeetaAnchorUserError {
+class KeetaStorageAnchorValidationFailedError extends KeetaAnchorUserValidationError {
 	static override readonly name: string = 'KeetaStorageAnchorValidationFailedError';
 	private readonly KeetaStorageAnchorValidationFailedErrorObjectTypeID!: string;
 	private static readonly KeetaStorageAnchorValidationFailedErrorObjectTypeID = '73cadd95-cf39-466b-b9b6-484e1ae1ca9c';
 
 	constructor(message?: string) {
-		super(message ?? 'Content validation failed');
-		this.statusCode = 422;
+		const msg = message ?? 'Content validation failed';
+		super({ fields: [{ path: 'content', message: msg }] }, msg);
 
 		Object.defineProperty(this, 'KeetaStorageAnchorValidationFailedErrorObjectTypeID', {
 			value: KeetaStorageAnchorValidationFailedError.KeetaStorageAnchorValidationFailedErrorObjectTypeID,
@@ -572,11 +585,15 @@ class KeetaStorageAnchorValidationFailedError extends KeetaAnchorUserError {
 		});
 	}
 
-	static isInstance(input: unknown): input is KeetaStorageAnchorValidationFailedError {
+	override get statusCode() {
+		return(422);
+	}
+
+	static override isInstance(input: unknown): input is KeetaStorageAnchorValidationFailedError {
 		return(this.hasPropWithValue(input, 'KeetaStorageAnchorValidationFailedErrorObjectTypeID', KeetaStorageAnchorValidationFailedError.KeetaStorageAnchorValidationFailedErrorObjectTypeID));
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorValidationFailedError> {
+	static override async fromJSON(input: unknown): Promise<KeetaStorageAnchorValidationFailedError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -881,14 +898,13 @@ class KeetaStorageAnchorInvariantViolationError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserError {
+class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserValidationError {
 	static override readonly name: string = 'KeetaStorageAnchorInvalidTagError';
 	private readonly KeetaStorageAnchorInvalidTagErrorObjectTypeID!: string;
 	private static readonly KeetaStorageAnchorInvalidTagErrorObjectTypeID = 'b8d6e4f2-9c0a-5d3b-c4e5-f6a7b8c9d0e1';
 
 	constructor(message?: string) {
-		super(message ?? 'Invalid tag');
-		this.statusCode = 400;
+		super({ fields: [{ path: 'tags', message: message ?? 'Invalid tag' }] }, message ?? 'Invalid tag');
 
 		Object.defineProperty(this, 'KeetaStorageAnchorInvalidTagErrorObjectTypeID', {
 			value: KeetaStorageAnchorInvalidTagError.KeetaStorageAnchorInvalidTagErrorObjectTypeID,
@@ -896,11 +912,11 @@ class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserError {
 		});
 	}
 
-	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidTagError {
+	static override isInstance(input: unknown): input is KeetaStorageAnchorInvalidTagError {
 		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidTagErrorObjectTypeID', KeetaStorageAnchorInvalidTagError.KeetaStorageAnchorInvalidTagErrorObjectTypeID));
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidTagError> {
+	static override async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidTagError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -908,14 +924,14 @@ class KeetaStorageAnchorInvalidTagError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaStorageAnchorInvalidMetadataError extends KeetaAnchorUserError {
+class KeetaStorageAnchorInvalidMetadataError extends KeetaAnchorUserValidationError {
 	static override readonly name: string = 'KeetaStorageAnchorInvalidMetadataError';
 	private readonly KeetaStorageAnchorInvalidMetadataErrorObjectTypeID!: string;
 	private static readonly KeetaStorageAnchorInvalidMetadataErrorObjectTypeID = 'c9e7f5a3-0d1b-6e4c-d5f6-a7b8c9d0e1f2';
 
 	constructor(reason?: string) {
-		super(reason ? `Invalid metadata: ${reason}` : 'Invalid metadata');
-		this.statusCode = 400;
+		const message = reason ? `Invalid metadata: ${reason}` : 'Invalid metadata';
+		super({ fields: [{ path: 'metadata', message }] }, message);
 
 		Object.defineProperty(this, 'KeetaStorageAnchorInvalidMetadataErrorObjectTypeID', {
 			value: KeetaStorageAnchorInvalidMetadataError.KeetaStorageAnchorInvalidMetadataErrorObjectTypeID,
@@ -923,11 +939,11 @@ class KeetaStorageAnchorInvalidMetadataError extends KeetaAnchorUserError {
 		});
 	}
 
-	static isInstance(input: unknown): input is KeetaStorageAnchorInvalidMetadataError {
+	static override isInstance(input: unknown): input is KeetaStorageAnchorInvalidMetadataError {
 		return(this.hasPropWithValue(input, 'KeetaStorageAnchorInvalidMetadataErrorObjectTypeID', KeetaStorageAnchorInvalidMetadataError.KeetaStorageAnchorInvalidMetadataErrorObjectTypeID));
 	}
 
-	static async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidMetadataError> {
+	static override async fromJSON(input: unknown): Promise<KeetaStorageAnchorInvalidMetadataError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 		const error = new this(message);
 		error.restoreFromJSON(other);
@@ -1061,7 +1077,7 @@ export const Errors: {
  * Provided by the client when storing an object.
  */
 export type StoragePutMetadata = {
-	/** Owner's public key string */
+	/** Owner's identifier */
 	owner: string;
 	/** Tags for categorization and search */
 	tags: string[];
@@ -1087,7 +1103,7 @@ export type StorageGetResult = {
 export interface UploadReservation {
 	/** Unique identifier for this reservation */
 	id: string;
-	/** Owner's public key string */
+	/** Owner's identifier */
 	owner: string;
 	/** Target path for the upload */
 	path: string;
@@ -1145,14 +1161,14 @@ export interface QuotaManagedStorage {
 	/**
 	 * Get per-user quota limits.
 	 * Return null to use global defaults.
-	 * @param owner - Owner's public key string
+	 * @param owner - Owner's identifier
 	 */
 	getQuotaLimits?(owner: string): Promise<QuotaLimits | null>;
 
 	/**
 	 * Reserve quota for an upcoming upload.
 	 *
-	 * @param owner - Owner's public key string
+	 * @param owner - Owner's identifier
 	 * @param path - Target path for the upload
 	 * @param size - Size in bytes to reserve
 	 * @param options.ttlMs - Optional TTL in milliseconds for the reservation

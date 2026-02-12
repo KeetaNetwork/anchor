@@ -563,6 +563,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					if (tag.length > maxTagLength) {
 						throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
 					}
+					// Reset lastIndex in case the pattern has the global or sticky flag
+					tagPattern.lastIndex = 0;
 					if (!tagPattern.test(tag)) {
 						throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
 					}
@@ -589,7 +591,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				const data = arrayBufferLikeToBuffer(postData);
 				const objectSize = data.byteLength;
 				if (objectSize > effectiveLimits.maxObjectSize) {
-					throw(new Errors.QuotaExceeded(`Object too large: ${objectSize} bytes exceeds limit of ${effectiveLimits.maxObjectSize}`));
+					throw(new Errors.QuotaExceeded({
+						quotaType: 'maxObjectSize',
+						limit: effectiveLimits.maxObjectSize,
+						current: objectSize
+					}));
 				}
 
 				const needsValidation = requiresValidation(objectPath, validators);
@@ -807,41 +813,31 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			return(jsonResponse(response, assertKeetaStorageAnchorQuotaResponse));
 		};
 
-		// GET /api/public/* - Public object access via pre-signed URL
+		// GET /api/public/** - Public object access via pre-signed URL
 		routes['GET /api/public/**'] = async function(params, _postData, _headers, url) {
 			const objectPath = extractObjectPath(params);
 			const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
-			// Get signature parameters from query params
-			const parsedUrl = new URL(url);
-			const signature = parsedUrl.searchParams.get('signature');
-			const expires = parsedUrl.searchParams.get('expires');
-			const nonce = parsedUrl.searchParams.get('nonce');
-			const timestamp = parsedUrl.searchParams.get('timestamp');
-			if (!signature || !expires || !nonce || !timestamp) {
+			// Parse signature using standard signed field convention
+			const urlParsed = parseSignatureFromURL(url);
+			if (!urlParsed.signedField) {
 				throw(new Errors.SignatureInvalid('Missing required signature parameters'));
 			}
 
-			// Resolve signer: policy-specified or from URL
+			// Resolve signer: policy-specified or from URL account param (any-signer for public objects)
 			const policySignerPubKey = policy.getAuthorizedSigner(parsed);
-			const signerPubKey = policySignerPubKey ?? parsedUrl.searchParams.get('signer');
+			const signerPubKey = policySignerPubKey ?? urlParsed.account?.publicKeyString.get() ?? null;
 			if (!signerPubKey) {
 				throw(new Errors.SignatureInvalid('Missing signer'));
 			}
 
-			// Validate nonce format
-			if (nonce.length === 0 || nonce.length > 64) {
-				throw(new Errors.SignatureInvalid('Invalid nonce format'));
+			// Parse and validate expires param
+			const parsedUrl = typeof url === 'string' ? new URL(url) : url;
+			const expiresParam = parsedUrl.searchParams.get('expires');
+			if (!expiresParam) {
+				throw(new Errors.SignatureInvalid('Missing expires parameter'));
 			}
-
-			// Validate timestamp format (ISO 8601)
-			const timestampDate = Date.parse(timestamp);
-			if (!Number.isFinite(timestampDate)) {
-				throw(new Errors.SignatureInvalid('Invalid timestamp format'));
-			}
-
-			// Check expiry
-			const expiresAt = parseInt(expires, 10);
+			const expiresAt = parseInt(expiresParam, 10);
 			if (!Number.isFinite(expiresAt)) {
 				throw(new Errors.SignatureInvalid('Invalid expires parameter'));
 			}
@@ -855,19 +851,17 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureExpired('Signed URL TTL exceeds maximum allowed'));
 			}
 
-			// Verify signature using the signing library
-			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
-
 			// Pre-validate signature is valid base64 with reasonable length
-			const signatureBuffer = Buffer.from(signature, 'base64');
+			const signatureBuffer = Buffer.from(urlParsed.signedField.signature, 'base64');
 			if (signatureBuffer.length < 64 || signatureBuffer.length > 256) {
 				throw(new Errors.SignatureInvalid('Invalid signature format'));
 			}
 
+			// Verify signature using the signing library
+			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
 			try {
-				const signedData = { nonce, timestamp, signature };
 				// Allow 5 minutes of clock skew for signature verification
-				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt, signerPubKey], signedData, {
+				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt, signerPubKey], urlParsed.signedField, {
 					maxSkewMs: 5 * 60 * 1000
 				});
 				if (!valid) {
