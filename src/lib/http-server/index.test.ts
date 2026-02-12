@@ -123,8 +123,8 @@ test('Basic Functionality', async function() {
 				};
 
 				// Wildcard route - captures variable-depth paths
-				routes['GET /api/files/*'] = async function(params) {
-					const wildcardPath = params.get('*');
+				routes['GET /api/files/**'] = async function(params) {
+					const wildcardPath = params.get('**');
 					return({
 						output: JSON.stringify({
 							message: 'Wildcard route works!',
@@ -144,10 +144,10 @@ test('Basic Functionality', async function() {
 					});
 				};
 
-				// Wildcard with path parameter (defined before /api/* for priority)
-				routes['GET /api/users/:id/*'] = async function(params) {
+				// Wildcard with path parameter (defined before /api/** for priority)
+				routes['GET /api/users/:id/**'] = async function(params) {
 					const userId = params.get('id');
-					const wildcardPath = params.get('*');
+					const wildcardPath = params.get('**');
 					return({
 						output: JSON.stringify({
 							message: 'Wildcard with param!',
@@ -159,8 +159,8 @@ test('Basic Functionality', async function() {
 				};
 
 				// Fallback wildcard
-				routes['GET /api/*'] = async function(params) {
-					const wildcardPath = params.get('*');
+				routes['GET /api/**'] = async function(params) {
+					const wildcardPath = params.get('**');
 					return({
 						output: JSON.stringify({
 							message: 'Less specific wildcard!',
