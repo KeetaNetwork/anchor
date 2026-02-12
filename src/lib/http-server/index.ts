@@ -71,10 +71,10 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		const requestURLPaths = requestURL.pathname.split('/');
 		const routeURLPaths = routeURL.pathname.split('/');
 
-		// Check if route ends with wildcard /*
-		const isWildcard = routeURLPaths.length > 0 && routeURLPaths[routeURLPaths.length - 1] === '*';
+		// Check if route ends with wildcard /**
+		const isWildcard = routeURLPaths.length > 0 && routeURLPaths[routeURLPaths.length - 1] === '**';
 		if (isWildcard) {
-			// For wildcard routes, request must have more segments than route prefix (minus the *)
+			// For wildcard routes, request must have more segments than route prefix (minus the **)
 			// This ensures at least one segment is captured by the wildcard
 			const prefixLength = routeURLPaths.length - 1;
 			if (requestURLPaths.length <= prefixLength) {
@@ -111,7 +111,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				return({ match: false });
 			}
 
-			params.set('*', remainder);
+			params.set('**', remainder);
 
 			return({ match: true, params: params, isWildcard: true });
 		}
