@@ -46,15 +46,24 @@ import { asleep } from '../../lib/utils/asleep.js';
  */
 const PARANOID = true;
 
-/**
- * The purpose for why getConversionRateAndFee is being called
- *   estimate means it is being called to get an estimate for a swap
- *   quote means it is being called to get a firm quote for a swap that will be executed
- *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
- */
-type GetConversionRateAndFeePurpose = 'estimate' | 'quote' | 'exchange';
-export interface GetConversionRateAndFeeContext {
-	purpose: GetConversionRateAndFeePurpose;
+export type GetConversionRateAndFeeContext = {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   estimate means it is being called to get an estimate for a swap
+	 *   quote means it is being called to get a firm quote for a swap that will be executed
+	 */
+	purpose: 'quote' | 'estimate';
+} | {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
+	 */
+	purpose: 'exchange';
+
+	/**
+	 * The request information related to this exchange
+	 */
+	request: KeetaFXAnchorQueueStage1Request;
 }
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -459,7 +468,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange' });
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
 
 			assertExchangeBlockParameters({
 				block: block,
@@ -824,7 +833,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			};
 		}
 
-		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: GetConversionRateAndFeeContext['purpose']): Promise<KeetaFXInternalPriceQuote> {
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: Exclude<GetConversionRateAndFeeContext['purpose'], 'exchange'>): Promise<KeetaFXInternalPriceQuote> {
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion, { purpose });
 
 			if (PARANOID) {
