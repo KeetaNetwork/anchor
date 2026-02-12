@@ -24,7 +24,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
-import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueEntry } from '../../lib/queue/index.ts';
+import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
@@ -63,7 +63,7 @@ export type GetConversionRateAndFeeContext = {
 	/**
 	 * The queue job that requested the conversion rate and fee.
 	 */
-	job: KeetaFXAnchorQueuePipelineStage1Job;
+	job: KeetaFXAnchorQueueStage1Request;
 }
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -318,7 +318,6 @@ type KeetaFXAnchorQueueStage1Response = {
 	blockhash: string;
 };
 
-type KeetaFXAnchorQueuePipelineStage1Job = KeetaAnchorQueueEntry<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>;
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
 	protected sequential = true;
@@ -342,7 +341,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	 * We just put the job back into pending because the processor
 	 * will check the network state again.
 	 */
-	protected async processorStuck(entry: KeetaFXAnchorQueuePipelineStage1Job): ReturnType<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>> {
+	protected async processorStuck(entry: Parameters<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>>[0]): ReturnType<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processorStuck']>> {
 		return({
 			status: 'pending',
 			output: entry.output
@@ -469,7 +468,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		let expected = entry.request.expected;
 		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', job: entry });
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', job: entry.request });
 
 			assertExchangeBlockParameters({
 				block: block,
