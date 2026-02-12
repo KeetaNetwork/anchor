@@ -1322,15 +1322,14 @@ test('FX Server Estimate to Exchange Test', async function() {
 					throw(new Error('No block computed'));
 				}
 
-				const costTokenBalancePre = await client.balance(testCase.quote.cost.token)
+				const costTokenBalancePre = await client.balance(testCase.quote.cost.token);
 				const sendTokenBalancePre = await client.balance(testCurrencyUSD);
-
 
 				const exchange = await singleEstimate.createExchange(block);
 
 				await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
 
-				const costTokenBalancePost = await client.balance(testCase.quote.cost.token)
+				const costTokenBalancePost = await client.balance(testCase.quote.cost.token);
 				const sendTokenBalancePost = await client.balance(testCurrencyUSD);
 
 				let expectedCostTokenChange = testCase.expectedChange.costToken;

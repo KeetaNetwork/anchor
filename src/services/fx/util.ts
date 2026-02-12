@@ -41,13 +41,15 @@ export function convertQuoteToExpectedSwapWithoutCost(input: {
 }
 
 export type RefundValue = { token: TokenAddress; amount: bigint; };
-export function assertExchangeBlockParameters(args: {
+export function assertExchangeBlockParametersAndComputeRefund(args: {
 	block: InstanceType<typeof KeetaNet['lib']['Block']>;
 	liquidityAccount: InstanceType<typeof KeetaNet['lib']['Account']>;
 
 	allowedLiquidityAccounts: null | InstanceType<typeof KeetaNet['lib']['Account']['Set']>;
 
 	checks: Parameters<typeof convertQuoteToExpectedSwapWithoutCost>[0];
+
+	isQuoteBasedExchange: boolean;
 }): {
 		refunds: RefundValue[];
 	} {
@@ -58,15 +60,26 @@ export function assertExchangeBlockParameters(args: {
 	const userSent: { [tokenPublicKey: string]: bigint; } = {};
 	const userExpectsReceive: { [tokenPublicKey: string]: bigint; } = {};
 	for (const operation of args.block.operations) {
+		let validToken;
 		if (operation.type === KeetaNet.lib.Block.OperationType.SEND) {
 			if (!(operation.to.comparePublicKey(args.liquidityAccount))) {
 				throw(new KeetaAnchorUserError('Send operations in exchange block must be made sending to liquidity account'));
+			}
+
+			if (operation.token.comparePublicKey(args.checks.request.from)) {
+				validToken = true;
+			} else if (operation.token.comparePublicKey(args.checks.quote.cost.token) && args.checks.quote.cost.amount > 0n) {
+				validToken = true;
+			} else {
+				validToken = false;
 			}
 
 			const tokenPub = operation.token.publicKeyString.get();
 
 			if (!(userSent[tokenPub])) {
 				userSent[tokenPub] = 0n;
+			} else {
+				throw(new KeetaAnchorUserError(`Multiple send operations for token ${tokenPub} in exchange block are not allowed`));
 			}
 
 			userSent[tokenPub] += operation.amount;
@@ -75,15 +88,23 @@ export function assertExchangeBlockParameters(args: {
 				throw(new KeetaAnchorUserError('Receive operations in exchange block must be made requesting from liquidity account'));
 			}
 
+			validToken = operation.token.comparePublicKey(args.checks.request.to);
+
 			const tokenPub = operation.token.publicKeyString.get();
 
 			if (!(userExpectsReceive[tokenPub])) {
 				userExpectsReceive[tokenPub] = 0n;
+			} else {
+				throw(new KeetaAnchorUserError(`Multiple receive operations for token ${tokenPub} in exchange block are not allowed`));
 			}
 
 			userExpectsReceive[tokenPub] += operation.amount;
 		} else {
 			throw(new KeetaAnchorUserError(`Invalid operation type in exchange block: ${operation.type}`));
+		}
+
+		if (!(validToken)) {
+			throw(new KeetaAnchorUserError(`Invalid token sent/received in exchange block: ${operation.token.publicKeyString.get()}`));
 		}
 	}
 
@@ -113,11 +134,17 @@ export function assertExchangeBlockParameters(args: {
 	for (const [ tokenPub, amount ] of Object.entries(userSendsMinimum)) {
 		const userDidSend = userSent[tokenPub] ?? 0n;
 
+		if (userDidSend !== amount && args.isQuoteBasedExchange) {
+			throw(new KeetaAnchorUserError(`For quote based exchanges, user must send exactly the expected amount of ${amount} for token ${tokenPub}, user sent ${userDidSend}`));
+		}
+
 		if (userDidSend < amount) {
 			throw(new KeetaAnchorUserError(`Expected send of ${amount}, only saw ${userDidSend} for token ${tokenPub}`));
 		}
 
-		// If the user sent more than the minimum and the excess is in the expected receive token or the cost token, consider it a refund. This allows users to send more than the minimum if they want to receive more than the expected amount, but still ensures that if they do so by mistake they will get a refund of the excess.
+		// If the user sent more than the minimum and the excess is in the expected receive token or the cost token, consider it a refund.
+		// This allows users to send more than the minimum if they want to receive more than the expected amount,
+		// but still ensures that if they do so by mistake they will get a refund of the excess.
 		if (userDidSend > amount) {
 			let isRefundable = false;
 
