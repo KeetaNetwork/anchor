@@ -201,7 +201,7 @@ async function verifyURLAuth<T>(
  * @throws InvalidPath if wildcard parameter is missing
  */
 function extractObjectPath(params: Map<string, string>): string {
-	const wildcardPath = params.get('*');
+	const wildcardPath = params.get('**');
 	if (!wildcardPath) {
 		throw(new Errors.InvalidPath());
 	}
@@ -527,7 +527,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// #region API Routes
 
 		// PUT /api/object/* - Create or update an object
-		routes['PUT /api/object/*'] = {
+		routes['PUT /api/object/**'] = {
 			bodyType: 'raw',
 			handler: async function(params, postData, _headers, url) {
 				const objectPath = extractObjectPath(params);
@@ -665,7 +665,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		};
 
 		// GET /api/object/* - Retrieve an object
-		routes['GET /api/object/*'] = async function(params, _postData, _headers, url) {
+		routes['GET /api/object/**'] = async function(params, _postData, _headers, url) {
 			const { objectPath } = await authorizeURLAccess(
 				pathPolicies,
 				params,
@@ -685,7 +685,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		};
 
 		// DELETE /api/object/* - Delete an object
-		routes['DELETE /api/object/*'] = async function(params, _postData, _headers, url) {
+		routes['DELETE /api/object/**'] = async function(params, _postData, _headers, url) {
 			const { objectPath } = await authorizeURLAccess(
 				pathPolicies,
 				params,
@@ -707,7 +707,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		};
 
 		// GET /api/metadata/* - Get object metadata
-		routes['GET /api/metadata/*'] = async function(params, _postData, _headers, url) {
+		routes['GET /api/metadata/**'] = async function(params, _postData, _headers, url) {
 			const { objectPath } = await authorizeURLAccess(
 				pathPolicies,
 				params,
@@ -808,7 +808,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		};
 
 		// GET /api/public/* - Public object access via pre-signed URL
-		routes['GET /api/public/*'] = async function(params, _postData, _headers, url) {
+		routes['GET /api/public/**'] = async function(params, _postData, _headers, url) {
 			const objectPath = extractObjectPath(params);
 			const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
