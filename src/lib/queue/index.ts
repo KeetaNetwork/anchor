@@ -1006,14 +1006,14 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	private async moveCompletedToNextStage(toMoveStatus: KeetaAnchorPipeableQueueStatus): Promise<void> {
+	private async moveCompletedToNextStage(statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
 		const pipes = (() => {
 			const filteredPipes = [];
 
 			for (const pipe of this.pipes) {
-				if (pipe.acceptStatus === toMoveStatus) {
+				if (pipe.acceptStatus === statusTarget) {
 					filteredPipes.push(pipe);
 				}
 			}
@@ -1026,7 +1026,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			return;
 		}
 
-		const allRequests = await this.queue.query({ status: toMoveStatus, limit: 100 });
+		const allRequests = await this.queue.query({ status: statusTarget, limit: 100 });
 		let requests = allRequests;
 
 		const RequestSentToPipes = new Map<KeetaAnchorQueueRequestID, number>();
@@ -1082,7 +1082,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				) {
 					iterationTargetSeenRequestIDs.clear();
 
-					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
+					logger?.debug(`Preparing to move ${statusTarget} requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} ${statusTarget} requests available`);
 
 					/**
 					 * Compute a batch of entries to send to the next stage,
@@ -1106,12 +1106,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					if (batchRaw.length < pipe.minBatchSize) {
 						sequentialFailureCount++;
 						if (sequentialFailureCount >= 3) {
-							logger?.debug(`Not enough completed requests to move to next stage ${pipe.target.id}, stopping batch processing`);
+							logger?.debug(`Not enough ${statusTarget} requests to move to next stage ${pipe.target.id}, stopping batch processing`);
 
 							break;
 						}
 
-						logger?.debug(`Not moving completed requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
+						logger?.debug(`Not moving ${statusTarget} requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
 
 						continue;
 					}
@@ -1133,7 +1133,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						return(entry.output);
 					});
 
-					logger?.debug(`Moving batch of ${batchOutput.length} completed requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
+					logger?.debug(`Moving batch of ${batchOutput.length} ${statusTarget} requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
 
 					try {
 						await pipe.target.add(batchOutput, {
@@ -1187,7 +1187,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						if (output === null) {
 							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
-							logger?.debug(`Moving completed request with id ${String(request.id)} to next pipe`, pipe.target.id);
+							logger?.debug(`Moving ${statusTarget} request with id ${String(request.id)} to next pipe`, pipe.target.id);
 							await pipe.target.add(output, { id: request.id });
 						}
 
@@ -1206,13 +1206,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		for (const request of allRequests) {
 			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
 			if (sentCount !== TotalPipes) {
-				logger?.debug(`Completed request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
 				continue;
 			}
 
-			logger?.debug(`Marking completed request with id ${String(request.id)} as moved`);
+			logger?.debug(`Marking ${statusTarget} request with id ${String(request.id)} as moved`);
 
-			await this.queue.setStatus(request.id, 'moved', { oldStatus: 'completed', by: this.workerID });
+			await this.queue.setStatus(request.id, 'moved', { oldStatus: statusTarget, by: this.workerID });
 		}
 
 	}
