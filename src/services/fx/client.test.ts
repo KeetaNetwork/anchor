@@ -594,7 +594,9 @@ for (const useDeprecated of [false, true]) {
 			 * Check sending blocks that are able to get to the queue but fail later mark the queue as failed
 			 */
 
-			const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
+			const userBalanceUSD = await client.balance(testCurrencyUSD);
+			const swapValue = userBalanceUSD + 5n;
+			const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: swapValue, affinity: 'from' });
 
 			const quote = quotes?.[0];
 
@@ -602,9 +604,8 @@ for (const useDeprecated of [false, true]) {
 				throw(new Error('could not get single quote in test'));
 			}
 
-			const userBalanceUSD = await client.balance(testCurrencyUSD);
 			const negativeBalanceSwapBlockBuilder = client.initBuilder();
-			negativeBalanceSwapBlockBuilder.send(quote.quote.account, userBalanceUSD + 1n, quote.quote.request.from);
+			negativeBalanceSwapBlockBuilder.send(quote.quote.account, swapValue, quote.quote.request.from);
 			negativeBalanceSwapBlockBuilder.send(quote.quote.account, quote.quote.cost.amount, quote.quote.cost.token);
 			const computeResult = await negativeBalanceSwapBlockBuilder.computeBlocks();
 			const computedBlock = computeResult.blocks[0];
