@@ -11,6 +11,7 @@ import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote,
 import type KeetaFXAnchorClient from './client.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import type { Routes } from '../../lib/http-server/index.js';
+import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -593,7 +594,9 @@ for (const useDeprecated of [false, true]) {
 			 * Check sending blocks that are able to get to the queue but fail later mark the queue as failed
 			 */
 
-			const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
+			const userBalanceUSD = await client.balance(testCurrencyUSD);
+			const swapValue = userBalanceUSD + 5n;
+			const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: swapValue, affinity: 'from' });
 
 			const quote = quotes?.[0];
 
@@ -601,9 +604,8 @@ for (const useDeprecated of [false, true]) {
 				throw(new Error('could not get single quote in test'));
 			}
 
-			const userBalanceUSD = await client.balance(testCurrencyUSD);
 			const negativeBalanceSwapBlockBuilder = client.initBuilder();
-			negativeBalanceSwapBlockBuilder.send(quote.quote.account, userBalanceUSD + 1n, quote.quote.request.from);
+			negativeBalanceSwapBlockBuilder.send(quote.quote.account, swapValue, quote.quote.request.from);
 			negativeBalanceSwapBlockBuilder.send(quote.quote.account, quote.quote.cost.amount, quote.quote.cost.token);
 			const computeResult = await negativeBalanceSwapBlockBuilder.computeBlocks();
 			const computedBlock = computeResult.blocks[0];
@@ -821,8 +823,9 @@ test('FX Server Estimate to Exchange Test', async function() {
 	const initialAccountTokenBalance = 500000n;
 	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyGBP } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
-	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken() || !testCurrencyGBP.isToken()) {
 		throw(new Error('Test currencies not tokens'));
 	}
 
@@ -908,7 +911,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		});
 	}));
 
-	for (const token of [testCurrencyUSD, testCurrencyEUR]) {
+	for (const token of [testCurrencyUSD, testCurrencyEUR, testCurrencyGBP]) {
 		await client.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], []) }, { account: token });
 		await client.modTokenSupplyAndBalance(initialAccountTokenBalance, token);
 
@@ -927,7 +930,8 @@ test('FX Server Estimate to Exchange Test', async function() {
 			version: 1,
 			currencyMap: {
 				USD: testCurrencyUSD.publicKeyString.get(),
-				EUR: testCurrencyEUR.publicKeyString.get()
+				EUR: testCurrencyEUR.publicKeyString.get(),
+				GBP: testCurrencyGBP.publicKeyString.get()
 			},
 			services: {
 				fx: {
@@ -1230,6 +1234,115 @@ test('FX Server Estimate to Exchange Test', async function() {
 			serverDoesNotRequireQuoteReturnValue.convertedAmount = 1002n;
 			const refetchedQuote = await singleQuote.refetch();
 			expect(refetchedQuote.quote.convertedAmount).toBe(1002n);
+		}
+
+		{
+			/**
+			 * Check that excess value is refunded
+			 */
+
+			const tests: {
+				quote: { convertedAmount: bigint; cost: { token: TokenAddress; amount: bigint; }; };
+				request: Pick<ConversionInput, 'amount' | 'affinity'>;
+				send: { sendValue: bigint; costValue: bigint; }
+				expectedChange: { sendToken: bigint; costToken?: bigint; };
+			}[] = [
+				{
+					request: { amount: 1000n, affinity: 'from' },
+					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
+					send: { sendValue: 2000n, costValue: 0n },
+					// No expected additional refund as affinity is from
+					expectedChange: { sendToken: 2000n }
+				},
+				{
+					request: { amount: 1000n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
+					send: { sendValue: 2000n, costValue: 0n },
+					expectedChange: { sendToken: 1002n }
+				},
+				{
+					request: { amount: 1000n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyUSD, amount: 5n }, convertedAmount: 1002n },
+					send: { sendValue: 2000n, costValue: 1000n },
+					expectedChange: { sendToken: 1007n }
+				},
+				{
+					request: { amount: 100n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyEUR, amount: 5n }, convertedAmount: 105n },
+					send: { sendValue: 200n, costValue: 100n },
+					expectedChange: { sendToken: 105n, costToken: -95n }
+				},
+				{
+					request: { amount: 100n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyBTC, amount: 0n }, convertedAmount: 200n },
+					send: { sendValue: 300n, costValue: 0n },
+					expectedChange: { sendToken: 200n, costToken: 0n }
+				},
+				{
+					request: { amount: 100n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyUSD, amount: 5n }, convertedAmount: 200n },
+					send: { sendValue: 300n, costValue: 10n },
+					expectedChange: { sendToken: 205n }
+				},
+				{
+					request: { amount: 100n, affinity: 'to' },
+					quote: { cost: { token: testCurrencyGBP, amount: 5n }, convertedAmount: 200n },
+					send: { sendValue: 300n, costValue: 10n },
+					expectedChange: { sendToken: 200n, costToken: 5n }
+				}
+			];
+
+			for (const testCase of tests) {
+				serverDoesNotRequireQuoteReturnValue.convertedAmount = testCase.quote.convertedAmount;
+				serverDoesNotRequireQuoteReturnValue.convertedAmountBound = testCase.request.amount;
+				serverDoesNotRequireQuoteReturnValue.cost = testCase.quote.cost;
+
+				const quotes = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, ...testCase.request }, undefined, {
+					providerIDs: [ 'TestDoesNotRequireQuote' ]
+				});
+
+				const singleEstimate = quotes?.[0];
+				if (singleEstimate === undefined || singleEstimate.estimate.requiresQuote !== false) {
+					throw(new Error('Could not get valid estimate from TestDoesNotRequireQuote'));
+				}
+
+				await client.send(singleEstimate.estimate.account, 10000n, testCurrencyEUR);
+
+				const builder = client.initBuilder();
+				builder.send(singleEstimate.estimate.account, testCase.send.sendValue, testCurrencyUSD);
+
+				if (testCase.send.costValue > 0n) {
+					builder.send(singleEstimate.estimate.account, testCase.send.costValue, testCase.quote.cost.token);
+				}
+
+				builder.receive(singleEstimate.estimate.account, 1n, testCurrencyEUR);
+
+				const block = (await builder.computeBlocks()).blocks[0];
+
+				if (!block) {
+					throw(new Error('No block computed'));
+				}
+
+				const costTokenBalancePre = await client.balance(testCase.quote.cost.token);
+				const sendTokenBalancePre = await client.balance(testCurrencyUSD);
+
+				const exchange = await singleEstimate.createExchange(block);
+
+				await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
+
+				const costTokenBalancePost = await client.balance(testCase.quote.cost.token);
+				const sendTokenBalancePost = await client.balance(testCurrencyUSD);
+
+				let expectedCostTokenChange = testCase.expectedChange.costToken;
+				if (expectedCostTokenChange === undefined) {
+					if (!testCase.quote.cost.token.comparePublicKey(testCurrencyUSD)) {
+						throw(new Error('expectedChange.costToken is undefined but cost token is not send token'));
+					}
+					expectedCostTokenChange = testCase.expectedChange.sendToken;
+				}
+				expect(costTokenBalancePre - costTokenBalancePost).toBe(expectedCostTokenChange);
+				expect(sendTokenBalancePre - sendTokenBalancePost).toBe(testCase.expectedChange.sendToken);
+			}
 		}
 	}
 });

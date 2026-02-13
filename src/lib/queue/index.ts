@@ -17,6 +17,15 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
+const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const;
+/**
+ * This is a type-level assertion to ensure that all values in keetaAnchorPipeableQueueStatuses are valid KeetaAnchorQueueStatus values.
+ * If this assertion fails, it means that there is a value in keetaAnchorPipeableQueueStatuses that is not a valid KeetaAnchorQueueStatus, and the code will not compile.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type __check_keetaAnchorPipeableQueueStatuses_valid = AssertNever<typeof keetaAnchorPipeableQueueStatuses[number] extends KeetaAnchorQueueStatus ? never : true>;
+
+export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
@@ -457,7 +466,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipes to other runners we have registered
 	 */
-	private readonly pipes: ({
+	private readonly pipes: (({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
@@ -467,6 +476,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
 		minBatchSize: number;
 		maxBatchSize: number;
+	}) & {
+		acceptStatus: KeetaAnchorPipeableQueueStatus;
 	})[] = [];
 
 	/**
@@ -1003,15 +1014,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	private async moveCompletedToNextStage(): Promise<void> {
+	private async moveCompletedToNextStage(statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
-		const pipes = [...this.pipes];
+		const pipes = [...this.pipes].filter(function(pipe) {
+			return(pipe.acceptStatus === statusTarget);
+		});
+
 		if (pipes.length === 0) {
 			return;
 		}
 
-		const allRequests = await this.queue.query({ status: 'completed', limit: 100 });
+		const allRequests = await this.queue.query({ status: statusTarget, limit: 100 });
 		let requests = allRequests;
 
 		const RequestSentToPipes = new Map<KeetaAnchorQueueRequestID, number>();
@@ -1067,7 +1081,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				) {
 					iterationTargetSeenRequestIDs.clear();
 
-					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
+					logger?.debug(`Preparing to move ${statusTarget} requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} ${statusTarget} requests available`);
 
 					/**
 					 * Compute a batch of entries to send to the next stage,
@@ -1091,12 +1105,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					if (batchRaw.length < pipe.minBatchSize) {
 						sequentialFailureCount++;
 						if (sequentialFailureCount >= 3) {
-							logger?.debug(`Not enough completed requests to move to next stage ${pipe.target.id}, stopping batch processing`);
+							logger?.debug(`Not enough ${statusTarget} requests to move to next stage ${pipe.target.id}, stopping batch processing`);
 
 							break;
 						}
 
-						logger?.debug(`Not moving completed requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
+						logger?.debug(`Not moving ${statusTarget} requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
 
 						continue;
 					}
@@ -1118,7 +1132,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						return(entry.output);
 					});
 
-					logger?.debug(`Moving batch of ${batchOutput.length} completed requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
+					logger?.debug(`Moving batch of ${batchOutput.length} ${statusTarget} requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
 
 					try {
 						await pipe.target.add(batchOutput, {
@@ -1172,7 +1186,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						if (output === null) {
 							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
-							logger?.debug(`Moving completed request with id ${String(request.id)} to next pipe`, pipe.target.id);
+							logger?.debug(`Moving ${statusTarget} request with id ${String(request.id)} to next pipe`, pipe.target.id);
 							await pipe.target.add(output, { id: request.id });
 						}
 
@@ -1191,13 +1205,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		for (const request of allRequests) {
 			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
 			if (sentCount !== TotalPipes) {
-				logger?.debug(`Completed request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
 				continue;
 			}
 
-			logger?.debug(`Marking completed request with id ${String(request.id)} as moved`);
+			logger?.debug(`Marking ${statusTarget} request with id ${String(request.id)} as moved`);
 
-			await this.queue.setStatus(request.id, 'moved', { oldStatus: 'completed', by: this.workerID });
+			await this.queue.setStatus(request.id, 'moved', { oldStatus: statusTarget, by: this.workerID });
 		}
 
 	}
@@ -1235,10 +1249,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
-		try {
-			await this.moveCompletedToNextStage();
-		} catch (error: unknown) {
-			logger?.debug('Failed to move completed requests to next stage:', error);
+		for (const pipeStatus of keetaAnchorPipeableQueueStatuses) {
+			try {
+				await this.moveCompletedToNextStage(pipeStatus);
+			} catch (error: unknown) {
+				logger?.debug(`Failed to move ${pipeStatus} requests to next stage:`, error);
+			}
 		}
 
 		for (const pipe of this.pipes) {
@@ -1264,7 +1280,17 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
 		this.pipes.push({
 			isBatchPipe: false,
-			target: target
+			target: target,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+		this.pipes.push({
+			isBatchPipe: false,
+			target: target,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}
@@ -1277,7 +1303,19 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			isBatchPipe: true,
 			target: target,
 			minBatchSize: minBatchSize,
-			maxBatchSize: maxBatchSize
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+		this.pipes.push({
+			isBatchPipe: true,
+			target: target,
+			minBatchSize: minBatchSize,
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}
