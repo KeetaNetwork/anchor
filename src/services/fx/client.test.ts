@@ -5,7 +5,8 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { KeetaAnchorFXServerConfig, KeetaFXInternalPriceQuote } from './server.js';
-import { KeetaAnchorQueueEntry, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
+import type { KeetaAnchorQueueEntry } from '../../lib/queue/index.js';
+import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 import type KeetaFXAnchorClient from './client.js';
@@ -1284,7 +1285,7 @@ test.only('FX Server Queue extensions', async function() {
 				currencyCodes: [testCurrencyUSD.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()],
 				to: [testCurrencyEUR.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()]
 			}],
-			getConversionRateAndFee: async function(request) {
+			getConversionRateAndFee: async function() {
 				return({
 					account: signerLiquidityAccount,
 					...serverDoesNotRequireQuoteReturnValue
@@ -1316,7 +1317,7 @@ test.only('FX Server Queue extensions', async function() {
 	for (const token of [testCurrencyUSD, testCurrencyEUR]) {
 		await client.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], []) }, { account: token });
 		await client.modTokenSupplyAndBalance(initialAccountTokenBalance, token);
-		
+
 		for (const recipient of allTokenRecipients) {
 			await client.send(recipient, 2000n, token);
 		}
@@ -1334,7 +1335,7 @@ test.only('FX Server Queue extensions', async function() {
 			},
 			services: {
 				fx: {
-					Provider: await server.serviceMetadata(),
+					Provider: await server.serviceMetadata()
 				}
 			}
 		})

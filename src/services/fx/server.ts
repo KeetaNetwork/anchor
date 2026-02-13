@@ -651,7 +651,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 			this.failureStageRunner = (new class extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable> {
 				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable>['processor']>[0]) {
-					return(failureExtension(entry));
+					return(await failureExtension(entry));
 				}
 
 				protected encodeRequest(request: KeetaFXAnchorQueueStage1Request) { return(encodeKeetaFXAnchorQueueStage1Request(request)); }
@@ -671,11 +671,13 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 			this.successStageRunner = (new class extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> {
 				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>['processor']>[0]) {
-					return(successExtension(entry));
+					return(await successExtension(entry));
 				}
 
 				protected encodeRequest(request: KeetaFXAnchorQueueStage1Response) { return(request); }
 				protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Response {
+					/* See note at bottom of file */
+					// eslint-disable-next-line @typescript-eslint/no-use-before-define
 					const parsed = assertKeetaFXAnchorQueueStage1ResponseOrNull(request);
 					if (parsed === null) {
 						throw(new Error('Invalid request for success extension'));
@@ -686,6 +688,8 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 				protected encodeResponse(response: KeetaFXAnchorQueueStage1Response | null) { return(response); }
 				protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
+					/* See note at bottom of file */
+					// eslint-disable-next-line @typescript-eslint/no-use-before-define
 					return(assertKeetaFXAnchorQueueStage1ResponseOrNull(response));
 				}
 			}({
@@ -801,7 +805,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 	#getAllRunners() {
 		const runners = [];
-	
+
 		for (const account of this.accounts) {
 			const runner = this.runners[account.publicKeyAndTypeString];
 			if (runner === undefined) {
@@ -825,7 +829,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 		await super.init();
 
 		const runners = this.#getAllRunners();
-	
+
 		let retval = false;
 		for (const runner of runners) {
 			const more = await runner.run(options);
