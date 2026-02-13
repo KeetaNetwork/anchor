@@ -312,7 +312,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 				let bodyData: JSONSerializable | Buffer | undefined;
 
-				const shouldCheckBody = ['POST', 'PUT', 'PATCH'].includes(request.method);
+				const shouldCheckBody = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method);
 
 				if (typeof route === 'function') {
 					throw(new Error('internal error: Route handler missing body type configuration, should have been added in addCORS'));

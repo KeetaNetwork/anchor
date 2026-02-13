@@ -6,10 +6,10 @@ import { formatGloballyIdentifiableUsername, Errors, USERNAME_MAX_LENGTH } from 
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import Resolver from '../../lib/resolver.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
-import type { GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
+type AccountInstance = InstanceType<typeof KeetaNet.lib.Account>;
 
 test('username client resolves accounts through resolver', async () => {
 	const providerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -22,10 +22,21 @@ test('username client resolves accounts through resolver', async () => {
 	const secondaryMappedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const aliceUsername = formatGloballyIdentifiableUsername('alice', providerID);
 	const bobUsername = formatGloballyIdentifiableUsername('bob', providerID);
+	const transferUsernameKey = 'dave';
+	const transferUsername = formatGloballyIdentifiableUsername(transferUsernameKey, providerID);
 	const claimantAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const assignedAccounts = new Map<string, GenericAccount>();
+	const charlieAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const transferFromAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const transferRecipientAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const assignedAccounts = new Map<string, AccountInstance>();
 	assignedAccounts.set('alice', mappedAccount);
-	const secondaryAssignedAccounts = new Map<string, GenericAccount>();
+	assignedAccounts.set(transferUsernameKey, transferFromAccount);
+	let transferClaimUsername: string | null = null;
+	let transferClaimAccountMatched = false;
+	let transferClaimFromUserMatched = false;
+	let dissasociateInvocations = 0;
+	let dissasociateMatchedAccount = false;
+	const secondaryAssignedAccounts = new Map<string, AccountInstance>();
 	secondaryAssignedAccounts.set('eve', secondaryMappedAccount);
 
 	await using primaryServer = new KeetaNetUsernameAnchorHTTPServer({
@@ -50,11 +61,37 @@ test('username client resolves accounts through resolver', async () => {
 
 				return(null);
 			},
-			async claim({ username, account }) {
-				if (assignedAccounts.has(username)) {
-					return({ ok: false, taken: true });
+			async claim({ username, account, fromUser }) {
+				const existing = assignedAccounts.get(username);
+				if (existing) {
+					if (!fromUser || !existing.comparePublicKey(fromUser)) {
+						return({ ok: false, taken: true });
+					}
 				}
+
 				assignedAccounts.set(username, account);
+				if (username === transferUsernameKey) {
+					transferClaimUsername = username;
+					transferClaimAccountMatched = account.comparePublicKey(transferRecipientAccount);
+					transferClaimFromUserMatched = !!fromUser && fromUser.comparePublicKey(transferFromAccount);
+				}
+				return({ ok: true });
+			},
+			async dissasociateUsername({ account }) {
+				dissasociateInvocations += 1;
+				dissasociateMatchedAccount = account.comparePublicKey(charlieAccount);
+				let removed = false;
+				for (const [username, assignedAccount] of assignedAccounts.entries()) {
+					if (assignedAccount.comparePublicKey(account)) {
+						assignedAccounts.delete(username);
+						removed = true;
+					}
+				}
+
+				if (!removed) {
+					return({ ok: false });
+				}
+
 				return({ ok: true });
 			}
 		}
@@ -217,15 +254,53 @@ test('username client resolves accounts through resolver', async () => {
 
 	expect(await usernameClient.claimUsername(bobUsername)).toBe(true);
 
+	const transferSignedField = await usernameClient.signUsernameTransfer({
+		username: transferUsernameKey,
+		to: transferRecipientAccount
+	}, transferFromAccount);
+
+	expect(await usernameClient.claimUsername(transferUsername, {
+		account: transferRecipientAccount,
+		transfer: {
+			from: transferFromAccount,
+			signed: transferSignedField
+		}
+	})).toBe(true);
+
+	expect(transferClaimUsername).toBe(transferUsernameKey);
+	expect(transferClaimAccountMatched).toBe(true);
+	expect(transferClaimFromUserMatched).toBe(true);
+
+	const transferResolution = await usernameClient.resolve(transferUsername);
+	expect(transferResolution).not.toBeNull();
+	if (!transferResolution) {
+		throw(new Error('expected transfer username to resolve after claim'));
+	}
+	expect(transferResolution.account.publicKeyString.get()).toBe(transferRecipientAccount.publicKeyString.get());
+	expect(transferResolution.username).toBe(transferUsernameKey);
+
+	const transferSearch = await usernameClient.search(transferRecipientAccount);
+	expect(transferSearch).not.toBeNull();
+	if (!transferSearch) {
+		throw(new Error('expected transfer recipient account search to succeed'));
+	}
+	const transferSearchResult = transferSearch[provider.providerID];
+	expect(transferSearchResult).toBeDefined();
+	if (!transferSearchResult) {
+		throw(new Error('expected provider result for transfer search'));
+	}
+	expect(transferSearchResult.account.publicKeyString.get()).toBe(transferRecipientAccount.publicKeyString.get());
+	expect(transferSearchResult.username).toBe(transferUsernameKey);
+
 	const charlieUsername = formatGloballyIdentifiableUsername('charlie', providerID);
-	expect(await usernameClient.claimUsername(charlieUsername)).toBe(true);
+	expect(await usernameClient.claimUsername(charlieUsername, { account: charlieAccount })).toBe(true);
 
 	const charlieResolution = await usernameClient.resolve(charlieUsername);
 	expect(charlieResolution).not.toBeNull();
 	if (!charlieResolution) {
 		throw(new Error('expected charlie to resolve after claim'));
 	}
-	expect(charlieResolution.account.publicKeyString.get()).toBe(claimantAccount.publicKeyString.get());
+	expect(charlieResolution.account.publicKeyString.get()).toBe(charlieAccount.publicKeyString.get());
 	expect(charlieResolution.username).toBe('charlie');
 
 	const searchAfterCharlieClaim = await usernameClient.search(charlieUsername);
@@ -238,8 +313,17 @@ test('username client resolves accounts through resolver', async () => {
 	if (!searchAfterCharlieClaimResult) {
 		throw(new Error('expected provider result for charlie after claim'));
 	}
-	expect(searchAfterCharlieClaimResult.account.publicKeyString.get()).toBe(claimantAccount.publicKeyString.get());
+	expect(searchAfterCharlieClaimResult.account.publicKeyString.get()).toBe(charlieAccount.publicKeyString.get());
 	expect(searchAfterCharlieClaimResult.username).toBe('charlie');
+
+	expect(await provider.dissasociateUsername({ account: charlieAccount })).toBe(true);
+	expect(dissasociateInvocations).toBe(1);
+	expect(dissasociateMatchedAccount).toBe(true);
+
+	expect(await usernameClient.resolve(charlieUsername)).toBeNull();
+	expect(await usernameClient.search(charlieUsername)).toBeNull();
+	expect(await usernameClient.search(charlieAccount)).toBeNull();
+	expect(assignedAccounts.has('charlie')).toBe(false);
 
 	await expect(async () => {
 		await usernameClient.claimUsername(formatGloballyIdentifiableUsername('Invalid123', providerID));

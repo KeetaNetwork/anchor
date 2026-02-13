@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaNetUsernameAnchorHTTPServer } from './server.js';
-import { USERNAME_MAX_LENGTH } from './common.js';
+import { USERNAME_MAX_LENGTH, getUsernameClaimSignable, getUsernameDissasociateSignable, getUsernameTransferSignable } from './common.js';
+import { SignData } from '../../lib/utils/signing.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -145,4 +146,148 @@ test('username server enforces default validation rules', async () => {
 			]
 		}
 	});
+}, 10_000);
+
+test('username server validates signed transfers and dissasociation requests', async () => {
+	const providerID = 'provider-signatures';
+	const transferFromAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const transferToAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	let claimCalls = 0;
+	let transferClaimUsername: string | null = null;
+	let transferClaimAccountMatched = false;
+	let transferClaimFromUserMatched = false;
+	let dissasociateCalls = 0;
+	let dissasociateMatchedAccount = false;
+
+	await using server = new KeetaNetUsernameAnchorHTTPServer({
+		providerID,
+		usernames: {
+			async resolveUsername() {
+				return(null);
+			},
+			async resolveAccount() {
+				return(null);
+			},
+			async claim(context) {
+				claimCalls += 1;
+				transferClaimUsername = context.username;
+				transferClaimAccountMatched = context.account.comparePublicKey(transferToAccount);
+				transferClaimFromUserMatched = !!context.fromUser && context.fromUser.comparePublicKey(transferFromAccount);
+				return({ ok: true });
+			},
+			async dissasociateUsername({ account }) {
+				dissasociateCalls += 1;
+				dissasociateMatchedAccount = account.comparePublicKey(transferToAccount);
+				return({ ok: true });
+			}
+		}
+	});
+
+	await server.start();
+
+	const baseURL = new URL(server.url);
+	const username = 'transferme';
+
+	const transferSigned = await SignData(transferFromAccount.assertAccount(), getUsernameTransferSignable({
+		username,
+		from: transferFromAccount,
+		to: transferToAccount
+	}));
+
+	const claimPayload = {
+		username,
+		account: transferToAccount,
+		transfer: {
+			from: transferFromAccount,
+			signed: transferSigned
+		}
+	};
+
+	const claimSigned = await SignData(transferToAccount.assertAccount(), getUsernameClaimSignable(claimPayload));
+
+	const claimResponse = await fetch(new URL('/api/claim', baseURL), {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			username,
+			account: transferToAccount.publicKeyString.get(),
+			transfer: {
+				from: transferFromAccount.publicKeyString.get(),
+				signed: transferSigned
+			},
+			signed: claimSigned
+		})
+	});
+
+	expect(claimResponse.status).toBe(200);
+	expect(await claimResponse.json()).toEqual({ ok: true });
+	expect(claimCalls).toBe(1);
+	expect(transferClaimUsername).toBe(username);
+	expect(transferClaimAccountMatched).toBe(true);
+	expect(transferClaimFromUserMatched).toBe(true);
+
+	const invalidClaimResponse = await fetch(new URL('/api/claim', baseURL), {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			username,
+			account: transferToAccount.publicKeyString.get(),
+			transfer: {
+				from: transferFromAccount.publicKeyString.get(),
+				signed: transferSigned
+			},
+			signed: {
+				...claimSigned,
+				signature: 'invalid-signature'
+			}
+		})
+	});
+
+	expect(invalidClaimResponse.status).toBeGreaterThanOrEqual(400);
+	expect(invalidClaimResponse.status).toBeLessThan(600);
+	expect(claimCalls).toBe(1);
+
+	const dissasociateSigned = await SignData(transferToAccount.assertAccount(), getUsernameDissasociateSignable({ account: transferToAccount }));
+
+	const dissasociateResponse = await fetch(new URL('/api/dissasociate', baseURL), {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			account: transferToAccount.publicKeyString.get(),
+			signed: dissasociateSigned
+		})
+	});
+
+	expect(dissasociateResponse.status).toBe(200);
+	expect(await dissasociateResponse.json()).toEqual({ ok: true });
+	expect(dissasociateCalls).toBe(1);
+	expect(dissasociateMatchedAccount).toBe(true);
+
+	const invalidDissasociateResponse = await fetch(new URL('/api/dissasociate', baseURL), {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			account: transferToAccount.publicKeyString.get(),
+			signed: {
+				...dissasociateSigned,
+				signature: 'invalid-signature'
+			}
+		})
+	});
+
+	expect(invalidDissasociateResponse.status).toBeGreaterThanOrEqual(400);
+	expect(invalidDissasociateResponse.status).toBeLessThan(600);
+	expect(dissasociateCalls).toBe(1);
 }, 10_000);

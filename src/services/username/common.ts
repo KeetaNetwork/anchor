@@ -78,9 +78,9 @@ export interface UsernameComponents {
 	providerID: string;
 };
 
-export type KeetaUsernameAnchorResolveRequest = {
-	username: string;
-};
+export interface KeetaUsernameAnchorAccountResolutionContext { account: KeetaNetAccount; }
+
+export interface KeetaUsernameAnchorUsernameResolutionContext { username: string; }
 
 export type KeetaUsernameAnchorResolveResponse = ({
 	ok: true;
@@ -92,29 +92,50 @@ export type KeetaUsernameAnchorResolveResponse = ({
 });
 
 
-export type KeetaUsernameAnchorAccountResolutionContext = {
-	account: KeetaNetAccount;
-};
-
-export type KeetaUsernameAnchorUsernameResolutionContext = {
-	username: string;
-};
-
-export type KeetaUsernameAnchorClaimContext = {
-	username: string;
-	account: KeetaNetAccount;
-	signed: HTTPSignedField;
-};
 
 export type KeetaUsernameAnchorResolveResponseJSON = ToJSONSerializable<KeetaUsernameAnchorResolveResponse>;
 
-export type KeetaUsernameAnchorClaimRequest = {
+export interface KeetaUsernameAnchorClaimContext {
 	username: string;
-	account: string;
+	account: KeetaNetAccount;
+	fromUser: KeetaNetAccount | null;
+}
+
+export interface KeetaUsernameAnchorClaimRequestPayload {
+	transfer?: Pick<TransferUsernameOwnershipSignablePayload, 'from'> & {
+		signed: HTTPSignedField;
+	};
+
+	username: string;
+	account: KeetaNetAccount;
+};
+
+
+export interface KeetaUsernameAnchorClaimRequest extends KeetaUsernameAnchorClaimRequestPayload {
 	signed: HTTPSignedField;
 };
 
+export type KeetaUsernameAnchorClaimRequestJSON = ToJSONSerializable<KeetaUsernameAnchorClaimRequest>;
+
 export type KeetaUsernameAnchorClaimResponse = ({
+	ok: true;
+}) | ({
+	ok: false;
+	error: string;
+});
+
+
+export interface KeetaUsernameAnchorDisassociateRequestPayload {
+	account: KeetaNetAccount;
+}
+
+export interface KeetaUsernameAnchorDisassociateRequest extends KeetaUsernameAnchorDisassociateRequestPayload {
+	signed: HTTPSignedField;
+}
+
+export type KeetaUsernameAnchorDisassociateRequestJSON = ToJSONSerializable<KeetaUsernameAnchorDisassociateRequest>;
+
+export type KeetaUsernameAnchorDisassociateResponse = ({
 	ok: true;
 }) | ({
 	ok: false;
@@ -182,13 +203,45 @@ export function parseGloballyIdentifiableUsername(input: GloballyIdentifiableUse
 	return(attemptParseGloballyIdentifiableUsername(input));
 }
 
+// Namespace for the Username Anchor signable claims
 const usernameNamespace = 'c26e65bf-ad9f-4000-bc81-12c31dc86b8b';
-export function getUsernameClaimSignable(username: string, account: KeetaNetAccount): Signable {
+export function getUsernameClaimSignable(request: KeetaUsernameAnchorClaimRequestPayload): Signable {
 	return([
 		usernameNamespace,
-		'CLAIM_USERNAME:c26e65bf-ad9f-4000-bc81-12c31dc86b8b', // Namespace for the Username Anchor signable claims
-		username,
-		account.publicKeyString.get()
+		'CLAIM_USERNAME',
+		request.username,
+		request.account.publicKeyString.get(),
+
+		// Transfer data
+		request.transfer?.from ?? 0,
+		request.transfer?.signed.signature ?? 0,
+		request.transfer?.signed.nonce ?? 0,
+		request.transfer?.signed.timestamp ?? 0
+	]);
+}
+
+export interface TransferUsernameOwnershipSignablePayload {
+	username: string;
+	to: KeetaNetAccount;
+	from: KeetaNetAccount;
+}
+
+export function getUsernameTransferSignable(payload: TransferUsernameOwnershipSignablePayload): Signable {
+	return([
+		usernameNamespace,
+		'TRANSFER_USERNAME',
+		payload.username,
+		payload.from,
+		payload.to
+	]);
+}
+
+
+export function getUsernameDissasociateSignable(payload: KeetaUsernameAnchorDisassociateRequestPayload): Signable {
+	return([
+		usernameNamespace,
+		'DISSASOCIATE_USERNAME',
+		payload.account
 	]);
 }
 

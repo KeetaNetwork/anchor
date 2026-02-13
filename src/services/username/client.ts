@@ -10,6 +10,9 @@ import { createAssertEquals } from 'typia';
 import type { BrandedString } from '../../lib/utils/brand.ts';
 import { KeetaAnchorError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { SignData } from '../../lib/utils/signing.js';
+import type {
+	TransferUsernameOwnershipSignablePayload,
+	KeetaUsernameAnchorClaimRequestPayload } from './common.js';
 import {
 	isKeetaUsernameAnchorResolveResponse,
 	isKeetaUsernameAnchorClaimResponse,
@@ -20,8 +23,12 @@ import {
 	type GloballyIdentifiableUsername,
 	isGloballyIdentifiableUsername,
 	isKeetaNetPublicKeyString,
-	Errors
+	Errors,
+	getUsernameTransferSignable,
+	getUsernameDissasociateSignable,
+	isKeetaUsernameAnchorDisassociateResponse
 } from './common.js';
+import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
 export type KeetaUsernameAnchorClientConfig = {
 	id?: string;
@@ -62,9 +69,13 @@ type GetEndpointsResult = {
 	[id in ProviderID]: KeetaUsernameServiceInfo;
 };
 
+
 type ClaimUsernameOptions = {
 	account?: KeetaNetAccount | undefined;
-	shared?: SharedLookupCriteria | undefined;
+	transfer?: {
+		from: KeetaNetAccount | string;
+		signed?: HTTPSignedField;
+	};
 };
 
 function validateURL(url: string | undefined): URL {
@@ -336,10 +347,10 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 	/**
 	 * Claim a username for a specific provider
 	 * @param usernameInput The username to claim
-	 * @param account The account to claim for
+	 * @param options The account to claim for, and options related to transfer if applicable
 	 * @returns True if the claim was successful, false otherwise
 	 */
-	async claimUsername(usernameInput: string, account?: KeetaNetAccount): Promise<boolean> {
+	async claimUsername(usernameInput: string, options?: ClaimUsernameOptions): Promise<boolean> {
 		let username: string;
 		if (isGloballyIdentifiableUsername(usernameInput)) {
 			const parsed = parseGloballyIdentifiableUsername(usernameInput);
@@ -360,13 +371,39 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error('Username claim operation must require account authentication'));
 		}
 
-		const accountToUse = account ?? this.account ?? this.signer;
+		const accountToUse = options?.account ?? this.account ?? this.signer;
 		if (!accountToUse) {
 			throw(new Error('Account is required to claim a username'));
 		}
 
-		const signable = getUsernameClaimSignable(username, accountToUse);
-		const signed = await SignData(accountToUse.assertAccount(), signable);
+		const request: KeetaUsernameAnchorClaimRequestPayload = {
+			username,
+			account: accountToUse
+		}
+
+		if (options?.transfer) {
+			const from = KeetaNetLib.Account.toAccount(options.transfer.from);
+
+			let signed = options.transfer.signed;
+
+			if (!signed) {
+				if (!from.hasPrivateKey) {
+					throw(new Error('Transfer "from" account must have a private key when signature is not provided'));
+				}
+
+				const signable = getUsernameTransferSignable({
+					username,
+					from: from,
+					to: accountToUse
+				});
+
+				signed = await SignData(from.assertAccount(), signable);
+			}
+
+			request.transfer = { from, signed };
+		}
+
+		const signed = await SignData(accountToUse.assertAccount(), getUsernameClaimSignable(request));
 
 		const response = await fetch(endpoint.url(), {
 			method: 'POST',
@@ -377,6 +414,10 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			body: JSON.stringify({
 				username: username,
 				account: accountToUse.publicKeyString.get(),
+				transfer: request.transfer ? {
+					from: request.transfer.from.publicKeyString.get(),
+					signed: request.transfer.signed
+				} : undefined,
 				signed
 			})
 		});
@@ -389,6 +430,55 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		}
 
 		if (!isKeetaUsernameAnchorClaimResponse(responseJSON)) {
+			throw(new Error('Invalid response from username provider claim endpoint'));
+		}
+
+		if (!responseJSON.ok) {
+			throw(await this.#parseResponseError(responseJSON));
+		}
+
+		return(responseJSON.ok);
+	}
+
+	/**
+	 * Dissasociate a username for a specific provider
+	 * @param options The account to claim for, and options related to transfer if applicable
+	 * @returns True if the claim was successful, false otherwise
+	 */
+	async dissasociateUsername(input?: { account?: KeetaNetAccount; }): Promise<boolean> {
+		const endpoint = await this.#getOperation('dissasociate');
+
+		if (endpoint.options.authentication.type === 'none') {
+			throw(new Error('Username claim operation must require account authentication'));
+		}
+
+		const accountToUse = input?.account ?? this.account ?? this.signer;
+		if (!accountToUse) {
+			throw(new Error('Account is required to claim a username'));
+		}
+
+		const signed = await SignData(accountToUse.assertAccount(), getUsernameDissasociateSignable({ account: accountToUse }));
+
+		const response = await fetch(endpoint.url(), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				account: accountToUse.publicKeyString.get(),
+				signed
+			})
+		});
+
+		let responseJSON: unknown;
+		try {
+			responseJSON = await response.json();
+		} catch (error) {
+			throw(new Error(`Failed to parse username claim response as JSON: ${error}`));
+		}
+
+		if (!isKeetaUsernameAnchorDisassociateResponse(responseJSON)) {
 			throw(new Error('Invalid response from username provider claim endpoint'));
 		}
 
@@ -517,12 +607,24 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 	 * @param options Claim options
 	 * @returns True if the claim was successful, false otherwise
 	 */
-	async claimUsername(input: GloballyIdentifiableUsername, options: ClaimUsernameOptions = {}): ReturnType<KeetaUsernameAnchorProvider['claimUsername']> {
+	async claimUsername(input: GloballyIdentifiableUsername, options?: ClaimUsernameOptions, shared?: SharedLookupCriteria): ReturnType<KeetaUsernameAnchorProvider['claimUsername']> {
 		const { username, providerID } = parseGloballyIdentifiableUsername(input);
-		const provider = await this.#requireProvider(providerID, options.shared);
+		const provider = await this.#requireProvider(providerID, shared);
+		return(await provider.claimUsername(username, options));
+	}
 
-		const account = options.account ?? this.account ?? this.signer;
-		return(await provider.claimUsername(username, account));
+	async signUsernameTransfer(request: Omit<TransferUsernameOwnershipSignablePayload, 'from'>, from?: KeetaNetAccount): Promise<HTTPSignedField> {
+		const accountToUse = from ?? this.signer ?? this.account;
+		if (!accountToUse) {
+			throw(new Error('Signer or account is required to sign username transfer'));
+		}
+
+		const signable = getUsernameTransferSignable({
+			...request,
+			from: accountToUse
+		});
+
+		return(await SignData(accountToUse.assertAccount(), signable));
 	}
 
 	/** @internal */

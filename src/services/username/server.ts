@@ -2,16 +2,21 @@ import { KeetaNet } from '../../client/index.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
-	KeetaUsernameAnchorAccountResolutionContext } from './common.js';
+	KeetaUsernameAnchorAccountResolutionContext,
+	KeetaUsernameAnchorClaimRequest,
+	KeetaUsernameAnchorDisassociateRequest } from './common.js';
 import {
-	assertKeetaUsernameAnchorClaimRequest,
 	getUsernameClaimSignable,
 	validateUsernameDefault,
 	type KeetaUsernameAnchorClaimContext,
 	Errors,
-	isKeetaNetPublicKeyString
+	isKeetaNetPublicKeyString,
+	assertKeetaUsernameAnchorClaimRequestJSON,
+	getUsernameTransferSignable,
+	assertKeetaUsernameAnchorDisassociateRequestJSON,
+	getUsernameDissasociateSignable
 } from './common.js';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import * as Signing from '../../lib/utils/signing.js';
@@ -40,7 +45,9 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 	usernames: {
 		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
 		resolveAccount: (input: KeetaUsernameAnchorAccountResolutionContext) => Promise<{ username: string; } | null>;
-		claim?: ((input: KeetaUsernameAnchorClaimContext) => Promise<ClaimHandlerResponse>) | undefined;
+
+		dissasociateUsername?: (input: { account: InstanceType<typeof KeetaNet.lib.Account>; }) => Promise<{ ok: boolean; }>;
+		claim?: ((input: KeetaUsernameAnchorClaimContext) => Promise<ClaimHandlerResponse>);
 	};
 	routes?: Routes;
 	usernamePattern?: string | RegExp;
@@ -164,23 +171,53 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		const claimHandler = this.usernames.claim;
 		if (claimHandler) {
 			routes['POST /api/claim'] = async (_params, body) => {
-				const request = assertKeetaUsernameAnchorClaimRequest(body);
+
+				const request: KeetaUsernameAnchorClaimRequest = (() => {
+					const raw = assertKeetaUsernameAnchorClaimRequestJSON(body);
+
+					const ret: KeetaUsernameAnchorClaimRequest = {
+						username: raw.username,
+						account: KeetaNet.lib.Account.toAccount(raw.account),
+						signed: raw.signed
+					};
+
+					if (raw.transfer) {
+						ret.transfer = {
+							from: KeetaNet.lib.Account.toAccount(raw.transfer.from),
+							signed: raw.transfer.signed
+						};
+					}
+
+					return(ret);
+				})();
 
 				const username = request.username;
 
 				this.#assertProviderIssuedNameValid(username);
-				const account = KeetaNet.lib.Account.fromPublicKeyString(request.account);
 
-				const signable = getUsernameClaimSignable(username, account);
-				const verified = await Signing.VerifySignedData(account, signable, request.signed);
+				if (request.transfer) {
+					const transferSignable = getUsernameTransferSignable({
+						username: request.username,
+						from: request.transfer.from,
+						to: request.account
+					});
+
+					const verifiedTransfer = await Signing.VerifySignedData(request.transfer.from, transferSignable, request.transfer.signed);
+
+					if (!verifiedTransfer) {
+						throw(new KeetaAnchorUserError('Invalid username claim transfer signature'));
+					}
+				}
+
+				const verified = await Signing.VerifySignedData(request.account, getUsernameClaimSignable(request), request.signed);
 				if (!verified) {
 					throw(new KeetaAnchorUserError('Invalid username claim signature'));
 				}
 
 				const claimResponse = await claimHandler({
 					username: request.username,
-					account: account,
-					signed: request.signed
+					account: request.account,
+					fromUser: request.transfer?.from ?? null
 				});
 
 				if (!claimResponse.ok) {
@@ -198,6 +235,38 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			};
 		}
 
+		const dissasociateHandler = this.usernames.dissasociateUsername;
+		if (dissasociateHandler) {
+			routes['POST /api/dissasociate'] = async (_params, body) => {
+				const request: KeetaUsernameAnchorDisassociateRequest = (() => {
+					const raw = assertKeetaUsernameAnchorDisassociateRequestJSON(body);
+
+					return({
+						account: KeetaNet.lib.Account.toAccount(raw.account),
+						signed: raw.signed
+					});
+				})();
+
+
+				const verified = await Signing.VerifySignedData(request.account, getUsernameDissasociateSignable(request), request.signed);
+				if (!verified) {
+					throw(new KeetaAnchorUserError('Invalid username claim signature'));
+				}
+
+				const dissasociateResponse = await dissasociateHandler({ account: request.account });
+
+				if (!dissasociateResponse.ok) {
+					throw(new KeetaAnchorUserError('Disassociate claim rejected'));
+				}
+
+				return({
+					output: JSON.stringify({ ok: true }),
+					contentType: 'application/json'
+				});
+			};
+		}
+
+
 		return(routes);
 	}
 
@@ -206,15 +275,22 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()
 		};
 
+		const authentication: ServiceMetadataAuthenticationType = {
+			method: 'keeta-account',
+			type: 'required'
+		}
+
 		if (this.usernames.claim) {
 			operations.claim = {
 				url: (new URL('/api/claim', this.url)).toString(),
-				options: {
-					authentication: {
-						method: 'keeta-account',
-						type: 'required'
-					}
-				}
+				options: { authentication }
+			};
+		}
+
+		if (this.usernames.dissasociateUsername) {
+			operations.dissasociate = {
+				url: (new URL('/api/dissasociate', this.url)).toString(),
+				options: { authentication }
 			};
 		}
 
