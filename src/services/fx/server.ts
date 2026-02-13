@@ -760,7 +760,8 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 			const entry = await runner.get(id);
 			if (entry !== null) {
 				if (entry.status === 'moved') {
-					let updateStatusTo = null;
+					let failedFound = null;
+					let successFound = null;
 
 					if (this.failureStageRunner || this.successStageRunner) {
 						await Promise.all([
@@ -769,10 +770,10 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 									return(null);
 								}
 
-								const entry = await this.failureStageRunner.get(id);
+								failedFound = await this.failureStageRunner.get(id);
 
 								if (entry) {
-									updateStatusTo = 'failed_permanently';
+									failedFound = true;
 								}
 							})(),
 							(async () => {
@@ -780,17 +781,17 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 									return(null);
 								}
 
-								const entry = await this.successStageRunner.get(id);
-
-								if (entry) {
-									updateStatusTo = 'completed';
-								}
+								successFound = await this.successStageRunner.get(id);
 							})()
-						])
+						]);
 					}
 
-					if (updateStatusTo) {
-						entry.status = updateStatusTo;
+					if (failedFound && successFound) {
+						this.logger?.warn(`Request with ID ${String(id)} was found in both the success and failure stages -- this should not happen`, { requestID: id });
+					} else if (failedFound) {
+						entry.status = 'failed_permanently';
+					} else if (successFound) {
+						entry.status = 'completed';
 					} else {
 						this.logger?.warn(`Request with ID ${String(id)} has moved from the main processing stage but was not found in either the success or failure stages -- leaving status as "moved"`, { requestID: id });
 					}

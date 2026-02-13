@@ -1058,7 +1058,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			} else {
 				throw(new Error(`Unsupported status target ${statusTarget}`));
 			}
-		}
+		};
 
 		for (const pipe of pipes) {
 			logger?.debug('Processing pipe to target', pipe.target.id, pipe.isBatchPipe ? '(batch pipe)' : '(single item pipe)');
