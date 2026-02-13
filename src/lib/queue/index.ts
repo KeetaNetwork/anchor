@@ -467,7 +467,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipes to other runners we have registered
 	 */
 	private readonly pipes: (
-		// Non-Batch pipe -- dependending on acceptStatus, either UserResult[] or UserRequest[]
+		// Non-Batch pipe -- depending on acceptStatus, either UserResult[] or UserRequest[]
 		({
 			isBatchPipe: false;
 		} & ({
@@ -480,7 +480,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			acceptStatus: Extract<KeetaAnchorPipeableQueueStatus, 'failed_permanently'>;
 		})) |
 
-		// Batch pipe -- dependending on acceptStatus, either UserResult[] or UserRequest[]
+		// Batch pipe -- depending on acceptStatus, either UserResult[] or UserRequest[]
 		({
 			isBatchPipe: true;
 			minBatchSize: number;
