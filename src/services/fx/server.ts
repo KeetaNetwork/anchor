@@ -635,9 +635,16 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 }
 
+type RunnerOrRunnerWithOptions<Req, Res> = {
+	processor: KeetaAnchorQueueRunner<Req, Res>['processor'];
+	maxRetries?: number | undefined;
+	processTimeout?: number | undefined;
+	batchSize?: number | undefined;
+} | KeetaAnchorQueueRunner<Req, Res>['processor'];
+
 type KeetaFXAnchorQueuePipelineExtensions = {
-	success?: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>['processor'];
-	failure?: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable>['processor'];
+	success?: RunnerOrRunnerWithOptions<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>;
+	failure?: RunnerOrRunnerWithOptions<KeetaFXAnchorQueueStage1Request, JSONSerializable>;
 }
 
 type KeetaFXAnchorQueuePipelineAdditionalConfig = {
@@ -672,58 +679,98 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 		const failureExtension = this.extensions?.failure;
 		const successExtension = this.extensions?.success;
 
-		if (failureExtension) {
-			const failureQueue = await this.baseQueue.partition('failed');
-			this.queues.push(failureQueue);
+		if (failureExtension || successExtension) {
+			abstract class BaseExtensionClass<Req, Res> extends KeetaAnchorQueueRunner<Req, Res> {
+				#configSet = false;
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+				#processorMethod: Extract<RunnerOrRunnerWithOptions<Req, Res>, Function> = (() => {
+					throw(new Error('config not set'));
+				});
 
-			this.failureStageRunner = (new class extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable> {
-				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable>['processor']>[0]) {
-					return(await failureExtension(entry));
-				}
-
-				protected encodeRequest(request: KeetaFXAnchorQueueStage1Request) { return(encodeKeetaFXAnchorQueueStage1Request(request)); }
-				protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Request { return(decodeKeetaFXAnchorQueueStage1Request(request)); }
-				protected encodeResponse(response: JSONSerializable | null) { return(response); }
-				protected decodeResponse(response: JSONSerializable | null) { return(response); }
-			}({
-				id: 'keeta-fx-anchor-failure-runner',
-				queue: failureQueue,
-				logger: this.logger
-			}));
-		}
-
-		if (successExtension) {
-			const successQueue = await this.baseQueue.partition('success');
-			this.queues.push(successQueue);
-
-			this.successStageRunner = (new class extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> {
-				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>['processor']>[0]) {
-					return(await successExtension(entry));
-				}
-
-				protected encodeRequest(request: KeetaFXAnchorQueueStage1Response) { return(request); }
-				protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Response {
-					/* See note at bottom of file */
-					// eslint-disable-next-line @typescript-eslint/no-use-before-define
-					const parsed = assertKeetaFXAnchorQueueStage1ResponseOrNull(request);
-					if (parsed === null) {
-						throw(new Error('Invalid request for success extension'));
+				_setConfiguration(config: RunnerOrRunnerWithOptions<Req, Res>) {
+					if (this.#configSet) {
+						throw(new Error('Configuration can only be set once'));
 					}
 
-					return(parsed);
+					this.#configSet = true;
+
+					if (typeof config === 'function') {
+						this.#processorMethod = config;
+					} else {
+						this.#processorMethod = config.processor;
+
+						if (config.batchSize) {
+							this.batchSize = config.batchSize;
+						}
+
+						if (config.maxRetries) {
+							this.maxRetries = config.maxRetries;
+						}
+
+						if (config.processTimeout) {
+							this.processTimeout = config.processTimeout;
+						}
+					}
 				}
 
-				protected encodeResponse(response: KeetaFXAnchorQueueStage1Response | null) { return(response); }
-				protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
-					/* See note at bottom of file */
-					// eslint-disable-next-line @typescript-eslint/no-use-before-define
-					return(assertKeetaFXAnchorQueueStage1ResponseOrNull(response));
+				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<Req, Res>['processor']>[0]) {
+					return(await this.#processorMethod(entry));
 				}
-			}({
-				id: 'keeta-fx-anchor-success-runner',
-				queue: successQueue,
-				logger: this.logger
-			}));
+			}
+
+			if (failureExtension) {
+				const failureQueue = await this.baseQueue.partition('failed');
+				this.queues.push(failureQueue);
+
+				const runner = (new class extends BaseExtensionClass<KeetaFXAnchorQueueStage1Request, JSONSerializable> {
+					protected encodeRequest(request: KeetaFXAnchorQueueStage1Request) { return(encodeKeetaFXAnchorQueueStage1Request(request)); }
+					protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Request { return(decodeKeetaFXAnchorQueueStage1Request(request)); }
+					protected encodeResponse(response: JSONSerializable | null) { return(response); }
+					protected decodeResponse(response: JSONSerializable | null) { return(response); }
+				}({
+					id: 'keeta-fx-anchor-failure-runner',
+					queue: failureQueue,
+					logger: this.logger
+				}));
+
+				runner._setConfiguration(failureExtension);
+
+				this.failureStageRunner = runner;
+			}
+
+			if (successExtension) {
+				const successQueue = await this.baseQueue.partition('success');
+				this.queues.push(successQueue);
+
+				const runner = (new class extends BaseExtensionClass<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> {
+					protected encodeRequest(request: KeetaFXAnchorQueueStage1Response) { return(request); }
+					protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Response {
+						/* See note at bottom of file */
+						// eslint-disable-next-line @typescript-eslint/no-use-before-define
+						const parsed = assertKeetaFXAnchorQueueStage1ResponseOrNull(request);
+						if (parsed === null) {
+							throw(new Error('Invalid request for success extension'));
+						}
+
+						return(parsed);
+					}
+
+					protected encodeResponse(response: KeetaFXAnchorQueueStage1Response | null) { return(response); }
+					protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
+						/* See note at bottom of file */
+						// eslint-disable-next-line @typescript-eslint/no-use-before-define
+						return(assertKeetaFXAnchorQueueStage1ResponseOrNull(response));
+					}
+				}({
+					id: 'keeta-fx-anchor-success-runner',
+					queue: successQueue,
+					logger: this.logger
+				}));
+
+				runner._setConfiguration(successExtension);
+
+				this.successStageRunner = runner;
+			}
 		}
 
 		for (const account of this.accounts) {
