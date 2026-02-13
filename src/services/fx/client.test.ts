@@ -1478,7 +1478,9 @@ test('FX Server Queue extensions', async function() {
 	expect(successHandledBlockhashes.size).toBeGreaterThanOrEqual(1);
 	expect(failureHandledBlockhashes.size).toBe(0);
 
-	const failureQuotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 1000n, affinity: 'from' });
+	const userBalanceUSD = await client.balance(testCurrencyUSD);
+	const userFailureSwapAmount = userBalanceUSD + 1n;
+	const failureQuotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: userFailureSwapAmount, affinity: 'from' });
 	if (!failureQuotes || failureQuotes.length === 0) {
 		throw(new Error('No FX quotes returned for failure scenario'));
 	}
@@ -1487,9 +1489,8 @@ test('FX Server Queue extensions', async function() {
 		throw(new Error('FX quote unexpectedly undefined in failure scenario'));
 	}
 
-	const userBalanceUSD = await client.balance(testCurrencyUSD);
 	const failureSwapBuilder = client.initBuilder();
-	failureSwapBuilder.send(failingQuote.quote.account, userBalanceUSD + 1n, failingQuote.quote.request.from);
+	failureSwapBuilder.send(failingQuote.quote.account, userFailureSwapAmount, failingQuote.quote.request.from);
 	if (failingQuote.quote.cost.amount > 0n) {
 		failureSwapBuilder.send(failingQuote.quote.account, failingQuote.quote.cost.amount, failingQuote.quote.cost.token);
 	}

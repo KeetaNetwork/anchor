@@ -792,10 +792,6 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 								}
 
 								failedFound = await this.failureStageRunner.get(id);
-
-								if (entry) {
-									failedFound = true;
-								}
 							})(),
 							(async () => {
 								if (!this.successStageRunner) {
