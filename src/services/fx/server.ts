@@ -30,7 +30,7 @@ import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
-import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
@@ -46,15 +46,24 @@ import { asleep } from '../../lib/utils/asleep.js';
  */
 const PARANOID = true;
 
-/**
- * The purpose for why getConversionRateAndFee is being called
- *   estimate means it is being called to get an estimate for a swap
- *   quote means it is being called to get a firm quote for a swap that will be executed
- *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
- */
-type GetConversionRateAndFeePurpose = 'estimate' | 'quote' | 'exchange';
-export interface GetConversionRateAndFeeContext {
-	purpose: GetConversionRateAndFeePurpose;
+export type GetConversionRateAndFeeContext = {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   estimate means it is being called to get an estimate for a swap
+	 *   quote means it is being called to get a firm quote for a swap that will be executed
+	 */
+	purpose: 'quote' | 'estimate';
+} | {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
+	 */
+	purpose: 'exchange';
+
+	/**
+	 * The request information related to this exchange
+	 */
+	request: KeetaFXAnchorQueueStage1Request;
 }
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -527,21 +536,33 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		}
 
 		/* We are clear to attempt the swap now */
+		const builder = userClient.initBuilder();
 		let expected = entry.request.expected;
-		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange' });
 
-			assertExchangeBlockParameters({
+		/**
+		 * We only want to refund excess for cost/paying token if it is not a fixed rate
+		 * as if it is a fixed rate transfer, you can assume the client did not send unintentionally
+		 *
+		 * Additionally, other FX anchors are not forced to refund any, so there is no guarantee to client that refunds will occur
+		 */
+		if (expected === null) {
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
+
+			const { refunds } = assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: entry.request.account,
 				allowedLiquidityAccounts: null,
-				checks: { quote, request }
+				checks: { quote, request },
+				isQuoteBasedExchange: false
 			});
+
+			for (const refund of refunds) {
+				builder.send(block.account, refund.amount, refund.token);
+			}
 
 			expected = convertQuoteToExpectedSwapWithoutCost({ quote, request });
 		}
 
-		const builder = userClient.initBuilder();
 		builder.send(block.account, expected.send.amount, expected.send.token);
 
 		const sendBlock = await builder.computeBlocks();
@@ -988,7 +1009,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			};
 		}
 
-		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: GetConversionRateAndFeeContext['purpose']): Promise<KeetaFXInternalPriceQuote> {
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: Exclude<GetConversionRateAndFeeContext['purpose'], 'exchange'>): Promise<KeetaFXInternalPriceQuote> {
 			const rateAndFee = await config.fx.getConversionRateAndFee(conversion, { purpose });
 
 			if (PARANOID) {
@@ -1113,9 +1134,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			let shouldValidateQuote;
 			let liquidityAccount;
 			let expectedConversion: KeetaFXAnchorQueueStage1Request['expected'];
+			let isQuoteBasedExchange;
 			if ('quote' in request && 'estimate' in request && request.quote && request.estimate) {
 				throw(new Error('Request cannot contain both quote and estimate'));
 			} else if ('quote' in request && request.quote) {
+				isQuoteBasedExchange = true;
 				shouldValidateQuote = true;
 				quoteInput = request.quote;
 				conversionInput = quoteInput.request;
@@ -1138,6 +1161,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					request: conversionInput
 				});
 			} else if ('request' in request && request.request) {
+				isQuoteBasedExchange = false;
 				if (instance.quoteConfiguration.requiresQuote) {
 					throw(new Errors.QuoteRequired());
 				}
@@ -1197,11 +1221,12 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('config.account or config.accounts must be provided'));
 			}
 
-			assertExchangeBlockParameters({
+			assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: liquidityAccountInstance,
 				allowedLiquidityAccounts: allowedLiquidityAccounts,
-				checks: { quote: parsedQuote, request: conversionInput }
+				checks: { quote: parsedQuote, request: conversionInput },
+				isQuoteBasedExchange: isQuoteBasedExchange
 			});
 
 			/* Enqueue the exchange request */
