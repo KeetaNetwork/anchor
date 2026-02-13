@@ -1,7 +1,7 @@
 import type { BrandedString, Brand } from '../utils/brand.ts';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.ts';
-import type { AssertNever } from '../utils/never.ts';
+import { assertNever, type AssertNever } from '../utils/never.ts';
 import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
@@ -420,6 +420,14 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	}
 }
 
+interface AdditionalPipeOptions {
+	/**
+	 * If true, call maintain/run on this target when maintaining/running this runner
+	 * Defaults to true
+	 */
+	callMaintainRun?: boolean;
+}
+
 /**
  * A Queue Runner and Request Translator for processing entries in a queue
  *
@@ -466,19 +474,37 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipes to other runners we have registered
 	 */
-	private readonly pipes: (({
-		isBatchPipe: false;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
-	} | {
-		isBatchPipe: true;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
-		minBatchSize: number;
-		maxBatchSize: number;
-	}) & {
-		acceptStatus: KeetaAnchorPipeableQueueStatus;
-	})[] = [];
+	private readonly pipes: (
+		// Non-Batch pipe -- depending on acceptStatus, either UserResult[] or UserRequest[]
+		(
+			({
+				isBatchPipe: false;
+			} & ({
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
+				acceptStatus: Extract<KeetaAnchorPipeableQueueStatus, 'completed'>;
+			} | {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				target: KeetaAnchorQueueRunner<UserRequest, any, QueueResult, any>
+				acceptStatus: Extract<KeetaAnchorPipeableQueueStatus, 'failed_permanently'>;
+			})) |
+
+			// Batch pipe -- depending on acceptStatus, either UserResult[] or UserRequest[]
+			({
+				isBatchPipe: true;
+				minBatchSize: number;
+				maxBatchSize: number;
+			} & ({
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
+				acceptStatus: Extract<KeetaAnchorPipeableQueueStatus, 'completed'>;
+			} | {
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				target: KeetaAnchorQueueRunner<UserRequest[], any, JSONSerializable, any>;
+				acceptStatus: Extract<KeetaAnchorPipeableQueueStatus, 'failed_permanently'>;
+			}))
+		) & AdditionalPipeOptions
+	)[] = [];
 
 	/**
 	 * Initialization promise
@@ -906,6 +932,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 */
 		const pipes = [...this.pipes];
 		for (const pipe of pipes) {
+			if (pipe.callMaintainRun === false) {
+				continue;
+			}
+
 			let remainingTime: number | undefined = undefined;
 			if (timeout !== undefined) {
 				const elapsed = Date.now() - startTime;
@@ -1034,6 +1064,15 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			RequestSentToPipes.set(requestID, sentCount + 1);
 		}
 
+		const getNextPipeRequestInput = (entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>) => {
+			if (statusTarget === 'completed') {
+				return(this.decodeResponse(entry.output));
+			} else if (statusTarget === 'failed_permanently') {
+				return(this.decodeRequest(entry.request));
+			}
+
+			assertNever(statusTarget);
+		};
 
 		for (const pipe of pipes) {
 			logger?.debug('Processing pipe to target', pipe.target.id, pipe.isBatchPipe ? '(batch pipe)' : '(single item pipe)');
@@ -1089,8 +1128,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					 * the entries which have non-null outputs
 					 */
 					const batchRaw = requests.map((entry) => {
-						return({ output: this.decodeResponse(entry.output), id: entry.id });
-					}).filter(function(entry): entry is { output: UserResult; id: KeetaAnchorQueueRequestID; } {
+						return({ output: getNextPipeRequestInput(entry), id: entry.id });
+					}).filter(function(entry): entry is { output: UserRequest | UserResult; id: KeetaAnchorQueueRequestID; } {
 						if (entry === null) {
 							return(false);
 						}
@@ -1135,7 +1174,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					logger?.debug(`Moving batch of ${batchOutput.length} ${statusTarget} requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
 
 					try {
-						await pipe.target.add(batchOutput, {
+						// There is no way for typescript to cleanly infer the type here, so we assert it.
+						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+						await pipe.target.add(batchOutput as (UserRequest & UserResult)[], {
 							id: batchID,
 							/* Use the set of IDs as the idempotent IDs for the batch */
 							idempotentKeys: batchLocalIDs
@@ -1182,12 +1223,15 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				for (const request of requests) {
 					let shouldMarkAsMoved = true;
 					try {
-						const output = this.decodeResponse(request.output);
+						const output = getNextPipeRequestInput(request);
+
 						if (output === null) {
 							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
 							logger?.debug(`Moving ${statusTarget} request with id ${String(request.id)} to next pipe`, pipe.target.id);
-							await pipe.target.add(output, { id: request.id });
+							// There is no way for typescript to cleanly infer the type here, so we assert it.
+							// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+							await pipe.target.add(output as UserRequest & UserResult, { id: request.id });
 						}
 
 					} catch (error: unknown) {
@@ -1259,6 +1303,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 		for (const pipe of this.pipes) {
 			try {
+				if (pipe.callMaintainRun === false) {
+					continue;
+				}
+
 				await pipe.target.maintain();
 			} catch (error: unknown) {
 				logger?.debug(`Failed to maintain piped runner with ID ${pipe.target.id}:`, error);
@@ -1277,8 +1325,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipe the the completed entries of this runner to another runner
 	 */
-	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
 		this.pipes.push({
+			...options,
 			isBatchPipe: false,
 			target: target,
 			acceptStatus: 'completed'
@@ -1286,8 +1335,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(target);
 	}
 
-	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
 		this.pipes.push({
+			...options,
 			isBatchPipe: false,
 			target: target,
 			acceptStatus: 'failed_permanently'
@@ -1298,8 +1348,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
-	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
 		this.pipes.push({
+			...options,
 			isBatchPipe: true,
 			target: target,
 			minBatchSize: minBatchSize,
@@ -1309,8 +1360,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(target);
 	}
 
-	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
 		this.pipes.push({
+			...options,
 			isBatchPipe: true,
 			target: target,
 			minBatchSize: minBatchSize,
