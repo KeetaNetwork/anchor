@@ -1235,7 +1235,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 	}
 });
 
-test.only('FX Server Queue extensions', async function() {
+test('FX Server Queue extensions', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	await using nodeAndClient = await createNodeAndClient(userAccount);
 	const client = nodeAndClient.userClient;
