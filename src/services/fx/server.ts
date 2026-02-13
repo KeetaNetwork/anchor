@@ -640,6 +640,12 @@ type KeetaFXAnchorQueuePipelineExtensions = {
 	failure?: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable>['processor'];
 }
 
+type KeetaFXAnchorQueuePipelineAdditionalConfig = {
+	serverConfig: KeetaAnchorFXServerConfig;
+	accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
+	extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
+}
+
 class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	private readonly serverConfig: KeetaAnchorFXServerConfig;
 	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
@@ -653,11 +659,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	constructor(
 		options:
 			ConstructorParameters<typeof KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] &
-			{
-				serverConfig: KeetaAnchorFXServerConfig;
-				accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
-				extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
-			}
+			KeetaFXAnchorQueuePipelineAdditionalConfig
 	) {
 		super(options);
 
@@ -736,11 +738,11 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 			});
 
 			if (this.successStageRunner) {
-				runner.pipe(this.successStageRunner);
+				runner.pipe(this.successStageRunner, { callMaintainRun: false });
 			}
 
 			if (this.failureStageRunner) {
-				runner.pipeFailed(this.failureStageRunner);
+				runner.pipeFailed(this.failureStageRunner, { callMaintainRun: false });
 			}
 
 			this.runners[account.publicKeyAndTypeString] = runner;
