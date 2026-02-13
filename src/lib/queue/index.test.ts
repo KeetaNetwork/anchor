@@ -943,7 +943,7 @@ for (const singleWorkerID of [true, false]) {
 	});
 }
 
-test.only('Pipeline Basic Tests', async function() {
+test('Pipeline Basic Tests', async function() {
 	await using cleanup = new AsyncDisposableStack();
 	vi.useFakeTimers();
 	cleanup.defer(function() {
