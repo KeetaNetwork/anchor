@@ -170,8 +170,13 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	};
 
 	/**
-	 * Method to extend the queue pipeline runner for each account
-	 * Useful for adding jobs before or after the main FX processing
+	 * Methods to extend the shared queue pipeline runners used by all accounts.
+	 *
+	 * These extensions add shared success and failure handlers that receive
+	 * results from all account-specific runners (in the `runners` object),
+	 * which internally pipe into these shared handlers.
+	 *
+	 * Useful for adding jobs before or after the main FX processing.
 	 */
 	queueRunnerExtensions?: KeetaFXAnchorQueuePipelineExtensions;
 
@@ -664,7 +669,6 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	protected async createPipeline(): Promise<void> {
 		const failureExtension = this.extensions?.failure;
 		const successExtension = this.extensions?.success;
-
 
 		if (failureExtension) {
 			const failureQueue = await this.baseQueue.partition('failed');
