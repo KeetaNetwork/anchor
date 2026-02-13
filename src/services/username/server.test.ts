@@ -141,12 +141,7 @@ test('username server enforces default validation rules', async () => {
 		name: 'KeetaAnchorUserValidationError',
 		data: {
 			fields: [
-				{
-					path: 'username',
-					valueRules: {
-						maximum: String(USERNAME_MAX_LENGTH)
-					}
-				}
+				{ path: 'username' }
 			]
 		}
 	});

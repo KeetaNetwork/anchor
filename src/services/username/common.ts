@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { ToJSONSerializable } from '../../lib/utils/json.ts';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -6,6 +6,7 @@ import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/
 export * from './common.generated.js';
 
 export const USERNAME_DELIMITER = '$';
+export const USERNAME_MIN_LENGTH = 1;
 export const USERNAME_MAX_LENGTH = 256;
 
 export type UsernameValidationReason = 'length' | 'latin1';
@@ -25,14 +26,13 @@ type ValidateUsernameOptions = {
 export function validateUsernameDefault(username: string, options: ValidateUsernameOptions = {}): void {
 	const fieldPath = options.fieldPath ?? 'username';
 
-	if (username.length > USERNAME_MAX_LENGTH) {
+	if (username.length > USERNAME_MAX_LENGTH || username.length < USERNAME_MIN_LENGTH) {
 		throw(new KeetaAnchorUserValidationError({
 			fields: [
 				{
 					path: fieldPath,
-					message: `Username must not exceed ${USERNAME_MAX_LENGTH} characters`,
-					receivedValue: username,
-					valueRules: { maximum: String(USERNAME_MAX_LENGTH) }
+					message: `Username must be between ${USERNAME_MIN_LENGTH}-${USERNAME_MAX_LENGTH} characters`,
+					receivedValue: username
 				}
 			]
 		}));
@@ -182,9 +182,11 @@ export function parseGloballyIdentifiableUsername(input: GloballyIdentifiableUse
 	return(attemptParseGloballyIdentifiableUsername(input));
 }
 
+const usernameNamespace = 'c26e65bf-ad9f-4000-bc81-12c31dc86b8b';
 export function getUsernameClaimSignable(username: string, account: KeetaNetAccount): Signable {
 	return([
-		'CLAIM_USERNAME',
+		usernameNamespace,
+		'CLAIM_USERNAME:c26e65bf-ad9f-4000-bc81-12c31dc86b8b', // Namespace for the Username Anchor signable claims
 		username,
 		account.publicKeyString.get()
 	]);
@@ -239,8 +241,74 @@ class KeetaUsernameAnchorUsernameAlreadyTakenError extends KeetaAnchorUserError 
 	}
 }
 
+interface KeetaUsernameAnchorUserNotFoundErrorProperties {
+	username?: string | undefined;
+	account?: KeetaNetAccount | undefined;
+}
+
+type KeetaUsernameAnchorUserNotFoundErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaUsernameAnchorUserNotFoundErrorProperties;
+
+class KeetaUsernameAnchorUserNotFoundError extends KeetaAnchorUserError implements KeetaUsernameAnchorUserNotFoundErrorProperties {
+	static override readonly name: string = 'KeetaUsernameAnchorUserNotFoundError';
+	private readonly KeetaUsernameAnchorUserNotFoundErrorObjectTypeID!: string;
+	private static readonly KeetaUsernameAnchorUserNotFoundErrorObjectTypeID = 'd4831db5-ca33-4c21-9780-ec86929f2e4c';
+	override readonly logLevel = 'INFO';
+	readonly username: string | undefined;
+	readonly account: KeetaNetAccount | undefined;
+
+	constructor(properties: KeetaUsernameAnchorUserNotFoundErrorProperties, message?: string) {
+		super(message ?? `${properties.username ?? properties.account?.publicKeyString.get() ?? '<UNKNOWN>'} not found`);
+		this.statusCode = 404;
+
+		Object.defineProperty(this, 'KeetaUsernameAnchorUserNotFoundErrorObjectTypeID', {
+			value: KeetaUsernameAnchorUserNotFoundError.KeetaUsernameAnchorUserNotFoundErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.username = properties.username;
+		this.account = properties.account;
+	}
+
+	static isInstance(input: unknown): input is KeetaUsernameAnchorUserNotFoundError {
+		return(this.hasPropWithValue(input, 'KeetaUsernameAnchorUserNotFoundErrorObjectTypeID', KeetaUsernameAnchorUserNotFoundError.KeetaUsernameAnchorUserNotFoundErrorObjectTypeID));
+	}
+
+	toJSON(): KeetaUsernameAnchorUserNotFoundErrorJSON {
+		return({
+			...super.toJSON(),
+			username: this.username
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaUsernameAnchorUserNotFoundError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		const properties: KeetaUsernameAnchorUserNotFoundErrorProperties = {};
+		if ('username' in other) {
+			if (typeof other.username !== 'string') {
+				throw(new Error('Invalid KeetaUsernameAnchorUserNotFoundError JSON object: missing or invalid username'));
+			}
+
+			properties.username = other.username;
+		}
+
+		if ('account' in other && other.account) {
+			if (typeof other.account !== 'string' && !(KeetaNetLib.Account.isInstance(other.account))) {
+				throw(new Error('Invalid KeetaUsernameAnchorUserNotFoundError JSON object: account must be a string or KeetaNet Account object'));
+			}
+			properties.account = KeetaNetLib.Account.toAccount(other.account);
+		}
+
+		const error = new this(properties, message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	UsernameAlreadyTaken: typeof KeetaUsernameAnchorUsernameAlreadyTakenError;
+	UserNotFound: typeof KeetaUsernameAnchorUserNotFoundError;
 } = {
-	UsernameAlreadyTaken: KeetaUsernameAnchorUsernameAlreadyTakenError
+	UsernameAlreadyTaken: KeetaUsernameAnchorUsernameAlreadyTakenError,
+	UserNotFound: KeetaUsernameAnchorUserNotFoundError
 };

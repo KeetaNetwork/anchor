@@ -13,7 +13,7 @@ import {
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import * as Signing from '../../lib/utils/signing.js';
 
 function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
@@ -111,7 +111,15 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 				try {
 					toResolve = decodeURIComponent(toResolve);
 				} catch {
-					/* ignore */
+					throw(new KeetaAnchorUserValidationError({
+						fields: [
+							{
+								path: 'toResolve',
+								message: 'toResolve parameter is not a valid URI component',
+								receivedValue: toResolve
+							}
+						]
+					}));
 				}
 
 				this.#assertProviderIssuedNameValid(toResolve);
@@ -120,11 +128,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			}
 
 			if (!resolution) {
-				return({
-					statusCode: 404,
-					output: JSON.stringify({ ok: true }),
-					contentType: 'application/json'
-				});
+				throw(new Errors.UserNotFound({ username: username ?? undefined, account: account ?? undefined }));
 			}
 
 			if ('account' in resolution) {

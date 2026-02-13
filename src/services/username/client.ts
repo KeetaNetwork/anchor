@@ -19,7 +19,8 @@ import {
 	type KeetaNetAccount,
 	type GloballyIdentifiableUsername,
 	isGloballyIdentifiableUsername,
-	isKeetaNetPublicKeyString
+	isKeetaNetPublicKeyString,
+	Errors
 } from './common.js';
 
 export type KeetaUsernameAnchorClientConfig = {
@@ -293,10 +294,6 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		const serviceURL = endpoint.url({ toResolve: toResolveString });
 		const response = await fetch(serviceURL);
 
-		if (response.status === 404) {
-			return(null);
-		}
-
 		let responseJSON: unknown;
 		try {
 			responseJSON = await response.json();
@@ -309,7 +306,13 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		}
 
 		if (!responseJSON.ok) {
-			throw(await this.#parseResponseError(responseJSON));
+			const responseError = await this.#parseResponseError(responseJSON);
+
+			if (Errors.UserNotFound.isInstance(responseError)) {
+				return(null);
+			}
+
+			throw(responseError);
 		}
 
 		const retval = {
