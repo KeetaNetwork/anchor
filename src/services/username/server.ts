@@ -4,7 +4,7 @@ import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
 	KeetaUsernameAnchorAccountResolutionContext,
 	KeetaUsernameAnchorClaimRequest,
-	KeetaUsernameAnchorDisassociateRequest } from './common.js';
+	KeetaUsernameAnchorReleaseRequest } from './common.js';
 import {
 	getUsernameClaimSignable,
 	validateUsernameDefault,
@@ -13,8 +13,8 @@ import {
 	isKeetaNetPublicKeyString,
 	assertKeetaUsernameAnchorClaimRequestJSON,
 	getUsernameTransferSignable,
-	assertKeetaUsernameAnchorDisassociateRequestJSON,
-	getUsernameDissasociateSignable
+	assertKeetaUsernameAnchorReleaseRequestJSON,
+	getUsernameReleaseSignable
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
@@ -46,7 +46,7 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
 		resolveAccount: (input: KeetaUsernameAnchorAccountResolutionContext) => Promise<{ username: string; } | null>;
 
-		dissasociateUsername?: (input: { account: InstanceType<typeof KeetaNet.lib.Account>; }) => Promise<{ ok: boolean; }>;
+		releaseUsername?: (input: { account: InstanceType<typeof KeetaNet.lib.Account>; }) => Promise<{ ok: boolean; }>;
 		claim?: ((input: KeetaUsernameAnchorClaimContext) => Promise<ClaimHandlerResponse>);
 	};
 	routes?: Routes;
@@ -235,11 +235,11 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			};
 		}
 
-		const dissasociateHandler = this.usernames.dissasociateUsername;
-		if (dissasociateHandler) {
-			routes['POST /api/dissasociate'] = async (_params, body) => {
-				const request: KeetaUsernameAnchorDisassociateRequest = (() => {
-					const raw = assertKeetaUsernameAnchorDisassociateRequestJSON(body);
+		const releaseHandler = this.usernames.releaseUsername;
+		if (releaseHandler) {
+			routes['POST /api/release'] = async (_params, body) => {
+				const request: KeetaUsernameAnchorReleaseRequest = (() => {
+					const raw = assertKeetaUsernameAnchorReleaseRequestJSON(body);
 
 					return({
 						account: KeetaNet.lib.Account.toAccount(raw.account),
@@ -248,15 +248,15 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 				})();
 
 
-				const verified = await Signing.VerifySignedData(request.account, getUsernameDissasociateSignable(request), request.signed);
+				const verified = await Signing.VerifySignedData(request.account, getUsernameReleaseSignable(request), request.signed);
 				if (!verified) {
 					throw(new KeetaAnchorUserError('Invalid username claim signature'));
 				}
 
-				const dissasociateResponse = await dissasociateHandler({ account: request.account });
+				const releaseResponse = await releaseHandler({ account: request.account });
 
-				if (!dissasociateResponse.ok) {
-					throw(new KeetaAnchorUserError('Disassociate claim rejected'));
+				if (!releaseResponse.ok) {
+					throw(new KeetaAnchorUserError('Release claim rejected'));
 				}
 
 				return({
@@ -287,9 +287,9 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			};
 		}
 
-		if (this.usernames.dissasociateUsername) {
-			operations.dissasociate = {
-				url: (new URL('/api/dissasociate', this.url)).toString(),
+		if (this.usernames.releaseUsername) {
+			operations.release = {
+				url: (new URL('/api/release', this.url)).toString(),
 				options: { authentication }
 			};
 		}

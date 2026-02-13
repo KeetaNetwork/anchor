@@ -125,17 +125,17 @@ export type KeetaUsernameAnchorClaimResponse = ({
 });
 
 
-export interface KeetaUsernameAnchorDisassociateRequestPayload {
+export interface KeetaUsernameAnchorReleaseRequestPayload {
 	account: KeetaNetAccount;
 }
 
-export interface KeetaUsernameAnchorDisassociateRequest extends KeetaUsernameAnchorDisassociateRequestPayload {
+export interface KeetaUsernameAnchorReleaseRequest extends KeetaUsernameAnchorReleaseRequestPayload {
 	signed: HTTPSignedField;
 }
 
-export type KeetaUsernameAnchorDisassociateRequestJSON = ToJSONSerializable<KeetaUsernameAnchorDisassociateRequest>;
+export type KeetaUsernameAnchorReleaseRequestJSON = ToJSONSerializable<KeetaUsernameAnchorReleaseRequest>;
 
-export type KeetaUsernameAnchorDisassociateResponse = ({
+export type KeetaUsernameAnchorReleaseResponse = ({
 	ok: true;
 }) | ({
 	ok: false;
@@ -237,10 +237,10 @@ export function getUsernameTransferSignable(payload: TransferUsernameOwnershipSi
 }
 
 
-export function getUsernameDissasociateSignable(payload: KeetaUsernameAnchorDisassociateRequestPayload): Signable {
+export function getUsernameReleaseSignable(payload: KeetaUsernameAnchorReleaseRequestPayload): Signable {
 	return([
 		usernameNamespace,
-		'DISSASOCIATE_USERNAME',
+		'RELEASE_USERNAME',
 		payload.account
 	]);
 }

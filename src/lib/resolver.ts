@@ -168,7 +168,7 @@ type ServiceMetadata = {
 				operations: {
 					resolve: ServiceMetadataEndpoint;
 					claim?: ServiceMetadataEndpoint;
-					dissasociate?: ServiceMetadataEndpoint;
+					release?: ServiceMetadataEndpoint;
 				};
 
 				/**

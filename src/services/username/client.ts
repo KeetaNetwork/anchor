@@ -25,8 +25,8 @@ import {
 	isKeetaNetPublicKeyString,
 	Errors,
 	getUsernameTransferSignable,
-	getUsernameDissasociateSignable,
-	isKeetaUsernameAnchorDisassociateResponse
+	getUsernameReleaseSignable,
+	isKeetaUsernameAnchorReleaseResponse
 } from './common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 
@@ -441,12 +441,12 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 	}
 
 	/**
-	 * Dissasociate a username for a specific provider
+	 * Release a username for a specific provider
 	 * @param options The account to claim for, and options related to transfer if applicable
 	 * @returns True if the claim was successful, false otherwise
 	 */
-	async dissasociateUsername(input?: { account?: KeetaNetAccount; }): Promise<boolean> {
-		const endpoint = await this.#getOperation('dissasociate');
+	async releaseUsername(input?: { account?: KeetaNetAccount; }): Promise<boolean> {
+		const endpoint = await this.#getOperation('release');
 
 		if (endpoint.options.authentication.type === 'none') {
 			throw(new Error('Username claim operation must require account authentication'));
@@ -457,7 +457,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error('Account is required to claim a username'));
 		}
 
-		const signed = await SignData(accountToUse.assertAccount(), getUsernameDissasociateSignable({ account: accountToUse }));
+		const signed = await SignData(accountToUse.assertAccount(), getUsernameReleaseSignable({ account: accountToUse }));
 
 		const response = await fetch(endpoint.url(), {
 			method: 'POST',
@@ -478,7 +478,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error(`Failed to parse username claim response as JSON: ${error}`));
 		}
 
-		if (!isKeetaUsernameAnchorDisassociateResponse(responseJSON)) {
+		if (!isKeetaUsernameAnchorReleaseResponse(responseJSON)) {
 			throw(new Error('Invalid response from username provider claim endpoint'));
 		}
 

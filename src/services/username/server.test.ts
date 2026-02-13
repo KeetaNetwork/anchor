@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaNetUsernameAnchorHTTPServer } from './server.js';
-import { USERNAME_MAX_LENGTH, getUsernameClaimSignable, getUsernameDissasociateSignable, getUsernameTransferSignable } from './common.js';
+import { USERNAME_MAX_LENGTH, getUsernameClaimSignable, getUsernameReleaseSignable, getUsernameTransferSignable } from './common.js';
 import { SignData } from '../../lib/utils/signing.js';
 
 const DEBUG = false;
@@ -148,7 +148,7 @@ test('username server enforces default validation rules', async () => {
 	});
 }, 10_000);
 
-test('username server validates signed transfers and dissasociation requests', async () => {
+test('username server validates signed transfers and release requests', async () => {
 	const providerID = 'provider-signatures';
 	const transferFromAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const transferToAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -156,8 +156,8 @@ test('username server validates signed transfers and dissasociation requests', a
 	let transferClaimUsername: string | null = null;
 	let transferClaimAccountMatched = false;
 	let transferClaimFromUserMatched = false;
-	let dissasociateCalls = 0;
-	let dissasociateMatchedAccount = false;
+	let releaseCalls = 0;
+	let releaseMatchedAccount = false;
 
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
 		providerID,
@@ -175,9 +175,9 @@ test('username server validates signed transfers and dissasociation requests', a
 				transferClaimFromUserMatched = !!context.fromUser && context.fromUser.comparePublicKey(transferFromAccount);
 				return({ ok: true });
 			},
-			async dissasociateUsername({ account }) {
-				dissasociateCalls += 1;
-				dissasociateMatchedAccount = account.comparePublicKey(transferToAccount);
+			async releaseUsername({ account }) {
+				releaseCalls += 1;
+				releaseMatchedAccount = account.comparePublicKey(transferToAccount);
 				return({ ok: true });
 			}
 		}
@@ -186,7 +186,7 @@ test('username server validates signed transfers and dissasociation requests', a
 	await server.start();
 
 	const baseURL = new URL(server.url);
-	const username = 'transferme';
+	const username = 'transfer';
 
 	const transferSigned = await SignData(transferFromAccount.assertAccount(), getUsernameTransferSignable({
 		username,
@@ -253,9 +253,9 @@ test('username server validates signed transfers and dissasociation requests', a
 	expect(invalidClaimResponse.status).toBeLessThan(600);
 	expect(claimCalls).toBe(1);
 
-	const dissasociateSigned = await SignData(transferToAccount.assertAccount(), getUsernameDissasociateSignable({ account: transferToAccount }));
+	const releaseSigned = await SignData(transferToAccount.assertAccount(), getUsernameReleaseSignable({ account: transferToAccount }));
 
-	const dissasociateResponse = await fetch(new URL('/api/dissasociate', baseURL), {
+	const releaseResponse = await fetch(new URL('/api/release', baseURL), {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -263,16 +263,16 @@ test('username server validates signed transfers and dissasociation requests', a
 		},
 		body: JSON.stringify({
 			account: transferToAccount.publicKeyString.get(),
-			signed: dissasociateSigned
+			signed: releaseSigned
 		})
 	});
 
-	expect(dissasociateResponse.status).toBe(200);
-	expect(await dissasociateResponse.json()).toEqual({ ok: true });
-	expect(dissasociateCalls).toBe(1);
-	expect(dissasociateMatchedAccount).toBe(true);
+	expect(releaseResponse.status).toBe(200);
+	expect(await releaseResponse.json()).toEqual({ ok: true });
+	expect(releaseCalls).toBe(1);
+	expect(releaseMatchedAccount).toBe(true);
 
-	const invalidDissasociateResponse = await fetch(new URL('/api/dissasociate', baseURL), {
+	const invalidReleaseResponse = await fetch(new URL('/api/release', baseURL), {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -281,13 +281,13 @@ test('username server validates signed transfers and dissasociation requests', a
 		body: JSON.stringify({
 			account: transferToAccount.publicKeyString.get(),
 			signed: {
-				...dissasociateSigned,
+				...releaseSigned,
 				signature: 'invalid-signature'
 			}
 		})
 	});
 
-	expect(invalidDissasociateResponse.status).toBeGreaterThanOrEqual(400);
-	expect(invalidDissasociateResponse.status).toBeLessThan(600);
-	expect(dissasociateCalls).toBe(1);
+	expect(invalidReleaseResponse.status).toBeGreaterThanOrEqual(400);
+	expect(invalidReleaseResponse.status).toBeLessThan(600);
+	expect(releaseCalls).toBe(1);
 }, 10_000);

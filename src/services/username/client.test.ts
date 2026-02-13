@@ -34,8 +34,8 @@ test('username client resolves accounts through resolver', async () => {
 	let transferClaimUsername: string | null = null;
 	let transferClaimAccountMatched = false;
 	let transferClaimFromUserMatched = false;
-	let dissasociateInvocations = 0;
-	let dissasociateMatchedAccount = false;
+	let releaseInvocations = 0;
+	let releaseMatchedAccount = false;
 	const secondaryAssignedAccounts = new Map<string, AccountInstance>();
 	secondaryAssignedAccounts.set('eve', secondaryMappedAccount);
 
@@ -77,9 +77,9 @@ test('username client resolves accounts through resolver', async () => {
 				}
 				return({ ok: true });
 			},
-			async dissasociateUsername({ account }) {
-				dissasociateInvocations += 1;
-				dissasociateMatchedAccount = account.comparePublicKey(charlieAccount);
+			async releaseUsername({ account }) {
+				releaseInvocations += 1;
+				releaseMatchedAccount = account.comparePublicKey(charlieAccount);
 				let removed = false;
 				for (const [username, assignedAccount] of assignedAccounts.entries()) {
 					if (assignedAccount.comparePublicKey(account)) {
@@ -316,9 +316,9 @@ test('username client resolves accounts through resolver', async () => {
 	expect(searchAfterCharlieClaimResult.account.publicKeyString.get()).toBe(charlieAccount.publicKeyString.get());
 	expect(searchAfterCharlieClaimResult.username).toBe('charlie');
 
-	expect(await provider.dissasociateUsername({ account: charlieAccount })).toBe(true);
-	expect(dissasociateInvocations).toBe(1);
-	expect(dissasociateMatchedAccount).toBe(true);
+	expect(await provider.releaseUsername({ account: charlieAccount })).toBe(true);
+	expect(releaseInvocations).toBe(1);
+	expect(releaseMatchedAccount).toBe(true);
 
 	expect(await usernameClient.resolve(charlieUsername)).toBeNull();
 	expect(await usernameClient.search(charlieUsername)).toBeNull();
