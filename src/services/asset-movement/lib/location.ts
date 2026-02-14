@@ -1,13 +1,20 @@
 import { assertNever } from "../../../lib/utils/never.js";
-import { assertBankAccountType, isTronNetworkAlias } from "./location.generated.js";
+import type { BankAccountAddressObfuscated, MobileWalletAddressObfuscated } from "../common.js";
+import { assertBankAccountType, assertMobileWalletAccountType, isTronNetworkAlias } from "./location.generated.js";
 
-interface BaseLocation<Type extends 'chain' | 'bank-account'> {
+interface BaseLocation<Type extends 'chain' | 'bank-account' | 'mobile-wallet'> {
 	type: Type;
 }
 
 export interface BankLocation extends BaseLocation<'bank-account'> {
 	account: {
 		type: BankAccountType;
+	}
+}
+
+export interface MobileWalletLocation extends BaseLocation<'mobile-wallet'> {
+	account: {
+		type: MobileWalletAccountType;
 	}
 }
 
@@ -69,13 +76,15 @@ export function isChainLocation<T extends ChainLocationType>(input: AssetLocatio
 	return(true);
 }
 
-export type AssetLocation = ChainLocation | BankLocation;
+export type AssetLocation = ChainLocation | BankLocation | MobileWalletLocation;
 
-export type BankAccountType = 'us' | 'iban-swift' | 'clabe' | 'pix';
+export type BankAccountType = BankAccountAddressObfuscated['accountType'];
+export type MobileWalletAccountType = MobileWalletAddressObfuscated['accountType'];
 
 export type AssetLocationString =
 	`chain:${'keeta' | 'evm'}:${bigint}` | `chain:${'solana' | 'bitcoin' | 'tron'}:${string}` |
-	`bank-account:${BankAccountType}`;
+	`bank-account:${BankAccountType}` |
+	`mobile-wallet:${MobileWalletAccountType}`;
 
 export type AssetLocationLike = AssetLocation | AssetLocationString;
 
@@ -103,6 +112,8 @@ export function convertAssetLocationToString(input: AssetLocationLike): AssetLoc
 		}
 	} else if (input.type === 'bank-account') {
 		return(`bank-account:${assertBankAccountType(input.account.type)}`);
+	} else if (input.type === 'mobile-wallet') {
+		return(`mobile-wallet:${assertMobileWalletAccountType(input.account.type)}`);
 	} else {
 		throw(new Error(`Invalid AssetLocation type: ${JSON.stringify(input)}`));
 	}
@@ -206,6 +217,15 @@ export function toAssetLocationFromString(input: string): AssetLocation {
 		return({
 			type: 'bank-account',
 			account: { type: assertBankAccountType(parts[0]) }
+		});
+	} else if (kind === 'mobile-wallet') {
+		if (parts.length !== 1) {
+			throw(new Error('Invalid AssetLocation mobile-wallet string'));
+		}
+
+		return({
+			type: 'mobile-wallet',
+			account: { type: assertMobileWalletAccountType(parts[0]) }
 		});
 	} else {
 		throw(new Error('Invalid AssetLocation string'));
