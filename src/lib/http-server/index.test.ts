@@ -432,3 +432,52 @@ test('Basic Functionality', async function() {
 		}).toThrow();
 	}
 }, 90000);
+
+test('Wildcard specificity: most specific route wins regardless of definition order', async function() {
+	// Define routes in reverse specificity order
+	const server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /api/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'catch-all', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			routes['GET /api/files/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'files', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			routes['GET /api/files/images/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'images', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const cases = [
+		{ path: '/api/other/thing', expectedHandler: 'catch-all' },
+		{ path: '/api/files/doc.txt', expectedHandler: 'files' },
+		{ path: '/api/files/images/photo.png', expectedHandler: 'images' },
+		{ path: '/api/files/images/vacation/beach.jpg', expectedHandler: 'images' }
+	];
+
+	for (const testCase of cases) {
+		const response = await testHTTPRequest(server.url, testCase.path, 'GET');
+		expect(response.code).toBe(200);
+		expect(response.body).toMatchObject({ handler: testCase.expectedHandler });
+	}
+
+	await server.stop();
+}, 30000);

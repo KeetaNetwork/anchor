@@ -67,7 +67,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
 
-	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; isWildcard: boolean } | { match: false }) {
+	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; wildcard?: { prefixLength: number }} | { match: false }) {
 		const requestURLPaths = requestURL.pathname.split('/');
 		const routeURLPaths = routeURL.pathname.split('/');
 
@@ -113,7 +113,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 			params.set('**', remainder);
 
-			return({ match: true, params: params, isWildcard: true });
+			return({ match: true, params: params, wildcard: { prefixLength }});
 		}
 
 		// Non-wildcard: require exact segment count
@@ -137,11 +137,12 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 		}
 
-		return({ match: true, params: params, isWildcard: false });
+		return({ match: true, params: params });
 	}
 
 	private static routeFind(method: string, requestURL: URL, routes: Routes): { route: Routes[keyof Routes]; params: Map<string, string> } | null {
 		let wildcardMatch: { route: Routes[keyof Routes]; params: Map<string, string> } | null = null;
+		let wildcardPrefixLength = -1;
 
 		for (const routeKey in routes) {
 			const route = routes[routeKey];
@@ -160,15 +161,16 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const matchResult = this.routeMatch(requestURL, routeURL);
 			if (matchResult.match) {
 				// Exact matches take priority over wildcard matches
-				if (!matchResult.isWildcard) {
+				if (matchResult.wildcard === undefined) {
 					return({
 						route: route,
 						params: matchResult.params
 					});
 				}
 
-				// Save wildcard match but continue looking for exact match
-				if (wildcardMatch === null) {
+				// Keep the most specific wildcard (longest prefix wins)
+				if (matchResult.wildcard.prefixLength > wildcardPrefixLength) {
+					wildcardPrefixLength = matchResult.wildcard.prefixLength;
 					wildcardMatch = {
 						route: route,
 						params: matchResult.params
@@ -177,7 +179,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 		}
 
-		// Return wildcard match if no exact match found
+		// Return most specific wildcard match if no exact match found
 		return(wildcardMatch);
 	}
 
