@@ -1376,8 +1376,8 @@ test('FX Server Queue extensions', async function() {
 	const signerLiquidityAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	allTokenRecipients.push(signerLiquidityAccount);
 
-	const successHandledBlockhashes = new KeetaNet.lib.Block.Hash.Set();
-	const failureHandledBlockhashes = new KeetaNet.lib.Block.Hash.Set();
+	const successHandledBlockhashes: { [blockhash: string]: number; } = {};
+	const failureHandledBlockhashes: { [blockhash: string]: number; } = {};
 
 	type StageResult = { blockhash: string; blocks: string[] };
 	type QueueEntryLike<Request> = KeetaAnchorQueueEntry<Request, unknown>;
@@ -1407,14 +1407,16 @@ test('FX Server Queue extensions', async function() {
 		},
 		queueRunnerExtensions: {
 			success: async function(entry: QueueEntryLike<StageResult>) {
-				successHandledBlockhashes.add(new KeetaNet.lib.Block.Hash(entry.request.blockhash));
+				const cur = successHandledBlockhashes[entry.request.blockhash.toString()] ?? 0
+				successHandledBlockhashes[entry.request.blockhash.toString()] = cur + 1;
 				return({
 					status: 'completed',
 					output: entry.request
 				});
 			},
 			failure: async function(entry) {
-				failureHandledBlockhashes.add(entry.request.block.hash);
+				const cur = failureHandledBlockhashes[entry.request.block.hash.toString()] ?? 0
+				failureHandledBlockhashes[entry.request.block.hash.toString()] = cur + 1;
 				return({
 					status: 'completed',
 					output: null
@@ -1473,10 +1475,7 @@ test('FX Server Queue extensions', async function() {
 	const successExchange = await successfulQuote.createExchange();
 	const successExchangeStatus = await waitForExchangeToComplete(server, successExchange);
 
-	const successBlockHash = new KeetaNet.lib.Block.Hash(successExchangeStatus.blockhash);
-	expect(successHandledBlockhashes.has(successBlockHash)).toBe(true);
-	expect(successHandledBlockhashes.size).toBeGreaterThanOrEqual(1);
-	expect(failureHandledBlockhashes.size).toBe(0);
+	expect(successHandledBlockhashes[successExchangeStatus.blockhash]).toBe(1);
 
 	const userBalanceUSD = await client.balance(testCurrencyUSD);
 	const userFailureSwapAmount = userBalanceUSD + 1n;
@@ -1514,7 +1513,5 @@ test('FX Server Queue extensions', async function() {
 	}
 	expect(failureError.message.includes('Exchange failed')).toBe(true);
 
-	const failureExchangeBlockHash = new KeetaNet.lib.Block.Hash(failureBlock.hash.toString());
-	expect(failureHandledBlockhashes.has(failureExchangeBlockHash)).toBe(true);
-	expect(failureHandledBlockhashes.size).toBeGreaterThan(0);
+	expect(failureHandledBlockhashes[failureBlock.hash.toString()]).toBe(1);
 });
