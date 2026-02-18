@@ -44,6 +44,7 @@ import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-ser
 import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators } from './lib/validators.js';
 import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
+import { assertVisibility } from './utils.js';
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
 
@@ -536,7 +537,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 				// Get metadata from query params
 				const parsedUrl = new URL(url);
-				const visibilityParam = parsedUrl.searchParams.get('visibility');
+				const visibilityParam = assertVisibility(parsedUrl.searchParams.get('visibility'));
 				const tagsParam = parsedUrl.searchParams.get('tags');
 
 				// Parse visibility and raw tags
