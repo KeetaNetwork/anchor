@@ -26,7 +26,9 @@ import {
 	assertKeetaStorageAnchorGetRequest,
 	assertKeetaStorageAnchorSearchRequest,
 	assertKeetaStorageAnchorSearchResponse,
-	assertKeetaStorageAnchorQuotaResponse,
+	assertKeetaStorageAnchorQuotaResponse
+} from './common.generated.js';
+import {
 	getKeetaStorageAnchorDeleteRequestSigningData,
 	getKeetaStorageAnchorPutRequestSigningData,
 	getKeetaStorageAnchorGetRequestSigningData,

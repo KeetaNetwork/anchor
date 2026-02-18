@@ -20,7 +20,9 @@ import {
 	isKeetaStorageAnchorDeleteResponse,
 	isKeetaStorageAnchorPutResponse,
 	isKeetaStorageAnchorSearchResponse,
-	isKeetaStorageAnchorQuotaResponse,
+	isKeetaStorageAnchorQuotaResponse
+} from './common.generated.js';
+import {
 	getKeetaStorageAnchorDeleteRequestSigningData,
 	getKeetaStorageAnchorPutRequestSigningData,
 	getKeetaStorageAnchorGetRequestSigningData,
