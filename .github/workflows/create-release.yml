@@ -36,3 +36,12 @@ jobs:
             --title "v${{ steps.get_version.outputs.version }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Discord
+        continue-on-error: true
+        run: |
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "content": "<@&1427361285888016635> **Anchor v${{ steps.get_version.outputs.version }}** has been released!\nhttps://github.com/KeetaNetwork/anchor/releases/tag/${{ steps.get_version.outputs.tag }}"
+            }'
