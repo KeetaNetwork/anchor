@@ -527,9 +527,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 		return(this.processTimeout * 10);
 	}
+
 	protected set retryDelay(value: number) {
 		this.internalRetryDelay = value;
 	}
+
 	private internalRetryDelay?: number;
 
 	/**
@@ -540,9 +542,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * processing the job has died or is otherwise no longer making
 	 * progress on the job.
 	 *
-	 * Like the `aborted` status, the `stuck` status is means the job is
-	 * in an indeterminate state where it may have done some of the work
-	 * of the processor but we don't know how much (if any) of it was
+	 * Like the `aborted` status, the `stuck` status means the job is in
+	 * an indeterminate state where it may have done some of the work of
+	 * the processor but we don't know how much (if any) of it was
 	 * completed, so the `stuck` processor should be prepared to handle
 	 * that situation.  It is unlikely that the job is still being actively
 	 * processed by a worker at this point, but it is possible, so the
@@ -554,9 +556,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 		return(10);
 	}
+
 	protected set stuckMultiplier(value: number) {
 		this.internalStuckMultiplier = value;
 	}
+
 	private internalStuckMultiplier?: number;
 
 	/**
