@@ -426,7 +426,7 @@ interface AdditionalPipeOptions {
 	 * If true, call maintain/run on this target when maintaining/running this runner
 	 * Defaults to true
 	 */
-	callMaintainRun?: boolean;
+	exclusiveTarget?: boolean;
 }
 
 /**
@@ -933,7 +933,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 */
 		const pipes = [...this.pipes];
 		for (const pipe of pipes) {
-			if (pipe.callMaintainRun === false) {
+			if (pipe.exclusiveTarget === false) {
 				continue;
 			}
 
@@ -1304,7 +1304,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 		for (const pipe of this.pipes) {
 			try {
-				if (pipe.callMaintainRun === false) {
+				if (pipe.exclusiveTarget === false) {
 					continue;
 				}
 

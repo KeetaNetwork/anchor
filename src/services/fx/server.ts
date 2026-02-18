@@ -785,11 +785,11 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 			});
 
 			if (this.successStageRunner) {
-				runner.pipe(this.successStageRunner, { callMaintainRun: false });
+				runner.pipe(this.successStageRunner, { exclusiveTarget: false });
 			}
 
 			if (this.failureStageRunner) {
-				runner.pipeFailed(this.failureStageRunner, { callMaintainRun: false });
+				runner.pipeFailed(this.failureStageRunner, { exclusiveTarget: false });
 			}
 
 			this.runners[account.publicKeyAndTypeString] = runner;
