@@ -174,7 +174,7 @@ export type FromPlaintextOptions = {
  *         }
  *
  *         ContainerPackage ::= SEQUENCE {
- *                 version                Version (v2 | v3),
+ *                 version                Version,
  *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
  *                 plaintextContainer     [1] EXPLICIT PlaintextContainerBox OPTIONAL,
  *                 signerInfo             [2] EXPLICIT SignerInfo OPTIONAL,  -- v3 only
