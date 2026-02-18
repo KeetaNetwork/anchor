@@ -1,7 +1,8 @@
 import type { BrandedString, Brand } from '../utils/brand.ts';
 import type { Logger } from '../log/index.ts';
 import type { JSONSerializable } from '../utils/json.ts';
-import { assertNever, type AssertNever } from '../utils/never.js';
+import { assertNever } from '../utils/never.js';
+import type { AssertNever } from '../utils/never.ts';
 import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
