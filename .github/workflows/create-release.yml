@@ -42,6 +42,4 @@ jobs:
         run: |
           curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "content": "<@&1427361285888016635> **Anchor v${{ steps.get_version.outputs.version }}** has been released!\nhttps://github.com/KeetaNetwork/anchor/releases/tag/${{ steps.get_version.outputs.tag }}"
-            }'
+            -d '{"content": "<@&1427361285888016635> **Anchor v${{ steps.get_version.outputs.version }}** has been released! https://github.com/KeetaNetwork/anchor/releases/tag/${{ steps.get_version.outputs.tag }}"}'
