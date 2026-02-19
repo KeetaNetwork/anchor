@@ -44,13 +44,11 @@ node_modules/.done: package.json package-lock.json Makefile
 node_modules: node_modules/.done
 	@touch node_modules
 
-# Generated files for the KYC Service
-GENERATED_FILES := src/services/kyc/iso20022.generated.ts src/services/kyc/oids.generated.ts src/services/asset-movement/lib/data/addresses/types.generated.ts
+# Generated files for the KYC + Asset movement Service
+GENERATED_FILES := src/services/kyc/iso20022.generated.ts src/services/kyc/oids.generated.ts src/services/asset-movement/lib/data/addresses/types.generated.ts src/services/asset-movement/lib/data/addresses/mobile-wallet/index.generated.ts src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts
 src/services/kyc/oids.generated.ts: src/services/kyc/iso20022.generated.ts
 src/services/kyc/iso20022.generated.ts: utils/run-ts src/services/kyc/utils/generate-kyc-schema.ts src/services/kyc/utils/oids.json node_modules
 	./utils/run-ts ./src/services/kyc/utils/generate-kyc-schema.ts --oids-json=./src/services/kyc/utils/oids.json --oids-output=./src/services/kyc/oids.generated.ts --iso20022-output=./src/services/kyc/iso20022.generated.ts
-
-# Generated files for asset movement service
 
 src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts: utils/run-ts $(shell find src/services/asset-movement/lib/data/addresses/bank-account/ -type f ! -name '*.generated.ts') node_modules ./src/services/asset-movement/lib/data/scripts/generate-index.sh
 	./src/services/asset-movement/lib/data/scripts/generate-index.sh src/services/asset-movement/lib/data/addresses/bank-account > ./src/services/asset-movement/lib/data/addresses/bank-account/index.generated.ts.tmp
@@ -133,6 +131,7 @@ clean:
 	rm -f keetanetwork-anchor-*.tgz
 	rm -f src/services/kyc/oids.generated.ts src/services/kyc/iso20022.generated.ts
 	rm -f src/services/asset-movement/lib/data/addresses/*.generated.ts
+	rm -f src/services/asset-movement/lib/data/addresses/*/*.generated.ts
 
 # Files created during the "install" process are cleaned up
 # by the "distclean" target.

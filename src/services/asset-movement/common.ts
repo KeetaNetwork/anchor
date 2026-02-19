@@ -127,7 +127,7 @@ export interface Asset {
 	id: string;
 }
 
-type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH';
+type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET';
 type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
 

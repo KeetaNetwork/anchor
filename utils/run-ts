@@ -40,4 +40,4 @@ if [ ! -f "${bin}" ]; then
 	exit 1
 fi
 
-node "${bin}" "$@"
+node "${bin}" "${@}"
