@@ -537,13 +537,13 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 				// Get metadata from query params
 				const parsedUrl = new URL(url);
-				const visibilityParam = assertVisibility(parsedUrl.searchParams.get('visibility'));
+				const visibilityParam = parsedUrl.searchParams.get('visibility');
 				const tagsParam = parsedUrl.searchParams.get('tags');
 
-				// Parse visibility and raw tags
+				// Default to private when absent, assert valid value otherwise
 				let visibility: StorageObjectVisibility = 'private';
-				if (visibilityParam === 'public') {
-					visibility = 'public';
+				if (visibilityParam !== null) {
+					visibility = assertVisibility(visibilityParam);
 				}
 
 				const rawTags: string[] = (tagsParam ?? '')
