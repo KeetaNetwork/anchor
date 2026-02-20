@@ -481,3 +481,49 @@ test('Wildcard specificity: most specific route wins regardless of definition or
 
 	await server.stop();
 }, 30000);
+
+test('maxBodySize: rejects oversized requests', async function() {
+	const MAX_BODY = 64;
+	let handlerCalled = false;
+
+	const server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['PUT /api/upload'] = {
+				bodyType: 'raw',
+				maxBodySize: MAX_BODY,
+				handler: async function() {
+					handlerCalled = true;
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	// Request with Content-Length exceeding maxBodySize should get 413
+	handlerCalled = false;
+	const oversizedResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY + 1)
+	});
+	expect(oversizedResponse.status).toBe(413);
+	expect(handlerCalled).toBe(false);
+
+	// Request within maxBodySize should succeed
+	handlerCalled = false;
+	const okResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY)
+	});
+	expect(okResponse.status).toBe(200);
+	expect(handlerCalled).toBe(true);
+
+	await server.stop();
+}, 30000);
