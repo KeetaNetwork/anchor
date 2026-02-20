@@ -19,9 +19,11 @@ const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {
 	bodyType: 'raw';
+	maxBodySize?: number;
 	handler: RouteHandlerMethod<Buffer>;
 } | {
 	bodyType: 'parsed';
+	maxBodySize?: number;
 	handler: RouteHandlerMethod;
 } | {
 	bodyType: 'none';
@@ -260,7 +262,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			newRoutes[routeKey] = {
-				bodyType: newRoute.bodyType,
+				...newRoute,
 				async handler(...args: Parameters<RouteHandlerMethod<unknown>>) {
 					// This is typed properly, but TS can't infer it here
 					// @ts-ignore
@@ -384,11 +386,30 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 * If POST'ing, PUT'ing, or PATCH'ing, read and parse the request body
 				 */
 				if (shouldCheckBody && route.bodyType !== 'none') {
+					const bodySizeLimit = route.maxBodySize ?? MAX_REQUEST_SIZE;
+
+					// Early rejection based on Content-Length header
+					const contentLength = request.headers['content-length'];
+					if (contentLength !== undefined) {
+						const declaredSize = parseInt(contentLength, 10);
+						if (!isNaN(declaredSize) && declaredSize > bodySizeLimit) {
+							request.resume();
+
+							response.statusCode = 413;
+							response.setHeader('Content-Type', 'text/plain');
+							response.write('Payload Too Large');
+
+							await responseFinalize();
+
+							return;
+						}
+					}
+
 					const data = await request.map(function(chunk) {
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 						return(Buffer.from(chunk));
 					}).reduce(function(prev, curr) {
-						if (prev.length > MAX_REQUEST_SIZE) {
+						if (prev.length > bodySizeLimit) {
 							throw(new Error('Request too large'));
 						}
 

@@ -532,6 +532,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// PUT /api/object/* - Create or update an object
 		routes['PUT /api/object/**'] = {
 			bodyType: 'raw',
+			maxBodySize: quotas.maxObjectSize,
 			handler: async function(params, postData, _headers, url) {
 				const objectPath = extractObjectPath(params);
 
