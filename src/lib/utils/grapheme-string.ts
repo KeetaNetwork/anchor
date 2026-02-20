@@ -45,9 +45,6 @@ export class GraphemeString implements removeIndexSignature<String> {
 
 	/**
 	 * Get a copy of the parts of this grapheme cluster string.
-	 *
-	 * Modifying the returned array will not affect the internal state of
-	 * the GraphemeString, but it also won't modify the original string.
 	 */
 	protected get _parts(): string[] {
 		return([...this.#parts]);
