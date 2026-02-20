@@ -1382,6 +1382,17 @@ export class EncryptedContainer {
 	 * @returns true if signature is valid, false if invalid, or throws if not signed or plaintext unavailable
 	 */
 	async verifySignature(): Promise<boolean> {
+		// If we have a signer but no parsed info yet, encode first to produce the signed DER
+		if (!this.#signingInfo.parsedSignerInfo && this.#signingInfo.signer) {
+			const encoded = await this.#computeEncoded();
+			if (encoded) {
+				const parsed = parseASN1Bare(encoded);
+				if (parsed.signerInfo) {
+					this.#signingInfo.parsedSignerInfo = parsed.signerInfo;
+				}
+			}
+		}
+
 		if (!this.#signingInfo.parsedSignerInfo) {
 			throw(new EncryptedContainerError('NOT_SIGNED', 'Container is not signed'));
 		}

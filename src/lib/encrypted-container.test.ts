@@ -518,5 +518,11 @@ describe('Encrypted Container Signing Tests', function() {
 			expect(decoded.getSigningAccount()?.comparePublicKey(testAccount2)).toBe(false);
 			expect(await decoded.verifySignature()).toBe(true);
 		});
+
+		test('verify on freshly created container without round-trip', async function() {
+			const container = EncryptedContainer.EncryptedContainer.fromPlaintext(testData, [testAccount1], { signer: testAccount1 });
+			expect(container.isSigned).toBe(true);
+			expect(await container.verifySignature()).toBe(true);
+		});
 	});
 });
