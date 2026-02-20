@@ -9,10 +9,10 @@ type removeIndexSignature<T> = {
 
 // eslint-disable-next-line @typescript-eslint/no-wrapper-object-types
 export class GraphemeString implements removeIndexSignature<String> {
-	#parts: string[];
-	#locale: ConstructorParameters<typeof Intl.Segmenter>[0] | undefined;
+	readonly #parts: string[];
+	readonly #locale: ConstructorParameters<typeof Intl.Segmenter>[0] | undefined;
 
-	length: number;
+	readonly length: number;
 
 	constructor(input: string | string[], locale?: ConstructorParameters<typeof Intl.Segmenter>[0]);
 	constructor(input: GraphemeString);
@@ -145,10 +145,10 @@ export class GraphemeString implements removeIndexSignature<String> {
 		}
 
 		let startPos: number;
-		if (position !== undefined) {
-			startPos = Math.min(position, this.length - searchStringEncoded.length);
-		} else {
+		if (position === undefined) {
 			startPos = this.length - searchStringEncoded.length;
+		} else {
+			startPos = Math.min(position, this.length - searchStringEncoded.length);
 		}
 
 		for (let index = startPos; index >= 0; index--) {
@@ -182,10 +182,10 @@ export class GraphemeString implements removeIndexSignature<String> {
 	match(match: string | RegExp | { [Symbol.match](string: string): RegExpMatchArray | null }): RegExpMatchArray | null {
 		if (typeof match === 'string') {
 			const index = this.indexOf(match);
-			if (index !== -1) {
-				return([match]);
-			} else {
+			if (index === -1) {
 				return(null);
+			} else {
+				return([match]);
 			}
 		}
 
@@ -278,7 +278,7 @@ export class GraphemeString implements removeIndexSignature<String> {
 	// Cannot be combined - both overloads are deprecated (all variants)
 	split(separator: string | RegExp, limit?: number): string[] {
 		if (separator === '') {
-			return([...this.#parts.slice(0, limit)]);
+			return(this.#parts.slice(0, limit));
 		}
 
 		throw(new Error('not implemented'));
@@ -428,10 +428,10 @@ export class GraphemeString implements removeIndexSignature<String> {
 		}
 
 		let effectivePosition: number;
-		if (position !== undefined) {
-			effectivePosition = Math.min(position, this.length);
-		} else {
+		if (position === undefined) {
 			effectivePosition = this.length;
+		} else {
+			effectivePosition = Math.min(position, this.length);
 		}
 		const startIndex = effectivePosition - searchStringEncoded.length;
 
@@ -473,7 +473,7 @@ export class GraphemeString implements removeIndexSignature<String> {
 		return(this.repeatGrapheme(count).toString());
 	}
 
-	startsWith(searchString: string | GraphemeString, position?: number): boolean {
+	startsWith(searchString: string | GraphemeString, position = 0): boolean {
 		let searchStringEncoded: GraphemeString;
 		if (typeof searchString === 'string') {
 			searchStringEncoded = new GraphemeString(searchString);
@@ -481,7 +481,7 @@ export class GraphemeString implements removeIndexSignature<String> {
 			searchStringEncoded = searchString;
 		}
 
-		const effectivePosition = position ?? 0;
+		const effectivePosition = position;
 
 		if (effectivePosition < 0 || effectivePosition > this.length) {
 			return(false);
