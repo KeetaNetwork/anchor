@@ -447,7 +447,7 @@ describe('Encrypted Container Error Tests', function() {
 	});
 });
 
-describe('Encrypted Container Signing Tests (v3)', function() {
+describe('Encrypted Container Signing Tests', function() {
 	const testData = Buffer.from('Test content', 'utf-8');
 
 	describe('container creation', function() {
