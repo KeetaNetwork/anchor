@@ -11,12 +11,14 @@ type removeIndexSignature<T> = {
 export class GraphemeString implements removeIndexSignature<String> {
 	readonly #parts: string[];
 	readonly #locale: ConstructorParameters<typeof Intl.Segmenter>[0] | undefined;
+	#bytes: Uint8Array | null = null;
+	#byteLength: number | null = null;
 
 	readonly length: number;
 
-	constructor(input: string | string[], locale?: ConstructorParameters<typeof Intl.Segmenter>[0]);
+	constructor(input: string | string[] | Uint8Array, locale?: ConstructorParameters<typeof Intl.Segmenter>[0]);
 	constructor(input: GraphemeString);
-	constructor(input: string | string[] | GraphemeString, locale?: ConstructorParameters<typeof Intl.Segmenter>[0]) {
+	constructor(input: string | string[] | GraphemeString | Uint8Array, locale?: ConstructorParameters<typeof Intl.Segmenter>[0]) {
 		if (input instanceof GraphemeString) {
 			if (locale !== undefined) {
 				throw(new Error('Locale argument must not be provided when input is a GraphemeString'));
@@ -28,6 +30,11 @@ export class GraphemeString implements removeIndexSignature<String> {
 			this.#parts = [...input];
 			this.#locale = locale;
 		} else {
+			if (input instanceof Uint8Array) {
+				const decoder = new TextDecoder();
+				input = decoder.decode(input);
+			}
+
 			const segmenter = new Intl.Segmenter(locale, { granularity: 'grapheme' });
 			const normalizedInput = input.normalize('NFC');
 			const segments = segmenter.segment(normalizedInput);
@@ -60,6 +67,29 @@ export class GraphemeString implements removeIndexSignature<String> {
 
 	toString(): string {
 		return(this.#parts.join(''));
+	}
+
+	/**
+	 * The UTF-8 encoding of this GraphemeString as a Uint8Array.
+	 */
+	get bytes(): Uint8Array {
+		if (this.#bytes === null) {
+			const encoder = new TextEncoder();
+			this.#bytes = encoder.encode(this.toString());
+		}
+
+		return(this.#bytes);
+	}
+
+	/**
+	 * The byte length of the UTF-8 Encoding of this GraphemeString.
+	 */
+	get byteLength(): number {
+		if (this.#byteLength === null) {
+			this.#byteLength = this.bytes.length;
+		}
+
+		return(this.#byteLength);
 	}
 
 	charAt(pos: number): string {

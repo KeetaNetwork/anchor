@@ -25,6 +25,11 @@ describe('GraphemeString', function() {
 				const gs = new GraphemeString(check.input);
 				expect(gs.length).toBe(check.expectedLength);
 				expect(gs.toString()).toBe(check.expectedString);
+
+				const bytes = gs.bytes;
+				const gsDuplicate = new GraphemeString(bytes);
+				expect(gsDuplicate.length).toBe(check.expectedLength);
+				expect(gsDuplicate.toString()).toBe(check.expectedString);
 			}
 		});
 
