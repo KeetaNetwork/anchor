@@ -1165,7 +1165,7 @@ test('Pipeline Basic Tests', async function() {
 		throw(new Error('internal error: failed pipe entry not found in next stage'));
 	}
 	expect(pendingFailedEntry.status).toBe('pending');
-	expect(pendingFailedEntry.request).toBe('failed:job-fail');
+	expect(pendingFailedEntry.request).toBe('job-fail');
 
 	await failedStage2.run();
 
@@ -1174,7 +1174,7 @@ test('Pipeline Basic Tests', async function() {
 		throw(new Error('internal error: completed pipe entry not found in next stage'));
 	}
 	expect(completedFailedEntry.status).toBe('completed');
-	expect(completedFailedEntry.output).toBe('handled:failed:job-fail');
+	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
 test('Errors', async function() {
