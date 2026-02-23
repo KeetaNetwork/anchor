@@ -429,6 +429,22 @@ interface AdditionalPipeOptions {
 	exclusiveTarget?: boolean;
 }
 
+// @ts-ignore
+export interface KeetaAnchorQueueRunnerConfigurationObject {
+	maxRetries: number;
+	processTimeout: number;
+	batchSize: number;
+	retryDelay: number;
+	stuckMultiplier: number;
+}
+
+// Ensure that KeetaAnchorQueueRunnerConfigurationObject has all the required properties of KeetaAnchorQueueRunner, and no extra properties
+// if this assertion fails, it means that KeetaAnchorQueueRunnerConfigurationObject is missing a property from KeetaAnchorQueueRunner or has an extra property
+// @ts-ignore
+type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout'>>;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type __check = AssertNever<__check_KeetaAnchorQueueRunnerConfigurationObject extends KeetaAnchorQueueRunnerConfigurationObject ? (KeetaAnchorQueueRunnerConfigurationObject extends __check_KeetaAnchorQueueRunnerConfigurationObject ? never : false) : false>;
+
 /**
  * A Queue Runner and Request Translator for processing entries in a queue
  *

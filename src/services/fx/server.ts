@@ -24,7 +24,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
-import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
+import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueRunnerConfigurationObject } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
@@ -635,15 +635,9 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 }
 
-type RunnerOrRunnerWithOptions<Req, Res> = {
+type RunnerOrRunnerWithOptions<Req, Res> = ({
 	processor: KeetaAnchorQueueRunner<Req, Res>['processor'];
-	maxRetries?: number | undefined;
-	processTimeout?: number | undefined;
-	batchSize?: number | undefined;
-	maxRunners?: number;
-	retryDelay?: number;
-	stuckMultiplier?: number;
-} | KeetaAnchorQueueRunner<Req, Res>['processor'];
+} & KeetaAnchorQueueRunnerConfigurationObject) | KeetaAnchorQueueRunner<Req, Res>['processor'];
 
 type KeetaFXAnchorQueuePipelineExtensions = {
 	success?: RunnerOrRunnerWithOptions<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>;
@@ -700,30 +694,33 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					if (typeof config === 'function') {
 						this.#processorMethod = config;
 					} else {
-						this.#processorMethod = config.processor;
+						// eslint-disable-next-line @typescript-eslint/no-unused-vars
+						const { processor, batchSize, maxRetries, processTimeout, retryDelay, stuckMultiplier, ...rest } = config;
 
-						if (config.batchSize !== undefined) {
-							this.batchSize = config.batchSize;
+						// Ensure that all keys in the config object are expected and used
+						// eslint-disable-next-line @typescript-eslint/no-unused-vars
+						type __checkAllExtensionConfigKeysAreUsed = AssertNever<keyof typeof rest>;
+
+						this.#processorMethod = processor;
+
+						if (batchSize !== undefined) {
+							this.batchSize = batchSize;
 						}
 
-						if (config.maxRetries !== undefined) {
-							this.maxRetries = config.maxRetries;
+						if (maxRetries !== undefined) {
+							this.maxRetries = maxRetries;
 						}
 
-						if (config.processTimeout !== undefined) {
-							this.processTimeout = config.processTimeout;
+						if (processTimeout !== undefined) {
+							this.processTimeout = processTimeout;
 						}
 
-						if (config.retryDelay !== undefined) {
-							this.retryDelay = config.retryDelay;
+						if (retryDelay !== undefined) {
+							this.retryDelay = retryDelay;
 						}
 
-						if (config.stuckMultiplier !== undefined) {
-							this.stuckMultiplier = config.stuckMultiplier;
-						}
-
-						if (config.maxRunners !== undefined) {
-							this.maxRunners = config.maxRunners;
+						if (stuckMultiplier !== undefined) {
+							this.stuckMultiplier = stuckMultiplier;
 						}
 					}
 				}
