@@ -640,6 +640,9 @@ type RunnerOrRunnerWithOptions<Req, Res> = {
 	maxRetries?: number | undefined;
 	processTimeout?: number | undefined;
 	batchSize?: number | undefined;
+	maxRunners?: number;
+	retryDelay?: number;
+	stuckMultiplier?: number;
 } | KeetaAnchorQueueRunner<Req, Res>['processor'];
 
 type KeetaFXAnchorQueuePipelineExtensions = {
@@ -699,16 +702,28 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					} else {
 						this.#processorMethod = config.processor;
 
-						if (config.batchSize) {
+						if (config.batchSize !== undefined) {
 							this.batchSize = config.batchSize;
 						}
 
-						if (config.maxRetries) {
+						if (config.maxRetries !== undefined) {
 							this.maxRetries = config.maxRetries;
 						}
 
-						if (config.processTimeout) {
+						if (config.processTimeout !== undefined) {
 							this.processTimeout = config.processTimeout;
+						}
+
+						if (config.retryDelay !== undefined) {
+							this.retryDelay = config.retryDelay;
+						}
+
+						if (config.stuckMultiplier !== undefined) {
+							this.stuckMultiplier = config.stuckMultiplier;
+						}
+
+						if (config.maxRunners !== undefined) {
+							this.maxRunners = config.maxRunners;
 						}
 					}
 				}
