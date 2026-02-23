@@ -679,6 +679,22 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		return(await this.initializePromise);
 	}
 
+	protected setConfiguration(parameters: Partial<KeetaAnchorQueueRunnerConfigurationObject>): void {
+		const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier' ] as const satisfies (keyof typeof parameters)[];
+		// Ensure that all keys in the config object are expected and used
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars
+		type __checkAllExtensionConfigKeysAreValid = AssertNever<Exclude<keyof typeof parameters, typeof parameterNames[number]>>;
+
+		for (const parameterName of parameterNames) {
+			const value = parameters[parameterName];
+			if (value === undefined) {
+				continue;
+			}
+
+			this[parameterName] = value;
+		}
+	}
+
 	private methodLogger(method: string): Logger | undefined {
 		return(MethodLogger(this.logger, {
 			class: 'KeetaAnchorQueueRunner',

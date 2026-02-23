@@ -684,7 +684,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					throw(new Error('config not set'));
 				});
 
-				_setConfiguration(config: RunnerOrRunnerWithOptions<Req, Res>) {
+				_setConfigurationAndProcessor(config: RunnerOrRunnerWithOptions<Req, Res>) {
 					if (this.#configSet) {
 						throw(new Error('Configuration can only be set once'));
 					}
@@ -697,14 +697,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 						const { processor, ...parameters } = config;
 						this.#processorMethod = processor;
 
-						const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier' ] as const satisfies (keyof typeof parameters)[];
-						// Ensure that all keys in the config object are expected and used
-						// eslint-disable-next-line @typescript-eslint/no-unused-vars
-						type __checkAllExtensionConfigKeysAreValid = AssertNever<Exclude<keyof typeof parameters, typeof parameterNames[number]>>;
-
-						for (const parameterName of parameterNames) {
-							this[parameterName] = parameters[parameterName];
-						}
+						this.setConfiguration(parameters);
 					}
 				}
 
@@ -728,7 +721,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					logger: this.logger
 				}));
 
-				runner._setConfiguration(failureExtension);
+				runner._setConfigurationAndProcessor(failureExtension);
 
 				this.failureStageRunner = runner;
 			}
@@ -762,7 +755,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					logger: this.logger
 				}));
 
-				runner._setConfiguration(successExtension);
+				runner._setConfigurationAndProcessor(successExtension);
 
 				this.successStageRunner = runner;
 			}
