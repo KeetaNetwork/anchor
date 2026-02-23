@@ -706,7 +706,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 	/** @internal */
 	_Testing(key: string): {
-		setMaxRunners: (maxRunners: number) => void;
+		setParams: (params: Partial<KeetaAnchorQueueRunnerConfigurationObject> & { maxRunners?: number; }) => void;
 		queue: () => KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 		markWorkerAsProcessing: () => Promise<void>;
 	} {
@@ -715,8 +715,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 
 		return({
-			setMaxRunners: (maxRunners: number) => {
-				this.maxRunners = maxRunners;
+			setParams: (params: Partial<KeetaAnchorQueueRunnerConfigurationObject> & { maxRunners?: number; }) => {
+				const { maxRunners, ...configParams } = params;
+				this.setConfiguration(configParams);
+
+				if (maxRunners !== undefined) {
+					this.maxRunners = maxRunners;
+				}
 			},
 			queue: () => {
 				return(this.queue);
