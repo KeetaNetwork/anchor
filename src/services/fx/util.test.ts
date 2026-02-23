@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
 import { KeetaNet } from '../../client/index.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
@@ -110,7 +110,7 @@ test('assertExchangeBlockParameters', async function() {
 	} as const satisfies Parameters<typeof convertQuoteToExpectedSwapWithoutCost>[0];
 
 	const checks: {
-		args: Parameters<typeof assertExchangeBlockParameters>[0];
+		args: Parameters<typeof assertExchangeBlockParametersAndComputeRefund>[0];
 		pass: boolean;
 	}[] = [
 		{
@@ -118,7 +118,8 @@ test('assertExchangeBlockParameters', async function() {
 				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
 				block: aSendsTokenAToBBlock,
 				liquidityAccount: accountB,
-				checks: baseQuoteRequest
+				checks: baseQuoteRequest,
+				isQuoteBasedExchange: false
 			},
 			pass: true
 		},
@@ -126,8 +127,30 @@ test('assertExchangeBlockParameters', async function() {
 			args: {
 				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
 				block: aSendsTokenAToBBlock,
+				liquidityAccount: accountB,
+				checks: baseQuoteRequest,
+				isQuoteBasedExchange: true
+			},
+			pass: true
+		},
+		{
+			args: {
+				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
+				block: aSendsTokenAToBBlock,
+				liquidityAccount: accountB,
+				// Try to send 1 more than the quote amount, which should fail quote-based exchange validation but pass non-quote-based validation
+				checks: { ...baseQuoteRequest, request: { ...baseQuoteRequest.request, amount: baseQuoteRequest.request.amount - 1n }},
+				isQuoteBasedExchange: true
+			},
+			pass: false
+		},
+		{
+			args: {
+				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
+				block: aSendsTokenAToBBlock,
 				liquidityAccount: accountA,
-				checks: baseQuoteRequest
+				checks: baseQuoteRequest,
+				isQuoteBasedExchange: false
 			},
 			pass: false
 		},
@@ -142,7 +165,8 @@ test('assertExchangeBlockParameters', async function() {
 						...baseQuoteRequest.request,
 						amount: 501n
 					}
-				}
+				},
+				isQuoteBasedExchange: false
 			},
 			pass: false
 		},
@@ -157,7 +181,8 @@ test('assertExchangeBlockParameters', async function() {
 						...baseQuoteRequest.quote,
 						convertedAmount: 499n
 					}
-				}
+				},
+				isQuoteBasedExchange: false
 			},
 			pass: false
 		},
@@ -179,7 +204,8 @@ test('assertExchangeBlockParameters', async function() {
 						...baseQuoteRequest.request,
 						amount: 475n
 					}
-				}
+				},
+				isQuoteBasedExchange: false
 			},
 			pass: true
 		},
@@ -201,7 +227,8 @@ test('assertExchangeBlockParameters', async function() {
 						...baseQuoteRequest.request,
 						amount: 480n
 					}
-				}
+				},
+				isQuoteBasedExchange: false
 			},
 			pass: false
 		},
@@ -219,7 +246,8 @@ test('assertExchangeBlockParameters', async function() {
 							amount: 1n
 						}
 					}
-				}
+				},
+				isQuoteBasedExchange: false
 			},
 			pass: false
 		}
@@ -228,7 +256,7 @@ test('assertExchangeBlockParameters', async function() {
 	for (const check of checks) {
 		let passed = true;
 		try {
-			assertExchangeBlockParameters(check.args);
+			assertExchangeBlockParametersAndComputeRefund(check.args);
 		} catch {
 			passed = false;
 		}

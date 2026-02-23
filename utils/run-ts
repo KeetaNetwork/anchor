@@ -26,6 +26,16 @@ mkdir -p "${tmpdir}" || exit 1
 npm run --silent tsc -- --module NodeNext --moduleResolution NodeNext --isolatedModules false --outDir "${tmpdir}" "${script}"
 bin="$(find "${tmpdir}" -name '*.js')"
 if [ ! -f "${bin}" ]; then
+	canonicalScript="$(realpath "${script}")"
+	# Trim the length of ${workdir} from the canonical path
+	relativeScript="${canonicalScript#"${workdir}"}"
+	# Trim the "/src/" prefix if it exists
+	relativeScript="${relativeScript#/src/}"
+	# Prepend tmpdir
+	bin="${tmpdir}/${relativeScript%.ts}.js"
+fi
+
+if [ ! -f "${bin}" ]; then
 	echo "Compiled file not found"
 	exit 1
 fi

@@ -17,6 +17,15 @@ export type KeetaAnchorQueueRequestID = BrandedString<'KeetaAnchorQueueID'>;
 export type KeetaAnchorQueueWorkerID = Brand<number, 'KeetaAnchorQueueWorkerID'>;
 
 export type KeetaAnchorQueueStatus = 'pending' | 'processing' | 'completed' | 'failed_temporarily' | 'failed_permanently' | 'stuck' | 'aborted' | 'moved' | '@internal';
+const keetaAnchorPipeableQueueStatuses = [ 'completed', 'failed_permanently' ] as const;
+/**
+ * This is a type-level assertion to ensure that all values in keetaAnchorPipeableQueueStatuses are valid KeetaAnchorQueueStatus values.
+ * If this assertion fails, it means that there is a value in keetaAnchorPipeableQueueStatuses that is not a valid KeetaAnchorQueueStatus, and the code will not compile.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type __check_keetaAnchorPipeableQueueStatuses_valid = AssertNever<typeof keetaAnchorPipeableQueueStatuses[number] extends KeetaAnchorQueueStatus ? never : true>;
+
+export type KeetaAnchorPipeableQueueStatus = Extract<KeetaAnchorQueueStatus, typeof keetaAnchorPipeableQueueStatuses[number]>;
 export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
 	/**
 	 * The Job ID
@@ -457,7 +466,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pipes to other runners we have registered
 	 */
-	private readonly pipes: ({
+	private readonly pipes: (({
 		isBatchPipe: false;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		target: KeetaAnchorQueueRunner<UserResult, any, QueueResult, any>
@@ -467,6 +476,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		target: KeetaAnchorQueueRunner<UserResult[], any, JSONSerializable, any>;
 		minBatchSize: number;
 		maxBatchSize: number;
+	}) & {
+		acceptStatus: KeetaAnchorPipeableQueueStatus;
 	})[] = [];
 
 	/**
@@ -477,9 +488,80 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Configuration for this queue
 	 */
+	/**
+	 * The maximum number of times to retry a failed job before giving up
+	 * and marking it as permanently failed
+	 */
 	protected maxRetries = 5;
+	/**
+	 * The amount of time to allow a job to run before considering it
+	 * timed out and marking it as aborted, the `aborted` processor
+	 * (if provided) will be responsible for determining what to do with
+	 * the job at that point (e.g. retry it, mark it as failed, etc)
+	 * because some work from the job may have been completed
+	 * before the timeout was reached -- it could even still be on-going
+	 * after the timeout is reached, so the `aborted` processor should be
+	 * prepared to handle that situation as well.
+	 */
 	protected processTimeout = 300_000; /* 5 minutes */
+	/**
+	 * When piping a batch of jobs to another runner, this is the number
+	 * of jobs to include in each batch (max).
+	 */
 	protected batchSize = 100;
+
+	/**
+	 * The amount of time to wait before retrying a failed job -- this should
+	 * be long enough to allow any transient issues to be resolved (e.g. a downstream
+	 * service to come back up, etc) but not so long that it causes excessive
+	 * delays in processing.
+	 *
+	 * Keep in mind that after the {@link maxRetries} is reached, the job will
+	 * be marked as permanently failed, so if the retry delay is too low then
+	 * it could cause jobs to be marked as permanently failed before transient
+	 * issues have a chance to be resolved.
+	 */
+	protected get retryDelay(): number {
+		if (this.internalRetryDelay !== undefined) {
+			return(this.internalRetryDelay);
+		}
+		return(this.processTimeout * 10);
+	}
+
+	protected set retryDelay(value: number) {
+		this.internalRetryDelay = value;
+	}
+
+	private internalRetryDelay?: number;
+
+	/**
+	 * The number of {@link processTimeout} intervals to wait before
+	 * considering a job to be stuck -- this is for jobs that are
+	 * still in the 'processing' state but have not updated their
+	 * timestamp in a long time, which likely indicates that the worker
+	 * processing the job has died or is otherwise no longer making
+	 * progress on the job.
+	 *
+	 * Like the `aborted` status, the `stuck` status means the job is in
+	 * an indeterminate state where it may have done some of the work of
+	 * the processor but we don't know how much (if any) of it was
+	 * completed, so the `stuck` processor should be prepared to handle
+	 * that situation.  It is unlikely that the job is still being actively
+	 * processed by a worker at this point, but it is possible, so the
+	 * `stuck` processor should be prepared to handle that as well.
+	 */
+	protected get stuckMultiplier(): number {
+		if (this.internalStuckMultiplier !== undefined) {
+			return(this.internalStuckMultiplier);
+		}
+		return(10);
+	}
+
+	protected set stuckMultiplier(value: number) {
+		this.internalStuckMultiplier = value;
+	}
+
+	private internalStuckMultiplier?: number;
 
 	/**
 	 * How many runners can process this queue in parallel
@@ -755,7 +837,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			return;
 		}
 		const lockAge = moment.getTime() - lockEntry.updated.getTime();
-		if (lockAge > this.processTimeout * 10) {
+		if (lockAge > this.processTimeout * this.stuckMultiplier) {
 			logger?.warn('Processing lock is stale, taking over lock for worker ID', this.workerID);
 
 			await this.queue.setStatus(this.runnerLockKey, '@internal', {
@@ -953,7 +1035,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	private async markStuckRequestsAsStuck(): Promise<void> {
-		const stuckThreshold = this.processTimeout * 10;
+		const stuckThreshold = this.processTimeout * this.stuckMultiplier;
 
 		const logger = this.methodLogger('markStuckRequestsAsStuck');
 		const now = Date.now();
@@ -978,7 +1060,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	private async requeueFailedRequests(): Promise<void> {
-		const retryDelay = this.processTimeout * 10;
+		const retryDelay = this.retryDelay;
 		const maxRetries = this.maxRetries;
 
 		const logger = this.methodLogger('requeueFailedRequests');
@@ -1003,15 +1085,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	private async moveCompletedToNextStage(): Promise<void> {
+	private async moveCompletedToNextStage(statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
-		const pipes = [...this.pipes];
+		const pipes = [...this.pipes].filter(function(pipe) {
+			return(pipe.acceptStatus === statusTarget);
+		});
+
 		if (pipes.length === 0) {
 			return;
 		}
 
-		const allRequests = await this.queue.query({ status: 'completed', limit: 100 });
+		const allRequests = await this.queue.query({ status: statusTarget, limit: 100 });
 		let requests = allRequests;
 
 		const RequestSentToPipes = new Map<KeetaAnchorQueueRequestID, number>();
@@ -1067,7 +1152,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				) {
 					iterationTargetSeenRequestIDs.clear();
 
-					logger?.debug(`Preparing to move completed requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} completed requests available`);
+					logger?.debug(`Preparing to move ${statusTarget} requests to next stage ${pipe.target.id} (min=${pipe.minBatchSize}, max=${pipe.maxBatchSize}), have ${requests.length} ${statusTarget} requests available`);
 
 					/**
 					 * Compute a batch of entries to send to the next stage,
@@ -1091,12 +1176,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					if (batchRaw.length < pipe.minBatchSize) {
 						sequentialFailureCount++;
 						if (sequentialFailureCount >= 3) {
-							logger?.debug(`Not enough completed requests to move to next stage ${pipe.target.id}, stopping batch processing`);
+							logger?.debug(`Not enough ${statusTarget} requests to move to next stage ${pipe.target.id}, stopping batch processing`);
 
 							break;
 						}
 
-						logger?.debug(`Not moving completed requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
+						logger?.debug(`Not moving ${statusTarget} requests to next stage ${pipe.target.id} because batch size ${batchRaw.length} is less than minimum size ${pipe.minBatchSize}`);
 
 						continue;
 					}
@@ -1118,7 +1203,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						return(entry.output);
 					});
 
-					logger?.debug(`Moving batch of ${batchOutput.length} completed requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
+					logger?.debug(`Moving batch of ${batchOutput.length} ${statusTarget} requests to next pipe`, pipe.target.id, '(input entry IDs:', Array.from(batchLocalIDs), '->', `${pipe.target.id}:${String(batchID)})`);
 
 					try {
 						await pipe.target.add(batchOutput, {
@@ -1172,7 +1257,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 						if (output === null) {
 							logger?.debug(`Completed request with id ${String(request.id)} has no output -- next stage will not be run`);
 						} else {
-							logger?.debug(`Moving completed request with id ${String(request.id)} to next pipe`, pipe.target.id);
+							logger?.debug(`Moving ${statusTarget} request with id ${String(request.id)} to next pipe`, pipe.target.id);
 							await pipe.target.add(output, { id: request.id });
 						}
 
@@ -1191,13 +1276,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		for (const request of allRequests) {
 			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
 			if (sentCount !== TotalPipes) {
-				logger?.debug(`Completed request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
 				continue;
 			}
 
-			logger?.debug(`Marking completed request with id ${String(request.id)} as moved`);
+			logger?.debug(`Marking ${statusTarget} request with id ${String(request.id)} as moved`);
 
-			await this.queue.setStatus(request.id, 'moved', { oldStatus: 'completed', by: this.workerID });
+			await this.queue.setStatus(request.id, 'moved', { oldStatus: statusTarget, by: this.workerID });
 		}
 
 	}
@@ -1235,10 +1320,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
-		try {
-			await this.moveCompletedToNextStage();
-		} catch (error: unknown) {
-			logger?.debug('Failed to move completed requests to next stage:', error);
+		for (const pipeStatus of keetaAnchorPipeableQueueStatuses) {
+			try {
+				await this.moveCompletedToNextStage(pipeStatus);
+			} catch (error: unknown) {
+				logger?.debug(`Failed to move ${pipeStatus} requests to next stage:`, error);
+			}
 		}
 
 		for (const pipe of this.pipes) {
@@ -1264,7 +1351,17 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
 		this.pipes.push({
 			isBatchPipe: false,
-			target: target
+			target: target,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>): typeof target {
+		this.pipes.push({
+			isBatchPipe: false,
+			target: target,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}
@@ -1277,7 +1374,19 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			isBatchPipe: true,
 			target: target,
 			minBatchSize: minBatchSize,
-			maxBatchSize: maxBatchSize
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'completed'
+		});
+		return(target);
+	}
+
+	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1): typeof target {
+		this.pipes.push({
+			isBatchPipe: true,
+			target: target,
+			minBatchSize: minBatchSize,
+			maxBatchSize: maxBatchSize,
+			acceptStatus: 'failed_permanently'
 		});
 		return(target);
 	}

@@ -5,7 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import { Errors, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
+import { Errors, type RailWithExtendedDetails, type KeetaAssetMovementAnchorCreatePersistentForwardingRequest, type KeetaAssetMovementAnchorCreatePersistentForwardingResponse, type KeetaAssetMovementAnchorGetTransferStatusResponse, type KeetaAssetMovementAnchorInitiateTransferClientRequest, type KeetaAssetMovementAnchorInitiateTransferRequest, type KeetaAssetMovementAnchorInitiateTransferResponse, type KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, type KeetaAssetMovementAnchorlistTransactionsRequest, type KeetaAssetMovementTransaction, type ProviderSearchInput } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -61,6 +61,22 @@ test('Asset Movement Anchor Client Test', async function() {
 		updatedAt: currentDateString
 	};
 
+	const extendedKeetaSendDetails: RailWithExtendedDetails = {
+		rail: 'KEETA_SEND',
+		estimatedTransferTimeMs: [ 1000, 2000 ],
+		estimatedTransferValueRange: {
+			value: [ '100', '10000' ],
+			asset: 'USD'
+		},
+		estimatedFee: {
+			fixedFee: {
+				value: '2',
+				asset: 'USD'
+			},
+			variableFeeBps: 50
+		}
+	};
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
@@ -74,7 +90,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					paths: [
 						{
 							pair: [
-								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ { rail: 'KEETA_SEND' } ] }},
 								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
 							]
 						}
@@ -97,7 +113,11 @@ test('Asset Movement Anchor Client Test', async function() {
 						{
 							pair: [
 								{ location: 'bank-account:us', id: 'USD', rails: { common: [ 'EVM_SEND' ] }},
-								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+								{
+									location: 'chain:keeta:123',
+									id: testCurrencyUSDC.publicKeyString.get(),
+									rails: { inbound: [ extendedKeetaSendDetails ] }
+								}
 							]
 						}
 					]
@@ -375,6 +395,23 @@ test('Asset Movement Anchor Client Test', async function() {
 			const result = await test.test();
 			expect(result).toEqual(test.result);
 		}
+	}
+
+	{
+		/**
+		 * Test that extended rail details gets encoded/decoded correctly
+		 */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		const supportedAssetWithDetails = testProvider?.serviceInfo.supportedAssets.find(function(asset) {
+			return(asset.asset[0] === testCurrencyUSDC.publicKeyString.get() && asset.asset[1] === 'USD');
+		})
+
+		if (!supportedAssetWithDetails) {
+			throw(new Error('Supported asset with details not found'));
+		}
+
+		expect(supportedAssetWithDetails.paths[0]?.pair[1].rails.inbound?.[0]).toEqual(extendedKeetaSendDetails);
 	}
 });
 
