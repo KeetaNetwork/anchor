@@ -694,33 +694,16 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 					if (typeof config === 'function') {
 						this.#processorMethod = config;
 					} else {
-						// eslint-disable-next-line @typescript-eslint/no-unused-vars
-						const { processor, batchSize, maxRetries, processTimeout, retryDelay, stuckMultiplier, ...rest } = config;
-
-						// Ensure that all keys in the config object are expected and used
-						// eslint-disable-next-line @typescript-eslint/no-unused-vars
-						type __checkAllExtensionConfigKeysAreUsed = AssertNever<keyof typeof rest>;
-
+						const { processor, ...parameters } = config;
 						this.#processorMethod = processor;
 
-						if (batchSize !== undefined) {
-							this.batchSize = batchSize;
-						}
+						const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier' ] as const satisfies (keyof typeof parameters)[];
+						// Ensure that all keys in the config object are expected and used
+						// eslint-disable-next-line @typescript-eslint/no-unused-vars
+						type __checkAllExtensionConfigKeysAreValid = AssertNever<Exclude<keyof typeof parameters, typeof parameterNames[number]>>;
 
-						if (maxRetries !== undefined) {
-							this.maxRetries = maxRetries;
-						}
-
-						if (processTimeout !== undefined) {
-							this.processTimeout = processTimeout;
-						}
-
-						if (retryDelay !== undefined) {
-							this.retryDelay = retryDelay;
-						}
-
-						if (stuckMultiplier !== undefined) {
-							this.stuckMultiplier = stuckMultiplier;
+						for (const parameterName of parameterNames) {
+							this[parameterName] = parameters[parameterName];
 						}
 					}
 				}
