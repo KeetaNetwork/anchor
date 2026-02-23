@@ -4,13 +4,23 @@ import type {
 	ASN1AnyJS as KeetaNetASN1AnyJS
 } from '@keetanetwork/keetanet-client/lib/utils/asn1.js';
 
-import { Buffer } from '../../lib/utils/buffer.js';
+import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { assertNever } from '../../lib/utils/never.js';
 
 export type SignableAccount = ReturnType<InstanceType<typeof KeetaNetLib.Account>['assertAccount']>;
 export type VerifiableAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type Signable = (string | number | bigint | InstanceType<typeof KeetaNetLib.Account>)[];
+
+/**
+ * Options for signature verification
+ */
+export interface VerifyOptions {
+	/** Maximum allowed time difference in milliseconds (default: 5 * 60 * 1000 = 5 minutes) */
+	maxSkewMs?: number;
+	/** Reference time for skew calculation (default: new Date()) */
+	referenceTime?: Date;
+}
 
 export function FormatData(account: VerifiableAccount, data: Signable, nonce?: string, timestamp?: string | Date): { nonce: string; timestamp: string; verificationData: Buffer; } {
 	nonce ??= crypto.randomUUID();
@@ -68,7 +78,7 @@ export function FormatData(account: VerifiableAccount, data: Signable, nonce?: s
 
 export async function SignData(account: SignableAccount, data: Signable): Promise<{ nonce: string; timestamp: string; signature: string; }> {
 	const { nonce, timestamp, verificationData } = FormatData(account, data);
-	const signature = await account.sign(verificationData);
+	const signature = await account.sign(bufferToArrayBuffer(verificationData));
 
 	return({
 		nonce: nonce,
@@ -77,7 +87,12 @@ export async function SignData(account: SignableAccount, data: Signable): Promis
 	});
 }
 
-export async function VerifySignedData(account: VerifiableAccount, data: Signable, signed: Awaited<ReturnType<typeof SignData>>): Promise<boolean> {
+export async function VerifySignedData(
+	account: VerifiableAccount,
+	data: Signable,
+	signed: Awaited<ReturnType<typeof SignData>>,
+	options?: VerifyOptions
+): Promise<boolean> {
 	const nonce = signed.nonce;
 	const timestampString = signed.timestamp;
 	const signatureBuffer = Buffer.from(signed.signature, 'base64');
@@ -95,16 +110,10 @@ export async function VerifySignedData(account: VerifiableAccount, data: Signabl
 		return(false);
 	}
 
-	/*
-	 * XXX:TODO: It would be better to allow some configuration of the
-	 *           allowed time skew as well as the moment instead of
-	 *           Date.now()
-	 *
-	 * We will probably need to refactor this interface as a class in the
-	 * future.
-	 */
-	if (Math.abs(timestamp.valueOf() - Date.now()) > 5 * 60 * 1000) {
-		/* Timestamp is more than 5 minutes in the past or future */
+	const maxSkewMs = options?.maxSkewMs ?? 5 * 60 * 1000;
+	const referenceTime = options?.referenceTime ?? new Date();
+	if (Math.abs(timestamp.valueOf() - referenceTime.valueOf()) > maxSkewMs) {
+		/* Timestamp exceeds allowed skew from reference time */
 		return(false);
 	}
 
