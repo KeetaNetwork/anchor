@@ -706,7 +706,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 	/** @internal */
 	_Testing(key: string): {
-		setParams: (maxBatchSize: number, processTimeout: number, maxRetries: number, maxWorkers?: number) => void;
+		setMaxRunners: (maxRunners: number) => void;
 		queue: () => KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 		markWorkerAsProcessing: () => Promise<void>;
 	} {
@@ -715,13 +715,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 
 		return({
-			setParams: (maxBatchSize: number, processTimeout: number, maxRetries: number, maxWorkers?: number) => {
-				this.batchSize = maxBatchSize;
-				this.processTimeout = processTimeout;
-				this.maxRetries = maxRetries;
-				if (maxWorkers !== undefined) {
-					this.maxRunners = maxWorkers;
-				}
+			setMaxRunners: (maxRunners: number) => {
+				this.maxRunners = maxRunners;
 			},
 			queue: () => {
 				return(this.queue);
@@ -1520,15 +1515,21 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 		processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
 		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | undefined;
 		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | undefined;
-	}) {
+	} & Partial<KeetaAnchorQueueRunnerConfigurationObject>) {
 		super(config);
-		this.processor = config.processor;
-		if (config.processorStuck) {
-			this.processorStuck = config.processorStuck;
+
+		const { processor, processorStuck, processorAborted, ...parameters } = config;
+
+		this.processor = processor;
+
+		if (processorStuck) {
+			this.processorStuck = processorStuck;
 		}
-		if (config.processorAborted) {
-			this.processorAborted = config.processorAborted;
+		if (processorAborted) {
+			this.processorAborted = processorAborted;
 		}
+
+		this.setConfiguration(parameters);
 	}
 }
 
