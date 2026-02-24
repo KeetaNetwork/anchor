@@ -89,7 +89,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 * (KeetaNetAnchorHTTPServer), which means it
 				 * can't be assigned to the type of `#url`
 				 * without overriding the type check. However,
-				 * we know that `this` will be atleast
+				 * we know that `this` will be at least
 				 * compatible with the base class.
 				 */
 				// @ts-ignore
