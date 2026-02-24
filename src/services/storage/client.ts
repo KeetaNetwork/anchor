@@ -43,6 +43,7 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
+import { StorageContactsClient } from './clients/contacts.js';
 
 /**
  * The configuration options for the Storage Anchor client.
@@ -1175,6 +1176,13 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const session = this.beginSession(config);
 		return(await fn(session));
 	}
+
+	/**
+	 * Get a contacts client bound to the given account.
+	 */
+	getContactsClient(account: InstanceType<typeof KeetaNetLib.Account>, basePath: string): StorageContactsClient {
+		return(new StorageContactsClient(this, account, basePath));
+	}
 }
 
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
@@ -1240,6 +1248,20 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 			return(p.providerID === providerID);
 		});
 		return(provider ?? null);
+	}
+
+	/**
+	 * Get a contacts client bound to the given account.
+	 * Resolves the first available provider and constructs a StorageContactsClient.
+	 */
+	async getContactsClient(account: InstanceType<typeof KeetaNetLib.Account>, basePath: string): Promise<StorageContactsClient | null> {
+		const providers = await this.getProviders();
+		const provider = providers?.[0];
+		if (!provider) {
+			return(null);
+		}
+
+		return(provider.getContactsClient(account, basePath));
 	}
 
 	/** @internal */
