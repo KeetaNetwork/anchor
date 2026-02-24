@@ -300,7 +300,7 @@ abstract class BaseBlockOperationQueueRunner<
 }
 
 export abstract class BlockQueueRunner<UserResult = null, QueueResult extends JSONSerializable = null> extends BaseBlockOperationQueueRunner<BlockQueueRunnerRequest, UserResult, BlockQueueRunnerRequestSerialized, QueueResult> {
-	abstract filterBlock(block: Block): (boolean | Promise<boolean>);
+	protected abstract filterBlock(block: Block): (boolean | Promise<boolean>);
 
 	protected decodeRequest(request: BlockQueueRunnerRequestSerialized): BlockQueueRunnerRequest {
 		return({ blockHash: new KeetaNet.lib.Block.Hash(request.blockHash) });
@@ -333,7 +333,7 @@ type OperationQueueRunnerRequest = { blockHash: BlockHash; operationIndex: numbe
 type OperationQueueRunnerRequestSerialized = { blockHash: string; operationIndex: number; };
 
 export abstract class OperationQueueRunner<UserResult = null, QueueResult extends JSONSerializable = null> extends BaseBlockOperationQueueRunner<OperationQueueRunnerRequest, UserResult, OperationQueueRunnerRequestSerialized, QueueResult> {
-	abstract filterOperation(operation: BlockOperations, context: { block: Block; operationIndex: number; }): (boolean | Promise<boolean>);
+	protected abstract filterOperation(operation: BlockOperations, context: { block: Block; operationIndex: number; }): (boolean | Promise<boolean>);
 
 	protected decodeRequest(request: OperationQueueRunnerRequestSerialized): OperationQueueRunnerRequest {
 		return({ blockHash: new KeetaNet.lib.Block.Hash(request.blockHash), operationIndex: request.operationIndex });
