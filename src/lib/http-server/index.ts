@@ -77,7 +77,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 
 		if (config.url !== undefined) {
-			if (config.url instanceof URL || typeof config.url === 'string' || config.url === undefined) {
+			if (config.url instanceof URL || typeof config.url === 'string') {
 				this.#url = config.url;
 				this.#urlParts = undefined;
 			} else if (typeof config.url === 'function') {
