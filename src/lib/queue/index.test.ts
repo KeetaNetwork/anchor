@@ -833,7 +833,7 @@ for (const singleWorkerID of [true, false]) {
 
 					return({ status: entry.request.newStatus, output: 'OK' });
 				},
-				batchSize: 1,
+				batchSize: 3,
 				processTimeout: 100,
 				maxRetries: 3
 			});
