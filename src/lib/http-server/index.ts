@@ -362,9 +362,27 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
+			/*
+			 * Get the Base URL from the request Host header (if
+			 * available) or default to localhost. This is used
+			 * to construct the full URL for routing.
+			 */
+			const inputURLBaseRaw = new URL(`http://${request.headers.host ?? 'localhost'}`);
+			const inputURLBase = inputURLBaseRaw.protocol + '//' + inputURLBaseRaw.host;
+
+			/*
+			 * Normalize the input URL by stripping leading slashes and
+			 * combining it with the base URL to get the full URL for routing.
+			 */
 			const inputURLRaw = (request.url ?? '/').replace(/^\/+/, '/');
-			const inputURL = new URL(inputURLRaw, 'http://localhost').pathname;
-			const inputURLBase = `http://${request.headers.host ?? 'localhost'}`;
+			const inputURLObject = new URL(inputURLRaw, 'http://localhost');
+			const inputURL = inputURLObject.pathname + (function() {
+				if (inputURLObject.search === '') {
+					return('');
+				}
+
+				return('?' + inputURLObject.searchParams.toString());
+			})();
 			const url = new URL(inputURL, inputURLBase);
 			const method = request.method ?? 'GET';
 
