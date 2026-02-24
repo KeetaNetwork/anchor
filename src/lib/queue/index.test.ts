@@ -452,7 +452,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing(TestingKey).setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -680,7 +680,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing(TestingKey).setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 50, maxRetries: 3 });
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -832,7 +832,10 @@ for (const singleWorkerID of [true, false]) {
 					vi.advanceTimersByTime(50);
 
 					return({ status: entry.request.newStatus, output: 'OK' });
-				}
+				},
+				batchSize: 3,
+				processTimeout: 100,
+				maxRetries: 3
 			});
 		};
 
@@ -844,7 +847,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing(TestingKey).setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams({ maxRunners: 1 });
 
 			return(runner);
 		});
@@ -1028,10 +1031,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage2._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage3._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage4._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage2._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage3._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage4._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -1136,8 +1139,8 @@ test('Pipeline Basic Tests', async function() {
 		return({ status: 'completed', output: `handled:${entry.request}` });
 	});
 
-	failedStage1._Testing(TestingKey).setParams(10, 100, 0);
-	failedStage2._Testing(TestingKey).setParams(10, 100, 0);
+	failedStage1._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+	failedStage2._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
 
 	failedStage1.pipeFailed(failedStage2);
 
