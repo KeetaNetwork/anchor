@@ -47,6 +47,17 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * Enable debug logging
 	 */
 	logger?: Logger | undefined;
+	/**
+	 * The URL for the server. By default, this will be generated based on
+	 * the port and will use "localhost" as the hostname, but it can be
+	 * overridden by setting this to a string, URL, or function that
+	 * generates the URL
+	 */
+	url?: undefined | string | URL | ((object: KeetaNetAnchorHTTPServer) => string) | {
+		hostname?: string;
+		port?: number;
+		protocol?: string;
+	};
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
@@ -55,6 +66,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	readonly id: NonNullable<KeetaAnchorHTTPServerConfig['id']>;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
+	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
 	#url: undefined | string | URL | ((object: this) => string);
 	readonly #config: ConfigType;
 
@@ -63,6 +75,31 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.port = config.port ?? 0;
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
+
+		if (config.url !== undefined) {
+			if (config.url instanceof URL || typeof config.url === 'string') {
+				this.#url = config.url;
+				this.#urlParts = undefined;
+			} else if (typeof config.url === 'function') {
+				/**
+				 * The parameter for the call back is typed as
+				 * `this`, which means any subclass is typed
+				 * but the interface can't identify that --
+				 * instead it types it as the base class
+				 * (KeetaNetAnchorHTTPServer), which means it
+				 * can't be assigned to the type of `#url`
+				 * without overriding the type check. However,
+				 * we know that `this` will be at least
+				 * compatible with the base class.
+				 */
+				// @ts-ignore
+				this.#url = config.url;
+				this.#urlParts = undefined;
+			} else {
+				this.#url = undefined;
+				this.#urlParts = config.url;
+			}
+		}
 	}
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
@@ -325,7 +362,28 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
-			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+			/*
+			 * Get the Base URL from the request Host header (if
+			 * available) or default to localhost. This is used
+			 * to construct the full URL for routing.
+			 */
+			const inputURLBaseRaw = new URL(`http://${request.headers.host ?? 'localhost'}`);
+			const inputURLBase = inputURLBaseRaw.protocol + '//' + inputURLBaseRaw.host;
+
+			/*
+			 * Normalize the input URL by stripping leading slashes and
+			 * combining it with the base URL to get the full URL for routing.
+			 */
+			const inputURLRaw = (request.url ?? '/').replace(/^\/+/, '/');
+			const inputURLObject = new URL(inputURLRaw, 'http://localhost');
+			const inputURL = inputURLObject.pathname + (function() {
+				if (inputURLObject.search === '') {
+					return('');
+				}
+
+				return('?' + inputURLObject.searchParams.toString());
+			})();
+			const url = new URL(inputURL, inputURLBase);
 			const method = request.method ?? 'GET';
 
 			/*
@@ -343,6 +401,17 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 				response.end();
 			};
+
+			/*
+			 * If the request is malformed, reject it immediately
+			 */
+			if (inputURLRaw.at(0) !== '/') {
+				response.statusCode = 400;
+				response.setHeader('Content-Type', 'text/plain');
+				response.write('Bad Request');
+				await responseFinalize();
+				return;
+			}
 
 			/*
 			 * Lookup the route based on the request
@@ -581,13 +650,25 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			newURLObj.pathname = '/';
 			newURLObj.search = '';
 
-			return(newURLObj.toString());
+			const retval = newURLObj.toString();
+
+			return(retval);
 		}
 
-		return(`http://localhost:${this.port}`);
+		const urlObj = new URL('http://localhost');
+		urlObj.port = String(this.#urlParts?.port ?? this.port);
+		urlObj.hostname = this.#urlParts?.hostname ?? 'localhost';
+		urlObj.protocol = this.#urlParts?.protocol ?? 'http:';
+		urlObj.pathname = '/';
+		urlObj.search = '';
+
+		const retval = urlObj.toString();
+
+		return(retval);
 	}
 
-	set url(value: string | URL | ((object: this) => string)) {
+	set url(value: undefined | string | URL | ((object: this) => string)) {
+		this.#urlParts = undefined;
 		this.#url = value;
 	}
 
