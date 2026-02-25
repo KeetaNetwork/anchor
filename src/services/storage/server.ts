@@ -325,9 +325,10 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	anchorAccount: Account;
 
 	/**
-	 * Quota configuration for storage limits
+	 * Quota configuration for storage limits.
+	 * Partial values are merged with defaults.
 	 */
-	quotas?: QuotaConfig;
+	quotas?: Partial<QuotaConfig>;
 
 	/**
 	 * Namespace validators for special paths
@@ -399,7 +400,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.homepage = config.homepage ?? '';
 		this.backend = config.backend;
 		this.anchorAccount = config.anchorAccount;
-		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
+		this.quotas = { ...DEFAULT_QUOTAS, ...config.quotas };
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
