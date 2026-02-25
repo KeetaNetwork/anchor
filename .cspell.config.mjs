@@ -115,7 +115,9 @@ export default {
 		'Valuizable',
 		'Valuize',
 		'VALUIZABLE',
-		'wrongpath'
+		'wrongpath',
+		'refetched',
+		'pipeable'
 	],
 	flagWords: [
 		'recieve'
