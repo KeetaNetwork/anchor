@@ -87,11 +87,13 @@ describe('PathPolicy (TestPathPolicy implementation)', function() {
 	});
 
 	describe('getAuthorizedSigner', function() {
-		test('returns owner from parsed path', function() {
+		test('returns account for parsed path owner', function() {
 			const parsed = testPathPolicy.parse('/user/abc123/file.txt');
 			expect(parsed).not.toBeNull();
 			if (parsed) {
-				expect(testPathPolicy.getAuthorizedSigner(parsed)).toBe('abc123');
+				const signer = testPathPolicy.getAuthorizedSigner(parsed);
+				expect(signer).not.toBeNull();
+				expect(signer!.publicKeyString.get()).toBe('abc123');
 			}
 		});
 	});

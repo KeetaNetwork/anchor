@@ -829,11 +829,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Resolve signer: policy-specified or from URL account param (any-signer for public objects)
-			const policySignerPubKey = policy.getAuthorizedSigner(parsed);
-			const signerPubKey = policySignerPubKey ?? urlParsed.account?.publicKeyString.get() ?? null;
-			if (!signerPubKey) {
+			const signerAccount = policy.getAuthorizedSigner(parsed) ?? urlParsed.account ?? null;
+			if (!signerAccount) {
 				throw(new Errors.SignatureInvalid('Missing signer'));
 			}
+			const signerPubKey = signerAccount.publicKeyString.get();
 
 			// Parse and validate expires param
 			const parsedUrl = typeof url === 'string' ? new URL(url) : url;
@@ -861,11 +861,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureInvalid('Invalid signature format'));
 			}
 
-			// Verify signature using the signing library
-			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
 			try {
 				// Allow 5 minutes of clock skew for signature verification
-				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt, signerPubKey], urlParsed.signedField, {
+				const valid = await VerifySignedData(signerAccount, [objectPath, expiresAt, signerPubKey], urlParsed.signedField, {
 					maxSkewMs: 5 * 60 * 1000
 				});
 				if (!valid) {
