@@ -1,5 +1,4 @@
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from '../../client/index.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
@@ -7,6 +6,7 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import type { Signable } from '../../lib/utils/signing.js';
 import type { Buffer } from '../../lib/utils/buffer.js';
 import type {
+	KeetaNetAccount,
 	StorageObjectMetadata,
 	SearchCriteria,
 	SearchPagination,
@@ -68,12 +68,12 @@ export type KeetaStorageAnchorClientConfig = {
 	 * The account to use for signing requests. If not provided, the
 	 * account associated with the provided client will be used.
 	 */
-	signer?: InstanceType<typeof KeetaNetLib.Account>;
+	signer?: KeetaNetAccount;
 	/**
 	 * Account to perform changes on. If not provided, the account
 	 * associated with the provided client will be used.
 	 */
-	account?: InstanceType<typeof KeetaNetLib.Account>;
+	account?: KeetaNetAccount;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'>;
 
 /**
@@ -84,7 +84,7 @@ export type SessionConfig = {
 	/**
 	 * The account to use for all operations in this session.
 	 */
-	account: InstanceType<typeof KeetaNetLib.Account>;
+	account: KeetaNetAccount;
 	/**
 	 * Optional working directory prefix for relative paths.
 	 * e.g., '/user/pubkey/docs/' - relative paths will be appended to this.
@@ -249,7 +249,7 @@ class KeetaStorageAnchorBase {
  */
 export class KeetaStorageAnchorSession {
 	readonly provider: KeetaStorageAnchorProvider;
-	readonly account: InstanceType<typeof KeetaNetLib.Account>;
+	readonly account: KeetaNetAccount;
 	readonly workingDirectory: string;
 	readonly #defaultVisibility: StorageObjectVisibility;
 
@@ -406,7 +406,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	/**
 	 * The anchor account for this provider.
 	 */
-	readonly anchorAccount: InstanceType<typeof KeetaNetLib.Account> | null;
+	readonly anchorAccount: KeetaNetAccount | null;
 
 	constructor(serviceInfo: KeetaStorageServiceInfo, providerID: ProviderID, parent: KeetaStorageAnchorClient) {
 		const parentPrivate = parent._internals(KeetaStorageAnchorClientAccessToken);
@@ -505,9 +505,9 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * @throws PrivateKeyRequired if private key is needed but not available
 	 */
 	#resolveSignerAccount(
-		account: InstanceType<typeof KeetaNetLib.Account> | undefined,
+		account: KeetaNetAccount | undefined,
 		requirePrivateKey = true
-	): InstanceType<typeof KeetaNetLib.Account> {
+	): KeetaNetAccount {
 		const resolved = account ?? this.client.account;
 		if (requirePrivateKey && !resolved?.hasPrivateKey) {
 			throw(new Errors.PrivateKeyRequired());
@@ -601,7 +601,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	>(input: {
 		method: 'GET' | 'POST' | 'PUT' | 'DELETE';
 		endpoint: keyof KeetaStorageAnchorOperations;
-		account?: InstanceType<typeof KeetaNetLib.Account> | undefined;
+		account?: KeetaNetAccount | undefined;
 		params?: { [key: string]: string; } | undefined;
 		queryParams?: { [key: string]: string; } | undefined;
 		pathSuffix?: string | undefined;
@@ -707,7 +707,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		data: Buffer;
 		visibility?: StorageObjectVisibility;
 		tags?: string[];
-		account: InstanceType<typeof KeetaNetLib.Account>;
+		account: KeetaNetAccount;
 	}): Promise<{ ok: true; object: StorageObjectMetadata }> {
 		const { url, auth } = await this.#getOperationData('put');
 		const visibility = input.visibility ?? 'private';
@@ -781,7 +781,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 */
 	async #makeBinaryGetRequest(input: {
 		path: string;
-		account: InstanceType<typeof KeetaNetLib.Account>;
+		account: KeetaNetAccount;
 	}): Promise<Buffer> {
 		const { url, auth } = await this.#getOperationData('get');
 
@@ -859,7 +859,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 */
 	async get(options: {
 		path: string;
-		account?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
 	}): Promise<{ data: Buffer; mimeType: string } | null> {
 		const { path } = options;
 		this.logger?.debug(`Getting object at path: ${path}`);
@@ -902,7 +902,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 */
 	async getMetadata(options: {
 		path: string;
-		account?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
 	}): Promise<StorageObjectMetadata | null> {
 		const { path } = options;
 		this.logger?.debug(`Getting metadata at path: ${path}`);
@@ -972,14 +972,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		mimeType: string;
 		tags?: string[];
 		visibility?: StorageObjectVisibility;
-		account?: InstanceType<typeof KeetaNetLib.Account>;
-		anchorAccount?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
+		anchorAccount?: KeetaNetAccount;
 	}): Promise<StorageObjectMetadata> {
 		const { path, data, mimeType, tags, visibility, anchorAccount } = options;
 		this.logger?.debug(`Putting object at path: ${path}`);
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
-		const principals: InstanceType<typeof KeetaNetLib.Account>[] = [signerAccount];
+		const principals: KeetaNetAccount[] = [signerAccount];
 
 		if (visibility === 'public') {
 			const effectiveAnchor = anchorAccount ?? this.anchorAccount;
@@ -1030,13 +1030,13 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	async search(options: {
 		criteria: SearchCriteria;
 		pagination?: SearchPagination;
-		account?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
 	}): Promise<{ results: StorageObjectMetadata[]; nextCursor?: string }> {
 		const { criteria, pagination } = options;
 		this.logger?.debug('Searching for objects');
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
-		const bodyToSend: { criteria: SearchCriteria; pagination?: SearchPagination; account?: InstanceType<typeof KeetaNetLib.Account> } = {
+		const bodyToSend: { criteria: SearchCriteria; pagination?: SearchPagination; account?: KeetaNetAccount } = {
 			criteria,
 			account: signerAccount
 		};
@@ -1046,7 +1046,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const response = await this.#makeRequest<
 			{ ok: true; results: StorageObjectMetadata[]; nextCursor?: string } | { ok: false; error: string },
-			{ criteria: SearchCriteria; pagination?: SearchPagination; account?: InstanceType<typeof KeetaNetLib.Account> },
+			{ criteria: SearchCriteria; pagination?: SearchPagination; account?: KeetaNetAccount },
 			KeetaStorageAnchorSearchRequest
 		>({
 			method: 'POST',
@@ -1091,14 +1091,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * @returns Current quota status
 	 */
 	async getQuotaStatus(options?: {
-		account?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
 	}): Promise<QuotaStatus> {
 		this.logger?.debug('Getting quota status');
 
 		const signerAccount = this.#resolveSignerAccount(options?.account);
 		const response = await this.#makeRequest<
 			{ ok: true; quota: QuotaStatus } | { ok: false; error: string },
-			{ account?: InstanceType<typeof KeetaNetLib.Account> },
+			{ account?: KeetaNetAccount },
 			KeetaStorageAnchorQuotaRequest
 		>({
 			method: 'GET',
@@ -1131,7 +1131,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	async getPublicUrl(options: {
 		path: string;
 		ttl?: number;
-		account?: InstanceType<typeof KeetaNetLib.Account>;
+		account?: KeetaNetAccount;
 	}): Promise<string> {
 		const { path } = options;
 		const signerAccount = this.#resolveSignerAccount(options.account);
@@ -1180,8 +1180,8 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 	readonly resolver: Resolver;
 	readonly id: string;
-	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
-	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
+	readonly #signer: KeetaNetAccount;
+	readonly #account: KeetaNetAccount;
 
 	constructor(client: KeetaNetUserClient, config: KeetaStorageAnchorClientConfig = {}) {
 		super({ client, logger: config.logger });
