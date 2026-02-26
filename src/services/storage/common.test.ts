@@ -87,12 +87,13 @@ describe('PathPolicy (TestPathPolicy implementation)', function() {
 	});
 
 	describe('getAuthorizedSigner', function() {
-		test('returns owner from parsed path', function() {
-			const parsed = testPathPolicy.parse('/user/abc123/file.txt');
-			expect(parsed).not.toBeNull();
-			if (parsed) {
-				expect(testPathPolicy.getAuthorizedSigner(parsed)).toBe('abc123');
-			}
+		test('returns account for parsed path owner', function() {
+			const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const pubkey = account.publicKeyString.get();
+			const parsed = testPathPolicy.validate(`/user/${pubkey}/file.txt`);
+			const signer = testPathPolicy.getAuthorizedSigner(parsed);
+			expect(signer).not.toBeNull();
+			expect(signer?.publicKeyString.get()).toBe(pubkey);
 		});
 	});
 });

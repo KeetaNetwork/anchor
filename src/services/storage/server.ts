@@ -325,9 +325,10 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	anchorAccount: Account;
 
 	/**
-	 * Quota configuration for storage limits
+	 * Quota configuration for storage limits.
+	 * Partial values are merged with defaults.
 	 */
-	quotas?: QuotaConfig;
+	quotas?: Partial<QuotaConfig>;
 
 	/**
 	 * Namespace validators for special paths
@@ -399,7 +400,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.homepage = config.homepage ?? '';
 		this.backend = config.backend;
 		this.anchorAccount = config.anchorAccount;
-		this.quotas = config.quotas ?? DEFAULT_QUOTAS;
+		this.quotas = { ...DEFAULT_QUOTAS, ...config.quotas };
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
@@ -829,11 +830,11 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			}
 
 			// Resolve signer: policy-specified or from URL account param (any-signer for public objects)
-			const policySignerPubKey = policy.getAuthorizedSigner(parsed);
-			const signerPubKey = policySignerPubKey ?? urlParsed.account?.publicKeyString.get() ?? null;
-			if (!signerPubKey) {
+			const signerAccount = policy.getAuthorizedSigner(parsed) ?? urlParsed.account ?? null;
+			if (!signerAccount) {
 				throw(new Errors.SignatureInvalid('Missing signer'));
 			}
+			const signerPubKey = signerAccount.publicKeyString.get();
 
 			// Parse and validate expires param
 			const parsedUrl = typeof url === 'string' ? new URL(url) : url;
@@ -861,11 +862,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureInvalid('Invalid signature format'));
 			}
 
-			// Verify signature using the signing library
-			const ownerAccount = KeetaNet.lib.Account.fromPublicKeyString(signerPubKey).assertAccount();
 			try {
 				// Allow 5 minutes of clock skew for signature verification
-				const valid = await VerifySignedData(ownerAccount, [objectPath, expiresAt, signerPubKey], urlParsed.signedField, {
+				const valid = await VerifySignedData(signerAccount, [objectPath, expiresAt, signerPubKey], urlParsed.signedField, {
 					maxSkewMs: 5 * 60 * 1000
 				});
 				if (!valid) {

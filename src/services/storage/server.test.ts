@@ -1,5 +1,5 @@
 import { expect, test, describe } from 'vitest';
-import type { KeetaStorageAnchorSearchRequest } from './common.js';
+import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount } from './common.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
@@ -663,7 +663,7 @@ describe('Storage Server', function() {
 		 * allowing any account to sign pre-signed URLs for public objects.
 		 */
 		class AnySignerPathPolicy extends TestPathPolicy {
-			getAuthorizedSigner(_ignoreParsed: TestParsedPath): string | null {
+			getAuthorizedSigner(_ignoreParsed: TestParsedPath): KeetaNetAccount | null {
 				return(null);
 			}
 		}

@@ -24,13 +24,13 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
-import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID } from '../../lib/queue/index.ts';
+import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueRunnerConfigurationObject } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
 import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
-import { assertExchangeBlockParameters, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 
@@ -45,6 +45,26 @@ import { asleep } from '../../lib/utils/asleep.js';
  * misconfigurations so it is enabled by default for now.
  */
 const PARANOID = true;
+
+export type GetConversionRateAndFeeContext = {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   estimate means it is being called to get an estimate for a swap
+	 *   quote means it is being called to get a firm quote for a swap that will be executed
+	 */
+	purpose: 'quote' | 'estimate';
+} | {
+	/**
+	 * The purpose for why getConversionRateAndFee is being called
+	 *   exchange means it is being called right before executing a swap, when the user is requesting a floating rate swap
+	 */
+	purpose: 'exchange';
+
+	/**
+	 * The request information related to this exchange
+	 */
+	request: KeetaFXAnchorQueueStage1Request;
+}
 
 export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -117,7 +137,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 *
 		 * This is used to handle quotes and estimates
 		 */
-		getConversionRateAndFee: (request: ConversionInputCanonicalJSON) => Promise<KeetaFXInternalPriceQuote>;
+		getConversionRateAndFee: (request: ConversionInputCanonicalJSON, context: GetConversionRateAndFeeContext) => Promise<KeetaFXInternalPriceQuote>;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -148,6 +168,17 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		 */
 		autoRun?: boolean;
 	};
+
+	/**
+	 * Methods to extend the shared queue pipeline runners used by all accounts.
+	 *
+	 * These extensions add shared success and failure handlers that receive
+	 * results from all account-specific runners (in the `runners` object),
+	 * which internally pipe into these shared handlers.
+	 *
+	 * Useful for adding jobs before or after the main FX processing.
+	 */
+	queueRunnerExtensions?: KeetaFXAnchorQueuePipelineExtensions;
 
 	/**
 	 * The network client to use for submitting blocks
@@ -205,7 +236,7 @@ async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: Con
 	let account: KeetaNetAccount | KeetaNetStorageAccount | null;
 	// eslint-disable-next-line @typescript-eslint/no-deprecated
 	if (config.account !== undefined) {
-		const rateFee = await config.fx.getConversionRateAndFee(request);
+		const rateFee = await config.fx.getConversionRateAndFee(request, { purpose: 'estimate' });
 		account = rateFee.account;
 	} else {
 		account = null;
@@ -297,6 +328,70 @@ type KeetaFXAnchorQueueStage1Response = {
 	 */
 	blockhash: string;
 };
+
+function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
+	let expected: KeetaFXAnchorQueueStage1RequestJSON['expected'];
+
+	if (request.expected === null) {
+		expected = null;
+	} else {
+		expected = {
+			receive: {
+				token: request.expected.receive.token.publicKeyString.get(),
+				amount: request.expected.receive.amount.toString()
+			},
+			send: {
+				token: request.expected.send.token.publicKeyString.get(),
+				amount: request.expected.send.amount.toString()
+			}
+		};
+	};
+
+	const retval: KeetaFXAnchorQueueStage1RequestJSON = {
+		version: 1,
+		account: request.account.publicKeyString.get(),
+		block: Buffer.from(request.block.toBytes()).toString('base64'),
+		request: request.request,
+		expected: expected
+	};
+
+	return(retval);
+}
+
+function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
+	/* See note at bottom of file */
+	// eslint-disable-next-line @typescript-eslint/no-use-before-define
+	const reqJSON = assertKeetaFXAnchorQueueStage1RequestJSON(request);
+
+	if (reqJSON.version !== 1) {
+		throw(new Error(`Unsupported KeetaFXAnchorQueueStage1Request version ${reqJSON.version}`));
+	}
+
+	let expected: KeetaFXAnchorQueueStage1Request['expected'];
+	if (reqJSON.expected === null) {
+		expected = null;
+	} else {
+		expected = {
+			receive: {
+				token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.receive.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+				amount: BigInt(reqJSON.expected.receive.amount)
+			},
+			send: {
+				token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.send.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+				amount: BigInt(reqJSON.expected.send.amount)
+			}
+		};
+	}
+
+	const retval: KeetaFXAnchorQueueStage1Request = {
+		account: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.account),
+		block: new KeetaNet.lib.Block(reqJSON.block),
+		request: reqJSON.request,
+		expected: expected
+	};
+
+	return(retval);
+}
 
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
@@ -446,21 +541,33 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		}
 
 		/* We are clear to attempt the swap now */
+		const builder = userClient.initBuilder();
 		let expected = entry.request.expected;
-		if (expected === null) {
-			const quote = await this.serverConfig.fx.getConversionRateAndFee(request);
 
-			assertExchangeBlockParameters({
+		/**
+		 * We only want to refund excess for cost/paying token if it is not a fixed rate
+		 * as if it is a fixed rate transfer, you can assume the client did not send unintentionally
+		 *
+		 * Additionally, other FX anchors are not forced to refund any, so there is no guarantee to client that refunds will occur
+		 */
+		if (expected === null) {
+			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
+
+			const { refunds } = assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: entry.request.account,
 				allowedLiquidityAccounts: null,
-				checks: { quote, request }
+				checks: { quote, request },
+				isQuoteBasedExchange: false
 			});
+
+			for (const refund of refunds) {
+				builder.send(block.account, refund.amount, refund.token);
+			}
 
 			expected = convertQuoteToExpectedSwapWithoutCost({ quote, request });
 		}
 
-		const builder = userClient.initBuilder();
 		builder.send(block.account, expected.send.amount, expected.send.token);
 
 		const sendBlock = await builder.computeBlocks();
@@ -471,9 +578,30 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		if (userClient.config.generateFeeBlock !== undefined) {
 			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
 		}
-		const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
-		if (!publishResult.publish) {
-			throw(new Error('Exchange Publish Failed'));
+
+		try {
+			const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
+			if (!publishResult.publish) {
+				throw(new Error('Exchange Publish Failed'));
+			}
+		} catch (error) {
+			if (
+				KeetaNet.lib.Error.isInstance(error) &&
+				'shouldRetry' in error &&
+				// Disable this warning as there is nothing stopping this from not being a boolean
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
+				error.shouldRetry === false
+			) {
+				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Non-retryable error publishing swap blocks:', error);
+
+				return({
+					status: 'failed_permanently',
+					output: null,
+					error: `${error.code} ${error.message}`
+				});
+			}
+
+			throw(error);
 		}
 
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
@@ -489,32 +617,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 
 	protected encodeRequest(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
-		let expected: KeetaFXAnchorQueueStage1RequestJSON['expected'];
-
-		if (request.expected === null) {
-			expected = null;
-		} else {
-			expected = {
-				receive: {
-					token: request.expected.receive.token.publicKeyString.get(),
-					amount: request.expected.receive.amount.toString()
-				},
-				send: {
-					token: request.expected.send.token.publicKeyString.get(),
-					amount: request.expected.send.amount.toString()
-				}
-			};
-		};
-
-		const retval: KeetaFXAnchorQueueStage1RequestJSON = {
-			version: 1,
-			account: request.account.publicKeyString.get(),
-			block: Buffer.from(request.block.toBytes()).toString('base64'),
-			request: request.request,
-			expected: expected
-		};
-
-		return(retval);
+		return(encodeKeetaFXAnchorQueueStage1Request(request));
 	}
 
 	protected encodeResponse(response: KeetaFXAnchorQueueStage1Response | null): JSONSerializable | null {
@@ -522,38 +625,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 
 	protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
-		/* See note at bottom of file */
-		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		const reqJSON = assertKeetaFXAnchorQueueStage1RequestJSON(request);
-
-		if (reqJSON.version !== 1) {
-			throw(new Error(`Unsupported KeetaFXAnchorQueueStage1Request version ${reqJSON.version}`));
-		}
-
-		let expected: KeetaFXAnchorQueueStage1Request['expected'];
-		if (reqJSON.expected === null) {
-			expected = null;
-		} else {
-			expected = {
-				receive: {
-					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.receive.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					amount: BigInt(reqJSON.expected.receive.amount)
-				},
-				send: {
-					token: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.expected.send.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					amount: BigInt(reqJSON.expected.send.amount)
-				}
-			};
-		}
-
-		const retval: KeetaFXAnchorQueueStage1Request = {
-			account: KeetaNet.lib.Account.fromPublicKeyString(reqJSON.account),
-			block: new KeetaNet.lib.Block(reqJSON.block),
-			request: reqJSON.request,
-			expected: expected
-		};
-
-		return(retval);
+		return(decodeKeetaFXAnchorQueueStage1Request(request));
 	}
 
 	protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
@@ -563,19 +635,132 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 	}
 }
 
+type RunnerOrRunnerWithOptions<Req, Res> = ({
+	processor: KeetaAnchorQueueRunner<Req, Res>['processor'];
+} & KeetaAnchorQueueRunnerConfigurationObject) | KeetaAnchorQueueRunner<Req, Res>['processor'];
+
+type KeetaFXAnchorQueuePipelineExtensions = {
+	success?: RunnerOrRunnerWithOptions<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response>;
+	failure?: RunnerOrRunnerWithOptions<KeetaFXAnchorQueueStage1Request, JSONSerializable>;
+}
+
+type KeetaFXAnchorQueuePipelineAdditionalConfig = {
+	serverConfig: KeetaAnchorFXServerConfig;
+	accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
+	extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
+}
+
 class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	private readonly serverConfig: KeetaAnchorFXServerConfig;
 	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
-	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>; } = {};
+	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> } = {};
 
-	constructor(options: ConstructorParameters<typeof KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] & { serverConfig: KeetaAnchorFXServerConfig; accounts: InstanceType<typeof KeetaNet.lib.Account.Set>; }) {
+	private extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
+
+	private successStageRunner: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> | null = null;
+	private failureStageRunner: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, JSONSerializable> | null = null;
+
+	constructor(
+		options:
+			ConstructorParameters<typeof KeetaAnchorQueuePipelineAdvanced<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>>[0] &
+			KeetaFXAnchorQueuePipelineAdditionalConfig
+	) {
 		super(options);
 
 		this.serverConfig = options.serverConfig;
 		this.accounts = options.accounts;
+		this.extensions = options.extensions;
 	}
 
 	protected async createPipeline(): Promise<void> {
+		const failureExtension = this.extensions?.failure;
+		const successExtension = this.extensions?.success;
+
+		if (failureExtension || successExtension) {
+			abstract class BaseExtensionClass<Req, Res> extends KeetaAnchorQueueRunner<Req, Res> {
+				#configSet = false;
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+				#processorMethod: Extract<RunnerOrRunnerWithOptions<Req, Res>, Function> = (() => {
+					throw(new Error('config not set'));
+				});
+
+				_setConfigurationAndProcessor(config: RunnerOrRunnerWithOptions<Req, Res>) {
+					if (this.#configSet) {
+						throw(new Error('Configuration can only be set once'));
+					}
+
+					this.#configSet = true;
+
+					if (typeof config === 'function') {
+						this.#processorMethod = config;
+					} else {
+						const { processor, ...parameters } = config;
+						this.#processorMethod = processor;
+
+						this.setConfiguration(parameters);
+					}
+				}
+
+				protected async processor(entry: Parameters<KeetaAnchorQueueRunner<Req, Res>['processor']>[0]) {
+					return(await this.#processorMethod(entry));
+				}
+			}
+
+			if (failureExtension) {
+				const failureQueue = await this.baseQueue.partition('failed');
+				this.queues.push(failureQueue);
+
+				const runner = (new class extends BaseExtensionClass<KeetaFXAnchorQueueStage1Request, JSONSerializable> {
+					protected encodeRequest(request: KeetaFXAnchorQueueStage1Request) { return(encodeKeetaFXAnchorQueueStage1Request(request)); }
+					protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Request { return(decodeKeetaFXAnchorQueueStage1Request(request)); }
+					protected encodeResponse(response: JSONSerializable | null) { return(response); }
+					protected decodeResponse(response: JSONSerializable | null) { return(response); }
+				}({
+					id: 'keeta-fx-anchor-failure-runner',
+					queue: failureQueue,
+					logger: this.logger
+				}));
+
+				runner._setConfigurationAndProcessor(failureExtension);
+
+				this.failureStageRunner = runner;
+			}
+
+			if (successExtension) {
+				const successQueue = await this.baseQueue.partition('success');
+				this.queues.push(successQueue);
+
+				const runner = (new class extends BaseExtensionClass<KeetaFXAnchorQueueStage1Response, KeetaFXAnchorQueueStage1Response> {
+					protected encodeRequest(request: KeetaFXAnchorQueueStage1Response) { return(request); }
+					protected decodeRequest(request: JSONSerializable): KeetaFXAnchorQueueStage1Response {
+						/* See note at bottom of file */
+						// eslint-disable-next-line @typescript-eslint/no-use-before-define
+						const parsed = assertKeetaFXAnchorQueueStage1ResponseOrNull(request);
+						if (parsed === null) {
+							throw(new Error('Invalid request for success extension'));
+						}
+
+						return(parsed);
+					}
+
+					protected encodeResponse(response: KeetaFXAnchorQueueStage1Response | null) { return(response); }
+					protected decodeResponse(response: JSONSerializable | null): KeetaFXAnchorQueueStage1Response | null {
+						/* See note at bottom of file */
+						// eslint-disable-next-line @typescript-eslint/no-use-before-define
+						return(assertKeetaFXAnchorQueueStage1ResponseOrNull(response));
+					}
+				}({
+					id: 'keeta-fx-anchor-success-runner',
+					queue: successQueue,
+					logger: this.logger
+				}));
+
+				runner._setConfigurationAndProcessor(successExtension);
+
+				this.successStageRunner = runner;
+			}
+		}
+
 		for (const account of this.accounts) {
 			const queue = await this.baseQueue.partition(account.publicKeyAndTypeString);
 			this.queues.push(queue);
@@ -586,6 +771,15 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 				logger: this.logger,
 				serverConfig: this.serverConfig
 			});
+
+			if (this.successStageRunner) {
+				runner.pipe(this.successStageRunner, { exclusiveTarget: false });
+			}
+
+			if (this.failureStageRunner) {
+				runner.pipeFailed(this.failureStageRunner, { exclusiveTarget: false });
+			}
+
 			this.runners[account.publicKeyAndTypeString] = runner;
 		}
 	}
@@ -608,6 +802,14 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 		return(await runner.add(request));
 	}
 
+	/**
+	 * Get the status of a request by ID.
+	 * If the request is found in any of the runners, it is returned with its current status.
+	 * Because typically the user will only care about the status of the first stage-
+	 * The request will be marked as failed or completed if it is found in the success or failure stages, instead of the status from those stages.
+	 * @param id The ID of the request to get the status of
+	 * @returns The inferred status of the request, or null if the request is not found
+	 */
 	async get(id: KeetaAnchorQueueRequestID): ReturnType<KeetaFXAnchorQueuePipelineStage1['get']> {
 		await super.init();
 
@@ -619,6 +821,40 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 			const entry = await runner.get(id);
 			if (entry !== null) {
+				if (entry.status === 'moved') {
+					let failedFound = null;
+					let successFound = null;
+
+					if (this.failureStageRunner || this.successStageRunner) {
+						await Promise.all([
+							(async () => {
+								if (!this.failureStageRunner) {
+									return(null);
+								}
+
+								failedFound = await this.failureStageRunner.get(id);
+							})(),
+							(async () => {
+								if (!this.successStageRunner) {
+									return(null);
+								}
+
+								successFound = await this.successStageRunner.get(id);
+							})()
+						]);
+					}
+
+					if (failedFound && successFound) {
+						this.logger?.warn(`Request with ID ${String(id)} was found in both the success and failure stages -- this should not happen`, { requestID: id });
+					} else if (failedFound) {
+						entry.status = 'failed_permanently';
+					} else if (successFound) {
+						entry.status = 'completed';
+					} else {
+						this.logger?.warn(`Request with ID ${String(id)} has moved from the main processing stage but was not found in either the success or failure stages -- leaving status as "moved"`, { requestID: id });
+					}
+				}
+
 				return(entry);
 			}
 		}
@@ -626,16 +862,35 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 		return(null);
 	}
 
-	async run(options?: Parameters<KeetaFXAnchorQueuePipelineStage1['run']>[0]): ReturnType<KeetaFXAnchorQueuePipelineStage1['run']> {
-		await super.init();
+	#getAllRunners() {
+		const runners = [];
 
-		let retval = false;
 		for (const account of this.accounts) {
 			const runner = this.runners[account.publicKeyAndTypeString];
 			if (runner === undefined) {
 				continue;
 			}
+			runners.push(runner);
+		}
 
+		if (this.successStageRunner) {
+			runners.push(this.successStageRunner);
+		}
+
+		if (this.failureStageRunner) {
+			runners.push(this.failureStageRunner);
+		}
+
+		return(runners);
+	}
+
+	async run(options?: Parameters<KeetaFXAnchorQueuePipelineStage1['run']>[0]): ReturnType<KeetaFXAnchorQueuePipelineStage1['run']> {
+		await super.init();
+
+		const runners = this.#getAllRunners();
+
+		let retval = false;
+		for (const runner of runners) {
 			const more = await runner.run(options);
 			if (more) {
 				retval = true;
@@ -648,12 +903,9 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	async maintain(): Promise<void> {
 		await super.init();
 
-		for (const account of this.accounts) {
-			const runner = this.runners[account.publicKeyAndTypeString];
-			if (runner === undefined) {
-				continue;
-			}
+		const runners = this.#getAllRunners();
 
+		for (const runner of runners) {
 			await runner.maintain();
 		}
 	}
@@ -668,7 +920,8 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 		await super.destroy();
 
-		for (const runner of Object.values(this.runners)) {
+		const runners = this.#getAllRunners();
+		for (const runner of runners) {
 			try {
 				await runner.destroy();
 			} catch (error) {
@@ -679,7 +932,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 }
 
-export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage'> {
+export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions'> {
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly client: KeetaAnchorFXServerConfig['client'];
 	readonly accounts: NonNullable<KeetaAnchorFXServerConfig['accounts']>;
@@ -754,7 +1007,8 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			}),
 			accounts: this.accounts,
 			logger: this.logger,
-			serverConfig: this
+			serverConfig: this,
+			extensions: config.queueRunnerExtensions
 		});
 	}
 
@@ -792,6 +1046,19 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			};
 		}
 
+		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: Exclude<GetConversionRateAndFeeContext['purpose'], 'exchange'>): Promise<KeetaFXInternalPriceQuote> {
+			const rateAndFee = await config.fx.getConversionRateAndFee(conversion, { purpose });
+
+			if (PARANOID) {
+				const quoteAccount = rateAndFee.account;
+				if (!instance.accounts.has(quoteAccount)) {
+					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
+				}
+			}
+
+			return(rateAndFee);
+		}
+
 		/**
 		 * Setup the request handler for an estimate request
 		 */
@@ -804,7 +1071,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			}
 
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
-			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
+			const rateAndFee = await getUnsignedQuoteData(conversion, 'estimate');
 
 			let requiresQuoteBody: { requiresQuote: true } | { requiresQuote: false; account: KeetaNetAccount | KeetaNetStorageAccount; };
 			if (instance.quoteConfiguration.requiresQuote) {
@@ -845,18 +1112,6 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			});
 		}
 
-		async function getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON) {
-			const rateAndFee = await config.fx.getConversionRateAndFee(conversion);
-
-			if (PARANOID) {
-				const quoteAccount = rateAndFee.account;
-				if (!instance.accounts.has(quoteAccount)) {
-					throw(new Error('"getConversionRateAndFee" returned an account not configured for this server'));
-				}
-			}
-
-			return(rateAndFee);
-		}
 
 		routes['POST /api/getQuote'] = async function(_ignore_params, postData) {
 			if (!instance.quoteConfiguration.requiresQuote && !instance.quoteConfiguration.issueQuotes) {
@@ -872,7 +1127,7 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			}
 
 			const conversion = assertConversionInputCanonicalJSON(postData.request);
-			const rateAndFee = await getUnsignedQuoteData(conversion);
+			const rateAndFee = await getUnsignedQuoteData(conversion, 'quote');
 
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
 				request: conversion,
@@ -916,9 +1171,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 			let shouldValidateQuote;
 			let liquidityAccount;
 			let expectedConversion: KeetaFXAnchorQueueStage1Request['expected'];
+			let isQuoteBasedExchange;
 			if ('quote' in request && 'estimate' in request && request.quote && request.estimate) {
 				throw(new Error('Request cannot contain both quote and estimate'));
 			} else if ('quote' in request && request.quote) {
+				isQuoteBasedExchange = true;
 				shouldValidateQuote = true;
 				quoteInput = request.quote;
 				conversionInput = quoteInput.request;
@@ -941,12 +1198,13 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 					request: conversionInput
 				});
 			} else if ('request' in request && request.request) {
+				isQuoteBasedExchange = false;
 				if (instance.quoteConfiguration.requiresQuote) {
 					throw(new Errors.QuoteRequired());
 				}
 
 				conversionInput = request.request;
-				quoteInput = await getUnsignedQuoteData(conversionInput);
+				quoteInput = await getUnsignedQuoteData(conversionInput, 'estimate');
 
 				if (instance.quoteConfiguration.validateQuoteBeforeExchange !== undefined) {
 					shouldValidateQuote = instance.quoteConfiguration.validateQuoteBeforeExchange;
@@ -1000,11 +1258,12 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				throw(new Error('config.account or config.accounts must be provided'));
 			}
 
-			assertExchangeBlockParameters({
+			assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: liquidityAccountInstance,
 				allowedLiquidityAccounts: allowedLiquidityAccounts,
-				checks: { quote: parsedQuote, request: conversionInput }
+				checks: { quote: parsedQuote, request: conversionInput },
+				isQuoteBasedExchange: isQuoteBasedExchange
 			});
 
 			/* Enqueue the exchange request */

@@ -1,4 +1,4 @@
-import type { KeetaNet } from '../../client/index.js';
+import { KeetaNet } from '../../client/index.js';
 import type {
 	PathPolicy,
 	FullStorageBackend,
@@ -78,9 +78,8 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(parsed.owner === account.publicKeyString.get());
 	}
 
-	getAuthorizedSigner(parsed: TestParsedPath): string | null {
-		// The owner is the authorized signer for pre-signed URLs
-		return(parsed.owner);
+	getAuthorizedSigner(parsed: TestParsedPath): InstanceType<typeof KeetaNet.lib.Account> | null {
+		return(KeetaNet.lib.Account.fromPublicKeyString(parsed.owner).assertAccount());
 	}
 
 	validateMetadata(parsed: TestParsedPath, metadata: StoragePutMetadata): void {

@@ -525,7 +525,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
  *   Estimate(optional) -> Quote(optional) -> Exchange -> ExchangeStatus
  */
 class KeetaFXAnchorExchangeWithProvider {
-	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly provider: KeetaFXAnchorProviderBase;
 	readonly exchange: KeetaFXAnchorExchange
 
 	constructor(provider: KeetaFXAnchorProviderBase, exchange: KeetaFXAnchorExchange) {
@@ -548,7 +548,7 @@ interface CanCreateExchange {
 }
 
 class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
-	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly provider: KeetaFXAnchorProviderBase;
 	readonly quote: KeetaFXAnchorQuote;
 	readonly isQuote = true as const;
 
@@ -565,10 +565,20 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 		const exchange = await this.provider.createExchange({ quote: this.quote }, block);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
+
+	/**
+	 * Re-fetch the quote from the provider.
+	 *
+	 * @returns a new KeetaFXAnchorQuoteWithProvider with the updated quote
+	 */
+	async refetch(): Promise<KeetaFXAnchorQuoteWithProvider> {
+		const quote = await this.provider.getQuote();
+		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
+	}
 }
 
 class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
-	private readonly provider: KeetaFXAnchorProviderBase;
+	readonly provider: KeetaFXAnchorProviderBase;
 	readonly estimate: KeetaFXAnchorEstimate;
 	readonly isQuote = false as const;
 
@@ -589,6 +599,16 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
+	}
+
+	/**
+	 * Re-fetch the estimate from the provider.
+	 *
+	 * @returns a new KeetaFXAnchorEstimateWithProvider with the updated estimate
+	 */
+	async refetch(): Promise<KeetaFXAnchorEstimateWithProvider> {
+		const estimate = await this.provider.getEstimate();
+		return(new KeetaFXAnchorEstimateWithProvider(this.provider, estimate));
 	}
 }
 

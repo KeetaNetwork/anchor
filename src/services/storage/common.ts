@@ -1216,12 +1216,12 @@ export interface PathPolicy<TPathInfo> {
 	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'): boolean;
 
 	/**
-	 * Get the public key of the account authorized to sign pre-signed URLs for this path.
+	 * Get the account authorized to sign pre-signed URLs for this path.
 	 * Used for public object access verification.
 	 *
-	 * @returns The public key string if only that account can sign (owner-restricted), or `null` if any account can sign
+	 * @returns The account if only that account can sign (owner-restricted), or `null` if any account can sign
 	 */
-	getAuthorizedSigner(parsed: TPathInfo): string | null;
+	getAuthorizedSigner(parsed: TPathInfo): KeetaNetAccount | null;
 
 	/**
 	 * Validate metadata for a path.

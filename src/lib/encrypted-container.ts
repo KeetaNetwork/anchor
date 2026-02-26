@@ -142,7 +142,7 @@ export type FromPlaintextOptions = {
  *
  * EncryptedContainer DEFINITIONS ::=
  * BEGIN
- *         Version        ::= INTEGER { v2(1), v3(2) }
+ *         Version        ::= INTEGER { v2(1) }
  *
  *         KeyStore ::= SEQUENCE {
  *                 publicKey              OCTET STRING,
@@ -177,7 +177,7 @@ export type FromPlaintextOptions = {
  *                 version                Version,
  *                 encryptedContainer     [0] EXPLICIT EncryptedContainerBox OPTIONAL,
  *                 plaintextContainer     [1] EXPLICIT PlaintextContainerBox OPTIONAL,
- *                 signerInfo             [2] EXPLICIT SignerInfo OPTIONAL,  -- v3 only
+ *                 signerInfo             [2] EXPLICIT SignerInfo OPTIONAL,
  *                 ...
  *         } (WITH COMPONENTS {
  *                 encryptedContainer PRESENT,
@@ -331,51 +331,23 @@ type EncryptedContainerBoxPlaintext = [
 	Buffer
 ];
 
-type ContainerPackageV2 = [
+type SignerInfoBoxContext = {
+	type: 'context',
+	value: 2,
+	kind: 'explicit',
+	contains: SignerInfoASN1
+};
+
+type ContainerPackage = [
 	/* version */
 	number,
 
 	/* container */
-	{
-		type: 'context',
-		value: 0,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxEncrypted
-	} | {
-		type: 'context',
-		value: 1,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxPlaintext
-	}
+	ContainerBox,
+
+	/* signerInfo (optional) */
+	SignerInfoBoxContext?
 ];
-
-type ContainerPackageV3 = [
-	/* version */
-	number,
-
-	/* container */
-	{
-		type: 'context',
-		value: 0,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxEncrypted
-	} | {
-		type: 'context',
-		value: 1,
-		kind: 'explicit',
-		contains: EncryptedContainerBoxPlaintext
-	},
-
-	/* signerInfo */
-	{
-		type: 'context',
-		value: 2,
-		kind: 'explicit',
-		contains: SignerInfoASN1
-	}
-];
-
-type ContainerPackage = ContainerPackageV2 | ContainerPackageV3;
 
 type EncryptedBoxContext = {
 	type: 'context',
@@ -429,7 +401,7 @@ function buildPlaintextBox(
  */
 function buildSignerInfoBox(
 	signerInfo: SignerInfoASN1
-): { type: 'context', value: 2, kind: 'explicit', contains: SignerInfoASN1 } {
+): SignerInfoBoxContext {
 	return({
 		type: 'context',
 		value: 2,
@@ -472,7 +444,7 @@ type SigningOptions = {
 *
 * @param plaintext The plaintext data to encode
 * @param encryptionOptions Optional encryption options
-* @param signingOptions Optional signing options (will produce v3 container)
+* @param signingOptions Optional signing options (will include SignerInfo)
 * @returns The ASN.1 DER data
 */
 async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, signingOptions?: SigningOptions): Promise<Buffer> {
@@ -526,10 +498,10 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, sig
 	/*
 	 * Build the typed container package
 	 */
-	let container: ContainerPackage;
+	const container: ContainerPackage = [1, containerBox];
+
 	if (signingOptions) {
 		/*
-		 * V3 container with SignerInfo
 		 * Sign the compressed plaintext (before encryption) so signature is verifiable after decryption
 		 */
 		const { signer } = signingOptions;
@@ -570,21 +542,7 @@ async function buildASN1(plaintext: Buffer, encryptionOptions?: ASN1Options, sig
 			signature
 		];
 
-		const containerV3: ContainerPackageV3 = [
-			2, // version
-			containerBox,
-			buildSignerInfoBox(signerInfoASN1)
-		];
-		container = containerV3;
-	} else {
-		/*
-		 * V2 container without SignerInfo
-		 */
-		const containerV2: ContainerPackageV2 = [
-			1, // version
-			containerBox
-		];
-		container = containerV2;
+		container.push(buildSignerInfoBox(signerInfoASN1));
 	}
 
 	const outputASN1 = JStoASN1(container);
@@ -603,8 +561,7 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 		throw(new EncryptedContainerError('MALFORMED_VERSION', 'Malformed data detected (version expected at position 0)'));
 	}
 
-	// Support v2 (1) and v3 (2)
-	if (version !== 1n && version !== 2n) {
+	if (version !== 1n) {
 		throw(new EncryptedContainerError('UNSUPPORTED_VERSION', 'Malformed data detected (unsupported version)'));
 	}
 
@@ -715,9 +672,9 @@ function parseASN1Bare(input: Buffer, acceptableEncryptionAlgorithms = ['aes-256
 		containedCompressed = Buffer.from(containedCompressedUnchecked);
 	}
 
-	// Parse SignerInfo if present (v3 containers)
+	// Parse SignerInfo if present
 	let signerInfo: ParsedSignerInfo | undefined;
-	if (version === 2n && inputSequence.length >= 3) {
+	if (inputSequence.length >= 3) {
 		const signerInfoBox = inputSequence[2];
 		if (typeof signerInfoBox === 'object' && signerInfoBox !== null &&
 			'type' in signerInfoBox && signerInfoBox.type === 'context' &&
@@ -1425,6 +1382,17 @@ export class EncryptedContainer {
 	 * @returns true if signature is valid, false if invalid, or throws if not signed or plaintext unavailable
 	 */
 	async verifySignature(): Promise<boolean> {
+		// If we have a signer but no parsed info yet, encode first to produce the signed DER
+		if (!this.#signingInfo.parsedSignerInfo && this.#signingInfo.signer) {
+			const encoded = await this.#computeEncoded();
+			if (encoded) {
+				const parsed = parseASN1Bare(encoded);
+				if (parsed.signerInfo) {
+					this.#signingInfo.parsedSignerInfo = parsed.signerInfo;
+				}
+			}
+		}
+
 		if (!this.#signingInfo.parsedSignerInfo) {
 			throw(new EncryptedContainerError('NOT_SIGNED', 'Container is not signed'));
 		}
