@@ -72,6 +72,8 @@ function canonicalizeValue(value: unknown): string {
 	const keys = Object.keys(value).sort();
 	const pairs: string[] = [];
 	for (const key of keys) {
+		// Assertion required: `value` is a non-null, non-array object (guarded above) but typed as `unknown`
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		pairs.push(JSON.stringify(key) + ':' + canonicalizeValue((value as { [k: string]: unknown })[key]));
 	}
 
