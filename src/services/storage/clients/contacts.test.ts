@@ -171,24 +171,28 @@ const updateCases: {
 	initial: { label: string; address: ContactAddress };
 	update: { label?: string; address?: ContactAddress };
 	expected: { label: string; address: ContactAddress };
+	changesId: boolean;
 }[] = [
 	{
-		name: 'label only preserves address',
+		name: 'label only preserves address and id',
 		initial: { label: 'Original', address: keetaSendAddress },
 		update: { label: 'Renamed' },
-		expected: { label: 'Renamed', address: keetaSendAddress }
+		expected: { label: 'Renamed', address: keetaSendAddress },
+		changesId: false
 	},
 	{
-		name: 'address only preserves label',
+		name: 'address only preserves label and changes id',
 		initial: { label: 'Keep This', address: keetaSendAddress },
 		update: { address: bitcoinSendAddress },
-		expected: { label: 'Keep This', address: bitcoinSendAddress }
+		expected: { label: 'Keep This', address: bitcoinSendAddress },
+		changesId: true
 	},
 	{
-		name: 'both label and address',
+		name: 'both label and address changes id',
 		initial: { label: 'Old', address: keetaSendAddress },
 		update: { label: 'New', address: evmSendAddress },
-		expected: { label: 'New', address: evmSendAddress }
+		expected: { label: 'New', address: evmSendAddress },
+		changesId: true
 	}
 ];
 
@@ -200,7 +204,7 @@ describe('Contacts Client - CRUD per address type', function() {
 	test.each(sampleAddresses)('create and get contact with $type address', function({ address }) {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created = await contactsClient.create({ label: 'Test Contact', address });
-			expect(created.id).toBeDefined();
+			expect(created.id).toBe(contactsClient.deriveId(address));
 			expect(created.label).toBe('Test Contact');
 			expect(created.address).toEqual(address);
 
@@ -211,16 +215,22 @@ describe('Contacts Client - CRUD per address type', function() {
 });
 
 describe('Contacts Client - Update', function() {
-	test.each(updateCases)('update $name', function({ initial, update, expected }) {
+	test.each(updateCases)('update $name', function({ initial, update, expected, changesId }) {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created = await contactsClient.create(initial);
 			const updated = await contactsClient.update(created.id, update);
-			expect(updated.id).toBe(created.id);
+
+			expect(updated.id).toBe(contactsClient.deriveId(expected.address));
 			expect(updated.label).toBe(expected.label);
 			expect(updated.address).toEqual(expected.address);
 
-			const retrieved = await contactsClient.get(created.id);
+			const retrieved = await contactsClient.get(updated.id);
 			expect(retrieved).toEqual(updated);
+
+			if (changesId) {
+				const oldRetrieved = await contactsClient.get(created.id);
+				expect(oldRetrieved).toBeNull();
+			}
 		}));
 	});
 
@@ -276,12 +286,18 @@ describe('Contacts Client - List', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			await contactsClient.create({ label: 'Wire Contact', address: wireAddress });
 			await contactsClient.create({ label: 'Bitcoin Contact', address: bitcoinSendAddress });
-			await contactsClient.create({ label: 'Another Wire', address: wireAddress });
+			await contactsClient.create({ label: 'ACH Contact', address: achAddress });
 
 			const wireContacts = await contactsClient.list({ type: 'WIRE' });
-			expect(wireContacts).toHaveLength(2);
+			expect(wireContacts).toHaveLength(1);
 			for (const contact of wireContacts) {
 				expect(contact.address.type).toBe('WIRE');
+			}
+
+			const achContacts = await contactsClient.list({ type: 'ACH' });
+			expect(achContacts).toHaveLength(1);
+			for (const contact of achContacts) {
+				expect(contact.address.type).toBe('ACH');
 			}
 
 			const btcContacts = await contactsClient.list({ type: 'BITCOIN_SEND' });
@@ -298,6 +314,31 @@ describe('Contacts Client - Edge Cases', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const result = await contactsClient.get('does-not-exist');
 			expect(result).toBeNull();
+		}));
+	});
+
+	test('creating the same address twice is idempotent and updates the label', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const first = await contactsClient.create({ label: 'First', address: keetaSendAddress });
+			const second = await contactsClient.create({ label: 'Second', address: keetaSendAddress });
+			expect(second.id).toBe(first.id);
+			expect(second.label).toBe('Second');
+
+			const retrieved = await contactsClient.get(first.id);
+			expect(retrieved).toEqual(second);
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(1);
+		}));
+	});
+
+	test('deriveId is deterministic across client instances', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient, storageClient, account }) {
+			const pubkey = account.publicKeyString.get();
+			const otherClient = (await storageClient.getProviderByID('test-provider'))!.getContactsClient(account, `/user/${pubkey}/contacts/`); // eslint-disable-line @typescript-eslint/no-non-null-assertion
+			for (const { address } of sampleAddresses) {
+				expect(contactsClient.deriveId(address)).toBe(otherClient.deriveId(address));
+			}
 		}));
 	});
 });

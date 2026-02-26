@@ -2,7 +2,7 @@ import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { AssetTransferInstructions } from '../../asset-movement/common.js';
 import type { KeetaStorageAnchorProvider } from '../client.js';
 import type { SearchCriteria } from '../common.js';
-import crypto from '../../../lib/utils/crypto.js';
+import { hash } from '../../../lib/utils/tests/hash.js';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 import { assertContact } from './contacts.generated.js';
@@ -36,6 +36,8 @@ export type Contact = {
  * Generic contacts client interface
  */
 export interface ContactsClient {
+	deriveId(address: ContactAddress): string;
+
 	create(options: {
 		label: string;
 		address: ContactAddress;
@@ -61,6 +63,27 @@ export interface ContactsClient {
 
 const MIME_TYPE = 'application/json';
 
+function canonicalizeValue(value: unknown): string {
+	if (value === null || typeof value !== 'object') {
+		return(JSON.stringify(value));
+	}
+	if (Array.isArray(value)) {
+		return('[' + value.map(canonicalizeValue).join(',') + ']');
+	}
+
+	const keys = Object.keys(value).sort();
+	const pairs: string[] = [];
+	for (const key of keys) {
+		pairs.push(JSON.stringify(key) + ':' + canonicalizeValue((value as { [k: string]: unknown })[key]));
+	}
+
+	return('{' + pairs.join(',') + '}');
+}
+
+function canonicalizeContactAddress(address: ContactAddress): string {
+	return(canonicalizeValue(address));
+}
+
 /**
  * Storage Anchor-backed implementation of `ContactsClient`.
  * Stores contacts as encrypted JSON objects via `KeetaStorageAnchorProvider`.
@@ -74,6 +97,10 @@ export class StorageContactsClient implements ContactsClient {
 		this.#provider = provider;
 		this.#account = account;
 		this.#basePath = basePath;
+	}
+
+	deriveId(address: ContactAddress): string {
+		return(hash(canonicalizeContactAddress(address)));
 	}
 
 	#contactPath(id: string): string {
@@ -96,7 +123,7 @@ export class StorageContactsClient implements ContactsClient {
 		label: string;
 		address: ContactAddress;
 	}): Promise<Contact> {
-		const id = crypto.randomUUID();
+		const id = this.deriveId(options.address);
 		const contact: Contact = {
 			id,
 			label: options.label,
@@ -135,14 +162,24 @@ export class StorageContactsClient implements ContactsClient {
 			throw(new Errors.DocumentNotFound(`Contact not found: ${id}`));
 		}
 
+		const newAddress = options.address ?? existing.address;
+		const newId = this.deriveId(newAddress);
+
 		const updated: Contact = {
-			id: existing.id,
+			id: newId,
 			label: options.label ?? existing.label,
-			address: options.address ?? existing.address
+			address: newAddress
 		};
 
+		if (newId !== id) {
+			await this.#provider.delete({
+				path: this.#contactPath(id),
+				account: this.#account
+			});
+		}
+
 		await this.#provider.put({
-			path: this.#contactPath(id),
+			path: this.#contactPath(newId),
 			data: this.#serialize(updated),
 			mimeType: MIME_TYPE,
 			tags: [updated.address.type],
