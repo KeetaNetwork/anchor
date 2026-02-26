@@ -1180,7 +1180,8 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 * Get a contacts client bound to the given account.
 	 */
 	getContactsClient(account: KeetaNetAccount, basePath: string): StorageContactsClient {
-		return(new StorageContactsClient(this, account, basePath));
+		const session = this.beginSession({ account, workingDirectory: basePath });
+		return(new StorageContactsClient(session));
 	}
 }
 

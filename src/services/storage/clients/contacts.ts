@@ -1,7 +1,5 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { AssetTransferInstructions } from '../../asset-movement/common.js';
-import type { KeetaStorageAnchorProvider } from '../client.js';
-import type { SearchCriteria } from '../common.js';
+import type { KeetaStorageAnchorSession } from '../client.js';
 import { hash } from '../../../lib/utils/tests/hash.js';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
@@ -86,29 +84,17 @@ function canonicalizeContactAddress(address: ContactAddress): string {
 
 /**
  * Storage Anchor-backed implementation of `ContactsClient`.
- * Stores contacts as encrypted JSON objects via `KeetaStorageAnchorProvider`.
+ * Stores contacts as encrypted JSON objects via a `KeetaStorageAnchorSession`.
  */
 export class StorageContactsClient implements ContactsClient {
-	readonly #provider: KeetaStorageAnchorProvider;
-	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
-	readonly #basePath: string;
+	readonly #session: KeetaStorageAnchorSession;
 
-	constructor(provider: KeetaStorageAnchorProvider, account: InstanceType<typeof KeetaNetLib.Account>, basePath: string) {
-		this.#provider = provider;
-		this.#account = account;
-		this.#basePath = basePath;
+	constructor(session: KeetaStorageAnchorSession) {
+		this.#session = session;
 	}
 
 	deriveId(address: ContactAddress): string {
 		return(hash(canonicalizeContactAddress(address)));
-	}
-
-	#contactPath(id: string): string {
-		return(`${this.#basePath}${id}`);
-	}
-
-	#contactsPathPrefix(): string {
-		return(this.#basePath);
 	}
 
 	#serialize(contact: Contact): Buffer {
@@ -130,22 +116,16 @@ export class StorageContactsClient implements ContactsClient {
 			address: options.address
 		};
 
-		await this.#provider.put({
-			path: this.#contactPath(id),
-			data: this.#serialize(contact),
+		await this.#session.put(id, this.#serialize(contact), {
 			mimeType: MIME_TYPE,
-			tags: [options.address.type],
-			account: this.#account
+			tags: [options.address.type]
 		});
 
 		return(contact);
 	}
 
 	async get(id: string): Promise<Contact | null> {
-		const result = await this.#provider.get({
-			path: this.#contactPath(id),
-			account: this.#account
-		});
+		const result = await this.#session.get(id);
 		if (!result) {
 			return(null);
 		}
@@ -172,53 +152,32 @@ export class StorageContactsClient implements ContactsClient {
 		};
 
 		if (newId !== id) {
-			await this.#provider.delete({
-				path: this.#contactPath(id),
-				account: this.#account
-			});
+			await this.#session.delete(id);
 		}
 
-		await this.#provider.put({
-			path: this.#contactPath(newId),
-			data: this.#serialize(updated),
+		await this.#session.put(newId, this.#serialize(updated), {
 			mimeType: MIME_TYPE,
-			tags: [updated.address.type],
-			account: this.#account
+			tags: [updated.address.type]
 		});
 
 		return(updated);
 	}
 
 	async delete(id: string): Promise<boolean> {
-		return(await this.#provider.delete({
-			path: this.#contactPath(id),
-			account: this.#account
-		}));
+		return(await this.#session.delete(id));
 	}
 
 	async list(options?: {
 		type?: ContactAddress['type'];
 	}): Promise<Contact[]> {
-		const criteria: SearchCriteria = {
-			pathPrefix: this.#contactsPathPrefix(),
-			owner: this.#account.publicKeyString.get()
-		};
-
-		if (options?.type) {
-			criteria.tags = [options.type];
-		}
-
-		const searchResult = await this.#provider.search({
-			criteria,
-			account: this.#account
+		const searchResult = await this.#session.search({
+			pathPrefix: this.#session.workingDirectory,
+			...(options?.type ? { tags: [options.type] } : {})
 		});
 
 		const contacts: Contact[] = [];
 		for (const metadata of searchResult.results) {
-			const result = await this.#provider.get({
-				path: metadata.path,
-				account: this.#account
-			});
+			const result = await this.#session.get(metadata.path);
 			if (result) {
 				contacts.push(this.#deserialize(result.data));
 			}
