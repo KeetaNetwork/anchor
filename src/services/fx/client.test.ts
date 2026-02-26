@@ -1577,7 +1577,7 @@ test('FX Server Converted Amount Bound Validation', async function() {
 	await server.start();
 
 	await client.setInfo({
-		name: 'TEST', description: 'FX Bound Test Root',
+		name: 'TEST', description: '',
 		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
 			version: 1,
 			currencyMap: {
@@ -1599,69 +1599,26 @@ test('FX Server Converted Amount Bound Validation', async function() {
 		logger: logger
 	});
 
-	// Test case 1: affinity='to' with bound equal to convertedAmount (should succeed)
-	{
-		serverReturnValue.convertedAmount = 1000n;
-		serverReturnValue.convertedAmountBound = 1000n;
+	const testCases: { convertedAmount: bigint; convertedAmountBound: bigint; affinity: 'to' | 'from'; shouldSucceed: boolean; }[] = [
+		{ convertedAmount: 1000n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: true },
+		{ convertedAmount: 1100n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: false },
+		{ convertedAmount: 950n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: true },
+		{ convertedAmount: 900n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: false },
+		{ convertedAmount: 900n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: true },
+		{ convertedAmount: 1000n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: true }
+	];
 
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 900n, affinity: 'to' });
+	for (const testCase of testCases) {
+		serverReturnValue.convertedAmount = testCase.convertedAmount;
+		serverReturnValue.convertedAmountBound = testCase.convertedAmountBound;
 
-		expect(estimates).toBeTruthy();
-		expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
-	}
-
-	// Test case 2: affinity='to' with convertedAmount exceeding bound (should fail/filter)
-	{
-		serverReturnValue.convertedAmount = 1100n;
-		serverReturnValue.convertedAmountBound = 1000n;
-
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 900n, affinity: 'to' });
-
-		// Server should reject this due to bound violation, so either no estimates or requiresQuote: true
-		expect(estimates === null || estimates.length === 0 || estimates[0]?.estimate.requiresQuote === true).toBe(true);
-	}
-
-	// Test case 3: affinity='from' with convertedAmount equal to bound (should succeed)
-	{
-		serverReturnValue.convertedAmount = 950n;
-		serverReturnValue.convertedAmountBound = 950n;
-
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' });
-
-		expect(estimates).toBeTruthy();
-		expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
-	}
-
-	// Test case 4: affinity='from' with convertedAmount below bound (should fail/filter)
-	{
-		serverReturnValue.convertedAmount = 900n;
-		serverReturnValue.convertedAmountBound = 950n;
-
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' });
-
-		// Server should reject this due to bound violation, so either no estimates or requires Quote: true
-		expect(estimates === null || estimates.length === 0 || estimates[0]?.estimate.requiresQuote === true).toBe(true);
-	}
-
-	// Test case 5: affinity='to' with convertedAmount below bound (should succeed)
-	{
-		serverReturnValue.convertedAmount = 900n;
-		serverReturnValue.convertedAmountBound = 1000n;
-
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 850n, affinity: 'to' });
-
-		expect(estimates).toBeTruthy();
-		expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
-	}
-
-	// Test case 6: affinity='from' with convertedAmount above bound (should succeed)
-	{
-		serverReturnValue.convertedAmount = 1000n;
-		serverReturnValue.convertedAmountBound = 950n;
-
-		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' });
-
-		expect(estimates).toBeTruthy();
-		expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
+		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 900n, affinity: testCase.affinity });
+		if (testCase.shouldSucceed) {
+			expect(estimates).toBeTruthy();
+			expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
+		} else {
+			// Server should reject this due to bound violation, so either no estimates or requiresQuote: true
+			expect(estimates === null || estimates.length === 0).toBe(true);
+		}
 	}
 });
