@@ -61,6 +61,7 @@ jobs:
 
       # Save artifacts from testing for running SonarCloud in a privileged step
       - name: Save Tested Artifacts for SonarCloud
+        if: success()
         uses: actions/upload-artifact@v6
         with:
           name: test-artifacts
