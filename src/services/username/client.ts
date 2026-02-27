@@ -12,10 +12,14 @@ import { KeetaAnchorError, KeetaAnchorUserValidationError } from '../../lib/erro
 import { SignData } from '../../lib/utils/signing.js';
 import type {
 	TransferUsernameOwnershipSignablePayload,
-	KeetaUsernameAnchorClaimRequestPayload } from './common.js';
+	KeetaUsernameAnchorClaimRequestPayload,
+	KeetaUsernameAnchorUsernameWithAccount,
+	KeetaUsernameAnchorSearchRequestParameters,
+	KeetaUsernameAnchorResolveResponseJSON
+} from './common.js';
 import {
-	isKeetaUsernameAnchorResolveResponse,
-	isKeetaUsernameAnchorClaimResponse,
+	isKeetaUsernameAnchorResolveResponseJSON,
+	isKeetaUsernameAnchorClaimResponseJSON,
 	parseGloballyIdentifiableUsername,
 	getUsernameClaimSignable,
 	validateUsernameDefault,
@@ -26,9 +30,12 @@ import {
 	Errors,
 	getUsernameTransferSignable,
 	getUsernameReleaseSignable,
-	isKeetaUsernameAnchorReleaseResponse
+	isKeetaUsernameAnchorReleaseResponseJSON,
+	formatGloballyIdentifiableUsername,
+	isKeetaUsernameAnchorSearchResponseJSON
 } from './common.js';
-import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
+import { assertNever } from '../../lib/utils/never.js';
 
 export type KeetaUsernameAnchorClientConfig = {
 	id?: string;
@@ -195,6 +202,11 @@ class KeetaUsernameAnchorBase {
 	}
 }
 
+export interface KeetaUsernameAnchorUsernameWithAccountAndProvider extends KeetaUsernameAnchorUsernameWithAccount {
+	providerID: ProviderID;
+	globallyIdentifiableUsername: GloballyIdentifiableUsername;
+}
+
 class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 	readonly serviceInfo: KeetaUsernameServiceInfo;
 	readonly providerID: ProviderID;
@@ -281,12 +293,21 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		}
 	}
 
+	#toKeetaUsernameAnchorUsernameWithAccountAndProvider(response: Pick<ExtractOk<KeetaUsernameAnchorResolveResponseJSON>, 'username' | 'account'>): KeetaUsernameAnchorUsernameWithAccountAndProvider {
+		return({
+			account: KeetaNetLib.Account.toAccount(response.account),
+			username: response.username,
+			providerID: this.providerID,
+			globallyIdentifiableUsername: formatGloballyIdentifiableUsername(response.username, String(this.providerID))
+		});
+	}
+
 	/**
 	 * Resolve a username for a specific provider
 	 * @param input The value to lookup, can be a username, PublicKeyString, or an account
 	 * @returns The resolved account and username, or null if not found
 	 */
-	async resolve(input: string | KeetaNetAccount): Promise<{ account: KeetaNetAccount; username: string; } | null> {
+	async resolve(input: string | KeetaNetAccount): Promise<KeetaUsernameAnchorUsernameWithAccountAndProvider | null> {
 		let toResolveString;
 		if (typeof input === 'string') {
 			toResolveString = input;
@@ -312,7 +333,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error(`Failed to parse username provider response as JSON: ${error}`));
 		}
 
-		if (!isKeetaUsernameAnchorResolveResponse(responseJSON)) {
+		if (!isKeetaUsernameAnchorResolveResponseJSON(responseJSON)) {
 			throw(new Error('Invalid response from username provider'));
 		}
 
@@ -326,10 +347,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(responseError);
 		}
 
-		const retval = {
-			account: KeetaNetLib.Account.toAccount(responseJSON.account),
-			username: responseJSON.username
-		};
+		const retval = this.#toKeetaUsernameAnchorUsernameWithAccountAndProvider(responseJSON);
 
 		if (isKeetaNetPublicKeyString(toResolveString)) {
 			if (!(retval.account.comparePublicKey(toResolveString))) {
@@ -429,7 +447,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error(`Failed to parse username claim response as JSON: ${error}`));
 		}
 
-		if (!isKeetaUsernameAnchorClaimResponse(responseJSON)) {
+		if (!isKeetaUsernameAnchorClaimResponseJSON(responseJSON)) {
 			throw(new Error('Invalid response from username provider claim endpoint'));
 		}
 
@@ -478,7 +496,7 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error(`Failed to parse username claim response as JSON: ${error}`));
 		}
 
-		if (!isKeetaUsernameAnchorReleaseResponse(responseJSON)) {
+		if (!isKeetaUsernameAnchorReleaseResponseJSON(responseJSON)) {
 			throw(new Error('Invalid response from username provider claim endpoint'));
 		}
 
@@ -487,6 +505,53 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 		}
 
 		return(responseJSON.ok);
+	}
+
+	/**
+	 * Release a username for a specific provider
+	 * @param options The account to claim for, and options related to transfer if applicable
+	 * @returns True if the claim was successful, false otherwise
+	 */
+	async search(parameters: KeetaUsernameAnchorSearchRequestParameters): Promise<{ results: KeetaUsernameAnchorUsernameWithAccountAndProvider[]; }> {
+		const endpoint = await this.#getOperation('search');
+
+		if (endpoint.options.authentication.type !== 'none') {
+			throw(new Error('Username search operation does not currently support authenticated endpoints'));
+		}
+
+		const urlWithParameters = (() => {
+			const reconstructed = new URL(endpoint.url().toString());
+			reconstructed.searchParams.set('search', parameters.search);
+			return(reconstructed);
+		})();
+
+		const response = await fetch(urlWithParameters, {
+			method: 'GET',
+			headers: { 'Accept': 'application/json' }
+		});
+
+		let responseJSON: unknown;
+		try {
+			responseJSON = await response.json();
+		} catch (error) {
+			throw(new Error(`Failed to parse username claim response as JSON: ${error}`));
+		}
+
+		if (!isKeetaUsernameAnchorSearchResponseJSON(responseJSON)) {
+			throw(new Error('Invalid response from username provider claim endpoint'));
+		}
+
+		if (!responseJSON.ok) {
+			throw(await this.#parseResponseError(responseJSON));
+		}
+
+		const results = responseJSON.results.map((result) => {
+			this.#assertProviderIssuedNameValid(result.username);
+
+			return(this.#toKeetaUsernameAnchorUsernameWithAccountAndProvider(result));
+		});
+
+		return({ results });
 	}
 }
 
@@ -549,13 +614,13 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 	}
 
 	/**
-	 * Search all username providers for the given input.
+	 * Resolve against all username providers for the given input.
 	 * @param input The value to search for, either a globally identifiable username, a username, or an account
 	 * @param shared Shared lookup criteria
 	 * @returns A mapping of provider IDs to their resolution results, or null if no providers found a match
 	 */
 	// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-	async search(input: string | KeetaNetAccount | GloballyIdentifiableUsername, shared?: SharedLookupCriteria): Promise<({
+	async resolveMulti(input: string | KeetaNetAccount | GloballyIdentifiableUsername, shared?: SharedLookupCriteria): Promise<({
 		[providerId: ProviderID]: Awaited<ReturnType<KeetaUsernameAnchorProvider['resolve']>>;
 	}) | null> {
 		if (isGloballyIdentifiableUsername(input)) {
@@ -590,7 +655,7 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 					response[provider.providerID] = result;
 				}
 			} catch (error) {
-				this.logger?.debug('UsernameAnchor:search', `Error resolving username with provider ${String(provider.providerID)}`, error);
+				this.logger?.debug('UsernameAnchor:resolveMulti', `Error resolving username with provider ${String(provider.providerID)}`, error);
 			}
 		}));
 
@@ -599,6 +664,51 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 		}
 
 		return(response);
+	}
+
+	/**
+	 * Resolve against all username providers for the given input.
+	 * @param input The value to search for, either a globally identifiable username, a username, or an account
+	 * @param shared Shared lookup criteria
+	 * @returns A mapping of provider IDs to their resolution results, or null if no providers found a match
+	 */
+
+	async search(parameters: KeetaUsernameAnchorSearchRequestParameters, responseType: 'separate', shared?: SharedLookupCriteria): Promise<({ [providerId: ProviderID]: Awaited<ReturnType<KeetaUsernameAnchorProvider['search']>>; }) | null>;
+	async search(parameters: KeetaUsernameAnchorSearchRequestParameters, responseType?: 'joined', shared?: SharedLookupCriteria): Promise<Awaited<ReturnType<KeetaUsernameAnchorProvider['search']>> | null>;
+	async search(parameters: KeetaUsernameAnchorSearchRequestParameters, responseType: 'joined' | 'separate' = 'joined', shared?: SharedLookupCriteria) {
+		const providers = await this.#lookup({}, shared);
+
+		if (!providers) {
+			return(null);
+		}
+
+		const response: {
+			[providerId: ProviderID]: NonNullable<Awaited<ReturnType<KeetaUsernameAnchorProvider['search']>>>;
+		} = {};
+
+		await Promise.all(providers.map(async (provider) => {
+			try {
+				response[provider.providerID] = await provider.search(parameters);
+			} catch (error) {
+				this.logger?.debug('UsernameAnchor:search', `Error resolving username with provider ${String(provider.providerID)}`, error);
+			}
+		}));
+
+		if (responseType === 'separate') {
+			return(response);
+		} else if (responseType === 'joined') {
+			const joinedResults: KeetaUsernameAnchorUsernameWithAccountAndProvider[] = [];
+			for (const providerResponse of Object.values(response)) {
+				// For some reason TypeScript loses the type information here, even though it is correctly inferred in the loop above. We have to manually assert the type to get the correct typings for results.
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const results = (providerResponse as typeof response[keyof typeof response]).results;
+				joinedResults.push(...results);
+			}
+
+			return({ results: joinedResults });
+		} else {
+			assertNever(responseType);
+		}
 	}
 
 	/**

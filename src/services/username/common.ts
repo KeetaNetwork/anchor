@@ -16,8 +16,6 @@ export interface UsernameValidationIssue {
 	message: string;
 }
 
-const LATIN1_MAX_CODE_POINT = 0xFF;
-
 type ValidateUsernameOptions = {
 	pattern?: string | RegExp | undefined;
 	fieldPath?: string;
@@ -38,19 +36,29 @@ export function validateUsernameDefault(username: string, options: ValidateUsern
 		}));
 	}
 
-	for (const char of username) {
-		if (char.charCodeAt(0) > LATIN1_MAX_CODE_POINT) {
-			throw(new KeetaAnchorUserValidationError({
-				fields: [
-					{
-						path: fieldPath,
-						message: 'Username must contain only Latin-1 characters',
-						receivedValue: username,
-						expected: 'Latin-1 characters'
-					}
-				]
-			}));
-		}
+	if (username.includes(USERNAME_DELIMITER)) {
+		throw(new KeetaAnchorUserValidationError({
+			fields: [
+				{
+					path: fieldPath,
+					message: `Username must not contain "${USERNAME_DELIMITER}" character`,
+					receivedValue: username
+				}
+			]
+		}));
+	}
+
+	const isUSAscii = /^[\x20-\x7E]*$/.test(username);
+	if (!isUSAscii) {
+		throw(new KeetaAnchorUserValidationError({
+			fields: [
+				{
+					path: fieldPath,
+					message: 'Username must contain only US ASCII characters',
+					receivedValue: username
+				}
+			]
+		}));
 	}
 
 	if (options.pattern !== undefined) {
@@ -82,16 +90,31 @@ export interface KeetaUsernameAnchorAccountResolutionContext { account: KeetaNet
 
 export interface KeetaUsernameAnchorUsernameResolutionContext { username: string; }
 
-export type KeetaUsernameAnchorResolveResponse = ({
-	ok: true;
-	account: string;
+export interface KeetaUsernameAnchorSearchRequestParameters {
+	search: string;
+}
+
+export interface KeetaUsernameAnchorUsernameWithAccount {
 	username: string;
+	account: KeetaNetAccount;
+}
+
+export type KeetaUsernameAnchorSearchResponse = ({
+	ok: true;
+	results: KeetaUsernameAnchorUsernameWithAccount[];
 }) | ({
 	ok: false;
 	error: string;
+})
+
+export type KeetaUsernameAnchorSearchResponseJSON = ToJSONSerializable<KeetaUsernameAnchorSearchResponse>;
+
+export type KeetaUsernameAnchorResolveResponse = ({
+	ok: true;
+} & KeetaUsernameAnchorUsernameWithAccount) | ({
+	ok: false;
+	error: string;
 });
-
-
 
 export type KeetaUsernameAnchorResolveResponseJSON = ToJSONSerializable<KeetaUsernameAnchorResolveResponse>;
 
@@ -117,7 +140,7 @@ export interface KeetaUsernameAnchorClaimRequest extends KeetaUsernameAnchorClai
 
 export type KeetaUsernameAnchorClaimRequestJSON = ToJSONSerializable<KeetaUsernameAnchorClaimRequest>;
 
-export type KeetaUsernameAnchorClaimResponse = ({
+export type KeetaUsernameAnchorClaimResponseJSON = ({
 	ok: true;
 }) | ({
 	ok: false;
@@ -135,7 +158,7 @@ export interface KeetaUsernameAnchorReleaseRequest extends KeetaUsernameAnchorRe
 
 export type KeetaUsernameAnchorReleaseRequestJSON = ToJSONSerializable<KeetaUsernameAnchorReleaseRequest>;
 
-export type KeetaUsernameAnchorReleaseResponse = ({
+export type KeetaUsernameAnchorReleaseResponseJSON = ({
 	ok: true;
 }) | ({
 	ok: false;

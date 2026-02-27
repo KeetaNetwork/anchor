@@ -169,6 +169,7 @@ type ServiceMetadata = {
 					resolve: ServiceMetadataEndpoint;
 					claim?: ServiceMetadataEndpoint;
 					release?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
 				};
 
 				/**

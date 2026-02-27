@@ -4,7 +4,10 @@ import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
 	KeetaUsernameAnchorAccountResolutionContext,
 	KeetaUsernameAnchorClaimRequest,
-	KeetaUsernameAnchorReleaseRequest } from './common.js';
+	KeetaUsernameAnchorReleaseRequest,
+	KeetaUsernameAnchorSearchRequestParameters,
+	KeetaUsernameAnchorUsernameWithAccount,
+	KeetaUsernameAnchorSearchResponseJSON } from './common.js';
 import {
 	getUsernameClaimSignable,
 	validateUsernameDefault,
@@ -38,6 +41,7 @@ function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
 }
 
 type ClaimHandlerResponse = { ok: true; } | { ok: false; taken?: false; } | { ok: false; taken: true; };
+type SearchHandlerResponse = { results: KeetaUsernameAnchorUsernameWithAccount[] };
 
 export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	homepage?: string | (() => Promise<string> | string);
@@ -48,6 +52,8 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 
 		releaseUsername?: (input: { account: InstanceType<typeof KeetaNet.lib.Account>; }) => Promise<{ ok: boolean; }>;
 		claim?: ((input: KeetaUsernameAnchorClaimContext) => Promise<ClaimHandlerResponse>);
+
+		search?: ((input: KeetaUsernameAnchorSearchRequestParameters) => Promise<SearchHandlerResponse>);
 	};
 	routes?: Routes;
 	usernamePattern?: string | RegExp;
@@ -72,10 +78,10 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		}
 	}
 
-	#assertProviderIssuedNameValid(username: string): void {
+	#assertProviderIssuedNameValid(username: string, fieldPath = 'username'): void {
 		validateUsernameDefault(username, {
 			pattern: this.#usernamePattern,
-			fieldPath: 'username'
+			fieldPath: fieldPath
 		});
 	}
 
@@ -266,6 +272,48 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 			};
 		}
 
+		const searchHandler = this.usernames.search;
+		if (searchHandler) {
+			routes['GET /api/search'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
+				const request: KeetaUsernameAnchorSearchRequestParameters = (() => {
+					const searchParameter = url.searchParams.get('search');
+
+					if (!searchParameter) {
+						throw(new KeetaAnchorUserValidationError({
+							fields: [
+								{
+									path: 'search',
+									message: 'Missing search parameter',
+									receivedValue: searchParameter
+								}
+							]
+						}));
+					}
+
+					this.#assertProviderIssuedNameValid(searchParameter, 'search');
+
+					return({ search: searchParameter });
+				})();
+
+				const searchResponse = await searchHandler(request);
+
+				const formatted: KeetaUsernameAnchorSearchResponseJSON = {
+					ok: true,
+					results: searchResponse.results.map(function(result) {
+						return({
+							username: result.username,
+							account: result.account.publicKeyString.get()
+						});
+					})
+				}
+
+				return({
+					output: JSON.stringify(formatted),
+					contentType: 'application/json'
+				});
+			};
+		}
+
 
 		return(routes);
 	}
@@ -292,6 +340,10 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 				url: (new URL('/api/release', this.url)).toString(),
 				options: { authentication }
 			};
+		}
+
+		if (this.usernames.search) {
+			operations.search = { url: (new URL('/api/search', this.url)).toString() };
 		}
 
 		return({
