@@ -6,6 +6,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { Buffer } from '../../lib/utils/buffer.js';
 import type {
 	KeetaNetAccount,
+	ContactsClientConfig,
 	StorageObjectMetadata,
 	SearchCriteria,
 	SearchPagination,
@@ -1179,8 +1180,8 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	/**
 	 * Get a contacts client bound to the given account.
 	 */
-	getContactsClient(account: KeetaNetAccount, basePath: string): StorageContactsClient {
-		const session = this.beginSession({ account, workingDirectory: basePath });
+	getContactsClient(config: ContactsClientConfig): StorageContactsClient {
+		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
 		return(new StorageContactsClient(session));
 	}
 }
@@ -1254,14 +1255,14 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 	 * Get a contacts client bound to the given account.
 	 * Resolves the first available provider and constructs a StorageContactsClient.
 	 */
-	async getContactsClient(account: KeetaNetAccount, basePath: string): Promise<StorageContactsClient | null> {
+	async getContactsClient(config: ContactsClientConfig): Promise<StorageContactsClient | null> {
 		const providers = await this.getProviders();
 		const provider = providers?.[0];
 		if (!provider) {
 			return(null);
 		}
 
-		return(provider.getContactsClient(account, basePath));
+		return(provider.getContactsClient(config));
 	}
 
 	/** @internal */

@@ -71,7 +71,7 @@ async function withContacts(
 	}
 
 	const pubkey = account.publicKeyString.get();
-	const contactsClient = maybeProvider.getContactsClient(account, `/user/${pubkey}/contacts/`);
+	const contactsClient = maybeProvider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
 	await testFunction({ contactsClient, account, storageClient });
 }
 
@@ -329,7 +329,7 @@ describe('Contacts Client - Edge Cases', function() {
 	test('deriveId is deterministic across client instances', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient, storageClient, account }) {
 			const pubkey = account.publicKeyString.get();
-			const otherClient = (await storageClient.getProviderByID('test-provider'))!.getContactsClient(account, `/user/${pubkey}/contacts/`); // eslint-disable-line @typescript-eslint/no-non-null-assertion
+			const otherClient = (await storageClient.getProviderByID('test-provider'))!.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` }); // eslint-disable-line @typescript-eslint/no-non-null-assertion
 			for (const { address } of sampleAddresses) {
 				expect(contactsClient.deriveId(address)).toBe(otherClient.deriveId(address));
 			}
@@ -364,7 +364,7 @@ describe('Contacts Client - Factory Methods', function() {
 	test('getContactsClient via storage client resolves provider', function() {
 		return(withContacts(randomSeed(), async function({ storageClient, account }) {
 			const pubkey = account.publicKeyString.get();
-			const contactsClient = await storageClient.getContactsClient(account, `/user/${pubkey}/contacts/`);
+			const contactsClient = await storageClient.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
 			expect(contactsClient).toBeInstanceOf(StorageContactsClient);
 		}));
 	});
