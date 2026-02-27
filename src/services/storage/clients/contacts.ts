@@ -153,14 +153,18 @@ export class StorageContactsClient implements ContactsClient {
 			address: newAddress
 		};
 
-		if (newId !== id) {
-			await this.#session.delete(id);
-		}
-
 		await this.#session.put(newId, this.#serialize(updated), {
 			mimeType: MIME_TYPE,
 			tags: [updated.address.type]
 		});
+
+		if (newId !== id) {
+			try {
+				await this.#session.delete(id);
+			} catch {
+				// Put succeeded; old contact is now orphaned
+			}
+		}
 
 		return(updated);
 	}
