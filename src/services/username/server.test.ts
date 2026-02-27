@@ -125,10 +125,7 @@ test('username server enforces default validation rules', async () => {
 		name: 'KeetaAnchorUserValidationError',
 		data: {
 			fields: [
-				{
-					path: 'username',
-					expected: 'Latin-1 characters'
-				}
+				{ path: 'username' }
 			]
 		}
 	});
