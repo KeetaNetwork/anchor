@@ -34,6 +34,7 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		import('../services/kyc/common.js'),
 		import('../services/fx/common.js'),
 		import('../services/asset-movement/common.js'),
+		import('../services/storage/common.js'),
 		import('../services/username/common.js')
 	]);
 

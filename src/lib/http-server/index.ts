@@ -19,9 +19,11 @@ const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {
 	bodyType: 'raw';
+	maxBodySize?: number;
 	handler: RouteHandlerMethod<Buffer>;
 } | {
 	bodyType: 'parsed';
+	maxBodySize?: number;
 	handler: RouteHandlerMethod;
 } | {
 	bodyType: 'none';
@@ -47,6 +49,17 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * Enable debug logging
 	 */
 	logger?: Logger | undefined;
+	/**
+	 * The URL for the server. By default, this will be generated based on
+	 * the port and will use "localhost" as the hostname, but it can be
+	 * overridden by setting this to a string, URL, or function that
+	 * generates the URL
+	 */
+	url?: undefined | string | URL | ((object: KeetaNetAnchorHTTPServer) => string) | {
+		hostname?: string;
+		port?: number;
+		protocol?: string;
+	};
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
@@ -55,6 +68,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	readonly id: NonNullable<KeetaAnchorHTTPServerConfig['id']>;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
+	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
 	#url: undefined | string | URL | ((object: this) => string);
 	readonly #config: ConfigType;
 
@@ -63,14 +77,85 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.port = config.port ?? 0;
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
+
+		if (config.url !== undefined) {
+			if (config.url instanceof URL || typeof config.url === 'string') {
+				this.#url = config.url;
+				this.#urlParts = undefined;
+			} else if (typeof config.url === 'function') {
+				/**
+				 * The parameter for the call back is typed as
+				 * `this`, which means any subclass is typed
+				 * but the interface can't identify that --
+				 * instead it types it as the base class
+				 * (KeetaNetAnchorHTTPServer), which means it
+				 * can't be assigned to the type of `#url`
+				 * without overriding the type check. However,
+				 * we know that `this` will be at least
+				 * compatible with the base class.
+				 */
+				// @ts-ignore
+				this.#url = config.url;
+				this.#urlParts = undefined;
+			} else {
+				this.#url = undefined;
+				this.#urlParts = config.url;
+			}
+		}
 	}
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
 
-	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string> } | { match: false }) {
+	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; wildcard?: { prefixLength: number }} | { match: false }) {
 		const requestURLPaths = requestURL.pathname.split('/');
 		const routeURLPaths = routeURL.pathname.split('/');
 
+		// Check if route ends with wildcard /**
+		const isWildcard = routeURLPaths.length > 0 && routeURLPaths[routeURLPaths.length - 1] === '**';
+		if (isWildcard) {
+			// For wildcard routes, request must have more segments than route prefix (minus the **)
+			// This ensures at least one segment is captured by the wildcard
+			const prefixLength = routeURLPaths.length - 1;
+			if (requestURLPaths.length <= prefixLength) {
+				return({ match: false });
+			}
+
+			// Check that prefix segments match
+			const params = new Map<string, string>();
+			for (let partIndex = 0; partIndex < prefixLength; partIndex++) {
+				const requestPath = requestURLPaths[partIndex];
+
+				const routePath = routeURLPaths[partIndex];
+				if (routePath === undefined || requestPath === undefined) {
+					return({ match: false });
+				}
+
+				if (routePath.startsWith(':')) {
+					params.set(routePath.slice(1), requestPath);
+				} else if (requestPath !== routePath) {
+					return({ match: false });
+				}
+			}
+
+			// Capture the remainder as the wildcard param
+			// Filter empty segments to handle trailing slashes correctly
+			const remainder = requestURLPaths.slice(prefixLength)
+				.filter(function(s) {
+					return(s !== '');
+				})
+				.join('/');
+
+			if (remainder === '') {
+				// Reject if wildcard would capture nothing
+				return({ match: false });
+			}
+
+			params.set('**', remainder);
+
+			return({ match: true, params: params, wildcard: { prefixLength }});
+		}
+
+		// Non-wildcard: require exact segment count
 		if (requestURLPaths.length !== routeURLPaths.length) {
 			return({ match: false });
 		}
@@ -95,6 +180,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	}
 
 	private static routeFind(method: string, requestURL: URL, routes: Routes): { route: Routes[keyof Routes]; params: Map<string, string> } | null {
+		let wildcardMatch: { route: Routes[keyof Routes]; params: Map<string, string> } | null = null;
+		let wildcardPrefixLength = -1;
+
 		for (const routeKey in routes) {
 			const route = routes[routeKey];
 			if (route === undefined) {
@@ -111,14 +199,27 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const routeURL = new URL(routePath, 'http://localhost');
 			const matchResult = this.routeMatch(requestURL, routeURL);
 			if (matchResult.match) {
-				return({
-					route: route,
-					params: matchResult.params
-				});
+				// Exact matches take priority over wildcard matches
+				if (matchResult.wildcard === undefined) {
+					return({
+						route: route,
+						params: matchResult.params
+					});
+				}
+
+				// Keep the most specific wildcard (longest prefix wins)
+				if (matchResult.wildcard.prefixLength > wildcardPrefixLength) {
+					wildcardPrefixLength = matchResult.wildcard.prefixLength;
+					wildcardMatch = {
+						route: route,
+						params: matchResult.params
+					};
+				}
 			}
 		}
 
-		return(null);
+		// Return most specific wildcard match if no exact match found
+		return(wildcardMatch);
 	}
 
 	private static addCORS(routes: Routes): RoutesWithConfigs {
@@ -198,7 +299,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			newRoutes[routeKey] = {
-				bodyType: newRoute.bodyType,
+				...newRoute,
 				async handler(...args: Parameters<RouteHandlerMethod<unknown>>) {
 					// This is typed properly, but TS can't infer it here
 					// @ts-ignore
@@ -263,7 +364,28 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
-			const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+			/*
+			 * Get the Base URL from the request Host header (if
+			 * available) or default to localhost. This is used
+			 * to construct the full URL for routing.
+			 */
+			const inputURLBaseRaw = new URL(`http://${request.headers.host ?? 'localhost'}`);
+			const inputURLBase = inputURLBaseRaw.protocol + '//' + inputURLBaseRaw.host;
+
+			/*
+			 * Normalize the input URL by stripping leading slashes and
+			 * combining it with the base URL to get the full URL for routing.
+			 */
+			const inputURLRaw = (request.url ?? '/').replace(/^\/+/, '/');
+			const inputURLObject = new URL(inputURLRaw, 'http://localhost');
+			const inputURL = inputURLObject.pathname + (function() {
+				if (inputURLObject.search === '') {
+					return('');
+				}
+
+				return('?' + inputURLObject.searchParams.toString());
+			})();
+			const url = new URL(inputURL, inputURLBase);
 			const method = request.method ?? 'GET';
 
 			/*
@@ -281,6 +403,17 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 				response.end();
 			};
+
+			/*
+			 * If the request is malformed, reject it immediately
+			 */
+			if (inputURLRaw.at(0) !== '/') {
+				response.statusCode = 400;
+				response.setHeader('Content-Type', 'text/plain');
+				response.write('Bad Request');
+				await responseFinalize();
+				return;
+			}
 
 			/*
 			 * Lookup the route based on the request
@@ -322,11 +455,30 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 * If POST'ing, PUT'ing, or PATCH'ing, read and parse the request body
 				 */
 				if (shouldCheckBody && route.bodyType !== 'none') {
+					const bodySizeLimit = route.maxBodySize ?? MAX_REQUEST_SIZE;
+
+					// Early rejection based on Content-Length header
+					const contentLength = request.headers['content-length'];
+					if (contentLength !== undefined) {
+						const declaredSize = parseInt(contentLength, 10);
+						if (!isNaN(declaredSize) && declaredSize > bodySizeLimit) {
+							request.resume();
+
+							response.statusCode = 413;
+							response.setHeader('Content-Type', 'text/plain');
+							response.write('Payload Too Large');
+
+							await responseFinalize();
+
+							return;
+						}
+					}
+
 					const data = await request.map(function(chunk) {
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 						return(Buffer.from(chunk));
 					}).reduce(function(prev, curr) {
-						if (prev.length > MAX_REQUEST_SIZE) {
+						if (prev.length > bodySizeLimit) {
 							throw(new Error('Request too large'));
 						}
 
@@ -519,13 +671,25 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			newURLObj.pathname = '/';
 			newURLObj.search = '';
 
-			return(newURLObj.toString());
+			const retval = newURLObj.toString();
+
+			return(retval);
 		}
 
-		return(`http://localhost:${this.port}`);
+		const urlObj = new URL('http://localhost');
+		urlObj.port = String(this.#urlParts?.port ?? this.port);
+		urlObj.hostname = this.#urlParts?.hostname ?? 'localhost';
+		urlObj.protocol = this.#urlParts?.protocol ?? 'http:';
+		urlObj.pathname = '/';
+		urlObj.search = '';
+
+		const retval = urlObj.toString();
+
+		return(retval);
 	}
 
-	set url(value: string | URL | ((object: this) => string)) {
+	set url(value: undefined | string | URL | ((object: this) => string)) {
+		this.#urlParts = undefined;
 		this.#url = value;
 	}
 
