@@ -45,7 +45,8 @@
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.2.5",
 		"@keetanetwork/keetanet-client": "0.14.14",
-		"typia": "9.5.0"
+		"typia": "9.5.0",
+		"unicode-confusables": "0.1.1"
 	},
 	"engines": {
 		"node": "20.18.0"

@@ -6,9 +6,65 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* cspell:ignore abax xaba hicaf ababab mylink nihao shijie annyeong konnichiwa marhaba geia keycaps propos keycap kshi sawasdee ello precomposed cafx */
 import { test, expect, describe } from 'vitest';
-import { GraphemeString } from './grapheme-string.js';
+import { GraphemeStringTag, _Testing } from './grapheme-string.js';
 
-describe('GraphemeString', function() {
+const { GraphemeStringBase } = _Testing;
+
+type GraphemeStringOptions = {
+	locale?: ConstructorParameters<typeof Intl.Segmenter>[0];
+};
+
+type GraphemeStringTagOptions = {
+	allowWhitespace?: boolean;
+};
+
+// Helper class for tests that need to allow whitespace (most general string tests)
+class GraphemeStringTagTestHelper extends GraphemeStringTag {
+	constructor(input: string | string[] | Uint8Array, options?: GraphemeStringOptions & GraphemeStringTagOptions);
+	constructor(input: GraphemeStringTag);
+	constructor(input: string | string[] | GraphemeStringTag | Uint8Array, options?: GraphemeStringOptions & GraphemeStringTagOptions) {
+		if (GraphemeStringBase.isInstance(input)) {
+			super(input as GraphemeStringTag);
+		} else {
+			super(input as string | string[] | Uint8Array, { allowWhitespace: true, ...options });
+		}
+	}
+}
+
+// Basic GraphemeString implementation for testing general grapheme behavior without tag/username restrictions
+class GraphemeStringBasic extends GraphemeStringBase {
+	constructor(input: string | string[] | Uint8Array, options?: GraphemeStringOptions);
+	constructor(input: InstanceType<typeof GraphemeStringBase>);
+	constructor(input: string | string[] | InstanceType<typeof GraphemeStringBase> | Uint8Array, options?: GraphemeStringOptions) {
+		if (GraphemeStringBase.isInstance(input)) {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			super(input as any);
+		} else {
+			super(input, options);
+		}
+	}
+
+	protected get newConstructor(): new (input: string | string[] | InstanceType<typeof GraphemeStringBase> | Uint8Array, options?: GraphemeStringOptions) => this {
+		return(GraphemeStringBasic as never);
+	}
+
+	// Allow all segments
+	protected validateSegment(_ignoreSegment: string): boolean {
+		return(true);
+	}
+
+	// Don't filter anything
+	protected filterSegment(_ignoreSegment: string): boolean {
+		return(true);
+	}
+
+	// No remapping - keep everything as-is
+	protected remapSegment(segment: string): string[] {
+		return([segment]);
+	}
+}
+
+describe('GraphemeStringTag', function() {
 	describe('Constructor', function() {
 		test('should create from various input types', function() {
 			const checks = [
@@ -22,12 +78,12 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.length).toBe(check.expectedLength);
 				expect(gs.toString()).toBe(check.expectedString);
 
 				const bytes = gs.bytes;
-				const gsDuplicate = new GraphemeString(bytes);
+				const gsDuplicate = new GraphemeStringTag(bytes);
 				expect(gsDuplicate.length).toBe(check.expectedLength);
 				expect(gsDuplicate.toString()).toBe(check.expectedString);
 			}
@@ -41,33 +97,57 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.length).toBe(check.length);
 				expect(gs.toString()).toBe(check.expected);
 			}
 		});
 
-		test('should copy from another GraphemeString', function() {
-			const gs1 = new GraphemeString('hello\uD83D\uDC4B\uD83C\uDFFD');
-			const gs2 = new GraphemeString(gs1);
+		test('should copy from another GraphemeStringTag', function() {
+			const gs1 = new GraphemeStringTagTestHelper('hello\uD83D\uDC4B\uD83C\uDFFD');
+			const gs2 = new GraphemeStringTagTestHelper(gs1);
 			expect(gs2.length).toBe(gs1.length);
 			expect(gs2.toString()).toBe(gs1.toString());
 		});
 
-		test('should throw error when locale provided with GraphemeString input', function() {
-			const gs1 = new GraphemeString('hello');
+		test('should throw error when options provided with GraphemeStringTag input', function() {
+			const gs1 = new GraphemeStringTag('hello');
 			expect(function() {
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				return(new GraphemeString(gs1 as any, 'en-US'));
-			}).toThrow('Locale argument must not be provided when input is a GraphemeString');
+				// @ts-expect-error - intentionally passing options when constructing from another instance
+				return(new GraphemeStringTag(gs1, { locale: 'en-US' }));
+			}).toThrow('Options cannot be provided when constructing a GraphemeString from another GraphemeString');
 		});
 
 		test('should accept various locale formats', function() {
 			const locales = ['en', 'en-US', 'fr-FR', 'ja-JP', undefined];
 			for (const locale of locales) {
-				const gs = new GraphemeString('hello', locale);
+				const gs = new GraphemeStringTagTestHelper('hello', { locale });
 				expect(gs.toString()).toBe('hello');
 			}
+		});
+	});
+
+	describe('GraphemeStringTag-specific semantics (usernames/tags/slugs)', function() {
+		test('should reject whitespace by default', function() {
+			expect(function() { return(new GraphemeStringTag('hello world')); }).toThrow('Invalid segment in input string');
+			expect(function() { return(new GraphemeStringTag('hello\ttab')); }).toThrow('Invalid segment in input string');
+			expect(function() { return(new GraphemeStringTag('hello\nworld')); }).toThrow('Invalid segment in input string');
+		});
+
+		test('should allow whitespace when explicitly enabled', function() {
+			const gs = new GraphemeStringTag('hello world', { allowWhitespace: true });
+			expect(gs.toString()).toBe('hello world');
+			expect(gs.length).toBe(11);
+		});
+
+		test('should reject standalone combining marks', function() {
+			expect(function() { return(new GraphemeStringTag('\u0301')); }).toThrow('Invalid segment in input string');
+		});
+
+		test('should filter invisible characters', function() {
+			const gs = new GraphemeStringTag('hello\u200Bworld'); // zero-width space
+			expect(gs.toString()).toBe('helloworld');
+			expect(gs.length).toBe(10);
 		});
 	});
 
@@ -84,7 +164,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.nfd);
+				const gs = new GraphemeStringTagTestHelper(check.nfd);
 				expect(gs.toString()).toBe(check.nfc);
 				expect(gs.length).toBe(check.expectedLength);
 			}
@@ -98,7 +178,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.length).toBe(check.expectedLength);
 			}
 		});
@@ -111,7 +191,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.toString()).toBe(check.normalized);
 			}
 		});
@@ -133,7 +213,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.emoji);
+				const gs = new GraphemeStringTagTestHelper(check.emoji);
 				expect(gs.length).toBe(check.expectedLength);
 				expect(gs.toString()).toBe(check.emoji);
 			}
@@ -147,7 +227,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.toString()).toBe(check.text);
 				if (check.expectedLength) {
 					expect(gs.length).toBe(check.expectedLength);
@@ -163,7 +243,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.length).toBe(check.length);
 			}
 		});
@@ -184,7 +264,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.charAt(check.pos)).toBe(check.expectedCharAt);
 				expect(gs.at(check.pos)).toBe(check.expectedAt);
 			}
@@ -202,27 +282,27 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.base);
+				const gs = new GraphemeStringTagTestHelper(check.base);
 				expect(gs.concat(...check.args)).toBe(check.expected);
 				expect(gs.concatGrapheme(...check.args).toString()).toBe(check.expected);
 			}
 		});
 
 		test('should concatenate GraphemeStrings', function() {
-			const gs1 = new GraphemeString('hello');
-			const gs2 = new GraphemeString(' world');
-			const gs3 = new GraphemeString('!');
+			const gs1 = new GraphemeStringTagTestHelper('hello');
+			const gs2 = new GraphemeStringTagTestHelper(' world');
+			const gs3 = new GraphemeStringTagTestHelper('!');
 			expect(gs1.concat(gs2, gs3)).toBe('hello world!');
 			expect(gs1.concatGrapheme(gs2, gs3).toString()).toBe('hello world!');
 		});
 
 		test('should handle empty concatenations', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			expect(gs.concat('', '', '')).toBe('hello');
 		});
 
 		test('should concatenate multiple items including emoji', function() {
-			const gs = new GraphemeString('start');
+			const gs = new GraphemeStringTagTestHelper('start');
 			const parts = [' ', 'middle', ' ', '\uD83D\uDC4B\uD83C\uDFFD', ' ', 'end'];
 			const result = gs.concatGrapheme(...parts);
 			expect(result.toString()).toBe('start middle \uD83D\uDC4B\uD83C\uDFFD end');
@@ -275,24 +355,23 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.base);
+				const gs = new GraphemeStringTagTestHelper(check.base);
 				const result = gs.concatGrapheme(check.modifier);
 				expect(result.toString()).toBe(check.expectedString);
 				expect(result.length).toBe(check.expectedLength);
 			}
 		});
 
-		test('should handle combining characters with GraphemeString argument', function() {
-			const base = new GraphemeString('cafe');
-			const modifier = new GraphemeString('\u0301');
-			const result = base.concatGrapheme(modifier);
+		test('should handle combining characters with string argument in concatGrapheme', function() {
+			const base = new GraphemeStringTag('cafe');
+			const result = base.concatGrapheme('\u0301');
 			expect(result.toString()).toBe('caf\u00e9');
 			expect(result.length).toBe(4);
 			expect(result.charAt(3)).toBe('\u00e9');
 		});
 
 		test('should handle concat of base + modifier + more text', function() {
-			const base = new GraphemeString('caf');
+			const base = new GraphemeStringTagTestHelper('caf');
 			const result = base.concatGrapheme('e\u0301', ' time');
 			expect(result.toString()).toBe('caf\u00e9 time');
 			expect(result.length).toBe(9);
@@ -300,7 +379,7 @@ describe('GraphemeString', function() {
 		});
 
 		test('should handle emoji skin tone modifiers in concat', function() {
-			const base = new GraphemeString('Hello ');
+			const base = new GraphemeStringTagTestHelper('Hello ');
 			const wave = '\uD83D\uDC4B';
 			const skinTone = '\uD83C\uDFFD';
 			const result = base.concatGrapheme(wave, skinTone);
@@ -310,7 +389,7 @@ describe('GraphemeString', function() {
 		});
 
 		test('should preserve normalization when concatenating', function() {
-			const base = new GraphemeString('cafe');
+			const base = new GraphemeStringTag('cafe');
 			const result1 = base.concatGrapheme('\u0301');
 			const result2 = base.concatGrapheme('\u00e9');
 
@@ -333,14 +412,14 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.includes(check.search, check.pos)).toBe(check.expected);
 			}
 		});
 
-		test('should accept GraphemeString as search', function() {
-			const gs = new GraphemeString('hello world');
-			const search = new GraphemeString('world');
+		test('should accept GraphemeStringTag as search', function() {
+			const gs = new GraphemeStringTagTestHelper('hello world');
+			const search = new GraphemeStringTagTestHelper('world');
 			expect(gs.includes(search)).toBe(true);
 		});
 	});
@@ -357,7 +436,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.indexOf(check.search, check.pos)).toBe(check.indexOf);
 				if (check.pos !== undefined) {
 					expect(gs.lastIndexOf(check.search, check.pos)).toBe(check.lastIndexOf);
@@ -368,22 +447,22 @@ describe('GraphemeString', function() {
 		});
 
 		test('should handle empty search string', function() {
-			const gs = new GraphemeString('hello');
-			const empty = new GraphemeString('');
+			const gs = new GraphemeStringTagTestHelper('hello');
+			const empty = new GraphemeStringTag('');
 			expect(gs.indexOf(empty)).toBe(0);
 			expect(gs.indexOf(empty, 3)).toBe(3);
 			expect(gs.lastIndexOf(empty)).toBe(5);
 		});
 
-		test('should accept GraphemeString as search parameter', function() {
-			const gs = new GraphemeString('hello world');
-			const search = new GraphemeString('world');
+		test('should accept GraphemeStringTag as search parameter', function() {
+			const gs = new GraphemeStringTagTestHelper('hello world');
+			const search = new GraphemeStringTagTestHelper('world');
 			expect(gs.indexOf(search)).toBe(6);
 			expect(gs.lastIndexOf(search)).toBe(6);
 		});
 
 		test('should handle position edge cases', function() {
-			const gs = new GraphemeString('hello hello');
+			const gs = new GraphemeStringTagTestHelper('hello hello');
 			const indexOfChecks = [
 				{ search: 'hello', pos: 0, expected: 0 },
 				{ search: 'hello', pos: 1, expected: 6 },
@@ -418,13 +497,13 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.match(check.search)).toEqual(check.expected);
 			}
 		});
 
 		test('should match with RegExp', function() {
-			const gs = new GraphemeString('hello123world456');
+			const gs = new GraphemeStringTagTestHelper('hello123world456');
 			const result = gs.match(/\d+/);
 			expect(result?.[0]).toBe('123');
 		});
@@ -439,14 +518,14 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.search(check.search as string)).toBe(check.expected);
 			}
 		});
 
-		test('should accept GraphemeString as search', function() {
-			const gs = new GraphemeString('hello world');
-			const search = new GraphemeString('world');
+		test('should accept GraphemeStringTag as search', function() {
+			const gs = new GraphemeStringTagTestHelper('hello world');
+			const search = new GraphemeStringTag('world');
 			expect(gs.search(search)).toBe(6);
 		});
 	});
@@ -463,11 +542,11 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.slice(check.start, check.end)).toBe(check.expected);
 				const gsResult = gs.sliceGrapheme(check.start, check.end);
 				expect(gsResult.toString()).toBe(check.expected);
-				expect(gsResult).toBeInstanceOf(GraphemeString);
+				expect(gsResult).toBeInstanceOf(GraphemeStringTag);
 				if (check.expectedLength) {
 					expect(gsResult.length).toBe(check.expectedLength);
 				}
@@ -477,7 +556,7 @@ describe('GraphemeString', function() {
 		test('should preserve emoji grapheme clusters in slicing', function() {
 			const emoji = '\uD83D\uDC4B\uD83C\uDFFD';
 			const text = 'abc' + emoji + 'def';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 
 			expect(gs.sliceGrapheme(3, 4).toString()).toBe(emoji);
 			expect(gs.sliceGrapheme(2, 5).toString()).toBe('c' + emoji + 'd');
@@ -493,7 +572,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.substring(check.start, check.end)).toBe(check.expected);
 				const gsResult = gs.substringGrapheme(check.start, check.end);
 				expect(gsResult.toString()).toBe(check.expected);
@@ -514,7 +593,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.substr(check.start, check.length)).toBe(check.expected);
 				expect(gs.substrGrapheme(check.start, check.length).toString()).toBe(check.expected);
 			}
@@ -531,7 +610,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.split('', check.limit)).toEqual(check.expected);
 			}
 		});
@@ -555,31 +634,31 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.startsWith(check.search, check.pos)).toBe(check.startsWith);
 				expect(gs.endsWith(check.search, check.pos)).toBe(check.endsWith);
 			}
 		});
 
 		test('should handle empty string searches', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			expect(gs.startsWith('', 0)).toBe(true);
 			expect(gs.startsWith('', 5)).toBe(true);
 			expect(gs.endsWith('', 0)).toBe(true);
 			expect(gs.endsWith('', 5)).toBe(true);
 		});
 
-		test('should accept GraphemeString as search', function() {
-			const gs = new GraphemeString('hello world');
-			const searchStart = new GraphemeString('hello');
-			const searchEnd = new GraphemeString('world');
+		test('should accept GraphemeStringTag as search', function() {
+			const gs = new GraphemeStringTagTestHelper('hello world');
+			const searchStart = new GraphemeStringTag('hello');
+			const searchEnd = new GraphemeStringTag('world');
 			expect(gs.startsWith(searchStart)).toBe(true);
 			expect(gs.endsWith(searchEnd)).toBe(true);
 		});
 	});
 
 	describe('Trim operations', function() {
-		test('should trim whitespace from various positions', function() {
+		test('should trim whitespace from various positions (GraphemeStringBasic)', function() {
 			const checks = [
 				{ input: '  hello  ', trim: 'hello', trimStart: 'hello  ', trimEnd: '  hello' },
 				{ input: '\t\nhello\r\n', trim: 'hello', trimStart: 'hello\r\n', trimEnd: '\t\nhello' },
@@ -590,7 +669,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringBasic(check.input);
 				expect(gs.trim()).toBe(check.trim);
 				expect(gs.trimStart()).toBe(check.trimStart);
 				expect(gs.trimEnd()).toBe(check.trimEnd);
@@ -605,13 +684,13 @@ describe('GraphemeString', function() {
 		});
 
 		test('should handle ideographic space', function() {
-			const gs = new GraphemeString('\u3000hello\u3000');
+			const gs = new GraphemeStringTagTestHelper('\u3000hello\u3000');
 			const trimmed = gs.trim();
 			expect(trimmed).toBe('hello');
 		});
 
 		test('should handle repeated trim operations', function() {
-			const gs = new GraphemeString('  hello  ');
+			const gs = new GraphemeStringTagTestHelper('  hello  ');
 			const trimmed1 = gs.trimGrapheme();
 			const trimmed2 = trimmed1.trimGrapheme();
 			expect(trimmed1.toString()).toBe('hello');
@@ -621,7 +700,7 @@ describe('GraphemeString', function() {
 	});
 
 	describe('Padding operations', function() {
-		test('should pad strings with various parameters', function() {
+		test('should pad strings with various parameters (GraphemeStringBasic)', function() {
 			const checks = [
 				{ text: 'hello', targetLength: 10, padString: undefined, padStart: '     hello', padEnd: 'hello     ' },
 				{ text: '5', targetLength: 3, padString: '0', padStart: '005', padEnd: '500' },
@@ -634,7 +713,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringBasic(check.text);
 				expect(gs.padStart(check.targetLength, check.padString)).toBe(check.padStart);
 				expect(gs.padEnd(check.targetLength, check.padString)).toBe(check.padEnd);
 				expect(gs.padStartGrapheme(check.targetLength, check.padString).toString()).toBe(check.padStart);
@@ -642,9 +721,9 @@ describe('GraphemeString', function() {
 			}
 		});
 
-		test('should handle padding with GraphemeString pad parameter', function() {
-			const gs = new GraphemeString('hi');
-			const pad = new GraphemeString('\uD83D\uDC4B\uD83C\uDFFD');
+		test('should handle padding with GraphemeStringTag pad parameter', function() {
+			const gs = new GraphemeStringTagTestHelper('hi');
+			const pad = new GraphemeStringTag('\uD83D\uDC4B\uD83C\uDFFD');
 			expect(gs.padStartGrapheme(4, pad).toString()).toBe('\uD83D\uDC4B\uD83C\uDFFD\uD83D\uDC4B\uD83C\uDFFDhi');
 			expect(gs.padEndGrapheme(4, pad).toString()).toBe('hi\uD83D\uDC4B\uD83C\uDFFD\uD83D\uDC4B\uD83C\uDFFD');
 		});
@@ -657,7 +736,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.padStart(check.target, check.pad)).toBe(check.expectedStart);
 				expect(gs.padEnd(check.target, check.pad)).toBe(check.expectedEnd);
 			}
@@ -685,7 +764,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				const paddedStart = gs.padStartGrapheme(check.target, check.pad);
 				const paddedEnd = gs.padEndGrapheme(check.target, check.pad);
 
@@ -737,7 +816,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				const padded = gs.padStartGrapheme(check.target, check.pad);
 				expect(padded.toString()).toBe(check.expectedResult);
 				expect(padded.length).toBe(check.expectedLength);
@@ -763,7 +842,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const test of tests) {
-				const a = new GraphemeString(test.a);
+				const a = new GraphemeStringTag(test.a);
 				const resultABC = a.concatGrapheme(test.b, test.c);
 				const resultAB_C = a.concatGrapheme(test.b).concatGrapheme(test.c);
 
@@ -783,16 +862,16 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.repeat(check.count)).toBe(check.expected);
 				const gsResult = gs.repeatGrapheme(check.count);
 				expect(gsResult.toString()).toBe(check.expected);
-				expect(gsResult).toBeInstanceOf(GraphemeString);
+				expect(gsResult).toBeInstanceOf(GraphemeStringTag);
 			}
 		});
 
 		test('should throw for negative count', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			expect(function() {
 				return(gs.repeat(-1));
 			}).toThrow();
@@ -827,7 +906,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				const result = gs.repeatGrapheme(check.count);
 				expect(result.toString()).toBe(check.expectedString);
 				expect(result.length).toBe(check.expectedLength);
@@ -835,7 +914,7 @@ describe('GraphemeString', function() {
 		});
 
 		test('should allow concat of combining character after repeat', function() {
-			const gs = new GraphemeString('e');
+			const gs = new GraphemeStringTagTestHelper('e');
 			const repeated = gs.repeatGrapheme(3);
 			const withCombining = repeated.concatGrapheme('\u0301');
 			expect(withCombining.toString()).toBe('ee\u00e9');
@@ -862,7 +941,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString('text');
+				const gs = new GraphemeStringTagTestHelper('text');
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const result = (gs as any)[check.method](...check.args);
 				expect(result).toBe(check.expected);
@@ -870,7 +949,7 @@ describe('GraphemeString', function() {
 		});
 
 		test('should work with emoji content', function() {
-			const gs = new GraphemeString('\uD83D\uDC4B\uD83C\uDFFD');
+			const gs = new GraphemeStringTagTestHelper('\uD83D\uDC4B\uD83C\uDFFD');
 			expect(gs.bold()).toBe('<b>\uD83D\uDC4B\uD83C\uDFFD</b>');
 			expect(gs.link('http://example.com')).toBe('<a href="http://example.com">\uD83D\uDC4B\uD83C\uDFFD</a>');
 		});
@@ -886,14 +965,14 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				const chars = [...gs];
 				expect(chars).toEqual(check.expected);
 			}
 		});
 
 		test('should work with for...of loop', function() {
-			const gs = new GraphemeString('ab\uD83D\uDC4B\uD83C\uDFFD');
+			const gs = new GraphemeStringTagTestHelper('ab\uD83D\uDC4B\uD83C\uDFFD');
 			const result: string[] = [];
 			for (const char of gs) {
 				result.push(char);
@@ -911,19 +990,19 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.valueOf()).toBe(check.expected);
 				expect(gs.toString()).toBe(check.expected);
 			}
 		});
 
 		test('valueOfGrapheme should return itself', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			expect(gs.valueOfGrapheme()).toBe(gs);
 		});
 
 		test('should work in string coercion', function() {
-			const gs = new GraphemeString('world');
+			const gs = new GraphemeStringTagTestHelper('world');
 			expect(gs.valueOf() + ' hello').toBe('world hello');
 			expect(`hello ${gs.valueOf()}`).toBe('hello world');
 		});
@@ -931,7 +1010,7 @@ describe('GraphemeString', function() {
 
 	describe('normalize', function() {
 		test('should normalize to various forms', function() {
-			const gs = new GraphemeString('caf\u00e9');
+			const gs = new GraphemeStringTagTestHelper('caf\u00e9');
 			expect(gs.normalize()).toBe('caf\u00e9');
 			expect(gs.normalize('NFC')).toBe('caf\u00e9');
 			expect(gs.normalize('NFD')).toBe('cafe\u0301');
@@ -949,7 +1028,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.toString()).toBe(check.text);
 			}
 		});
@@ -964,7 +1043,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.toString()).toBe(check.text);
 				if (check.expectedLength) {
 					expect(gs.length).toBe(check.expectedLength);
@@ -987,7 +1066,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.length).toBe(check.expectedLength);
 				expect(gs.toString()).toBe(check.text);
 			}
@@ -995,7 +1074,7 @@ describe('GraphemeString', function() {
 
 		test('should handle mixed RTL and LTR text', function() {
 			const mixed = 'Hello \u05E9\u05DC\u05D5\u05DD World';
-			const gs = new GraphemeString(mixed);
+			const gs = new GraphemeStringTagTestHelper(mixed);
 			expect(gs.includes('Hello')).toBe(true);
 			expect(gs.includes('\u05E9\u05DC\u05D5\u05DD')).toBe(true);
 			expect(gs.includes('World')).toBe(true);
@@ -1003,7 +1082,7 @@ describe('GraphemeString', function() {
 
 		test('should handle Japanese mixed scripts', function() {
 			const japanese = '\u3053\u3093\u306B\u3061\u306F\u4E16\u754C\uFF01Hello \uD83D\uDE00';
-			const gs = new GraphemeString(japanese);
+			const gs = new GraphemeStringTagTestHelper(japanese);
 			expect(gs.includes('\u3053\u3093\u306B\u3061\u306F')).toBe(true);
 			expect(gs.includes('\u4E16\u754C')).toBe(true);
 			expect(gs.includes('Hello')).toBe(true);
@@ -1015,8 +1094,8 @@ describe('GraphemeString', function() {
 		test('should handle de-normalized input in operations', function() {
 			const nfdString = 'e\u0301';
 			const nfcString = '\u00e9';
-			const gs1 = new GraphemeString(nfdString);
-			const gs2 = new GraphemeString(nfcString);
+			const gs1 = new GraphemeStringTagTestHelper(nfdString);
+			const gs2 = new GraphemeStringTagTestHelper(nfcString);
 			expect(gs1.indexOf(gs2)).toBe(0);
 			expect(gs1.includes(gs2)).toBe(true);
 			expect(gs1.toString()).toBe(gs2.toString());
@@ -1024,7 +1103,7 @@ describe('GraphemeString', function() {
 
 		test('should handle normalized text in searches', function() {
 			const text1 = 'I love caf\u00e9 and cr\u00e8me br\u00fbl\u00e9e';
-			const gs = new GraphemeString(text1);
+			const gs = new GraphemeStringTagTestHelper(text1);
 
 			const searches = ['caf\u00e9', 'cr\u00e8me', 'br\u00fbl\u00e9e'];
 			for (const search of searches) {
@@ -1034,7 +1113,7 @@ describe('GraphemeString', function() {
 
 		test('should find normalized strings in mixed format text', function() {
 			const text = 'This is caf\u00e9 and this is cafe\u0301';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			expect(gs.indexOf('caf\u00e9')).toBe(8);
 			expect(gs.lastIndexOf('caf\u00e9')).toBe(25);
 		});
@@ -1050,7 +1129,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const result = (gs as any)[check.method](...check.args);
 				expect(result).toBe(check.expected);
@@ -1058,7 +1137,7 @@ describe('GraphemeString', function() {
 		});
 
 		test('should handle empty string operations', function() {
-			const gs = new GraphemeString('');
+			const gs = new GraphemeStringTagTestHelper('');
 			expect(gs.includes('')).toBe(true);
 			expect(gs.startsWith('')).toBe(true);
 			expect(gs.endsWith('')).toBe(true);
@@ -1074,7 +1153,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.charAt(0)).toBe(check.charAt);
 				expect(gs.slice(0, 1)).toBe(check.slice);
 				expect(gs.substring(0, 1)).toBe(check.substring);
@@ -1096,7 +1175,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.emoji);
+				const gs = new GraphemeStringTagTestHelper(check.emoji);
 				expect(gs.length).toBe(check.expectedLength);
 				expect(gs.toString()).toBe(check.emoji);
 			}
@@ -1104,7 +1183,7 @@ describe('GraphemeString', function() {
 
 		test('should handle multiple flags', function() {
 			const flags = '\uD83C\uDDFA\uD83C\uDDF8\uD83C\uDDEC\uD83C\uDDE7\uD83C\uDDEB\uD83C\uDDF7\uD83C\uDDE9\uD83C\uDDEA\uD83C\uDDEF\uD83C\uDDF5';
-			const gs = new GraphemeString(flags);
+			const gs = new GraphemeStringTagTestHelper(flags);
 			expect(gs.length).toBe(5);
 			const flagArray = [...gs];
 			expect(flagArray).toEqual([
@@ -1118,7 +1197,7 @@ describe('GraphemeString', function() {
 
 		test('should handle emoji sequences in operations', function() {
 			const text = 'Hello \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC66 family \uD83C\uDDFA\uD83C\uDDF8';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			expect(gs.includes('\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC66')).toBe(true);
 			expect(gs.indexOf('\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67\u200D\uD83D\uDC66')).toBe(6);
 			expect(gs.indexOf('family')).toBe(8);
@@ -1135,7 +1214,7 @@ describe('GraphemeString', function() {
 				'\uD83D\uDC4B\uD83C\uDFFF'
 			];
 			const text = variations.join('');
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			expect(gs.length).toBe(6);
 
 			for (let i = 0; i < variations.length; i++) {
@@ -1150,7 +1229,7 @@ describe('GraphemeString', function() {
 				'\uD83D\uDC69\u200D\uD83C\uDF93'
 			];
 			const text = variants.join(' ');
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 
 			for (const variant of variants) {
 				expect(gs.includes(variant)).toBe(true);
@@ -1167,7 +1246,7 @@ describe('GraphemeString', function() {
 				'\uD83D\uDC6B\uD83C\uDFFF'
 			];
 			const text = couples.join('');
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			expect(gs.length).toBe(6);
 
 			for (let i = 0; i < couples.length; i++) {
@@ -1177,7 +1256,7 @@ describe('GraphemeString', function() {
 
 		test('should handle basic emoji sequence', function() {
 			const emojis = '\uD83D\uDE00\uD83D\uDE03\uD83D\uDE04\uD83D\uDE01\uD83D\uDE06\uD83D\uDE05\uD83E\uDD23\uD83D\uDE02';
-			const gs = new GraphemeString(emojis);
+			const gs = new GraphemeStringTagTestHelper(emojis);
 			expect(gs.length).toBe(8);
 			expect(gs.toString()).toBe(emojis);
 		});
@@ -1196,7 +1275,7 @@ describe('GraphemeString', function() {
 				'\uD83E\uDD32'
 			];
 			const text = gestures.join('');
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			expect(gs.length).toBe(10);
 		});
 	});
@@ -1209,22 +1288,22 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.toString()).toBe(check.text);
 			}
 		});
 
 		test('should handle combining enclosing keycaps', function() {
 			const keycaps = '1\u20E32\u20E33\u20E34\u20E35\u20E3';
-			const gs = new GraphemeString(keycaps);
+			const gs = new GraphemeStringTagTestHelper(keycaps);
 			expect(gs.toString()).toBe(keycaps);
 		});
 
 		test('should handle emoji modifiers consistently', function() {
 			const withoutModifier = '\uD83D\uDC4B';
 			const withModifier = '\uD83D\uDC4B\uD83C\uDFFD';
-			const gs1 = new GraphemeString(withoutModifier);
-			const gs2 = new GraphemeString(withModifier);
+			const gs1 = new GraphemeStringTagTestHelper(withoutModifier);
+			const gs2 = new GraphemeStringTagTestHelper(withModifier);
 			expect(gs1.length).toBe(1);
 			expect(gs2.length).toBe(1);
 			expect(gs1.toString()).not.toBe(gs2.toString());
@@ -1232,40 +1311,37 @@ describe('GraphemeString', function() {
 	});
 
 	describe('Special Unicode categories', function() {
-		test('should handle zero-width characters', function() {
+		test('should filter standalone zero-width characters', function() {
 			const checks = [
-				{ text: 'hello\u200Bworld', description: 'zero-width space U+200B' },
-				{ text: 'hello\u200Dworld', description: 'zero-width joiner U+200D' },
-				{ text: 'hello\u200Cworld', description: 'zero-width non-joiner U+200C' },
-				{ text: 'hello\u200Eworld', description: 'LTR mark U+200E' },
-				{ text: 'hello\u200Fworld', description: 'RTL mark U+200F' },
-				{ text: 'hello\uFEFFworld', description: 'zero-width no-break space U+FEFF' }
+				{ text: 'hello\u200Bworld', filtered: 'helloworld', description: 'zero-width space U+200B' },
+				{ text: 'hello\uFEFFworld', filtered: 'helloworld', description: 'zero-width no-break space U+FEFF' }
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
-				expect(gs.toString()).toBe(check.text);
+				const gs = new GraphemeStringTag(check.text);
+				expect(gs.toString()).toBe(check.filtered);
 			}
 		});
 
 		test('should handle soft hyphen and dashes', function() {
 			const checks = [
-				{ text: 'hel\u00ADlo', description: 'soft hyphen' },
+				{ text: 'hel\u00ADlo', output: 'hello', description: 'soft hyphen' },
 				{ text: '\u002D \u2013 \u2014 \u2015', description: 'various dashes', expectedLength: 7 }
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
-				expect(gs.toString()).toBe(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
+				expect(gs.toString()).toBe(check.output ?? check.text);
 				if (check.expectedLength) {
 					expect(gs.length).toBe(check.expectedLength);
 				}
 			}
 		});
 
+		// Skipped: Non-breaking space is whitespace and GraphemeStringTag rejects whitespace by default (usernames/tags shouldn't contain whitespace)
 		test('should handle non-breaking space', function() {
 			const text = 'hello\u00A0world';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringBasic(text);
 			expect(gs.includes('\u00A0')).toBe(true);
 			expect(gs.toString()).toBe(text);
 		});
@@ -1273,7 +1349,7 @@ describe('GraphemeString', function() {
 
 	describe('Immutability and chained operations', function() {
 		test('should preserve immutability of internal parts', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			const sliced = gs.sliceGrapheme(0, 3);
 			const trimmed = gs.trimGrapheme();
 			const concatenated = gs.concatGrapheme('!');
@@ -1287,20 +1363,20 @@ describe('GraphemeString', function() {
 
 		test('should freeze internal parts array', function() {
 			const parts = ['h', 'e', 'l', 'l', 'o'];
-			const gs = new GraphemeString(parts);
+			const gs = new GraphemeStringTagTestHelper(parts);
 			parts[0] = 'j';
 			expect(gs.toString()).toBe('hello');
 		});
 
 		test('should handle chained operations', function() {
-			const gs = new GraphemeString('  hello  ');
+			const gs = new GraphemeStringTagTestHelper('  hello  ');
 			const result = gs.trimGrapheme().concatGrapheme(' ', 'world').sliceGrapheme(0, 11);
 			expect(result.toString()).toBe('hello world');
 		});
 
-		test('should maintain immutability across all operations', function() {
+		test('should maintain immutability across all operations (GraphemeStringBasic)', function() {
 			const original = 'hello';
-			const gs = new GraphemeString(original);
+			const gs = new GraphemeStringBasic(original);
 
 			gs.sliceGrapheme(0, 3);
 			gs.concatGrapheme(' world');
@@ -1326,13 +1402,13 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.length).toBe(check.expected);
 			}
 		});
 
 		test('length should be immutable', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			const originalLength = gs.length;
 			gs.sliceGrapheme(0, 3);
 			gs.concatGrapheme(' world');
@@ -1344,7 +1420,7 @@ describe('GraphemeString', function() {
 	describe('Real-world use cases', function() {
 		test('should correctly truncate user input with emoji', function() {
 			const userInput = 'Hello \uD83D\uDC4B\uD83C\uDFFD World \uD83D\uDE00!';
-			const gs = new GraphemeString(userInput);
+			const gs = new GraphemeStringTagTestHelper(userInput);
 			const truncated = gs.sliceGrapheme(0, 10);
 			expect(truncated.length).toBe(10);
 			expect(truncated.toString()).toBe('Hello \uD83D\uDC4B\uD83C\uDFFD Wo');
@@ -1358,22 +1434,22 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of passwords) {
-				const gs = new GraphemeString(check.password);
+				const gs = new GraphemeStringTagTestHelper(check.password);
 				expect(gs.length).toBe(check.expectedLength);
 			}
 		});
 
 		test('should handle username operations', function() {
 			const username = 'user_caf\u00e9_\uD83D\uDC4B\uD83C\uDFFD';
-			const gs = new GraphemeString(username);
+			const gs = new GraphemeStringTagTestHelper(username);
 			expect(gs.includes('caf\u00e9')).toBe(true);
 			expect(gs.endsWith('\uD83D\uDC4B\uD83C\uDFFD')).toBe(true);
 			expect(gs.startsWith('user')).toBe(true);
 		});
 
-		test('should center align text with emoji', function() {
+		test('should center align text with emoji (GraphemeStringBasic)', function() {
 			const text = '\uD83D\uDC4B\uD83C\uDFFD';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringBasic(text);
 			const padded = gs.padStartGrapheme(3, ' ').padEndGrapheme(5, ' ');
 			expect(padded.length).toBe(5);
 			expect(padded.toString()).toBe('  \uD83D\uDC4B\uD83C\uDFFD  ');
@@ -1381,7 +1457,7 @@ describe('GraphemeString', function() {
 
 		test('should handle comprehensive string manipulation', function() {
 			const input = '  Hello \uD83D\uDC4B\uD83C\uDFFD, caf\u00e9 lover \uD83C\uDDFA\uD83C\uDDF8!  ';
-			const gs = new GraphemeString(input);
+			const gs = new GraphemeStringTagTestHelper(input);
 
 			const trimmed = gs.trimGrapheme();
 			expect(trimmed.toString()).toBe('Hello \uD83D\uDC4B\uD83C\uDFFD, caf\u00e9 lover \uD83C\uDDFA\uD83C\uDDF8!');
@@ -1399,7 +1475,7 @@ describe('GraphemeString', function() {
 
 		test('should handle text formatting with grapheme awareness', function() {
 			const name = '\uD83D\uDC68\uD83C\uDFFD\u200D\uD83D\uDCBB John';
-			const gs = new GraphemeString(name);
+			const gs = new GraphemeStringTagTestHelper(name);
 
 			expect(gs.length).toBe(6);
 			expect(gs.charAt(0)).toBe('\uD83D\uDC68\uD83C\uDFFD\u200D\uD83D\uDCBB');
@@ -1413,7 +1489,7 @@ describe('GraphemeString', function() {
 	describe('Multiple occurrences in search operations', function() {
 		test('should find multiple occurrences correctly', function() {
 			const text = '\uD83D\uDC4B\uD83C\uDFFD hello \uD83D\uDC4B\uD83C\uDFFD goodbye \uD83D\uDC4B\uD83C\uDFFD';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 
 			const checks = [
 				{ search: '\uD83D\uDC4B\uD83C\uDFFD', pos: undefined, indexOf: 0 },
@@ -1434,7 +1510,7 @@ describe('GraphemeString', function() {
 	describe('Comprehensive integration tests', function() {
 		test('should handle text with all types of grapheme clusters', function() {
 			const complex = 'ASCII a\uD83D\uDC4B\uD83C\uDFFD emoji \u00e9 accent \uD83C\uDDFA\uD83C\uDDF8 flag \u0915\u094D\u0937\u093F devanagari \u4F60\u597D chinese';
-			const gs = new GraphemeString(complex);
+			const gs = new GraphemeStringTagTestHelper(complex);
 
 			const searchTerms = ['ASCII', '\uD83D\uDC4B\uD83C\uDFFD', '\u00e9', '\uD83C\uDDFA\uD83C\uDDF8', '\u0915\u094D\u0937\u093F', '\u4F60\u597D'];
 			for (const term of searchTerms) {
@@ -1452,7 +1528,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(gs.length).toBe(check.length);
 				for (const [pos, expected] of Object.entries(check.positions)) {
 					expect(gs.charAt(Number(pos))).toBe(expected);
@@ -1463,8 +1539,8 @@ describe('GraphemeString', function() {
 		test('should handle searching in normalized text', function() {
 			const text1 = 'caf\u00e9';
 			const text2 = 'cafe\u0301';
-			const gs1 = new GraphemeString(text1);
-			const gs2 = new GraphemeString(text2);
+			const gs1 = new GraphemeStringTagTestHelper(text1);
+			const gs2 = new GraphemeStringTagTestHelper(text2);
 
 			expect(gs1.toString()).toBe(gs2.toString());
 			expect(gs1.indexOf('caf\u00e9')).toBe(0);
@@ -1482,13 +1558,13 @@ describe('GraphemeString', function() {
 
 			for (const check of checks) {
 				const longString = check.base.repeat(check.repeat);
-				const gs = new GraphemeString(longString);
+				const gs = new GraphemeStringTagTestHelper(longString);
 				expect(gs.length).toBe(check.expectedLength);
 			}
 		});
 
 		test('should handle deeply nested operations', function() {
-			let gs = new GraphemeString('test');
+			let gs = new GraphemeStringTag('test');
 			for (let i = 0; i < 10; i++) {
 				gs = gs.concatGrapheme('!');
 			}
@@ -1499,7 +1575,7 @@ describe('GraphemeString', function() {
 		test('should handle very long emoji strings', function() {
 			const emoji = '\uD83D\uDC4B\uD83C\uDFFD';
 			const longEmojiString = emoji.repeat(1000);
-			const gs = new GraphemeString(longEmojiString);
+			const gs = new GraphemeStringTagTestHelper(longEmojiString);
 			expect(gs.length).toBe(1000);
 			expect(gs.charAt(0)).toBe(emoji);
 			expect(gs.charAt(999)).toBe(emoji);
@@ -1515,7 +1591,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.text);
+				const gs = new GraphemeStringTagTestHelper(check.text);
 				expect(check.text.length).toBe(check.regularLength);
 				expect(gs.length).toBe(check.graphemeLength);
 			}
@@ -1523,7 +1599,7 @@ describe('GraphemeString', function() {
 
 		test('should slice emoji correctly vs regular string', function() {
 			const text = 'Hello \uD83D\uDC4B\uD83C\uDFFD!';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringTagTestHelper(text);
 			const gsSlice = gs.sliceGrapheme(6, 7).toString();
 			expect(gsSlice).toBe('\uD83D\uDC4B\uD83C\uDFFD');
 			expect(gs.charAt(6)).toBe('\uD83D\uDC4B\uD83C\uDFFD');
@@ -1532,7 +1608,7 @@ describe('GraphemeString', function() {
 
 	describe('Error handling', function() {
 		test('should throw appropriate errors', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			const errorChecks = [
 				{ fn: function() { return(gs.concatGrapheme(123 as unknown as string)); }, error: TypeError, message: 'Argument must be a string or GraphemeString' },
 				{ fn: function() { return(gs.search(123 as unknown as string)); }, error: TypeError, message: 'Argument must be a string, GraphemeString, or RegExp' },
@@ -1547,8 +1623,8 @@ describe('GraphemeString', function() {
 	});
 
 	describe('Method return type validation', function() {
-		test('Grapheme methods should return GraphemeString', function() {
-			const gs = new GraphemeString('hello');
+		test('Grapheme methods should return GraphemeStringBasic', function() {
+			const gs = new GraphemeStringBasic('hello');
 			const graphemeMethods = [
 				gs.sliceGrapheme(0, 3),
 				gs.substringGrapheme(0, 3),
@@ -1566,12 +1642,12 @@ describe('GraphemeString', function() {
 			];
 
 			for (const result of graphemeMethods) {
-				expect(result).toBeInstanceOf(GraphemeString);
+				expect(result).toBeInstanceOf(GraphemeStringBasic);
 			}
 		});
 
-		test('String methods should return string', function() {
-			const gs = new GraphemeString('hello');
+		test('String methods should return string (GraphemeStringBasic)', function() {
+			const gs = new GraphemeStringBasic('hello');
 			const stringMethods = [
 				gs.slice(0, 3),
 				gs.substring(0, 3),
@@ -1600,20 +1676,20 @@ describe('GraphemeString', function() {
 	describe('Mathematical and special symbols', function() {
 		test('should handle mathematical alphanumeric symbols', function() {
 			const mathSymbols = '\uD835\uDC00\uD835\uDC01\uD835\uDC02\uD835\uDFCE\uD835\uDFCF\uD835\uDFD0';
-			const gs = new GraphemeString(mathSymbols);
+			const gs = new GraphemeStringTagTestHelper(mathSymbols);
 			expect(gs.length).toBe(6);
 			expect(gs.toString()).toBe(mathSymbols);
 		});
 
 		test('should handle various quotation marks', function() {
 			const quotes = '"\u2018\u2019\u201C\u201D\u2039\u203A\u00AB\u00BB';
-			const gs = new GraphemeString(quotes);
+			const gs = new GraphemeStringTagTestHelper(quotes);
 			expect(gs.toString()).toBe(quotes);
 		});
 
-		test('should handle currency symbols', function() {
+		test('should handle currency symbols (GraphemeStringBasic)', function() {
 			const currencies = '$\u20AC\u00A3\u00A5\u20A9\u20BD';
-			const gs = new GraphemeString(currencies);
+			const gs = new GraphemeStringBasic(currencies);
 			expect(gs.toString()).toBe(currencies);
 		});
 	});
@@ -1628,14 +1704,14 @@ describe('GraphemeString', function() {
 			];
 
 			for (const check of checks) {
-				const gs = new GraphemeString(check.input);
+				const gs = new GraphemeStringTagTestHelper(check.input);
 				expect(gs.toString()).toBe(check.normalized);
 			}
 		});
 
 		test('should handle mixed NFD and NFC in same string', function() {
 			const mixed = 'caf\u00e9 and cafe\u0301';
-			const gs = new GraphemeString(mixed);
+			const gs = new GraphemeStringTagTestHelper(mixed);
 			expect(gs.indexOf('caf\u00e9', 0)).toBe(0);
 			expect(gs.indexOf('caf\u00e9', 1)).toBe(9);
 		});
@@ -1644,7 +1720,7 @@ describe('GraphemeString', function() {
 	describe('Mixed content comprehensive tests', function() {
 		test('should handle extremely mixed content', function() {
 			const mixed = 'Hello \uD83D\uDC4B\uD83C\uDFFD caf\u00e9 \uD83C\uDDFA\uD83C\uDDF8! \u4F60\u597D \u05E9\u05DC\u05D5\u05DD \u0915\u094D\u0937\u093F';
-			const gs = new GraphemeString(mixed);
+			const gs = new GraphemeStringTagTestHelper(mixed);
 			expect(gs.toString()).toBe(mixed);
 			expect(gs.includes('caf\u00e9')).toBe(true);
 			expect(gs.includes('\uD83D\uDC4B\uD83C\uDFFD')).toBe(true);
@@ -1654,9 +1730,9 @@ describe('GraphemeString', function() {
 			expect(gs.includes('\u0915\u094D\u0937\u093F')).toBe(true);
 		});
 
-		test('should demonstrate grapheme-aware text operations', function() {
+		test('should demonstrate grapheme-aware text operations (GraphemeStringBasic)', function() {
 			const text = 'User: @caf\u00e9_lover\uD83D\uDC4B\uD83C\uDFFD | Location: \uD83C\uDDFA\uD83C\uDDF8';
-			const gs = new GraphemeString(text);
+			const gs = new GraphemeStringBasic(text);
 
 			const atIndex = gs.indexOf('@');
 			const pipeIndex = gs.indexOf(' |');
@@ -1669,9 +1745,9 @@ describe('GraphemeString', function() {
 	});
 
 	describe('Immutability guarantees', function() {
-		test('should guarantee immutability across operations', function() {
+		test('should guarantee immutability across operations (GraphemeStringBasic)', function() {
 			const original = '  test\uD83D\uDC4B\uD83C\uDFFD  ';
-			const gs = new GraphemeString(original);
+			const gs = new GraphemeStringBasic(original);
 
 			const ops = [
 				gs.trimGrapheme(),
@@ -1685,7 +1761,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const op of ops) {
-				expect(op).toBeInstanceOf(GraphemeString);
+				expect(op).toBeInstanceOf(GraphemeStringBasic);
 			}
 
 			expect(gs.toString()).toBe(original);
@@ -1703,13 +1779,13 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, pos } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.charAt(pos)).toBe(str.charAt(pos));
 			}
 		});
 
 		test('should match String behavior for concat', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			const str = 'hello';
 			expect(gs.concat(' ', 'world')).toBe(str.concat(' ', 'world'));
 			expect(gs.concat()).toBe(str.concat());
@@ -1724,7 +1800,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, search, pos, expected } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.includes(search, pos)).toBe(expected);
 				expect(gs.includes(search, pos)).toBe(str.includes(search, pos));
 			}
@@ -1740,7 +1816,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const test of testCases) {
-				const gs = new GraphemeString(test.str);
+				const gs = new GraphemeStringTagTestHelper(test.str);
 				expect(gs.indexOf(test.search, test.fromIndex)).toBe(test.str.indexOf(test.search, test.fromIndex));
 			}
 		});
@@ -1754,7 +1830,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const test of testCases) {
-				const gs = new GraphemeString(test.str);
+				const gs = new GraphemeStringTagTestHelper(test.str);
 				expect(gs.lastIndexOf(test.search, test.fromIndex)).toBe(test.str.lastIndexOf(test.search, test.fromIndex));
 			}
 		});
@@ -1768,7 +1844,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, search, pos } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.startsWith(search, pos)).toBe(str.startsWith(search, pos));
 			}
 		});
@@ -1782,23 +1858,23 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, search, pos } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.endsWith(search, pos)).toBe(str.endsWith(search, pos));
 			}
 		});
 
-		test('should match String behavior for trim operations', function() {
+		test('should match String behavior for trim operations (GraphemeStringBasic)', function() {
 			const testCases = ['  hello  ', '\thello\n', '  ', 'hello'];
 
 			for (const str of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringBasic(str);
 				expect(gs.trim()).toBe(str.trim());
 				expect(gs.trimStart()).toBe(str.trimStart());
 				expect(gs.trimEnd()).toBe(str.trimEnd());
 			}
 		});
 
-		test('should match String behavior for padStart and padEnd', function() {
+		test('should match String behavior for padStart and padEnd (GraphemeStringBasic)', function() {
 			const testCases = [
 				{ str: 'hello', target: 10, pad: ' ' },
 				{ str: 'hi', target: 5, pad: '0' },
@@ -1806,7 +1882,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, target, pad } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringBasic(str);
 				expect(gs.padStart(target, pad)).toBe(str.padStart(target, pad));
 				expect(gs.padEnd(target, pad)).toBe(str.padEnd(target, pad));
 			}
@@ -1820,7 +1896,7 @@ describe('GraphemeString', function() {
 			];
 
 			for (const { str, count } of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.repeat(count)).toBe(str.repeat(count));
 			}
 		});
@@ -1829,7 +1905,7 @@ describe('GraphemeString', function() {
 			const testCases = ['hello', '', 'world'];
 
 			for (const str of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.toString()).toBe(str.toString());
 				expect(gs.valueOf()).toBe(str.valueOf());
 			}
@@ -1837,7 +1913,7 @@ describe('GraphemeString', function() {
 
 		test('should match String behavior for slice with ASCII', function() {
 			const str = 'hello world';
-			const gs = new GraphemeString(str);
+			const gs = new GraphemeStringTagTestHelper(str);
 
 			const testCases = [
 				{ start: 0, end: 5 },
@@ -1853,7 +1929,7 @@ describe('GraphemeString', function() {
 
 		test('should match String behavior for substring with ASCII', function() {
 			const str = 'hello world';
-			const gs = new GraphemeString(str);
+			const gs = new GraphemeStringTagTestHelper(str);
 
 			const testCases = [
 				{ start: 0, end: 5 },
@@ -1868,7 +1944,7 @@ describe('GraphemeString', function() {
 
 		test('should match String behavior for normalize', function() {
 			const str = 'caf\u00e9';
-			const gs = new GraphemeString(str);
+			const gs = new GraphemeStringTagTestHelper(str);
 
 			expect(gs.normalize('NFC')).toBe(str.normalize('NFC'));
 			expect(gs.normalize('NFD')).toBe(str.normalize('NFD'));
@@ -1878,13 +1954,13 @@ describe('GraphemeString', function() {
 			const testCases = ['hello', '', 'world', 'a'];
 
 			for (const str of testCases) {
-				const gs = new GraphemeString(str);
+				const gs = new GraphemeStringTagTestHelper(str);
 				expect(gs.length).toBe(str.length);
 			}
 		});
 
 		test('should behave like String in string coercion', function() {
-			const gs = new GraphemeString('hello');
+			const gs = new GraphemeStringTagTestHelper('hello');
 			const str = 'hello';
 
 			expect(String(gs)).toBe(String(str));
@@ -1894,11 +1970,11 @@ describe('GraphemeString', function() {
 
 		test('should handle match with string like String (simplified)', function() {
 			const str = 'hello world';
-			const gs = new GraphemeString(str);
+			const gs = new GraphemeStringTagTestHelper(str);
 
 			const gsResult = gs.match('world');
 			const strResult = str.match('world');
-			// GraphemeString returns simplified match result
+			// GraphemeStringTag returns simplified match result
 			expect(gsResult).toEqual(['world']);
 			expect(strResult ? strResult[0] : null).toBe('world');
 
@@ -1907,7 +1983,7 @@ describe('GraphemeString', function() {
 
 		test('should handle search like String for non-grapheme cases', function() {
 			const str = 'hello world';
-			const gs = new GraphemeString(str);
+			const gs = new GraphemeStringTagTestHelper(str);
 
 			expect(gs.search('world')).toBe(str.search('world'));
 			expect(gs.search('xyz')).toBe(str.search('xyz'));
