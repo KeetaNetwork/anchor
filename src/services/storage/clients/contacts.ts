@@ -61,27 +61,23 @@ export interface ContactsClient {
 
 const MIME_TYPE = 'application/json';
 
-function canonicalizeValue(value: unknown): string {
-	if (value === null || typeof value !== 'object') {
-		return(JSON.stringify(value));
-	}
-	if (Array.isArray(value)) {
-		return('[' + value.map(canonicalizeValue).join(',') + ']');
-	}
-
-	const keys = Object.keys(value).sort();
-	const pairs: string[] = [];
-	for (const key of keys) {
-		// Assertion required: `value` is a non-null, non-array object (guarded above) but typed as `unknown`
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		pairs.push(JSON.stringify(key) + ':' + canonicalizeValue((value as { [k: string]: unknown })[key]));
-	}
-
-	return('{' + pairs.join(',') + '}');
-}
-
+/**
+ * Canonicalize a contact address for use as a storage path.
+ *
+ * @param address - The contact address to canonicalize.
+ *
+ * @returns The canonicalized string representation of the contact address.
+ */
 function canonicalizeContactAddress(address: ContactAddress): string {
-	return(canonicalizeValue(address));
+	return(JSON.stringify(address, function(_key: string, value: unknown): unknown {
+		if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const obj = value as { [k: string]: unknown };
+			return(Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))));
+		}
+
+		return(value);
+	}));
 }
 
 /**

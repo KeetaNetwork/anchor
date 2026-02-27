@@ -283,27 +283,21 @@ describe('Contacts Client - List', function() {
 	});
 
 	test('list filtered by type returns only matching contacts', function() {
+		const fixtures: { type: ContactAddress['type']; address: ContactAddress }[] = [
+			{ type: 'WIRE', address: wireAddress },
+			{ type: 'ACH', address: achAddress },
+			{ type: 'BITCOIN_SEND', address: bitcoinSendAddress }
+		];
+
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
-			await contactsClient.create({ label: 'Wire Contact', address: wireAddress });
-			await contactsClient.create({ label: 'Bitcoin Contact', address: bitcoinSendAddress });
-			await contactsClient.create({ label: 'ACH Contact', address: achAddress });
-
-			const wireContacts = await contactsClient.list({ type: 'WIRE' });
-			expect(wireContacts).toHaveLength(1);
-			for (const contact of wireContacts) {
-				expect(contact.address.type).toBe('WIRE');
+			for (const { type, address } of fixtures) {
+				await contactsClient.create({ label: `${type} Contact`, address });
 			}
 
-			const achContacts = await contactsClient.list({ type: 'ACH' });
-			expect(achContacts).toHaveLength(1);
-			for (const contact of achContacts) {
-				expect(contact.address.type).toBe('ACH');
-			}
-
-			const btcContacts = await contactsClient.list({ type: 'BITCOIN_SEND' });
-			expect(btcContacts).toHaveLength(1);
-			for (const contact of btcContacts) {
-				expect(contact.address.type).toBe('BITCOIN_SEND');
+			for (const { type } of fixtures) {
+				const filtered = await contactsClient.list({ type });
+				expect(filtered).toHaveLength(1);
+				expect(filtered[0]?.address.type).toBe(type);
 			}
 		}));
 	});
@@ -339,6 +333,29 @@ describe('Contacts Client - Edge Cases', function() {
 			for (const { address } of sampleAddresses) {
 				expect(contactsClient.deriveId(address)).toBe(otherClient.deriveId(address));
 			}
+		}));
+	});
+
+	test('deriveId is stable regardless of key order', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const reordered: ContactAddress = {
+				tokenAddress: '0x1a2b3c4d',
+				sendToAddress: '0x4d5e6f7a8b9c',
+				type: 'EVM_SEND',
+				location: 'chain:evm:1'
+			};
+			expect(contactsClient.deriveId(evmSendAddress)).toBe(contactsClient.deriveId(reordered));
+		}));
+	});
+
+	test('deriveId ignores undefined optional fields', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			// Simulates runtime scenario where an optional field is explicitly set to undefined
+			const withUndefined = {
+				...wireAddress,
+				depositMessage: undefined
+			};
+			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(wireAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
 		}));
 	});
 });
