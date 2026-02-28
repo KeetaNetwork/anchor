@@ -1295,7 +1295,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 
 			for (const testCase of tests) {
 				serverDoesNotRequireQuoteReturnValue.convertedAmount = testCase.quote.convertedAmount;
-				serverDoesNotRequireQuoteReturnValue.convertedAmountBound = testCase.request.amount;
+				serverDoesNotRequireQuoteReturnValue.convertedAmountBound = testCase.quote.convertedAmount;
 				serverDoesNotRequireQuoteReturnValue.cost = testCase.quote.cost;
 
 				const quotes = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, ...testCase.request }, undefined, {
@@ -1514,4 +1514,111 @@ test('FX Server Queue extensions', async function() {
 	expect(failureError.message.includes('Exchange failed')).toBe(true);
 
 	expect(failureHandledBlockhashes[failureBlock.hash.toString()]).toBe(1);
+});
+
+test('FX Server Converted Amount Bound Validation', async function() {
+	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using nodeAndClient = await createNodeAndClient(userAccount);
+	const client = nodeAndClient.userClient;
+	const giveTokens = nodeAndClient.give.bind(nodeAndClient);
+
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
+		throw(new Error('Test currencies not tokens'));
+	}
+
+	const serverReturnValue = {
+		convertedAmount: 1000n,
+		convertedAmountBound: 1000n,
+		cost: {
+			amount: 5n,
+			token: testCurrencyUSD
+		}
+	};
+
+	async function makeServerConfig(
+		config: Pick<KeetaAnchorFXServerConfig, 'quoteConfiguration'>
+	): Promise<KeetaAnchorFXServerConfig> {
+		const liquidityAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		await giveTokens(liquidityAccount, 10000n);
+
+		return({
+			logger: logger,
+			accounts: new KeetaNet.lib.Account.Set([liquidityAccount]),
+			signer: liquidityAccount,
+			client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+			quoteSigner: liquidityAccount,
+			...config,
+			fx: {
+				from: [{
+					currencyCodes: [testCurrencyUSD.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()],
+					to: [testCurrencyEUR.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()]
+				}],
+				getConversionRateAndFee: async function() {
+					return({
+						account: liquidityAccount,
+						...serverReturnValue
+					});
+				}
+			}
+		});
+	}
+
+	await using server = new KeetaNetFXAnchorHTTPServer(await makeServerConfig({
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	}));
+
+	await server.start();
+
+	await client.setInfo({
+		name: 'TEST', description: '',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				fx: {
+					BoundTest: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const fxClient = new KeetaNetAnchor.FX.Client(client, {
+		root: userAccount,
+		signer: userAccount,
+		account: userAccount,
+		logger: logger
+	});
+
+	const testCases: { convertedAmount: bigint; convertedAmountBound: bigint; affinity: 'to' | 'from'; shouldSucceed: boolean; }[] = [
+		{ convertedAmount: 1000n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: true },
+		{ convertedAmount: 1100n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: false },
+		{ convertedAmount: 950n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: true },
+		{ convertedAmount: 900n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: false },
+		{ convertedAmount: 900n, convertedAmountBound: 1000n, affinity: 'to', shouldSucceed: true },
+		{ convertedAmount: 1000n, convertedAmountBound: 950n, affinity: 'from', shouldSucceed: true }
+	];
+
+	for (const testCase of testCases) {
+		serverReturnValue.convertedAmount = testCase.convertedAmount;
+		serverReturnValue.convertedAmountBound = testCase.convertedAmountBound;
+
+		const estimates = await fxClient.getEstimates({ from: testCurrencyUSD, to: testCurrencyEUR, amount: 900n, affinity: testCase.affinity });
+		if (testCase.shouldSucceed) {
+			expect(estimates).toBeTruthy();
+			expect(estimates?.[0]?.estimate.requiresQuote).toBe(false);
+		} else {
+			// Server should reject this due to bound violation, so either no estimates or requiresQuote: true
+			expect(estimates === null || estimates.length === 0).toBe(true);
+		}
+	}
 });

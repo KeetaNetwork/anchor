@@ -1080,11 +1080,11 @@ export class KeetaNetFXAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAn
 				if (rateAndFee.convertedAmountBound === undefined) {
 					instance.logger.warn('POST /api/getEstimate', 'FX configuration indicates quotes are not required, but "convertedAmountBound" was not provided in the rate and fee response');
 				} else {
-					if (conversion.affinity === 'to' && (BigInt(conversion.amount) > rateAndFee.convertedAmountBound)) {
+					if (conversion.affinity === 'to' && (BigInt(rateAndFee.convertedAmount) > rateAndFee.convertedAmountBound)) {
 						throw(new KeetaAnchorError('Affinity is to, but bound is less than estimated sent amount'));
 					}
 
-					if (conversion.affinity === 'from' && (BigInt(conversion.amount) < rateAndFee.convertedAmountBound)) {
+					if (conversion.affinity === 'from' && (BigInt(rateAndFee.convertedAmount) < rateAndFee.convertedAmountBound)) {
 						throw(new KeetaAnchorError('Affinity is from, but bound is greater than estimated received amount'));
 					}
 				}
