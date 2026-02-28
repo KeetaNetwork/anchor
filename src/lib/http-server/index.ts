@@ -497,7 +497,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						} catch {
 							throw(new Error('Invalid JSON data'));
 						}
-					} else {
+					} else if (data.length > 0) {
 						throw(new KeetaAnchorUserError('Unsupported content type'));
 					}
 				}
