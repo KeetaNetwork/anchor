@@ -45,7 +45,6 @@ type SearchHandlerResponse = { results: KeetaUsernameAnchorUsernameWithAccount[]
 
 export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	homepage?: string | (() => Promise<string> | string);
-	providerID: string;
 	usernames: {
 		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
 		resolveAccount: (input: KeetaUsernameAnchorAccountResolutionContext) => Promise<{ username: string; } | null>;
@@ -62,7 +61,6 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorUsernameServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorUsernameServerConfig['homepage']>;
 	readonly usernames: KeetaAnchorUsernameServerConfig['usernames'];
-	readonly providerID: string;
 	readonly routes: NonNullable<KeetaAnchorUsernameServerConfig['routes']>;
 	readonly #usernamePattern?: RegExp;
 
@@ -71,7 +69,6 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 
 		this.homepage = config.homepage ?? '';
 		this.usernames = config.usernames;
-		this.providerID = config.providerID;
 		this.routes = config.routes ?? {};
 		if (config.usernamePattern !== undefined) {
 			this.#usernamePattern = normalizeUsernamePattern(config.usernamePattern);
