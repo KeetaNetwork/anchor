@@ -79,7 +79,6 @@ test('username client resolves accounts through resolver', async () => {
 
 	await using primaryServer = new KeetaNetUsernameAnchorHTTPServer({
 		logger: logger,
-		providerID,
 		usernamePattern: '^[a-z]+$',
 		usernames: {
 			async resolveUsername({ username }) {
@@ -140,7 +139,6 @@ test('username client resolves accounts through resolver', async () => {
 
 	await using secondaryServer = new KeetaNetUsernameAnchorHTTPServer({
 		logger: logger,
-		providerID: secondaryProviderID,
 		usernames: {
 			async resolveUsername({ username }) {
 				const account = secondaryAssignedAccounts.get(username);
