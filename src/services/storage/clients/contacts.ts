@@ -1,5 +1,7 @@
-import type { AssetTransferInstructions } from '../../asset-movement/common.js';
+import type { AssetTransferInstructions, RecipientResolved, MovableAsset } from '../../asset-movement/common.js';
+import type { AssetLocationLike } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
+import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
 import { hash } from '../../../lib/utils/tests/hash.js';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
@@ -10,12 +12,23 @@ import { assertContact } from './contacts.generated.js';
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
 /**
- * A contact address derived from `AssetTransferInstructions`
+ * The structural shape of a transfer instruction, excluding transaction-specific fields.
  */
-export type ContactAddress = DistributiveOmit<
+export type TransferInstructionShape = DistributiveOmit<
 	AssetTransferInstructions,
 	'value' | 'assetFee' | 'totalReceiveAmount' | 'persistentAddressId'
 >;
+
+/**
+ * A contact address with decomposed recipient, location, asset, and metadata.
+ */
+export type ContactAddress = {
+	recipient: RecipientResolved;
+	location?: AssetLocationLike;
+	asset?: MovableAsset;
+	providerInformation?: { [providerId: string]: true | { usingProvider: true; usingForUsername?: boolean }};
+	pastInstructions?: TransferInstructionShape[];
+};
 
 /**
  * A stored contact with metadata and an address.
@@ -51,7 +64,7 @@ export interface ContactsClient {
 	delete(id: string): Promise<boolean>;
 
 	list(options?: {
-		type?: ContactAddress['type'];
+		location?: AssetLocationLike;
 	}): Promise<Contact[]>;
 }
 
@@ -59,25 +72,61 @@ export interface ContactsClient {
 
 // #region Storage Implementation
 
+/**
+ * MIME type for contact data.
+ */
 const MIME_TYPE = 'application/json';
 
 /**
- * Canonicalize a contact address for use as a storage path.
+ * Canonicalize a contact address for use in ID derivation.
+ * Excludes metadata fields (`providerInformation`, `pastInstructions`) that are not part of contact identity.
  *
  * @param address - The contact address to canonicalize.
  *
- * @returns The canonicalized string representation of the contact address.
+ * @returns The canonicalized string representation of the contact address identity fields.
  */
 function canonicalizeContactAddress(address: ContactAddress): string {
-	return(JSON.stringify(address, function(_key: string, value: unknown): unknown {
+	const { providerInformation: _, pastInstructions: __, ...identity } = address; // eslint-disable-line @typescript-eslint/no-unused-vars
+	return(JSON.stringify(identity, function(_key: string, value: unknown): unknown {
 		if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const obj = value as { [k: string]: unknown };
-			return(Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))));
+			return(Object.fromEntries(
+				Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))
+			));
 		}
 
 		return(value);
 	}));
+}
+
+/**
+ * Convert an asset location to a tag for use in storage.
+ *
+ * @param location - The asset location to convert to a tag.
+ *
+ * @returns The tag string.
+ */
+function locationToTag(location: AssetLocationLike): string {
+	const str = convertAssetLocationToString(location);
+
+	const parts = str.split(':');
+	return(parts.join('-'));
+}
+
+/**
+ * Convert a contact address to a list of tags for use in storage.
+ *
+ * @param address - The contact address to convert to tags.
+ *
+ * @returns The list of tags.
+ */
+function contactTags(address: ContactAddress): string[] {
+	if (address.location) {
+		return([locationToTag(address.location)]);
+	}
+
+	return([]);
 }
 
 /**
@@ -116,7 +165,7 @@ export class StorageContactsClient implements ContactsClient {
 
 		await this.#session.put(id, this.#serialize(contact), {
 			mimeType: MIME_TYPE,
-			tags: [options.address.type]
+			tags: contactTags(options.address)
 		});
 
 		return(contact);
@@ -151,7 +200,7 @@ export class StorageContactsClient implements ContactsClient {
 
 		await this.#session.put(newId, this.#serialize(updated), {
 			mimeType: MIME_TYPE,
-			tags: [updated.address.type]
+			tags: contactTags(updated.address)
 		});
 
 		if (newId !== id) {
@@ -170,12 +219,17 @@ export class StorageContactsClient implements ContactsClient {
 	}
 
 	async list(options?: {
-		type?: ContactAddress['type'];
+		location?: AssetLocationLike;
 	}): Promise<Contact[]> {
-		const searchResult = await this.#session.search({
-			pathPrefix: this.#session.workingDirectory,
-			...(options?.type ? { tags: [options.type] } : {})
-		});
+		const criteria: { pathPrefix: string; tags?: string[] } = {
+			pathPrefix: this.#session.workingDirectory
+		};
+
+		if (options?.location) {
+			criteria.tags = [locationToTag(options.location)];
+		}
+
+		const searchResult = await this.#session.search(criteria);
 
 		const contacts: Contact[] = [];
 		for (const metadata of searchResult.results) {

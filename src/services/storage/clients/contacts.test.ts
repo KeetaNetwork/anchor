@@ -79,23 +79,18 @@ async function withContacts(
 
 // #region Test Fixtures
 
-const keetaSendAddress: ContactAddress = {
-	type: 'KEETA_SEND',
-	location: 'chain:keeta:1',
-	sendToAddress: 'keeta1a2b3c',
-	tokenAddress: '0x1a2b3c4d'
+const keetaAddress: ContactAddress = {
+	recipient: 'keeta1a2b3c',
+	location: 'chain:keeta:1'
 };
 
-const evmSendAddress: ContactAddress = {
-	type: 'EVM_SEND',
-	location: 'chain:evm:1',
-	sendToAddress: '0x4d5e6f7a8b9c',
-	tokenAddress: '0x1a2b3c4d'
+const evmAddress: ContactAddress = {
+	recipient: '0x4d5e6f7a8b9c',
+	location: 'chain:evm:1'
 };
 
 const wireAddress: ContactAddress = {
-	type: 'WIRE',
-	account: {
+	recipient: {
 		type: 'bank-account',
 		accountType: 'us',
 		accountNumber: '123456789',
@@ -105,35 +100,23 @@ const wireAddress: ContactAddress = {
 	}
 };
 
-const bitcoinSendAddress: ContactAddress = {
-	type: 'BITCOIN_SEND',
-	location: 'chain:bitcoin:f9beb4d9',
-	sendToAddress: 'bc1q0a1b2c3d4e5f'
+const bitcoinAddress: ContactAddress = {
+	recipient: 'bc1q0a1b2c3d4e5f',
+	location: 'chain:bitcoin:f9beb4d9'
 };
 
-const solanaSendAddress: ContactAddress = {
-	type: 'SOLANA_SEND',
-	location: 'chain:solana:1',
-	sendToAddress: '9a8b7c6d5e4f'
+const solanaAddress: ContactAddress = {
+	recipient: '9a8b7c6d5e4f',
+	location: 'chain:solana:1'
 };
 
-const tronSendAddress: ContactAddress = {
-	type: 'TRON_SEND',
-	location: 'chain:tron:mainnet',
-	sendToAddress: 'T1a2b3c4d5e6'
-};
-
-const evmCallAddress: ContactAddress = {
-	type: 'EVM_CALL',
-	location: 'chain:evm:1',
-	contractAddress: '0x9c0d1e2f',
-	contractMethodName: 'deposit(uint256)',
-	contractMethodArgs: ['1000']
+const tronAddress: ContactAddress = {
+	recipient: 'T1a2b3c4d5e6',
+	location: 'chain:tron:mainnet'
 };
 
 const achAddress: ContactAddress = {
-	type: 'ACH',
-	account: {
+	recipient: {
 		type: 'bank-account',
 		accountType: 'us',
 		accountNumber: '987654321',
@@ -143,9 +126,8 @@ const achAddress: ContactAddress = {
 	}
 };
 
-const sepaPushAddress: ContactAddress = {
-	type: 'SEPA_PUSH',
-	account: {
+const sepaAddress: ContactAddress = {
+	recipient: {
 		type: 'bank-account',
 		accountType: 'iban-swift',
 		iban: 'DE89370400440532013000',
@@ -154,16 +136,22 @@ const sepaPushAddress: ContactAddress = {
 	}
 };
 
-const sampleAddresses: { type: ContactAddress['type']; address: ContactAddress }[] = [
-	{ type: 'KEETA_SEND', address: keetaSendAddress },
-	{ type: 'EVM_SEND', address: evmSendAddress },
-	{ type: 'EVM_CALL', address: evmCallAddress },
-	{ type: 'WIRE', address: wireAddress },
-	{ type: 'ACH', address: achAddress },
-	{ type: 'SEPA_PUSH', address: sepaPushAddress },
-	{ type: 'BITCOIN_SEND', address: bitcoinSendAddress },
-	{ type: 'SOLANA_SEND', address: solanaSendAddress },
-	{ type: 'TRON_SEND', address: tronSendAddress }
+const persistentAddress: ContactAddress = {
+	recipient: { type: 'persistent-address', persistentAddressId: 'pa-123' },
+	location: 'chain:evm:1',
+	asset: 'evm:0x1a2b3c4d'
+};
+
+const sampleAddresses: { name: string; address: ContactAddress }[] = [
+	{ name: 'keeta crypto', address: keetaAddress },
+	{ name: 'evm crypto', address: evmAddress },
+	{ name: 'wire bank', address: wireAddress },
+	{ name: 'bitcoin crypto', address: bitcoinAddress },
+	{ name: 'solana crypto', address: solanaAddress },
+	{ name: 'tron crypto', address: tronAddress },
+	{ name: 'ach bank', address: achAddress },
+	{ name: 'sepa bank', address: sepaAddress },
+	{ name: 'persistent address', address: persistentAddress }
 ];
 
 const updateCases: {
@@ -175,23 +163,23 @@ const updateCases: {
 }[] = [
 	{
 		name: 'label only preserves address and id',
-		initial: { label: 'Original', address: keetaSendAddress },
+		initial: { label: 'Original', address: keetaAddress },
 		update: { label: 'Renamed' },
-		expected: { label: 'Renamed', address: keetaSendAddress },
+		expected: { label: 'Renamed', address: keetaAddress },
 		changesId: false
 	},
 	{
 		name: 'address only preserves label and changes id',
-		initial: { label: 'Keep This', address: keetaSendAddress },
-		update: { address: bitcoinSendAddress },
-		expected: { label: 'Keep This', address: bitcoinSendAddress },
+		initial: { label: 'Keep This', address: keetaAddress },
+		update: { address: bitcoinAddress },
+		expected: { label: 'Keep This', address: bitcoinAddress },
 		changesId: true
 	},
 	{
 		name: 'both label and address changes id',
-		initial: { label: 'Old', address: keetaSendAddress },
-		update: { label: 'New', address: evmSendAddress },
-		expected: { label: 'New', address: evmSendAddress },
+		initial: { label: 'Old', address: keetaAddress },
+		update: { label: 'New', address: evmAddress },
+		expected: { label: 'New', address: evmAddress },
 		changesId: true
 	}
 ];
@@ -201,7 +189,7 @@ const updateCases: {
 // #region Tests
 
 describe('Contacts Client - CRUD per address type', function() {
-	test.each(sampleAddresses)('create and get contact with $type address', function({ address }) {
+	test.each(sampleAddresses)('create and get contact: $name', function({ address }) {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created = await contactsClient.create({ label: 'Test Contact', address });
 			expect(created.id).toBe(contactsClient.deriveId(address));
@@ -247,7 +235,7 @@ describe('Contacts Client - Delete', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created = await contactsClient.create({
 				label: 'To Delete',
-				address: keetaSendAddress
+				address: keetaAddress
 			});
 
 			const deleted = await contactsClient.delete(created.id);
@@ -272,8 +260,8 @@ describe('Contacts Client - List', function() {
 
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created: Contact[] = [];
-			for (const { address } of sampleAddresses) {
-				created.push(await contactsClient.create({ label: `Contact ${address.type}`, address }));
+			for (const { name, address } of sampleAddresses) {
+				created.push(await contactsClient.create({ label: `Contact ${name}`, address }));
 			}
 
 			const listed = await contactsClient.list();
@@ -282,22 +270,27 @@ describe('Contacts Client - List', function() {
 		}));
 	});
 
-	test('list filtered by type returns only matching contacts', function() {
-		const fixtures: { type: ContactAddress['type']; address: ContactAddress }[] = [
-			{ type: 'WIRE', address: wireAddress },
-			{ type: 'ACH', address: achAddress },
-			{ type: 'BITCOIN_SEND', address: bitcoinSendAddress }
+	test('list filtered by location returns only matching contacts', function() {
+		const fixtures: { address: ContactAddress }[] = [
+			{ address: evmAddress },
+			{ address: bitcoinAddress },
+			{ address: solanaAddress }
 		];
 
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
-			for (const { type, address } of fixtures) {
-				await contactsClient.create({ label: `${type} Contact`, address });
+			for (const { address } of fixtures) {
+				await contactsClient.create({ label: 'Location Test', address });
 			}
 
-			for (const { type } of fixtures) {
-				const filtered = await contactsClient.list({ type });
+			for (const fixture of fixtures) {
+				const location = fixture.address.location;
+				expect(location).toBeDefined();
+				if (!location) {
+					continue;
+				}
+				const filtered = await contactsClient.list({ location });
 				expect(filtered).toHaveLength(1);
-				expect(filtered[0]?.address.type).toBe(type);
+				expect(filtered[0]?.address).toEqual(fixture.address);
 			}
 		}));
 	});
@@ -313,8 +306,8 @@ describe('Contacts Client - Edge Cases', function() {
 
 	test('creating the same address twice is idempotent and updates the label', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
-			const first = await contactsClient.create({ label: 'First', address: keetaSendAddress });
-			const second = await contactsClient.create({ label: 'Second', address: keetaSendAddress });
+			const first = await contactsClient.create({ label: 'First', address: keetaAddress });
+			const second = await contactsClient.create({ label: 'Second', address: keetaAddress });
 			expect(second.id).toBe(first.id);
 			expect(second.label).toBe('Second');
 
@@ -339,23 +332,45 @@ describe('Contacts Client - Edge Cases', function() {
 	test('deriveId is stable regardless of key order', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const reordered: ContactAddress = {
-				tokenAddress: '0x1a2b3c4d',
-				sendToAddress: '0x4d5e6f7a8b9c',
-				type: 'EVM_SEND',
-				location: 'chain:evm:1'
+				location: 'chain:evm:1',
+				recipient: '0x4d5e6f7a8b9c'
 			};
-			expect(contactsClient.deriveId(evmSendAddress)).toBe(contactsClient.deriveId(reordered));
+			expect(contactsClient.deriveId(evmAddress)).toBe(contactsClient.deriveId(reordered));
 		}));
 	});
 
 	test('deriveId ignores undefined optional fields', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
-			// Simulates runtime scenario where an optional field is explicitly set to undefined
 			const withUndefined = {
-				...wireAddress,
-				depositMessage: undefined
+				...keetaAddress,
+				asset: undefined
 			};
-			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(wireAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
+			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(keetaAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
+		}));
+	});
+
+	test('deriveId excludes pastInstructions from identity', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const withInstructions: ContactAddress = {
+				...evmAddress,
+				pastInstructions: [{
+					type: 'EVM_SEND',
+					location: 'chain:evm:1',
+					sendToAddress: '0x4d5e6f7a8b9c',
+					tokenAddress: '0x1a2b3c4d'
+				}]
+			};
+			expect(contactsClient.deriveId(withInstructions)).toBe(contactsClient.deriveId(evmAddress));
+		}));
+	});
+
+	test('deriveId excludes providerInformation from identity', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const withProvider: ContactAddress = {
+				...evmAddress,
+				providerInformation: { 'provider-abc': { usingProvider: true }}
+			};
+			expect(contactsClient.deriveId(withProvider)).toBe(contactsClient.deriveId(evmAddress));
 		}));
 	});
 });
