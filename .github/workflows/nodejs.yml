@@ -53,15 +53,22 @@ jobs:
           # Needed to fetch packages from GitHub Package Registry
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Run SonarCloud after completing tests and generating code coverage report
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: Save PR Number for SonarCloud
+        if: github.event_name == 'pull_request'
+        run: |
+          rm -f .pr
+          echo '${{ github.event.number }}' > .pr
+
+      # Save artifacts from testing for running SonarCloud in a privileged step
+      - name: Save Tested Artifacts for SonarCloud
+        if: success()
+        uses: actions/upload-artifact@v6
         with:
-          args: >
-            -Dproject.settings=./.sonar-project.properties
+          name: test-artifacts
+          path: |
+            .pr
+            .coverage
+            node_modules
 
       - name: Stop Services
         run: |
