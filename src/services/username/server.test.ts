@@ -8,12 +8,10 @@ const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 
 test('username server resolves account and nulls', async () => {
-	const providerID = 'provider-abc';
 	const knownAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
 		logger: logger,
-		providerID,
 		usernames: {
 			async resolveUsername({ username }) {
 				if (username === 'alice') {
@@ -57,9 +55,7 @@ test('username server resolves account and nulls', async () => {
 }, 10_000);
 
 test('username server enforces usernamePattern when provided', async () => {
-	const providerID = 'provider-pattern';
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
-		providerID,
 		usernamePattern: '^[a-z]+$',
 		usernames: {
 			async resolveUsername({ username }) {
@@ -104,9 +100,7 @@ test('username server enforces usernamePattern when provided', async () => {
 }, 10_000);
 
 test('username server enforces default validation rules', async () => {
-	const providerID = 'provider-default-validation';
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
-		providerID,
 		usernames: {
 			async resolveAccount() { return(null); },
 			async resolveUsername() { return(null); }
@@ -146,7 +140,6 @@ test('username server enforces default validation rules', async () => {
 }, 10_000);
 
 test('username server validates signed transfers and release requests', async () => {
-	const providerID = 'provider-signatures';
 	const transferFromAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const transferToAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	let claimCalls = 0;
@@ -157,7 +150,6 @@ test('username server validates signed transfers and release requests', async ()
 	let releaseMatchedAccount = false;
 
 	await using server = new KeetaNetUsernameAnchorHTTPServer({
-		providerID,
 		usernames: {
 			async resolveUsername() {
 				return(null);
