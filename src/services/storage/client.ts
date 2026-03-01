@@ -1,5 +1,4 @@
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
-import { KeetaNet } from '../../client/index.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint } from '../../lib/resolver.ts';
@@ -7,6 +6,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { Buffer } from '../../lib/utils/buffer.js';
 import type {
 	KeetaNetAccount,
+	ContactsClientConfig,
 	StorageObjectMetadata,
 	SearchCriteria,
 	SearchPagination,
@@ -34,15 +34,17 @@ import {
 	CONTENT_TYPE_OCTET_STREAM,
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
+import { KeetaNet } from '../../client/index.js';
 import { getDefaultResolver } from '../../config.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
-import Resolver from '../../lib/resolver.js';
-import crypto from '../../lib/utils/crypto.js';
 import { createAssertEquals } from 'typia';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
+import { StorageContactsClient } from './clients/contacts.js';
+import Resolver from '../../lib/resolver.js';
+import crypto from '../../lib/utils/crypto.js';
 
 /**
  * The configuration options for the Storage Anchor client.
@@ -443,7 +445,6 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		if (endpoint === undefined) {
 			throw(new Errors.OperationNotSupported(operationName));
 		}
-
 		if (endpoint.options.authentication.method !== 'keeta-account') {
 			throw(new Errors.UnsupportedAuthMethod(endpoint.options.authentication.method));
 		}
@@ -1175,6 +1176,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const session = this.beginSession(config);
 		return(await fn(session));
 	}
+
+	/**
+	 * Get a contacts client bound to the given account.
+	 */
+	getContactsClient(config: ContactsClientConfig): StorageContactsClient {
+		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
+		return(new StorageContactsClient(session));
+	}
 }
 
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
@@ -1240,6 +1249,20 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 			return(p.providerID === providerID);
 		});
 		return(provider ?? null);
+	}
+
+	/**
+	 * Get a contacts client bound to the given account.
+	 * Resolves the first available provider and constructs a StorageContactsClient.
+	 */
+	async getContactsClient(config: ContactsClientConfig): Promise<StorageContactsClient | null> {
+		const providers = await this.getProviders();
+		const provider = providers?.[0];
+		if (!provider) {
+			return(null);
+		}
+
+		return(provider.getContactsClient(config));
 	}
 
 	/** @internal */
