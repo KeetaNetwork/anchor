@@ -163,6 +163,22 @@ type ServiceMetadata = {
 				}[];
 			}
 		};
+		username?: {
+			[id: string]: {
+				operations: {
+					resolve: ServiceMetadataEndpoint;
+					claim?: ServiceMetadataEndpoint;
+					release?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+				};
+
+				/**
+				 * Optional regex pattern which provider-issued unique names must match in order to be valid.
+				 * If not specified, then any provider-issued unique name is considered valid as long as it meets the general requirements for provider-issued unique names (e.g. length limits, valid character range).
+				 */
+				usernamePattern?: string;
+			}
+		};
 		assetMovement?: {
 			[id: string]: {
 				operations: {
@@ -290,6 +306,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		kycProviders?: string[];
 	};
+	/**
+	 * There are currently no additional filters for searching a username provider
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'username': {};
 	'cards': {
 		/* XXX:TODO */
 		workInProgress: true;
@@ -406,6 +427,22 @@ function assertValidOperationsAssetMovement(input: unknown): asserts input is { 
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsUsername(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['operations'] } {
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOptionalUsernamePattern(input: unknown): asserts input is { usernamePattern?: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['usernamePattern'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('usernamePattern' in input && input.usernamePattern !== undefined) {
+		if (typeof input.usernamePattern !== 'string' && typeof input.usernamePattern !== 'function') {
+			throw(new Error(`Expected "usernamePattern" to be a string | function, got ${typeof input.usernamePattern}`));
+		}
+	}
+}
+
 function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
@@ -498,6 +535,13 @@ const assertResolverLookupAssetMovementResults = async function(input: unknown):
 
 	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
 	// @ts-ignore
+	return(input);
+};
+
+const assertResolverLookupUsernameResult = function(input: unknown): ResolverLookupServiceResults<'username'>[string] {
+	assertValidOperationsUsername(input);
+	assertValidOptionalUsernamePattern(input);
+
 	return(input);
 };
 
@@ -1305,6 +1349,9 @@ class Resolver {
 		'assetMovement': {
 			search: this.lookupAssetMovementServices.bind(this)
 		},
+		'username': {
+			search: this.lookupUsernameServices.bind(this)
+		},
 		'cards': {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'cards'>) => {
@@ -1723,8 +1770,33 @@ class Resolver {
 		return(retval);
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	private async lookupStorageServices(storageServices: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'storage'>): Promise<ResolverLookupServiceResults<'storage'> | undefined> {
+	private async lookupUsernameServices(usernameServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'username'>) {
+		if (usernameServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'username'> = {};
+		for (const checkUsernameServiceID in usernameServices) {
+			try {
+				const checkUsernameService = await usernameServices[checkUsernameServiceID]?.('object');
+				if (checkUsernameService === undefined) {
+					continue;
+				}
+
+				retval[checkUsernameServiceID] = assertResolverLookupUsernameResult(checkUsernameService);
+			} catch (checkUsernameServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking username service', checkUsernameServiceID, ':', checkUsernameServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupStorageServices(storageServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'storage'>): Promise<ResolverLookupServiceResults<'storage'> | undefined> {
 		if (storageServices === undefined) {
 			return(undefined);
 		}

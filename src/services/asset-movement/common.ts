@@ -1080,6 +1080,7 @@ export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown
 export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
 export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
 export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => input is KeetaAssetMovementAnchorShareKYCResponse = createIs<KeetaAssetMovementAnchorShareKYCResponse>();
+export const isKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => input is KeetaAssetMovementAnchorListPersistentForwardingResponse = createIs<KeetaAssetMovementAnchorListPersistentForwardingResponse>();
 
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 
