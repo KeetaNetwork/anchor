@@ -3,7 +3,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
-test('FX Server Tests', async function() {
+test('Asset Movement Server Tests', async function() {
 	const asset = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
