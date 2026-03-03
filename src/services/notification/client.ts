@@ -14,16 +14,27 @@ import type {
 	KeetaNotificationAnchorRegisterTargetClientRequest,
 	KeetaNotificationAnchorListTargetsClientRequest,
 	KeetaNotificationAnchorDeleteTargetClientRequest,
+	KeetaNotificationAnchorCreateSubscriptionClientRequest,
+	KeetaNotificationAnchorListSubscriptionsClientRequest,
+	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
 	NotificationTargetWithIDResponse,
+	SubscriptionDetailsWithID,
 	NotificationChannelArguments
 } from './common.js';
 import {
 	getNotificationRegisterTargetRequestSignable,
 	getNotificationListTargetsRequestSignable,
 	getNotificationDeleteTargetRequestSignable,
+	getNotificationCreateSubscriptionRequestSignable,
+	getNotificationListSubscriptionsRequestSignable,
+	getNotificationDeleteSubscriptionRequestSignable,
 	isKeetaNotificationAnchorRegisterTargetResponseJSON,
 	isKeetaNotificationAnchorListTargetsResponseJSON,
-	isKeetaNotificationAnchorDeleteTargetResponseJSON
+	isKeetaNotificationAnchorDeleteTargetResponseJSON,
+	isKeetaNotificationAnchorCreateSubscriptionResponseJSON,
+	isKeetaNotificationAnchorListSubscriptionsResponseJSON,
+	isKeetaNotificationAnchorDeleteSubscriptionResponseJSON,
+	parseSubscriptionDetailsWithIDJSON
 } from './common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
@@ -321,6 +332,128 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 
 		if (!isKeetaNotificationAnchorDeleteTargetResponseJSON(responseJSON)) {
 			throw(new Error('Invalid response from notification provider deleteTarget endpoint'));
+		}
+
+		if (!responseJSON.ok) {
+			throw(await this.#parseResponseError(responseJSON));
+		}
+
+		return({ ok: responseJSON.ok });
+	}
+
+	async createSubscription(input: KeetaNotificationAnchorCreateSubscriptionClientRequest): Promise<{ id: string }> {
+		const endpoint = await this.#getOperation('createSubscription');
+
+		if (endpoint.options.authentication.type === 'none') {
+			throw(new Error('Notification createSubscription operation must require account authentication'));
+		}
+
+		const accountToUse = this.#resolveAccount(input.account);
+		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationCreateSubscriptionRequestSignable(input));
+
+		const serializedSubscription = {
+			...input.subscription,
+			...(input.subscription.toAddress ? { toAddress: input.subscription.toAddress.publicKeyString.get() } : {})
+		};
+
+		const response = await fetch(endpoint.url(), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				account: accountToUse.publicKeyString.get(),
+				subscription: serializedSubscription,
+				signed
+			})
+		});
+
+		let responseJSON: unknown;
+		try {
+			responseJSON = await response.json();
+		} catch (error) {
+			throw(new Error(`Failed to parse notification createSubscription response as JSON: ${error}`));
+		}
+
+		if (!isKeetaNotificationAnchorCreateSubscriptionResponseJSON(responseJSON)) {
+			throw(new Error('Invalid response from notification provider createSubscription endpoint'));
+		}
+
+		if (!responseJSON.ok) {
+			throw(await this.#parseResponseError(responseJSON));
+		}
+
+		return({ id: responseJSON.id });
+	}
+
+	async listSubscriptions(input?: KeetaNotificationAnchorListSubscriptionsClientRequest): Promise<{ subscriptions: SubscriptionDetailsWithID[] }> {
+		const endpoint = await this.#getOperation('listSubscriptions');
+
+		if (endpoint.options.authentication.type === 'none') {
+			throw(new Error('Notification listSubscriptions operation must require account authentication'));
+		}
+
+		const accountToUse = this.#resolveAccount(input?.account);
+		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationListSubscriptionsRequestSignable());
+
+		const serviceURL = addSignatureToURL(endpoint.url(), { signedField: signed, account: accountToUse.assertAccount() });
+
+		const response = await fetch(serviceURL, {
+			method: 'GET',
+			headers: { 'Accept': 'application/json' }
+		});
+
+		let responseJSON: unknown;
+		try {
+			responseJSON = await response.json();
+		} catch (error) {
+			throw(new Error(`Failed to parse notification listSubscriptions response as JSON: ${error}`));
+		}
+
+		if (!isKeetaNotificationAnchorListSubscriptionsResponseJSON(responseJSON)) {
+			throw(new Error('Invalid response from notification provider listSubscriptions endpoint'));
+		}
+
+		if (!responseJSON.ok) {
+			throw(await this.#parseResponseError(responseJSON));
+		}
+
+		return({ subscriptions: responseJSON.subscriptions.map(parseSubscriptionDetailsWithIDJSON) });
+	}
+
+	async deleteSubscription(input: KeetaNotificationAnchorDeleteSubscriptionClientRequest): Promise<{ ok: boolean }> {
+		const endpoint = await this.#getOperation('deleteSubscription');
+
+		if (endpoint.options.authentication.type === 'none') {
+			throw(new Error('Notification deleteSubscription operation must require account authentication'));
+		}
+
+		const accountToUse = this.#resolveAccount(input.account);
+		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationDeleteSubscriptionRequestSignable(input));
+
+		const response = await fetch(endpoint.url(), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({
+				account: accountToUse.publicKeyString.get(),
+				id: input.id,
+				signed
+			})
+		});
+
+		let responseJSON: unknown;
+		try {
+			responseJSON = await response.json();
+		} catch (error) {
+			throw(new Error(`Failed to parse notification deleteSubscription response as JSON: ${error}`));
+		}
+
+		if (!isKeetaNotificationAnchorDeleteSubscriptionResponseJSON(responseJSON)) {
+			throw(new Error('Invalid response from notification provider deleteSubscription endpoint'));
 		}
 
 		if (!responseJSON.ok) {

@@ -7,6 +7,12 @@ import type {
 	KeetaNotificationAnchorDeleteTargetClientRequest,
 	KeetaNotificationAnchorRegisterTargetRequest,
 	KeetaNotificationAnchorDeleteTargetRequest,
+	KeetaNotificationAnchorCreateSubscriptionClientRequest,
+	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
+	KeetaNotificationAnchorDeleteSubscriptionRequest,
+	KeetaNotificationAnchorListSubscriptionsClientRequest,
+	SubscriptionDetailsWithID,
+	NotificationSubscriptionArguments,
 	NotificationSubscriptionType,
 	SupportedChannelConfigurationMetadata } from './common.js';
 import {
@@ -14,7 +20,12 @@ import {
 	assertKeetaNotificationAnchorRegisterTargetRequestJSON,
 	getNotificationListTargetsRequestSignable,
 	assertKeetaNotificationAnchorDeleteTargetRequestJSON,
-	getNotificationDeleteTargetRequestSignable
+	getNotificationDeleteTargetRequestSignable,
+	assertKeetaNotificationAnchorCreateSubscriptionRequestJSON,
+	getNotificationCreateSubscriptionRequestSignable,
+	assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON,
+	getNotificationDeleteSubscriptionRequestSignable,
+	getNotificationListSubscriptionsRequestSignable
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
 import type { Routes } from '../../lib/http-server/index.js';
@@ -28,6 +39,10 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServ
 		registerTarget?: (args: Required<KeetaNotificationAnchorRegisterTargetClientRequest>) => Promise<{ id: string; }>;
 		listTargets?: (args: Required<KeetaNotificationAnchorListTargetsClientRequest>) => Promise<{ targets: NotificationTargetWithIDResponse[]; }>;
 		deleteTarget?: (args: Required<KeetaNotificationAnchorDeleteTargetClientRequest>) => Promise<{ ok: boolean; }>;
+
+		createSubscription?: (args: Required<KeetaNotificationAnchorCreateSubscriptionClientRequest>) => Promise<{ id: string; }>;
+		listSubscriptions?: (args: Required<KeetaNotificationAnchorListSubscriptionsClientRequest>) => Promise<{ subscriptions: SubscriptionDetailsWithID[]; }>;
+		deleteSubscription?: (args: Required<KeetaNotificationAnchorDeleteSubscriptionClientRequest>) => Promise<{ ok: boolean; }>;
 
 		supportedChannels?: SupportedChannelConfigurationMetadata;
 		supportedSubscriptions?: NotificationSubscriptionType[];
@@ -168,6 +183,105 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 			};
 		}
 
+		const createSubscriptionHandler = this.notification.createSubscription;
+		if (createSubscriptionHandler) {
+			routes['POST /api/subscription'] = async (_params, body) => {
+				const raw = assertKeetaNotificationAnchorCreateSubscriptionRequestJSON(body);
+				const account = KeetaNet.lib.Account.fromPublicKeyString(raw.account);
+
+				let subscription: NotificationSubscriptionArguments;
+				if (raw.subscription.type === 'RECEIVE_FUNDS') {
+					subscription = {
+						type: 'RECEIVE_FUNDS',
+						target: raw.subscription.target,
+						...(raw.subscription.toAddress
+							? { toAddress: KeetaNet.lib.Account.fromPublicKeyString(raw.subscription.toAddress) }
+							: {})
+					};
+				} else {
+					throw(new KeetaAnchorUserError(`Unsupported subscription type`));
+				}
+
+				const request = { account, subscription, signed: raw.signed };
+
+				const signatureVerified = await Signing.VerifySignedData(
+					account,
+					getNotificationCreateSubscriptionRequestSignable({ subscription }),
+					raw.signed
+				);
+
+				if (!signatureVerified) {
+					throw(new KeetaAnchorUserError('Invalid signature'));
+				}
+
+				const createResponse = await createSubscriptionHandler(request);
+
+				return({
+					output: JSON.stringify({ ok: true, id: createResponse.id }),
+					contentType: 'application/json'
+				});
+			};
+		}
+
+		const listSubscriptionsHandler = this.notification.listSubscriptions;
+		if (listSubscriptionsHandler) {
+			routes['GET /api/subscriptions'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
+				const signatureDetails = parseSignatureFromURL(url);
+
+				if (!signatureDetails.account || !signatureDetails.signedField) {
+					throw(new KeetaAnchorUserError('Missing signature parameters in URL'));
+				}
+
+				const verifiedSignature = await Signing.VerifySignedData(
+					signatureDetails.account,
+					getNotificationListSubscriptionsRequestSignable(),
+					signatureDetails.signedField
+				);
+
+				if (!verifiedSignature) {
+					throw(new KeetaAnchorUserError('Invalid signature'));
+				}
+
+				const listResponse = await listSubscriptionsHandler({ account: signatureDetails.account });
+
+				return({
+					output: JSON.stringify({ ok: true, subscriptions: listResponse.subscriptions }),
+					contentType: 'application/json'
+				});
+			};
+		}
+
+		const deleteSubscriptionHandler = this.notification.deleteSubscription;
+		if (deleteSubscriptionHandler) {
+			routes['POST /api/delete-subscription'] = async (_params, body) => {
+				const request: Required<KeetaNotificationAnchorDeleteSubscriptionRequest> = (() => {
+					const raw = assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON(body);
+
+					return({
+						...raw,
+						account: KeetaNet.lib.Account.toAccount(raw.account)
+					});
+				})();
+
+				const verifiedSignature = await Signing.VerifySignedData(
+					request.account,
+					getNotificationDeleteSubscriptionRequestSignable(request),
+					request.signed
+				);
+
+				if (!verifiedSignature) {
+					throw(new KeetaAnchorUserError('Invalid signature'));
+				}
+
+				const deleteResponse = await deleteSubscriptionHandler(request);
+
+				return({
+					output: JSON.stringify(deleteResponse),
+					contentType: 'application/json'
+				});
+			};
+		}
+
 		return(routes);
 	}
 
@@ -189,6 +303,18 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 
 		if (this.notification.deleteTarget) {
 			retval.operations.deleteTarget = { url: (new URL('/api/delete-target', this.url)).toString(), options: { authentication }};
+		}
+
+		if (this.notification.createSubscription) {
+			retval.operations.createSubscription = { url: (new URL('/api/subscription', this.url)).toString(), options: { authentication }};
+		}
+
+		if (this.notification.listSubscriptions) {
+			retval.operations.listSubscriptions = { url: (new URL('/api/subscriptions', this.url)).toString(), options: { authentication }};
+		}
+
+		if (this.notification.deleteSubscription) {
+			retval.operations.deleteSubscription = { url: (new URL('/api/delete-subscription', this.url)).toString(), options: { authentication }};
 		}
 
 		if (this.notification.supportedChannels) {

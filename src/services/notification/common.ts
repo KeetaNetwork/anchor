@@ -5,6 +5,7 @@ import type { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/
 import { assertNever } from '../../lib/utils/never.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import { assertNotificationChannelType, assertNotificationIntentType } from './common.generated.js';
+import { KeetaNet } from '../../client/index.js';
 export * from './common.generated.js';
 
 interface BaseNotificationChannelArguments<T extends string> {
@@ -40,6 +41,7 @@ interface BaseNotificationSubscriptionArguments<T extends string> {
 }
 
 interface ReceiveFundsNotificationSubscriptionArguments extends BaseNotificationSubscriptionArguments<'RECEIVE_FUNDS'> {
+	// Address to listen to incoming transactions for, if omitted will use the requestors address
 	toAddress?: GenericAccount;
 }
 
@@ -144,8 +146,116 @@ export function getNotificationDeleteTargetRequestSignable(request: Pick<KeetaNo
 	]);
 }
 
+export interface KeetaNotificationAnchorCreateSubscriptionClientRequest {
+	account?: Account;
+	subscription: NotificationSubscriptionArguments;
+}
+export interface KeetaNotificationAnchorCreateSubscriptionRequest extends KeetaNotificationAnchorCreateSubscriptionClientRequest {
+	account: Account;
+	signed: HTTPSignedField;
+}
+export type KeetaNotificationAnchorCreateSubscriptionRequestJSON = ToJSONSerializable<KeetaNotificationAnchorCreateSubscriptionRequest>;
 
-// // Namespace for the Username Anchor signable claims
+export type KeetaNotificationAnchorCreateSubscriptionResponse = ({
+	ok: true;
+	id: string;
+}) | ({
+	ok: false;
+	error: string;
+});
+
+export type KeetaNotificationAnchorCreateSubscriptionResponseJSON = ToJSONSerializable<KeetaNotificationAnchorCreateSubscriptionResponse>;
+
+export function getNotificationCreateSubscriptionRequestSignable(request: Pick<KeetaNotificationAnchorCreateSubscriptionClientRequest, 'subscription'>): Signable {
+	const parts: Signable = [
+		notificationNamespace,
+		'CREATE_SUBSCRIPTION',
+		request.subscription.type
+	];
+
+	if (request.subscription.type === 'RECEIVE_FUNDS') {
+		parts.push(request.subscription.toAddress ?? 'NO_ADDRESS');
+	} else {
+		assertNever(request.subscription.type);
+	}
+
+	return(parts);
+}
+
+export interface KeetaNotificationAnchorDeleteSubscriptionClientRequest {
+	account?: Account;
+	id: string;
+}
+export interface KeetaNotificationAnchorDeleteSubscriptionRequest extends KeetaNotificationAnchorDeleteSubscriptionClientRequest {
+	account: Account;
+	signed: HTTPSignedField;
+}
+export type KeetaNotificationAnchorDeleteSubscriptionRequestJSON = ToJSONSerializable<KeetaNotificationAnchorDeleteSubscriptionRequest>;
+
+export type KeetaNotificationAnchorDeleteSubscriptionResponse = ({
+	ok: true;
+}) | ({
+	ok: false;
+	error: string;
+});
+
+export type KeetaNotificationAnchorDeleteSubscriptionResponseJSON = ToJSONSerializable<KeetaNotificationAnchorDeleteSubscriptionResponse>;
+
+export function getNotificationDeleteSubscriptionRequestSignable(request: Pick<KeetaNotificationAnchorDeleteSubscriptionClientRequest, 'id'>): Signable {
+	return([
+		notificationNamespace,
+		'DELETE_SUBSCRIPTION',
+		request.id
+	]);
+}
+
+export interface SubscriptionDetailsWithID {
+	id: string;
+	subscription: NotificationSubscriptionArguments;
+}
+
+export type SubscriptionDetailsWithIDJSON = ToJSONSerializable<SubscriptionDetailsWithID>;
+
+export function parseSubscriptionDetailsWithIDJSON(input: SubscriptionDetailsWithIDJSON): SubscriptionDetailsWithID {
+	let subscription: NotificationSubscriptionArguments;
+	if (input.subscription.type === 'RECEIVE_FUNDS') {
+		subscription = {
+			type: 'RECEIVE_FUNDS',
+			target: input.subscription.target,
+			...(input.subscription.toAddress
+				? { toAddress: KeetaNet.lib.Account.fromPublicKeyString(input.subscription.toAddress) }
+				: {})
+		};
+	} else {
+		assertNever(input.subscription.type);
+	}
+
+	return({ id: input.id, subscription });
+}
+
+export interface KeetaNotificationAnchorListSubscriptionsClientRequest { account?: Account; }
+interface KeetaNotificationAnchorListSubscriptionsRequest extends KeetaNotificationAnchorListSubscriptionsClientRequest {
+	account: Account;
+	signed: HTTPSignedField;
+}
+export type KeetaNotificationAnchorListSubscriptionsRequestJSON = ToJSONSerializable<KeetaNotificationAnchorListSubscriptionsRequest>;
+
+export type KeetaNotificationAnchorListSubscriptionsResponse = ({
+	ok: true;
+	subscriptions: SubscriptionDetailsWithID[];
+}) | ({
+	ok: false;
+	error: string;
+});
+
+export type KeetaNotificationAnchorListSubscriptionsResponseJSON = ToJSONSerializable<KeetaNotificationAnchorListSubscriptionsResponse>;
+
+export function getNotificationListSubscriptionsRequestSignable(_ignore_request?: KeetaNotificationAnchorListSubscriptionsClientRequest): Signable {
+	return([
+		notificationNamespace,
+		'LIST_SUBSCRIPTIONS'
+	]);
+}
 
 interface KeetaNotificationAnchorMethodNotSupportedErrorProperties {
 	channelType?: NotificationChannelType | undefined;

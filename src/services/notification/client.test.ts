@@ -26,7 +26,9 @@ test('notification client registers, lists, and deletes targets through resolver
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	const targets = new Map<string, NotificationTargetWithIDResponse>();
+	const subscriptions = new Map<string, { type: 'RECEIVE_FUNDS'; target: { ids: string[] }}>();
 	let nextID = 1;
+	let nextSubID = 1;
 
 	await using server = new KeetaNetNotificationAnchorHTTPServer({
 		logger,
@@ -41,6 +43,20 @@ test('notification client registers, lists, and deletes targets through resolver
 			},
 			async deleteTarget({ id }) {
 				const deleted = targets.delete(id);
+				return({ ok: deleted });
+			},
+			async createSubscription({ subscription }) {
+				const id = String(nextSubID++);
+				subscriptions.set(id, { type: subscription.type, target: subscription.target });
+				return({ id });
+			},
+			async listSubscriptions() {
+				return({
+					subscriptions: Array.from(subscriptions.entries()).map(([id, sub]) => ({ id, subscription: sub }))
+				});
+			},
+			async deleteSubscription({ id }) {
+				const deleted = subscriptions.delete(id);
 				return({ ok: deleted });
 			},
 			supportedChannels: {
@@ -105,6 +121,31 @@ test('notification client registers, lists, and deletes targets through resolver
 	const listAfterDelete = await provider.listTargets({ account: userAccount });
 	expect(listAfterDelete.targets).toHaveLength(1);
 	expect(listAfterDelete.targets[0]?.id).toBe(targetID2);
+
+	// createSubscription
+	const sub = { type: 'RECEIVE_FUNDS' as const, target: { ids: [targetID2] }};
+	const createSubResult = await provider.createSubscription({ account: userAccount, subscription: sub });
+	expect(typeof createSubResult.id).toBe('string');
+	const subID = createSubResult.id;
+	expect(subscriptions.has(subID)).toBe(true);
+
+	const listSubsResult = await provider.listSubscriptions({ account: userAccount });
+	expect(listSubsResult.subscriptions).toHaveLength(1);
+	expect(listSubsResult.subscriptions[0]).toMatchObject({ id: subID, subscription: sub });
+
+	const sub2 = { type: 'RECEIVE_FUNDS' as const, target: { ids: [targetID2] }};
+	const createSubResult2 = await provider.createSubscription({ account: userAccount, subscription: sub2 });
+	const subID2 = createSubResult2.id;
+
+	expect((await provider.listSubscriptions({ account: userAccount })).subscriptions).toHaveLength(2);
+
+	const deleteSubResult = await provider.deleteSubscription({ account: userAccount, id: subID });
+	expect(deleteSubResult.ok).toBe(true);
+	expect(subscriptions.has(subID)).toBe(false);
+
+	const listAfterSubDelete = await provider.listSubscriptions({ account: userAccount });
+	expect(listAfterSubDelete.subscriptions).toHaveLength(1);
+	expect(listAfterSubDelete.subscriptions[0]?.id).toBe(subID2);
 }, 20_000);
 
 test('notification client getProviders returns all matching providers', async () => {
