@@ -80,7 +80,6 @@ test('Asset Movement Anchor Client Test', async function() {
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
-		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		assetMovement: {
 			/**
 			 * Supported assets and their configurations
@@ -514,7 +513,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		}
 	})({
 		...(logger ? { logger: logger } : {}),
-		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		assetMovement: {
 			authenticationRequired: true,
 

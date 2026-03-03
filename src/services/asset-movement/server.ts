@@ -62,11 +62,6 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 	homepage?: string | (() => Promise<string> | string);
 
 	/**
-	 * The network client to use for submitting blocks
-	 */
-	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
-
-	/**
 	 * Configuration for asset movement operations
 	 */
 	assetMovement: {
@@ -142,14 +137,12 @@ function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAss
 
 export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Required<KeetaAnchorAssetMovementServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
-	readonly client: KeetaAnchorAssetMovementServerConfig['client'];
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
 
 	constructor(config: KeetaAnchorAssetMovementServerConfig) {
 		super(config);
 
 		this.homepage = config.homepage ?? '';
-		this.client = config.client;
 		this.assetMovement = config.assetMovement;
 	}
 
