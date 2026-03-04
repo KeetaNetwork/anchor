@@ -1,4 +1,4 @@
-import type { AccountAddressSchema } from "../../types.js";
+import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
 const usSchema: AccountAddressSchema = {
 	type: 'bank-account',
@@ -15,7 +15,8 @@ const usSchema: AccountAddressSchema = {
 			properties: {
 				accountNumber: { type: "string" },
 				routingNumber: { type: "string" },
-				accountTypeDetail: { type: "string", enum: ['checking', 'savings'] }
+				accountTypeDetail: { type: "string", enum: ['checking', 'savings'] },
+				accountAddress: sharedSchemaReferences.PhysicalAddress,
 			},
 			required: ['accountNumber', 'routingNumber', 'accountTypeDetail']
 		},
@@ -23,7 +24,13 @@ const usSchema: AccountAddressSchema = {
 			type: "object",
 			properties: {
 				routingNumber: { type: "string" },
-				accountTypeDetail: { type: "string", enum: ['checking', 'savings'] }
+				accountTypeDetail: { type: "string", enum: ['checking', 'savings'] },
+				accountAddress: {
+					oneOf: [
+						{ type: 'string' },
+						sharedSchemaReferences.PhysicalAddress
+					]
+				},
 			},
 			required: ['routingNumber']
 		}
