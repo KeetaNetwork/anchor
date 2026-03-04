@@ -244,6 +244,21 @@ export type KeetaStorageAnchorPutRequest = {
 };
 
 /**
+ * Configuration for a contacts client.
+ * Contacts are stored in a subdirectory of the account's working directory.
+ */
+export type ContactsClientConfig = {
+	/**
+	 * The account to use for the contacts client.
+	 */
+	account: KeetaNetAccount;
+	/**
+	 * The base path for the contacts client.
+	 */
+	basePath: string;
+};
+
+/**
  * Generic response type for storage operations.
  */
 export type StorageResponse<T> = ({ ok: true } & T) | { ok: false; error: string };
