@@ -16,7 +16,7 @@ const usSchema: AccountAddressSchema = {
 				accountNumber: { type: "string" },
 				routingNumber: { type: "string" },
 				accountTypeDetail: { type: "string", enum: ['checking', 'savings'] },
-				accountAddress: sharedSchemaReferences.PhysicalAddress,
+				accountAddress: sharedSchemaReferences.PhysicalAddress
 			},
 			required: ['accountNumber', 'routingNumber', 'accountTypeDetail']
 		},
@@ -30,7 +30,7 @@ const usSchema: AccountAddressSchema = {
 						{ type: 'string' },
 						sharedSchemaReferences.PhysicalAddress
 					]
-				},
+				}
 			},
 			required: ['routingNumber']
 		}
