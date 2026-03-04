@@ -1,5 +1,5 @@
 import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount } from '../../asset-movement/common.js';
-import type { AssetLocationLike } from '../../asset-movement/lib/location.js';
+import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
 import { hash } from '../../../lib/utils/tests/hash.js';
@@ -43,11 +43,12 @@ export interface ContactAddressBase<
 	pastInstructions?: TransferInstructionShape[];
 }
 
+export type KeetaAssetLocation = PickChainLocation<'keeta'> | `chain:keeta:${bigint}`;
+
 /**
  * A contact address for a Keeta account.
- * The recipient is a Keeta account public key string. It is a string in `RecipientResolved`.
  */
-export type KeetaContactAddress = ContactAddressBase<string, `chain:keeta:${bigint}`, 'username'>;
+export type KeetaContactAddress = ContactAddressBase<string, KeetaAssetLocation, 'username'>;
 
 /**
  * A contact address for a persistent address template.
@@ -55,11 +56,11 @@ export type KeetaContactAddress = ContactAddressBase<string, `chain:keeta:${bigi
 export type TemplateContactAddress = ContactAddressBase<PersistentAddressTemplateRecipient, AssetLocationLike, 'template'>;
 
 /**
- * A contact address for a non-Keeta account or non-persistent address template.
+ * A contact address for a non-Keeta, non-persistent-address recipient.
  */
 export type OtherContactAddress = ContactAddressBase<
 	Exclude<RecipientResolved, KeetaNetAccount | PersistentAddressTemplateRecipient>,
-	Exclude<AssetLocationLike, `chain:keeta:${bigint}`>,
+	Exclude<AssetLocationLike, KeetaAssetLocation>,
 	'template'
 >;
 
