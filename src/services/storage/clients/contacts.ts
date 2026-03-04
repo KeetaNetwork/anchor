@@ -1,4 +1,4 @@
-import type { AssetTransferInstructions, RecipientResolved, MovableAsset } from '../../asset-movement/common.js';
+import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount } from '../../asset-movement/common.js';
 import type { AssetLocationLike } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
@@ -20,15 +20,50 @@ export type TransferInstructionShape = DistributiveOmit<
 >;
 
 /**
- * A contact address with decomposed recipient, location, asset, and metadata.
+ * The type of provider information allowed for a contact address.
  */
-export type ContactAddress = {
-	recipient: RecipientResolved;
-	location?: AssetLocationLike;
-	asset?: MovableAsset;
-	providerInformation?: { [providerId: string]: true | { usingProvider: true; usingForUsername?: boolean }};
+export type ProviderInformationType = 'username' | 'template';
+
+/**
+ * The type of recipient for a persistent address template.
+ */
+export type PersistentAddressTemplateRecipient = Extract<RecipientResolved, { type: 'persistent-address' }>;
+
+/**
+ * Base interface for contact addresses with narrowed generic parameters.
+ */
+export interface ContactAddressBase<
+	RecipientType extends RecipientResolved,
+	Location extends AssetLocationLike,
+	ProviderInformationAllowedTypes extends ProviderInformationType
+> {
+	recipient: RecipientType;
+	location?: Location;
+	providerInformation?: { [providerId: string]: ProviderInformationAllowedTypes[] };
 	pastInstructions?: TransferInstructionShape[];
-};
+}
+
+/**
+ * A contact address for a Keeta account.
+ * The recipient is a Keeta account public key string. It is a string in `RecipientResolved`.
+ */
+export type KeetaContactAddress = ContactAddressBase<string, `chain:keeta:${bigint}`, 'username'>;
+
+/**
+ * A contact address for a persistent address template.
+ */
+export type TemplateContactAddress = ContactAddressBase<PersistentAddressTemplateRecipient, AssetLocationLike, 'template'>;
+
+/**
+ * A contact address for a non-Keeta account or non-persistent address template.
+ */
+export type OtherContactAddress = ContactAddressBase<
+	Exclude<RecipientResolved, KeetaNetAccount | PersistentAddressTemplateRecipient>,
+	Exclude<AssetLocationLike, `chain:keeta:${bigint}`>,
+	'template'
+>;
+
+export type ContactAddress = KeetaContactAddress | TemplateContactAddress | OtherContactAddress;
 
 /**
  * A stored contact with metadata and an address.

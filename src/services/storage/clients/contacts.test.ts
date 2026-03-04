@@ -138,8 +138,7 @@ const sepaAddress: ContactAddress = {
 
 const persistentAddress: ContactAddress = {
 	recipient: { type: 'persistent-address', persistentAddressId: 'pa-123' },
-	location: 'chain:evm:1',
-	asset: 'evm:0x1a2b3c4d'
+	location: 'chain:evm:1'
 };
 
 const sampleAddresses: { name: string; address: ContactAddress }[] = [
@@ -342,10 +341,10 @@ describe('Contacts Client - Edge Cases', function() {
 	test('deriveId ignores undefined optional fields', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const withUndefined = {
-				...keetaAddress,
-				asset: undefined
+				...wireAddress,
+				location: undefined
 			};
-			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(keetaAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
+			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(wireAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
 		}));
 	});
 
@@ -368,7 +367,7 @@ describe('Contacts Client - Edge Cases', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const withProvider: ContactAddress = {
 				...evmAddress,
-				providerInformation: { 'provider-abc': { usingProvider: true }}
+				providerInformation: { 'provider-abc': ['template'] }
 			};
 			expect(contactsClient.deriveId(withProvider)).toBe(contactsClient.deriveId(evmAddress));
 		}));
