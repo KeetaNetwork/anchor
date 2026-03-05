@@ -178,7 +178,10 @@ export class StorageContactsClient implements ContactsClient {
 
 	deriveId(address: ContactAddress): string {
 		const data = Buffer.from(canonicalizeContactAddress(address));
-		return(Buffer.from(KeetaNetLib.Utils.Hash.Hash(data)).toString('hex'));
+		const hash = KeetaNetLib.Utils.Hash.Hash(data);
+
+		const result = Buffer.from(hash).toString('hex');
+		return(result);
 	}
 
 	#serialize(contact: Contact): Buffer {
