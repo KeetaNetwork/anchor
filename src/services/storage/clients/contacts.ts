@@ -1,8 +1,8 @@
 import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount } from '../../asset-movement/common.js';
 import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
+import { Hash } from '@keetanetwork/keetanet-client/lib/utils/hash.js';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
-import { hash } from '../../../lib/utils/tests/hash.js';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 import { assertContact } from './contacts.generated.js';
@@ -177,7 +177,8 @@ export class StorageContactsClient implements ContactsClient {
 	}
 
 	deriveId(address: ContactAddress): string {
-		return(hash(canonicalizeContactAddress(address)));
+		const data = Buffer.from(canonicalizeContactAddress(address));
+		return(Buffer.from(Hash(data)).toString('hex'));
 	}
 
 	#serialize(contact: Contact): Buffer {
