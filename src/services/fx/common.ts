@@ -73,7 +73,7 @@ export type KeetaFXAnchorEstimate = {
 
 	/**
 	 * Outer bound of the converted amount.
-	 * if affinity is 'from', this is the maximum amount the user would need to send, if its to, this is the minimum amount the user would receive.
+	 * if affinity is 'to', this is the maximum amount the user would need to send, if its 'from', this is the minimum amount the user would receive.
 	 */
 	convertedAmountBound?: bigint;
 

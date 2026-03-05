@@ -399,21 +399,83 @@ test('Basic Functionality', async function() {
 		/*
 		 * Ensure we can update the URL
 		 */
-		const urlChecks = [
+		const urlChecks: {
+			in: string | URL | undefined | ((serverObj: typeof server | InstanceType<typeof HTTPServer.KeetaNetAnchorHTTPServer>) => string);
+			out: string | ((serverObj: { port: number }) => string);
+		}[] = [
 			{ in: 'http://example.com/foo', out: 'http://example.com/' },
 			{ in: 'https://example.com:8080/bar/baz', out: 'https://example.com:8080/' },
 			{ in: 'https://example.com:8080/bar/baz?a=b', out: 'https://example.com:8080/' },
 			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
+			{ in: undefined, out: function(serverObj) { return(`http://localhost:${serverObj.port}/`); } },
 			{
-				in: function(serverObj: typeof server) {
+				in: function(serverObj: typeof server | InstanceType<typeof HTTPServer.KeetaNetAnchorHTTPServer>) {
 					return('http://localhost:' + String(serverObj.port) + '/some/other/path');
 				},
-				out: `http://localhost:${server.port}/`
+				out: function(serverObj) {
+					return('http://localhost:' + String(serverObj.port) + '/');
+				}
 			}
 		];
 		for (const urlCheck of urlChecks) {
 			server.url = urlCheck.in;
-			expect(server.url).toBe(urlCheck.out);
+
+			let outCheck: string;
+			if (typeof urlCheck.out === 'function') {
+				outCheck = urlCheck.out(server);
+			} else {
+				outCheck = urlCheck.out;
+			}
+
+			expect(server.url).toBe(outCheck);
+		}
+
+		/*
+		 * Same URL checks, plus some more supported by the
+		 * constructor configuration `url` option
+		 */
+		const constructionURLChecks: {
+			in: ConstructorParameters<typeof HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr>>[0]['url'];
+			out: string | ((serverObj: { port: number }) => string);
+		}[] = [
+			...urlChecks,
+			{
+				in: {
+					hostname: 'example.com'
+				},
+				out: function(serverObj) {
+					return('http://example.com:' + String(serverObj.port) + '/');
+				}
+			}, {
+				in: {
+					protocol: 'https:',
+					port: 443
+				},
+				out: 'https://localhost/'
+			}
+		];
+
+		for (const urlCheck of constructionURLChecks) {
+			await using tempServer = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
+				protected async initRoutes(_ignore_config: ConfigWithAttr): Promise<HTTPServer.Routes> {
+					const routes: HTTPServer.Routes = {};
+					return(routes);
+				}
+			})({
+				url: urlCheck.in,
+				attr: 'test'
+			});
+
+			await tempServer.start();
+
+			let outCheck: string;
+			if (typeof urlCheck.out === 'function') {
+				outCheck = urlCheck.out(tempServer);
+			} else {
+				outCheck = urlCheck.out;
+			}
+
+			expect(tempServer.url).toBe(outCheck);
 		}
 
 		/*
@@ -478,6 +540,52 @@ test('Wildcard specificity: most specific route wins regardless of definition or
 		expect(response.code).toBe(200);
 		expect(response.body).toMatchObject({ handler: testCase.expectedHandler });
 	}
+
+	await server.stop();
+}, 30000);
+
+test('maxBodySize: rejects oversized requests', async function() {
+	const MAX_BODY = 64;
+	let handlerCalled = false;
+
+	const server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['PUT /api/upload'] = {
+				bodyType: 'raw',
+				maxBodySize: MAX_BODY,
+				handler: async function() {
+					handlerCalled = true;
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	// Request with Content-Length exceeding maxBodySize should get 413
+	handlerCalled = false;
+	const oversizedResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY + 1)
+	});
+	expect(oversizedResponse.status).toBe(413);
+	expect(handlerCalled).toBe(false);
+
+	// Request within maxBodySize should succeed
+	handlerCalled = false;
+	const okResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY)
+	});
+	expect(okResponse.status).toBe(200);
+	expect(handlerCalled).toBe(true);
 
 	await server.stop();
 }, 30000);

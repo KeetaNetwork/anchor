@@ -165,10 +165,10 @@ test('FX Server Tests', async function() {
 				to: [token2.publicKeyString.get()]
 			}],
 			operations: {
-				getEstimate: `${url}/api/getEstimate`,
-				getQuote: `${url}/api/getQuote`,
-				createExchange: `${url}/api/createExchange`,
-				getExchangeStatus: `${url}/api/getExchangeStatus/{id}`
+				getEstimate: new URL('/api/getEstimate', url).toString(),
+				getQuote: new URL('/api/getQuote', url).toString(),
+				createExchange: new URL('/api/createExchange', url).toString(),
+				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
 			}
 		});
 
