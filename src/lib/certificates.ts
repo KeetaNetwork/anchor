@@ -7,7 +7,7 @@ import { assertNever } from './utils/never.js';
 import type { SensitiveAttributeType, CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
 import { CertificateAttributeOIDDB, CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { getOID, lookupByOID } from './utils/oid.js';
-import { convertToJSON as convertToJSONUtil } from './utils/json.js';
+import { toJSONSerializable } from './utils/json.js';
 import { EncryptedContainer } from './encrypted-container.js';
 import { assertSharableCertificateAttributesContentsSchema } from './certificates.generated.js';
 import { checkHashWithOID } from './utils/external.js';
@@ -228,7 +228,7 @@ async function walkObject(input: unknown, keyTransformer?: (key: string, input: 
 }
 
 function toJSON(data: unknown): unknown {
-	return(convertToJSONUtil(data));
+	return(toJSONSerializable(data));
 }
 
 // Generic type guard to align decoded values with generated attribute types
