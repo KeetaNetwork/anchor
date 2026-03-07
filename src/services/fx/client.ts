@@ -863,7 +863,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 	async getQuotesOrEstimates(request: ConversionInput, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<(KeetaFXAnchorQuoteWithProvider | KeetaFXAnchorEstimateWithProvider)[] | null> {
 		const [ quotesAndEstimates, estimateProviders ] = await Promise.all([
-			await this.#multiRequestQuotes(request, options, sharedCriteria),
+			this.#multiRequestQuotes(request, options, sharedCriteria),
 			this.getBaseProvidersForConversion(request, {
 				...options,
 				requiredOperations: ['getEstimate']
