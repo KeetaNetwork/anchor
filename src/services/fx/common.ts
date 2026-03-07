@@ -86,22 +86,28 @@ export type KeetaFXAnchorEstimate = {
 		max: bigint;
 		token: KeetaNetToken;
 	};
-} & ({
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange
-	 */
-	requiresQuote: false;
+} & (
+	{
+		canPerformExchange: false;
+	} | ({
+		canPerformExchange?: true;
+	} & ({
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange
+		 */
+		requiresQuote: false;
 
-	/**
-	 * Liquidity provider account if the user is not going to request a quote before the exchange
-	 */
-	account: KeetaNetAccount | KeetaNetStorageAccount;
-} | {
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange, defaults to true
-	 */
-	requiresQuote?: true;
-});
+		/**
+		 * Liquidity provider account if the user is not going to request a quote before the exchange
+		 */
+		account: KeetaNetAccount | KeetaNetStorageAccount;
+	} | {
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange, defaults to true
+		 */
+		requiresQuote?: true;
+	}))
+);
 
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
