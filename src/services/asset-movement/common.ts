@@ -165,6 +165,18 @@ export interface SupportedAssetsMetadata {
 	paths: AssetPath[];
 }
 
+/**
+ * This is the type of content that can be rendered directly in a client application.
+ *
+ * The recommended format of this is a subset of markdown, allowing the following elements:
+ * - Links (with the format [link text](url))
+ * - Bold text (with the format **bold text**)
+ *
+ * Clients can choose to display this content as-is, or apply rendering.
+ * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
+ */
+export type ClientRenderableContent = string;
+
 export interface RailWithExtendedDetails {
 	rail: Rail;
 
@@ -605,6 +617,10 @@ export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	ok: true;
 	id: string;
 	instructionChoices: AssetTransferInstructions[];
+	/**
+	 * Additional details about this transfer that (optionally) can be rendered in the client application.
+	 */
+	additionalTransferDetails?: ClientRenderableContent;
 }) | ({
 	ok: false;
 	error: string;
@@ -702,6 +718,13 @@ export type KeetaAssetMovementTransaction = {
 		asset: MovableAsset;
 		value: string;
 	} | null;
+
+	/**
+	 * Additional details about this rail that (optionally) can be rendered in the client application.
+	 *
+	 * Ex: If their is a proprietary block explorer for a chain involved in the transfer, this field could contain a URL to view the transaction on that explorer.
+	 */
+	additionalTransferDetails?: ClientRenderableContent;
 
 	/**
 	 * Timestamp for when the transaction was created

@@ -58,6 +58,7 @@ test('Asset Movement Anchor Client Test', async function() {
 			}
 		},
 		fee: null,
+		additionalTransferDetails: 'Custom Transaction Details',
 		createdAt: currentDateString,
 		updatedAt: currentDateString
 	};
@@ -157,7 +158,8 @@ test('Asset Movement Anchor Client Test', async function() {
 
 						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
 						assetFee: '10'
-					}]
+					}],
+					additionalTransferDetails: `TO:${request.to.recipient}`
 				})
 			},
 
@@ -412,6 +414,31 @@ test('Asset Movement Anchor Client Test', async function() {
 		}
 
 		expect(supportedAssetWithDetails.paths[0]?.pair[1].rails.inbound?.[0]).toEqual(extendedKeetaSendDetails);
+	}
+
+	{
+		/**
+		 * Test initiateTransfer and getTransferStatus with additionalTransferDetails
+		 */
+
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const initiatedTransfer = await testProvider.initiateTransfer({
+			asset: baseToken,
+			from: { location: 'chain:keeta:100' },
+			to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() },
+			value: '100',
+			account
+		});
+
+		expect(initiatedTransfer.additionalTransferDetails).toEqual(`TO:${account.publicKeyString.get()}`);
+
+		const transferStatus = await initiatedTransfer.getTransferStatus();
+		expect(transferStatus.transaction.additionalTransferDetails).toEqual('Custom Transaction Details');
 	}
 });
 
