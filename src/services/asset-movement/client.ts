@@ -292,10 +292,6 @@ class KeetaAssetMovementTransfer {
 	get instructions(): AssetTransferInstructions[] {
 		return(this.transfer.instructionChoices);
 	}
-
-	get additionalTransferDetails(): ClientRenderableContent | undefined {
-		return(this.transfer.additionalTransferDetails);
-	}
 }
 
 
