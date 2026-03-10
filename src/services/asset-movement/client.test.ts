@@ -58,7 +58,7 @@ test('Asset Movement Anchor Client Test', async function() {
 			}
 		},
 		fee: null,
-		additionalTransferDetails: 'Custom Transaction Details',
+		additionalTransferDetails: { type: 'markdown', content: 'Custom Transaction Details' },
 		createdAt: currentDateString,
 		updatedAt: currentDateString
 	};
@@ -435,7 +435,7 @@ test('Asset Movement Anchor Client Test', async function() {
 		});
 
 		const transferStatus = await initiatedTransfer.getTransferStatus();
-		expect(transferStatus.transaction.additionalTransferDetails).toEqual('Custom Transaction Details');
+		expect(transferStatus.transaction.additionalTransferDetails).toEqual({ type: 'markdown', content: 'Custom Transaction Details' });
 	}
 });
 

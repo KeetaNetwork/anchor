@@ -168,14 +168,9 @@ export interface SupportedAssetsMetadata {
 /**
  * This is the type of content that can be rendered directly in a client application.
  *
- * The recommended format of this is a subset of markdown, allowing the following elements:
- * - Links (with the format [link text](url))
- * - Bold text (with the format **bold text**)
- *
- * Clients can choose to display this content as-is, or apply rendering.
  * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
  */
-export type ClientRenderableContent = string;
+export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 export interface RailWithExtendedDetails {
 	rail: Rail;
