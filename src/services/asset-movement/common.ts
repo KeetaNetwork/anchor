@@ -722,7 +722,7 @@ export type KeetaAssetMovementTransaction = {
 	/**
 	 * Additional details about this rail that (optionally) can be rendered in the client application.
 	 *
-	 * Ex: If their is a proprietary block explorer for a chain involved in the transfer, this field could contain a URL to view the transaction on that explorer.
+	 * Ex: If there is a proprietary block explorer for a chain involved in the transfer, this field could contain a URL to view the transaction on that explorer.
 	 */
 	additionalTransferDetails?: ClientRenderableContent;
 
