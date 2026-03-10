@@ -31,7 +31,8 @@ type TokenSearchCanonical = TokenPublicKeyString;
 export type EVMAsset = `evm:${HexString}`;
 export type TronAsset = `tron:${string}`;
 export type SolanaAsset = `solana:${string}`;
-export type ChainAssetString = SolanaAsset | EVMAsset | TronAsset | TokenPublicKeyString;
+export type ExternalChainAsset = EVMAsset | TronAsset | SolanaAsset;
+export type ChainAssetString = ExternalChainAsset | TokenPublicKeyString;
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
 export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | ChainAssetString;
@@ -106,6 +107,10 @@ export function parseSolanaAsset(input: SolanaAsset): string {
 
 export function isSolanaAsset(input: unknown): input is SolanaAsset {
 	return(typeof input === 'string' && input.startsWith('solana:'));
+}
+
+export function isExternalChainAsset(input: unknown): input is ExternalChainAsset {
+	return(isEVMAsset(input) || isTronAsset(input) || isSolanaAsset(input));
 }
 
 export type ProviderSearchInput = {
