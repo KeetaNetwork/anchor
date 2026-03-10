@@ -158,8 +158,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
 						assetFee: '10'
-					}],
-					additionalTransferDetails: `TO:${request.to.recipient}`
+					}]
 				})
 			},
 
@@ -434,8 +433,6 @@ test('Asset Movement Anchor Client Test', async function() {
 			value: '100',
 			account
 		});
-
-		expect(initiatedTransfer.additionalTransferDetails).toEqual(`TO:${account.publicKeyString.get()}`);
 
 		const transferStatus = await initiatedTransfer.getTransferStatus();
 		expect(transferStatus.transaction.additionalTransferDetails).toEqual('Custom Transaction Details');

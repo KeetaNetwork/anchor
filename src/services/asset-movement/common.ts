@@ -617,10 +617,6 @@ export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
 	ok: true;
 	id: string;
 	instructionChoices: AssetTransferInstructions[];
-	/**
-	 * Additional details about this transfer that (optionally) can be rendered in the client application.
-	 */
-	additionalTransferDetails?: ClientRenderableContent;
 }) | ({
 	ok: false;
 	error: string;
