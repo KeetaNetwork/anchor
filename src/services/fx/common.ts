@@ -88,8 +88,14 @@ export type KeetaFXAnchorEstimate = {
 	};
 } & (
 	{
+		/**
+		 * Indicates that the exchange cannot be performed if false, and no quote can be issued
+		 */
 		canPerformExchange: false;
 	} | ({
+		/**
+		 * Indicates that the exchange can be performed if true or undefined, but a quote may or may not be required before proceeding with the exchange
+		 */
 		canPerformExchange?: true;
 	} & ({
 		/**
