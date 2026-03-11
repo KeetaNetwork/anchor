@@ -29,8 +29,7 @@ import type {
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
 	KeetaPersistentForwardingAddressDetails,
-	KeetaAssetMovementAnchorInitiateTransferResponse,
-	ClientRenderableContent
+	KeetaAssetMovementAnchorInitiateTransferResponse
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadata,
