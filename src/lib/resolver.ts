@@ -126,17 +126,17 @@ type ServiceMetadata = {
 					 * Get a quote for a currency
 					 * conversion
 					 */
-					getQuote: string;
+					getQuote?: string;
 					/**
 					 * Create an exchange to convert
 					 * currency
 					 */
-					createExchange: string;
+					createExchange?: string;
 					/**
 					 * Get the status of an exchange
 					 * which was previously created
 					 */
-					getExchangeStatus: string;
+					getExchangeStatus?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -284,6 +284,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * KYC providers
 		 */
 		kycProviders?: string[];
+
+		/**
+		 * Search for a provider which supports ALL of the following FX operations
+		 */
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
 	};
 	'kyc': {
 		/**
@@ -1561,6 +1566,21 @@ class Resolver {
 				const checkFXService = await assertResolverLookupFXResult(await fxServices[checkFXServiceID]?.('object'));
 				if (!checkFXService) {
 					continue;
+				}
+
+				if (criteria.requiredOperations) {
+					let hasAllRequiredOperations = true;
+					for (const operation of criteria.requiredOperations) {
+						const resolvedOperation = (await checkFXService['operations']('object'))[operation];
+
+						if (!resolvedOperation) {
+							hasAllRequiredOperations = false;
+							break;
+						}
+					}
+					if (!hasAllRequiredOperations) {
+						continue;
+					}
 				}
 
 				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
