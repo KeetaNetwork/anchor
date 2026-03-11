@@ -28,7 +28,8 @@ import type {
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
-	KeetaPersistentForwardingAddressDetails
+	KeetaPersistentForwardingAddressDetails,
+	KeetaAssetMovementAnchorInitiateTransferResponse
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadata,
@@ -270,9 +271,9 @@ class KeetaAssetMovementAnchorBase {
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
 	private request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
-	private transfer:  { id: string, instructionChoices: AssetTransferInstructions[] }
+	private transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>;
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
@@ -472,8 +473,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
-		const anchorTransfer = new KeetaAssetMovementTransfer(this, request, { id: requestInformationJSON.id, instructionChoices: requestInformationJSON.instructionChoices });
-		return(anchorTransfer);
+		return(new KeetaAssetMovementTransfer(this, request, requestInformationJSON));
 	}
 
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
