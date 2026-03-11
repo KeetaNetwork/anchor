@@ -1113,21 +1113,8 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	 */
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
-			getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
-			createExchange: (new URL('/api/createExchange', this.url)).toString(),
-			getExchangeStatus: (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}'
+			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
 		};
-
-		if (this.canPerformExchanges) {
-			if (!this.quoteConfiguration) {
-				throw(new Error('FX server is configured to perform exchanges but quoteConfiguration is not set'));
-			}
-
-			if (this.quoteConfiguration.requiresQuote || this.quoteConfiguration.issueQuotes) {
-				operations.getQuote = (new URL('/api/getQuote', this.url)).toString();
-			}
-			operations.createExchange = (new URL('/api/createExchange', this.url)).toString();
-		}
 
 		return({
 			from: this.fx.from ?? [],
@@ -1524,6 +1511,19 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		return(routes);
+	}
+
+	override async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
+		const baseMetadata = await super.serviceMetadata();
+
+		if (this.quoteConfiguration.requiresQuote || this.quoteConfiguration.issueQuotes) {
+			baseMetadata.operations.getQuote = (new URL('/api/getQuote', this.url)).toString();
+		}
+
+		baseMetadata.operations.getExchangeStatus = (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}';
+		baseMetadata.operations.createExchange = (new URL('/api/createExchange', this.url)).toString();
+
+		return(baseMetadata);
 	}
 
 	async stop(): Promise<void> {
