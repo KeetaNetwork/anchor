@@ -18,7 +18,7 @@ import type {
 	KeetaNotificationAnchorListSubscriptionsClientRequest,
 	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
 	NotificationTargetWithIDResponse,
-	SubscriptionDetailsWithID,
+	SubscriptionDetails,
 	NotificationChannelArguments
 } from './common.js';
 import {
@@ -34,7 +34,7 @@ import {
 	isKeetaNotificationAnchorCreateSubscriptionResponseJSON,
 	isKeetaNotificationAnchorListSubscriptionsResponseJSON,
 	isKeetaNotificationAnchorDeleteSubscriptionResponseJSON,
-	parseSubscriptionDetailsWithIDJSON
+	parseSubscriptionDetailsWithID
 } from './common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
@@ -353,6 +353,7 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 
 		const serializedSubscription = {
 			...input.subscription,
+			...(input.subscription.locale ? { locale: input.subscription.locale.toString() } : {}),
 			...(input.subscription.toAddress ? { toAddress: input.subscription.toAddress.publicKeyString.get() } : {})
 		};
 
@@ -387,7 +388,7 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		return({ id: responseJSON.id });
 	}
 
-	async listSubscriptions(input?: KeetaNotificationAnchorListSubscriptionsClientRequest): Promise<{ subscriptions: SubscriptionDetailsWithID[] }> {
+	async listSubscriptions(input?: KeetaNotificationAnchorListSubscriptionsClientRequest): Promise<{ subscriptions: SubscriptionDetails[] }> {
 		const endpoint = await this.#getOperation('listSubscriptions');
 
 		if (endpoint.options.authentication.type === 'none') {
@@ -419,7 +420,11 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 			throw(await this.#parseResponseError(responseJSON));
 		}
 
-		return({ subscriptions: responseJSON.subscriptions.map(parseSubscriptionDetailsWithIDJSON) });
+		return({
+			subscriptions: responseJSON.subscriptions.map(function(row) {
+				return(parseSubscriptionDetailsWithID(row));
+			})
+		});
 	}
 
 	async deleteSubscription(input: KeetaNotificationAnchorDeleteSubscriptionClientRequest): Promise<{ ok: boolean }> {

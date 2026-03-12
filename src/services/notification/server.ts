@@ -11,10 +11,12 @@ import type {
 	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
 	KeetaNotificationAnchorDeleteSubscriptionRequest,
 	KeetaNotificationAnchorListSubscriptionsClientRequest,
-	SubscriptionDetailsWithID,
+	SubscriptionDetails,
 	NotificationSubscriptionArguments,
 	NotificationSubscriptionType,
-	SupportedChannelConfigurationMetadata } from './common.js';
+	SupportedChannelConfigurationMetadata,
+	SubscriptionDetailsJSON
+} from './common.js';
 import {
 	getNotificationRegisterTargetRequestSignable,
 	assertKeetaNotificationAnchorRegisterTargetRequestJSON,
@@ -41,7 +43,7 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServ
 		deleteTarget?: (args: Required<KeetaNotificationAnchorDeleteTargetClientRequest>) => Promise<{ ok: boolean; }>;
 
 		createSubscription?: (args: Required<KeetaNotificationAnchorCreateSubscriptionClientRequest>) => Promise<{ id: string; }>;
-		listSubscriptions?: (args: Required<KeetaNotificationAnchorListSubscriptionsClientRequest>) => Promise<{ subscriptions: SubscriptionDetailsWithID[]; }>;
+		listSubscriptions?: (args: Required<KeetaNotificationAnchorListSubscriptionsClientRequest>) => Promise<{ subscriptions: SubscriptionDetails[]; }>;
 		deleteSubscription?: (args: Required<KeetaNotificationAnchorDeleteSubscriptionClientRequest>) => Promise<{ ok: boolean; }>;
 
 		supportedChannels?: SupportedChannelConfigurationMetadata;
@@ -196,13 +198,14 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 						target: raw.subscription.target,
 						...(raw.subscription.toAddress
 							? { toAddress: KeetaNet.lib.Account.fromPublicKeyString(raw.subscription.toAddress) }
-							: {})
+							: {}),
+						...(raw.subscription.locale ? { locale: new Intl.Locale(raw.subscription.locale) } : {})
 					};
 				} else {
 					throw(new KeetaAnchorUserError(`Unsupported subscription type`));
 				}
 
-				const request = { account, subscription, signed: raw.signed };
+				const request = { account: account.assertAccount(), subscription, signed: raw.signed };
 
 				const signatureVerified = await Signing.VerifySignedData(
 					account,
@@ -244,8 +247,22 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 
 				const listResponse = await listSubscriptionsHandler({ account: signatureDetails.account });
 
+				const subscriptionsJSON: SubscriptionDetailsJSON[] = listResponse.subscriptions.map(function(subscription): SubscriptionDetailsJSON {
+					const { locale, ...restSubscription } = subscription.subscription;
+					return({
+						...subscription,
+						subscription: {
+							...KeetaNet.lib.Utils.Conversion.toJSONSerializable(restSubscription),
+							...(locale ? { locale: locale.toString() } : {})
+						}
+					});
+				});
+
 				return({
-					output: JSON.stringify({ ok: true, subscriptions: listResponse.subscriptions }),
+					output: JSON.stringify(KeetaNet.lib.Utils.Conversion.toJSONSerializable({
+						ok: true,
+						subscriptions: subscriptionsJSON
+					})),
 					contentType: 'application/json'
 				});
 			};
@@ -259,7 +276,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 
 					return({
 						...raw,
-						account: KeetaNet.lib.Account.toAccount(raw.account)
+						account: KeetaNet.lib.Account.toAccount(raw.account).assertAccount()
 					});
 				})();
 

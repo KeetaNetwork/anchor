@@ -250,8 +250,6 @@ type ServiceMetadata = {
 					createSubscription?: ServiceMetadataEndpoint;
 					listSubscriptions?: ServiceMetadataEndpoint;
 					deleteSubscription?: ServiceMetadataEndpoint;
-
-					send?: ServiceMetadataEndpoint;
 				};
 			}
 		};

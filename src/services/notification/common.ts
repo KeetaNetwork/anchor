@@ -33,6 +33,10 @@ interface NotificationChannelServiceMetadata {
 
 interface BaseNotificationSubscriptionArguments<T extends string> {
 	type: T;
+
+	// The preferred locale to receive notifications in, if supported by the channel and provider
+	locale?: Intl.Locale;
+
 	target: {
 		provider?: string | undefined;
 
@@ -46,6 +50,9 @@ interface ReceiveFundsNotificationSubscriptionArguments extends BaseNotification
 }
 
 export type NotificationSubscriptionArguments = ReceiveFundsNotificationSubscriptionArguments;
+export type NotificationSubscriptionArgumentsJSON = ToJSONSerializable<Omit<NotificationSubscriptionArguments, 'locale'>> & {
+	locale?: string | undefined;
+};
 export type NotificationSubscriptionType = NotificationSubscriptionArguments['type'];
 
 export type SupportedChannelConfigurationMetadata = {
@@ -150,11 +157,12 @@ export interface KeetaNotificationAnchorCreateSubscriptionClientRequest {
 	account?: Account;
 	subscription: NotificationSubscriptionArguments;
 }
-export interface KeetaNotificationAnchorCreateSubscriptionRequest extends KeetaNotificationAnchorCreateSubscriptionClientRequest {
-	account: Account;
+
+export type KeetaNotificationAnchorCreateSubscriptionRequestJSON = {
+	subscription: NotificationSubscriptionArgumentsJSON;
+	account: string;
 	signed: HTTPSignedField;
 }
-export type KeetaNotificationAnchorCreateSubscriptionRequestJSON = ToJSONSerializable<KeetaNotificationAnchorCreateSubscriptionRequest>;
 
 export type KeetaNotificationAnchorCreateSubscriptionResponse = ({
 	ok: true;
@@ -209,21 +217,33 @@ export function getNotificationDeleteSubscriptionRequestSignable(request: Pick<K
 	]);
 }
 
-export interface SubscriptionDetailsWithID {
+export interface SubscriptionDetails {
 	id: string;
 	subscription: NotificationSubscriptionArguments;
 }
 
-export type SubscriptionDetailsWithIDJSON = ToJSONSerializable<SubscriptionDetailsWithID>;
+export type SubscriptionDetailsJSON = ToJSONSerializable<Omit<SubscriptionDetails, 'subscription'>> & {
+	subscription: NotificationSubscriptionArgumentsJSON;
+}
 
-export function parseSubscriptionDetailsWithIDJSON(input: SubscriptionDetailsWithIDJSON): SubscriptionDetailsWithID {
+export function parseSubscriptionDetailsWithID(input: SubscriptionDetailsJSON | SubscriptionDetails): SubscriptionDetails {
 	let subscription: NotificationSubscriptionArguments;
 	if (input.subscription.type === 'RECEIVE_FUNDS') {
+		let locale;
+		if (input.subscription.locale) {
+			if (typeof input.subscription.locale === 'string') {
+				locale = new Intl.Locale(input.subscription.locale);
+			} else {
+				locale = input.subscription.locale;
+			}
+		}
+
 		subscription = {
 			type: 'RECEIVE_FUNDS',
 			target: input.subscription.target,
+			...(locale ? { locale } : {}),
 			...(input.subscription.toAddress
-				? { toAddress: KeetaNet.lib.Account.fromPublicKeyString(input.subscription.toAddress) }
+				? { toAddress: KeetaNet.lib.Account.toAccount(input.subscription.toAddress) }
 				: {})
 		};
 	} else {
@@ -242,7 +262,7 @@ export type KeetaNotificationAnchorListSubscriptionsRequestJSON = ToJSONSerializ
 
 export type KeetaNotificationAnchorListSubscriptionsResponse = ({
 	ok: true;
-	subscriptions: SubscriptionDetailsWithID[];
+	subscriptions: SubscriptionDetailsJSON[];
 }) | ({
 	ok: false;
 	error: string;
