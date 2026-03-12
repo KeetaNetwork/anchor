@@ -1,21 +1,13 @@
 import { test, expect, describe } from 'vitest';
-import { KeetaNet } from '../../../client/index.js';
-import { createNodeAndClient, setResolverInfo } from '../../../lib/utils/tests/node.js';
-import KeetaAnchorResolver from '../../../lib/resolver.js';
-import { KeetaNetStorageAnchorHTTPServer } from '../server.js';
-import KeetaStorageAnchorClient from '../client.js';
-import { MemoryStorageBackend, testPathPolicy } from '../test-utils.js';
+
 import type { Contact, ContactAddress } from './contacts.js';
+import type { Account } from '../test-utils.js';
+import type KeetaStorageAnchorClient from '../client.js';
 import { StorageContactsClient } from './contacts.js';
 import { Errors } from '../common.js';
+import { randomSeed, withStorageProvider } from '../test-utils.js';
 
 // #region Test Harness
-
-type Account = InstanceType<typeof KeetaNet.lib.Account>;
-
-function randomSeed() {
-	return(KeetaNet.lib.Account.generateRandomSeed());
-}
 
 interface ContactsTestContext {
 	contactsClient: StorageContactsClient;
@@ -27,52 +19,11 @@ async function withContacts(
 	seed: string | ArrayBuffer,
 	testFunction: (ctx: ContactsTestContext) => Promise<void>
 ): Promise<void> {
-	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
-	const anchorAccount = KeetaNet.lib.Account.fromSeed(seed, 50);
-
-	await using nodeAndClient = await createNodeAndClient(account);
-
-	const userClient = nodeAndClient.userClient;
-	nodeAndClient.fees.disable();
-
-	const backend = new MemoryStorageBackend();
-
-	await using server = new KeetaNetStorageAnchorHTTPServer({
-		backend,
-		anchorAccount,
-		pathPolicies: [testPathPolicy]
+	await withStorageProvider(seed, async function({ provider, account, storageClient }) {
+		const pubkey = account.publicKeyString.get();
+		const contactsClient = provider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
+		await testFunction({ contactsClient, account, storageClient });
 	});
-
-	await server.start();
-
-	const rootAccount = KeetaNet.lib.Account.fromSeed(seed, 100);
-	const serviceMetadata = await server.serviceMetadata();
-
-	await setResolverInfo(rootAccount, userClient, {
-		version: 1,
-		currencyMap: {},
-		services: {
-			storage: {
-				'test-provider': serviceMetadata
-			}
-		}
-	});
-
-	const resolver = new KeetaAnchorResolver({
-		root: rootAccount,
-		client: userClient,
-		trustedCAs: []
-	});
-
-	const storageClient = new KeetaStorageAnchorClient(userClient, { resolver });
-	const maybeProvider = await storageClient.getProviderByID('test-provider');
-	if (!maybeProvider) {
-		throw(new Error('Provider not found'));
-	}
-
-	const pubkey = account.publicKeyString.get();
-	const contactsClient = maybeProvider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
-	await testFunction({ contactsClient, account, storageClient });
 }
 
 // #endregion
