@@ -62,7 +62,7 @@ export class StorageIconsClient implements IconsClient {
 	}
 
 	async delete(): Promise<boolean> {
-        const result = await this.#session.delete(ICON_FILENAME);
+		const result = await this.#session.delete(ICON_FILENAME);
 		return(result);
 	}
 }
