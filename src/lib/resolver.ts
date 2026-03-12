@@ -11,6 +11,7 @@ import crypto from './utils/crypto.js';
 import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails } from '../services/asset-movement/common.js';
+import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -236,6 +237,22 @@ type ServiceMetadata = {
 				searchableFields?: ('owner' | 'tags' | 'visibility' | 'pathPrefix')[];
 			};
 		};
+		notification?: {
+			[id: string]: {
+				supportedChannels?: SupportedChannelConfigurationMetadata;
+				supportedSubscriptions?: NotificationSubscriptionType[];
+
+				operations: {
+					registerTarget?: ServiceMetadataEndpoint;
+					listTargets?: ServiceMetadataEndpoint;
+					deleteTarget?: ServiceMetadataEndpoint;
+
+					createSubscription?: ServiceMetadataEndpoint;
+					listSubscriptions?: ServiceMetadataEndpoint;
+					deleteSubscription?: ServiceMetadataEndpoint;
+				};
+			}
+		};
 	};
 };
 
@@ -324,6 +341,17 @@ type ServiceSearchCriteria<T extends Services> = {
 	'storage': {
 		/* No search criteria - TODO? */
 	};
+	'notification': {
+		/**
+		 * Search for a provider which supports ANY of the following
+		 */
+		supportedChannels?: NotificationChannelType[];
+
+		/**
+		 * Search for a provider which supports ANY of the following
+		 */
+		supportedSubscriptions?: NotificationSubscriptionType[];
+	}
 }[T];
 
 type ResolverLookupServiceResults<Service extends Services> = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services'][Service]>[string]> };
@@ -435,6 +463,12 @@ function assertValidOperationsAssetMovement(input: unknown): asserts input is { 
 function assertValidOperationsUsername(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['operations'] } {
 	assertValidOperationsBanking(input);
 }
+
+function assertValidOperationsNotification(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['notification']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
 
 function assertValidOptionalUsernamePattern(input: unknown): asserts input is { usernamePattern?: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['usernamePattern'] } {
 	if (typeof input !== 'object' || input === null) {
@@ -549,6 +583,14 @@ const assertResolverLookupUsernameResult = function(input: unknown): ResolverLoo
 
 	return(input);
 };
+
+const assertResolverLookupNotificationResult = function(input: unknown): ResolverLookupServiceResults<'notification'>[string] {
+	// XXX:TODO: Perform deeper validation of the structure
+
+	assertValidOperationsNotification(input);
+
+	return(input);
+}
 
 // #endregion
 
@@ -1365,6 +1407,9 @@ class Resolver {
 		},
 		'storage': {
 			search: this.lookupStorageServices.bind(this)
+		},
+		'notification': {
+			search: this.lookupNotificationServices.bind(this)
 		}
 	};
 
@@ -1637,6 +1682,73 @@ class Resolver {
 				retval[checkFXServiceID] = await assertResolverLookupFXResult(checkFXService);
 			} catch (checkFXServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking FX service', checkFXServiceID, ':', checkFXServiceError, ' -- ignoring');
+			}
+		}
+
+		return(retval);
+	}
+
+	private async lookupNotificationServices(notificationServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'notification'>): Promise<ResolverLookupServiceResults<'notification'> | undefined> {
+		if (notificationServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'notification'> = {};
+		for (const checkNotificationServiceID in notificationServices) {
+			try {
+				const checkNotificationService = assertResolverLookupNotificationResult(await notificationServices[checkNotificationServiceID]?.('object'));
+				if (!checkNotificationService) {
+					continue;
+				}
+
+				if (criteria.supportedSubscriptions !== undefined) {
+					const serviceArray = await checkNotificationService['supportedSubscriptions']?.('array') ?? [];
+					const serviceArrayValues = await Promise.all(serviceArray.map(async function(item) {
+						try {
+							return(await item?.('string'));
+						} catch {
+							return(undefined);
+						}
+					}));
+
+					const matchFound = criteria.supportedSubscriptions.find(criteriaEntry => serviceArrayValues.includes(criteriaEntry)) !== undefined;
+
+					if (!matchFound) {
+						continue;
+					}
+				}
+
+				if (criteria.supportedChannels !== undefined) {
+					const serviceArray = await checkNotificationService['supportedChannels']?.('object');
+					if (serviceArray === undefined) {
+						continue;
+					}
+
+					let matchFound = false;
+
+
+					for (const channel of criteria.supportedChannels) {
+						const criteriaChannelValue = await serviceArray[channel]?.('any');
+						if (criteriaChannelValue === undefined) {
+							continue;
+						}
+
+						if (Array.isArray(criteriaChannelValue) && criteriaChannelValue.length === 0) {
+							continue;
+						}
+
+						matchFound = true;
+						break;
+					}
+
+					if (!matchFound) {
+						continue;
+					}
+				}
+
+				retval[checkNotificationServiceID] = checkNotificationService;
+			} catch (checkFXServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking Notification service', checkNotificationServiceID, ':', checkFXServiceError, ' -- ignoring');
 			}
 		}
 
