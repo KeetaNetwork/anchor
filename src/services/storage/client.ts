@@ -7,6 +7,7 @@ import type { Buffer } from '../../lib/utils/buffer.js';
 import type {
 	KeetaNetAccount,
 	ContactsClientConfig,
+	IconsClientConfig,
 	StorageObjectMetadata,
 	SearchCriteria,
 	SearchPagination,
@@ -43,6 +44,7 @@ import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { StorageContactsClient } from './clients/contacts.js';
+import { StorageIconsClient } from './clients/icon.js';
 import Resolver from '../../lib/resolver.js';
 import crypto from '../../lib/utils/crypto.js';
 
@@ -1184,6 +1186,18 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
 		return(new StorageContactsClient(session));
 	}
+
+	/**
+	 * Get an icons client bound to the given account.
+	 */
+	getIconsClient(config: IconsClientConfig): StorageIconsClient {
+		const session = this.beginSession({
+			account: config.account,
+			workingDirectory: config.basePath,
+			defaultVisibility: 'public'
+		});
+		return(new StorageIconsClient(session));
+	}
 }
 
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
@@ -1251,18 +1265,30 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 		return(provider ?? null);
 	}
 
-	/**
-	 * Get a contacts client bound to the given account.
-	 * Resolves the first available provider and constructs a StorageContactsClient.
-	 */
-	async getContactsClient(config: ContactsClientConfig): Promise<StorageContactsClient | null> {
+	async #withProvider<T>(fn: (provider: KeetaStorageAnchorProvider) => T): Promise<T | null> {
 		const providers = await this.getProviders();
 		const provider = providers?.[0];
 		if (!provider) {
 			return(null);
 		}
 
-		return(provider.getContactsClient(config));
+		return(fn(provider));
+	}
+
+	/**
+	 * Get a contacts client bound to the given account.
+	 * Resolves the first available provider and constructs a StorageContactsClient.
+	 */
+	async getContactsClient(config: ContactsClientConfig): Promise<StorageContactsClient | null> {
+		return(await this.#withProvider(function(provider) { return(provider.getContactsClient(config)); }));
+	}
+
+	/**
+	 * Get an icons client bound to the given account.
+	 * Resolves the first available provider and constructs a StorageIconsClient.
+	 */
+	async getIconsClient(config: IconsClientConfig): Promise<StorageIconsClient | null> {
+		return(await this.#withProvider(function(provider) { return(provider.getIconsClient(config)); }));
 	}
 
 	/** @internal */
