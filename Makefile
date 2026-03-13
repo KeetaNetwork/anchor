@@ -36,6 +36,7 @@ help:
 node_modules/.done: package.json package-lock.json Makefile
 	rm -rf node_modules
 	npm clean-install
+	cp node_modules/unicode-confusables/index.ts.d node_modules/unicode-confusables/index.d.ts
 	@touch node_modules/.done
 
 # Creates the "node_modules" directory -- this target is for
