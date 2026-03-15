@@ -254,6 +254,21 @@ for (const useDeprecated of [false, true]) {
 								getQuote: `${invalidServerURL}/api/getQuote`,
 								createExchange: `${invalidServerURL}/api/createExchange`
 							}
+						},
+						TestAffinityFromOnly: {
+							from: [
+								{
+									currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+									to: [testCurrencyBTC.publicKeyString.get()],
+									supportedAffinities: { from: true, to: false }
+								}
+							],
+							operations: {
+								getEstimate: `${serverURL}/api/getEstimate`,
+								getQuote: `${serverURL}/api/getQuote`,
+								createExchange: `${serverURL}/api/createExchange`,
+								getExchangeStatus: `${serverURL}/api/getExchangeStatus/{id}`
+							}
 						}
 					}
 				}
@@ -367,6 +382,26 @@ for (const useDeprecated of [false, true]) {
 				expect(result).toEqual(test.result);
 			}
 		}
+
+		/*
+		 * Verify that supportedAffinities filtering works correctly in getBaseProvidersForConversion.
+		 * TestAffinityFromOnly supports USD->BTC with affinity 'from' only (to: false).
+		 */
+		const fromAffinityProviders = await fxClientConversions.getBaseProvidersForConversion({
+			from: 'USD',
+			to: testCurrencyBTC,
+			amount: 100n,
+			affinity: 'from'
+		});
+		expect(fromAffinityProviders?.map(p => String(p.providerID))).toContain('TestAffinityFromOnly');
+
+		const toAffinityProviders = await fxClientConversions.getBaseProvidersForConversion({
+			from: 'USD',
+			to: testCurrencyBTC,
+			amount: 100n,
+			affinity: 'to'
+		});
+		expect(toAffinityProviders?.map(p => String(p.providerID))).not.toContain('TestAffinityFromOnly');
 
 		const fxClient = new KeetaNetAnchor.FX.Client(client, {
 			root: account,
