@@ -5,11 +5,13 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import { Errors } from './common.js';
-import type { RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData } from './common.js';
+import { Errors, toAssetPair } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData } from './common.js';
 import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
+
+const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -76,8 +78,21 @@ test('Asset Movement Anchor Client Test', async function() {
 				asset: 'USD'
 			},
 			variableFeeBps: 50
+		},
+		supportedOperations: {
+			createPersistentForwarding: false,
+			initiateTransfer: false
 		}
 	};
+
+	function shouldOperationFailExtendedKeetaSend(inputAsset: AssetOrPair): boolean {
+		const assetPair = toAssetPair(inputAsset);
+		if (typeof assetPair.from !== 'string' || !(testCurrencyUSDC.comparePublicKey(assetPair.from)) || assetPair.to !== 'USD') {
+			return(false);
+		}
+
+		return(true);
+	}
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
@@ -133,6 +148,14 @@ test('Asset Movement Anchor Client Test', async function() {
 					throw(new Error('Missing depositAddress in request'));
 				}
 
+
+				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
+					throw(new Errors.OperationNotSupported({
+						forAsset: request.asset,
+						forRail: extendedKeetaSendDetails.rail
+					}));
+				}
+
 				return({
 					address: request.destinationAddress
 				})
@@ -144,6 +167,13 @@ test('Asset Movement Anchor Client Test', async function() {
 			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
 				if (typeof request.to.recipient !== 'string') {
 					throw(new Error('Recipient is not a string'));
+				}
+
+				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
+					throw(new Errors.OperationNotSupported({
+						forAsset: 'USD',
+						forRail: extendedKeetaSendDetails.rail
+					}));
 				}
 
 				return({
@@ -413,6 +443,49 @@ test('Asset Movement Anchor Client Test', async function() {
 		}
 
 		expect(supportedAssetWithDetails.paths[0]?.pair[1].rails.inbound?.[0]).toEqual(extendedKeetaSendDetails);
+
+		for (const [ method, expectedArguments ] of [
+			[
+				() => testProvider?.createPersistentForwardingAddress({
+					asset: { from: testCurrencyUSDC, to: 'USD' },
+					destinationLocation: 'chain:keeta:123',
+					destinationAddress: 'test-address',
+					sourceLocation: 'bank-account:us'
+				}),
+				{
+					forAsset: { from: testCurrencyUSDC, to: 'USD' },
+					forRail: 'KEETA_SEND'
+				}
+			],
+			[
+				() => testProvider?.initiateTransfer({
+					asset: { from: testCurrencyUSDC, to: 'USD' },
+					from: { location: 'bank-account:us' },
+					to: { location: 'chain:keeta:123', recipient: 'test-recipient' },
+					value: '1000'
+				}),
+				{
+					forAsset: 'USD',
+					forRail: 'KEETA_SEND'
+				}
+			]
+		] as const) {
+			let error = null;
+			try {
+				await method();
+			} catch (e) {
+				error = e;
+			}
+
+			if (!(error instanceof Errors.OperationNotSupported)) {
+				throw(new Error('Expected OperationNotSupported error'));
+			}
+
+			expect(toJSONSerializable({
+				forAsset: error.forAsset,
+				forRail: error.forRail
+			})).toEqual(toJSONSerializable(expectedArguments));
+		}
 	}
 
 	{
