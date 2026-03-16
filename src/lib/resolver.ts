@@ -302,7 +302,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		/**
 		 * Search for a provider which supports the specified affinity
 		 */
-		supportsAffinity?: 'from' | 'to';
+		supportedAffinity?: 'from' | 'to';
 	};
 	'kyc': {
 		/**
@@ -1639,10 +1639,10 @@ class Resolver {
 						}
 					}
 
-					if (criteria.supportsAffinity && fromEntry.supportedAffinities !== undefined) {
+					if (criteria.supportedAffinity && fromEntry.supportedAffinities !== undefined) {
 						const supportedAffinities = await fromEntry.supportedAffinities('object');
 
-						const isSupported = await supportedAffinities[criteria.supportsAffinity]?.('boolean');
+						const isSupported = await supportedAffinities[criteria.supportedAffinity]?.('boolean');
 
 						if (isSupported === false) {
 							continue;

@@ -119,7 +119,7 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 	}
 
 	if (request.affinity !== undefined) {
-		criteria.supportsAffinity = request.affinity;
+		criteria.supportedAffinity = request.affinity;
 	}
 
 	const response = await resolver.lookup('fx', {
