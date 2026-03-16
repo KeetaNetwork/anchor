@@ -105,7 +105,7 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to'>> & Pick<GetProvidersOptions, 'requiredOperations'>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>, sharedCriteria?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to' | 'affinity'>> & Pick<GetProvidersOptions, 'requiredOperations'>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>, sharedCriteria?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
 	const criteria: ServiceSearchCriteria<'fx'> = {};
 	if (request.from !== undefined) {
 		criteria.inputCurrencyCode = request.from.publicKeyString.get();
@@ -116,6 +116,10 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 
 	if (request.requiredOperations) {
 		criteria.requiredOperations = request.requiredOperations;
+	}
+
+	if (request.affinity !== undefined) {
+		criteria.supportedAffinity = request.affinity;
 	}
 
 	const response = await resolver.lookup('fx', {
