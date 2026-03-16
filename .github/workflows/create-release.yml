@@ -29,10 +29,20 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Tag: $TAG_NAME, Version: $VERSION"
 
+      - name: Extract notes from tag
+        id: get_notes
+        run: |
+          NOTES_FILE="$(mktemp)"
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          git show "${GITHUB_REF}" | sed '/^commit /,$ d;/^-----BEGIN PGP SIGNATURE-----/,$ d;0,/^ *$/ d' > "$NOTES_FILE"
+          echo "Extracted release notes to $NOTES_FILE"
+          ls -l "$NOTES_FILE"
+          cat "$NOTES_FILE"
+
       - name: Create GitHub Release
         run: |
           gh release create "${{ steps.get_version.outputs.tag }}" \
-            --notes-from-tag \
+            --notes-file "${{ steps.get_notes.outputs.notes_file }}" \
             --title "v${{ steps.get_version.outputs.version }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
