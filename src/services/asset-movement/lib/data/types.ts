@@ -1,0 +1,140 @@
+import { Country } from "@keetanetwork/currency-info";
+import type { ObjectSchema, Schema } from "./json-schema.js";
+
+export interface AccountAddressSchema {
+	type: 'bank-account' | 'mobile-wallet';
+
+	includeFields: {
+		accountOwner?: boolean;
+		bankName?: boolean;
+		accountNumberEnding?: boolean;
+		phoneNumber?: boolean;
+	}
+
+	additionalProperties: {
+		resolved?: ObjectSchema;
+		obfuscated?: ObjectSchema;
+	}
+}
+
+export const sharedSchemaReferences: { [K in keyof typeof sharedJSONSchemaTypes]: { $ref: string }} = {
+	ISOCountryCode: { $ref: '#/definitions/ISOCountryCode' },
+	PhysicalAddress: { $ref: '#/definitions/PhysicalAddress' },
+	ResolvedAccountOwner: { $ref: '#/definitions/ResolvedAccountOwner' },
+	ObfuscatedAccountOwner: { $ref: '#/definitions/ObfuscatedAccountOwner' },
+	PhoneNumber: { $ref: '#/definitions/PhoneNumber' },
+	PhoneNumberObjectExtends: { $ref: '#/definitions/PhoneNumberObjectExtends' },
+	MonthYearDateInput: { $ref: '#/definitions/MonthYearDateInput' },
+	CardType: { $ref: '#/definitions/CardType' }
+}
+
+export const sharedJSONSchemaTypes: {
+	[K in 'ISOCountryCode' | 'PhysicalAddress' | 'ResolvedAccountOwner' | 'ObfuscatedAccountOwner' | 'PhoneNumber' | 'PhoneNumberObjectExtends' | 'MonthYearDateInput' | 'CardType']: Schema;
+} = {
+	ResolvedAccountOwner: {
+		$id: 'ResolvedAccountOwner',
+		oneOf: [
+			{
+				type: 'object',
+				properties: {
+					accountOwner: {
+						type: 'object',
+						properties: {
+							type: { type: 'string', const: 'individual' },
+							firstName: { type: 'string' },
+							lastName: { type: 'string' }
+						},
+						required: ['type', 'firstName', 'lastName']
+					}
+				},
+				required: ['accountOwner']
+			},
+			{
+				type: 'object',
+				properties: {
+					accountOwner: {
+						type: 'object',
+						properties: {
+							type: { type: 'string', const: 'business' },
+							businessName: { type: 'string' }
+						},
+						required: ['type', 'businessName']
+					}
+				},
+				required: ['accountOwner']
+			},
+			{
+				type: 'object',
+				properties: {
+					accountOwner: {
+						type: 'object',
+						properties: {
+							type: { type: 'string', const: 'unknown' },
+							beneficiaryName: { type: 'string' }
+						},
+						required: ['type', 'beneficiaryName']
+					}
+				},
+				required: ['accountOwner']
+			}
+		]
+	},
+	ObfuscatedAccountOwner: {
+		$id: 'ObfuscatedAccountOwner',
+		type: 'object',
+		properties: {
+			accountOwner: {
+				type: 'object',
+				properties: {
+					type: { type: 'string', enum: ['individual', 'business'] },
+					name: { type: 'string' },
+					businessName: { type: 'string' }
+				}
+			}
+		},
+		required: ['accountOwner']
+	},
+	ISOCountryCode: { $id: 'ISOCountryCode', type: "string", enum: Country.allCountryCodes },
+	PhysicalAddress: {
+		$id: 'PhysicalAddress',
+		type: "object",
+		properties: {
+			line1: { type: "string" },
+			line2: { type: "string" },
+			country: sharedSchemaReferences.ISOCountryCode,
+			postalCode: { type: "string" },
+			subdivision: { type: "string" },
+			city: { type: "string" }
+		},
+		required: ['line1', 'country', 'postalCode', 'subdivision', 'city']
+	},
+	MonthYearDateInput: {
+		$id: 'MonthYearDateInput',
+		type: "object",
+		properties: {
+			month: { type: "string", pattern: "^(0[1-9]|1[0-2])$" },
+			year: { type: "string", pattern: "^\\d{4}$" }
+		},
+		required: ['month', 'year']
+	},
+	CardType: {
+		$id: 'CardType',
+		type: "string",
+		enum: ['DEBIT', 'CREDIT', 'PREPAID', 'UNKNOWN']
+	},
+	PhoneNumber: {
+		$id: 'PhoneNumber',
+		type: "string",
+		maxLength: 80,
+		minLength: 1,
+		pattern: "^\\d{1,80}$"
+	},
+	PhoneNumberObjectExtends: {
+		$id: 'PhoneNumberObjectExtends',
+		type: "object",
+		properties: {
+			phoneNumber: sharedSchemaReferences.PhoneNumber
+		},
+		required: ['phoneNumber']
+	}
+};

@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
+import type { GetConversionRateAndFeeContext } from './server.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -164,10 +165,10 @@ test('FX Server Tests', async function() {
 				to: [token2.publicKeyString.get()]
 			}],
 			operations: {
-				getEstimate: `${url}/api/getEstimate`,
-				getQuote: `${url}/api/getQuote`,
-				createExchange: `${url}/api/createExchange`,
-				getExchangeStatus: `${url}/api/getExchangeStatus/{id}`
+				getEstimate: new URL('/api/getEstimate', url).toString(),
+				getQuote: new URL('/api/getQuote', url).toString(),
+				createExchange: new URL('/api/createExchange', url).toString(),
+				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
 			}
 		});
 
@@ -572,19 +573,27 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 	}
 
 	let processingCount = 0;
+	const contextPurposes: GetConversionRateAndFeeContext['purpose'][] = [];
 	const delayMs = 50;
 
 	await using server = new KeetaNetFXAnchorHTTPServer({
 		logger: TestLogger,
-		account: serverAccount,
+		accounts: new KeetaNet.lib.Account.Set([serverAccount]),
+		signer: serverAccount,
 		client: serverClient,
 		quoteSigner: serverAccount,
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		},
 		fx: {
 			from: [{
 				currencyCodes: [token1.publicKeyString.get()],
 				to: [token2.publicKeyString.get()]
 			}],
-			getConversionRateAndFee: async function() {
+			getConversionRateAndFee: async function(request, context) {
+				contextPurposes.push(context.purpose);
 				processingCount++;
 				await asleep(delayMs);
 				return({
@@ -650,6 +659,54 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 	for (const result of completionResults) {
 		expect(result).toHaveProperty('status', 'completed');
 	}
+
+	const conversionRequest = {
+		from: token1.publicKeyString.get(),
+		to: token2.publicKeyString.get(),
+		amount: '75',
+		affinity: 'from' as const
+	};
+
+	const requestClient = clients[0];
+	if (!requestClient) {
+		throw(new Error('Invalid request client index'));
+	}
+	const requestBuilder = requestClient.initBuilder();
+	requestBuilder.receive(serverAccount, 1n, token2);
+	requestBuilder.send(serverAccount, 75n, token1);
+	const requestBlocks = await requestBuilder.computeBlocks();
+	const requestBlock = requestBlocks.blocks.at(-1);
+	if (!requestBlock) {
+		throw(new Error('Expected exchange block'));
+	}
+
+	const directExchangeResponse = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({
+			request: {
+				request: conversionRequest,
+				block: Buffer.from(requestBlock.toBytes()).toString('base64')
+			}
+		})
+	});
+
+	expect(directExchangeResponse.status).toBe(200);
+	const directExchangeData: unknown = await directExchangeResponse.json();
+	const directExchangeID = extractExchangeID(directExchangeData);
+
+	await waitForExchangeCompletion(url, directExchangeID, 10000);
+
+	const estimateCount = contextPurposes.filter(purpose => purpose === 'estimate').length;
+	const quoteCount = contextPurposes.filter(purpose => purpose === 'quote').length;
+	const exchangeCount = contextPurposes.filter(purpose => purpose === 'exchange').length;
+
+	expect(estimateCount).toBeGreaterThanOrEqual(1);
+	expect(quoteCount).toBeGreaterThanOrEqual(numConcurrentRequests);
+	expect(exchangeCount).toBeGreaterThanOrEqual(1);
 }, 30000);
 
 test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {

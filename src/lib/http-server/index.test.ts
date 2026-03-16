@@ -118,8 +118,56 @@ test('Basic Functionality', async function() {
 							throw(new Error('Hash does not match'));
 						}
 
-						return({ output: 'true' })
+						return({ output: 'true' });
 					}
+				};
+
+				// Wildcard route - captures variable-depth paths
+				routes['GET /api/files/**'] = async function(params) {
+					const wildcardPath = params.get('**');
+					return({
+						output: JSON.stringify({
+							message: 'Wildcard route works!',
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
+				};
+
+				// Exact route that should take priority over wildcard
+				routes['GET /api/files/special'] = async function() {
+					return({
+						output: JSON.stringify({
+							message: 'Exact route takes priority!'
+						}),
+						statusCode: 200
+					});
+				};
+
+				// Wildcard with path parameter (defined before /api/** for priority)
+				routes['GET /api/users/:id/**'] = async function(params) {
+					const userId = params.get('id');
+					const wildcardPath = params.get('**');
+					return({
+						output: JSON.stringify({
+							message: 'Wildcard with param!',
+							id: userId,
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
+				};
+
+				// Fallback wildcard
+				routes['GET /api/**'] = async function(params) {
+					const wildcardPath = params.get('**');
+					return({
+						output: JSON.stringify({
+							message: 'Less specific wildcard!',
+							path: wildcardPath
+						}),
+						statusCode: 200
+					});
 				};
 
 				return(routes);
@@ -186,6 +234,13 @@ test('Basic Functionality', async function() {
 		}, {
 			method: 'GET',
 			path: '/api/does-not-exist',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'does-not-exist'
+			}
+		}, {
+			method: 'GET',
+			path: '/other/does-not-exist',
 			statusCode: 404
 		}, {
 			method: 'GET',
@@ -219,6 +274,96 @@ test('Basic Functionality', async function() {
 			path: `/api/test-raw/${testRawPostHash}`,
 			body: `${testRawPostBody} `,
 			statusCode: 500
+		},
+		// Wildcard route tests
+		{
+			method: 'GET',
+			path: '/api/files/user/abc123/documents/report.pdf',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'user/abc123/documents/report.pdf'
+			}
+		},
+		{
+			method: 'GET',
+			path: '/api/files/simple.txt',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'simple.txt'
+			}
+		},
+		// Exact route takes priority over wildcard
+		{
+			method: 'GET',
+			path: '/api/files/special',
+			responseMatch: {
+				message: 'Exact route takes priority!'
+			}
+		},
+		// Trailing slash falls through to /api/*
+		{
+			method: 'GET',
+			path: '/api/files/',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'files'
+			}
+		},
+		// Multiple trailing slashes fall through to /api/*
+		{
+			method: 'GET',
+			path: '/api/files///',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'files'
+			}
+		},
+		// Trailing slash after content is stripped
+		{
+			method: 'GET',
+			path: '/api/files/folder/',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'folder'
+			}
+		},
+		// Falls through to /api/*
+		{
+			method: 'GET',
+			path: '/api/other/something',
+			responseMatch: {
+				message: 'Less specific wildcard!',
+				path: 'other/something'
+			}
+		},
+		// More specific wildcard takes priority
+		{
+			method: 'GET',
+			path: '/api/files/doc.txt',
+			responseMatch: {
+				message: 'Wildcard route works!',
+				path: 'doc.txt'
+			}
+		},
+		// Wildcard with path parameter
+		{
+			method: 'GET',
+			path: '/api/users/abc123/documents/report.pdf',
+			responseMatch: {
+				message: 'Wildcard with param!',
+				id: 'abc123',
+				path: 'documents/report.pdf'
+			}
+		},
+		// Wildcard with path parameter (single segment)
+		{
+			method: 'GET',
+			path: '/api/users/user42/file.txt',
+			responseMatch: {
+				message: 'Wildcard with param!',
+				id: 'user42',
+				path: 'file.txt'
+			}
 		}] as const;
 
 		for (const check of checks) {
@@ -254,21 +399,83 @@ test('Basic Functionality', async function() {
 		/*
 		 * Ensure we can update the URL
 		 */
-		const urlChecks = [
+		const urlChecks: {
+			in: string | URL | undefined | ((serverObj: typeof server | InstanceType<typeof HTTPServer.KeetaNetAnchorHTTPServer>) => string);
+			out: string | ((serverObj: { port: number }) => string);
+		}[] = [
 			{ in: 'http://example.com/foo', out: 'http://example.com/' },
 			{ in: 'https://example.com:8080/bar/baz', out: 'https://example.com:8080/' },
 			{ in: 'https://example.com:8080/bar/baz?a=b', out: 'https://example.com:8080/' },
 			{ in: new URL('http://localhost:3000/some/path'), out: 'http://localhost:3000/' },
+			{ in: undefined, out: function(serverObj) { return(`http://localhost:${serverObj.port}/`); } },
 			{
-				in: function(serverObj: typeof server) {
+				in: function(serverObj: typeof server | InstanceType<typeof HTTPServer.KeetaNetAnchorHTTPServer>) {
 					return('http://localhost:' + String(serverObj.port) + '/some/other/path');
 				},
-				out: `http://localhost:${server.port}/`
+				out: function(serverObj) {
+					return('http://localhost:' + String(serverObj.port) + '/');
+				}
 			}
 		];
 		for (const urlCheck of urlChecks) {
 			server.url = urlCheck.in;
-			expect(server.url).toBe(urlCheck.out);
+
+			let outCheck: string;
+			if (typeof urlCheck.out === 'function') {
+				outCheck = urlCheck.out(server);
+			} else {
+				outCheck = urlCheck.out;
+			}
+
+			expect(server.url).toBe(outCheck);
+		}
+
+		/*
+		 * Same URL checks, plus some more supported by the
+		 * constructor configuration `url` option
+		 */
+		const constructionURLChecks: {
+			in: ConstructorParameters<typeof HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr>>[0]['url'];
+			out: string | ((serverObj: { port: number }) => string);
+		}[] = [
+			...urlChecks,
+			{
+				in: {
+					hostname: 'example.com'
+				},
+				out: function(serverObj) {
+					return('http://example.com:' + String(serverObj.port) + '/');
+				}
+			}, {
+				in: {
+					protocol: 'https:',
+					port: 443
+				},
+				out: 'https://localhost/'
+			}
+		];
+
+		for (const urlCheck of constructionURLChecks) {
+			await using tempServer = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<ConfigWithAttr> {
+				protected async initRoutes(_ignore_config: ConfigWithAttr): Promise<HTTPServer.Routes> {
+					const routes: HTTPServer.Routes = {};
+					return(routes);
+				}
+			})({
+				url: urlCheck.in,
+				attr: 'test'
+			});
+
+			await tempServer.start();
+
+			let outCheck: string;
+			if (typeof urlCheck.out === 'function') {
+				outCheck = urlCheck.out(tempServer);
+			} else {
+				outCheck = urlCheck.out;
+			}
+
+			expect(tempServer.url).toBe(outCheck);
 		}
 
 		/*
@@ -287,3 +494,98 @@ test('Basic Functionality', async function() {
 		}).toThrow();
 	}
 }, 90000);
+
+test('Wildcard specificity: most specific route wins regardless of definition order', async function() {
+	// Define routes in reverse specificity order
+	const server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /api/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'catch-all', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			routes['GET /api/files/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'files', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			routes['GET /api/files/images/**'] = async function(params) {
+				return({
+					output: JSON.stringify({ handler: 'images', path: params.get('**') }),
+					statusCode: 200
+				});
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const cases = [
+		{ path: '/api/other/thing', expectedHandler: 'catch-all' },
+		{ path: '/api/files/doc.txt', expectedHandler: 'files' },
+		{ path: '/api/files/images/photo.png', expectedHandler: 'images' },
+		{ path: '/api/files/images/vacation/beach.jpg', expectedHandler: 'images' }
+	];
+
+	for (const testCase of cases) {
+		const response = await testHTTPRequest(server.url, testCase.path, 'GET');
+		expect(response.code).toBe(200);
+		expect(response.body).toMatchObject({ handler: testCase.expectedHandler });
+	}
+
+	await server.stop();
+}, 30000);
+
+test('maxBodySize: rejects oversized requests', async function() {
+	const MAX_BODY = 64;
+	let handlerCalled = false;
+
+	const server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['PUT /api/upload'] = {
+				bodyType: 'raw',
+				maxBodySize: MAX_BODY,
+				handler: async function() {
+					handlerCalled = true;
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	// Request with Content-Length exceeding maxBodySize should get 413
+	handlerCalled = false;
+	const oversizedResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY + 1)
+	});
+	expect(oversizedResponse.status).toBe(413);
+	expect(handlerCalled).toBe(false);
+
+	// Request within maxBodySize should succeed
+	handlerCalled = false;
+	const okResponse = await fetch(new URL('/api/upload', server.url), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/octet-stream' },
+		body: Buffer.alloc(MAX_BODY)
+	});
+	expect(okResponse.status).toBe(200);
+	expect(handlerCalled).toBe(true);
+
+	await server.stop();
+}, 30000);

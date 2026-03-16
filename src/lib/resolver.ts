@@ -126,17 +126,17 @@ type ServiceMetadata = {
 					 * Get a quote for a currency
 					 * conversion
 					 */
-					getQuote: string;
+					getQuote?: string;
 					/**
 					 * Create an exchange to convert
 					 * currency
 					 */
-					createExchange: string;
+					createExchange?: string;
 					/**
 					 * Get the status of an exchange
 					 * which was previously created
 					 */
-					getExchangeStatus: string;
+					getExchangeStatus?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -163,6 +163,22 @@ type ServiceMetadata = {
 				}[];
 			}
 		};
+		username?: {
+			[id: string]: {
+				operations: {
+					resolve: ServiceMetadataEndpoint;
+					claim?: ServiceMetadataEndpoint;
+					release?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+				};
+
+				/**
+				 * Optional regex pattern which provider-issued unique names must match in order to be valid.
+				 * If not specified, then any provider-issued unique name is considered valid as long as it meets the general requirements for provider-issued unique names (e.g. length limits, valid character range).
+				 */
+				usernamePattern?: string;
+			}
+		};
 		assetMovement?: {
 			[id: string]: {
 				operations: {
@@ -183,6 +199,41 @@ type ServiceMetadata = {
 			[id: string]: {
 				/* XXX:TODO */
 				workInProgress?: true;
+			};
+		};
+		storage?: {
+			[id: string]: {
+				operations: {
+					put?: ServiceMetadataEndpoint;
+					get?: ServiceMetadataEndpoint;
+					delete?: ServiceMetadataEndpoint;
+					metadata?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+					public?: ServiceMetadataEndpoint;
+					quota?: ServiceMetadataEndpoint;
+				};
+				/**
+				 * Anchor's public key for sharing encrypted containers
+				 */
+				anchorAccount?: string;
+				/**
+				 * Published quota limits
+				 */
+				quotas?: {
+					maxObjectSize: number;
+					maxObjectsPerUser: number;
+					maxStoragePerUser: number;
+					maxSearchLimit: number;
+					maxSignedUrlTTL: number;
+				};
+				/**
+				 * Default TTL in seconds for pre-signed URLs
+				 */
+				signedUrlDefaultTTL?: number;
+				/**
+				 * Fields that can be used in search criteria
+				 */
+				searchableFields?: ('owner' | 'tags' | 'visibility' | 'pathPrefix')[];
 			};
 		};
 	};
@@ -233,6 +284,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * KYC providers
 		 */
 		kycProviders?: string[];
+
+		/**
+		 * Search for a provider which supports ALL of the following FX operations
+		 */
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
 	};
 	'kyc': {
 		/**
@@ -255,9 +311,18 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		kycProviders?: string[];
 	};
+	/**
+	 * There are currently no additional filters for searching a username provider
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'username': {};
 	'cards': {
 		/* XXX:TODO */
 		workInProgress: true;
+	};
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'storage': {
+		/* No search criteria - TODO? */
 	};
 }[T];
 
@@ -367,6 +432,22 @@ function assertValidOperationsAssetMovement(input: unknown): asserts input is { 
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsUsername(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['operations'] } {
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOptionalUsernamePattern(input: unknown): asserts input is { usernamePattern?: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['usernamePattern'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('usernamePattern' in input && input.usernamePattern !== undefined) {
+		if (typeof input.usernamePattern !== 'string' && typeof input.usernamePattern !== 'function') {
+			throw(new Error(`Expected "usernamePattern" to be a string | function, got ${typeof input.usernamePattern}`));
+		}
+	}
+}
+
 function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
@@ -459,6 +540,13 @@ const assertResolverLookupAssetMovementResults = async function(input: unknown):
 
 	// XXX:TODO: Perform deeper validation of the "supportedAssets" structure
 	// @ts-ignore
+	return(input);
+};
+
+const assertResolverLookupUsernameResult = function(input: unknown): ResolverLookupServiceResults<'username'>[string] {
+	assertValidOperationsUsername(input);
+	assertValidOptionalUsernamePattern(input);
+
 	return(input);
 };
 
@@ -1266,11 +1354,17 @@ class Resolver {
 		'assetMovement': {
 			search: this.lookupAssetMovementServices.bind(this)
 		},
+		'username': {
+			search: this.lookupUsernameServices.bind(this)
+		},
 		'cards': {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'cards'>) => {
 				throw(new Error('not implemented'));
 			}
+		},
+		'storage': {
+			search: this.lookupStorageServices.bind(this)
 		}
 	};
 
@@ -1474,6 +1568,21 @@ class Resolver {
 					continue;
 				}
 
+				if (criteria.requiredOperations) {
+					let hasAllRequiredOperations = true;
+					for (const operation of criteria.requiredOperations) {
+						const resolvedOperation = (await checkFXService['operations']('object'))[operation];
+
+						if (!resolvedOperation) {
+							hasAllRequiredOperations = false;
+							break;
+						}
+					}
+					if (!hasAllRequiredOperations) {
+						continue;
+					}
+				}
+
 				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
 				const from = await fromUnrealized?.('array');
 				if (from === undefined) {
@@ -1675,6 +1784,58 @@ class Resolver {
 			 * If we didn't find any asset movement services, then we return
 			 * undefined to indicate that no services were found.
 			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupUsernameServices(usernameServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'username'>) {
+		if (usernameServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'username'> = {};
+		for (const checkUsernameServiceID in usernameServices) {
+			try {
+				const checkUsernameService = await usernameServices[checkUsernameServiceID]?.('object');
+				if (checkUsernameService === undefined) {
+					continue;
+				}
+
+				retval[checkUsernameServiceID] = assertResolverLookupUsernameResult(checkUsernameService);
+			} catch (checkUsernameServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking username service', checkUsernameServiceID, ':', checkUsernameServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupStorageServices(storageServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'storage'>): Promise<ResolverLookupServiceResults<'storage'> | undefined> {
+		if (storageServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'storage'> = {};
+		for (const checkStorageServiceID in storageServices) {
+			try {
+				const checkStorageService = await isValidOperations(await storageServices[checkStorageServiceID]?.('object'));
+				if (!checkStorageService) {
+					continue;
+				}
+
+				retval[checkStorageServiceID] = checkStorageService;
+			} catch (checkStorageServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking storage service', checkStorageServiceID, ':', checkStorageServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
 			return(undefined);
 		}
 

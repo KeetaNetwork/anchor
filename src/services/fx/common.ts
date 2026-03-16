@@ -73,7 +73,7 @@ export type KeetaFXAnchorEstimate = {
 
 	/**
 	 * Outer bound of the converted amount.
-	 * if affinity is 'from', this is the maximum amount the user would need to send, if its to, this is the minimum amount the user would receive.
+	 * if affinity is 'to', this is the maximum amount the user would need to send, if its 'from', this is the minimum amount the user would receive.
 	 */
 	convertedAmountBound?: bigint;
 
@@ -86,22 +86,34 @@ export type KeetaFXAnchorEstimate = {
 		max: bigint;
 		token: KeetaNetToken;
 	};
-} & ({
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange
-	 */
-	requiresQuote: false;
+} & (
+	{
+		/**
+		 * Indicates that the exchange cannot be performed if false, and no quote can be issued
+		 */
+		canPerformExchange: false;
+	} | ({
+		/**
+		 * Indicates that the exchange can be performed if true or undefined, but a quote may or may not be required before proceeding with the exchange
+		 */
+		canPerformExchange?: true;
+	} & ({
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange
+		 */
+		requiresQuote: false;
 
-	/**
-	 * Liquidity provider account if the user is not going to request a quote before the exchange
-	 */
-	account: KeetaNetAccount | KeetaNetStorageAccount;
-} | {
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange, defaults to true
-	 */
-	requiresQuote?: true;
-});
+		/**
+		 * Liquidity provider account if the user is not going to request a quote before the exchange
+		 */
+		account: KeetaNetAccount | KeetaNetStorageAccount;
+	} | {
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange, defaults to true
+		 */
+		requiresQuote?: true;
+	}))
+);
 
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;

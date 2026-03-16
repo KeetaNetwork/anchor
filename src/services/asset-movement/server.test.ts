@@ -1,20 +1,15 @@
 import { expect, test } from 'vitest';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
-import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 
-test('FX Server Tests', async function() {
-	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const { userClient: client } = await createNodeAndClient(account);
-
-	const xxx = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+test('Asset Movement Server Tests', async function() {
+	const asset = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
-		client: client,
 		assetMovement: {
 			supportedAssets: [{
-				asset: xxx.publicKeyString.get(),
+				asset: asset.publicKeyString.get(),
 				paths: [{
 					pair: [{
 						id: 'foo',

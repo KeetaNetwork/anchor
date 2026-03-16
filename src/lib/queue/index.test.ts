@@ -13,7 +13,8 @@ import type {
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
-	KeetaAnchorQueueRequestID
+	KeetaAnchorQueueRequestID,
+	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
 
@@ -451,7 +452,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing(TestingKey).setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -679,7 +680,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing(TestingKey).setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 50, maxRetries: 3 });
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -831,7 +832,10 @@ for (const singleWorkerID of [true, false]) {
 					vi.advanceTimersByTime(50);
 
 					return({ status: entry.request.newStatus, output: 'OK' });
-				}
+				},
+				batchSize: 3,
+				processTimeout: 100,
+				maxRetries: 3
 			});
 		};
 
@@ -843,7 +847,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing(TestingKey).setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams({ maxRunners: 1 });
 
 			return(runner);
 		});
@@ -949,7 +953,7 @@ test('Pipeline Basic Tests', async function() {
 		vi.useRealTimers();
 	});
 
-	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorPipeableQueueStatus; output: OUTPUT; }>) {
 		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
 			id: `${name}_runner`,
 			processor: processor,
@@ -1027,10 +1031,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage2._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage3._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage4._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage2._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage3._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage4._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -1124,6 +1128,56 @@ test('Pipeline Basic Tests', async function() {
 		expect(finalEntryIDs).toContain(finalLeftoverID);
 		expect(finalEntryIDs).toContain(id6);
 	}
+
+	/*
+	 * Validate that failed jobs can be piped to another stage as well
+	 */
+	await using failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
+		return({ status: 'failed_permanently', output: `failed:${entry.request}` });
+	});
+	await using failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
+		return({ status: 'completed', output: `handled:${entry.request}` });
+	});
+
+	failedStage1._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+	failedStage2._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+
+	failedStage1.pipeFailed(failedStage2);
+
+	const failedId = await failedStage1.add('job-fail');
+
+	await failedStage1.run();
+
+	const failedEntry = await failedStage1.get(failedId);
+	if (!failedEntry) {
+		throw(new Error('internal error: failed entry not found'));
+	}
+	expect(failedEntry.status).toBe('failed_permanently');
+	expect(failedEntry.output).toBe('failed:job-fail');
+
+	await failedStage1.maintain();
+
+	const movedFailedEntry = await failedStage1.get(failedId);
+	if (!movedFailedEntry) {
+		throw(new Error('internal error: failed entry missing after maintain'));
+	}
+	expect(movedFailedEntry.status).toBe('moved');
+
+	const pendingFailedEntry = await failedStage2.get(failedId);
+	if (!pendingFailedEntry) {
+		throw(new Error('internal error: failed pipe entry not found in next stage'));
+	}
+	expect(pendingFailedEntry.status).toBe('pending');
+	expect(pendingFailedEntry.request).toBe('job-fail');
+
+	await failedStage2.run();
+
+	const completedFailedEntry = await failedStage2.get(failedId);
+	if (!completedFailedEntry) {
+		throw(new Error('internal error: completed pipe entry not found in next stage'));
+	}
+	expect(completedFailedEntry.status).toBe('completed');
+	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
 test('Errors', async function() {
