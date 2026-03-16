@@ -117,6 +117,7 @@ test: node_modules $(GENERATED_FILES)
 
 # Run linting
 do-lint: node_modules $(GENERATED_FILES)
+	unset $(shell locale | cut -f 1 -d =) && LC_ALL=C git grep '[^[:print:][:space:]]' && echo "Error: Found non-ASCII characters in the source code." && exit 1 || :
 	npm run eslint -- --config .eslint.config.mjs ${KEETA_ANCHOR_LINT_ARGS}
 	npm run cspell -- --config .cspell.config.mjs --no-progress 'src/**/*.ts'
 
@@ -141,4 +142,4 @@ distclean: clean
 	rm -rf node_modules
 	rm -f .nvmrc
 
-.PHONY: all help test clean distclean do-npm-pack do-deploy
+.PHONY: all help test clean distclean do-npm-pack do-deploy do-lint
