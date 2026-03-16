@@ -259,6 +259,21 @@ export type ContactsClientConfig = {
 };
 
 /**
+ * Configuration for an icons client.
+ * The icon is stored as a single file under the base path.
+ */
+export type IconsClientConfig = {
+	/**
+	 * The account to use for the icons client.
+	 */
+	account: KeetaNetAccount;
+	/**
+	 * The base path for the icons client (e.g., `/user/<pubkey>/`).
+	 */
+	basePath: string;
+};
+
+/**
  * Generic response type for storage operations.
  */
 export type StorageResponse<T> = ({ ok: true } & T) | { ok: false; error: string };

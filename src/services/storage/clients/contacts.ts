@@ -255,7 +255,8 @@ export class StorageContactsClient implements ContactsClient {
 	}
 
 	async delete(id: string): Promise<boolean> {
-		return(await this.#session.delete(id));
+		const result = await this.#session.delete(id);
+		return(result);
 	}
 
 	async list(options?: {
