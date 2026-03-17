@@ -127,17 +127,17 @@ type ServiceMetadata = {
 					 * Get a quote for a currency
 					 * conversion
 					 */
-					getQuote: string;
+					getQuote?: string;
 					/**
 					 * Create an exchange to convert
 					 * currency
 					 */
-					createExchange: string;
+					createExchange?: string;
 					/**
 					 * Get the status of an exchange
 					 * which was previously created
 					 */
-					getExchangeStatus: string;
+					getExchangeStatus?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -161,6 +161,15 @@ type ServiceMetadata = {
 					 * then it does not require KYC.
 					 */
 					kycProviders?: string[];
+
+					/**
+					 * Operations which this FX provider supports for the specified path (e.g. it may support getting a quote, but not creating an exchange).
+					 * If not specified, then it is assumed that the provider supports all operations for the specified path.
+					 */
+					supportedAffinities?: {
+						from?: boolean;
+						to?: boolean;
+					}
 				}[];
 			}
 		};
@@ -301,6 +310,16 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * KYC providers
 		 */
 		kycProviders?: string[];
+
+		/**
+		 * Search for a provider which supports ALL of the following FX operations
+		 */
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
+
+		/**
+		 * Search for a provider which supports the specified affinity
+		 */
+		supportedAffinity?: 'from' | 'to';
 	};
 	'kyc': {
 		/**
@@ -1608,6 +1627,21 @@ class Resolver {
 					continue;
 				}
 
+				if (criteria.requiredOperations) {
+					let hasAllRequiredOperations = true;
+					for (const operation of criteria.requiredOperations) {
+						const resolvedOperation = (await checkFXService['operations']('object'))[operation];
+
+						if (!resolvedOperation) {
+							hasAllRequiredOperations = false;
+							break;
+						}
+					}
+					if (!hasAllRequiredOperations) {
+						continue;
+					}
+				}
+
 				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
 				const from = await fromUnrealized?.('array');
 				if (from === undefined) {
@@ -1646,6 +1680,16 @@ class Resolver {
 
 						// If outputToken was provided, check if it matches providers supported output currencies
 						if (!toCurrencyCodesValues.includes(outputToken.token)) {
+							continue;
+						}
+					}
+
+					if (criteria.supportedAffinity && fromEntry.supportedAffinities !== undefined) {
+						const supportedAffinities = await fromEntry.supportedAffinities('object');
+
+						const isSupported = await supportedAffinities[criteria.supportedAffinity]?.('boolean');
+
+						if (isSupported === false) {
 							continue;
 						}
 					}
