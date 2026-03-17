@@ -81,6 +81,9 @@ dist/.done: $(shell find src -type f) $(GENERATED_FILES) dist/npm-shrinkwrap.jso
 	find dist -type f -name '*.test.*' | xargs rm -f
 	rm -rf dist/lib/utils/tests
 	cp LICENSE dist/
+	@# Verify that "@keetanetwork/keetanet-node" is not listed in the
+	@# distribution files
+	@grep -r '@keetanetwork/keetanet-node' dist && (echo 'Error: @keetanetwork/keetanet-node should not be included in the distribution files' >&2; exit 1) || :
 	@touch dist/.done
 
 # Creates the distribution directory -- this target is for
