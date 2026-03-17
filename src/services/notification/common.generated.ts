@@ -31,4 +31,4 @@ export const isKeetaNotificationAnchorDeleteSubscriptionResponseJSON: (input: un
 export const isKeetaNotificationAnchorListSubscriptionsResponseJSON: (input: unknown) => input is KeetaNotificationAnchorListSubscriptionsResponseJSON = createIs<KeetaNotificationAnchorListSubscriptionsResponseJSON>();
 
 export const assertNotificationChannelType: (input: unknown) => NotificationChannelType = createAssertEquals<NotificationChannelType>();
-export const assertNotificationIntentType: (input: unknown) => NotificationSubscriptionType = createAssertEquals<NotificationSubscriptionType>();
+export const assertNotificationSubscriptionType: (input: unknown) => NotificationSubscriptionType = createAssertEquals<NotificationSubscriptionType>();

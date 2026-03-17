@@ -4,7 +4,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import { assertNever } from '../../lib/utils/never.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import { assertNotificationChannelType, assertNotificationIntentType } from './common.generated.js';
+import { assertNotificationChannelType, assertNotificationSubscriptionType } from './common.generated.js';
 import { KeetaNet } from '../../client/index.js';
 export * from './common.generated.js';
 
@@ -94,7 +94,7 @@ export function getNotificationRegisterTargetRequestSignable(request: Pick<Keeta
 	];
 
 	if (request.channel.type === 'FCM') {
-		parts.push(request.channel.fcmToken);
+		parts.push(request.channel.fcmToken, request.channel.appId);
 	} else {
 		assertNever(request.channel.type);
 	}
@@ -181,11 +181,21 @@ export function getNotificationCreateSubscriptionRequestSignable(request: Pick<K
 		request.subscription.type
 	];
 
+	parts.push(request.subscription.locale?.toString() ?? 'NO_LOCALE');
+
 	if (request.subscription.type === 'RECEIVE_FUNDS') {
 		parts.push(request.subscription.toAddress ?? 'NO_ADDRESS');
 	} else {
 		assertNever(request.subscription.type);
 	}
+
+	parts.push(request.subscription.target.provider ?? 'NO_PROVIDER');
+
+	parts.push('BEGIN_TARGETS');
+	for (const target of request.subscription.target.ids) {
+		parts.push(target);
+	}
+	parts.push('END_TARGETS');
 
 	return(parts);
 }
@@ -293,7 +303,7 @@ class KeetaNotificationAnchorMethodNotSupportedError extends KeetaAnchorUserErro
 	readonly subscriptionType?: NotificationSubscriptionType | undefined;
 
 	constructor(properties: KeetaNotificationAnchorMethodNotSupportedErrorProperties, message?: string) {
-		super(message ?? `Request failed: ${properties.channelType ? `channel type ${properties.channelType}` : `intent type ${properties.subscriptionType}`} not supported`);
+		super(message ?? `Request failed: ${properties.channelType ? `channel type ${properties.channelType}` : `subscription type ${properties.subscriptionType}`} not supported`);
 		this.statusCode = 400;
 
 		Object.defineProperty(this, 'KeetaNotificationAnchorMethodNotSupportedErrorObjectTypeID', {
@@ -320,17 +330,17 @@ class KeetaNotificationAnchorMethodNotSupportedError extends KeetaAnchorUserErro
 	static async fromJSON(input: unknown): Promise<KeetaNotificationAnchorMethodNotSupportedError> {
 		const { message, other } = this.extractErrorProperties(input, this);
 
-		let intent: NotificationSubscriptionType | undefined;
+		let subscriptionType: NotificationSubscriptionType | undefined;
 		if ('intent' in other && other.intent !== undefined) {
-			intent = assertNotificationIntentType(other.channel);
+			subscriptionType = assertNotificationSubscriptionType(other.subscriptionType);
 		}
 
-		let channel: NotificationChannelType | undefined;
-		if ('channel' in other && other.channel !== undefined) {
-			channel = assertNotificationChannelType(other.channel);
+		let channelType: NotificationChannelType | undefined;
+		if ('channelType' in other && other.channelType !== undefined) {
+			channelType = assertNotificationChannelType(other.channelType);
 		}
 
-		const error = new this({ subscriptionType: intent, channelType: channel }, message);
+		const error = new this({ subscriptionType, channelType }, message);
 		error.restoreFromJSON(other);
 		return(error);
 	}
