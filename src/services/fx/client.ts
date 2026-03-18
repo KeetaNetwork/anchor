@@ -3,6 +3,7 @@ import { getDefaultResolver } from '../../config.js';
 import type {
 	UserClient as KeetaNetUserClient
 } from '@keetanetwork/keetanet-client';
+import type { DeprecatedFee, DeprecatedFeeRange } from '../../lib/fee.ts';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata, ServiceSearchCriteria, SharedLookupCriteria } from '../../lib/resolver.ts';
@@ -15,6 +16,7 @@ import {
 	isKeetaFXAnchorEstimateResponse,
 	isKeetaFXAnchorExchangeResponse,
 	isKeetaFXAnchorQuoteResponse,
+	parseFXCostAsset,
 	Errors as FXErrors
 } from './common.js';
 import type {
@@ -302,13 +304,15 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const estimateJSON = requestInformationJSON.estimate;
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
+		const estimateCost = estimateJSON.expectedCost as typeof estimateJSON.expectedCost & Partial<DeprecatedFeeRange>;
 		return({
 			request: this.#parseConversionRequest(estimateJSON.request),
 			convertedAmount: BigInt(estimateJSON.convertedAmount),
 			expectedCost: {
-				min: BigInt(estimateJSON.expectedCost.min),
-				max: BigInt(estimateJSON.expectedCost.max),
-				token: KeetaNetLib.Account.fromPublicKeyString(estimateJSON.expectedCost.token)
+				min: BigInt(estimateCost.min),
+				max: BigInt(estimateCost.max),
+				asset: parseFXCostAsset(estimateCost.asset ?? estimateCost.token ?? '')
 			},
 			...(estimateJSON.convertedAmountBound !== undefined ? { convertedAmountBound: BigInt(estimateJSON.convertedAmountBound) } : {}),
 			...(() => {
@@ -376,13 +380,15 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const quoteJSON = requestInformationJSON.quote;
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
+		const quoteCost = quoteJSON.cost as typeof quoteJSON.cost & Partial<DeprecatedFee>;
 		return({
 			request: this.#parseConversionRequest(quoteJSON.request),
 			account: KeetaNetLib.Account.fromPublicKeyString(quoteJSON.account),
 			convertedAmount: BigInt(quoteJSON.convertedAmount),
 			cost: {
-				amount: BigInt(quoteJSON.cost.amount),
-				token: KeetaNetLib.Account.fromPublicKeyString(quoteJSON.cost.token)
+				value: BigInt(quoteCost.value ?? quoteCost.amount ?? '0'),
+				asset: parseFXCostAsset(quoteCost.asset ?? quoteCost.token ?? '')
 			},
 			signed: quoteJSON.signed
 		});
@@ -436,13 +442,12 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			const builder = this.client.initBuilder();
 
 			if ('quote' in input) {
-				/* If cost is required then send the required amount as well */
-				if (input.quote.cost.amount > 0) {
-					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token);
+				if (input.quote.cost.value > 0 && KeetaNetLib.Account.isInstance(input.quote.cost.asset)) {
+					builder.send(liquidityProvider, input.quote.cost.value, input.quote.cost.asset);
 				}
 			} else if ('estimate' in input) {
-				if (input.estimate.expectedCost.max > 0) {
-					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token);
+				if (input.estimate.expectedCost.max > 0 && KeetaNetLib.Account.isInstance(input.estimate.expectedCost.asset)) {
+					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.asset);
 				}
 			}
 
@@ -724,12 +729,18 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			throw(new Error('From and To are both required for a conversion'));
 		}
 
-		return({
+		const canonical: ConversionInputCanonical = {
 			from,
 			to,
 			amount: amount,
 			affinity: input.affinity
-		});
+		};
+
+		if (input.preferredCostAsset !== undefined) {
+			canonical.preferredCostAsset = input.preferredCostAsset;
+		}
+
+		return(canonical);
 	}
 
 	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {

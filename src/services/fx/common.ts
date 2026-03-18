@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
@@ -7,11 +7,47 @@ import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type {
+	KeetaNetAccount,
+	KeetaNetStorageAccount,
+	KeetaNetToken,
+	KeetaNetTokenPublicKeyString,
+	MovableAssetSearchCanonical
+} from '../../lib/asset.js';
 
-export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
-export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
-export type KeetaNetToken = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>;
-export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+export type {
+	KeetaNetAccount,
+	KeetaNetStorageAccount,
+	KeetaNetToken,
+	KeetaNetTokenPublicKeyString,
+	MovableAssetSearchCanonical
+} from '../../lib/asset.js';
+
+/**
+ * Asset type for FX cost denomination -- either a KeetaNet token account
+ * (for on-chain settlement) or a canonical string-based asset identifier
+ * (for advisory/off-chain fees).
+ */
+export type FXCostAsset = KeetaNetToken | MovableAssetSearchCanonical;
+
+/**
+ * Parses a cost asset from its serialized form. Attempts to reconstitute
+ * a KeetaNetToken from a public key string; falls back to treating
+ * the input as a canonical asset identifier.
+ */
+// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
+export function parseFXCostAsset(input: FXCostAsset | string): FXCostAsset {
+	if (KeetaNetLib.Account.isInstance(input)) {
+		return(input);
+	}
+
+	try {
+		return(KeetaNetLib.Account.fromPublicKeyString(input).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN));
+	} catch {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(input as FXCostAsset);
+	}
+}
 
 export type ConversionInput = {
 	/**
@@ -34,10 +70,17 @@ export type ConversionInput = {
 	 * (i.e., the user wants this much).
 	 */
 	affinity: 'from' | 'to';
+
+	/**
+	 * Optional preferred asset in which the fee/cost should be
+	 * denominated. The operator may use this to denominate the
+	 * cost in the requested asset, or ignore it and use their default.
+	 */
+	preferredCostAsset?: MovableAssetSearchCanonical;
 };
 
 export type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : ConversionInput[k];
+	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : Exclude<ConversionInput[k], undefined>;
 };
 
 export type ConversionInputCanonicalJSON = ToJSONSerializable<ConversionInputCanonical>;
@@ -78,13 +121,13 @@ export type KeetaFXAnchorEstimate = {
 	convertedAmountBound?: bigint;
 
 	/**
-	 * The expected cost of the fx request, in the form of a
-	 * token and a range of minimum and maximum expected costs
+	 * The expected cost of the fx request, denominated in a specific asset
+	 * with a range of minimum and maximum expected costs
 	 */
 	expectedCost: {
+		asset: FXCostAsset;
 		min: bigint;
 		max: bigint;
-		token: KeetaNetToken;
 	};
 } & (
 	{
@@ -140,12 +183,11 @@ export type KeetaFXAnchorQuote = {
 	convertedAmount: bigint;
 
 	/**
-	 * The cost of the fx request, in the form of a
-	 * token and amount that should be included with the swap
+	 * The cost of the fx request, denominated in a specific asset
 	 */
 	cost: {
-		amount: bigint;
-		token: KeetaNetToken;
+		asset: FXCostAsset;
+		value: bigint;
 	};
 
 	/**

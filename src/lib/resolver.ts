@@ -7,10 +7,10 @@ import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
-
 import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
-import type { MovableAssetSearchInput, AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails } from '../services/asset-movement/common.js';
+import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails } from '../services/asset-movement/common.js';
+import type { MovableAssetSearchInput, MovableAssetSearchCanonical } from './asset.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -170,6 +170,13 @@ type ServiceMetadata = {
 						to?: boolean;
 					}
 				}[];
+
+				/**
+				 * Asset identifiers in which this FX provider accepts fee
+				 * denomination. If not specified, the provider chooses the
+				 * fee denomination.
+				 */
+				acceptedCostAssets?: MovableAssetSearchCanonical[];
 			}
 		};
 		username?: {

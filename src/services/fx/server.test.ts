@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { GetConversionRateAndFeeContext } from './server.js';
+import type { FXCostAsset, ConversionInputCanonicalJSON, MovableAssetSearchCanonical } from './common.js';
+import type { DeprecatedFee, DeprecatedFeeRange } from '../../lib/fee.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -8,6 +10,71 @@ import { asleep } from '../../lib/utils/asleep.js';
 
 const DEBUG = false;
 const TestLogger = DEBUG ? console : undefined;
+
+type KeetaNetUserClient = InstanceType<typeof KeetaNet.UserClient>;
+
+/**
+ * Creates a test environment with a node, server account, two tokens
+ * with ACCESS permissions, and optionally funded user accounts.
+ *
+ * The harness owns the node lifecycle via AsyncDisposableStack.
+ */
+async function createFXTestHarness(userAccountCount = 1) {
+	const serverAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userAccounts = Array.from({ length: userAccountCount }, function() {
+		return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
+	});
+
+	const nodeAndClient = await createNodeAndClient(serverAccount);
+	const serverClient = nodeAndClient.userClient;
+
+	const { account: token1 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: token2 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	if (!token1.isToken() || !token2.isToken()) {
+		throw(new Error('Tokens are not tokens'));
+	}
+
+	await serverClient.setInfo({
+		name: '',
+		description: '',
+		metadata: '',
+		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
+	}, { account: token1 });
+	await serverClient.setInfo({
+		name: '',
+		description: '',
+		metadata: '',
+		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
+	}, { account: token2 });
+
+	await serverClient.modTokenSupplyAndBalance(100000n, token2);
+
+	const userClients: KeetaNetUserClient[] = [];
+	for (const userAccount of userAccounts) {
+		await serverClient.modTokenSupplyAndBalance(1000n, token1);
+		await serverClient.send(userAccount, 1000n, token1);
+
+		userClients.push(new KeetaNet.UserClient({
+			client: serverClient.client,
+			signer: userAccount,
+			usePublishAid: false,
+			network: serverClient.network,
+			networkAlias: 'test'
+		}));
+	}
+
+	return({
+		serverAccount,
+		serverClient,
+		token1,
+		token2,
+		userClients,
+		[Symbol.asyncDispose]: async function() {
+			await nodeAndClient[Symbol.asyncDispose]();
+		}
+	});
+}
 
 /*
  * Helper functions for autoRun tests
@@ -54,21 +121,22 @@ async function waitForExchangeCompletion(serverURL: string, exchangeID: string, 
 	throw(new Error(`Exchange ${exchangeID} did not complete within ${timeoutMs}ms`));
 }
 
-async function getQuoteFromServer(serverURL: string, fromToken: string, toToken: string, amount: string) {
+async function getQuoteFromServer(serverURL: string, fromToken: string, toToken: string, amount: string, extraFields?: { [key: string]: unknown }) {
+	const request: { [key: string]: unknown } = {
+		from: fromToken,
+		to: toToken,
+		amount: amount,
+		affinity: 'from',
+		...extraFields
+	};
+
 	const response = await fetch(`${serverURL}/api/getQuote`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			'Accept': 'application/json'
 		},
-		body: JSON.stringify({
-			request: {
-				from: fromToken,
-				to: toToken,
-				amount: amount,
-				affinity: 'from'
-			}
-		})
+		body: JSON.stringify({ request })
 	});
 
 	expect(response.status).toBe(200);
@@ -147,8 +215,8 @@ test('FX Server Tests', async function() {
 						account: fxAccount,
 						convertedAmount: 1000n,
 						cost: {
-							amount: 0n,
-							token: KeetaNet.lib.Account.fromTokenPublicKey(KeetaNet.lib.Account.generateRandomSeed())
+							value: 0n,
+							asset: KeetaNet.lib.Account.fromTokenPublicKey(KeetaNet.lib.Account.generateRandomSeed())
 						}
 					});
 				}
@@ -312,8 +380,8 @@ test('FX Server Quote Validation Tests', async function() {
 					account: account,
 					convertedAmount: 1000n,
 					cost: {
-						amount: 0n,
-						token: token1
+						value: 0n,
+						asset: token1
 					}
 				});
 			},
@@ -490,8 +558,8 @@ test('FX Server Constructor Variation Tests', async function() {
 						account: account,
 						convertedAmount: 1000n,
 						cost: {
-							token: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-							amount: 0n
+							asset: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+							value: 0n
 						}
 					});
 				}
@@ -512,65 +580,8 @@ test('FX Server Constructor Variation Tests', async function() {
 });
 
 test('FX Server autoRun Concurrent Request Tests', async function() {
-	/*
-	 * Create multiple accounts to avoid block chain conflicts when
-	 * submitting concurrent exchanges
-	 */
-	const accounts = [
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0)
-	];
-
-	const serverAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	await using nodeAndClient = await createNodeAndClient(serverAccount);
-	const serverClient = nodeAndClient.userClient;
-
-	// Create tokens and set default permissions
-	const { account: token1 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	const { account: token2 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-
-	if (!token1.isToken() || !token2.isToken()) {
-		throw(new Error('Tokens are not tokens'));
-	}
-
-	// Set default permissions to ACCESS so all accounts can look up info
-	await serverClient.setInfo({
-		name: '',
-		description: '',
-		metadata: '',
-		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
-	}, { account: token1 });
-	await serverClient.setInfo({
-		name: '',
-		description: '',
-		metadata: '',
-		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
-	}, { account: token2 });
-
-	// Fund the server account with token2 so it can send converted tokens
-	await serverClient.modTokenSupplyAndBalance(100000n, token2);
-
-	/*
-	 * Create clients for each account and fund them
-	 */
-	const clients: InstanceType<typeof KeetaNet.UserClient>[] = [];
-	for (const account of accounts) {
-		// Fund the account with token1
-		await serverClient.modTokenSupplyAndBalance(1000n, token1);
-		await serverClient.send(account, 1000n, token1);
-
-		// Create a client using the same connection
-		clients.push(new KeetaNet.UserClient({
-			client: serverClient.client,
-			signer: account,
-			usePublishAid: false,
-			network: serverClient.network,
-			networkAlias: 'test'
-		}));
-	}
+	await using harness = await createFXTestHarness(5);
+	const { serverAccount, serverClient, token1, token2, userClients: clients } = harness;
 
 	let processingCount = 0;
 	const contextPurposes: GetConversionRateAndFeeContext['purpose'][] = [];
@@ -600,8 +611,8 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 					account: serverAccount,
 					convertedAmount: 1000n,
 					cost: {
-						amount: 0n,
-						token: token1
+						value: 0n,
+						asset: token1
 					}
 				});
 			}
@@ -710,65 +721,8 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 }, 30000);
 
 test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
-	/*
-	 * Create multiple accounts to avoid block chain conflicts when
-	 * submitting concurrent exchanges
-	 */
-	const accounts = [
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
-		KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0)
-	];
-
-	const serverAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-
-	await using nodeAndClient = await createNodeAndClient(serverAccount);
-	const serverClient = nodeAndClient.userClient;
-
-	// Create tokens and set default permissions
-	const { account: token1 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	const { account: token2 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-
-	if (!token1.isToken() || !token2.isToken()) {
-		throw(new Error('Tokens are not tokens'));
-	}
-
-	// Set default permissions to ACCESS so all accounts can look up info
-	await serverClient.setInfo({
-		name: '',
-		description: '',
-		metadata: '',
-		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
-	}, { account: token1 });
-	await serverClient.setInfo({
-		name: '',
-		description: '',
-		metadata: '',
-		defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], [])
-	}, { account: token2 });
-
-	// Fund the server account with token2 so it can send converted tokens
-	await serverClient.modTokenSupplyAndBalance(100000n, token2);
-
-	/*
-	 * Create clients for each account and fund them
-	 */
-	const clients: InstanceType<typeof KeetaNet.UserClient>[] = [];
-	for (const account of accounts) {
-		// Fund the account with token1
-		await serverClient.modTokenSupplyAndBalance(1000n, token1);
-		await serverClient.send(account, 1000n, token1);
-
-		// Create a client using the same connection
-		clients.push(new KeetaNet.UserClient({
-			client: serverClient.client,
-			signer: account,
-			usePublishAid: false,
-			network: serverClient.network,
-			networkAlias: 'test'
-		}));
-	}
+	await using harness = await createFXTestHarness(4);
+	const { serverAccount, serverClient, token1, token2, userClients: clients } = harness;
 
 	/*
 	 * Create a shared storage backend that both servers will use
@@ -796,8 +750,8 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 						account: serverAccount,
 						convertedAmount: 1000n,
 						cost: {
-							amount: 0n,
-							token: token1
+							value: 0n,
+							asset: token1
 						}
 					});
 				}
@@ -875,3 +829,166 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	expect(status3).toHaveProperty('status', 'completed');
 	expect(status4).toHaveProperty('status', 'completed');
 }, 60000);
+
+test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async function() {
+	await using harness = await createFXTestHarness(1);
+
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const userClient = userClients[0];
+	if (userClient === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	const acceptedCostAssets: MovableAssetSearchCanonical[] = ['USD', 'evm:0xdead'];
+	const capturedRequests: ConversionInputCanonicalJSON[] = [];
+
+	const checks: {
+		preferredCostAsset?: string;
+		expectedCostAsset: string;
+		expectedCostValue: bigint;
+		sendAmount: bigint;
+	}[] = [
+		{
+			expectedCostAsset: 'USD',
+			expectedCostValue: 10n,
+			preferredCostAsset: 'USD',
+			sendAmount: 100n
+		},
+		{
+			expectedCostAsset: 'evm:0xdead',
+			expectedCostValue: 10n,
+			preferredCostAsset: 'evm:0xdead',
+			sendAmount: 100n
+		},
+		{
+			expectedCostAsset: token1.publicKeyString.get(),
+			expectedCostValue: 10n,
+			sendAmount: 110n
+		}
+	];
+
+	for (const check of checks) {
+		capturedRequests.length = 0;
+
+		await using server = new KeetaNetFXAnchorHTTPServer({
+			logger: TestLogger,
+			accounts: new KeetaNet.lib.Account.Set([serverAccount]),
+			signer: serverAccount,
+			client: serverClient,
+			quoteSigner: serverAccount,
+			quoteConfiguration: {
+				requiresQuote: false,
+				validateQuoteBeforeExchange: false,
+				issueQuotes: true
+			},
+			fx: {
+				from: [{
+					currencyCodes: [token1.publicKeyString.get()],
+					to: [token2.publicKeyString.get()]
+				}],
+				acceptedCostAssets: acceptedCostAssets,
+				getConversionRateAndFee: async function(request) {
+					capturedRequests.push(request);
+
+					let costAsset: FXCostAsset = token1;
+					if (request.preferredCostAsset !== undefined) {
+						costAsset = request.preferredCostAsset;
+					}
+
+					return({
+						account: serverAccount,
+						convertedAmount: 500n,
+						cost: {
+							value: check.expectedCostValue,
+							asset: costAsset
+						}
+					});
+				}
+			}
+		});
+
+		await server.start();
+		const url = server.url;
+
+		/*
+		 * Verify acceptedCostAssets appears in service metadata
+		 */
+		const metadata = await server.serviceMetadata();
+		expect(metadata.acceptedCostAssets).toEqual(acceptedCostAssets);
+
+		/*
+		 * Verify estimate response and preferredCostAsset flow
+		 */
+		const requestBody: { [key: string]: unknown } = {
+			from: token1.publicKeyString.get(),
+			to: token2.publicKeyString.get(),
+			amount: '100',
+			affinity: 'from'
+		};
+
+		if (check.preferredCostAsset !== undefined) {
+			requestBody.preferredCostAsset = check.preferredCostAsset;
+		}
+
+		const estimateResponse = await fetch(`${url}/api/getEstimate`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
+			},
+			body: JSON.stringify({ request: requestBody })
+		});
+
+		expect(estimateResponse.status).toBe(200);
+		const estimateData: unknown = await estimateResponse.json();
+		expect(estimateData).toHaveProperty('ok', true);
+		expect(estimateData).toHaveProperty('estimate');
+
+		expect(capturedRequests.length).toBe(1);
+		expect(capturedRequests[0]?.preferredCostAsset).toBe(check.preferredCostAsset);
+
+		if (typeof estimateData !== 'object' || estimateData === null || !('estimate' in estimateData) || typeof estimateData.estimate !== 'object' || estimateData.estimate === null) {
+			throw(new Error('Invalid estimate response'));
+		}
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
+		const estimate = estimateData.estimate as { expectedCost: DeprecatedFeeRange; };
+		expect(estimate.expectedCost.asset).toBe(check.expectedCostAsset);
+		expect(BigInt(estimate.expectedCost.min)).toBe(check.expectedCostValue);
+		expect(BigInt(estimate.expectedCost.max)).toBe(check.expectedCostValue);
+		expect(estimate.expectedCost.token).toBe(check.expectedCostAsset);
+
+		/*
+		 * Verify quote response serializes cost correctly
+		 */
+		const quoteExtraFields: { [key: string]: unknown } = {};
+		if (check.preferredCostAsset !== undefined) {
+			quoteExtraFields.preferredCostAsset = check.preferredCostAsset;
+		}
+
+		const token1String = token1.publicKeyString.get();
+		const token2String = token2.publicKeyString.get();
+		const quote = await getQuoteFromServer(url, token1String, token2String, '100', quoteExtraFields);
+		if (typeof quote !== 'object' || quote === null || !('cost' in quote) || typeof quote.cost !== 'object' || quote.cost === null) {
+			throw(new Error('Invalid quote'));
+		}
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
+		const quoteCost = quote.cost as DeprecatedFee;
+		expect(quoteCost.asset).toBe(check.expectedCostAsset);
+		expect(BigInt(quoteCost.value)).toBe(check.expectedCostValue);
+		expect(quoteCost.token).toBe(check.expectedCostAsset);
+		expect(BigInt(quoteCost.amount)).toBe(check.expectedCostValue);
+
+		/*
+		 * Verify exchange succeeds without an on-chain cost SEND
+		 * (advisory fee -- block only contains the swap operations)
+		 */
+		const exchange = await createExchangeOnServer(url, quote, userClient, token1, check.sendAmount);
+		expect(exchange).toHaveProperty('ok', true);
+
+		const exchangeID = extractExchangeID(exchange);
+		const status = await waitForExchangeCompletion(url, exchangeID, 10000);
+		expect(status).toHaveProperty('status', 'completed');
+	}
+}, 30000);

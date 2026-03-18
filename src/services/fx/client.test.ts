@@ -174,8 +174,8 @@ for (const useDeprecated of [false, true]) {
 						account: liquidityProviderAccount,
 						convertedAmount: BigInt(request.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 						cost: {
-							amount: 5n,
-							token: baseToken
+							value: 5n,
+							asset: baseToken
 						}
 					});
 				}
@@ -445,7 +445,7 @@ for (const useDeprecated of [false, true]) {
 				expectedCost: {
 					min: 5n,
 					max: 5n,
-					token: baseToken
+					asset: baseToken
 				}
 			}));
 
@@ -473,8 +473,8 @@ for (const useDeprecated of [false, true]) {
 				account: quote.quote.account,
 				convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 				cost: {
-					amount: 5n,
-					token: baseToken
+					value: 5n,
+					asset: baseToken
 				},
 				signed: {
 					...quote.quote.signed
@@ -503,8 +503,8 @@ for (const useDeprecated of [false, true]) {
 				account: quoteFromEstimate.quote.account,
 				convertedAmount: BigInt(requestCanonical.amount) * BigInt(Math.round(rate * 1000)) / 1000n,
 				cost: {
-					amount: 5n,
-					token: baseToken
+					value: 5n,
+					asset: baseToken
 				},
 				signed: {
 					...quoteFromEstimate.quote.signed
@@ -545,13 +545,15 @@ for (const useDeprecated of [false, true]) {
 			})).rejects.toThrow();
 
 			swapBlockBuilder.unseal();
-			// Add the cost to the operations
+			if (!KeetaNet.lib.Account.isInstance(quoteFromEstimate.quote.cost.asset)) {
+				throw(new Error('Expected cost asset to be a KeetaNet token in test'));
+			}
 			swapBlockBuilder.addOperation(
 				{
 					type: KeetaNet.lib.Block.OperationType.SEND,
 					to: quoteFromEstimate.quote.account,
-					token: quoteFromEstimate.quote.cost.token,
-					amount: quoteFromEstimate.quote.cost.amount
+					token: quoteFromEstimate.quote.cost.asset,
+					amount: quoteFromEstimate.quote.cost.value
 				}
 			);
 			const swapRequestBlock = await swapBlockBuilder.seal();
@@ -645,7 +647,10 @@ for (const useDeprecated of [false, true]) {
 
 			const negativeBalanceSwapBlockBuilder = client.initBuilder();
 			negativeBalanceSwapBlockBuilder.send(quote.quote.account, swapValue, quote.quote.request.from);
-			negativeBalanceSwapBlockBuilder.send(quote.quote.account, quote.quote.cost.amount, quote.quote.cost.token);
+			if (!KeetaNet.lib.Account.isInstance(quote.quote.cost.asset)) {
+				throw(new Error('Expected cost asset to be a KeetaNet token in test'));
+			}
+			negativeBalanceSwapBlockBuilder.send(quote.quote.account, quote.quote.cost.value, quote.quote.cost.asset);
 			const computeResult = await negativeBalanceSwapBlockBuilder.computeBlocks();
 			const computedBlock = computeResult.blocks[0];
 			if (!computedBlock) {
@@ -740,8 +745,8 @@ test('createExchange handles missing status field', async function() {
 					account: liquidityProvider,
 					convertedAmount: BigInt(request.amount) * 88n / 100n,
 					cost: {
-						amount: 5n,
-						token: baseToken
+						value: 5n,
+						asset: baseToken
 					}
 				});
 			}
@@ -908,8 +913,8 @@ test('FX Server Estimate to Exchange Test', async function() {
 			convertedAmount: 1003n,
 			convertedAmountBound: 900n,
 			cost: {
-				amount: 0n,
-				token: testCurrencyUSD
+				value: 0n,
+				asset: testCurrencyUSD
 			}
 		});
 	}));
@@ -918,8 +923,8 @@ test('FX Server Estimate to Exchange Test', async function() {
 		convertedAmount: 1002n,
 		convertedAmountBound: 850n,
 		cost: {
-			amount: 0n,
-			token: testCurrencyUSD
+			value: 0n,
+			asset: testCurrencyUSD
 		}
 	};
 
@@ -944,8 +949,8 @@ test('FX Server Estimate to Exchange Test', async function() {
 			convertedAmount: 1001n,
 			convertedAmountBound: 750n,
 			cost: {
-				amount: 0n,
-				token: testCurrencyUSD
+				value: 0n,
+				asset: testCurrencyUSD
 			}
 		});
 	}));
@@ -1281,51 +1286,51 @@ test('FX Server Estimate to Exchange Test', async function() {
 			 */
 
 			const tests: {
-				quote: { convertedAmount: bigint; cost: { token: TokenAddress; amount: bigint; }; };
+				quote: { convertedAmount: bigint; cost: { asset: TokenAddress; value: bigint; }; };
 				request: Pick<ConversionInput, 'amount' | 'affinity'>;
 				send: { sendValue: bigint; costValue: bigint; }
 				expectedChange: { sendToken: bigint; costToken?: bigint; };
 			}[] = [
 				{
 					request: { amount: 1000n, affinity: 'from' },
-					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
+					quote: { cost: { asset: testCurrencyUSD, value: 0n }, convertedAmount: 1002n },
 					send: { sendValue: 2000n, costValue: 0n },
 					// No expected additional refund as affinity is from
 					expectedChange: { sendToken: 2000n }
 				},
 				{
 					request: { amount: 1000n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1002n },
+					quote: { cost: { asset: testCurrencyUSD, value: 0n }, convertedAmount: 1002n },
 					send: { sendValue: 2000n, costValue: 0n },
 					expectedChange: { sendToken: 1002n }
 				},
 				{
 					request: { amount: 1000n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyUSD, amount: 5n }, convertedAmount: 1002n },
+					quote: { cost: { asset: testCurrencyUSD, value: 5n }, convertedAmount: 1002n },
 					send: { sendValue: 2000n, costValue: 1000n },
 					expectedChange: { sendToken: 1007n }
 				},
 				{
 					request: { amount: 100n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyEUR, amount: 5n }, convertedAmount: 105n },
+					quote: { cost: { asset: testCurrencyEUR, value: 5n }, convertedAmount: 105n },
 					send: { sendValue: 200n, costValue: 100n },
 					expectedChange: { sendToken: 105n, costToken: -95n }
 				},
 				{
 					request: { amount: 100n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyBTC, amount: 0n }, convertedAmount: 200n },
+					quote: { cost: { asset: testCurrencyBTC, value: 0n }, convertedAmount: 200n },
 					send: { sendValue: 300n, costValue: 0n },
 					expectedChange: { sendToken: 200n, costToken: 0n }
 				},
 				{
 					request: { amount: 100n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyUSD, amount: 5n }, convertedAmount: 200n },
+					quote: { cost: { asset: testCurrencyUSD, value: 5n }, convertedAmount: 200n },
 					send: { sendValue: 300n, costValue: 10n },
 					expectedChange: { sendToken: 205n }
 				},
 				{
 					request: { amount: 100n, affinity: 'to' },
-					quote: { cost: { token: testCurrencyGBP, amount: 5n }, convertedAmount: 200n },
+					quote: { cost: { asset: testCurrencyGBP, value: 5n }, convertedAmount: 200n },
 					send: { sendValue: 300n, costValue: 10n },
 					expectedChange: { sendToken: 200n, costToken: 5n }
 				}
@@ -1351,7 +1356,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 				builder.send(singleEstimate.estimate.account, testCase.send.sendValue, testCurrencyUSD);
 
 				if (testCase.send.costValue > 0n) {
-					builder.send(singleEstimate.estimate.account, testCase.send.costValue, testCase.quote.cost.token);
+					builder.send(singleEstimate.estimate.account, testCase.send.costValue, testCase.quote.cost.asset);
 				}
 
 				builder.receive(singleEstimate.estimate.account, 1n, testCurrencyEUR);
@@ -1362,19 +1367,19 @@ test('FX Server Estimate to Exchange Test', async function() {
 					throw(new Error('No block computed'));
 				}
 
-				const costTokenBalancePre = await client.balance(testCase.quote.cost.token);
+				const costTokenBalancePre = await client.balance(testCase.quote.cost.asset);
 				const sendTokenBalancePre = await client.balance(testCurrencyUSD);
 
 				const exchange = await singleEstimate.createExchange(block);
 
 				await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
 
-				const costTokenBalancePost = await client.balance(testCase.quote.cost.token);
+				const costTokenBalancePost = await client.balance(testCase.quote.cost.asset);
 				const sendTokenBalancePost = await client.balance(testCurrencyUSD);
 
 				let expectedCostTokenChange = testCase.expectedChange.costToken;
 				if (expectedCostTokenChange === undefined) {
-					if (!testCase.quote.cost.token.comparePublicKey(testCurrencyUSD)) {
+					if (!testCase.quote.cost.asset.comparePublicKey(testCurrencyUSD)) {
 						throw(new Error('expectedChange.costToken is undefined but cost token is not send token'));
 					}
 					expectedCostTokenChange = testCase.expectedChange.sendToken;
@@ -1470,7 +1475,7 @@ test('FX Server Pricing test', async function() {
 						return({
 							convertedAmount: convertedAmount,
 							account: signerLiquidityAccount,
-							cost: { amount: 0n, token: testCurrencyUSD }
+							cost: { value: 0n, asset: testCurrencyUSD }
 						})
 					}
 				}
@@ -1635,8 +1640,8 @@ test('FX Server Queue extensions', async function() {
 		convertedAmount: 1002n,
 		convertedAmountBound: 850n,
 		cost: {
-			amount: 0n,
-			token: testCurrencyUSD
+			value: 0n,
+			asset: testCurrencyUSD
 		}
 	};
 	const signerLiquidityAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -1756,8 +1761,8 @@ test('FX Server Queue extensions', async function() {
 
 	const failureSwapBuilder = client.initBuilder();
 	failureSwapBuilder.send(failingQuote.quote.account, userFailureSwapAmount, failingQuote.quote.request.from);
-	if (failingQuote.quote.cost.amount > 0n) {
-		failureSwapBuilder.send(failingQuote.quote.account, failingQuote.quote.cost.amount, failingQuote.quote.cost.token);
+	if (failingQuote.quote.cost.value > 0n && KeetaNet.lib.Account.isInstance(failingQuote.quote.cost.asset)) {
+		failureSwapBuilder.send(failingQuote.quote.account, failingQuote.quote.cost.value, failingQuote.quote.cost.asset);
 	}
 	const failureSwapBlocks = await failureSwapBuilder.computeBlocks();
 	const failureBlock = failureSwapBlocks.blocks[0];
@@ -1799,8 +1804,8 @@ test('FX Server Converted Amount Bound Validation', async function() {
 		convertedAmount: 1000n,
 		convertedAmountBound: 1000n,
 		cost: {
-			amount: 5n,
-			token: testCurrencyUSD
+			value: 5n,
+			asset: testCurrencyUSD
 		}
 	};
 

@@ -68,7 +68,7 @@ export function assertExchangeBlockParametersAndComputeRefund(args: {
 
 			if (operation.token.comparePublicKey(args.checks.request.from)) {
 				validToken = true;
-			} else if (operation.token.comparePublicKey(args.checks.quote.cost.token) && args.checks.quote.cost.amount > 0n) {
+			} else if (KeetaNet.lib.Account.isInstance(args.checks.quote.cost.asset) && operation.token.comparePublicKey(args.checks.quote.cost.asset) && args.checks.quote.cost.value > 0n) {
 				validToken = true;
 			} else {
 				validToken = false;
@@ -119,14 +119,13 @@ export function assertExchangeBlockParametersAndComputeRefund(args: {
 	};
 
 	const costValue = args.checks.quote.cost;
-	if (costValue.amount > 0n) {
-		const feeTokenPub = costValue.token.publicKeyString.get();
-
+	if (costValue.value > 0n && KeetaNet.lib.Account.isInstance(costValue.asset)) {
+		const feeTokenPub = costValue.asset.publicKeyString.get();
 		if (!userSendsMinimum[feeTokenPub]) {
 			userSendsMinimum[feeTokenPub] = 0n;
 		}
 
-		userSendsMinimum[feeTokenPub] += costValue.amount;
+		userSendsMinimum[feeTokenPub] += costValue.value;
 	}
 
 	const refunds: RefundValue[] = [];
@@ -155,7 +154,7 @@ export function assertExchangeBlockParametersAndComputeRefund(args: {
 				if (args.checks.request.affinity === 'to') {
 					isRefundable = true;
 				}
-			} else if (costValue.amount > 0n && excessToken.comparePublicKey(costValue.token)) {
+			} else if (costValue.value > 0n && KeetaNet.lib.Account.isInstance(costValue.asset) && excessToken.comparePublicKey(costValue.asset)) {
 				isRefundable = true;
 			}
 
