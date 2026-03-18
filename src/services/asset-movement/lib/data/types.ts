@@ -97,16 +97,21 @@ export const sharedJSONSchemaTypes: {
 	ISOCountryCode: { $id: 'ISOCountryCode', type: "string", enum: Country.allCountryCodes },
 	PhysicalAddress: {
 		$id: 'PhysicalAddress',
-		type: "object",
-		properties: {
-			line1: { type: "string" },
-			line2: { type: "string" },
-			country: sharedSchemaReferences.ISOCountryCode,
-			postalCode: { type: "string" },
-			subdivision: { type: "string" },
-			city: { type: "string" }
-		},
-		required: ['line1', 'country', 'postalCode', 'subdivision', 'city']
+		oneOf: [
+			{
+				type: "object",
+				properties: {
+					line1: { type: "string" },
+					line2: { type: "string" },
+					country: sharedSchemaReferences.ISOCountryCode,
+					postalCode: { type: "string" },
+					subdivision: { type: "string" },
+					city: { type: "string" }
+				},
+				required: ['line1', 'country', 'postalCode', 'subdivision', 'city']
+			},
+			{ type: 'string' }
+		]
 	},
 	MonthYearDateInput: {
 		$id: 'MonthYearDateInput',

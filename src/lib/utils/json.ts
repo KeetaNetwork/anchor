@@ -1,6 +1,8 @@
-import { type JSONSerializable, type ToJSONSerializable, toJSONSerializable } from '@keetanetwork/keetanet-node/dist/lib/utils/conversion.js';
-import { debugPrintableObject } from '@keetanetwork/keetanet-node/dist/lib/utils/helper.js';
+import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
+
+const debugPrintableObject: typeof KeetaNet.lib.Utils.Helper.debugPrintableObject = KeetaNet.lib.Utils.Helper.debugPrintableObject;
+const toJSONSerializable: typeof KeetaNet.lib.Utils.Conversion.toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
 export type { JSONSerializable, ToJSONSerializable };
-
 export { toJSONSerializable, debugPrintableObject };
