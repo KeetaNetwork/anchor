@@ -10,7 +10,7 @@ import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
-import type { MovableAssetSearchInput, AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails } from '../services/asset-movement/common.js';
+import type { MovableAssetSearchInput, AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput } from '../services/asset-movement/common.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
@@ -333,9 +333,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		from?: AssetLocationString;
 		to?: AssetLocationString;
 		/**
-		 * Search for a provider which supports ANY of the following rail(s)
+		 * Rail search criteria
+		 *
+		 * @see {AssetMovementRailSearchInput} for details on the structure and behavior of this criteria
 		 */
-		rail?: Rail | Rail[] | undefined;
+		rail?: AssetMovementRailSearchInput;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
@@ -1831,12 +1833,17 @@ class Resolver {
 					}
 				}
 
-				const [ from /* , to */ ] = pairSorted;
+				const [ from, to ] = pairSorted;
 
 				// XXX:TODO what rails do we want to check here? This is just inbound
-				const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
+				// const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []), ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ];
 
-				if (supportedRails.length === 0) {
+				const supportedRails = {
+					inbound: [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ],
+					outbound: [ ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ]
+				}
+
+				if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
 					continue;
 				}
 
@@ -1858,15 +1865,43 @@ class Resolver {
 
 				if (criteria.rail !== undefined) {
 					let railMatchFound = false;
-					if (typeof criteria.rail === 'string') {
-						railMatchFound = checkSupportedRailIncludes(criteria.rail, supportedRails);
-					} else {
-						for (const checkRail of criteria.rail) {
-							railMatchFound = checkSupportedRailIncludes(checkRail, supportedRails);
+					for (const direction of ['inbound', 'outbound'] as const) {
+						let searchFor;
+						let searchIn;
+						let eitherDirectionSharedSearch;
 
-							if (railMatchFound) {
-								break;
+						if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+							searchFor = criteria.rail[direction];
+							searchIn = supportedRails[direction];
+							eitherDirectionSharedSearch = false;
+						} else {
+							searchFor = criteria.rail;
+							searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+							eitherDirectionSharedSearch = true;
+						}
+
+
+						if (searchFor !== undefined) {
+							if (typeof searchFor === 'string') {
+								railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+							} else {
+								for (const checkRail of searchFor) {
+									railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+									if (railMatchFound) {
+										break;
+									}
+								}
 							}
+						}
+
+						// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+						if (eitherDirectionSharedSearch) {
+							break;
+						}
+
+						if (railMatchFound) {
+							break;
 						}
 					}
 
