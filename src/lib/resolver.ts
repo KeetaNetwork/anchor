@@ -1835,9 +1835,6 @@ class Resolver {
 
 				const [ from, to ] = pairSorted;
 
-				// XXX:TODO what rails do we want to check here? This is just inbound
-				// const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []), ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ];
-
 				const supportedRails = {
 					inbound: [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ],
 					outbound: [ ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ]
