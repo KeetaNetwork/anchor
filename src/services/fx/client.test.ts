@@ -545,6 +545,7 @@ for (const useDeprecated of [false, true]) {
 			})).rejects.toThrow();
 
 			swapBlockBuilder.unseal();
+			// Add the cost to the operations
 			swapBlockBuilder.addOperation(
 				{
 					type: KeetaNet.lib.Block.OperationType.SEND,
