@@ -111,11 +111,25 @@ export function isSolanaAsset(input: unknown): input is SolanaAsset {
 	return(typeof input === 'string' && input.startsWith('solana:'));
 }
 
+type RailOrRails = Rail | Rail[];
+
+/**
+ * Search criteria for filtering asset movement rails when searching for supported rails for a given transfer.
+ * This can be either a single rail or an array of rails, and can be specified for inbound, outbound or common rails.
+ *
+ * If a single rail or array of rails is provided, it will be applied to both inbound and outbound rails.
+ * If separate inbound and outbound rails are provided, they will be applied to their respective directions.
+ *
+ * For both methods, this will look for providers that support at least one of the specified rails in the respective direction(s).
+ * For example, if { inbound: ['ACH', 'WIRE'] } is provided, it will match providers that support either ACH or WIRE inbound rails.
+ */
+export type AssetMovementRailSearchInput = RailOrRails | ({ inbound: RailOrRails; outbound?: RailOrRails } | { inbound?: RailOrRails; outbound: RailOrRails });
+
 export type ProviderSearchInput = {
 	asset?: MovableAsset | AssetPair;
 	from?: AssetLocationInput;
 	to?: AssetLocationInput;
-	rail?: Rail | Rail[];
+	rail?: AssetMovementRailSearchInput;
 }
 
 // A given asset should have a location and ID for the contract or public key for that asset

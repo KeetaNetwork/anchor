@@ -317,11 +317,23 @@ test('Asset Movement Anchor Client Test', async function() {
 		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: 'EVM_SEND' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: [ 'EVM_CALL' ] }, [ 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: [ 'EVM_CALL', 'EVM_SEND' ] }, [ 'Test', 'Test2' ] ],
-		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: [ 'EVM_CALL', 'EVM_SEND' ] }, [] ],
+		// With the new code, flat rail search checks both inbound and outbound combined, so EVM_SEND (outbound of evm:100) matches
+		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: [ 'EVM_CALL', 'EVM_SEND' ] }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC, from: 'chain:keeta:123', to: 'chain:evm:100', rail: 'KEETA_SEND' }, [ 'Test', 'Test2' ] ],
 		[ { asset: testCurrencyUSDC }, [ 'Test', 'Test2' ] ],
-		[ { asset: { from: testCurrencyUSDC, to: 'USD' }}, [ 'Test' ] ]
+		[ { asset: { from: testCurrencyUSDC, to: 'USD' }}, [ 'Test' ] ],
+		// Object form: search inbound/outbound rails separately
+		// from=evm:100: inbound=['EVM_SEND'] (Test), ['EVM_SEND','EVM_CALL'] (Test2)
+		// to=keeta:123: outbound=[] (Test), ['KEETA_SEND'] (Test2)
+		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_SEND' }}, [ 'Test', 'Test2' ] ],
+		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_CALL' }}, [ 'Test2' ] ],
+		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { outbound: 'KEETA_SEND' }}, [ 'Test2' ] ],
+		// OR logic: inbound match short-circuits, so Test (EVM_SEND inbound) and Test2 (EVM_CALL inbound) both match
+		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_SEND', outbound: 'KEETA_SEND' }}, [ 'Test', 'Test2' ] ],
+		// inbound doesn't match for Test, falls through to outbound which also doesn't match (Test has no outbound rails)
+		// Test2: EVM_CALL matches inbound → match
+		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_CALL', outbound: 'KEETA_SEND' }}, [ 'Test2' ] ]
 	];
 
 	for (const [ input, expectedProviderIDs ] of getProviderTests) {
