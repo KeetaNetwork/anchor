@@ -7,19 +7,19 @@ import {
 import {
 	assertConversionInputCanonicalJSON,
 	assertKeetaFXAnchorClientCreateExchangeRequestJSON,
-	parseFXCostAsset,
 	Errors
 } from './common.js';
-import type { Fee, FeeRange, DeprecatedFee, DeprecatedFeeRange } from '../../lib/fee.ts';
 import type {
 	ConversionInputCanonicalJSON,
 	KeetaFXAnchorEstimate,
+	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteJSON,
+	KeetaFXAnchorQuoteResponse,
 	KeetaNetAccount,
 	KeetaNetStorageAccount,
-	MovableAssetSearchCanonical
+	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
@@ -213,8 +213,8 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		unsignedQuote.request.affinity,
 		unsignedQuote.account,
 		unsignedQuote.convertedAmount,
-		unsignedQuote.cost.asset,
-		unsignedQuote.cost.value
+		unsignedQuote.cost.token,
+		unsignedQuote.cost.amount
 	];
 
 	return(retval);
@@ -229,7 +229,7 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
 		AssertNever<keyof Omit<typeof unsignedQuote['request'], 'from' | 'to' | 'amount' | 'affinity' | 'preferredCostAsset'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
-		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'asset' | 'value'>> &
+		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'token' | 'amount'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
 		AssertNever<keyof Omit<typeof unsignedQuote, 'request' | 'convertedAmount' | 'cost' | 'account'>>
 	>;
@@ -249,20 +249,6 @@ async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: Keet
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
-}
-
-/** @deprecated Adds legacy field aliases -- remove when all peers use asset/value/min/max */
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-function withDeprecatedCostFields(cost: FeeRange): DeprecatedFeeRange;
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-function withDeprecatedCostFields(cost: Fee): DeprecatedFee;
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-function withDeprecatedCostFields(cost: Fee | FeeRange): DeprecatedFee | DeprecatedFeeRange {
-	if ('value' in cost) {
-		return({ ...cost, token: cost.asset, amount: cost.value });
-	}
-
-	return({ ...cost, token: cost.asset });
 }
 
 async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount | null; }> {
@@ -311,8 +297,8 @@ export function toValidateQuoteInput(input: KeetaFXAnchorQuoteJSON | KeetaFXInte
 		account: KeetaNet.lib.Account.toAccount(input.account),
 		convertedAmount: BigInt(input.convertedAmount),
 		cost: {
-			value: BigInt(input.cost.value),
-			asset: parseFXCostAsset(input.cost.asset)
+			amount: BigInt(input.cost.amount),
+			token: KeetaNet.lib.Account.toAccount(input.cost.token)
 		}
 	};
 
@@ -352,7 +338,7 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Base64 encoded block from the user */
 	block: string;
 	/** Original request */
-	request: Omit<ConversionInputCanonicalJSON, 'preferredCostAsset'> & { preferredCostAsset?: MovableAssetSearchCanonical };
+	request: Omit<ConversionInputCanonicalJSON, 'preferredCostAsset'> & { preferredCostAsset?: KeetaNetTokenPublicKeyString };
 	/** Expected exchange details for verification */
 	expected: ToJSONSerializable<KeetaFXAnchorQueueStage1Request['expected']> | null;
 };
@@ -1113,25 +1099,19 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 				requiresQuoteBody = { requiresQuote: false, account: rateAndFee.account };
 			}
 
-			const estimateSerialized = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
-				request: conversion,
-				convertedAmount: rateAndFee.convertedAmount,
-				convertedAmountBound: rateAndFee.convertedAmountBound,
-				expectedCost: {
-					asset: rateAndFee.cost.asset,
-					min: rateAndFee.cost.value,
-					max: rateAndFee.cost.value
-				},
-				...requiresQuoteBody
-			});
-
-			const estimateResponse = {
-				ok: true as const,
-				estimate: {
-					...estimateSerialized,
-					// eslint-disable-next-line @typescript-eslint/no-deprecated
-					expectedCost: withDeprecatedCostFields(estimateSerialized.expectedCost)
-				}
+			const estimateResponse: KeetaFXAnchorEstimateResponse = {
+				ok: true,
+				estimate: KeetaNet.lib.Utils.Conversion.toJSONSerializable({
+					request: conversion,
+					convertedAmount: rateAndFee.convertedAmount,
+					convertedAmountBound: rateAndFee.convertedAmountBound,
+					expectedCost: {
+						min: rateAndFee.cost.amount,
+						max: rateAndFee.cost.amount,
+						token: rateAndFee.cost.token
+					},
+					...requiresQuoteBody
+				})
 			};
 
 			return({
@@ -1295,12 +1275,9 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 			}
 
 			const signedQuote = await generateSignedQuote(config.quoteSigner, unsignedQuote);
-			const quoteResponse = {
-				ok: true as const,
-				quote: {
-					...signedQuote,
-					cost: withDeprecatedCostFields(signedQuote.cost)
-				}
+			const quoteResponse: KeetaFXAnchorQuoteResponse = {
+				ok: true,
+				quote: signedQuote
 			};
 
 			return({

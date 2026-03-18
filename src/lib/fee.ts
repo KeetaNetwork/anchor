@@ -21,18 +21,3 @@ export interface FeeRange {
 	min: string;
 	max: string;
 }
-
-/**
- * @deprecated Legacy field aliases
- */
-export interface DeprecatedFee extends Fee {
-	token: string;
-	amount: string;
-}
-
-/**
- * @deprecated Legacy field aliases
- */
-export interface DeprecatedFeeRange extends FeeRange {
-	token: string;
-}

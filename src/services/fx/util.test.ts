@@ -1,7 +1,6 @@
 import { test, expect } from 'vitest';
 import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
-import { parseFXCostAsset } from './common.js';
-import type { FXCostAsset } from './common.js';
+import { parseFXCostToken } from './common.js';
 import { KeetaNet } from '../../client/index.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
@@ -20,8 +19,8 @@ test('convertQuoteToExpectedSwapWithoutCost', function() {
 				quote: {
 					convertedAmount: 4000n,
 					cost: {
-						value: 0n,
-						asset: tokenA
+						amount: 0n,
+						token: tokenA
 					}
 				},
 				request: {
@@ -41,8 +40,8 @@ test('convertQuoteToExpectedSwapWithoutCost', function() {
 				quote: {
 					convertedAmount: 3000n,
 					cost: {
-						value: 0n,
-						asset: tokenB
+						amount: 0n,
+						token: tokenB
 					}
 				},
 				request: {
@@ -99,8 +98,8 @@ test('assertExchangeBlockParameters', async function() {
 		quote: {
 			convertedAmount: 4000n,
 			cost: {
-				value: 0n,
-				asset: tokenA
+				amount: 0n,
+				token: tokenA
 			}
 		},
 		request: {
@@ -198,8 +197,8 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							asset: tokenA,
-							value: 25n
+							amount: 25n,
+							token: tokenA
 						}
 					},
 					request: {
@@ -221,8 +220,8 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							asset: tokenA,
-							value: 25n
+							amount: 25n,
+							token: tokenA
 						}
 					},
 					request: {
@@ -244,52 +243,14 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							asset: tokenC,
-							value: 1n
+							amount: 1n,
+							token: tokenC
 						}
 					}
 				},
 				isQuoteBasedExchange: false
 			},
 			pass: false
-		},
-		{
-			args: {
-				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
-				block: aSendsTokenAToBBlock,
-				liquidityAccount: accountB,
-				checks: {
-					...baseQuoteRequest,
-					quote: {
-						...baseQuoteRequest.quote,
-						cost: {
-							asset: 'USD',
-							value: 5n
-						}
-					}
-				},
-				isQuoteBasedExchange: false
-			},
-			pass: true
-		},
-		{
-			args: {
-				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
-				block: aSendsTokenAToBBlock,
-				liquidityAccount: accountB,
-				checks: {
-					...baseQuoteRequest,
-					quote: {
-						...baseQuoteRequest.quote,
-						cost: {
-							asset: 'USD',
-							value: 0n
-						}
-					}
-				},
-				isQuoteBasedExchange: false
-			},
-			pass: true
 		}
 	];
 
@@ -306,48 +267,31 @@ test('assertExchangeBlockParameters', async function() {
 });
 
 
-test('parseFXCostAsset', function() {
+test('parseFXCostToken', function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const token = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 0);
 	const tokenPubKeyString = token.publicKeyString.get();
 
 	const checks: {
-		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-		input: FXCostAsset | string;
-		isAccount: boolean;
-		matchesToken?: typeof token;
+		input: typeof token | string;
+		matchesToken: typeof token;
 	}[] = [
 		{
 			input: token,
-			isAccount: true,
 			matchesToken: token
 		},
 		{
 			input: tokenPubKeyString,
-			isAccount: true,
 			matchesToken: token
-		},
-		{
-			input: 'USD',
-			isAccount: false
-		},
-		{
-			input: 'evm:0x1234',
-			isAccount: false
-		},
-		{
-			// cspell:disable-next-line
-			input: 'tron:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
-			isAccount: false
 		}
 	];
 
 	for (const check of checks) {
-		const result = parseFXCostAsset(check.input);
-		expect(KeetaNet.lib.Account.isInstance(result)).toEqual(check.isAccount);
-
-		if (check.matchesToken) {
-			expect(KeetaNet.lib.Account.isInstance(result) && result.comparePublicKey(check.matchesToken)).toEqual(true);
-		}
+		const result = parseFXCostToken(check.input);
+		expect(KeetaNet.lib.Account.isInstance(result)).toEqual(true);
+		expect(result.comparePublicKey(check.matchesToken)).toEqual(true);
 	}
+
+	expect(function() { parseFXCostToken('USD'); }).toThrow();
+	expect(function() { parseFXCostToken('evm:0x1234'); }).toThrow();
 });

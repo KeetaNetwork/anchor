@@ -1,8 +1,7 @@
 import { expect, test } from 'vitest';
 import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { GetConversionRateAndFeeContext } from './server.js';
-import type { FXCostAsset, ConversionInputCanonicalJSON, MovableAssetSearchCanonical } from './common.js';
-import type { DeprecatedFee, DeprecatedFeeRange } from '../../lib/fee.js';
+import type { ConversionInputCanonicalJSON, KeetaNetTokenPublicKeyString } from './common.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -156,14 +155,21 @@ async function createExchangeOnServer(
 	quote: unknown,
 	client: InstanceType<typeof KeetaNet.UserClient>,
 	sendToken: InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>,
-	amount: bigint
+	amount: bigint,
+	feeToken?: InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>,
+	feeAmount?: bigint
 ) {
 	if (typeof quote !== 'object' || quote === null || !('account' in quote) || typeof quote.account !== 'string') {
 		throw(new Error('Invalid quote'));
 	}
 
+	const liquidityProvider = KeetaNet.lib.Account.fromPublicKeyString(quote.account);
 	const builder = client.initBuilder();
-	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), amount, sendToken);
+	builder.send(liquidityProvider, amount, sendToken);
+	if (feeToken !== undefined && feeAmount !== undefined && feeAmount > 0n) {
+		builder.send(liquidityProvider, feeAmount, feeToken);
+	}
+
 	const computed = await builder.computeBlocks();
 	const block = computed.blocks[0];
 	if (!block) {
@@ -215,8 +221,8 @@ test('FX Server Tests', async function() {
 						account: fxAccount,
 						convertedAmount: 1000n,
 						cost: {
-							value: 0n,
-							asset: KeetaNet.lib.Account.fromTokenPublicKey(KeetaNet.lib.Account.generateRandomSeed())
+							amount: 0n,
+							token: KeetaNet.lib.Account.fromTokenPublicKey(KeetaNet.lib.Account.generateRandomSeed())
 						}
 					});
 				}
@@ -380,8 +386,8 @@ test('FX Server Quote Validation Tests', async function() {
 					account: account,
 					convertedAmount: 1000n,
 					cost: {
-						value: 0n,
-						asset: token1
+						amount: 0n,
+						token: token1
 					}
 				});
 			},
@@ -558,8 +564,8 @@ test('FX Server Constructor Variation Tests', async function() {
 						account: account,
 						convertedAmount: 1000n,
 						cost: {
-							asset: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-							value: 0n
+							token: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+							amount: 0n
 						}
 					});
 				}
@@ -611,8 +617,8 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 					account: serverAccount,
 					convertedAmount: 1000n,
 					cost: {
-						value: 0n,
-						asset: token1
+						amount: 0n,
+						token: token1
 					}
 				});
 			}
@@ -750,8 +756,8 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 						account: serverAccount,
 						convertedAmount: 1000n,
 						cost: {
-							value: 0n,
-							asset: token1
+							amount: 0n,
+							token: token1
 						}
 					});
 				}
@@ -830,7 +836,7 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	expect(status4).toHaveProperty('status', 'completed');
 }, 60000);
 
-test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async function() {
+test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function() {
 	await using harness = await createFXTestHarness(1);
 
 	const { serverAccount, serverClient, token1, token2, userClients } = harness;
@@ -839,37 +845,42 @@ test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async functio
 		throw(new Error('Missing user client'));
 	}
 
-	const acceptedCostAssets: MovableAssetSearchCanonical[] = ['USD', 'evm:0xdead'];
+	/* Give user token2 balance so they can pay fees in an alternative token */
+	await serverClient.modTokenSupplyAndBalance(1000n, token2);
+	await serverClient.send(userClient.account, 500n, token2);
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+	const acceptedCostAssets: KeetaNetTokenPublicKeyString[] = [token1String, token2String];
 	const capturedRequests: ConversionInputCanonicalJSON[] = [];
 
 	const checks: {
 		preferredCostAsset?: string;
-		expectedCostAsset: string;
+		expectedCostToken: typeof token1;
 		expectedCostValue: bigint;
-		sendAmount: bigint;
+		swapAmount: bigint;
+		feeToken?: typeof token1;
+		feeAmount?: bigint;
 	}[] = [
 		{
-			expectedCostAsset: 'USD',
+			preferredCostAsset: token2String,
+			expectedCostToken: token2,
 			expectedCostValue: 10n,
-			preferredCostAsset: 'USD',
-			sendAmount: 100n
+			swapAmount: 100n,
+			feeToken: token2,
+			feeAmount: 10n
 		},
 		{
-			expectedCostAsset: 'evm:0xdead',
+			expectedCostToken: token1,
 			expectedCostValue: 10n,
-			preferredCostAsset: 'evm:0xdead',
-			sendAmount: 100n
-		},
-		{
-			expectedCostAsset: token1.publicKeyString.get(),
-			expectedCostValue: 10n,
-			sendAmount: 110n
+			swapAmount: 110n
 		}
 	];
 
 	for (const check of checks) {
 		capturedRequests.length = 0;
 
+		const costToken = check.expectedCostToken;
 		await using server = new KeetaNetFXAnchorHTTPServer({
 			logger: TestLogger,
 			accounts: new KeetaNet.lib.Account.Set([serverAccount]),
@@ -883,24 +894,19 @@ test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async functio
 			},
 			fx: {
 				from: [{
-					currencyCodes: [token1.publicKeyString.get()],
-					to: [token2.publicKeyString.get()]
+					currencyCodes: [token1String],
+					to: [token2String]
 				}],
 				acceptedCostAssets: acceptedCostAssets,
 				getConversionRateAndFee: async function(request) {
 					capturedRequests.push(request);
 
-					let costAsset: FXCostAsset = token1;
-					if (request.preferredCostAsset !== undefined) {
-						costAsset = request.preferredCostAsset;
-					}
-
 					return({
 						account: serverAccount,
 						convertedAmount: 500n,
 						cost: {
-							value: check.expectedCostValue,
-							asset: costAsset
+							amount: check.expectedCostValue,
+							token: costToken
 						}
 					});
 				}
@@ -920,8 +926,8 @@ test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async functio
 		 * Verify estimate response and preferredCostAsset flow
 		 */
 		const requestBody: { [key: string]: unknown } = {
-			from: token1.publicKeyString.get(),
-			to: token2.publicKeyString.get(),
+			from: token1String,
+			to: token2String,
 			amount: '100',
 			affinity: 'from'
 		};
@@ -951,12 +957,11 @@ test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async functio
 			throw(new Error('Invalid estimate response'));
 		}
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
-		const estimate = estimateData.estimate as { expectedCost: DeprecatedFeeRange; };
-		expect(estimate.expectedCost.asset).toBe(check.expectedCostAsset);
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const estimate = estimateData.estimate as { expectedCost: { token: string; min: string; max: string; }; };
+		expect(estimate.expectedCost.token).toBe(costToken.publicKeyString.get());
 		expect(BigInt(estimate.expectedCost.min)).toBe(check.expectedCostValue);
 		expect(BigInt(estimate.expectedCost.max)).toBe(check.expectedCostValue);
-		expect(estimate.expectedCost.token).toBe(check.expectedCostAsset);
 
 		/*
 		 * Verify quote response serializes cost correctly
@@ -966,25 +971,20 @@ test('FX Server Advisory Cost Asset and preferredCostAsset Tests', async functio
 			quoteExtraFields.preferredCostAsset = check.preferredCostAsset;
 		}
 
-		const token1String = token1.publicKeyString.get();
-		const token2String = token2.publicKeyString.get();
 		const quote = await getQuoteFromServer(url, token1String, token2String, '100', quoteExtraFields);
 		if (typeof quote !== 'object' || quote === null || !('cost' in quote) || typeof quote.cost !== 'object' || quote.cost === null) {
 			throw(new Error('Invalid quote'));
 		}
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-deprecated
-		const quoteCost = quote.cost as DeprecatedFee;
-		expect(quoteCost.asset).toBe(check.expectedCostAsset);
-		expect(BigInt(quoteCost.value)).toBe(check.expectedCostValue);
-		expect(quoteCost.token).toBe(check.expectedCostAsset);
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const quoteCost = quote.cost as { token: string; amount: string; };
+		expect(quoteCost.token).toBe(costToken.publicKeyString.get());
 		expect(BigInt(quoteCost.amount)).toBe(check.expectedCostValue);
 
 		/*
-		 * Verify exchange succeeds without an on-chain cost SEND
-		 * (advisory fee -- block only contains the swap operations)
+		 * Verify exchange completes with the fee paid in the correct token
 		 */
-		const exchange = await createExchangeOnServer(url, quote, userClient, token1, check.sendAmount);
+		const exchange = await createExchangeOnServer(url, quote, userClient, token1, check.swapAmount, check.feeToken, check.feeAmount);
 		expect(exchange).toHaveProperty('ok', true);
 
 		const exchangeID = extractExchangeID(exchange);
