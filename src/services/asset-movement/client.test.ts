@@ -18,19 +18,6 @@ const logger = DEBUG ? console : undefined;
 
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
-// test.only('XXXX', async function() {
-// 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
-// 	const userClient = KeetaNet.UserClient.fromNetwork('main', account);
-// 	const client = new KeetaNetAnchor.AssetMovement.Client(userClient);
-
-// 	console.log(await client.getProvidersForTransfer({
-// 		from: 'chain:keeta:21378',
-// 		to: 'bank-account:us',
-// 		asset: {from: 'keeta_amnkge74xitii5dsobstldatv3irmyimujfjotftx7plaaaseam4bntb7wnna', to: 'USD'},
-// 		rail: ['ACH']
-// 	}));
-// });
-
 test('Asset Movement Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const { userClient: client } = await createNodeAndClient(account);
