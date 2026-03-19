@@ -593,6 +593,24 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				});
 			}
 
+			if (request.preferredCostAsset !== undefined) {
+				if (this.serverConfig.fx.acceptedCostAssets === undefined) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: 'This server does not support preferred cost asset selection'
+					});
+				}
+
+				if (!this.serverConfig.fx.acceptedCostAssets.includes(request.preferredCostAsset)) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: `Preferred cost asset "${request.preferredCostAsset}" is not accepted by this server`
+					});
+				}
+			}
+
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
 
 			const { refunds } = assertExchangeBlockParametersAndComputeRefund({
@@ -1000,6 +1018,16 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	protected async getUnsignedQuoteData(conversion: ConversionInputCanonicalJSON, purpose: Exclude<GetConversionRateAndFeeContext['purpose'], 'exchange'>): Promise<KeetaFXInternalPriceQuote | KeetaFXInternalPriceEstimate> {
 		if (purpose !== 'estimate' && !this.canPerformExchanges) {
 			throw(new Error(`FX configuration does not support performing exchanges, so purpose "${purpose}" is invalid`));
+		}
+
+		if (conversion.preferredCostAsset !== undefined) {
+			if (this.fx.acceptedCostAssets === undefined) {
+				throw(new KeetaAnchorUserError('This server does not support preferred cost asset selection'));
+			}
+
+			if (!this.fx.acceptedCostAssets.includes(conversion.preferredCostAsset)) {
+				throw(new KeetaAnchorUserError(`Preferred cost asset "${conversion.preferredCostAsset}" is not accepted by this server`));
+			}
 		}
 
 		if ('getConversionRateAndFee' in this.fx) {

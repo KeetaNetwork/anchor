@@ -63,12 +63,32 @@ async function createFXTestHarness(userAccountCount = 1) {
 		}));
 	}
 
+	type ServerConfig = ConstructorParameters<typeof KeetaNetFXAnchorHTTPServer>[0];
+
+	function createServer(fx: ServerConfig['fx'], overrides?: Partial<Omit<ServerConfig, 'fx'>>) {
+		return(new KeetaNetFXAnchorHTTPServer({
+			logger: TestLogger,
+			accounts: new KeetaNet.lib.Account.Set([serverAccount]),
+			signer: serverAccount,
+			client: serverClient,
+			quoteSigner: serverAccount,
+			...overrides,
+			fx: Object.assign({
+				from: [{
+					currencyCodes: [token1.publicKeyString.get()],
+					to: [token2.publicKeyString.get()]
+				}]
+			}, fx)
+		}));
+	}
+
 	return({
 		serverAccount,
 		serverClient,
 		token1,
 		token2,
 		userClients,
+		createServer,
 		[Symbol.asyncDispose]: async function() {
 			await nodeAndClient[Symbol.asyncDispose]();
 		}
@@ -587,41 +607,34 @@ test('FX Server Constructor Variation Tests', async function() {
 
 test('FX Server autoRun Concurrent Request Tests', async function() {
 	await using harness = await createFXTestHarness(5);
-	const { serverAccount, serverClient, token1, token2, userClients: clients } = harness;
+	const { serverAccount, token1, token2, userClients: clients } = harness;
 
 	let processingCount = 0;
 	const contextPurposes: GetConversionRateAndFeeContext['purpose'][] = [];
 	const delayMs = 50;
 
-	await using server = new KeetaNetFXAnchorHTTPServer({
-		logger: TestLogger,
-		accounts: new KeetaNet.lib.Account.Set([serverAccount]),
-		signer: serverAccount,
-		client: serverClient,
-		quoteSigner: serverAccount,
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function(_request: ConversionInputCanonicalJSON, context: GetConversionRateAndFeeContext) {
+			contextPurposes.push(context.purpose);
+
+			processingCount++;
+
+			await asleep(delayMs);
+
+			return({
+				account: serverAccount,
+				convertedAmount: 1000n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	}, {
 		quoteConfiguration: {
 			requiresQuote: false,
 			validateQuoteBeforeExchange: false,
 			issueQuotes: true
-		},
-		fx: {
-			from: [{
-				currencyCodes: [token1.publicKeyString.get()],
-				to: [token2.publicKeyString.get()]
-			}],
-			getConversionRateAndFee: async function(request, context) {
-				contextPurposes.push(context.purpose);
-				processingCount++;
-				await asleep(delayMs);
-				return({
-					account: serverAccount,
-					convertedAmount: 1000n,
-					cost: {
-						amount: 0n,
-						token: token1
-					}
-				});
-			}
 		}
 	});
 
@@ -728,39 +741,31 @@ test('FX Server autoRun Concurrent Request Tests', async function() {
 
 test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	await using harness = await createFXTestHarness(4);
-	const { serverAccount, serverClient, token1, token2, userClients: clients } = harness;
+	const { serverAccount, token1, token2, userClients: clients } = harness;
 
 	/*
 	 * Create a shared storage backend that both servers will use
 	 */
 	const sharedStorage = new KeetaAnchorQueueStorageDriverMemory();
 
-	const createServer = async function() {
-		const server = new KeetaNetFXAnchorHTTPServer({
-			logger: TestLogger,
-			account: serverAccount,
-			client: serverClient,
-			quoteSigner: serverAccount,
+	const createSharedServer = async function() {
+		const server = harness.createServer({
+			getConversionRateAndFee: async function() {
+				await asleep(30);
+
+				return({
+					account: serverAccount,
+					convertedAmount: 1000n,
+					cost: {
+						amount: 0n,
+						token: token1
+					}
+				});
+			}
+		}, {
 			storage: {
 				queue: sharedStorage,
 				autoRun: true
-			},
-			fx: {
-				from: [{
-					currencyCodes: [token1.publicKeyString.get()],
-					to: [token2.publicKeyString.get()]
-				}],
-				getConversionRateAndFee: async function() {
-					await asleep(30);
-					return({
-						account: serverAccount,
-						convertedAmount: 1000n,
-						cost: {
-							amount: 0n,
-							token: token1
-						}
-					});
-				}
 			}
 		});
 
@@ -768,8 +773,8 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 		return(server);
 	};
 
-	await using server1 = await createServer();
-	await using server2 = await createServer();
+	await using server1 = await createSharedServer();
+	await using server2 = await createSharedServer();
 
 	const url1 = server1.url;
 	const url2 = server2.url;
@@ -845,19 +850,62 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 		throw(new Error('Missing user client'));
 	}
 
-	/* Give user token2 balance so they can pay fees in an alternative token */
+	/*
+	 * Give user token2 balance so they can pay fees in an alternative token
+	 */
 	await serverClient.modTokenSupplyAndBalance(1000n, token2);
 	await serverClient.send(userClient.account, 500n, token2);
 
 	const token1String = token1.publicKeyString.get();
 	const token2String = token2.publicKeyString.get();
+	/*
+	 * Accepted cost assets are the tokens that the server will accept as fees
+	 */
 	const acceptedCostAssets: KeetaNetTokenPublicKeyString[] = [token1String, token2String];
 	const capturedRequests: ConversionInputCanonicalJSON[] = [];
 
+	await using server = harness.createServer({
+		acceptedCostAssets: acceptedCostAssets,
+		getConversionRateAndFee: async function(request: ConversionInputCanonicalJSON) {
+			capturedRequests.push(request);
+
+			let costToken = token1;
+			if (request.preferredCostAsset !== undefined) {
+				costToken = KeetaNet.lib.Account.fromPublicKeyString(request.preferredCostAsset);
+			}
+
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: {
+					amount: 10n,
+					token: costToken
+				}
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/*
+	 * Verify acceptedCostAssets appears in service metadata
+	 */
+	const metadata = await server.serviceMetadata();
+	expect(metadata.acceptedCostAssets).toEqual(acceptedCostAssets);
+
+	/*
+	 * Positive tests: verify fee denomination in different tokens
+	 */
 	const checks: {
 		preferredCostAsset?: string;
 		expectedCostToken: typeof token1;
-		expectedCostValue: bigint;
 		swapAmount: bigint;
 		feeToken?: typeof token1;
 		feeAmount?: bigint;
@@ -865,14 +913,12 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 		{
 			preferredCostAsset: token2String,
 			expectedCostToken: token2,
-			expectedCostValue: 10n,
 			swapAmount: 100n,
 			feeToken: token2,
 			feeAmount: 10n
 		},
 		{
 			expectedCostToken: token1,
-			expectedCostValue: 10n,
 			swapAmount: 110n
 		}
 	];
@@ -880,51 +926,6 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 	for (const check of checks) {
 		capturedRequests.length = 0;
 
-		const costToken = check.expectedCostToken;
-		await using server = new KeetaNetFXAnchorHTTPServer({
-			logger: TestLogger,
-			accounts: new KeetaNet.lib.Account.Set([serverAccount]),
-			signer: serverAccount,
-			client: serverClient,
-			quoteSigner: serverAccount,
-			quoteConfiguration: {
-				requiresQuote: false,
-				validateQuoteBeforeExchange: false,
-				issueQuotes: true
-			},
-			fx: {
-				from: [{
-					currencyCodes: [token1String],
-					to: [token2String]
-				}],
-				acceptedCostAssets: acceptedCostAssets,
-				getConversionRateAndFee: async function(request) {
-					capturedRequests.push(request);
-
-					return({
-						account: serverAccount,
-						convertedAmount: 500n,
-						cost: {
-							amount: check.expectedCostValue,
-							token: costToken
-						}
-					});
-				}
-			}
-		});
-
-		await server.start();
-		const url = server.url;
-
-		/*
-		 * Verify acceptedCostAssets appears in service metadata
-		 */
-		const metadata = await server.serviceMetadata();
-		expect(metadata.acceptedCostAssets).toEqual(acceptedCostAssets);
-
-		/*
-		 * Verify estimate response and preferredCostAsset flow
-		 */
 		const requestBody: { [key: string]: unknown } = {
 			from: token1String,
 			to: token2String,
@@ -944,8 +945,8 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 			},
 			body: JSON.stringify({ request: requestBody })
 		});
-
 		expect(estimateResponse.status).toBe(200);
+
 		const estimateData: unknown = await estimateResponse.json();
 		expect(estimateData).toHaveProperty('ok', true);
 		expect(estimateData).toHaveProperty('estimate');
@@ -959,13 +960,10 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const estimate = estimateData.estimate as { expectedCost: { token: string; min: string; max: string; }; };
-		expect(estimate.expectedCost.token).toBe(costToken.publicKeyString.get());
-		expect(BigInt(estimate.expectedCost.min)).toBe(check.expectedCostValue);
-		expect(BigInt(estimate.expectedCost.max)).toBe(check.expectedCostValue);
+		expect(estimate.expectedCost.token).toBe(check.expectedCostToken.publicKeyString.get());
+		expect(BigInt(estimate.expectedCost.min)).toBe(10n);
+		expect(BigInt(estimate.expectedCost.max)).toBe(10n);
 
-		/*
-		 * Verify quote response serializes cost correctly
-		 */
 		const quoteExtraFields: { [key: string]: unknown } = {};
 		if (check.preferredCostAsset !== undefined) {
 			quoteExtraFields.preferredCostAsset = check.preferredCostAsset;
@@ -978,12 +976,13 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const quoteCost = quote.cost as { token: string; amount: string; };
-		expect(quoteCost.token).toBe(costToken.publicKeyString.get());
-		expect(BigInt(quoteCost.amount)).toBe(check.expectedCostValue);
+		expect(quoteCost.token).toBe(check.expectedCostToken.publicKeyString.get());
+		expect(BigInt(quoteCost.amount)).toBe(10n);
 
-		/*
-		 * Verify exchange completes with the fee paid in the correct token
-		 */
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const quoteRequest = (quote as unknown as { request: { preferredCostAsset?: string; }; }).request;
+		expect(quoteRequest.preferredCostAsset).toBe(check.preferredCostAsset);
+
 		const exchange = await createExchangeOnServer(url, quote, userClient, token1, check.swapAmount, check.feeToken, check.feeAmount);
 		expect(exchange).toHaveProperty('ok', true);
 
@@ -991,4 +990,115 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 		const status = await waitForExchangeCompletion(url, exchangeID, 10000);
 		expect(status).toHaveProperty('status', 'completed');
 	}
+
+	/*
+	 * Negative tests: malformed preferredCostAsset values should be rejected
+	 */
+	const malformedInputs = [
+		'not-a-token',
+		'0x1234',
+		'',
+		12345
+	];
+
+	for (const badInput of malformedInputs) {
+		const response = await fetch(`${url}/api/getEstimate`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({
+				request: {
+					from: token1String,
+					to: token2String,
+					amount: '100',
+					affinity: 'from',
+					preferredCostAsset: badInput
+				}
+			})
+		});
+
+		expect(response.ok).toBe(false);
+
+		const body: unknown = await response.json();
+		expect(body).toHaveProperty('ok', false);
+		expect(body).toHaveProperty('error');
+	}
+
+	/*
+	 * Valid token format not in acceptedCostAssets
+	 */
+	const nonExistentToken = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0)
+		.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 0)
+		.publicKeyString.get();
+
+	const unacceptedResponse = await fetch(`${url}/api/getEstimate`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				from: token1String,
+				to: token2String,
+				amount: '100',
+				affinity: 'from',
+				preferredCostAsset: nonExistentToken
+			}
+		})
+	});
+
+	/*
+	 * The server should reject the request because the preferred cost asset
+	 * is not in the accepted cost assets list
+	 */
+	expect(unacceptedResponse.status).toBe(400);
+
+	const unacceptedBody: unknown = await unacceptedResponse.json();
+	expect(unacceptedBody).toHaveProperty('ok', false);
+	expect(unacceptedBody).toHaveProperty('error');
+
+	/*
+	 * Server without acceptedCostAssets should reject any preferredCostAsset
+	 */
+	await using serverNoAccepted = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: {
+					amount: 10n,
+					token: token1
+				}
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await serverNoAccepted.start();
+
+	const noAcceptedResponse = await fetch(`${serverNoAccepted.url}/api/getEstimate`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				from: token1String,
+				to: token2String,
+				amount: '100',
+				affinity: 'from',
+				preferredCostAsset: token1String
+			}
+		})
+	});
+
+	/*
+	 * The server should reject the request because it does not support
+	 * preferred cost asset selection
+	 */
+	expect(noAcceptedResponse.status).toBe(400);
+
+	const noAcceptedBody: unknown = await noAcceptedResponse.json();
+	expect(noAcceptedBody).toHaveProperty('ok', false);
+	expect(noAcceptedBody).toHaveProperty('error');
 }, 30000);
