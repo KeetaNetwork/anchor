@@ -557,12 +557,12 @@ describe('Storage Server', function() {
 
 		const corsCases = [
 			{
-				name: 'GET /api/object includes CORS header when publicCorsOrigin is configured',
+				name: 'GET /api/object includes CORS header when authenticatedCorsOrigin is configured',
 				authenticatedCorsOrigin: 'https://testing.example.com',
 				expectedCorsHeader: 'https://testing.example.com'
 			},
 			{
-				name: 'GET /api/object omits CORS header when publicCorsOrigin is not configured',
+				name: 'GET /api/object includes default CORS header when authenticatedCorsOrigin is not configured',
 				authenticatedCorsOrigin: undefined,
 				expectedCorsHeader: '*'
 			}
