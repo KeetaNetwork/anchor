@@ -88,7 +88,7 @@ export default {
 		'promiseerror',
 		'Retryable',
 		'retval',
-		"satoshis",
+		'satoshis',
 		'secp',
 		'SEPA',
 		'singleworker',
