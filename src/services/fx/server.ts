@@ -217,6 +217,10 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		unsignedQuote.cost.amount
 	];
 
+	if (unsignedQuote.request.preferredCostAsset !== undefined) {
+		retval.push(unsignedQuote.request.preferredCostAsset);
+	}
+
 	return(retval);
 
 	/**
