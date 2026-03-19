@@ -332,7 +332,7 @@ test('Asset Movement Anchor Client Test', async function() {
 		// OR logic: inbound match short-circuits, so Test (EVM_SEND inbound) and Test2 (EVM_CALL inbound) both match
 		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_SEND', outbound: 'KEETA_SEND' }}, [ 'Test', 'Test2' ] ],
 		// inbound doesn't match for Test, falls through to outbound which also doesn't match (Test has no outbound rails)
-		// Test2: EVM_CALL matches inbound → match
+		// Test2: EVM_CALL matches inbound -- match
 		[ { asset: testCurrencyUSDC, from: 'chain:evm:100', to: 'chain:keeta:123', rail: { inbound: 'EVM_CALL', outbound: 'KEETA_SEND' }}, [ 'Test2' ] ]
 	];
 
