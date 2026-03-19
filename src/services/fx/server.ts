@@ -18,8 +18,7 @@ import type {
 	KeetaFXAnchorQuoteJSON,
 	KeetaFXAnchorQuoteResponse,
 	KeetaNetAccount,
-	KeetaNetStorageAccount,
-	KeetaNetTokenPublicKeyString
+	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
@@ -342,7 +341,7 @@ type KeetaFXAnchorQueueStage1RequestJSON = {
 	/** Base64 encoded block from the user */
 	block: string;
 	/** Original request */
-	request: Omit<ConversionInputCanonicalJSON, 'preferredCostAsset'> & { preferredCostAsset?: KeetaNetTokenPublicKeyString };
+	request: ConversionInputCanonicalJSON;
 	/** Expected exchange details for verification */
 	expected: ToJSONSerializable<KeetaFXAnchorQueueStage1Request['expected']> | null;
 };
@@ -359,7 +358,6 @@ type KeetaFXAnchorQueueStage1Response = {
 
 function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
 	let expected: KeetaFXAnchorQueueStage1RequestJSON['expected'];
-
 	if (request.expected === null) {
 		expected = null;
 	} else {
@@ -376,20 +374,21 @@ function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1
 	};
 
 	const { preferredCostAsset, ...requestBase } = request.request;
-	let requestForQueue: KeetaFXAnchorQueueStage1RequestJSON['request'] = requestBase;
+	const requestForQueue: { [key: string]: JSONSerializable } = { ...requestBase };
 	if (preferredCostAsset !== undefined) {
-		requestForQueue = { ...requestBase, preferredCostAsset };
+		requestForQueue.preferredCostAsset = preferredCostAsset;
 	}
 
-	const retval: KeetaFXAnchorQueueStage1RequestJSON = {
-		version: 1,
-		account: request.account.publicKeyString.get(),
-		block: Buffer.from(request.block.toBytes()).toString('base64'),
-		request: requestForQueue,
-		expected: expected
-	};
+	const account = request.account.publicKeyString.get();
+	const block = Buffer.from(request.block.toBytes()).toString('base64');
 
-	return(retval);
+	return({
+		version: 1 as const,
+		request: requestForQueue,
+		account,
+		block,
+		expected
+	});
 }
 
 function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
