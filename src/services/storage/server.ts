@@ -346,14 +346,14 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	 * - specific origin string restricts to that origin
 	 * - false (default) disables CORS headers on public responses
 	 */
-	publicCorsOrigin?: string | false;
+	publicCORSOrigin?: string | false;
 
 	/**
 	 * CORS origin for authenticated object endpoints (default: '*').
 	 * - '*' allows all origins
 	 * - specific origin string restricts to that origin
 	 */
-	authenticatedCorsOrigin?: string;
+	authenticatedCORSOrigin?: string;
 
 	/**
 	 * Path policies for parsing, validating, and access control of storage paths.
@@ -411,8 +411,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.quotas = { ...DEFAULT_QUOTAS, ...config.quotas };
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
-		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
-		this.authenticatedCorsOrigin = config.authenticatedCorsOrigin ?? '*';
+		this.publicCorsOrigin = config.publicCORSOrigin ?? false;
+		this.authenticatedCorsOrigin = config.authenticatedCORSOrigin ?? '*';
 		this.pathPolicies = config.pathPolicies;
 		this.tagValidation = {
 			maxTags: config.tagValidation?.maxTags ?? DEFAULT_TAG_VALIDATION.maxTags,

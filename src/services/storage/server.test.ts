@@ -558,12 +558,12 @@ describe('Storage Server', function() {
 		const corsCases = [
 			{
 				name: 'GET /api/object includes CORS header when authenticatedCorsOrigin is configured',
-				authenticatedCorsOrigin: 'https://testing.example.com',
+				authenticatedCORSOrigin: 'https://testing.example.com',
 				expectedCorsHeader: 'https://testing.example.com'
 			},
 			{
 				name: 'GET /api/object includes default CORS header when authenticatedCorsOrigin is not configured',
-				authenticatedCorsOrigin: undefined,
+				authenticatedCORSOrigin: undefined,
 				expectedCorsHeader: '*'
 			}
 		] as const;
@@ -599,7 +599,7 @@ describe('Storage Server', function() {
 
 				expect(response.status).toBe(200);
 				expect(response.headers.get('Access-Control-Allow-Origin')).toBe(testCase.expectedCorsHeader);
-			}, testCase.authenticatedCorsOrigin ? { authenticatedCorsOrigin: testCase.authenticatedCorsOrigin } : undefined));
+			}, testCase.authenticatedCORSOrigin ? { authenticatedCORSOrigin: testCase.authenticatedCORSOrigin } : undefined));
 		});
 
 	});
