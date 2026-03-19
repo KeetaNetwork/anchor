@@ -1,5 +1,6 @@
 import { expect, test, describe } from 'vitest';
 import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount } from './common.js';
+import type { KeetaAnchorStorageServerConfig } from './server.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
@@ -60,12 +61,20 @@ type ServerTestContext = {
 /**
  * Helper to run a test with a fresh server instance
  */
-async function withServer(fn: (ctx: ServerTestContext) => Promise<void>): Promise<void> {
+async function withServer(
+	fn: (ctx: ServerTestContext) => Promise<void>,
+	additionalServerConfig?: Omit<KeetaAnchorStorageServerConfig, 'backend' | 'anchorAccount' | 'pathPolicies'>
+): Promise<void> {
 	const backend = new MemoryStorageBackend();
 	const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const pathPolicies = [testPathPolicy];
 
-	await using server = new KeetaNetStorageAnchorHTTPServer({ backend, anchorAccount, pathPolicies });
+	await using server = new KeetaNetStorageAnchorHTTPServer({
+		backend,
+		anchorAccount,
+		pathPolicies,
+		...additionalServerConfig
+	});
 	await server.start();
 	await fn({ server, backend, url: server.url, anchorAccount });
 }
@@ -545,6 +554,54 @@ describe('Storage Server', function() {
 				expectErrorContains(json, testCase.expectedError);
 			}));
 		});
+
+		const corsCases = [
+			{
+				name: 'GET /api/object includes CORS header when publicCorsOrigin is configured',
+				authenticatedCorsOrigin: 'https://testing.example.com',
+				expectedCorsHeader: 'https://testing.example.com'
+			},
+			{
+				name: 'GET /api/object omits CORS header when publicCorsOrigin is not configured',
+				authenticatedCorsOrigin: undefined,
+				expectedCorsHeader: '*'
+			}
+		] as const;
+
+		test.each(corsCases)('$name', function(testCase) {
+			return(withServer(async function({ backend, url }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const accountPubKey = account.publicKeyString.get();
+				const objectPath = `/user/${accountPubKey}/cors-test.txt`;
+
+				await backend.put(objectPath, Buffer.from('test'), testMetadata(accountPubKey));
+
+				const signedField = await SignData(
+					account,
+					getKeetaStorageAnchorGetRequestSigningData({
+						path: objectPath,
+						account: accountPubKey
+					})
+				);
+
+				const requestUrl = addSignatureToURL(
+					`${url}/api/object${objectPath}`,
+					{ signedField, account }
+				);
+
+				const response = await fetch(requestUrl.toString(), {
+					method: 'GET',
+					headers: {
+						'Origin': 'http://example.com',
+						'Accept': 'application/octet-stream'
+					}
+				});
+
+				expect(response.status).toBe(200);
+				expect(response.headers.get('Access-Control-Allow-Origin')).toBe(testCase.expectedCorsHeader);
+			}, testCase.authenticatedCorsOrigin ? { authenticatedCorsOrigin: testCase.authenticatedCorsOrigin } : undefined));
+		});
+
 	});
 
 	describe('Replay Attack Prevention', function() {

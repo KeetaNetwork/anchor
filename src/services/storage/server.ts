@@ -349,6 +349,13 @@ export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.Ke
 	publicCorsOrigin?: string | false;
 
 	/**
+	 * CORS origin for authenticated object endpoints (default: '*').
+	 * - '*' allows all origins
+	 * - specific origin string restricts to that origin
+	 */
+	authenticatedCorsOrigin?: string;
+
+	/**
 	 * Path policies for parsing, validating, and access control of storage paths.
 	 * Each policy handles a specific path pattern. First matching policy wins.
 	 */
@@ -391,6 +398,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly validators: NamespaceValidator[];
 	readonly signedUrlDefaultTTL: number;
 	readonly publicCorsOrigin: string | false;
+	readonly authenticatedCorsOrigin: string;
 	readonly pathPolicies: PathPolicy<unknown>[];
 	readonly tagValidation: Required<NonNullable<KeetaAnchorStorageServerConfig['tagValidation']>>;
 
@@ -404,6 +412,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		this.validators = config.validators ?? [];
 		this.signedUrlDefaultTTL = config.signedUrlDefaultTTL ?? DEFAULT_SIGNED_URL_TTL_SECONDS;
 		this.publicCorsOrigin = config.publicCorsOrigin ?? false;
+		this.authenticatedCorsOrigin = config.authenticatedCorsOrigin ?? '*';
 		this.pathPolicies = config.pathPolicies;
 		this.tagValidation = {
 			maxTags: config.tagValidation?.maxTags ?? DEFAULT_TAG_VALIDATION.maxTags,
@@ -456,6 +465,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const quotas = this.quotas;
 		const validators = this.validators;
 		const publicCorsOrigin = this.publicCorsOrigin;
+		const authenticatedCorsOrigin = this.authenticatedCorsOrigin;
 		const pathPolicies = this.pathPolicies;
 		const tagValidation = this.tagValidation;
 		const logger = this.logger;
@@ -688,8 +698,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 			);
 
+			const headers: { [key: string]: string } = {};
+			if (authenticatedCorsOrigin) {
+				headers['Access-Control-Allow-Origin'] = authenticatedCorsOrigin;
+			}
+
 			const result = await requireObject(objectPath);
 			return({
+				headers,
 				output: result.data,
 				contentType: CONTENT_TYPE_OCTET_STREAM
 			});
