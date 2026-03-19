@@ -57,8 +57,8 @@ export type ConversionInput = {
 
 	/**
 	 * Optional preferred token in which the fee/cost should be
-	 * denominated. The operator may use this to denominate the
-	 * cost in the requested token, or ignore it and use their default.
+	 * denominated. Must be one of the operator's advertised
+	 * acceptedCostAssets, if specified.
 	 */
 	preferredCostAsset?: KeetaNetTokenPublicKeyString;
 };

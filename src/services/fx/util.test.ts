@@ -197,8 +197,8 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							amount: 25n,
-							token: tokenA
+							token: tokenA,
+							amount: 25n
 						}
 					},
 					request: {
@@ -220,8 +220,8 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							amount: 25n,
-							token: tokenA
+							token: tokenA,
+							amount: 25n
 						}
 					},
 					request: {
@@ -243,8 +243,8 @@ test('assertExchangeBlockParameters', async function() {
 					quote: {
 						...baseQuoteRequest.quote,
 						cost: {
-							amount: 1n,
-							token: tokenC
+							token: tokenC,
+							amount: 1n
 						}
 					}
 				},
