@@ -217,7 +217,7 @@ test('username client resolves accounts through resolver', async () => {
 
 	for (const [username, shouldFailBoth] of [
 		['Alice', false],
-		['漢', true],
+		['\u6f22', true],
 		['a'.repeat(USERNAME_MAX_LENGTH + 1), true]
 	] as const) {
 		for (const [usingProvider, isStrictProvider] of [[provider, true], [secondaryProvider, false]] as const) {
