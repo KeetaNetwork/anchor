@@ -1,8 +1,8 @@
 import { parseTokenMetadataJSON, stringifyTokenMetadataJSON } from "./token-metadata.generated.js";
 
 export interface TokenMetadata {
-    decimalPlaces: number;
-    logoURI?: string;
+	decimalPlaces: number;
+	logoURI?: string;
 }
 
 
@@ -18,7 +18,7 @@ export interface TokenMetadataJSON extends Omit<TokenMetadata, "decimalPlaces"> 
  */
 export function encodeTokenMetadata(metadata: TokenMetadata | TokenMetadataJSON): string {
 	const payload = stringifyTokenMetadataJSON(metadata)
-	return btoa(payload)
+	return(btoa(payload));
 }
 
 /**
@@ -27,15 +27,15 @@ export function encodeTokenMetadata(metadata: TokenMetadata | TokenMetadataJSON)
  * @returns the parsed TokenMetadata object
  */
 export function decodeTokenMetadata(encoded: string | TokenMetadataJSON | TokenMetadata): TokenMetadata {
-    let decoded;
-    if (typeof encoded === "string") {
-        decoded = parseTokenMetadataJSON(atob(encoded));
-    } else {
-        decoded = encoded;
-    }
+	let decoded;
+	if (typeof encoded === "string") {
+		decoded = parseTokenMetadataJSON(atob(encoded));
+	} else {
+		decoded = encoded;
+	}
 
-    return({
-        ...decoded,
-        decimalPlaces: Number(decoded.decimalPlaces)
-    });
+	return({
+		...decoded,
+		decimalPlaces: Number(decoded.decimalPlaces)
+	});
 }
