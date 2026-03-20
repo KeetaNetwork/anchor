@@ -226,7 +226,7 @@ function decodeWithSchema(buffer: ArrayBuffer, schema: unknown): unknown {
 function getGCMAuthTag(cipher: ReturnType<typeof crypto.createCipheriv>): Buffer {
 	const getAuthTag = Reflect.get(cipher, 'getAuthTag') as (() => Buffer) | undefined;
 	if (typeof getAuthTag !== 'function') {
-		throw(new Error('getAuthTag is not available on cipher'));
+		throw(new TypeError('getAuthTag is not available on cipher'));
 	}
 	return(getAuthTag.call(cipher));
 }
@@ -234,7 +234,7 @@ function getGCMAuthTag(cipher: ReturnType<typeof crypto.createCipheriv>): Buffer
 function setGCMAuthTag(decipher: ReturnType<typeof crypto.createDecipheriv>, tag: Buffer): void {
 	const setAuthTag = Reflect.get(decipher, 'setAuthTag') as ((tag: Buffer) => void) | undefined;
 	if (typeof setAuthTag !== 'function') {
-		throw(new Error('setAuthTag is not available on decipher'));
+		throw(new TypeError('setAuthTag is not available on decipher'));
 	}
 	setAuthTag.call(decipher, tag);
 }
