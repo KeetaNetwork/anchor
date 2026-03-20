@@ -19,7 +19,10 @@ import type {
 	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
 	NotificationTargetWithIDResponse,
 	SubscriptionDetails,
-	NotificationChannelArguments
+	NotificationChannelArguments,
+	NotificationChannelType,
+	SupportedChannelConfigurationMetadata,
+	NotificationSubscriptionType
 } from './common.js';
 import {
 	getNotificationRegisterTargetRequestSignable,
@@ -34,10 +37,12 @@ import {
 	isKeetaNotificationAnchorCreateSubscriptionResponseJSON,
 	isKeetaNotificationAnchorListSubscriptionsResponseJSON,
 	isKeetaNotificationAnchorDeleteSubscriptionResponseJSON,
-	parseSubscriptionDetailsWithID
+	parseSubscriptionDetailsWithID,
+	assertNotificationSubscriptionType
 } from './common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
+import type { AssertNever } from '../../lib/utils/never.js';
 
 export type KeetaNotificationAnchorClientConfig = {
 	id?: string;
@@ -61,7 +66,7 @@ type KeetaNotificationAnchorOperations = {
 	};
 };
 
-type KeetaNotificationServiceInfo = {
+type KeetaNotificationServiceInfo = Omit<NonNullable<ServiceMetadata['services']['notification']>[string], 'operations'> & {
 	operations: {
 		[operation in keyof KeetaNotificationAnchorOperations]: Promise<KeetaNotificationAnchorOperations[operation]>;
 	};
@@ -136,10 +141,93 @@ async function getEndpoints(resolver: Resolver, criteria: ServiceSearchCriteria<
 			});
 		}
 
+		const supportedChannels = await (async () => {
+			if (!serviceInfo.supportedChannels) {
+				return(undefined);
+			}
+
+			const resolvedValue = await serviceInfo.supportedChannels('object');
+
+			const allChannelTypes = ['FCM'] as const;
+			// Check that NotificationChannelType is fully covered by allChannelTypes
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			type __checkAllChannelTypes = AssertNever<NotificationChannelType extends typeof allChannelTypes[number] ? never : true>;
+
+			const retval: Partial<SupportedChannelConfigurationMetadata> = {};
+
+			for (const type of allChannelTypes) {
+				const typeCheck = await resolvedValue[type]?.('array');
+
+				if (!typeCheck) {
+					continue;
+				}
+
+				if (!retval[type]) {
+					retval[type] = [];
+				}
+
+				for (const item of typeCheck) {
+					const resolvedItem = await item('object');
+					if (type === 'FCM') {
+						const [ projectId, messagingSenderId, appId, apiKey, vapidKey, bundleId ] = await Promise.all([
+							resolvedItem.projectId('string'),
+							resolvedItem.messagingSenderId('string'),
+							resolvedItem.appId('string'),
+							resolvedItem.apiKey('string'),
+							resolvedItem.vapidKey?.('string'),
+							resolvedItem.bundleId?.('string')
+						]);
+
+						if (!projectId || !messagingSenderId || !appId || !apiKey) {
+							logger?.debug('NotificationAnchor:getEndpoints', 'Invalid supported channel configuration, missing required fields', { type, item: resolvedItem });
+							continue;
+						}
+
+						retval[type].push({
+							projectId,
+							messagingSenderId,
+							appId,
+							apiKey,
+							...(vapidKey ? { vapidKey } : {}),
+							...(bundleId ? { bundleId } : {})
+						});
+					}
+				}
+			}
+
+			return(retval);
+		})();
+
+		const supportedSubscriptions = await (async (): Promise<NotificationSubscriptionType[] | undefined> => {
+			if (!serviceInfo.supportedSubscriptions) {
+				return(undefined);
+			}
+
+			const resolvedValue = await serviceInfo.supportedSubscriptions('array');
+
+			const allValues = await Promise.allSettled(resolvedValue.map(async function(item) {
+				return(assertNotificationSubscriptionType(await item('string')))
+			}));
+
+			const retval: NotificationSubscriptionType[] = [];
+
+			for (const result of allValues) {
+				if (result.status === 'fulfilled') {
+					retval.push(result.value);
+				}
+			}
+
+			return(retval);
+		})();
+
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
-			{ operations: operationsFunctions }
+			{
+				operations: operationsFunctions,
+				...(supportedChannels ? { supportedChannels } : {}),
+				...(supportedSubscriptions ? { supportedSubscriptions } : {})
+			}
 		]);
 	});
 
