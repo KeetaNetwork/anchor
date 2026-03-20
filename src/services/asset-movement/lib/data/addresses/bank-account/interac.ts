@@ -4,7 +4,7 @@ const interacSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
-		accountOwner: false,
+		accountOwner: true,
 		bankName: true,
 		accountNumberEnding: true
 	},
