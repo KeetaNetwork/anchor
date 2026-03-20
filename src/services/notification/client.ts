@@ -42,7 +42,7 @@ import {
 } from './common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
-import { AssertNever } from '../../lib/utils/never.js';
+import type { AssertNever } from '../../lib/utils/never.js';
 
 export type KeetaNotificationAnchorClientConfig = {
 	id?: string;
@@ -67,7 +67,9 @@ type KeetaNotificationAnchorOperations = {
 };
 
 type KeetaNotificationServiceInfo = Omit<NonNullable<ServiceMetadata['services']['notification']>[string], 'operations'> & {
-	operations: KeetaNotificationAnchorOperations;
+	operations: {
+		[operation in keyof KeetaNotificationAnchorOperations]: Promise<KeetaNotificationAnchorOperations[operation]>;
+	};
 };
 
 type GetEndpointsResult = {
@@ -147,6 +149,8 @@ async function getEndpoints(resolver: Resolver, criteria: ServiceSearchCriteria<
 			const resolvedValue = await serviceInfo.supportedChannels('object');
 
 			const allChannelTypes = ['FCM'] as const;
+			// Check that NotificationChannelType is fully covered by allChannelTypes
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			type __checkAllChannelTypes = AssertNever<NotificationChannelType extends typeof allChannelTypes[number] ? never : true>;
 
 			const retval: Partial<SupportedChannelConfigurationMetadata> = {};
@@ -179,7 +183,7 @@ async function getEndpoints(resolver: Resolver, criteria: ServiceSearchCriteria<
 							continue;
 						}
 
-						retval[type]!.push({
+						retval[type].push({
 							projectId,
 							messagingSenderId,
 							appId,
@@ -200,7 +204,7 @@ async function getEndpoints(resolver: Resolver, criteria: ServiceSearchCriteria<
 			}
 
 			const resolvedValue = await serviceInfo.supportedSubscriptions('array');
-			
+
 			const allValues = await Promise.allSettled(resolvedValue.map(async function(item) {
 				return(assertNotificationSubscriptionType(await item('string')))
 			}));

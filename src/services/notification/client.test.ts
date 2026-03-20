@@ -103,7 +103,7 @@ test('notification client registers, lists, and deletes targets through resolver
 	});
 
 	const provider = asNonNull(await notificationClient.getProvider(providerID));
-	
+
 	expect(provider.serviceInfo.supportedChannels).toEqual(testSupportedChannels);
 
 	const channel = { type: 'FCM' as const, fcmToken: 'device-token-abc', appId: 'hello' };
