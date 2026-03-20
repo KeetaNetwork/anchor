@@ -451,8 +451,7 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 
 	toJSON(): SensitiveAttributeJSON {
 		const info = KeetaNetClient.lib.Utils.Conversion.toJSONSerializable(this.#info);
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(info as unknown as SensitiveAttributeJSON);
+		return(info);
 	}
 
 	/**
