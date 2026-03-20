@@ -23,7 +23,7 @@ function parseDecimalPlaces(input: number | string): number {
 		value = Number(value);
 	}
 
-	if (isNaN(value) || value < 0 || !Number.isInteger(value)) {
+	if (Number.isNaN(value) || value < 0 || !Number.isInteger(value)) {
 		valid = false;
 	}
 
