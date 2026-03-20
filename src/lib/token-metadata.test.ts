@@ -1,13 +1,7 @@
 import { test } from 'vitest';
 import { decodeTokenMetadata, encodeTokenMetadata, TokenMetadataJSON } from './token-metadata.js';
-import { KeetaNet } from '../client/index.js';
 
 test('Token metadata encoding / decoding', async function({ expect }) {
-    const metadata = {
-        decimalPlaces: 6,
-        logoURI: "https://example.com/logo.png"
-    }
-
     const tests: [TokenMetadataJSON | TokenMetadataJSON | string, string][] = [
         [
             {
