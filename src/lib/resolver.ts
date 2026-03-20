@@ -255,7 +255,7 @@ type ServiceMetadata = {
 		};
 		notification?: {
 			[id: string]: {
-				supportedChannels?: SupportedChannelConfigurationMetadata;
+				supportedChannels?: Partial<SupportedChannelConfigurationMetadata>;
 				supportedSubscriptions?: NotificationSubscriptionType[];
 
 				operations: {

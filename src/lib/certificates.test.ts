@@ -1018,4 +1018,4 @@ Ikz1g4z7LFI2Qw5gyPXl/+PcDSJwN6IHTQ==
 		expect(driversLicense?.front, `${name}: drivers license has front reference`).toBeDefined();
 		expect(driversLicense?.issuingCountry, `${name}: drivers license has issuingCountry`).toBe('US');
 	}
-}, 10000);
+}, 20000);

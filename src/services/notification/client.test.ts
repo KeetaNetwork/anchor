@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import KeetaNotificationAnchorClient from './client.js';
 import { KeetaNetNotificationAnchorHTTPServer } from './server.js';
-import type { NotificationSubscriptionArguments, NotificationTargetWithIDResponse } from './common.js';
+import type { NotificationSubscriptionArguments, NotificationTargetWithIDResponse, SupportedChannelConfigurationMetadata } from './common.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import Resolver from '../../lib/resolver.js';
 
@@ -29,6 +29,24 @@ test('notification client registers, lists, and deletes targets through resolver
 	const subscriptions = new Map<string, NotificationSubscriptionArguments>();
 	let nextID = 1;
 	let nextSubID = 1;
+
+	const testSupportedChannels: SupportedChannelConfigurationMetadata = {
+		FCM: [
+			{
+				projectId: 'project-id-123',
+				messagingSenderId: 'messaging-sender-id-456',
+				appId: 'app-id-789',
+				apiKey: 'api-key-abc'
+			},
+			{
+				projectId: 'project-id-two',
+				messagingSenderId: 'messaging-sender-id-three',
+				appId: 'app-id-four',
+				apiKey: 'api-key-five',
+				bundleId: 'com.example.app'
+			}
+		]
+	}
 
 	await using server = new KeetaNetNotificationAnchorHTTPServer({
 		logger,
@@ -60,14 +78,7 @@ test('notification client registers, lists, and deletes targets through resolver
 				const deleted = subscriptions.delete(id);
 				return({ ok: deleted });
 			},
-			supportedChannels: {
-				FCM: [{
-					projectId: 'project-id-123',
-					messagingSenderId: 'messaging-sender-id-456',
-					appId: 'app-id-789',
-					apiKey: 'api-key-abc'
-				}]
-			},
+			supportedChannels: testSupportedChannels,
 			supportedSubscriptions: ['RECEIVE_FUNDS']
 		}
 	});
@@ -92,6 +103,9 @@ test('notification client registers, lists, and deletes targets through resolver
 	});
 
 	const provider = asNonNull(await notificationClient.getProvider(providerID));
+
+	expect(provider.serviceInfo.supportedChannels).toEqual(testSupportedChannels);
+
 	const channel = { type: 'FCM' as const, fcmToken: 'device-token-abc', appId: 'hello' };
 
 	// registerTarget
