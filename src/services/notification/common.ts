@@ -28,6 +28,7 @@ interface NotificationChannelServiceMetadata {
 		appId: string;
 		apiKey: string;
 		vapidKey?: string;
+		bundleId?: string;
 	}
 }
 
