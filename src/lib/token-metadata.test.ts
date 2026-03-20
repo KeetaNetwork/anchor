@@ -7,18 +7,12 @@ test('Token metadata encoding / decoding', async function({ expect }) {
 		[
 			{
 				decimalPlaces: 6,
-				logoURI: "https://example.com/logo.png"
+				logoURI: 'https://example.com/logo.png'
 			},
-			"eyJsb2dvVVJJIjoiaHR0cHM6Ly9leGFtcGxlLmNvbS9sb2dvLnBuZyIsImRlY2ltYWxQbGFjZXMiOjZ9"
+			'eyJsb2dvVVJJIjoiaHR0cHM6Ly9leGFtcGxlLmNvbS9sb2dvLnBuZyIsImRlY2ltYWxQbGFjZXMiOjZ9' // cspell:disable-line
 		],
-		[
-			{ decimalPlaces: 18 },
-			'eyJkZWNpbWFsUGxhY2VzIjoxOH0='
-		],
-		[
-			{ decimalPlaces: '18' },
-			'eyJkZWNpbWFsUGxhY2VzIjoxOH0='
-		]
+		[ { decimalPlaces: 18 }, 'eyJkZWNpbWFsUGxhY2VzIjoxOH0=' ], // cspell:disable-line
+		[ { decimalPlaces: '18' }, 'eyJkZWNpbWFsUGxhY2VzIjoxOH0=' ] // cspell:disable-line
 	] as const;
 
 	for (const test of tests) {
