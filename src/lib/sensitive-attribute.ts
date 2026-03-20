@@ -352,8 +352,8 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 
 		// For AES-GCM, extract and set the 16-byte authentication tag
 		if (algorithm === 'aes-256-gcm') {
-			const authTag = value.subarray(value.length - 16);
-			const ciphertext = value.subarray(0, value.length - 16);
+			const authTag = value.subarray(-16);
+			const ciphertext = value.subarray(0, -16);
 
 			setGCMAuthTag(decipher, authTag);
 

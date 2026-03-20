@@ -461,7 +461,7 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 			| { sensitive: true; attribute: SensitiveAttribute<unknown> }
 	} = {};
 
-	#subjectPublicKeyString: string | undefined;
+	readonly #subjectPublicKeyString: string | undefined;
 
 	/**
 	 * Map the parameters from the public interface to the internal
