@@ -16,6 +16,14 @@ import type {
 	KeetaOrderMatcherClientConfig
 } from '../services/order-matcher/client.ts';
 import KeetaOrderMatcherClient from '../services/order-matcher/client.js';
+import type {
+	KeetaUsernameAnchorClientConfig
+} from '../services/username/client.ts';
+import KeetaUsernameAnchorClient from '../services/username/client.js';
+import KeetaNotificationAnchorClient from '../services/notification/client.js';
+import type {
+	KeetaNotificationAnchorClientConfig
+} from '../services/notification/client.js';
 
 // TODO: Determine how we want to export the client
 // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -34,6 +42,18 @@ export namespace FX {
 export namespace AssetMovement {
 	export type ClientConfig = KeetaAssetMovementClientConfig;
 	export const Client: typeof KeetaAssetMovementAnchorClient = KeetaAssetMovementAnchorClient;
+}
+// TODO: Determine how we want to export the client
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace Username {
+	export type ClientConfig = KeetaUsernameAnchorClientConfig;
+	export const Client: typeof KeetaUsernameAnchorClient = KeetaUsernameAnchorClient;
+}
+// TODO: Determine how we want to export the client
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace Notification {
+	export type ClientConfig = KeetaNotificationAnchorClientConfig;
+	export const Client: typeof KeetaNotificationAnchorClient = KeetaNotificationAnchorClient;
 }
 
 // TODO: Determine how we want to export the client

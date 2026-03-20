@@ -13,7 +13,8 @@ import type {
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
-	KeetaAnchorQueueRequestID
+	KeetaAnchorQueueRequestID,
+	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
 
@@ -25,18 +26,22 @@ import KeetaAnchorQueueStorageDriverFile from './drivers/queue_file.js';
 import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
 import KeetaAnchorQueueStorageDriverRedis from './drivers/queue_redis.js';
 import KeetaAnchorQueueStorageDriverPostgres from './drivers/queue_postgres.js';
+import KeetaAnchorQueueStorageDriverFirestore from './drivers/queue_firestore.js';
 
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import * as pg from 'pg';
+import { Firestore } from '@google-cloud/firestore';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
 if (DEBUG) {
 	logger = console;
 }
+
+const TestingKey = 'bc81abf8-e43b-490b-b486-744fb49a5082';
 
 const RunKey = crypto.randomUUID();
 function generateRequestID(): KeetaAnchorQueueRequestID {
@@ -78,6 +83,22 @@ function getTestingPostgresConfig(): { host: string; port: number; user: string;
 	}
 
 	return({ host: host, port: port, user: user, password: password });
+}
+
+function getTestingFirestoreConfig(): { host: string; port: number; } | null {
+	const host = process.env['ANCHOR_TESTING_FIRESTORE_HOST'];
+	const portStr = process.env['ANCHOR_TESTING_FIRESTORE_PORT'];
+
+	if (!host || !portStr) {
+		return(null);
+	}
+
+	const port = Number(portStr);
+	if (isNaN(port) || port <= 0 || port >= 65536) {
+		return(null);
+	}
+
+	return({ host: host, port: port });
 }
 
 const drivers: {
@@ -311,6 +332,73 @@ const drivers: {
 				throw(error);
 			}
 		}
+	},
+	'Firestore': {
+		persistent: true,
+		skip: async function() {
+			return(getTestingFirestoreConfig() === null);
+		},
+		create: async function(key: string, options = { leave: false }) {
+			const firestoreConfig = getTestingFirestoreConfig();
+			if (!firestoreConfig) {
+				throw(new Error('Firestore configuration not available'));
+			}
+
+			let firestore: Firestore | undefined;
+			const namespace = `test_${key}_${RunKey}`;
+
+			const queue = new KeetaAnchorQueueStorageDriverFirestore({
+				firestore: async function(): Promise<Firestore> {
+					if (!firestore) {
+						firestore = new Firestore({
+							projectId: 'test-project',
+							host: firestoreConfig.host,
+							port: firestoreConfig.port,
+							ssl: false,
+							credentials: {
+								client_email: 'test@example.com',
+								// Hard-coded test private key for emulator only - not a security risk
+								// as it's only used with the local Firestore emulator and never in production
+								private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7W8jT9qqF0GNf\n-----END PRIVATE KEY-----'
+							}
+						});
+					}
+					return(firestore);
+				},
+				id: key,
+				namespace: namespace,
+				logger: logger
+			});
+
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (firestore && !options?.leave) {
+						// Clean up only the collections created by this test instance
+						// Uses the namespace pattern to isolate test data
+						try {
+							const collections = await firestore.listCollections();
+							const prefix = `queue_entries_${namespace}_`;
+							const idempotentPrefix = `queue_idempotent_keys_${namespace}_`;
+							for (const collection of collections) {
+								// Only delete collections that match our test namespace
+								if (collection.id.startsWith(prefix) || collection.id.startsWith(idempotentPrefix)) {
+									const snapshot = await collection.get();
+									for (const doc of snapshot.docs) {
+										await doc.ref.delete();
+									}
+								}
+							}
+						} catch {
+							/* Ignore */
+						}
+					}
+
+					await firestore?.terminate();
+				}
+			});
+		}
 	}
 };
 
@@ -364,7 +452,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -468,7 +556,7 @@ test('Queue Runner Basic Tests', async function() {
 		const id = await runner.add({ key: 'stuck', newStatus: 'completed' });
 
 		/* Pretend the job is processing */
-		await runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').queue().setStatus(id, 'processing', { oldStatus: 'pending' });
+		await runner._Testing(TestingKey).queue().setStatus(id, 'processing', { oldStatus: 'pending' });
 		vi.advanceTimersByTime(100 * 10 + 200);
 		await runner.run();
 		{
@@ -592,7 +680,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 50, maxRetries: 3 });
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -744,7 +832,10 @@ for (const singleWorkerID of [true, false]) {
 					vi.advanceTimersByTime(50);
 
 					return({ status: entry.request.newStatus, output: 'OK' });
-				}
+				},
+				batchSize: 3,
+				processTimeout: 100,
+				maxRetries: 3
 			});
 		};
 
@@ -756,7 +847,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams({ maxRunners: 1 });
 
 			return(runner);
 		});
@@ -834,7 +925,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(10);
 			} else {
-				expect(processCallCountByKey.size).toBe(23);
+				expect(processCallCountByKey.size).toBe(17);
 			}
 
 			const id0 = ids[0];
@@ -862,7 +953,7 @@ test('Pipeline Basic Tests', async function() {
 		vi.useRealTimers();
 	});
 
-	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorPipeableQueueStatus; output: OUTPUT; }>) {
 		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
 			id: `${name}_runner`,
 			processor: processor,
@@ -940,10 +1031,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage2._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage3._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
-	stage4._Testing('bc81abf8-e43b-490b-b486-744fb49a5082').setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage2._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage3._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage4._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -952,7 +1043,7 @@ test('Pipeline Basic Tests', async function() {
 	const id1 = await stage1.add('hello');
 	const id2 = await stage1.add('a');
 	const id3 = await stage1.add('abc');
-	const id4 = await stage1.add('defg');
+	const id4 = await stage1.add('def');
 	const id5 = await stage1.add('blah');
 
 	/*
@@ -1037,6 +1128,77 @@ test('Pipeline Basic Tests', async function() {
 		expect(finalEntryIDs).toContain(finalLeftoverID);
 		expect(finalEntryIDs).toContain(id6);
 	}
+
+	/*
+	 * Validate that failed jobs can be piped to another stage as well
+	 */
+	await using failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
+		return({ status: 'failed_permanently', output: `failed:${entry.request}` });
+	});
+	await using failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
+		return({ status: 'completed', output: `handled:${entry.request}` });
+	});
+
+	failedStage1._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+	failedStage2._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+
+	failedStage1.pipeFailed(failedStage2);
+
+	const failedId = await failedStage1.add('job-fail');
+
+	await failedStage1.run();
+
+	const failedEntry = await failedStage1.get(failedId);
+	if (!failedEntry) {
+		throw(new Error('internal error: failed entry not found'));
+	}
+	expect(failedEntry.status).toBe('failed_permanently');
+	expect(failedEntry.output).toBe('failed:job-fail');
+
+	await failedStage1.maintain();
+
+	const movedFailedEntry = await failedStage1.get(failedId);
+	if (!movedFailedEntry) {
+		throw(new Error('internal error: failed entry missing after maintain'));
+	}
+	expect(movedFailedEntry.status).toBe('moved');
+
+	const pendingFailedEntry = await failedStage2.get(failedId);
+	if (!pendingFailedEntry) {
+		throw(new Error('internal error: failed pipe entry not found in next stage'));
+	}
+	expect(pendingFailedEntry.status).toBe('pending');
+	expect(pendingFailedEntry.request).toBe('job-fail');
+
+	await failedStage2.run();
+
+	const completedFailedEntry = await failedStage2.get(failedId);
+	if (!completedFailedEntry) {
+		throw(new Error('internal error: completed pipe entry not found in next stage'));
+	}
+	expect(completedFailedEntry.status).toBe('completed');
+	expect(completedFailedEntry.output).toBe('handled:job-fail');
+});
+
+test('Errors', async function() {
+	const id1 = generateRequestID();
+	const id2 = generateRequestID();
+	{
+		const error = new Errors.IdempotentExistsError('Test idempotent exists error', new Set([id1, id2]));
+		expect(error.message).toBe('Test idempotent exists error');
+		expect(error.idempotentIDsFound).toEqual(new Set([id1, id2]));
+		expect(error.retryable).toBe(false);
+		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(false);
+	}
+
+	{
+		const error = new Errors.IncorrectStateAssertedError(id1, 'pending', 'processing', 'Test incorrect state asserted error');
+		expect(error.message).toBe('Test incorrect state asserted error');
+		expect(error.retryable).toBe(true);
+		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(true);
+		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
+	}
 });
 
 suite.sequential('Driver Tests', async function() {
@@ -1069,7 +1231,6 @@ suite.sequential('Driver Tests', async function() {
 				beforeAll(async function() {
 					driverInstance = await driverConfig.create('basic_test');
 					queue = driverInstance.queue;
-
 				});
 
 				afterAll(async function() {
@@ -1092,6 +1253,14 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry?.worker).toBeNull();
 						expect(entry?.created).toBeInstanceOf(Date);
 						expect(entry?.updated).toBeInstanceOf(Date);
+					}
+
+					/*
+					 * Test getting a non-existent entry
+					 */
+					{
+						const entry = await queue.get(generateRequestID());
+						expect(entry).toBeNull();
 					}
 				});
 
@@ -1116,17 +1285,26 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that we can set status of an entry and that locking works (i.e. oldStatus must match) */
 				testRunner('Set Status with oldStatus', async function() {
-					const id = await queue.add({ key: 'test3' });
-					await queue.setStatus(id, 'processing', { oldStatus: 'pending' });
-					const entry = await queue.get(id);
+					await using queueLocal = await queue.partition('set-status-with-oldstatus');
+
+					/*
+					 * Add a Time-of-Check to Time-of-Use delay to simulate
+					 * a network delay that would cause some clients to be
+					 * able to compete to add the same ID
+					 */
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const id = await queueLocal.add({ key: 'test3' });
+					await queueLocal.setStatus(id, 'processing', { oldStatus: 'pending' });
+					const entry = await queueLocal.get(id);
 					expect(entry?.status).toBe('processing');
 
 					await expect(async function() {
-						return(await queue.setStatus(id, 'completed', { oldStatus: 'pending' }));
+						return(await queueLocal.setStatus(id, 'completed', { oldStatus: 'pending' }));
 					}).rejects.toThrow(Errors.IncorrectStateAssertedError);
 
-					await queue.setStatus(id, 'completed', { oldStatus: 'processing' });
-					const completedEntry = await queue.get(id);
+					await queueLocal.setStatus(id, 'completed', { oldStatus: 'processing' });
+					const completedEntry = await queueLocal.get(id);
 					expect(completedEntry?.status).toBe('completed');
 				}, 300_000);
 
@@ -1153,6 +1331,42 @@ suite.sequential('Driver Tests', async function() {
 
 					const entry = await queue.get(customID);
 					expect(entry?.request).toEqual({ key: 'first' });
+
+					/*
+					 * Test adding the same ID concurrently
+					 */
+					{
+						await using queueLocal = await queue.partition('idempotent-add-concurrently');
+
+						/*
+						 * Add a Time-of-Check to Time-of-Use delay to simulate
+						 * a network delay that would cause some clients to be
+						 * able to compete to add the same ID
+						 */
+						queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+						const allIds = await Promise.all(Array.from({ length: 20 }).map(async function(_ignored_value, index) {
+							return(await queueLocal.add({ key: `test${index + 1}` }, { id: 'custom_id_123' }));
+						}));
+
+						for (const id of allIds) {
+							expect(id).toBe('custom_id_123');
+						}
+						const id1 = allIds[0];
+						if (id1 === undefined) {
+							throw(new Error('internal error: id1 is undefined'));
+						}
+						const entry = await queueLocal.get(id1);
+
+						expect(entry).toBeDefined();
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+						expect(entry?.request).toEqual({ key: expect.stringMatching(/^test/) });
+
+						const id1_again = await queueLocal.add({ key: 'test1' }, { id: 'custom_id_123' });
+						expect(id1_again).toBe('custom_id_123');
+						const entry_again = await queueLocal.get(id1_again);
+						expect(entry_again).toBeDefined();
+					}
 				});
 
 				/* Test that we can add an entry with idempotent ID and it fails if the idempotent key exists with the appropriate error */
@@ -1456,8 +1670,11 @@ suite.sequential('Driver Tests', async function() {
 
 				/* Test that after adding a key, many concurrent changes to the same key are handled correctly (i.e., exactly one succeeds when using oldStatus all others fail) */
 				testRunner('Concurrent Status Changes', async function() {
-					const entryID = await queue.add({ key: 'concurrent_status_change' });
-					const initialEntry = await queue.get(entryID);
+					await using queueLocal = await queue.partition('concurrent-status-changes');
+					queueLocal._Testing?.(TestingKey).setToctouDelay?.(300);
+
+					const entryID = await queueLocal.add({ key: 'concurrent_status_change' });
+					const initialEntry = await queueLocal.get(entryID);
 					expect(initialEntry?.status).toBe('pending');
 
 					const concurrentUpdates = 20;
@@ -1466,7 +1683,7 @@ suite.sequential('Driver Tests', async function() {
 					for (let index = 0; index < concurrentUpdates; index++) {
 						updatePromises.push((async function() {
 							try {
-								await queue.setStatus(entryID, 'processing', { oldStatus: 'pending' });
+								await queueLocal.setStatus(entryID, 'processing', { oldStatus: 'pending' });
 								return({ success: true });
 							} catch (error: unknown) {
 								return({ success: false, error: error });
@@ -1486,7 +1703,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(successCount).toBe(1);
 					expect(failureCount).toBe(concurrentUpdates - 1);
 
-					const finalEntry = await queue.get(entryID);
+					const finalEntry = await queueLocal.get(entryID);
 					expect(finalEntry?.status).toBe('processing');
 				}, 30_000);
 
@@ -1563,8 +1780,18 @@ suite.sequential('Driver Tests', async function() {
 					{
 						await using partition1 = await queue.partition('partition1');
 						await using partition2 = await queue.partition('partition2');
+						await using partition11 = await partition1.partition('partition1');
+						await using partition111 = await partition11.partition('partition1');
+
+						expect(partition1.path).toEqual([...queue.path, 'partition1']);
+						expect(partition2.path).toEqual([...queue.path, 'partition2']);
+						expect(partition11.path).toEqual([...queue.path, 'partition1', 'partition1']);
+						expect(partition111.path).toEqual([...queue.path, 'partition1', 'partition1', 'partition1']);
+
 						id2 = await partition1.add({ key: 'partition_test_2' });
 						const id3 = await partition2.add({ key: 'partition_test_3' });
+						const id4 = await partition11.add({ key: 'partition_test_1_1' });
+						const id5 = await partition111.add({ key: 'partition_test_1_1_1' });
 
 						async function shouldNotHave(queueToCheck: typeof queue, id: typeof id1) {
 							const value = await queueToCheck.get(id);
@@ -1577,13 +1804,31 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry2?.request).toEqual({ key: 'partition_test_2' });
 						const entry3 = await partition2.get(id3);
 						expect(entry3?.request).toEqual({ key: 'partition_test_3' });
+						const entry4 = await partition11.get(id4);
+						expect(entry4?.request).toEqual({ key: 'partition_test_1_1' });
+						const entry5 = await partition111.get(id5);
+						expect(entry5?.request).toEqual({ key: 'partition_test_1_1_1' });
 
 						await shouldNotHave(partition1, id1);
 						await shouldNotHave(partition2, id1);
+						await shouldNotHave(partition11, id1);
+						await shouldNotHave(partition111, id1);
 						await shouldNotHave(queue, id2);
 						await shouldNotHave(partition2, id2);
+						await shouldNotHave(partition11, id2);
+						await shouldNotHave(partition111, id2);
 						await shouldNotHave(queue, id3);
 						await shouldNotHave(partition1, id3);
+						await shouldNotHave(partition11, id3);
+						await shouldNotHave(partition111, id3);
+						await shouldNotHave(queue, id4);
+						await shouldNotHave(partition1, id4);
+						await shouldNotHave(partition2, id4);
+						await shouldNotHave(partition111, id4);
+						await shouldNotHave(queue, id5);
+						await shouldNotHave(partition1, id5);
+						await shouldNotHave(partition2, id5);
+						await shouldNotHave(partition11, id5);
 
 						/* Ensure we can access the partition while the parent queue is still in use */
 						const partition1_again = await queue.partition('partition1');
@@ -1640,33 +1885,50 @@ suite.sequential('Driver Tests', async function() {
 					expect(entry?.status).toBe('pending');
 					expect(entry?.id).toBe(id1);
 
-					const [ part0_id1, part1_id1 ] = await (async function() {
+					const [ part0_id1, part1_id1, part11_id1, part111_id1 ] = await (async function() {
 						await using driverInstance = await driverConfig.create('partition_persistence_test', { leave: true });
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
+						await using subpartition = await partition.partition('part1');
+						await using subsubpartition = await subpartition.partition('part1');
 
 						return([
 							await queue.add({ partition: 'part0' }),
-							await partition.add({ partition: 'part1' })
+							await partition.add({ partition: 'part1' }),
+							await subpartition.add({ partition: 'part1.1' }),
+							await subsubpartition.add({ partition: 'part1.1.1' })
 						]);
 					})();
 
-					const [ part0_entry, part1_entry ] = await (async function() {
+					expect(part0_id1).toBeDefined();
+					expect(part1_id1).toBeDefined();
+					expect(part11_id1).toBeDefined();
+					expect(part111_id1).toBeDefined();
+
+					const [ part0_entry, part1_entry, part11_entry, part111_entry ] = await (async function() {
 						await using driverInstance = await driverConfig.create('partition_persistence_test');
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
+						await using subpartition = await partition.partition('part1');
+						await using subsubpartition = await subpartition.partition('part1');
 
 						return([
 							await queue.get(part0_id1),
-							await partition.get(part1_id1)
+							await partition.get(part1_id1),
+							await subpartition.get(part11_id1),
+							await subsubpartition.get(part111_id1)
 						]);
 					})();
 					expect(part0_entry).toBeDefined();
 					expect(part0_entry?.request).toEqual({ partition: 'part0' });
 					expect(part1_entry).toBeDefined();
 					expect(part1_entry?.request).toEqual({ partition: 'part1' });
+					expect(part11_entry).toBeDefined();
+					expect(part11_entry?.request).toEqual({ partition: 'part1.1' });
+					expect(part111_entry).toBeDefined();
+					expect(part111_entry?.request).toEqual({ partition: 'part1.1.1' });
 				});
 			}
 		});

@@ -49,6 +49,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { pool: () => Promise<pg.Pool>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -196,7 +197,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			try {
 				logger?.debug('Starting DB transaction');
-				await client.query('BEGIN');
+				await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
 				logger?.debug('DB transaction started');
 
 				const retval = await fn(client, logger);
@@ -232,6 +233,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			const idempotentIDs = info?.idempotentKeys;
@@ -250,6 +253,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				if (matchingIdempotentEntries.size !== 0) {
 					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
@@ -264,23 +269,16 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			 */
 			const status = info?.status ?? 'pending';
 
-			try {
-				await client.query(
-					`INSERT INTO queue_entries (id, path, request, output, last_error, status, created, updated, worker, failures)
-					 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
-					[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
-				);
+			await client.query(
+				`INSERT INTO queue_entries (id, path, request, output, last_error, status, created, updated, worker, failures)
+				 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
+				[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
+			);
 
-				if (idempotentIDs && idempotentIDs.size > 0) {
-					for (const idempotentID of idempotentIDs) {
-						await client.query('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES ($1, $2, $3)', [entryID, this.pathStr, idempotentID]);
-					}
+			if (idempotentIDs && idempotentIDs.size > 0) {
+				for (const idempotentID of idempotentIDs) {
+					await client.query('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES ($1, $2, $3)', [entryID, this.pathStr, idempotentID]);
 				}
-			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('duplicate key') && idempotentIDs) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
-				}
-				throw(error);
 			}
 
 			return(entryID);
@@ -295,6 +293,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
+
+			await this.toctouDelay?.();
 
 			const currentEntry = existingEntry.rows[0];
 			if (!currentEntry) {
@@ -324,6 +324,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			}
 
 			const result = await client.query(updateQuery, updateParams);
+
+			await this.toctouDelay?.();
 
 			if (oldStatus && result.rowCount === 0) {
 				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
@@ -482,5 +484,26 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 	async [Symbol.asyncDispose](): Promise<void> {
 		return(await this.destroy());
+	}
+
+	/** @internal */
+	_Testing(key: string): {
+		setToctouDelay(delay: number): void;
+		unsetToctouDelay(): void;
+	} {
+		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
+			throw(new Error('This is a testing only method'));
+		}
+
+		return({
+			setToctouDelay: (delay: number): void => {
+				this.toctouDelay = async (): Promise<void> => {
+					return(await asleep(delay));
+				};
+			},
+			unsetToctouDelay: (): void => {
+				this.toctouDelay = undefined;
+			}
+		});
 	}
 }
