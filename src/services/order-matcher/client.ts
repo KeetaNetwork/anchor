@@ -65,15 +65,6 @@ function toProviderID(value: string): ProviderID {
 	return(value as unknown as ProviderID);
 }
 
-function fromTokenPublicKeyString(value: string): KeetaNetToken {
-	const account = KeetaNetLib.Account.fromPublicKeyString(assertKeetaNetTokenPublicKeyString(value));
-	return(account.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN));
-}
-
-function fromAccountPublicKeyString(value: string): KeetaNetAccount {
-	return(KeetaNetLib.Account.fromPublicKeyString(value));
-}
-
 function canonicalizePair(pair: TokenPairInput): { tokenA: string; tokenB: string; } {
 	return({
 		tokenA: KeetaNetLib.Account.toPublicKeyString(pair[0]),
@@ -113,7 +104,7 @@ async function getEndpoints(resolver: Resolver, criteria: Partial<ServiceSearchC
 		const matchingAccountsEntries = await serviceInfo.matchingAccounts('array');
 		const matchingAccounts = await Promise.all(matchingAccountsEntries.map(async (entry) => {
 			const accountString = await entry('string');
-			return(fromAccountPublicKeyString(accountString));
+			return(KeetaNetLib.Account.fromPublicKeyString(accountString));
 		}));
 
 		const pairsEntries = await serviceInfo.pairs('array');
@@ -123,13 +114,13 @@ async function getEndpoints(resolver: Resolver, criteria: Partial<ServiceSearchC
 			const baseEntries = await pairInfo.base('array');
 			const baseTokens = await Promise.all(baseEntries.map(async (baseEntry) => {
 				const baseTokenString = await baseEntry('string');
-				return(fromTokenPublicKeyString(baseTokenString));
+				return(KeetaNetLib.Account.fromPublicKeyString(baseTokenString).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN))
 			}));
 
 			const quoteEntries = await pairInfo.quote('array');
 			const quoteTokens = await Promise.all(quoteEntries.map(async (quoteEntry) => {
 				const quoteTokenString = await quoteEntry('string');
-				return(fromTokenPublicKeyString(quoteTokenString));
+				return(KeetaNetLib.Account.fromPublicKeyString(quoteTokenString).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN))
 			}));
 
 			let fees: KeetaOrderMatcherPairFeeMetadata | undefined;
