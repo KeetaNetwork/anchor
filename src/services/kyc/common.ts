@@ -16,10 +16,18 @@ export type CountryCodesSearchCriteria = ServiceSearchCriteria<'kyc'>['countryCo
 export type Operations = NonNullable<ServiceMetadata['services']['kyc']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
+export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
+
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;
 	account: ReturnType<InstanceType<typeof KeetaNet.lib.Account>['publicKeyString']['get']>;
 	signed: HTTPSignedField;
+	/**
+	 * An optional URL that the KYC provider will redirect the user to
+	 * after the verification flow ends. The provider appends a
+	 * {@link KYCRedirectStatus} query parameter indicating the outcome.
+	 */
+	redirectURL?: string;
 }
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
