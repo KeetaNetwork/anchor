@@ -134,6 +134,13 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 		from?: NonNullable<ServiceMetadata['services']['fx']>[string]['from'];
 
 		/**
+		 * Asset identifiers in which this FX provider accepts fee
+		 * denomination. Advertised in service metadata so clients
+		 * can select a preferred cost asset.
+		 */
+		acceptedCostAssets?: NonNullable<ServiceMetadata['services']['fx']>[string]['acceptedCostAssets'];
+
+		/**
 		 * Optional callback to validate a quote before completing an exchange
 		 *
 		 * This allows the FX Server operator to reject quotes that are no longer
@@ -209,6 +216,10 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 		unsignedQuote.cost.amount
 	];
 
+	if (unsignedQuote.request.preferredCostAsset !== undefined) {
+		retval.push(unsignedQuote.request.preferredCostAsset);
+	}
+
 	return(retval);
 
 	/**
@@ -219,7 +230,7 @@ async function formatQuoteSignable(unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, '
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	type _ignore_static_assert = AssertNever<
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-		AssertNever<keyof Omit<typeof unsignedQuote['request'], 'from' | 'to' | 'amount' | 'affinity'>> &
+		AssertNever<keyof Omit<typeof unsignedQuote['request'], 'from' | 'to' | 'amount' | 'affinity' | 'preferredCostAsset'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
 		AssertNever<keyof Omit<typeof unsignedQuote['cost'], 'token' | 'amount'>> &
 		// eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents,@typescript-eslint/no-duplicate-type-constituents
@@ -347,7 +358,6 @@ type KeetaFXAnchorQueueStage1Response = {
 
 function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
 	let expected: KeetaFXAnchorQueueStage1RequestJSON['expected'];
-
 	if (request.expected === null) {
 		expected = null;
 	} else {
@@ -363,15 +373,22 @@ function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1
 		};
 	};
 
-	const retval: KeetaFXAnchorQueueStage1RequestJSON = {
-		version: 1,
-		account: request.account.publicKeyString.get(),
-		block: Buffer.from(request.block.toBytes()).toString('base64'),
-		request: request.request,
-		expected: expected
-	};
+	const { preferredCostAsset, ...requestBase } = request.request;
+	const requestForQueue: { [key: string]: JSONSerializable } = { ...requestBase };
+	if (preferredCostAsset !== undefined) {
+		requestForQueue.preferredCostAsset = preferredCostAsset;
+	}
 
-	return(retval);
+	const account = request.account.publicKeyString.get();
+	const block = Buffer.from(request.block.toBytes()).toString('base64');
+
+	return({
+		version: 1 as const,
+		request: requestForQueue,
+		account,
+		block,
+		expected
+	});
 }
 
 function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
@@ -574,6 +591,24 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 					output: null,
 					error: 'Server misconfiguration: getConversionRateAndFee must be provided in fx configuration to process exchanges without expected details'
 				});
+			}
+
+			if (request.preferredCostAsset !== undefined) {
+				if (this.serverConfig.fx.acceptedCostAssets === undefined) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: 'This server does not support preferred cost asset selection'
+					});
+				}
+
+				if (!this.serverConfig.fx.acceptedCostAssets.includes(request.preferredCostAsset)) {
+					return({
+						status: 'failed_permanently',
+						output: null,
+						error: `Preferred cost asset "${request.preferredCostAsset}" is not accepted by this server`
+					});
+				}
 			}
 
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
@@ -985,6 +1020,16 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			throw(new Error(`FX configuration does not support performing exchanges, so purpose "${purpose}" is invalid`));
 		}
 
+		if (conversion.preferredCostAsset !== undefined) {
+			if (this.fx.acceptedCostAssets === undefined) {
+				throw(new KeetaAnchorUserError('This server does not support preferred cost asset selection'));
+			}
+
+			if (!this.fx.acceptedCostAssets.includes(conversion.preferredCostAsset)) {
+				throw(new KeetaAnchorUserError(`Preferred cost asset "${conversion.preferredCostAsset}" is not accepted by this server`));
+			}
+		}
+
 		if ('getConversionRateAndFee' in this.fx) {
 			if (!this.accounts) {
 				throw(new Error('Accounts must be configured to use "getConversionRateAndFee" in fx configuration'));
@@ -1116,10 +1161,16 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
 		};
 
-		return({
+		const metadata: NonNullable<ServiceMetadata['services']['fx']>[string] = {
 			from: this.fx.from ?? [],
 			operations: operations
-		});
+		};
+
+		if (this.fx.acceptedCostAssets) {
+			metadata.acceptedCostAssets = this.fx.acceptedCostAssets;
+		}
+
+		return(metadata);
 	}
 }
 

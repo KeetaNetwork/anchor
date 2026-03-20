@@ -724,12 +724,18 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			throw(new Error('From and To are both required for a conversion'));
 		}
 
-		return({
+		const canonical: ConversionInputCanonical = {
 			from,
 			to,
 			amount: amount,
 			affinity: input.affinity
-		});
+		};
+
+		if (input.preferredCostAsset !== undefined) {
+			canonical.preferredCostAsset = input.preferredCostAsset;
+		}
+
+		return(canonical);
 	}
 
 	async listPossibleConversions(input: Partial<Pick<ConversionInput, 'from' | 'to'>>, options: AccountOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<{ conversions: KeetaNetTokenPublicKeyString[] } | null> {

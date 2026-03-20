@@ -1,7 +1,6 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import * as CurrencyInfo from '@keetanetwork/currency-info';
-import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type * as CurrencyInfo from '@keetanetwork/currency-info';
+import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
 import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
@@ -12,104 +11,44 @@ import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
+import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
 export * from './lib/location.js';
 
-type HexString = `0x${string}`;
+export type {
+	HexString,
+	KeetaNetAccount,
+	KeetaNetTokenPublicKeyString,
+	EVMAsset,
+	TronAsset,
+	SolanaAsset,
+	ChainAssetString,
+	MovableAssetSearchInput,
+	MovableAssetSearchCanonical,
+	MovableAsset,
+	CurrencySearchCanonical,
+	CurrencySearchInput,
+	TokenSearchInput,
+	TokenSearchCanonical
+} from '../../lib/asset.js';
 
-
-export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
-export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+export {
+	toEVMAsset,
+	parseEVMAsset,
+	isEVMAsset,
+	toTronAsset,
+	parseTronAsset,
+	isTronAsset,
+	toSolanaAsset,
+	parseSolanaAsset,
+	isSolanaAsset,
+	convertAssetSearchInputToCanonical
+} from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
-
-type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode | `$${string}`; /* XXX:TODO */
-type CurrencySearchInput = CurrencySearchCanonical | CurrencyInfo.Currency;
-
-type TokenSearchInput = TokenAddress | TokenPublicKeyString;
-type TokenSearchCanonical = TokenPublicKeyString;
-
-export type EVMAsset = `evm:${HexString}`;
-export type TronAsset = `tron:${string}`;
-export type SolanaAsset = `solana:${string}`;
-export type ChainAssetString = SolanaAsset | EVMAsset | TronAsset | TokenPublicKeyString;
-export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
-export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
-export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | ChainAssetString;
-
-export function toEVMAsset(input: HexString): EVMAsset {
-	return(`evm:${input}`);
-}
-
-function isHexString(input: unknown): input is HexString {
-	if (typeof input === 'string' && input.startsWith('0x')) {
-		return(true);
-	}
-
-	return(false);
-}
-
-export function parseEVMAsset(input: EVMAsset): HexString {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'evm') {
-		throw(new Error('Invalid EVMAsset string'));
-	}
-
-	const value = parts[1];
-	if (!isHexString(value)) {
-		throw(new Error('Invalid hex string in EVMAsset'));
-	}
-
-	return(value);
-}
-
-export function isEVMAsset(input: unknown): input is EVMAsset {
-	return(typeof input === 'string' && input.startsWith('evm:0x'));
-}
-
-export function toTronAsset(input: string): TronAsset {
-	return(`tron:${input}`);
-}
-
-export function parseTronAsset(input: TronAsset): string {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'tron') {
-		throw(new Error('Invalid TronAsset string'));
-	}
-
-	const value = parts[1];
-	if (!value || typeof value !== 'string' || value.length === 0) {
-		throw(new Error('Invalid hex string in TronAsset'));
-	}
-
-	return(value);
-}
-
-export function isTronAsset(input: unknown): input is TronAsset {
-	return(typeof input === 'string' && input.startsWith('tron:'));
-}
-
-export function toSolanaAsset(input: string): SolanaAsset {
-	return(`solana:${input}`);
-}
-
-export function parseSolanaAsset(input: SolanaAsset): string {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'solana') {
-		throw(new Error('Invalid SolanaAsset string'));
-	}
-	const value = parts[1];
-	if (!value || typeof value !== 'string' || value.length === 0) {
-		throw(new Error('Invalid string in SolanaAsset'));
-	}
-	return(value);
-}
-
-export function isSolanaAsset(input: unknown): input is SolanaAsset {
-	return(typeof input === 'string' && input.startsWith('solana:'));
-}
 
 type RailOrRails = Rail | Rail[];
 
@@ -326,25 +265,6 @@ function commonToSignable(item: SignableObjectInput): Signable {
 	});
 
 	return(result.map(item => item[1]));
-}
-
-export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {
-	if (input instanceof CurrencyInfo.Currency || CurrencyInfo.Currency.isCurrencyCode(input) || CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
-		if (CurrencyInfo.Currency.isCurrencyCode(input)) {
-			return(input);
-		} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
-			input = new CurrencyInfo.Currency(input);
-		}
-
-		return(input.code);
-	} else {
-		if (typeof input === 'string') {
-			return(input);
-		}
-
-		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
-		return(input.publicKeyString.get());
-	}
 }
 
 export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
