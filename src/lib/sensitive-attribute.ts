@@ -255,6 +255,22 @@ function decodeForSensitive(
 	return(normalizeDecodedValue(plainObject));
 }
 
+export type SensitiveAttributeJSON = {
+	version: string;
+	publicKey: string;
+	cipher: {
+		algorithm: string;
+		iv: string;
+		key: string;
+	};
+	hashedValue: {
+		encryptedSalt: string;
+		algorithm: string;
+		value: string;
+	};
+	encryptedValue: string;
+};
+
 export class SensitiveAttribute<T = ArrayBuffer> {
 	private static readonly SensitiveAttributeObjectTypeID = 'c0cc9591-cebb-4441-babe-23739279e3f2';
 	private readonly SensitiveAttributeObjectTypeID!: string;
@@ -433,8 +449,10 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 		return(this.#info.hashedValue.value.equals(hashedAndSaltedValueBuffer));
 	}
 
-	toJSON(): unknown/* XXX:TODO */ {
-		return(KeetaNetClient.lib.Utils.Conversion.toJSONSerializable(this.#info));
+	toJSON(): SensitiveAttributeJSON {
+		const info = KeetaNetClient.lib.Utils.Conversion.toJSONSerializable(this.#info);
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(info as unknown as SensitiveAttributeJSON);
 	}
 
 	/**
