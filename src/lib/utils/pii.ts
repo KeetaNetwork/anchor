@@ -1,7 +1,7 @@
 import type * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { CertificateAttributeOIDDB, type CertificateAttributeValueMap, type CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
 import type { CertificateBuilder, Certificate } from '../certificates.js';
-import { SensitiveAttribute, SensitiveAttributeBuilder } from '../certificates.js';
+import { SensitiveAttribute } from '../certificates.js';
 import { KeetaAnchorError } from '../error.js';
 
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
@@ -203,10 +203,9 @@ export class PIIStore {
 			return(storedValue as SensitiveAttribute<CertificateAttributeValue<K>>);
 		}
 
-		const builder = new SensitiveAttributeBuilder(subjectKey);
 		// @ts-expect-error storedValue type is validated at setAttribute time
-		builder.set(name, storedValue);
-		return(await builder.build());
+		const result = await SensitiveAttribute.create(subjectKey, name, storedValue);
+		return(result);
 	}
 
 	/**
@@ -215,12 +214,18 @@ export class PIIStore {
 	 * External attributes are not included in the certificate.
 	 *
 	 * @param builder - The certificate builder to apply attributes to
+	 * @param subjectKey - The subject's account key (required to encrypt sensitive attributes)
 	 * @returns The certificate builder with the attributes applied
 	 */
-	toCertificateBuilder(builder: CertificateBuilder): CertificateBuilder {
+	async toCertificateBuilder(builder: CertificateBuilder, subjectKey: KeetaNetAccount): Promise<CertificateBuilder> {
 		for (const [name, attr] of this.#attributes.entries()) {
 			if (this.#isKnownAttribute(name) && attr.value !== undefined && attr.value !== null) {
-				builder.setAttribute(name, attr.sensitive, attr.value);
+				if (attr.sensitive) {
+					const sensitiveAttr = await this.toSensitiveAttribute(name, subjectKey);
+					builder.setSensitiveAttribute(name, sensitiveAttr);
+				} else {
+					builder.setAttribute(name, attr.value);
+				}
 			}
 		}
 
@@ -252,4 +257,3 @@ export class PIIStore {
 		return(name in CertificateAttributeOIDDB);
 	}
 }
-

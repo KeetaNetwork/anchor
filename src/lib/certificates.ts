@@ -9,8 +9,8 @@ import { lookupByOID } from './utils/oid.js';
 import { EncryptedContainer } from './encrypted-container.js';
 import { assertSharableCertificateAttributesContentsSchema } from './certificates.generated.js';
 import { checkHashWithOID } from './utils/external.js';
-import { SensitiveAttribute, SensitiveAttributeBuilder, encodeForSensitive, encodeAttribute, type CertificateAttributeNames } from './sensitive-attribute.js';
-export { SensitiveAttribute, SensitiveAttributeBuilder } from './sensitive-attribute.js';
+import { SensitiveAttribute, encodeForSensitive, encodeAttribute, type CertificateAttributeNames } from './sensitive-attribute.js';
+export { SensitiveAttribute } from './sensitive-attribute.js';
 export type { CertificateAttributeNames } from './sensitive-attribute.js';
 
 /**
@@ -456,7 +456,9 @@ type CertificateAttributeInput<NAME extends CertificateAttributeNames> = Certifi
 
 export class CertificateBuilder extends BaseCertificateBuilder {
 	readonly #attributes: {
-		[name: string]: { sensitive: boolean; value: ArrayBuffer; preEncrypted?: boolean }
+		[name: string]:
+			| { sensitive: false; value: ArrayBuffer }
+			| { sensitive: true; attribute: SensitiveAttribute<unknown> }
 	} = {};
 
 	#subjectPublicKeyString: string | undefined;
@@ -487,21 +489,17 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 	}
 
 	/**
-	 * Set a KYC Attribute to a given value.
-	 * The sensitive flag is required.
+	 * Set a non-sensitive KYC Attribute to a given value.
 	 *
-	 * If an attribute is marked sensitive, the value is encoded
-	 * into the certificate using a commitment scheme so that the
-	 * value can be proven later without revealing it.
+	 * For sensitive attributes, use `setSensitiveAttribute` with a
+	 * pre-created `SensitiveAttribute` instance.
 	 */
-	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
-		// Non-sensitive path: only primitive schema (string/date) allowed
+	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: CertificateAttributeInput<NAME>): void {
 		const schemaValidator = CertificateAttributeSchema[name];
 		let encoded: ArrayBuffer;
 		if (value instanceof ArrayBuffer) {
 			encoded = value;
 		} else if (name in CertificateAttributeSchema) {
-			/* XXX: Why do we have two encoding methods ? */
 			encoded = bufferToArrayBuffer(encodeForSensitive(name, value));
 		} else if (schemaValidator === ASN1.ValidateASN1.IsDate) {
 			if (!(value instanceof Date)) {
@@ -512,11 +510,11 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 		} else if (schemaValidator === ASN1.ValidateASN1.IsString && typeof value === 'string') {
 			encoded = encodeAttribute(name, value);
 		} else {
-			throw(new Error('Unsupported non-sensitive value type'));
+			throw(new Error('Unsupported attribute value type'));
 		}
 
 		this.#attributes[name] = {
-			sensitive: sensitive,
+			sensitive: false,
 			value: encoded
 		};
 	}
@@ -537,16 +535,12 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 		}
 		this.#attributes[name] = {
 			sensitive: true,
-			value: attribute.toDER(),
-			preEncrypted: true
+			attribute
 		};
 	}
 
 	protected async addExtensions(...args: Parameters<BaseCertificateBuilder['addExtensions']>): ReturnType<BaseCertificateBuilder['addExtensions']> {
 		const retval = await super.addExtensions(...args);
-
-		const subject = args[0].subjectPublicKey;
-
 		/* Encode the attributes */
 		const certAttributes: CertificateKYCAttributeSchema = [];
 
@@ -560,23 +554,11 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 
 			let value: Buffer;
 			if (attribute.sensitive) {
-				if (attribute.preEncrypted) {
-					// Already encrypted via setSensitiveAttribute
-					value = arrayBufferToBuffer(attribute.value);
-				} else {
-					// Encrypt now
-					const builder = new SensitiveAttributeBuilder(subject);
-					builder.set(attribute.value);
-					const builtAttr = await builder.build();
-					value = arrayBufferToBuffer(builtAttr.toDER());
-				}
+				value = arrayBufferToBuffer(attribute.attribute.toDER());
 			} else {
-				if (typeof attribute.value === 'string') {
-					value = Buffer.from(attribute.value, 'utf-8');
-				} else {
-					value = arrayBufferToBuffer(attribute.value);
-				}
+				value = arrayBufferToBuffer(attribute.value);
 			}
+
 			certAttributes.push([{
 				type: 'oid',
 				oid: nameOID
@@ -1247,7 +1229,6 @@ Certificate.SharableAttributes = SharableCertificateAttributes;
 
 /** @internal */
 export const _Testing = {
-	SensitiveAttributeBuilder,
 	SensitiveAttribute,
 	ValidateASN1: ASN1.ValidateASN1,
 	BufferStorageASN1: ASN1.BufferStorageASN1,

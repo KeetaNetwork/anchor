@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { SensitiveAttribute, SensitiveAttributeBuilder } from './sensitive-attribute.js';
+import { SensitiveAttribute } from './sensitive-attribute.js';
 import type { CertificateAttributeNames } from './sensitive-attribute.js';
 import type { CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
 import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
@@ -34,23 +34,18 @@ const SCHEMA_ATTRIBUTES = [
 	attr('dateOfBirth', new Date('1990-01-15'))
 ];
 
-const RAW_PAYLOAD = bufferToArrayBuffer(Buffer.from('secret-value', 'utf-8'));
-
 // ============================================================================
 // Helpers
 // ============================================================================
 
 /**
- * Build an encrypted attribute from raw bytes
+ * Build an encrypted attribute using a named schema attribute
  */
-async function buildRaw(data: ArrayBuffer = RAW_PAYLOAD): Promise<{
-	encrypted: SensitiveAttribute<ArrayBuffer>;
+async function buildEncrypted(): Promise<{
+	encrypted: SensitiveAttribute<string>;
 	der: ArrayBuffer;
 }> {
-	const encrypted = await new SensitiveAttributeBuilder(accounts.publicKeyOnly)
-		.set(data)
-		.build();
-
+	const encrypted = await SensitiveAttribute.create(accounts.publicKeyOnly, 'firstName', 'secret-value');
 	return({ encrypted, der: encrypted.toDER() });
 }
 
@@ -58,8 +53,8 @@ async function buildRaw(data: ArrayBuffer = RAW_PAYLOAD): Promise<{
  * Generate a proof using the private key
  */
 async function generateProof(der: ArrayBuffer): Promise<{
-	proof: Awaited<ReturnType<SensitiveAttribute<ArrayBuffer>['getProof']>>;
-	attrWithKey: SensitiveAttribute<ArrayBuffer>;
+	proof: Awaited<ReturnType<SensitiveAttribute['getProof']>>;
+	attrWithKey: SensitiveAttribute;
 }> {
 	const attrWithKey = new SensitiveAttribute(accounts.withPrivateKey, der);
 	return({ proof: await attrWithKey.getProof(), attrWithKey });
@@ -78,37 +73,36 @@ function tamperDER(der: ArrayBuffer): ArrayBuffer {
 // Tests: Building & Decryption
 // ============================================================================
 
-test('raw bytes: encrypt and decrypt round-trip', async function() {
-	const { der } = await buildRaw();
-	const decrypted = await new SensitiveAttribute(accounts.withPrivateKey, der).getValue();
-	expect(arrayBufferToBuffer(decrypted).toString('utf-8')).toBe('secret-value');
+test('encrypt and decrypt round-trip', async function() {
+	const encrypted = await SensitiveAttribute.create(accounts.withPrivateKey, 'firstName', 'secret-value');
+	expect(await encrypted.getValue()).toBe('secret-value');
 });
 
-test('schema-aware: encrypt and decrypt with type preservation', async function() {
+test('encrypt and decrypt with type preservation', async function() {
 	for (const { name, value } of SCHEMA_ATTRIBUTES) {
-		const encrypted = await new SensitiveAttributeBuilder(accounts.withPrivateKey)
-			.set(name, value)
-			.build();
+		const encrypted = await SensitiveAttribute.create(accounts.withPrivateKey, name, value);
 		expect(await encrypted.getValue(), name).toEqual(value);
 	}
 });
 
 test('publicKey getter matches encryption key', async function() {
-	const { encrypted } = await buildRaw();
+	const { encrypted } = await buildEncrypted();
 	expect(encrypted.publicKey).toBe(accounts.publicKeyOnly.publicKeyString.get());
 });
 
 test('toDER returns re-constructable bytes', async function() {
-	const { der } = await buildRaw();
+	const { der } = await buildEncrypted();
 	expect(der).toBeInstanceOf(ArrayBuffer);
 	expect(der.byteLength).toBeGreaterThan(0);
 
-	const decrypted = await new SensitiveAttribute(accounts.withPrivateKey, der).getValue();
-	expect(arrayBufferToBuffer(decrypted).toString('utf-8')).toBe('secret-value');
+	const reconstructed = new SensitiveAttribute(accounts.withPrivateKey, der);
+	const raw = await reconstructed.get();
+	expect(raw).toBeInstanceOf(ArrayBuffer);
+	expect(raw.byteLength).toBeGreaterThan(0);
 });
 
 test('toJSON contains expected structure', async function() {
-	const { encrypted } = await buildRaw();
+	const { encrypted } = await buildEncrypted();
 	const json = encrypted.toJSON();
 	expect(typeof json).toBe('object');
 	expect(json).not.toBeNull();
@@ -124,7 +118,7 @@ test('toJSON contains expected structure', async function() {
 // ============================================================================
 
 test('proof: valid proof passes validation', async function() {
-	const { der } = await buildRaw();
+	const { der } = await buildEncrypted();
 	const { proof } = await generateProof(der);
 	expect(proof).toHaveProperty('value');
 	expect(proof).toHaveProperty('hash');
@@ -138,7 +132,7 @@ type ProofTestCase = {
 	name: string;
 	modify: (der: ArrayBuffer) => Promise<{
 		der: ArrayBuffer;
-		proof: Awaited<ReturnType<SensitiveAttribute<ArrayBuffer>['getProof']>>;
+		proof: Awaited<ReturnType<SensitiveAttribute['getProof']>>;
 		account?: typeof accounts.publicKeyOnly;
 	}>;
 };
@@ -169,7 +163,7 @@ const INVALID_PROOF_CASES: ProofTestCase[] = [
 
 for (const { name, modify } of INVALID_PROOF_CASES) {
 	test(`proof: fails with ${name}`, async function() {
-		const { der } = await buildRaw();
+		const { der } = await buildEncrypted();
 		const { der: testDER, proof, account = accounts.publicKeyOnly } = await modify(der);
 		const valid = await new SensitiveAttribute(account, testDER).validateProof(proof);
 		expect(valid).toBe(false);
@@ -181,15 +175,8 @@ for (const { name, modify } of INVALID_PROOF_CASES) {
 // ============================================================================
 
 test('error: decryption fails with wrong private key', async function() {
-	const { der } = await buildRaw();
+	const { der } = await buildEncrypted();
 	await expect(async function() {
 		return(await new SensitiveAttribute(accounts.wrong, der).getProof());
 	}).rejects.toThrow();
 });
-
-test('error: build throws when value not set', async function() {
-	await expect(async function() {
-		return(await new SensitiveAttributeBuilder(accounts.publicKeyOnly).build());
-	}).rejects.toThrow();
-});
-

@@ -436,60 +436,31 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 	toJSON(): unknown/* XXX:TODO */ {
 		return(KeetaNetClient.lib.Utils.Conversion.toJSONSerializable(this.#info));
 	}
-}
-
-export class SensitiveAttributeBuilder {
-	readonly #account: KeetaNetAccount;
-	#value: Buffer | undefined;
-	#attributeName: CertificateAttributeNames | undefined;
-
-	constructor(account: KeetaNetAccount) {
-		this.#account = account;
-	}
 
 	/**
-	 * Set a schema-aware attribute value (handles encoding internally)
+	 * Encrypt a value and create a new SensitiveAttribute
 	 */
-	set<K extends CertificateAttributeNames>(name: K, value: CertificateAttributeValue<K>): this;
-	/**
-	 * Set raw bytes for encryption
-	 */
-	set(value: Buffer | ArrayBufferLike): this;
-	set<K extends CertificateAttributeNames>(
-		nameOrValue: K | Buffer | ArrayBufferLike,
-		value?: CertificateAttributeValue<K>
-	): this {
-		// Distinguish overloads: if value provided, first arg is name; otherwise it's raw bytes
-		if (value !== undefined && typeof nameOrValue === 'string') {
-			this.#attributeName = nameOrValue;
-			this.#value = encodeForSensitive(nameOrValue, value);
-		} else if (Buffer.isBuffer(nameOrValue)) {
-			this.#value = nameOrValue;
-		} else if (typeof nameOrValue === 'object' && nameOrValue !== null) {
-			this.#value = arrayBufferLikeToBuffer(nameOrValue);
-		}
-
-		return(this);
-	}
-
-	async build<T = ArrayBuffer>(decoder?: (data: Buffer | ArrayBuffer) => T | Promise<T>): Promise<SensitiveAttribute<T>> {
-		if (this.#value === undefined) {
-			throw(new Error('Value not set'));
-		}
+	static async create<K extends CertificateAttributeNames>(
+		account: KeetaNetAccount,
+		name: K,
+		value: CertificateAttributeValue<K> | Buffer | ArrayBuffer
+	): Promise<SensitiveAttribute<CertificateAttributeValue<K>>> {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const encodedValue = encodeForSensitive(name, value as SensitiveAttributeType | Buffer | ArrayBuffer);
 
 		const salt = crypto.randomBytes(32);
 
 		const hashingAlgorithm = KeetaNetClient.lib.Utils.Hash.HashFunctionName;
-		const publicKey = Buffer.from(this.#account.publicKey.get());
+		const publicKey = Buffer.from(account.publicKey.get());
 
 		const cipher = 'aes-256-gcm';
 		const key = crypto.randomBytes(32);
 		const nonce = crypto.randomBytes(12);
-		const encryptedKey = await this.#account.encrypt(bufferToArrayBuffer(key));
+		const encryptedKey = await account.encrypt(bufferToArrayBuffer(key));
 
-		function encrypt(value: Buffer) {
+		function encrypt(input: Buffer) {
 			const cipherObject = crypto.createCipheriv(cipher, key, nonce);
-			let retval = Buffer.concat([cipherObject.update(value), cipherObject.final()]);
+			let retval = Buffer.concat([cipherObject.update(input), cipherObject.final()]);
 
 			// For AES-GCM, append the 16-byte authentication tag
 			if (cipher === 'aes-256-gcm') {
@@ -499,10 +470,10 @@ export class SensitiveAttributeBuilder {
 			return(retval);
 		}
 
-		const encryptedValue = encrypt(this.#value);
+		const encryptedValue = encrypt(encodedValue);
 		const encryptedSalt = encrypt(arrayBufferLikeToBuffer(salt));
 
-		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, this.#value]);
+		const saltedValue = Buffer.concat([salt, publicKey, encryptedValue, encodedValue]);
 		const hashedAndSaltedValue = KeetaNetClient.lib.Utils.Hash.Hash(saltedValue);
 
 		const attributeStructure: SensitiveAttributeSchema = [
@@ -530,20 +501,15 @@ export class SensitiveAttributeBuilder {
 			encryptedValue
 		];
 
-		// Produce canonical DER as ArrayBuffer
 		const encodedAttributeObject = ASN1.JStoASN1(attributeStructure);
 		const encryptedDER = encodedAttributeObject.toBER(false);
 
-		// Use provided decoder, or create one from attribute name, or undefined for raw bytes
-		let effectiveDecoder: ((data: Buffer | ArrayBuffer) => T | Promise<T>) | undefined = decoder;
-		if (!effectiveDecoder && this.#attributeName) {
-			const attrName = this.#attributeName;
-			effectiveDecoder = function(data: Buffer | ArrayBuffer): T {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(decodeForSensitive(attrName, data) as T);
-			};
-		}
+		const decoder = function(data: Buffer | ArrayBuffer): CertificateAttributeValue<K> {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			return(decodeForSensitive(name, data) as CertificateAttributeValue<K>);
+		};
 
-		return(new SensitiveAttribute<T>(this.#account, encryptedDER, effectiveDecoder));
+		const result = new SensitiveAttribute<CertificateAttributeValue<K>>(account, encryptedDER, decoder);
+		return(result);
 	}
 }

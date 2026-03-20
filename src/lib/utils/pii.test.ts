@@ -239,8 +239,8 @@ test('fromCertificate extracts all attributes', async function() {
 test('toCertificateBuilder <-> fromCertificate round-trip', async function() {
 	const originalStore = createPopulatedStore();
 
-	const certificate = await originalStore
-		.toCertificateBuilder(createBuilder())
+	const certificate = await (await originalStore
+		.toCertificateBuilder(createBuilder(), testAccounts.subject))
 		.build({ serial: 1 });
 
 	const certWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });

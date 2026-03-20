@@ -103,13 +103,17 @@ export async function createTestCertificate(options: CreateTestCertificateOption
 		serial: 1
 	});
 
-	// Add attributes
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	const attributesToInclude = attributes ?? (Object.keys(testAttributeValues) as (keyof typeof testAttributeValues)[]);
 	for (const name of attributesToInclude) {
 		const value = testAttributeValues[name];
 		if (value !== undefined) {
-			builder.setAttribute(name, sensitive, value);
+			if (sensitive) {
+				const sensitiveAttribute = await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, name, value);
+				builder.setSensitiveAttribute(name, sensitiveAttribute);
+			} else {
+				builder.setAttribute(name, value);
+			}
 		}
 	}
 

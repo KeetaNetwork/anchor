@@ -4,7 +4,8 @@ import KeetaAnchorResolver from '../../lib/resolver.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import {
 	Certificate as KYCCertificate,
-	CertificateBuilder as KYCCertificateBuilder
+	CertificateBuilder as KYCCertificateBuilder,
+	SensitiveAttribute
 } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
@@ -110,7 +111,10 @@ test('KYC Anchor Client Test', async function() {
 						validFrom: new Date(Date.now() - 30_000),
 						validTo: new Date(Date.now() + 120_000)
 					});
-					certificateBuilder.setAttribute('fullName', true, 'John Doe');
+					const fullName = await SensitiveAttribute.create(userAccount, 'fullName', 'John Doe');
+
+					certificateBuilder.setSensitiveAttribute('fullName', fullName);
+
 					const builtCertificate = await certificateBuilder.build();
 					certificate = builtCertificate.toPEM();
 					certificates.set(verificationID, certificate);
