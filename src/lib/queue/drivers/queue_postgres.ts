@@ -12,7 +12,8 @@ import type {
 } from '../index.ts';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -42,12 +43,13 @@ type IdempotentRow = {
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
-	private dbInitialized = false;
+	private dbInitializationPromise: Promise<boolean> | null = null;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverPostgres';
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { pool: () => Promise<pg.Pool>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -61,43 +63,58 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	private async initializeDBConnection(pool: pg.Pool): Promise<pg.Pool> {
-		if (this.dbInitialized) {
+		const logger = this.methodLogger('initializeDBConnection');
+
+		if (this.dbInitializationPromise !== null) {
+			logger?.debug('DB schema initialization already in progress or completed, waiting for it to finish');
+
+			await this.dbInitializationPromise;
 			return(pool);
 		}
-		this.dbInitialized = true;
 
-		this.methodLogger('initializeDBConnection')?.debug('Initializing DB schema for queue storage driver');
+		this.dbInitializationPromise = (async () => {
+			logger?.debug('Initializing DB schema for queue storage driver');
 
-		await pool.query(`
-			CREATE TABLE IF NOT EXISTS queue_entries (
-				id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				request TEXT NOT NULL,
-				output TEXT,
-				last_error TEXT,
-				status TEXT NOT NULL,
-				created BIGINT NOT NULL,
-				updated BIGINT NOT NULL,
-				worker BIGINT,
-				failures INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (id, path)
-			)`);
+			const client = await pool.connect();
+			try {
+				await client.query(`
+					CREATE TABLE IF NOT EXISTS queue_entries (
+						id TEXT NOT NULL,
+						path TEXT NOT NULL,
+						request TEXT NOT NULL,
+						output TEXT,
+						last_error TEXT,
+						status TEXT NOT NULL,
+						created BIGINT NOT NULL,
+						updated BIGINT NOT NULL,
+						worker BIGINT,
+						failures INTEGER NOT NULL DEFAULT 0,
+						PRIMARY KEY (id, path)
+					)`);
 
-		await pool.query(`
-			CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
-				entry_id TEXT NOT NULL,
-				idempotent_id TEXT NOT NULL,
-				path TEXT NOT NULL,
-				UNIQUE (idempotent_id, path),
-				PRIMARY KEY (entry_id, idempotent_id, path),
-				FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
-			)`);
+				await client.query(`
+					CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
+						entry_id TEXT NOT NULL,
+						idempotent_id TEXT NOT NULL,
+						path TEXT NOT NULL,
+						UNIQUE (idempotent_id, path),
+						PRIMARY KEY (entry_id, idempotent_id, path),
+						FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
+					)`);
 
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status)');
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated)');
-		await pool.query('CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated)');
+				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id)');
+			} finally {
+				client.release();
+			}
 
-		this.dbInitialized = true;
+			logger?.debug('Completed DB schema initialization for queue storage driver');
+
+			return(true);
+		})();
+
+		await this.dbInitializationPromise;
 
 		return(pool);
 	}
@@ -180,7 +197,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			try {
 				logger?.debug('Starting DB transaction');
-				await client.query('BEGIN');
+				await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
 				logger?.debug('DB transaction started');
 
 				const retval = await fn(client, logger);
@@ -209,13 +226,15 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
-			let entryID = info?.id;
+			let entryID = ConvertStringToRequestID(info?.id);
 			if (entryID) {
 				const existingEntry = await client.query<{ id: string }>('SELECT id FROM queue_entries WHERE id = $1 AND path = $2', [entryID, this.pathStr]);
 				if (existingEntry.rows.length > 0) {
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			const idempotentIDs = info?.idempotentKeys;
@@ -234,10 +253,11 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				if (matchingIdempotentEntries.size !== 0) {
 					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 				}
+
+				await this.toctouDelay?.();
 			}
 
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			entryID ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 			logger?.debug(`Enqueuing request with id ${String(entryID)}`);
 
@@ -249,23 +269,16 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			 */
 			const status = info?.status ?? 'pending';
 
-			try {
-				await client.query(
-					`INSERT INTO queue_entries (id, path, request, output, last_error, status, created, updated, worker, failures)
-					 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
-					[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
-				);
+			await client.query(
+				`INSERT INTO queue_entries (id, path, request, output, last_error, status, created, updated, worker, failures)
+				 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
+				[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
+			);
 
-				if (idempotentIDs && idempotentIDs.size > 0) {
-					for (const idempotentID of idempotentIDs) {
-						await client.query('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES ($1, $2, $3)', [entryID, this.pathStr, idempotentID]);
-					}
+			if (idempotentIDs && idempotentIDs.size > 0) {
+				for (const idempotentID of idempotentIDs) {
+					await client.query('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES ($1, $2, $3)', [entryID, this.pathStr, idempotentID]);
 				}
-			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('duplicate key') && idempotentIDs) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
-				}
-				throw(error);
 			}
 
 			return(entryID);
@@ -280,6 +293,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
+
+			await this.toctouDelay?.();
 
 			const currentEntry = existingEntry.rows[0];
 			if (!currentEntry) {
@@ -309,6 +324,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			}
 
 			const result = await client.query(updateQuery, updateParams);
+
+			await this.toctouDelay?.();
 
 			if (oldStatus && result.rowCount === 0) {
 				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
@@ -349,14 +366,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			const idempotentKeys = idempotentRows.rows.length > 0
 				? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+					return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 				}))
 				: undefined;
 
 			return({
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				id: entry.id as unknown as KeetaAnchorQueueRequestID,
+				id: ConvertStringToRequestID(entry.id),
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				request: JSON.parse(entry.request) as QueueRequest,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -417,14 +432,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 				const idempotentKeys = idempotentRows.rows.length > 0
 					? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+						return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 					}))
 					: undefined;
 
 				entries.push({
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					id: row.id as unknown as KeetaAnchorQueueRequestID,
+					id: ConvertStringToRequestID(row.id),
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					request: JSON.parse(row.request) as QueueRequest,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -471,5 +484,26 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 	async [Symbol.asyncDispose](): Promise<void> {
 		return(await this.destroy());
+	}
+
+	/** @internal */
+	_Testing(key: string): {
+		setToctouDelay(delay: number): void;
+		unsetToctouDelay(): void;
+	} {
+		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
+			throw(new Error('This is a testing only method'));
+		}
+
+		return({
+			setToctouDelay: (delay: number): void => {
+				this.toctouDelay = async (): Promise<void> => {
+					return(await asleep(delay));
+				};
+			},
+			unsetToctouDelay: (): void => {
+				this.toctouDelay = undefined;
+			}
+		});
 	}
 }

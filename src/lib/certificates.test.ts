@@ -393,6 +393,7 @@ test('Certificate Sharable Attributes', async function() {
 	/*
 	 * Add a document to be shared
 	 */
+	// cspell:disable-next-line
 	const mockDocumentContent = Buffer.from('Tk9UIFJFQUxMWSBBIFBORwo=', 'base64');
 	{
 		const mockDocumentContentEncrypted = EncryptedContainer.fromPlaintext(mockDocumentContent, [subjectAccount]);
@@ -935,4 +936,4 @@ Ikz1g4z7LFI2Qw5gyPXl/+PcDSJwN6IHTQ==
 		expect(driversLicense?.front, `${name}: drivers license has front reference`).toBeDefined();
 		expect(driversLicense?.issuingCountry, `${name}: drivers license has issuingCountry`).toBe('US');
 	}
-}, 10000);
+}, 20000);

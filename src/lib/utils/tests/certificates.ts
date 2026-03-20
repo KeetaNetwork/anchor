@@ -50,11 +50,11 @@ export const testAttributeValues: {
 	phoneNumber: '+1 555 911 3808',
 	dateOfBirth: new Date('1980-01-01'),
 	address: {
-		addressLines: ['100 Belgrave Street'],
-		streetName: '100 Belgrave Street',
+		addressLines: ['100 Belgrave Street'], // cspell:ignore Belgrave
+		streetName: '100 Belgrave Street', // cspell:ignore Belgrave
 		townName: 'Oldsmar',
 		countrySubDivision: 'FL',
-		postalCode: '34677'
+		postalCode: '34677' // cspell:ignore Oldsmar
 	},
 	entityType: {
 		person: [{ id: '123-45-6789', schemeName: 'SSN' }]
@@ -128,4 +128,3 @@ export async function createTestCertificate(options: CreateTestCertificateOption
 		ca
 	});
 }
-

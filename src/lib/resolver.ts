@@ -9,7 +9,9 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 
 import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, type MovableAssetSearchInput, type AssetLocationString, type AssetWithRailsMetadata, type Rail, type SupportedAssets, convertAssetOrPairSearchInputToCanonical } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
+import type { MovableAssetSearchInput, AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput } from '../services/asset-movement/common.js';
+import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -125,17 +127,17 @@ type ServiceMetadata = {
 					 * Get a quote for a currency
 					 * conversion
 					 */
-					getQuote: string;
+					getQuote?: string;
 					/**
 					 * Create an exchange to convert
 					 * currency
 					 */
-					createExchange: string;
+					createExchange?: string;
 					/**
 					 * Get the status of an exchange
 					 * which was previously created
 					 */
-					getExchangeStatus: string;
+					getExchangeStatus?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -159,7 +161,32 @@ type ServiceMetadata = {
 					 * then it does not require KYC.
 					 */
 					kycProviders?: string[];
+
+					/**
+					 * Operations which this FX provider supports for the specified path (e.g. it may support getting a quote, but not creating an exchange).
+					 * If not specified, then it is assumed that the provider supports all operations for the specified path.
+					 */
+					supportedAffinities?: {
+						from?: boolean;
+						to?: boolean;
+					}
 				}[];
+			}
+		};
+		username?: {
+			[id: string]: {
+				operations: {
+					resolve: ServiceMetadataEndpoint;
+					claim?: ServiceMetadataEndpoint;
+					release?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+				};
+
+				/**
+				 * Optional regex pattern which provider-issued unique names must match in order to be valid.
+				 * If not specified, then any provider-issued unique name is considered valid as long as it meets the general requirements for provider-issued unique names (e.g. length limits, valid character range).
+				 */
+				usernamePattern?: string;
 			}
 		};
 		assetMovement?: {
@@ -175,20 +202,7 @@ type ServiceMetadata = {
 					shareKYC?: ServiceMetadataEndpoint;
 				};
 
-				supportedAssets: {
-					asset: KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical | ([ KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical, KeetaNetAccountTokenPublicKeyString | ServiceMetadataCurrencyCodeCanonical ]);
-
-					paths: {
-						pair: [ AssetWithRailsMetadata, AssetWithRailsMetadata ]
-
-						/**
-						 * KYC providers which this Asset Movement Provider
-						 * supports (DN) -- if not specified,
-						 * then it does not require KYC.
-						 */
-						kycProviders?: string[];
-					}[];
-				}[];
+				supportedAssets: SupportedAssetsMetadata[];
 			}
 		};
 		cards?: {
@@ -196,6 +210,57 @@ type ServiceMetadata = {
 				/* XXX:TODO */
 				workInProgress?: true;
 			};
+		};
+		storage?: {
+			[id: string]: {
+				operations: {
+					put?: ServiceMetadataEndpoint;
+					get?: ServiceMetadataEndpoint;
+					delete?: ServiceMetadataEndpoint;
+					metadata?: ServiceMetadataEndpoint;
+					search?: ServiceMetadataEndpoint;
+					public?: ServiceMetadataEndpoint;
+					quota?: ServiceMetadataEndpoint;
+				};
+				/**
+				 * Anchor's public key for sharing encrypted containers
+				 */
+				anchorAccount?: string;
+				/**
+				 * Published quota limits
+				 */
+				quotas?: {
+					maxObjectSize: number;
+					maxObjectsPerUser: number;
+					maxStoragePerUser: number;
+					maxSearchLimit: number;
+					maxSignedUrlTTL: number;
+				};
+				/**
+				 * Default TTL in seconds for pre-signed URLs
+				 */
+				signedUrlDefaultTTL?: number;
+				/**
+				 * Fields that can be used in search criteria
+				 */
+				searchableFields?: ('owner' | 'tags' | 'visibility' | 'pathPrefix')[];
+			};
+		};
+		notification?: {
+			[id: string]: {
+				supportedChannels?: Partial<SupportedChannelConfigurationMetadata>;
+				supportedSubscriptions?: NotificationSubscriptionType[];
+
+				operations: {
+					registerTarget?: ServiceMetadataEndpoint;
+					listTargets?: ServiceMetadataEndpoint;
+					deleteTarget?: ServiceMetadataEndpoint;
+
+					createSubscription?: ServiceMetadataEndpoint;
+					listSubscriptions?: ServiceMetadataEndpoint;
+					deleteSubscription?: ServiceMetadataEndpoint;
+				};
+			}
 		};
 	};
 };
@@ -245,6 +310,16 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * KYC providers
 		 */
 		kycProviders?: string[];
+
+		/**
+		 * Search for a provider which supports ALL of the following FX operations
+		 */
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
+
+		/**
+		 * Search for a provider which supports the specified affinity
+		 */
+		supportedAffinity?: 'from' | 'to';
 	};
 	'kyc': {
 		/**
@@ -258,19 +333,41 @@ type ServiceSearchCriteria<T extends Services> = {
 		from?: AssetLocationString;
 		to?: AssetLocationString;
 		/**
-		 * Search for a provider which supports ANY of the following rail(s)
+		 * Rail search criteria
+		 *
+		 * @see {AssetMovementRailSearchInput} for details on the structure and behavior of this criteria
 		 */
-		rail?: Rail | Rail[] | undefined;
+		rail?: AssetMovementRailSearchInput;
 		/**
 		 * Search for a provider which supports ANY of the following
 		 * KYC providers
 		 */
 		kycProviders?: string[];
 	};
+	/**
+	 * There are currently no additional filters for searching a username provider
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'username': {};
 	'cards': {
 		/* XXX:TODO */
 		workInProgress: true;
 	};
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'storage': {
+		/* No search criteria - TODO? */
+	};
+	'notification': {
+		/**
+		 * Search for a provider which supports ANY of the following
+		 */
+		supportedChannels?: NotificationChannelType[];
+
+		/**
+		 * Search for a provider which supports ANY of the following
+		 */
+		supportedSubscriptions?: NotificationSubscriptionType[];
+	}
 }[T];
 
 type ResolverLookupServiceResults<Service extends Services> = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services'][Service]>[string]> };
@@ -379,6 +476,28 @@ function assertValidOperationsAssetMovement(input: unknown): asserts input is { 
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsUsername(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['operations'] } {
+	assertValidOperationsBanking(input);
+}
+
+function assertValidOperationsNotification(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['notification']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
+
+function assertValidOptionalUsernamePattern(input: unknown): asserts input is { usernamePattern?: ToValuizableObject<NonNullable<ServiceMetadata['services']['username']>[string]>['usernamePattern'] } {
+	if (typeof input !== 'object' || input === null) {
+		throw(new Error(`Expected an object, got ${typeof input}`));
+	}
+
+	if ('usernamePattern' in input && input.usernamePattern !== undefined) {
+		if (typeof input.usernamePattern !== 'string' && typeof input.usernamePattern !== 'function') {
+			throw(new Error(`Expected "usernamePattern" to be a string | function, got ${typeof input.usernamePattern}`));
+		}
+	}
+}
+
 function assertValidOptionalKYCProviders(input: unknown): asserts input is { kycProviders?: ToValuizableObject<NonNullable<ServiceMetadata['services']['banking']>[string]>['kycProviders'] } {
 	if (typeof input !== 'object' || input === null) {
 		throw(new Error(`Expected an object, got ${typeof input}`));
@@ -473,6 +592,21 @@ const assertResolverLookupAssetMovementResults = async function(input: unknown):
 	// @ts-ignore
 	return(input);
 };
+
+const assertResolverLookupUsernameResult = function(input: unknown): ResolverLookupServiceResults<'username'>[string] {
+	assertValidOperationsUsername(input);
+	assertValidOptionalUsernamePattern(input);
+
+	return(input);
+};
+
+const assertResolverLookupNotificationResult = function(input: unknown): ResolverLookupServiceResults<'notification'>[string] {
+	// XXX:TODO: Perform deeper validation of the structure
+
+	assertValidOperationsNotification(input);
+
+	return(input);
+}
 
 // #endregion
 
@@ -691,7 +825,7 @@ type ResolverConfig = {
 	/**
 	 * Logger to use for debugging
 	 */
-	logger?: Logger;
+	logger?: Logger | undefined;
 	/**
 	 * ID for this instance of the resolver
 	 */
@@ -719,7 +853,6 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
-const assertKeetaSupportedAssets = createAssert<SupportedAssets[]>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -751,7 +884,7 @@ class Metadata implements ValuizableInstance {
 
 	/**
 	 * Format the supplied Metadata as appropriate to be included
-	 * within the Metadata field of a KeetaNet acccount to serve
+	 * within the Metadata field of a KeetaNet account to serve
 	 * as the Metadata for the Resolver.
 	 */
 	static formatMetadata(metadata: ToJSONValuizable<ServiceMetadata>): string;
@@ -1279,11 +1412,20 @@ class Resolver {
 		'assetMovement': {
 			search: this.lookupAssetMovementServices.bind(this)
 		},
+		'username': {
+			search: this.lookupUsernameServices.bind(this)
+		},
 		'cards': {
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			search: async (_input: ValuizableObject | undefined, _criteria: ServiceSearchCriteria<'cards'>) => {
 				throw(new Error('not implemented'));
 			}
+		},
+		'storage': {
+			search: this.lookupStorageServices.bind(this)
+		},
+		'notification': {
+			search: this.lookupNotificationServices.bind(this)
 		}
 	};
 
@@ -1487,6 +1629,21 @@ class Resolver {
 					continue;
 				}
 
+				if (criteria.requiredOperations) {
+					let hasAllRequiredOperations = true;
+					for (const operation of criteria.requiredOperations) {
+						const resolvedOperation = (await checkFXService['operations']('object'))[operation];
+
+						if (!resolvedOperation) {
+							hasAllRequiredOperations = false;
+							break;
+						}
+					}
+					if (!hasAllRequiredOperations) {
+						continue;
+					}
+				}
+
 				const fromUnrealized: ToValuizable<NonNullable<ServiceMetadata['services']['fx']>[string]['from']> = checkFXService.from;
 				const from = await fromUnrealized?.('array');
 				if (from === undefined) {
@@ -1529,6 +1686,16 @@ class Resolver {
 						}
 					}
 
+					if (criteria.supportedAffinity && fromEntry.supportedAffinities !== undefined) {
+						const supportedAffinities = await fromEntry.supportedAffinities('object');
+
+						const isSupported = await supportedAffinities[criteria.supportedAffinity]?.('boolean');
+
+						if (isSupported === false) {
+							continue;
+						}
+					}
+
 					/* XXX:TODO: Check kycProviders */
 					acceptable = true;
 					break;
@@ -1547,15 +1714,82 @@ class Resolver {
 		return(retval);
 	}
 
-	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssets[]> {
+	private async lookupNotificationServices(notificationServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'notification'>): Promise<ResolverLookupServiceResults<'notification'> | undefined> {
+		if (notificationServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'notification'> = {};
+		for (const checkNotificationServiceID in notificationServices) {
+			try {
+				const checkNotificationService = assertResolverLookupNotificationResult(await notificationServices[checkNotificationServiceID]?.('object'));
+				if (!checkNotificationService) {
+					continue;
+				}
+
+				if (criteria.supportedSubscriptions !== undefined) {
+					const serviceArray = await checkNotificationService['supportedSubscriptions']?.('array') ?? [];
+					const serviceArrayValues = await Promise.all(serviceArray.map(async function(item) {
+						try {
+							return(await item?.('string'));
+						} catch {
+							return(undefined);
+						}
+					}));
+
+					const matchFound = criteria.supportedSubscriptions.find(criteriaEntry => serviceArrayValues.includes(criteriaEntry)) !== undefined;
+
+					if (!matchFound) {
+						continue;
+					}
+				}
+
+				if (criteria.supportedChannels !== undefined) {
+					const serviceArray = await checkNotificationService['supportedChannels']?.('object');
+					if (serviceArray === undefined) {
+						continue;
+					}
+
+					let matchFound = false;
+
+
+					for (const channel of criteria.supportedChannels) {
+						const criteriaChannelValue = await serviceArray[channel]?.('any');
+						if (criteriaChannelValue === undefined) {
+							continue;
+						}
+
+						if (Array.isArray(criteriaChannelValue) && criteriaChannelValue.length === 0) {
+							continue;
+						}
+
+						matchFound = true;
+						break;
+					}
+
+					if (!matchFound) {
+						continue;
+					}
+				}
+
+				retval[checkNotificationServiceID] = checkNotificationService;
+			} catch (checkFXServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking Notification service', checkNotificationServiceID, ':', checkFXServiceError, ' -- ignoring');
+			}
+		}
+
+		return(retval);
+	}
+
+	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssets(resolvedService);
+		const supportedAssets = assertKeetaSupportedAssetsMetadata(resolvedService);
 
-		const filteredAssetMovement: SupportedAssets[] = [];
+		const filteredAssetMovement: SupportedAssetsMetadata[] = [];
 		for (const supportedAsset of supportedAssets) {
 			let matchFound = false;
 
@@ -1599,32 +1833,77 @@ class Resolver {
 					}
 				}
 
-				const [ from /* , to */ ] = pairSorted;
+				const [ from, to ] = pairSorted;
 
-				// XXX:TODO what rails do we want to check here? This is just inbound
-				const supportedRails = [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ];
+				const supportedRails = {
+					inbound: [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ],
+					outbound: [ ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ]
+				}
 
-				if (supportedRails.length === 0) {
+				if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
 					continue;
 				}
 
-				if (criteria.rail !== undefined) {
-					if (typeof criteria.rail === 'string') {
-						if (!supportedRails.includes(criteria.rail)) {
-							continue;
+				const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+					for (const checkRail of searchIn) {
+						if (typeof checkRail === 'string') {
+							if (checkRail === searchFor) {
+								return(true);
+							}
+						} else {
+							if (checkRail.rail === searchFor) {
+								return(true);
+							}
 						}
-					} else {
-						let railMatchFound = false;
-						for (const checkRail of criteria.rail) {
-							if (supportedRails.includes(checkRail)) {
-								railMatchFound = true;
-								break;
+					}
+
+					return(false);
+				}
+
+				if (criteria.rail !== undefined) {
+					let railMatchFound = false;
+					for (const direction of ['inbound', 'outbound'] as const) {
+						let searchFor;
+						let searchIn;
+						let eitherDirectionSharedSearch;
+
+						if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+							searchFor = criteria.rail[direction];
+							searchIn = supportedRails[direction];
+							eitherDirectionSharedSearch = false;
+						} else {
+							searchFor = criteria.rail;
+							searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+							eitherDirectionSharedSearch = true;
+						}
+
+
+						if (searchFor !== undefined) {
+							if (typeof searchFor === 'string') {
+								railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+							} else {
+								for (const checkRail of searchFor) {
+									railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+									if (railMatchFound) {
+										break;
+									}
+								}
 							}
 						}
 
-						if (!railMatchFound) {
-							continue;
+						// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+						if (eitherDirectionSharedSearch) {
+							break;
 						}
+
+						if (railMatchFound) {
+							break;
+						}
+					}
+
+					if (!railMatchFound) {
+						continue;
 					}
 				}
 
@@ -1673,6 +1952,58 @@ class Resolver {
 			 * If we didn't find any asset movement services, then we return
 			 * undefined to indicate that no services were found.
 			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupUsernameServices(usernameServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'username'>) {
+		if (usernameServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'username'> = {};
+		for (const checkUsernameServiceID in usernameServices) {
+			try {
+				const checkUsernameService = await usernameServices[checkUsernameServiceID]?.('object');
+				if (checkUsernameService === undefined) {
+					continue;
+				}
+
+				retval[checkUsernameServiceID] = assertResolverLookupUsernameResult(checkUsernameService);
+			} catch (checkUsernameServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking username service', checkUsernameServiceID, ':', checkUsernameServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupStorageServices(storageServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'storage'>): Promise<ResolverLookupServiceResults<'storage'> | undefined> {
+		if (storageServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'storage'> = {};
+		for (const checkStorageServiceID in storageServices) {
+			try {
+				const checkStorageService = await isValidOperations(await storageServices[checkStorageServiceID]?.('object'));
+				if (!checkStorageService) {
+					continue;
+				}
+
+				retval[checkStorageServiceID] = checkStorageService;
+			} catch (checkStorageServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking storage service', checkStorageServiceID, ':', checkStorageServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
 			return(undefined);
 		}
 

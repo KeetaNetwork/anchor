@@ -56,6 +56,7 @@ make do-lint
 - The `.nvmrc` file is automatically generated from `package.json`
 - Generated files for KYC service are created automatically during the build process
 - Do not commit `node_modules/`, `dist/`, or other build artifacts (they're in `.gitignore`)
-- To start Redis or PostgreSQL for local development and testing use the scripts in `utils/` directory:
+- To start Redis, PostgreSQL, or Firestore for local development and testing use the scripts in `utils/` directory:
   - `utils/enable-postgres-backend`
   - `utils/enable-redis-backend`
+  - `utils/enable-firestore-backend`

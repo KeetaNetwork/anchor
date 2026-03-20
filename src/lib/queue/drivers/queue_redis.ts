@@ -12,12 +12,14 @@ import type {
 } from '../index.ts';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
 import type { Logger } from '../../log/index.ts';
 import type { JSONSerializable } from '../../utils/json.js';
+import { asleep } from '../../utils/asleep.js';
 
 import type { RedisClientType } from 'redis';
 
@@ -42,6 +44,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { redis: () => Promise<RedisClientType>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -89,32 +92,8 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('add');
 
-		let entryID = info?.id;
-		if (entryID) {
-			const exists = await redis.exists(this.queueKey(entryID));
-			if (exists) {
-				logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
-				return(entryID);
-			}
-		}
-
-		const idempotentIDs = info?.idempotentKeys;
-		if (idempotentIDs) {
-			const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
-			for (const idempotentID of idempotentIDs) {
-				const existingEntryID = await redis.get(this.idempotentKey(idempotentID));
-				if (existingEntryID) {
-					matchingIdempotentEntries.add(idempotentID);
-				}
-			}
-
-			if (matchingIdempotentEntries.size !== 0) {
-				throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
-			}
-		}
-
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		entryID ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+		let entryID = ConvertStringToRequestID(info?.id);
+		entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 		logger?.debug(`Enqueuing request with id ${String(entryID)}`);
 
@@ -138,77 +117,89 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			failures: 0
 		};
 
+		const idempotentIDs = info?.idempotentKeys;
 		if (idempotentIDs && idempotentIDs.size > 0) {
 			entryData.idempotentKeys = Array.from(idempotentIDs).map(String);
 		}
 
-		if (idempotentIDs && idempotentIDs.size > 0) {
-			const idempotentKeysArr = Array.from(idempotentIDs).map(String);
-			const luaScript = `
-				local entryKey = KEYS[1]
-				local pendingIndexKey = KEYS[2]
-				local allIndexKey = KEYS[3]
-				
-				local entryData = ARGV[1]
-				local score = ARGV[2]
-				local entryId = ARGV[3]
-				local numIdempotentKeys = tonumber(ARGV[4])
-				
-				-- Check if any idempotent keys already exist
-				for i = 1, numIdempotentKeys do
-					local idempotentKey = ARGV[4 + i]
-					if redis.call('EXISTS', idempotentKey) == 1 then
-						return redis.error_reply('IDEMPOTENT_EXISTS')
-					end
+		await this.toctouDelay?.();
+
+		const idempotentKeysArr = idempotentIDs && idempotentIDs.size > 0 ? Array.from(idempotentIDs).map(String) : [];
+		const luaScript = `
+			local entryKey = KEYS[1]
+			local statusIndexKey = KEYS[2]
+			local allIndexKey = KEYS[3]
+
+			local entryData = ARGV[1]
+			local score = ARGV[2]
+			local entryId = ARGV[3]
+			local numIdempotentKeys = tonumber(ARGV[4])
+
+			-- Check if entry already exists
+			if redis.call('EXISTS', entryKey) == 1 then
+				return 'EXISTS'
+			end
+
+			-- Check if any idempotent keys already exist and collect which ones
+			local conflictingKeys = {}
+			for i = 1, numIdempotentKeys do
+				local idempotentKeyIndex = 4 + numIdempotentKeys + i
+				local idempotentKey = ARGV[4 + i]
+				if redis.call('EXISTS', idempotentKey) == 1 then
+					table.insert(conflictingKeys, ARGV[idempotentKeyIndex])
 				end
-				
-				-- Add the entry
-				redis.call('SET', entryKey, entryData)
-				redis.call('ZADD', pendingIndexKey, score, entryId)
-				redis.call('ZADD', allIndexKey, score, entryId)
-				
-				-- Set idempotent keys
-				for i = 1, numIdempotentKeys do
-					local idempotentKey = ARGV[4 + i]
-					redis.call('SET', idempotentKey, entryId)
-				end
-				
-				return 'OK'
-			`;
+			end
 
-			const idempotentKeyPairs = idempotentKeysArr.map((idKey) => {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(this.idempotentKey(idKey as unknown as KeetaAnchorQueueRequestID));
-			});
+			if #conflictingKeys > 0 then
+				return {'IDEMPOTENT_EXISTS', unpack(conflictingKeys)}
+			end
 
-			try {
-				await redis.eval(luaScript, {
-					keys: [
-						this.queueKey(entryID),
-						this.indexKey('pending'),
-						this.indexKey()
-					],
-					arguments: [
-						JSON.stringify(entryData),
-						String(currentTime),
-						String(entryID),
-						String(idempotentKeysArr.length),
-						...idempotentKeyPairs
-					]
-				});
-			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('IDEMPOTENT_EXISTS')) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
-				}
-				throw(error);
-			}
-		} else {
-			const multi = redis.multi();
-			multi.set(this.queueKey(entryID), JSON.stringify(entryData));
-			multi.zAdd(this.indexKey('pending'), { score: currentTime, value: String(entryID) });
-			multi.zAdd(this.indexKey(), { score: currentTime, value: String(entryID) });
+			-- Add the entry
+			redis.call('SET', entryKey, entryData)
+			redis.call('ZADD', statusIndexKey, score, entryId)
+			redis.call('ZADD', allIndexKey, score, entryId)
 
-			await multi.exec();
+			-- Set idempotent keys
+			for i = 1, numIdempotentKeys do
+				local idempotentKey = ARGV[4 + i]
+				redis.call('SET', idempotentKey, entryId)
+			end
+
+			return 'OK'
+		`;
+
+		const idempotentKeyPairs = idempotentKeysArr.map((idKey) => {
+			return(this.idempotentKey(ConvertStringToRequestID(idKey)));
+		});
+
+		const result = await redis.eval(luaScript, {
+			keys: [
+				this.queueKey(entryID),
+				this.indexKey(status),
+				this.indexKey()
+			],
+			arguments: [
+				JSON.stringify(entryData),
+				String(currentTime),
+				String(entryID),
+				String(idempotentKeysArr.length),
+				...idempotentKeyPairs,
+				...idempotentKeysArr
+			]
+		});
+
+		if (result === 'EXISTS') {
+			logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
+			return(entryID);
+		}
+
+		if (Array.isArray(result) && result[0] === 'IDEMPOTENT_EXISTS') {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const conflictingIDsStr = result.slice(1) as string[];
+			const conflictingIDs = new Set(conflictingIDsStr.map(function(conflictingID) {
+				return(ConvertStringToRequestID(conflictingID));
+			}));
+			throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', conflictingIDs));
 		}
 
 		return(entryID);
@@ -220,6 +211,9 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const logger = this.methodLogger('setStatus');
 
 		const entryJSON = await redis.get(this.queueKey(id));
+
+		await this.toctouDelay?.();
+
 		if (!entryJSON) {
 			throw(new Error(`Request with ID ${String(id)} not found`));
 		}
@@ -258,24 +252,24 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				local allIndexKey = ARGV[5]
 				local entryId = ARGV[6]
 				local score = ARGV[7]
-				
+
 				local current = redis.call('GET', key)
 				if not current then
 					return {err = 'NOT_FOUND'}
 				end
-				
+
 				local currentData = cjson.decode(current)
 				if currentData.status ~= expectedStatus then
 					return {err = 'STATUS_MISMATCH'}
 				end
-				
+
 				redis.call('SET', key, newData)
 				if oldIndexKey ~= newIndexKey then
 					redis.call('ZREM', oldIndexKey, entryId)
 				end
 				redis.call('ZADD', newIndexKey, score, entryId)
 				redis.call('ZADD', allIndexKey, score, entryId)
-				
+
 				return {ok = 'OK'}
 			`;
 
@@ -327,14 +321,12 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 
 		const idempotentKeys = entryData.idempotentKeys && entryData.idempotentKeys.length > 0
 			? new Set(entryData.idempotentKeys.map(function(key: string) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(key as unknown as KeetaAnchorQueueRequestID);
+				return(ConvertStringToRequestID(key));
 			}))
 			: undefined;
 
 		return({
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id: entryData.id as unknown as KeetaAnchorQueueRequestID,
+			id: ConvertStringToRequestID(entryData.id),
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			request: JSON.parse(entryData.request) as QueueRequest,
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -405,10 +397,12 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 		for (const entryIDStr of entryIDs) {
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const entryID = entryIDStr as unknown as KeetaAnchorQueueRequestID;
+			const entryID = ConvertStringToRequestID(entryIDStr);
 			const entry = await this.get(entryID);
 			if (entry) {
+				if (filter?.status && entry.status !== filter.status) {
+					continue;
+				}
 				entries.push(entry);
 			}
 		}
@@ -418,7 +412,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		return(entries);
 	}
 
-	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.redisInternal === null) {
@@ -443,5 +437,26 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 
 	async [Symbol.asyncDispose](): Promise<void> {
 		return(await this.destroy());
+	}
+
+	/** @internal */
+	_Testing(key: string): {
+		setToctouDelay(delay: number): void;
+		unsetToctouDelay(): void;
+	} {
+		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
+			throw(new Error('This is a testing only method'));
+		}
+
+		return({
+			setToctouDelay: (delay: number): void => {
+				this.toctouDelay = async (): Promise<void> => {
+					return(await asleep(delay));
+				};
+			},
+			unsetToctouDelay: (): void => {
+				this.toctouDelay = undefined;
+			}
+		});
 	}
 }

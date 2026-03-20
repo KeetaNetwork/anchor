@@ -3,6 +3,7 @@ import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createTestNode } from '@keetanetwork/keetanet-node/dist/lib/utils/helper_testing.js';
 import * as KeetaNetNode from '@keetanetwork/keetanet-node/dist/client';
 import { assert } from 'typia';
+import Resolver from '../../resolver.js';
 
 const toCleanup: (() => Promise<void>)[] = [];
 afterEach(async function() {
@@ -15,11 +16,14 @@ type CreateNodeAndClientResponse = {
 	node: InstanceType<typeof KeetaNetNode.lib.Node>;
 	client: InstanceType<typeof KeetaNetClient.Client>;
 	userClient?: InstanceType<typeof KeetaNetClient.UserClient>;
+	give(account: InstanceType<typeof KeetaNetClient.lib.Account>, amount: bigint): Promise<void>;
 	fees: {
 		disable: () => void;
 		enable: () => void;
-		addFeeFreeAccount: (account: KeetaNetClientGenericAccount) => void;
-	}
+		addFeeFreeAccount: (account: InstanceType<typeof KeetaNetClient.lib.Account>) => void;
+	};
+	destroy: () => Promise<void>;
+	[Symbol.asyncDispose]: () => Promise<void>;
 };
 
 type KeetaNetClientGenericAccount = NonNullable<ConstructorParameters<typeof KeetaNetClient.UserClient>[0]['signer']>;
@@ -105,7 +109,7 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			usePublishAid: false
 		});
 		await itaUserClient.initializeNetwork({
-			addSupplyAmount: 1000n,
+			addSupplyAmount: 10_000_000_000_000n,
 			delegateTo: TestRepAccountClient,
 			/* XXX: This is broken too, so we need to set it to a high number */
 			voteSerial: BigInt('999999999999999999'),
@@ -120,7 +124,7 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			name: 'KEETANET',
 			description: 'Network Address For KeetaNet',
 			metadata: '',
-			defaultPermission: new KeetaNetClient.lib.Permissions(['TOKEN_ADMIN_CREATE','STORAGE_CREATE','ACCESS'])
+			defaultPermission: new KeetaNetClient.lib.Permissions(['TOKEN_ADMIN_CREATE', 'STORAGE_CREATE', 'ACCESS'])
 		}, { account: networkAddress });
 
 		/*
@@ -157,6 +161,23 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 			addFeeFreeAccount: function(account) {
 				feeFreeAccounts.add(account.publicKeyString.get());
 			}
+		},
+		give: async function(account, amount) {
+			const tmpClient = new KeetaNetClient.UserClient({
+				client: testClient,
+				network: testNode.config.network,
+				networkAlias: testNode.config.networkAlias,
+				signer: TestRepAccountClient,
+				account: TestRepAccountClient,
+				usePublishAid: false
+			});
+			await tmpClient.send(account, amount, tmpClient.baseToken);
+		},
+		destroy: async function() {
+			await testNode.stop();
+		},
+		[Symbol.asyncDispose]: async function() {
+			await testNode.stop();
 		}
 	};
 
@@ -172,3 +193,26 @@ export async function createNodeAndClient(userAccount?: KeetaNetClientGenericAcc
 	return(retval);
 }
 
+/**
+ * Helper to set resolver metadata on an account.
+ * This is useful for tests that need to set up service metadata for the resolver.
+ */
+export async function setResolverInfo(
+	account: KeetaNetClientGenericAccount,
+	userClient: InstanceType<typeof KeetaNetClient.UserClient>,
+	value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]
+): Promise<void> {
+	const accountUserClient = new KeetaNetClient.UserClient({
+		client: userClient.client,
+		signer: account,
+		usePublishAid: false,
+		network: userClient.network,
+		networkAlias: 'test'
+	});
+
+	await accountUserClient.setInfo({
+		name: '',
+		description: '',
+		metadata: Resolver.Metadata.formatMetadata(value)
+	});
+}

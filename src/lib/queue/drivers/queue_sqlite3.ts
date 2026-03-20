@@ -12,7 +12,8 @@ import type {
 } from '../index.ts';
 import {
 	MethodLogger,
-	ManageStatusUpdates
+	ManageStatusUpdates,
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -48,6 +49,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -229,13 +231,15 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (db, logger): Promise<KeetaAnchorQueueRequestID> => {
-			let entryID = info?.id;
+			let entryID = ConvertStringToRequestID(info?.id);
 			if (entryID) {
 				const existingEntry = await db.get<{ id: string }>('SELECT id FROM queue_entries WHERE id = ? AND path = ?', entryID, this.pathStr);
 				if (existingEntry) {
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
 				}
+
+				await this.toctouDelay?.();
 			}
 
 			const idempotentIDs = info?.idempotentKeys;
@@ -254,10 +258,11 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 				if (matchingIdempotentEntries.size !== 0) {
 					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
 				}
+
+				await this.toctouDelay?.();
 			}
 
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			entryID ??= crypto.randomUUID() as unknown as KeetaAnchorQueueRequestID;
+			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 			logger?.debug(`Enqueuing request with id ${String(entryID)}`);
 
@@ -269,28 +274,21 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			 */
 			const status = info?.status ?? 'pending';
 
-			try {
-				await db.run(
-					`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
-					 VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL, 0)`,
-					entryID,
-					this.pathStr,
-					requestJSON,
-					status,
-					currentTime,
-					currentTime
-				);
+			await db.run(
+				`INSERT INTO queue_entries (id, path, request, output, lastError, status, created, updated, worker, failures)
+				 VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, NULL, 0)`,
+				entryID,
+				this.pathStr,
+				requestJSON,
+				status,
+				currentTime,
+				currentTime
+			);
 
-				if (idempotentIDs && idempotentIDs.size > 0) {
-					for (const idempotentID of idempotentIDs) {
-						await db.run('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES (?, ?, ?)', entryID, this.pathStr, idempotentID);
-					}
+			if (idempotentIDs && idempotentIDs.size > 0) {
+				for (const idempotentID of idempotentIDs) {
+					await db.run('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES (?, ?, ?)', entryID, this.pathStr, idempotentID);
 				}
-			} catch (error: unknown) {
-				if (error instanceof Error && error.message.includes('UNIQUE constraint failed') && idempotentIDs) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', idempotentIDs));
-				}
-				throw(error);
 			}
 
 			return(entryID);
@@ -303,6 +301,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			if (!existingEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
+
+			await this.toctouDelay?.();
 
 			const changedData = ManageStatusUpdates<QueueResult>(id, {
 				status: existingEntry.status,
@@ -342,6 +342,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 			const result = await db.run(updateQuery, ...updateParams);
 
+			await this.toctouDelay?.();
+
 			if (oldStatus && result.changes === 0) {
 				const currentEntry = await db.get<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 				if (currentEntry) {
@@ -372,14 +374,12 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 			const idempotentKeys = idempotentRows.length > 0
 				? new Set(idempotentRows.map(function(idempotentRow: IdempotentRow) {
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+					return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 				}))
 				: undefined;
 
 			return({
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				id: row.id as unknown as KeetaAnchorQueueRequestID,
+				id: ConvertStringToRequestID(row.id),
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				request: JSON.parse(row.request) as QueueRequest,
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -439,14 +439,12 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 				const idempotentKeys = idempotentRows.length > 0
 					? new Set(idempotentRows.map(function(idempotentRow: IdempotentRow) {
-						// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-						return(idempotentRow.idempotent_id as unknown as KeetaAnchorQueueRequestID);
+						return(ConvertStringToRequestID(idempotentRow.idempotent_id));
 					}))
 					: undefined;
 
 				entries.push({
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					id: row.id as unknown as KeetaAnchorQueueRequestID,
+					id: ConvertStringToRequestID(row.id),
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					request: JSON.parse(row.request) as QueueRequest,
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
@@ -493,5 +491,26 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 	async [Symbol.asyncDispose](): Promise<void> {
 		return(await this.destroy());
+	}
+
+	/** @internal */
+	_Testing(key: string): {
+		setToctouDelay(delay: number): void;
+		unsetToctouDelay(): void;
+	} {
+		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
+			throw(new Error('This is a testing only method'));
+		}
+
+		return({
+			setToctouDelay: (delay: number): void => {
+				this.toctouDelay = async (): Promise<void> => {
+					return(await asleep(delay));
+				};
+			},
+			unsetToctouDelay: (): void => {
+				this.toctouDelay = undefined;
+			}
+		});
 	}
 }

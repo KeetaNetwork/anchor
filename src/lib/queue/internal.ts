@@ -75,3 +75,20 @@ export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, 
 
 	return(retval);
 }
+
+/**
+ * Convert a string to a KeetaAnchorQueueRequestID (branded string type)
+ *
+ * Use only when appropriate, such as when receiving a request ID from an
+ * external source or generating a new one.
+ */
+export function ConvertStringToRequestID(input: string | KeetaAnchorQueueRequestID): KeetaAnchorQueueRequestID;
+export function ConvertStringToRequestID(input: string | KeetaAnchorQueueRequestID | undefined): KeetaAnchorQueueRequestID | undefined;
+export function ConvertStringToRequestID(input: string | KeetaAnchorQueueRequestID | undefined): KeetaAnchorQueueRequestID | undefined {
+	if (input === undefined) {
+		return(undefined);
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(input as KeetaAnchorQueueRequestID);
+}

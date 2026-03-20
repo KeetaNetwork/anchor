@@ -6,7 +6,6 @@ import crypto from './utils/crypto.js';
 import type { SensitiveAttributeType, CertificateAttributeValue , CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.js';
 import { CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { getOID, lookupByOID } from './utils/oid.js';
-import { convertToJSON } from './utils/json.js';
 
 /**
  * Short alias for printing a debug representation of an object
@@ -435,7 +434,7 @@ export class SensitiveAttribute<T = ArrayBuffer> {
 	}
 
 	toJSON(): unknown/* XXX:TODO */ {
-		return(convertToJSON(this.#info));
+		return(KeetaNetClient.lib.Utils.Conversion.toJSONSerializable(this.#info));
 	}
 }
 
