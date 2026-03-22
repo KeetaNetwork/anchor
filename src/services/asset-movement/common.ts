@@ -533,9 +533,10 @@ export type AssetTransferInstructions = ({
 	value: string;
 
 	/**
-	 * The EVM token contract address to send.
+	 * The ERC20 token contract address if non-native.
+	 * Omitting will indicate the network's native asset.
 	 */
-	tokenAddress: HexString;
+	tokenAddress?: HexString;
 } | {
 	/**
 	 * An EVM contract call instruction, used for assets that require contract interaction to transfer (ex: ERC20 contract deposit() method).
