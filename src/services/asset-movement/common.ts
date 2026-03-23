@@ -482,7 +482,7 @@ export type AssetTransferInstructions = ({
 	 */
 	contractMethodArgs: string[];
 } | {
-	type: 'WIRE' | 'ACH' | 'SEPA_PUSH';
+	type: FiatRails;
 
 	/**
 	 * The resolved bank account address details to send funds to
