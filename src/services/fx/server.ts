@@ -373,22 +373,15 @@ function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1
 		};
 	};
 
-	const { preferredCostAsset, ...requestBase } = request.request;
-	const requestForQueue: { [key: string]: JSONSerializable } = { ...requestBase };
-	if (preferredCostAsset !== undefined) {
-		requestForQueue.preferredCostAsset = preferredCostAsset;
-	}
+	const retval: KeetaFXAnchorQueueStage1RequestJSON = {
+		version: 1,
+		account: request.account.publicKeyString.get(),
+		block: Buffer.from(request.block.toBytes()).toString('base64'),
+		request: request.request,
+		expected: expected
+	};
 
-	const account = request.account.publicKeyString.get();
-	const block = Buffer.from(request.block.toBytes()).toString('base64');
-
-	return({
-		version: 1 as const,
-		request: requestForQueue,
-		account,
-		block,
-		expected
-	});
+	return(retval);
 }
 
 function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): KeetaFXAnchorQueueStage1Request {
