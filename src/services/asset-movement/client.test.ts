@@ -7,7 +7,7 @@ import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
 import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData } from './common.js';
-import { Certificate, CertificateBuilder, SharableCertificateAttributes } from '../../lib/certificates.js';
+import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
 
@@ -845,7 +845,10 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			validFrom: new Date(Date.now() - 30_000),
 			validTo: new Date(Date.now() + 120_000)
 		});
-		certificateBuilder.setAttribute('firstName', true, name);
+		const firstName = await SensitiveAttribute.create(account, 'firstName', name);
+
+		certificateBuilder.setSensitiveAttribute('firstName', firstName);
+
 		const certificate = await certificateBuilder.build();
 		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
 		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);

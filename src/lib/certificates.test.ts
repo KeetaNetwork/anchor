@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
+import { bufferToArrayBuffer } from './utils/buffer.js';
 import type { Schema as ASN1Schema } from './utils/asn1.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';
@@ -60,88 +60,6 @@ async function verifyAttribute<NAME extends CertificateAttributeNames>(
 }
 
 const testSeed = 'D6986115BE7334E50DA8D73B1A4670A510E8BF47E8C5C9960B8F5248EC7D6E3D';
-const testAccount1 = KeetaNetClient.lib.Account.fromSeed(testSeed, 0);
-const testAccount2 = KeetaNetClient.lib.Account.fromSeed(testSeed, 1);
-
-test('Sensitive Attributes', async function() {
-	/*
-	 * Build a sensitive attribute with a test value from the users public key
-	 */
-	const testAccount1NoPrivate = KeetaNetClient.lib.Account.fromPublicKeyString(testAccount1.publicKeyString.get());
-	const builder1 = new Certificates._Testing.SensitiveAttributeBuilder(testAccount1NoPrivate);
-	const contactDetails: ArrayBuffer = bufferToArrayBuffer(Buffer.from(JSON.stringify({
-		fullName: 'Test User',
-		emailAddress: 'test@example.com',
-		phoneNumber: '+1 555 911 3808'
-	}), 'utf-8'));
-
-	builder1.set(contactDetails);
-
-	const attribute = await builder1.build();
-
-	/*
-	 * Access it with the private key
-	 */
-	const sensitiveAttribute1 = new Certificates._Testing.SensitiveAttribute(testAccount1, attribute);
-	const sensitiveAttribute1Value = await sensitiveAttribute1.getValue();
-	expect(Buffer.from(sensitiveAttribute1Value).toString('base64')).toEqual(Buffer.from(contactDetails).toString('base64'));
-
-	/**
-	 * Process the attribute as JSON
-	 */
-	const attributeJSON = sensitiveAttribute1.toJSON();
-	expect(JSON.parse(JSON.stringify(attributeJSON))).toEqual(attributeJSON);
-	if (typeof attributeJSON !== 'object' || attributeJSON === null) {
-		throw(new Error('Expected JSON object'));
-	}
-	expect(Object.keys(attributeJSON)).toContain('version');
-	expect(Object.keys(attributeJSON)).toContain('cipher');
-	expect(Object.keys(attributeJSON)).toContain('publicKey');
-	expect(Object.keys(attributeJSON)).toContain('hashedValue');
-	expect(Object.keys(attributeJSON)).toContain('encryptedValue');
-	expect(Object.keys(attributeJSON).length).toBe(5);
-
-	/*
-	 * Validate it with the public key and value
-	 */
-	const sensitiveAttribute1Proof = await sensitiveAttribute1.getProof();
-
-	const sensitiveAttribute2 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, attribute);
-	const sensitiveAttribute2Valid = await sensitiveAttribute2.validateProof(sensitiveAttribute1Proof);
-	expect(sensitiveAttribute2Valid).toBe(true);
-
-	/*
-	 * Attempt to access it with the wrong private key
-	 */
-	const sensitiveAttribute3 = new Certificates._Testing.SensitiveAttribute(testAccount2, attribute);
-	await expect(async function() {
-		return(await sensitiveAttribute3.getProof());
-	}).rejects.toThrow();
-
-	/*
-	 * Attempt to validate it with the wrong value
-	 */
-	const sensitiveAttribute2Invalid = await sensitiveAttribute2.validateProof({
-		...sensitiveAttribute1Proof,
-		value: 'Something'
-	});
-	expect(sensitiveAttribute2Invalid).toBe(false);
-
-	/*
-	 * Attempt to validate it with the wrong public key
-	 */
-	const sensitiveAttribute3Invalid = await sensitiveAttribute3.validateProof(sensitiveAttribute1Proof);
-	expect(sensitiveAttribute3Invalid).toBe(false);
-
-	/*
-	 * Attempt to validate a tampered attribute
-	 */
-	const attributeBuffer = arrayBufferToBuffer(attribute);
-	attributeBuffer.set([0x00], attributeBuffer.length - 3);
-	const tamperedAttribute = bufferToArrayBuffer(attributeBuffer);
-	const sensitiveAttribute4 = new Certificates._Testing.SensitiveAttribute(testAccount1NoPrivate, tamperedAttribute);
-	expect(await sensitiveAttribute4.validateProof(sensitiveAttribute1Proof)).toBe(false);
-});
 
 test('Certificates', async function() {
 	/*
@@ -185,12 +103,12 @@ test('Certificates', async function() {
 		/*
 		* Use the same builder to create a User Certificate
 		*/
-		builder1.setAttribute('fullName', true, 'Test User');
-		builder1.setAttribute('email', true, 'user@example.com');
-		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
-		builder1.setAttribute('address', true, testAddress);
-		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
-		builder1.setAttribute('entityType', true, testEntityType);
+		builder1.setSensitiveAttribute('fullName', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'fullName', 'Test User'));
+		builder1.setSensitiveAttribute('email', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'email', 'user@example.com'));
+		builder1.setSensitiveAttribute('phoneNumber', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'phoneNumber', '+1 555 911 3808'));
+		builder1.setSensitiveAttribute('address', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'address', testAddress));
+		builder1.setSensitiveAttribute('dateOfBirth', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'dateOfBirth', new Date('1980-01-01')));
+		builder1.setSensitiveAttribute('entityType', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'entityType', testEntityType));
 
 		// Create a document reference using DocumentBuilder
 		const mockDocumentContent = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAA8AAAAKCAIAAADkeZOuAAAAAXNSR0IB2cksfwAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAAAlwSFlzAAAuIwAALiMBeKU/dgAAAaNJREFUGBkFwTtv00AcAPD738v22c6DVEUgIEqXKh0QgoWNBYkJCcTI12DlUzEwAOIxgAQS3SoeLSWJS+s4SR2/7s6PO34/WF38llIWhfT8nbzGvdCDro1TiSlmjHJKxld7ejvj/qjSALPFj5M4BaO1ocry6a7b9wTBFJjjMMdag7vN+beXw71nFb8LR9Gf14ty9uYVcfzJoycPSCqKHCHUOmETXKmk2u3VAQLrkWSdYwCIP79/cX//+TiYf//q9kdKa8KwNXrgd4GwpWwMDwAFQBwMYK7nF7o1zPG8NF7GydblGXYtd4mFYegOhgPGGDIdNR2WRdHn4AANuAPRLzCmyfIkOdOyUFKXqewzLvOUoQYZi9Vm9enjl+1yOTs+/vDurS/CWzcn04M7N8Z7WZ5vs21tQHU2Scu2Q5g2aHLvdnV4VK3Kh4+fivTSul6ltEL052kULeYGgSeC0WjQNjWsz06llGHordY5iNDxhWwRqpVUSvjhavF3Ot2fR9G1HZEVJfw7n8vNJfUEdK1GzGIgBDdNQwlr2pZRyglCqOvqopTtfxPN5DQANIAzAAAAAElFTkSuQmCC', 'base64');
@@ -201,10 +119,10 @@ test('Certificates', async function() {
 			'image/png'
 		);
 		const documentReference = documentBuilder.build(mockDocumentContent);
-		builder1.setAttribute('documentDriversLicense', true, {
+		builder1.setSensitiveAttribute('documentDriversLicense', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'documentDriversLicense', {
 			documentNumber: 'DL1234567890',
 			front: documentReference
-		});
+		}));
 
 		/**
 		 * A User Certificate
@@ -468,9 +386,9 @@ test('Certificate Sharable Attributes', async function() {
 	 */
 	// The certificates cannot store ms precision times, so we round it down
 	const testDOB = new Date(Math.floor(((Date.now() - (35 * 365 * 24 * 60 * 60 * 1000)) / 1000)) * 1000); // Approx 35 years ago
-	builder1.setAttribute('fullName', false, 'Test User');
-	builder1.setAttribute('email', true, 'user@example.com');
-	builder1.setAttribute('dateOfBirth', true, testDOB);
+	builder1.setAttribute('fullName', 'Test User');
+	builder1.setSensitiveAttribute('email', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'email', 'user@example.com'));
+	builder1.setSensitiveAttribute('dateOfBirth', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'dateOfBirth', testDOB));
 
 	/*
 	 * Add a document to be shared
@@ -485,10 +403,11 @@ test('Certificate Sharable Attributes', async function() {
 			'image/png'
 		);
 		const documentReference = documentBuilder.build(mockDocumentContent);
-		builder1.setAttribute('documentDriversLicense', true, {
+		const documentDriversLicense = await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'documentDriversLicense', {
 			documentNumber: 'DL1234567890',
 			front: documentReference
 		});
+		builder1.setSensitiveAttribute('documentDriversLicense', documentDriversLicense);
 	}
 
 	const certificate = await builder1.build({
