@@ -64,7 +64,7 @@ export type ConversionInput = {
 };
 
 export type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : ConversionInput[k];
+	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : ConversionInput[k] extends undefined ? never : ConversionInput[k];
 };
 
 export type ConversionInputCanonicalJSON = ToJSONSerializable<ConversionInputCanonical>;
