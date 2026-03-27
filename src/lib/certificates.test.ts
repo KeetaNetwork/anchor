@@ -103,12 +103,12 @@ test('Certificates', async function() {
 		/*
 		* Use the same builder to create a User Certificate
 		*/
-		builder1.setSensitiveAttribute('fullName', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'fullName', 'Test User'));
-		builder1.setSensitiveAttribute('email', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'email', 'user@example.com'));
-		builder1.setSensitiveAttribute('phoneNumber', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'phoneNumber', '+1 555 911 3808'));
-		builder1.setSensitiveAttribute('address', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'address', testAddress));
-		builder1.setSensitiveAttribute('dateOfBirth', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'dateOfBirth', new Date('1980-01-01')));
-		builder1.setSensitiveAttribute('entityType', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'entityType', testEntityType));
+		builder1.setAttribute('fullName', true, 'Test User');
+		builder1.setAttribute('email', true, 'user@example.com');
+		builder1.setAttribute('phoneNumber', true, '+1 555 911 3808');
+		builder1.setAttribute('address', true, testAddress);
+		builder1.setAttribute('dateOfBirth', true, new Date('1980-01-01'));
+		builder1.setAttribute('entityType', true, testEntityType);
 
 		// Create a document reference using DocumentBuilder
 		const mockDocumentContent = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAA8AAAAKCAIAAADkeZOuAAAAAXNSR0IB2cksfwAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAAAlwSFlzAAAuIwAALiMBeKU/dgAAAaNJREFUGBkFwTtv00AcAPD738v22c6DVEUgIEqXKh0QgoWNBYkJCcTI12DlUzEwAOIxgAQS3SoeLSWJS+s4SR2/7s6PO34/WF38llIWhfT8nbzGvdCDro1TiSlmjHJKxld7ejvj/qjSALPFj5M4BaO1ocry6a7b9wTBFJjjMMdag7vN+beXw71nFb8LR9Gf14ty9uYVcfzJoycPSCqKHCHUOmETXKmk2u3VAQLrkWSdYwCIP79/cX//+TiYf//q9kdKa8KwNXrgd4GwpWwMDwAFQBwMYK7nF7o1zPG8NF7GydblGXYtd4mFYegOhgPGGDIdNR2WRdHn4AANuAPRLzCmyfIkOdOyUFKXqewzLvOUoQYZi9Vm9enjl+1yOTs+/vDurS/CWzcn04M7N8Z7WZ5vs21tQHU2Scu2Q5g2aHLvdnV4VK3Kh4+fivTSul6ltEL052kULeYGgSeC0WjQNjWsz06llGHordY5iNDxhWwRqpVUSvjhavF3Ot2fR9G1HZEVJfw7n8vNJfUEdK1GzGIgBDdNQwlr2pZRyglCqOvqopTtfxPN5DQANIAzAAAAAElFTkSuQmCC', 'base64');
@@ -386,9 +386,9 @@ test('Certificate Sharable Attributes', async function() {
 	 */
 	// The certificates cannot store ms precision times, so we round it down
 	const testDOB = new Date(Math.floor(((Date.now() - (35 * 365 * 24 * 60 * 60 * 1000)) / 1000)) * 1000); // Approx 35 years ago
-	builder1.setAttribute('fullName', 'Test User');
-	builder1.setSensitiveAttribute('email', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'email', 'user@example.com'));
-	builder1.setSensitiveAttribute('dateOfBirth', await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, 'dateOfBirth', testDOB));
+	builder1.setAttribute('fullName', false, 'Test User');
+	builder1.setAttribute('email', true, 'user@example.com');
+	builder1.setAttribute('dateOfBirth', true, testDOB);
 
 	/*
 	 * Add a document to be shared
