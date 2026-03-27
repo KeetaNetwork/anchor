@@ -23,7 +23,6 @@ const ibanSwiftSchema: AccountAddressSchema = {
 					type: "object",
 					properties: {
 						beneficiaryName: { type: "string" },
-		
 						intermediaryBank: {
 							type: "object",
 							properties: {
