@@ -22,6 +22,16 @@ const ibanSwiftSchema: AccountAddressSchema = {
 				swift: {
 					type: "object",
 					properties: {
+						beneficiaryName: { type: "string" },
+		
+						intermediaryBank: {
+							type: "object",
+							properties: {
+								bic: { type: "string" },
+								name: { type: "string" },
+								address: sharedSchemaReferences.PhysicalAddress
+							}
+						},
 						category: { type: "string" },
 						purposeOfFunds: {
 							type: "array",
@@ -37,7 +47,19 @@ const ibanSwiftSchema: AccountAddressSchema = {
 			type: "object",
 			properties: {
 				country: sharedSchemaReferences.ISOCountryCode,
-				bic: { type: "string" }
+				bic: { type: "string" },
+				swift: {
+					type: "object",
+					properties: {
+						beneficiaryName: { type: "string" },
+						intermediaryBank: {
+							type: "object",
+							properties: {
+								bic: { type: "string" }
+							}
+						}
+					}
+				}
 			},
 			required: []
 		}
