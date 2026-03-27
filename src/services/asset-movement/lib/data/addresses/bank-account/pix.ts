@@ -1,4 +1,4 @@
-import type { AccountAddressSchema } from "../../types.js";
+import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
 const pixSchema: AccountAddressSchema = {
 	type: 'bank-account',
@@ -15,6 +15,7 @@ const pixSchema: AccountAddressSchema = {
 			properties: {
 				brCode: { type: "string" },
 				pixKey: { type: "string" },
+				accountAddress: sharedSchemaReferences.PhysicalAddress,
 				document: {
 					type: 'object',
 					properties: {
@@ -27,7 +28,15 @@ const pixSchema: AccountAddressSchema = {
 			required: []
 		},
 		obfuscated: {
-			type: "object"
+			type: "object",
+			properties: {
+				accountAddress: {
+					oneOf: [
+						{ type: 'string' },
+						sharedSchemaReferences.PhysicalAddress
+					]
+				}
+			}
 		}
 	}
 }

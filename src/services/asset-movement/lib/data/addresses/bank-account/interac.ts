@@ -1,4 +1,4 @@
-import type { AccountAddressSchema } from "../../types.js";
+import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
 const interacSchema: AccountAddressSchema = {
 	type: 'bank-account',
@@ -30,12 +30,21 @@ const interacSchema: AccountAddressSchema = {
 					maxLength: 5,
 					minLength: 5,
 					pattern: "^\\d{5}$"
-				}
+				},
+				accountAddress: sharedSchemaReferences.PhysicalAddress
 			},
 			required: [ 'routingCode', 'bankCode']
 		},
 		obfuscated: {
-			type: "object"
+			type: "object",
+			properties: {
+				accountAddress: {
+					oneOf: [
+						{ type: 'string' },
+						sharedSchemaReferences.PhysicalAddress
+					]
+				}
+			}
 		}
 	}
 }
