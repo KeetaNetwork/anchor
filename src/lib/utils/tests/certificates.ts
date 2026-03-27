@@ -112,7 +112,7 @@ export async function createTestCertificate(options: CreateTestCertificateOption
 				const sensitiveAttribute = await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, name, value);
 				builder.setSensitiveAttribute(name, sensitiveAttribute);
 			} else {
-				builder.setAttribute(name, value);
+				builder.setAttribute(name, false, value);
 			}
 		}
 	}
