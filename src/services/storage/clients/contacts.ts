@@ -1,9 +1,10 @@
-import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount } from '../../asset-movement/common.js';
+import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount, Rail } from '../../asset-movement/common.js';
 import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
 import { Errors } from '../common.js';
+import type { StorageObjectMetadata } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 import { assertContact } from './contacts.generated.js';
 
@@ -69,11 +70,17 @@ export type ContactAddress = KeetaContactAddress | TemplateContactAddress | Othe
 /**
  * A stored contact with metadata and an address.
  */
-export type Contact = {
+export interface Contact {
 	id: string;
 	label: string;
 	address: ContactAddress;
-};
+	rail?: Rail;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface SharedStorageObjectMetadata extends Pick<StorageObjectMetadata, 'createdAt' | 'updatedAt'> {};
+
+export interface ContactWithMetadata extends Contact, SharedStorageObjectMetadata {}
 
 // #endregion
 
@@ -88,6 +95,7 @@ export interface ContactsClient {
 	create(options: {
 		label: string;
 		address: ContactAddress;
+		rail?: Rail;
 	}): Promise<Contact>;
 
 	get(id: string): Promise<Contact | null>;
@@ -188,19 +196,33 @@ export class StorageContactsClient implements ContactsClient {
 		return(Buffer.from(JSON.stringify(contact)));
 	}
 
-	#deserialize(data: Buffer): Contact {
-		return(assertContact(JSON.parse(data.toString())));
+	#deserialize(data: Buffer, metadata: SharedStorageObjectMetadata): ContactWithMetadata;
+	#deserialize(data: Buffer, metadata: null): Contact;
+	#deserialize(data: Buffer, metadata: SharedStorageObjectMetadata | null): ContactWithMetadata | Contact;
+	#deserialize(data: Buffer, metadata: SharedStorageObjectMetadata | null): ContactWithMetadata | Contact {
+		const contact = assertContact(JSON.parse(data.toString()));
+
+		if (metadata) {
+			return({
+				...contact,
+				...metadata
+			});
+		} else {
+			return(contact);
+		}
 	}
 
 	async create(options: {
 		label: string;
 		address: ContactAddress;
+		rail?: Rail | undefined;
 	}): Promise<Contact> {
 		const id = this.deriveId(options.address);
 		const contact: Contact = {
 			id,
 			label: options.label,
-			address: options.address
+			address: options.address,
+			...(options.rail !== undefined ? { rail: options.rail } : {})
 		};
 
 		await this.#session.put(id, this.#serialize(contact), {
@@ -211,13 +233,19 @@ export class StorageContactsClient implements ContactsClient {
 		return(contact);
 	}
 
-	async get(id: string): Promise<Contact | null> {
-		const result = await this.#session.get(id);
+	async get(id: string, includeMetadata: true): Promise<ContactWithMetadata | null>;
+	async get(id: string, includeMetadata?: false): Promise<Contact | null>;
+	async get(id: string, includeMetadata?: boolean) {
+		const [ result, metadata ] = await Promise.all([
+			this.#session.get(id),
+			includeMetadata ? this.#session.getMetadata(id) : Promise.resolve(null)
+		]);
+
 		if (!result) {
 			return(null);
 		}
 
-		return(this.#deserialize(result.data));
+		return(this.#deserialize(result.data, metadata));
 	}
 
 	async update(id: string, options: {
@@ -235,7 +263,8 @@ export class StorageContactsClient implements ContactsClient {
 		const updated: Contact = {
 			id: newId,
 			label: options.label ?? existing.label,
-			address: newAddress
+			address: newAddress,
+			...(existing.rail !== undefined ? { rail: existing.rail } : {})
 		};
 
 		await this.#session.put(newId, this.#serialize(updated), {
@@ -261,7 +290,7 @@ export class StorageContactsClient implements ContactsClient {
 
 	async list(options?: {
 		location?: AssetLocationLike;
-	}): Promise<Contact[]> {
+	}): Promise<ContactWithMetadata[]> {
 		const criteria: { pathPrefix: string; tags?: string[] } = {
 			pathPrefix: this.#session.workingDirectory
 		};
@@ -272,11 +301,11 @@ export class StorageContactsClient implements ContactsClient {
 
 		const searchResult = await this.#session.search(criteria);
 
-		const contacts: Contact[] = [];
+		const contacts: ContactWithMetadata[] = [];
 		for (const metadata of searchResult.results) {
 			const result = await this.#session.get(metadata.path);
 			if (result) {
-				contacts.push(this.#deserialize(result.data));
+				contacts.push(this.#deserialize(result.data, metadata));
 			}
 		}
 
