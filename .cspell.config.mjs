@@ -162,7 +162,7 @@ export default {
 			]
 		},
 		{
-			filename: 'src/services/asset-movement/lib/data/**/*.ts',
+			filename: [ 'src/services/asset-movement/lib/data/**/*.ts', 'src/services/asset-movement/common.ts' ],
 			words: [
 				'interac',
 				'airtel',
