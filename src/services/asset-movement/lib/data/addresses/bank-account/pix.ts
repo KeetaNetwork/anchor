@@ -14,6 +14,7 @@ const pixSchema: AccountAddressSchema = {
 			type: "object",
 			properties: {
 				brCode: { type: "string" },
+				pixKeyType: { type: "string", enum: [ 'random', 'email', 'phone' ] },
 				pixKey: { type: "string" },
 				accountAddress: sharedSchemaReferences.PhysicalAddress,
 				document: {
