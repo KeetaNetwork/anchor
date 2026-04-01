@@ -171,7 +171,9 @@ export default {
 				'nagad',
 				'naya',
 				'sada',
-				'venmo'
+				'venmo',
+				'duit',
+				'nric'
 			]
 		},
 	],
