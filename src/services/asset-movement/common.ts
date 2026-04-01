@@ -306,6 +306,10 @@ export type OperationNames = keyof Operations;
 
 export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
 
+/**
+ * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
+ */
+type AddressDepositMessage = string;
 
 type ConvertToExternalRequest<
 	Internal extends object,
@@ -338,7 +342,11 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	/**
 	 * The destination location and recipient for the asset transfer
 	 */
-	to: { location: AssetLocationLike; recipient: RecipientResolved; };
+	to: {
+		location: AssetLocationLike;
+		recipient: RecipientResolved;
+		depositMessage?: AddressDepositMessage;
+	};
 
 	/**
 	 * The amount of the asset to transfer, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -357,7 +365,7 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
 	from: { location: AssetLocationCanonical; };
-	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
+	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
@@ -489,10 +497,7 @@ export type AssetTransferInstructions = ({
 	 */
 	account: BankAccountAddressResolved;
 
-	/**
-	 * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
-	 */
-	depositMessage?: string;
+	depositMessage?: AddressDepositMessage;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -768,6 +773,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 export type KeetaPersistentForwardingAddressDetails = {
 	id?: string;
 	address: AddressObfuscated | AddressResolved;
+	depositMessage?: AddressDepositMessage;
 	asset?: AssetOrPair;
 	sourceLocation?: AssetLocationLike;
 	destinationLocation?: AssetLocationLike;
