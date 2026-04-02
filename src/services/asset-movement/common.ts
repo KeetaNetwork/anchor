@@ -6,7 +6,7 @@ import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
@@ -80,8 +80,8 @@ export interface Asset {
 	id: string;
 }
 
-type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET';
-type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
+export type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'CARD_PULL' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH';
+export type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
 
 // Rails can be inbound, outbound or common (inbound and outbound)
@@ -306,6 +306,10 @@ export type OperationNames = keyof Operations;
 
 export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
 
+/**
+ * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
+ */
+type AddressDepositMessage = string;
 
 type ConvertToExternalRequest<
 	Internal extends object,
@@ -338,7 +342,11 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	/**
 	 * The destination location and recipient for the asset transfer
 	 */
-	to: { location: AssetLocationLike; recipient: RecipientResolved; };
+	to: {
+		location: AssetLocationLike;
+		recipient: RecipientResolved;
+		depositMessage?: AddressDepositMessage;
+	};
 
 	/**
 	 * The amount of the asset to transfer, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -357,7 +365,7 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
 	from: { location: AssetLocationCanonical; };
-	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
+	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
@@ -482,17 +490,14 @@ export type AssetTransferInstructions = ({
 	 */
 	contractMethodArgs: string[];
 } | {
-	type: 'WIRE' | 'ACH' | 'SEPA_PUSH';
+	type: FiatRails;
 
 	/**
 	 * The resolved bank account address details to send funds to
 	 */
 	account: BankAccountAddressResolved;
 
-	/**
-	 * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
-	 */
-	depositMessage?: string;
+	depositMessage?: AddressDepositMessage;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -768,6 +773,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 export type KeetaPersistentForwardingAddressDetails = {
 	id?: string;
 	address: AddressObfuscated | AddressResolved;
+	depositMessage?: AddressDepositMessage;
 	asset?: AssetOrPair;
 	sourceLocation?: AssetLocationLike;
 	destinationLocation?: AssetLocationLike;

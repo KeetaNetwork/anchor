@@ -334,6 +334,18 @@ export class KeetaStorageAnchorSession {
 	}
 
 	/**
+	 * Get metadata for an object at a relative path.
+	 *
+	 * @param relativePath - The relative Path
+	 *
+	 * @returns The object metadata, or null if not found
+	 */
+	async getMetadata(relativePath: string): Promise<StorageObjectMetadata | null> {
+		const fullPath = this.#resolvePath(relativePath);
+		return(await this.provider.getMetadata({ path: fullPath, account: this.account }));
+	}
+
+	/**
 	 * Delete data at a relative path.
 	 *
 	 * @param relativePath - The relative path

@@ -224,7 +224,7 @@ export class PIIStore {
 					const sensitiveAttr = await this.toSensitiveAttribute(name, subjectKey);
 					builder.setSensitiveAttribute(name, sensitiveAttr);
 				} else {
-					builder.setAttribute(name, attr.value);
+					builder.setAttribute(name, false, attr.value);
 				}
 			}
 		}

@@ -457,7 +457,7 @@ type CertificateAttributeInput<NAME extends CertificateAttributeNames> = Certifi
 export class CertificateBuilder extends BaseCertificateBuilder {
 	readonly #attributes: {
 		[name: string]:
-			| { sensitive: false; value: ArrayBuffer }
+			| { sensitive: boolean; value: ArrayBuffer }
 			| { sensitive: true; attribute: SensitiveAttribute<unknown> }
 	} = {};
 
@@ -489,12 +489,14 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 	}
 
 	/**
-	 * Set a non-sensitive KYC Attribute to a given value.
+	 * Set a KYC Attribute to a given value.
+	 * The sensitive flag is required.
 	 *
-	 * For sensitive attributes, use `setSensitiveAttribute` with a
-	 * pre-created `SensitiveAttribute` instance.
+	 * If an attribute is marked sensitive, the value is encoded
+	 * into the certificate using a commitment scheme so that the
+	 * value can be proven later without revealing it.
 	 */
-	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, value: CertificateAttributeInput<NAME>): void {
+	setAttribute<NAME extends CertificateAttributeNames>(name: NAME, sensitive: boolean, value: CertificateAttributeInput<NAME>): void {
 		const schemaValidator = CertificateAttributeSchema[name];
 		let encoded: ArrayBuffer;
 		if (value instanceof ArrayBuffer) {
@@ -514,7 +516,7 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 		}
 
 		this.#attributes[name] = {
-			sensitive: false,
+			sensitive: sensitive,
 			value: encoded
 		};
 	}
@@ -553,8 +555,12 @@ export class CertificateBuilder extends BaseCertificateBuilder {
 			const nameOID = CertificateAttributeOIDDB[name];
 
 			let value: Buffer;
-			if (attribute.sensitive) {
+			if ('attribute' in attribute) {
 				value = arrayBufferToBuffer(attribute.attribute.toDER());
+			} else if (attribute.sensitive) {
+				const subject = args[0].subjectPublicKey;
+				const sensitiveAttr = await SensitiveAttribute.create(subject, name, attribute.value);
+				value = arrayBufferToBuffer(sensitiveAttr.toDER());
 			} else {
 				value = arrayBufferToBuffer(attribute.value);
 			}

@@ -1,11 +1,11 @@
 import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
-const pixSchema: AccountAddressSchema = {
+// UK Faster payments schema
+const fpsSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
 		accountOwner: true,
-		bankName: true,
 		accountNumberEnding: true
 	},
 
@@ -13,24 +13,16 @@ const pixSchema: AccountAddressSchema = {
 		resolved: {
 			type: "object",
 			properties: {
-				brCode: { type: "string" },
-				pixKeyType: { type: "string", enum: [ 'random', 'email', 'phone' ] },
-				pixKey: { type: "string" },
 				accountAddress: sharedSchemaReferences.PhysicalAddress,
-				document: {
-					type: 'object',
-					properties: {
-						type: { type: "string", enum: ['cpf', 'cnpj'] },
-						number: { type: "string" }
-					},
-					required: ['number']
-				}
+				accountNumber: { type: "string", pattern: "^[a-zA-Z0-9]{2,80}$" },
+				sortCode: { type: "string" }
 			},
 			required: []
 		},
 		obfuscated: {
 			type: "object",
 			properties: {
+				sortCode: { type: "string" },
 				accountAddress: {
 					oneOf: [
 						{ type: 'string' },
@@ -42,4 +34,4 @@ const pixSchema: AccountAddressSchema = {
 	}
 }
 
-export default pixSchema;
+export default fpsSchema;
