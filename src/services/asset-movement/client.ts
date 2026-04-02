@@ -459,8 +459,9 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			endpoint: 'initiateTransfer',
 			account: request.account,
 			serializeRequest(body) {
+				const { account, ...rest } = body;
 				return({
-					...body,
+					...rest,
 					value: String(body.value),
 					from: {
 						location: convertAssetLocationToString(body.from.location)
@@ -470,7 +471,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 						recipient: body.to.recipient
 					},
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.publicKeyString.get()
+					...(account ? { account: account.publicKeyString.get() } : {})
 				})
 			},
 			body: request,
@@ -510,11 +511,12 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			endpoint: 'createPersistentForwardingTemplate',
 			account: request.account,
 			serializeRequest(body) {
+				const { account, ...rest } = body;
 				return({
-					...body,
+					...rest,
 					location: convertAssetLocationToString(body.location),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.publicKeyString.get()
+					...(account ? { account: account.publicKeyString.get() } : {})
 				})
 			},
 			body: request,
@@ -578,7 +580,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body: request,
 			serializeRequest(body) {
 				return({
-					account: body.account?.publicKeyString.get(),
+					...(body.account ? { account: body.account.publicKeyString.get() } : {}),
 					asset: body.asset?.map(a => convertAssetSearchInputToCanonical(a)),
 					location: body.location?.map(l => convertAssetLocationToString(l))
 				});
@@ -754,7 +756,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				return({
 					account: body.account.publicKeyString.get(),
 					attributes: attributes,
-					tosAgreement: body.tosAgreement
+					...(body.tosAgreement ? { tosAgreement: body.tosAgreement } : {})
 				});
 			},
 			body: request,
