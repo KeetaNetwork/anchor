@@ -1177,7 +1177,7 @@ export interface StorageBackend {
 	delete(path: string): Promise<boolean>;
 
 	/**
-	 * Update metadata (tags/visibility) for an existing object without re-uploading data.
+	 * Update metadata for an existing object without re-uploading data.
 	 * @returns Updated metadata, or null if the object does not exist
 	 */
 	updateMetadata?(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null>;

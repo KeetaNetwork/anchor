@@ -762,7 +762,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			return(jsonResponse({ ok: true, object: result.metadata }, assertKeetaStorageAnchorPutResponse));
 		};
 
-		// PUT /api/metadata/* - Update object metadata (tags/visibility) without re-uploading data
+		// PUT /api/metadata/* - Update object metadata without re-uploading data
 		routes['PUT /api/metadata/**'] = async function(params, postData) {
 			const objectPath = extractObjectPath(params);
 			const request = assertKeetaStorageAnchorUpdateMetadataRequest(postData);
