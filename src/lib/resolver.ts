@@ -225,6 +225,7 @@ type ServiceMetadata = {
 					get?: ServiceMetadataEndpoint;
 					delete?: ServiceMetadataEndpoint;
 					metadata?: ServiceMetadataEndpoint;
+					updateMetadata?: ServiceMetadataEndpoint;
 					search?: ServiceMetadataEndpoint;
 					public?: ServiceMetadataEndpoint;
 					quota?: ServiceMetadataEndpoint;

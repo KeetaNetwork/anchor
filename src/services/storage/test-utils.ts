@@ -321,6 +321,24 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		return(this.storage.delete(path));
 	}
 
+	async updateMetadata(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null> {
+		const entry = this.storage.get(path);
+		if (!entry) {
+			return(null);
+		}
+
+		const now = new Date().toISOString();
+		const updated: StorageObjectMetadata = {
+			...entry.metadata,
+			tags: metadata.tags,
+			visibility: metadata.visibility,
+			updatedAt: now
+		};
+
+		this.storage.set(path, { data: entry.data, metadata: updated });
+		return(updated);
+	}
+
 	async search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults> {
 		return(searchStorage(this.storage, criteria, pagination));
 	}

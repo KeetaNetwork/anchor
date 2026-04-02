@@ -1,12 +1,12 @@
 import { expect, test, describe } from 'vitest';
-import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount } from './common.js';
+import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount, StoragePutMetadata, StorageObjectVisibility } from './common.js';
 import type { KeetaAnchorStorageServerConfig } from './server.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
 import { SignData, FormatData } from '../../lib/utils/signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
-import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData, getKeetaStorageAnchorDeleteRequestSigningData } from './common.js';
+import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData, getKeetaStorageAnchorDeleteRequestSigningData, getKeetaStorageAnchorUpdateMetadataRequestSigningData, Errors } from './common.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { TestPathPolicy, testPathPolicy, testMetadata } from './test-utils.js';
@@ -924,6 +924,222 @@ describe('Storage Server', function() {
 			}));
 		});
 
+	});
+
+	describe('PUT /api/metadata (Update Metadata)', function() {
+		async function sendUpdateMetadata(
+			url: string,
+			account: InstanceType<typeof KeetaNet.lib.Account>,
+			objectPath: string,
+			tags: string[],
+			visibility: StorageObjectVisibility
+		): Promise<Response> {
+			const signable = getKeetaStorageAnchorUpdateMetadataRequestSigningData({
+				path: objectPath,
+				visibility,
+				tags
+			});
+
+			const signed = await SignData(account.assertAccount(), signable);
+			return(await fetch(`${url}/api/metadata${objectPath}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+				body: JSON.stringify({
+					path: objectPath,
+					tags,
+					visibility,
+					account: account.publicKeyString.get(),
+					signed
+				})
+			}));
+		}
+
+		test('updates metadata while preserving owner and data', function() {
+			return(withServer(async function({ url, backend }) {
+				const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const ownerPubKey = account.publicKeyString.get();
+				const objectPath = `/user/${ownerPubKey}/file.txt`;
+				const originalData = Buffer.from('original-data');
+
+				await backend.put(objectPath, originalData, testMetadata(ownerPubKey, { tags: ['old'], visibility: 'private' }));
+
+				const response = await sendUpdateMetadata(url, account, objectPath, ['new-tag', 'another'], 'private');
+				expect(response.status).toBe(200);
+
+				const json: unknown = await response.json();
+				expectOk(json);
+
+				const stored = await backend.get(objectPath);
+				expect(stored?.metadata.tags).toEqual(['new-tag', 'another']);
+				expect(stored?.metadata.visibility).toBe('private');
+				expect(stored?.metadata.owner).toBe(ownerPubKey);
+				expect(stored?.metadata.updatedAt).toBeDefined();
+				expect(stored?.data.toString()).toBe('original-data');
+			}));
+		});
+
+		const rejectionCases = [
+			{
+				name: 'returns 404 when object does not exist',
+				createObject: false,
+				useAttacker: false,
+				relativePath: 'nonexistent.txt',
+				tags: ['tag'],
+				visibility: 'private' as const,
+				expectedStatus: 404
+			},
+			{
+				name: 'rejects cross-user metadata update',
+				createObject: true,
+				useAttacker: true,
+				relativePath: 'secret.txt',
+				tags: ['hacked'],
+				visibility: 'private' as const,
+				expectedStatus: 403
+			},
+			{
+				name: 'rejects tags exceeding maximum length',
+				createObject: true,
+				useAttacker: false,
+				relativePath: 'file.txt',
+				tags: ['a'.repeat(200)],
+				visibility: 'private' as const,
+				expectedStatus: { min: 400 }
+			},
+			{
+				name: 'rejects too many tags',
+				createObject: true,
+				useAttacker: false,
+				relativePath: 'file.txt',
+				tags: Array.from({ length: 50 }, function(_, i) { return(`tag-${i}`); }),
+				visibility: 'private' as const,
+				expectedStatus: { min: 400 }
+			},
+			{
+				name: 'enforces validateMetadata from path policy',
+				createObject: true,
+				useAttacker: false,
+				relativePath: 'public/file.txt',
+				createVisibility: 'public' as const,
+				tags: [],
+				visibility: 'private' as const,
+				expectedStatus: { min: 400 }
+			}
+		];
+
+		test.each(rejectionCases)('$name', function(testCase) {
+			return(withServer(async function({ url, backend }) {
+				const seed = KeetaNet.lib.Account.generateRandomSeed();
+				const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+				const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
+
+				const ownerPubKey = ownerAccount.publicKeyString.get();
+				const objectPath = `/user/${ownerPubKey}/${testCase.relativePath}`;
+
+				if (testCase.createObject) {
+					await backend.put(objectPath, Buffer.from('data'), testMetadata(ownerPubKey, {
+						visibility: ('createVisibility' in testCase ? testCase.createVisibility : 'private') ?? 'private'
+					}));
+				}
+
+				const signingAccount = testCase.useAttacker ? attackerAccount : ownerAccount;
+				const response = await sendUpdateMetadata(url, signingAccount, objectPath, testCase.tags, testCase.visibility);
+
+				if (typeof testCase.expectedStatus === 'number') {
+					expect(response.status).toBe(testCase.expectedStatus);
+				} else {
+					expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
+					expect(response.status).toBeLessThan(500);
+				}
+
+				const json: unknown = await response.json();
+				expectNotOk(json);
+			}));
+		});
+	});
+
+	describe('validateContainer Hook', function() {
+		class PrincipalCheckPolicy extends TestPathPolicy {
+			validateContainer(parsed: TestParsedPath, container: EncryptedContainer, _ignoreMetadata: StoragePutMetadata): void {
+				const hasOwner = container.principals.some(function(p) {
+					return(p.publicKeyString.get() === parsed.owner);
+				});
+				if (!hasOwner) {
+					throw(new Errors.InvalidMetadata('Owner must be a principal'));
+				}
+			}
+		}
+
+		const principalCheckPolicy = new PrincipalCheckPolicy();
+		async function withPrincipalCheckServer(fn: (ctx: ServerTestContext) => Promise<void>): Promise<void> {
+			const backend = new MemoryStorageBackend();
+			const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+			await using server = new KeetaNetStorageAnchorHTTPServer({
+				backend,
+				anchorAccount,
+				pathPolicies: [principalCheckPolicy]
+			});
+			await server.start();
+			await fn({ server, backend, url: server.url, anchorAccount });
+		}
+
+		const principalCases = [
+			{
+				name: 'rejects when owner is not a principal',
+				includeOwnerAsPrincipal: false,
+				expectedStatus: { min: 400 }
+			},
+			{
+				name: 'accepts when owner is a principal',
+				includeOwnerAsPrincipal: true,
+				expectedStatus: 200
+			}
+		];
+
+		test.each(principalCases)('$name', function(testCase) {
+			return(withPrincipalCheckServer(async function({ url, anchorAccount }) {
+				const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const userPubKey = userAccount.publicKeyString.get();
+				const objectPath = `/user/${userPubKey}/file.txt`;
+
+				const payload = { mimeType: 'text/plain', data: Buffer.from('data').toString('base64') };
+				const principals = testCase.includeOwnerAsPrincipal
+					? [userAccount, anchorAccount]
+					: [otherAccount, anchorAccount];
+				const container = EncryptedContainer.fromPlaintext(
+					JSON.stringify(payload),
+					principals,
+					{ signer: userAccount }
+				);
+
+				const binaryData = Buffer.from(await container.getEncodedBuffer());
+				const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData({
+					path: objectPath,
+					visibility: 'private'
+				}));
+
+				const requestUrl = addSignatureToURL(
+					new URL(`/api/object${objectPath}`, url),
+					{ signedField, account: userAccount }
+				);
+				requestUrl.searchParams.set('visibility', 'private');
+
+				const response = await fetch(requestUrl, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
+					body: bufferToArrayBuffer(binaryData)
+				});
+
+				if (typeof testCase.expectedStatus === 'number') {
+					expect(response.status).toBe(testCase.expectedStatus);
+				} else {
+					expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
+					expect(response.status).toBeLessThan(500);
+				}
+			}));
+		});
 	});
 
 });

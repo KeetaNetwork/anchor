@@ -1,6 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
+import type { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
@@ -287,6 +288,38 @@ export function getKeetaStorageAnchorPutRequestSigningData(
 	const tags: string[] = input.tags ?? [];
 	const sortedTags = [...tags].sort();
 	return(['put', input.path, visibility, ...sortedTags]);
+}
+
+// #endregion
+
+// #region Update Metadata
+
+/**
+ * Client-side request to update object metadata
+ */
+export type KeetaStorageAnchorUpdateMetadataClientRequest = {
+	account?: KeetaNetAccount;
+	path: string;
+	tags: string[];
+	visibility: StorageObjectVisibility;
+};
+
+/**
+ * Server-side request to update object metadata
+ */
+export type KeetaStorageAnchorUpdateMetadataRequest = {
+	account?: string;
+	signed?: HTTPSignedField;
+	path: string;
+	tags: string[];
+	visibility: StorageObjectVisibility;
+};
+
+export function getKeetaStorageAnchorUpdateMetadataRequestSigningData(
+	input: { path: string; visibility: StorageObjectVisibility; tags: string[] }
+): Signable {
+	const sortedTags = [...input.tags].sort();
+	return(['updateMetadata', input.path, input.visibility, ...sortedTags]);
 }
 
 // #endregion
@@ -1142,6 +1175,12 @@ export interface StorageBackend {
 	 * Delete an object by path
 	 */
 	delete(path: string): Promise<boolean>;
+
+	/**
+	 * Update metadata (tags/visibility) for an existing object without re-uploading data.
+	 * @returns Updated metadata, or null if the object does not exist
+	 */
+	updateMetadata?(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null>;
 }
 
 /**
@@ -1261,6 +1300,19 @@ export interface PathPolicy<TPathInfo> {
 	 * @throws Errors.InvalidMetadata if metadata violates path constraints
 	 */
 	validateMetadata?(parsed: TPathInfo, metadata: StoragePutMetadata): void;
+
+	/**
+	 * Validate the encrypted container during PUT.
+	 * Called after the container is parsed from the raw buffer but before decryption.
+	 * The container's principals getter returns all recipient public keys from the
+	 * ASN.1 header without requiring decryption.
+	 *
+	 * @param parsed - The parsed path info
+	 * @param container - The encrypted container parsed from the uploaded data
+	 * @param metadata - The metadata associated with the upload
+	 * @throws Errors.InvalidMetadata if the container violates policy constraints
+	 */
+	validateContainer?(parsed: TPathInfo, container: EncryptedContainer, metadata: StoragePutMetadata): void;
 }
 
 // #endregion
