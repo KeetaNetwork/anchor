@@ -473,6 +473,26 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const logger = this.logger;
 
 		/**
+		 * Validate tags against configured limits.
+		 * @throws Errors.InvalidTag if any tag violates constraints
+		 */
+		function validateTags(tags: string[]): void {
+			const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
+			for (const tag of tags) {
+				if (tag.length > maxTagLength) {
+					throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
+				}
+				tagPattern.lastIndex = 0;
+				if (!tagPattern.test(tag)) {
+					throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
+				}
+			}
+			if (tags.length > maxTags) {
+				throw(new Errors.InvalidTag(`Too many tags: ${tags.length} exceeds maximum of ${maxTags}`));
+			}
+		}
+
+		/**
 		 * Build a JSON response with assertion.
 		 */
 		function jsonResponse<T>(response: T, assertionHandler: (input: unknown) => T): { output: string } {
@@ -574,21 +594,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					return({ path: objectPath, visibility, tags: rawTags });
 				});
 
-				// Validate tags
-				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
-				for (const tag of rawTags) {
-					if (tag.length > maxTagLength) {
-						throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
-					}
-					// Reset lastIndex in case the pattern has the global or sticky flag
-					tagPattern.lastIndex = 0;
-					if (!tagPattern.test(tag)) {
-						throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
-					}
-				}
-				if (rawTags.length > maxTags) {
-					throw(new Errors.InvalidTag(`Too many tags: ${rawTags.length} exceeds maximum of ${maxTags}`));
-				}
+				validateTags(rawTags);
 				const tags = rawTags;
 
 				// Validate path format, metadata, and ownership
@@ -767,41 +773,16 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const objectPath = extractObjectPath(params);
 			const request = assertKeetaStorageAnchorUpdateMetadataRequest(postData);
 
-			if (!request.account || !request.signed) {
-				throw(new KeetaAnchorUserError('Authentication required'));
-			}
-
-			const account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
 			const signable = getKeetaStorageAnchorUpdateMetadataRequestSigningData({
 				path: objectPath,
 				visibility: request.visibility,
 				tags: request.tags
 			});
-			const signed = assertHTTPSignedField(request.signed);
-
-			const valid = await VerifySignedData(account, signable, signed);
-			if (!valid) {
-				throw(new KeetaAnchorUserError('Invalid signature'));
-			}
+			const account = await verifyBodyAuth(request, function() { return(signable); });
 
 			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
 
-			// Validate tags
-			const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
-			for (const tag of request.tags) {
-				if (tag.length > maxTagLength) {
-					throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
-				}
-
-				tagPattern.lastIndex = 0;
-				if (!tagPattern.test(tag)) {
-					throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
-				}
-			}
-
-			if (request.tags.length > maxTags) {
-				throw(new Errors.InvalidTag(`Too many tags: ${request.tags.length} exceeds maximum of ${maxTags}`));
-			}
+			validateTags(request.tags);
 
 			const visibility = assertVisibility(request.visibility);
 			const tags = request.tags;

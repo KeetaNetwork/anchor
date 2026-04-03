@@ -472,6 +472,21 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}
 
 	/**
+	 * Validate tags for client-side constraints before sending to server.
+	 * @throws Errors.InvalidTag if any tag is empty or contains commas
+	 */
+	#validateTags(tags: string[]): void {
+		for (const tag of tags) {
+			if (!tag || tag.trim().length === 0) {
+				throw(new Errors.InvalidTag('Tags cannot be empty'));
+			}
+			if (tag.includes(',')) {
+				throw(new Errors.InvalidTag('Tags cannot contain commas'));
+			}
+		}
+	}
+
+	/**
 	 * Get operation endpoint data for a given operation.
 	 *
 	 * @param operationName - The operation to get endpoint data for
@@ -762,16 +777,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 
 		const tags = input.tags ?? [];
-		for (const tag of tags) {
-			// Validate tags are not empty
-			if (!tag || tag.trim().length === 0) {
-				throw(new Errors.InvalidTag('Tags cannot be empty'));
-			}
-			// Validate tags don't contain commas (used as delimiter in query params)
-			if (tag.includes(',')) {
-				throw(new Errors.InvalidTag('Tags cannot contain commas'));
-			}
-		}
+		this.#validateTags(tags);
 
 		const signable = getKeetaStorageAnchorPutRequestSigningData({ path: input.path, visibility, tags });
 		const signed = await SignData(input.account.assertAccount(), signable);
@@ -1013,15 +1019,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const { path, tags, visibility } = options;
 
 		this.logger?.debug(`Updating metadata at path: ${path}`);
-
-		for (const tag of tags) {
-			if (!tag || tag.trim().length === 0) {
-				throw(new Errors.InvalidTag('Tags cannot be empty'));
-			}
-			if (tag.includes(',')) {
-				throw(new Errors.InvalidTag('Tags cannot contain commas'));
-			}
-		}
+		this.#validateTags(tags);
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
 		try {
