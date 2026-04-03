@@ -1276,7 +1276,7 @@ export interface PathPolicy<TPathInfo> {
 	 * Check if the account has access to perform the operation on the parsed path.
 	 * @returns true if access is allowed, false otherwise
 	 */
-	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'): boolean;
+	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata'): boolean;
 
 	/**
 	 * Get the account authorized to sign pre-signed URLs for this path.

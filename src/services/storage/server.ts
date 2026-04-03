@@ -78,7 +78,7 @@ function assertPathAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	account: Account,
 	path: string,
-	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata'
 ): { policy: PathPolicy<unknown>; parsed: unknown } {
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
@@ -780,7 +780,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			});
 			const account = await verifyBodyAuth(request, function() { return(signable); });
 
-			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
+			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'updateMetadata');
 
 			validateTags(request.tags);
 
