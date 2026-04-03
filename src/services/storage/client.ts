@@ -1027,7 +1027,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		try {
 			const response = await this.#makeRequest<
 				{ ok: true; object: StorageObjectMetadata } | { ok: false; error: string },
-				{ path: string; tags: string[]; visibility: StorageObjectVisibility; account?: KeetaNetAccount },
+				{ tags: string[]; visibility: StorageObjectVisibility; account?: KeetaNetAccount },
 				KeetaStorageAnchorUpdateMetadataRequest
 			>({
 				method: 'PUT',
@@ -1036,13 +1036,12 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				pathSuffix: path,
 				serializeRequest(body) {
 					return({
-						path: body.path,
 						tags: body.tags,
 						visibility: body.visibility,
 						...(body.account ? { account: body.account.publicKeyString.get() } : {})
 					});
 				},
-				body: { path, tags, visibility, account: signerAccount },
+				body: { tags, visibility, account: signerAccount },
 				getSignedData: function() {
 					return(getKeetaStorageAnchorUpdateMetadataRequestSigningData({
 						path,

@@ -295,22 +295,12 @@ export function getKeetaStorageAnchorPutRequestSigningData(
 // #region Update Metadata
 
 /**
- * Client-side request to update object metadata
- */
-export type KeetaStorageAnchorUpdateMetadataClientRequest = {
-	account?: KeetaNetAccount;
-	path: string;
-	tags: string[];
-	visibility: StorageObjectVisibility;
-};
-
-/**
- * Server-side request to update object metadata
+ * Server-side request to update object metadata.
+ * Path is derived from the URL, not the body.
  */
 export type KeetaStorageAnchorUpdateMetadataRequest = {
 	account?: string;
 	signed?: HTTPSignedField;
-	path: string;
 	tags: string[];
 	visibility: StorageObjectVisibility;
 };
@@ -318,7 +308,7 @@ export type KeetaStorageAnchorUpdateMetadataRequest = {
 export function getKeetaStorageAnchorUpdateMetadataRequestSigningData(
 	input: { path: string; visibility: StorageObjectVisibility; tags: string[] }
 ): Signable {
-	const sortedTags = [...input.tags].sort();
+	const sortedTags = [...input.tags].sort(function(a, b) { return(a.localeCompare(b)); });
 	return(['updateMetadata', input.path, input.visibility, ...sortedTags]);
 }
 

@@ -945,7 +945,6 @@ describe('Storage Server', function() {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
 				body: JSON.stringify({
-					path: objectPath,
 					tags,
 					visibility,
 					account: account.publicKeyString.get(),

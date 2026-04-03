@@ -766,7 +766,24 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		routes['PUT /api/metadata/**'] = async function(params, postData) {
 			const objectPath = extractObjectPath(params);
 			const request = assertKeetaStorageAnchorUpdateMetadataRequest(postData);
-			const account = await verifyBodyAuth(request, getKeetaStorageAnchorUpdateMetadataRequestSigningData);
+
+			if (!request.account || !request.signed) {
+				throw(new KeetaAnchorUserError('Authentication required'));
+			}
+
+			const account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
+			const signable = getKeetaStorageAnchorUpdateMetadataRequestSigningData({
+				path: objectPath,
+				visibility: request.visibility,
+				tags: request.tags
+			});
+			const signed = assertHTTPSignedField(request.signed);
+
+			const valid = await VerifySignedData(account, signable, signed);
+			if (!valid) {
+				throw(new KeetaAnchorUserError('Invalid signature'));
+			}
+
 			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
 
 			// Validate tags
