@@ -348,7 +348,7 @@ export class KeetaStorageAnchorSession {
 	}
 
 	/**
-	 * Update metadata (tags and visibility) for an object at a relative path.
+	 * Update metadata for an object at a relative path.
 	 *
 	 * @param relativePath - The relative path
 	 * @param options.tags - New tags for the object
@@ -999,7 +999,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}
 
 	/**
-	 * Update metadata (tags and visibility) for an existing object without re-uploading data.
+	 * Update metadata for an existing object without re-uploading data.
 	 *
 	 * @param options.path - The storage path
 	 * @param options.tags - New tags for the object
