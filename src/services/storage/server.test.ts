@@ -1003,7 +1003,7 @@ describe('Storage Server', function() {
 				relativePath: 'file.txt',
 				tags: ['a'.repeat(200)],
 				visibility: 'private' as const,
-				expectedStatus: { min: 400 }
+				expectedStatus: 400
 			},
 			{
 				name: 'rejects too many tags',
@@ -1012,7 +1012,7 @@ describe('Storage Server', function() {
 				relativePath: 'file.txt',
 				tags: Array.from({ length: 50 }, function(_, i) { return(`tag-${i}`); }),
 				visibility: 'private' as const,
-				expectedStatus: { min: 400 }
+				expectedStatus: 400
 			},
 			{
 				name: 'enforces validateMetadata from path policy',
@@ -1022,7 +1022,7 @@ describe('Storage Server', function() {
 				createVisibility: 'public' as const,
 				tags: [],
 				visibility: 'private' as const,
-				expectedStatus: { min: 400 }
+				expectedStatus: 400
 			}
 		];
 
@@ -1031,25 +1031,22 @@ describe('Storage Server', function() {
 				const seed = KeetaNet.lib.Account.generateRandomSeed();
 				const ownerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
 				const attackerAccount = KeetaNet.lib.Account.fromSeed(seed, 1);
-
 				const ownerPubKey = ownerAccount.publicKeyString.get();
 				const objectPath = `/user/${ownerPubKey}/${testCase.relativePath}`;
 
 				if (testCase.createObject) {
 					await backend.put(objectPath, Buffer.from('data'), testMetadata(ownerPubKey, {
-						visibility: ('createVisibility' in testCase ? testCase.createVisibility : 'private') ?? 'private'
+						visibility: testCase.createVisibility ?? 'private'
 					}));
 				}
 
-				const signingAccount = testCase.useAttacker ? attackerAccount : ownerAccount;
-				const response = await sendUpdateMetadata(url, signingAccount, objectPath, testCase.tags, testCase.visibility);
-
-				if (typeof testCase.expectedStatus === 'number') {
-					expect(response.status).toBe(testCase.expectedStatus);
-				} else {
-					expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
-					expect(response.status).toBeLessThan(500);
+				let signingAccount = ownerAccount;
+				if (testCase.useAttacker) {
+					signingAccount = attackerAccount;
 				}
+
+				const response = await sendUpdateMetadata(url, signingAccount, objectPath, testCase.tags, testCase.visibility);
+				expect(response.status).toBe(testCase.expectedStatus);
 
 				const json: unknown = await response.json();
 				expectNotOk(json);
@@ -1087,7 +1084,7 @@ describe('Storage Server', function() {
 			{
 				name: 'rejects when owner is not a principal',
 				includeOwnerAsPrincipal: false,
-				expectedStatus: { min: 400 }
+				expectedStatus: 400
 			},
 			{
 				name: 'accepts when owner is a principal',
@@ -1104,9 +1101,10 @@ describe('Storage Server', function() {
 				const objectPath = `/user/${userPubKey}/file.txt`;
 
 				const payload = { mimeType: 'text/plain', data: Buffer.from('data').toString('base64') };
-				const principals = testCase.includeOwnerAsPrincipal
-					? [userAccount, anchorAccount]
-					: [otherAccount, anchorAccount];
+				let principals = [otherAccount, anchorAccount];
+				if (testCase.includeOwnerAsPrincipal) {
+					principals = [userAccount, anchorAccount];
+				}
 				const container = EncryptedContainer.fromPlaintext(
 					JSON.stringify(payload),
 					principals,
@@ -1130,13 +1128,7 @@ describe('Storage Server', function() {
 					headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
 					body: bufferToArrayBuffer(binaryData)
 				});
-
-				if (typeof testCase.expectedStatus === 'number') {
-					expect(response.status).toBe(testCase.expectedStatus);
-				} else {
-					expect(response.status).toBeGreaterThanOrEqual(testCase.expectedStatus.min);
-					expect(response.status).toBeLessThan(500);
-				}
+				expect(response.status).toBe(testCase.expectedStatus);
 			}));
 		});
 	});

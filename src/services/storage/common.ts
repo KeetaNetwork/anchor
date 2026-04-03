@@ -305,6 +305,10 @@ export type KeetaStorageAnchorUpdateMetadataRequest = {
 	visibility: StorageObjectVisibility;
 };
 
+/**
+ * Build signing data for an update-metadata request.
+ * Tags are sorted with localeCompare for deterministic signatures.
+ */
 export function getKeetaStorageAnchorUpdateMetadataRequestSigningData(
 	input: { path: string; visibility: StorageObjectVisibility; tags: string[] }
 ): Signable {
