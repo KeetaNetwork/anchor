@@ -103,6 +103,14 @@ export type SessionConfig = {
 };
 
 /**
+ * Configuration for storage sub-clients.
+ */
+export interface StorageSubClientConfig {
+	session: KeetaStorageAnchorSession;
+	logger?: Logger | undefined;
+}
+
+/**
  * An opaque type that represents a provider ID.
  */
 type ProviderID = string;
@@ -1294,7 +1302,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 */
 	getContactsClient(config: ContactsClientConfig): StorageContactsClient {
 		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
-		return(new StorageContactsClient(session));
+		return(new StorageContactsClient({ session, logger: this.logger }));
 	}
 
 	/**
@@ -1306,7 +1314,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			workingDirectory: config.basePath,
 			defaultVisibility: 'public'
 		});
-		return(new StorageIconsClient(session));
+		return(new StorageIconsClient({ session, logger: this.logger }));
 	}
 }
 

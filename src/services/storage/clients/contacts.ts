@@ -1,10 +1,11 @@
 import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount, Rail } from '../../asset-movement/common.js';
 import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
-import type { KeetaStorageAnchorSession } from '../client.js';
+import type { KeetaStorageAnchorSession, StorageSubClientConfig } from '../client.js';
+import type { Logger } from '../../../lib/log/index.js';
+import type { StorageObjectMetadata } from '../common.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
 import { Errors } from '../common.js';
-import type { StorageObjectMetadata } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 import { assertContact } from './contacts.generated.js';
 
@@ -179,9 +180,11 @@ function contactTags(address: ContactAddress): string[] {
  */
 export class StorageContactsClient implements ContactsClient {
 	readonly #session: KeetaStorageAnchorSession;
+	readonly #logger?: Logger | undefined;
 
-	constructor(session: KeetaStorageAnchorSession) {
-		this.#session = session;
+	constructor(config: StorageSubClientConfig) {
+		this.#session = config.session;
+		this.#logger = config.logger;
 	}
 
 	deriveId(address: ContactAddress): string {
@@ -218,33 +221,40 @@ export class StorageContactsClient implements ContactsClient {
 		rail?: Rail | undefined;
 	}): Promise<Contact> {
 		const id = this.deriveId(options.address);
-		const contact: Contact = {
+		this.#logger?.debug('StorageContactsClient::create', `Creating contact ${id}`);
+
+		const contact: Contact = assertContact({
 			id,
 			label: options.label,
 			address: options.address,
 			...(options.rail !== undefined ? { rail: options.rail } : {})
-		};
+		});
 
 		await this.#session.put(id, this.#serialize(contact), {
 			mimeType: MIME_TYPE,
 			tags: contactTags(options.address)
 		});
 
+		this.#logger?.debug('StorageContactsClient::create', `Contact created: ${id}`);
 		return(contact);
 	}
 
 	async get(id: string, includeMetadata: true): Promise<ContactWithMetadata | null>;
 	async get(id: string, includeMetadata?: false): Promise<Contact | null>;
 	async get(id: string, includeMetadata?: boolean) {
+		this.#logger?.debug('StorageContactsClient::get', `Getting contact ${id}`);
+
 		const [ result, metadata ] = await Promise.all([
 			this.#session.get(id),
 			includeMetadata ? this.#session.getMetadata(id) : Promise.resolve(null)
 		]);
 
 		if (!result) {
+			this.#logger?.debug('StorageContactsClient::get', `Contact not found: ${id}`);
 			return(null);
 		}
 
+		this.#logger?.debug('StorageContactsClient::get', `Contact retrieved: ${id}`);
 		return(this.#deserialize(result.data, metadata));
 	}
 
@@ -252,6 +262,8 @@ export class StorageContactsClient implements ContactsClient {
 		label?: string;
 		address?: ContactAddress;
 	}): Promise<Contact> {
+		this.#logger?.debug('StorageContactsClient::update', `Updating contact ${id}`);
+
 		const existing = await this.get(id);
 		if (!existing) {
 			throw(new Errors.DocumentNotFound(`Contact not found: ${id}`));
@@ -260,12 +272,12 @@ export class StorageContactsClient implements ContactsClient {
 		const newAddress = options.address ?? existing.address;
 		const newId = this.deriveId(newAddress);
 
-		const updated: Contact = {
+		const updated: Contact = assertContact({
 			id: newId,
 			label: options.label ?? existing.label,
 			address: newAddress,
 			...(existing.rail !== undefined ? { rail: existing.rail } : {})
-		};
+		});
 
 		await this.#session.put(newId, this.#serialize(updated), {
 			mimeType: MIME_TYPE,
@@ -275,22 +287,27 @@ export class StorageContactsClient implements ContactsClient {
 		if (newId !== id) {
 			try {
 				await this.#session.delete(id);
-			} catch {
-				// Put succeeded; old contact is now orphaned
+			} catch (error) {
+				this.#logger?.warn('StorageContactsClient::update', `Failed to delete old contact ${id} after re-keying to ${newId}`, error);
 			}
 		}
 
+		this.#logger?.debug('StorageContactsClient::update', `Contact updated: ${newId}`);
 		return(updated);
 	}
 
 	async delete(id: string): Promise<boolean> {
+		this.#logger?.debug('StorageContactsClient::delete', `Deleting contact ${id}`);
 		const result = await this.#session.delete(id);
+		this.#logger?.debug('StorageContactsClient::delete', `Contact delete ${id}: ${result ? 'removed' : 'not found'}`);
 		return(result);
 	}
 
 	async list(options?: {
 		location?: AssetLocationLike;
 	}): Promise<ContactWithMetadata[]> {
+		this.#logger?.debug('StorageContactsClient::list', 'Listing contacts');
+
 		const criteria: { pathPrefix: string; tags?: string[] } = {
 			pathPrefix: this.#session.workingDirectory
 		};
@@ -300,15 +317,19 @@ export class StorageContactsClient implements ContactsClient {
 		}
 
 		const searchResult = await this.#session.search(criteria);
-
 		const contacts: ContactWithMetadata[] = [];
 		for (const metadata of searchResult.results) {
 			const result = await this.#session.get(metadata.path);
 			if (result) {
-				contacts.push(this.#deserialize(result.data, metadata));
+				try {
+					contacts.push(this.#deserialize(result.data, metadata));
+				} catch (error) {
+					this.#logger?.warn('StorageContactsClient::list', `Skipping corrupt contact at ${metadata.path}`, error);
+				}
 			}
 		}
 
+		this.#logger?.debug('StorageContactsClient::list', `Listed ${contacts.length} contacts`);
 		return(contacts);
 	}
 }
