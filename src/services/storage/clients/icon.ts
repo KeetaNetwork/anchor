@@ -1,4 +1,5 @@
 import type { KeetaStorageAnchorSession } from '../client.js';
+import type { Logger } from '../../../lib/log/index.js';
 import type { Buffer } from '../../../lib/utils/buffer.js';
 import { Errors } from '../common.js';
 
@@ -37,12 +38,16 @@ const ICON_FILENAME = 'icon';
  */
 export class StorageIconsClient implements IconsClient {
 	readonly #session: KeetaStorageAnchorSession;
+	readonly #logger?: Logger | undefined;
 
-	constructor(session: KeetaStorageAnchorSession) {
+	constructor(session: KeetaStorageAnchorSession, logger?: Logger) {
 		this.#session = session;
+		this.#logger = logger;
 	}
 
 	async set(icon: IconData): Promise<void> {
+		this.#logger?.debug(`Setting icon (${icon.mimeType})`);
+
 		if (!icon.mimeType.startsWith('image/')) {
 			throw(new Errors.ValidationFailed(`Invalid icon MIME type: "${icon.mimeType}". Must be an image/* type.`));
 		}
@@ -50,19 +55,27 @@ export class StorageIconsClient implements IconsClient {
 		await this.#session.put(ICON_FILENAME, icon.data, {
 			mimeType: icon.mimeType
 		});
+
+		this.#logger?.debug('Icon set successfully');
 	}
 
 	async get(): Promise<IconData | null> {
+		this.#logger?.debug('Getting icon');
+
 		const result = await this.#session.get(ICON_FILENAME);
 		if (!result) {
+			this.#logger?.debug('Icon not found');
 			return(null);
 		}
 
+		this.#logger?.debug('Icon retrieved');
 		return({ data: result.data, mimeType: result.mimeType });
 	}
 
 	async delete(): Promise<boolean> {
+		this.#logger?.debug('Deleting icon');
 		const result = await this.#session.delete(ICON_FILENAME);
+		this.#logger?.debug(`Icon delete: ${result ? 'removed' : 'not found'}`);
 		return(result);
 	}
 }

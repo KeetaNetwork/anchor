@@ -1,10 +1,11 @@
 import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount, Rail } from '../../asset-movement/common.js';
 import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
 import type { KeetaStorageAnchorSession } from '../client.js';
+import type { Logger } from '../../../lib/log/index.js';
+import type { StorageObjectMetadata } from '../common.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { convertAssetLocationToString } from '../../asset-movement/lib/location.js';
 import { Errors } from '../common.js';
-import type { StorageObjectMetadata } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
 import { assertContact } from './contacts.generated.js';
 
@@ -179,9 +180,11 @@ function contactTags(address: ContactAddress): string[] {
  */
 export class StorageContactsClient implements ContactsClient {
 	readonly #session: KeetaStorageAnchorSession;
+	readonly #logger?: Logger | undefined;
 
-	constructor(session: KeetaStorageAnchorSession) {
+	constructor(session: KeetaStorageAnchorSession, logger?: Logger) {
 		this.#session = session;
+		this.#logger = logger;
 	}
 
 	deriveId(address: ContactAddress): string {
@@ -218,6 +221,8 @@ export class StorageContactsClient implements ContactsClient {
 		rail?: Rail | undefined;
 	}): Promise<Contact> {
 		const id = this.deriveId(options.address);
+		this.#logger?.debug(`Creating contact ${id}`);
+
 		const contact: Contact = assertContact({
 			id,
 			label: options.label,
@@ -230,21 +235,26 @@ export class StorageContactsClient implements ContactsClient {
 			tags: contactTags(options.address)
 		});
 
+		this.#logger?.debug(`Contact created: ${id}`);
 		return(contact);
 	}
 
 	async get(id: string, includeMetadata: true): Promise<ContactWithMetadata | null>;
 	async get(id: string, includeMetadata?: false): Promise<Contact | null>;
 	async get(id: string, includeMetadata?: boolean) {
+		this.#logger?.debug(`Getting contact ${id}`);
+
 		const [ result, metadata ] = await Promise.all([
 			this.#session.get(id),
 			includeMetadata ? this.#session.getMetadata(id) : Promise.resolve(null)
 		]);
 
 		if (!result) {
+			this.#logger?.debug(`Contact not found: ${id}`);
 			return(null);
 		}
 
+		this.#logger?.debug(`Contact retrieved: ${id}`);
 		return(this.#deserialize(result.data, metadata));
 	}
 
@@ -252,6 +262,8 @@ export class StorageContactsClient implements ContactsClient {
 		label?: string;
 		address?: ContactAddress;
 	}): Promise<Contact> {
+		this.#logger?.debug(`Updating contact ${id}`);
+
 		const existing = await this.get(id);
 		if (!existing) {
 			throw(new Errors.DocumentNotFound(`Contact not found: ${id}`));
@@ -276,21 +288,26 @@ export class StorageContactsClient implements ContactsClient {
 			try {
 				await this.#session.delete(id);
 			} catch {
-				// Put succeeded; old contact is now orphaned
+				this.#logger?.warn(`Failed to delete old contact ${id} after re-keying to ${newId}`);
 			}
 		}
 
+		this.#logger?.debug(`Contact updated: ${newId}`);
 		return(updated);
 	}
 
 	async delete(id: string): Promise<boolean> {
+		this.#logger?.debug(`Deleting contact ${id}`);
 		const result = await this.#session.delete(id);
+		this.#logger?.debug(`Contact delete ${id}: ${result ? 'removed' : 'not found'}`);
 		return(result);
 	}
 
 	async list(options?: {
 		location?: AssetLocationLike;
 	}): Promise<ContactWithMetadata[]> {
+		this.#logger?.debug('Listing contacts');
+
 		const criteria: { pathPrefix: string; tags?: string[] } = {
 			pathPrefix: this.#session.workingDirectory
 		};
@@ -306,12 +323,13 @@ export class StorageContactsClient implements ContactsClient {
 			if (result) {
 				try {
 					contacts.push(this.#deserialize(result.data, metadata));
-				} catch {
-					// corrupt/non-parseable contact -- skip
+				} catch (error) {
+					this.#logger?.warn(`Skipping corrupt contact at ${metadata.path}`, error);
 				}
 			}
 		}
 
+		this.#logger?.debug(`Listed ${contacts.length} contacts`);
 		return(contacts);
 	}
 }

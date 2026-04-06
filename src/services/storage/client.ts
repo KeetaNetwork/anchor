@@ -1294,7 +1294,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 */
 	getContactsClient(config: ContactsClientConfig): StorageContactsClient {
 		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
-		return(new StorageContactsClient(session));
+		return(new StorageContactsClient(session, this.logger));
 	}
 
 	/**
@@ -1306,7 +1306,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			workingDirectory: config.basePath,
 			defaultVisibility: 'public'
 		});
-		return(new StorageIconsClient(session));
+		return(new StorageIconsClient(session, this.logger));
 	}
 }
 
