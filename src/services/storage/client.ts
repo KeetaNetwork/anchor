@@ -310,6 +310,7 @@ export class KeetaStorageAnchorSession {
 			mimeType: string;
 			tags?: string[];
 			visibility?: StorageObjectVisibility;
+			additionalPrincipals?: KeetaNetAccount[];
 		}
 	): Promise<StorageObjectMetadata> {
 		const fullPath = this.#resolvePath(relativePath);
@@ -323,6 +324,9 @@ export class KeetaStorageAnchorSession {
 		};
 		if (options.tags) {
 			putOpts.tags = options.tags;
+		}
+		if (options.additionalPrincipals) {
+			putOpts.additionalPrincipals = options.additionalPrincipals;
 		}
 		if (visibility === 'public' && this.provider.anchorAccount) {
 			putOpts.anchorAccount = this.provider.anchorAccount;
@@ -1095,12 +1099,17 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		visibility?: StorageObjectVisibility;
 		account?: KeetaNetAccount;
 		anchorAccount?: KeetaNetAccount;
+		additionalPrincipals?: KeetaNetAccount[];
 	}): Promise<StorageObjectMetadata> {
 		const { path, data, mimeType, tags, visibility, anchorAccount } = options;
 		this.logger?.debug(`Putting object at path: ${path}`);
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
 		const principals: KeetaNetAccount[] = [signerAccount];
+
+		if (options.additionalPrincipals) {
+			principals.push(...options.additionalPrincipals);
+		}
 
 		if (visibility === 'public') {
 			const effectiveAnchor = anchorAccount ?? this.anchorAccount;
