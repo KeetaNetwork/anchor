@@ -287,8 +287,8 @@ export class StorageContactsClient implements ContactsClient {
 		if (newId !== id) {
 			try {
 				await this.#session.delete(id);
-			} catch {
-				this.#logger?.warn('StorageContactsClient::update', `Failed to delete old contact ${id} after re-keying to ${newId}`);
+			} catch (error) {
+				this.#logger?.warn('StorageContactsClient::update', `Failed to delete old contact ${id} after re-keying to ${newId}`, error);
 			}
 		}
 
