@@ -1018,7 +1018,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	}): Promise<StorageObjectMetadata | null> {
 		const { path, tags, visibility } = options;
 
-		this.logger?.debug(`Updating metadata at path: ${path}`);
+		this.logger?.debug(`Updating metadata at path: ${path}, visibility: ${visibility}, tags: [${tags.join(', ')}]`);
 		this.#validateTags(tags);
 
 		const signerAccount = this.#resolveSignerAccount(options.account);
