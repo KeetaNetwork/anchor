@@ -46,7 +46,7 @@ export class StorageIconsClient implements IconsClient {
 	}
 
 	async set(icon: IconData): Promise<void> {
-		this.#logger?.debug(`Setting icon (${icon.mimeType})`);
+		this.#logger?.debug('StorageIconsClient::set', `Setting icon (${icon.mimeType})`);
 
 		if (!icon.mimeType.startsWith('image/')) {
 			throw(new Errors.ValidationFailed(`Invalid icon MIME type: "${icon.mimeType}". Must be an image/* type.`));
@@ -56,26 +56,26 @@ export class StorageIconsClient implements IconsClient {
 			mimeType: icon.mimeType
 		});
 
-		this.#logger?.debug('Icon set successfully');
+		this.#logger?.debug('StorageIconsClient::set', 'Icon set successfully');
 	}
 
 	async get(): Promise<IconData | null> {
-		this.#logger?.debug('Getting icon');
+		this.#logger?.debug('StorageIconsClient::get', 'Getting icon');
 
 		const result = await this.#session.get(ICON_FILENAME);
 		if (!result) {
-			this.#logger?.debug('Icon not found');
+			this.#logger?.debug('StorageIconsClient::get', 'Icon not found');
 			return(null);
 		}
 
-		this.#logger?.debug('Icon retrieved');
+		this.#logger?.debug('StorageIconsClient::get', 'Icon retrieved');
 		return({ data: result.data, mimeType: result.mimeType });
 	}
 
 	async delete(): Promise<boolean> {
-		this.#logger?.debug('Deleting icon');
+		this.#logger?.debug('StorageIconsClient::delete', 'Deleting icon');
 		const result = await this.#session.delete(ICON_FILENAME);
-		this.#logger?.debug(`Icon delete: ${result ? 'removed' : 'not found'}`);
+		this.#logger?.debug('StorageIconsClient::delete', `Icon delete: ${result ? 'removed' : 'not found'}`);
 		return(result);
 	}
 }
