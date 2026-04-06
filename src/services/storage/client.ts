@@ -15,7 +15,8 @@ import type {
 	StorageObjectVisibility,
 	KeetaStorageAnchorDeleteClientRequest,
 	KeetaStorageAnchorSearchRequest,
-	KeetaStorageAnchorQuotaRequest
+	KeetaStorageAnchorQuotaRequest,
+	KeetaStorageAnchorUpdateMetadataRequest
 } from './common.ts';
 import {
 	isKeetaStorageAnchorDeleteResponse,
@@ -29,6 +30,7 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
+	getKeetaStorageAnchorUpdateMetadataRequestSigningData,
 	parseContainerPayload,
 	Errors,
 	CONTENT_TYPE_JSON,
@@ -346,6 +348,32 @@ export class KeetaStorageAnchorSession {
 	}
 
 	/**
+	 * Update metadata for an object at a relative path.
+	 *
+	 * @param relativePath - The relative path
+	 * @param options.tags - New tags for the object
+	 * @param options.visibility - New visibility setting
+	 *
+	 * @returns The updated object metadata, or null if not found
+	 */
+	async updateMetadata(
+		relativePath: string,
+		options: {
+			tags: string[];
+			visibility?: StorageObjectVisibility;
+		}
+	): Promise<StorageObjectMetadata | null> {
+		const fullPath = this.#resolvePath(relativePath);
+		const visibility = options.visibility ?? this.#defaultVisibility;
+		return(await this.provider.updateMetadata({
+			path: fullPath,
+			tags: options.tags,
+			visibility,
+			account: this.account
+		}));
+	}
+
+	/**
 	 * Delete data at a relative path.
 	 *
 	 * @param relativePath - The relative path
@@ -440,6 +468,21 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 		} else {
 			this.anchorAccount = null;
+		}
+	}
+
+	/**
+	 * Validate tags for client-side constraints before sending to server.
+	 * @throws Errors.InvalidTag if any tag is empty or contains commas
+	 */
+	#validateTags(tags: string[]): void {
+		for (const tag of tags) {
+			if (!tag || tag.trim().length === 0) {
+				throw(new Errors.InvalidTag('Tags cannot be empty'));
+			}
+			if (tag.includes(',')) {
+				throw(new Errors.InvalidTag('Tags cannot contain commas'));
+			}
 		}
 	}
 
@@ -734,16 +777,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		}
 
 		const tags = input.tags ?? [];
-		for (const tag of tags) {
-			// Validate tags are not empty
-			if (!tag || tag.trim().length === 0) {
-				throw(new Errors.InvalidTag('Tags cannot be empty'));
-			}
-			// Validate tags don't contain commas (used as delimiter in query params)
-			if (tag.includes(',')) {
-				throw(new Errors.InvalidTag('Tags cannot contain commas'));
-			}
-		}
+		this.#validateTags(tags);
 
 		const signable = getKeetaStorageAnchorPutRequestSigningData({ path: input.path, visibility, tags });
 		const signed = await SignData(input.account.assertAccount(), signable);
@@ -960,6 +994,70 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			if (Errors.DocumentNotFound.isInstance(e)) {
 				return(null);
 			}
+			throw(e);
+		}
+	}
+
+	/**
+	 * Update metadata for an existing object without re-uploading data.
+	 *
+	 * @param options.path - The storage path
+	 * @param options.tags - New tags for the object
+	 * @param options.visibility - New visibility setting
+	 * @param options.account - Optional account for signing (falls back to client account)
+	 *
+	 * @returns The updated object metadata, or null if not found
+	 *
+	 * @throws PrivateKeyRequired if no account with private key is available
+	 */
+	async updateMetadata(options: {
+		path: string;
+		tags: string[];
+		visibility: StorageObjectVisibility;
+		account?: KeetaNetAccount;
+	}): Promise<StorageObjectMetadata | null> {
+		const { path, tags, visibility } = options;
+
+		this.logger?.debug(`Updating metadata at path: ${path}, visibility: ${visibility}, tags: [${tags.join(', ')}]`);
+		this.#validateTags(tags);
+
+		const signerAccount = this.#resolveSignerAccount(options.account);
+		try {
+			const response = await this.#makeRequest<
+				{ ok: true; object: StorageObjectMetadata } | { ok: false; error: string },
+				{ tags: string[]; visibility: StorageObjectVisibility; account?: KeetaNetAccount },
+				KeetaStorageAnchorUpdateMetadataRequest
+			>({
+				method: 'PUT',
+				endpoint: 'updateMetadata',
+				account: signerAccount,
+				pathSuffix: path,
+				serializeRequest(body) {
+					return({
+						tags: body.tags,
+						visibility: body.visibility,
+						...(body.account ? { account: body.account.publicKeyString.get() } : {})
+					});
+				},
+				body: { tags, visibility, account: signerAccount },
+				getSignedData: function() {
+					return(getKeetaStorageAnchorUpdateMetadataRequestSigningData({
+						path,
+						visibility,
+						tags
+					}));
+				},
+				isResponse: isKeetaStorageAnchorPutResponse
+			});
+
+			this.logger?.debug(`Update metadata successful for path: ${path}`);
+
+			return(response.object);
+		} catch (e) {
+			if (Errors.DocumentNotFound.isInstance(e)) {
+				return(null);
+			}
+
 			throw(e);
 		}
 	}

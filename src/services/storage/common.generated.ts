@@ -9,7 +9,8 @@ import type {
 	KeetaStorageAnchorSearchRequest,
 	KeetaStorageAnchorSearchResponse,
 	KeetaStorageAnchorQuotaRequest,
-	KeetaStorageAnchorQuotaResponse
+	KeetaStorageAnchorQuotaResponse,
+	KeetaStorageAnchorUpdateMetadataRequest
 } from './common.ts';
 
 export const isKeetaStorageAnchorPutResponse: (input: unknown) => input is KeetaStorageAnchorPutResponse = createIs<KeetaStorageAnchorPutResponse>();
@@ -28,3 +29,4 @@ export const assertKeetaStorageAnchorSearchRequest: (input: unknown) => KeetaSto
 export const assertKeetaStorageAnchorSearchResponse: (input: unknown) => KeetaStorageAnchorSearchResponse = createAssert<KeetaStorageAnchorSearchResponse>();
 export const assertKeetaStorageAnchorQuotaRequest: (input: unknown) => KeetaStorageAnchorQuotaRequest = createAssert<KeetaStorageAnchorQuotaRequest>();
 export const assertKeetaStorageAnchorQuotaResponse: (input: unknown) => KeetaStorageAnchorQuotaResponse = createAssert<KeetaStorageAnchorQuotaResponse>();
+export const assertKeetaStorageAnchorUpdateMetadataRequest: (input: unknown) => KeetaStorageAnchorUpdateMetadataRequest = createAssert<KeetaStorageAnchorUpdateMetadataRequest>();

@@ -26,7 +26,8 @@ import {
 	assertKeetaStorageAnchorGetRequest,
 	assertKeetaStorageAnchorSearchRequest,
 	assertKeetaStorageAnchorSearchResponse,
-	assertKeetaStorageAnchorQuotaResponse
+	assertKeetaStorageAnchorQuotaResponse,
+	assertKeetaStorageAnchorUpdateMetadataRequest
 } from './common.generated.js';
 import {
 	getKeetaStorageAnchorDeleteRequestSigningData,
@@ -34,6 +35,7 @@ import {
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
+	getKeetaStorageAnchorUpdateMetadataRequestSigningData,
 	parseContainerPayload,
 	Errors,
 	CONTENT_TYPE_OCTET_STREAM,
@@ -76,7 +78,7 @@ function assertPathAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	account: Account,
 	path: string,
-	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata'
 ): { policy: PathPolicy<unknown>; parsed: unknown } {
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
@@ -471,6 +473,26 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const logger = this.logger;
 
 		/**
+		 * Validate tags against configured limits.
+		 * @throws Errors.InvalidTag if any tag violates constraints
+		 */
+		function validateTags(tags: string[]): void {
+			const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
+			for (const tag of tags) {
+				if (tag.length > maxTagLength) {
+					throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
+				}
+				tagPattern.lastIndex = 0;
+				if (!tagPattern.test(tag)) {
+					throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
+				}
+			}
+			if (tags.length > maxTags) {
+				throw(new Errors.InvalidTag(`Too many tags: ${tags.length} exceeds maximum of ${maxTags}`));
+			}
+		}
+
+		/**
 		 * Build a JSON response with assertion.
 		 */
 		function jsonResponse<T>(response: T, assertionHandler: (input: unknown) => T): { output: string } {
@@ -572,21 +594,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					return({ path: objectPath, visibility, tags: rawTags });
 				});
 
-				// Validate tags
-				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
-				for (const tag of rawTags) {
-					if (tag.length > maxTagLength) {
-						throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
-					}
-					// Reset lastIndex in case the pattern has the global or sticky flag
-					tagPattern.lastIndex = 0;
-					if (!tagPattern.test(tag)) {
-						throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
-					}
-				}
-				if (rawTags.length > maxTags) {
-					throw(new Errors.InvalidTag(`Too many tags: ${rawTags.length} exceeds maximum of ${maxTags}`));
-				}
+				validateTags(rawTags);
 				const tags = rawTags;
 
 				// Validate path format, metadata, and ownership
@@ -614,24 +622,34 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 
 				const needsValidation = requiresValidation(objectPath, validators);
+				const needsContainerValidation = !!policy.validateContainer;
 				const needsAnchorDecryption = needsValidation || visibility === 'public';
-				if (needsAnchorDecryption) {
+				if (needsContainerValidation || needsAnchorDecryption) {
 					try {
 						const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
-						const plaintext = await container.getPlaintext();
 
-						if (needsValidation) {
-							// Extract content and mimeType from encrypted payload
-							const { content, mimeType } = parseContainerPayload(plaintext);
-							const matchingValidators = findMatchingValidators(objectPath, validators);
-							for (const validator of matchingValidators) {
-								const result = await validator.validate(objectPath, content, mimeType);
-								if (!result.valid) {
-									throw(new Errors.ValidationFailed(result.error));
+						if (policy.validateContainer) {
+							policy.validateContainer(parsed, container, { owner, tags, visibility });
+						}
+
+						if (needsAnchorDecryption) {
+							const plaintext = await container.getPlaintext();
+							if (needsValidation) {
+								// Extract content and mimeType from encrypted payload
+								const { content, mimeType } = parseContainerPayload(plaintext);
+								const matchingValidators = findMatchingValidators(objectPath, validators);
+								for (const validator of matchingValidators) {
+									const result = await validator.validate(objectPath, content, mimeType);
+									if (!result.valid) {
+										throw(new Errors.ValidationFailed(result.error));
+									}
 								}
 							}
 						}
 					} catch (e) {
+						if (Errors.InvalidMetadata.isInstance(e)) {
+							throw(e);
+						}
 						if (Errors.ValidationFailed.isInstance(e)) {
 							throw(e);
 						}
@@ -748,6 +766,43 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			const result = await requireObject(objectPath);
 			return(jsonResponse({ ok: true, object: result.metadata }, assertKeetaStorageAnchorPutResponse));
+		};
+
+		// PUT /api/metadata/* - Update object metadata without re-uploading data
+		routes['PUT /api/metadata/**'] = async function(params, postData) {
+			const objectPath = extractObjectPath(params);
+			const request = assertKeetaStorageAnchorUpdateMetadataRequest(postData);
+
+			const signable = getKeetaStorageAnchorUpdateMetadataRequestSigningData({
+				path: objectPath,
+				visibility: request.visibility,
+				tags: request.tags
+			});
+			const account = await verifyBodyAuth(request, function() { return(signable); });
+
+			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'updateMetadata');
+
+			validateTags(request.tags);
+
+			const visibility = assertVisibility(request.visibility);
+			const tags = request.tags;
+
+			// Confirm object exists and preserve existing owner
+			const existing = await requireObject(objectPath);
+			if (policy.validateMetadata) {
+				policy.validateMetadata(parsed, { owner: existing.metadata.owner, tags, visibility });
+			}
+
+			if (!backend.updateMetadata) {
+				throw(new Errors.OperationNotSupported('updateMetadata'));
+			}
+
+			const updated = await backend.updateMetadata(objectPath, { tags, visibility });
+			if (!updated) {
+				throw(new Errors.DocumentNotFound());
+			}
+
+			return(jsonResponse({ ok: true, object: updated }, assertKeetaStorageAnchorPutResponse));
 		};
 
 		// POST /api/search - Search for objects
@@ -929,6 +984,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			get: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			delete: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			metadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
+			updateMetadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
 			search: { url: (new URL('/api/search', this.url)).toString(), ...authRequired },
 			public: (new URL('/api/public', this.url)).toString(),
 			quota: { url: (new URL('/api/quota', this.url)).toString(), ...authRequired }
