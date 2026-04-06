@@ -1,4 +1,4 @@
-import { test, expect, describe } from 'vitest';
+import { test, expect, describe, assert } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
@@ -6,8 +6,10 @@ import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
+import { parseContainerPayload } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 import { testPathPolicy } from './test-utils.js';
+import { EncryptedContainer } from '../../lib/encrypted-container.js';
 
 // #region Test Harness
 
@@ -184,6 +186,32 @@ describe('Storage Client - Private Object CRUD', function() {
 			// Verify gone
 			const after = await provider.get({ path, account });
 			expect(after).toBeNull();
+		}));
+	});
+
+	test('put with additionalPrincipals allows recipient to decrypt', function() {
+		return(withClient(randomSeed(), async function({ provider, account, backend, makePath }) {
+			const recipientAccount = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const testData = Buffer.from('shared secret');
+			const path = makePath('shared.txt');
+
+			await provider.put({
+				path,
+				data: testData,
+				mimeType: 'text/plain',
+				visibility: 'private',
+				account,
+				additionalPrincipals: [recipientAccount]
+			});
+
+			const rawEntry = await backend.get(path);
+			assert(rawEntry);
+
+			const container = EncryptedContainer.fromEncryptedBuffer(rawEntry.data, [recipientAccount]);
+			const plaintext = await container.getPlaintext();
+			const { mimeType, content } = parseContainerPayload(plaintext);
+			expect(content.toString()).toBe('shared secret');
+			expect(mimeType).toBe('text/plain');
 		}));
 	});
 });
