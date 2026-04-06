@@ -1,6 +1,6 @@
 import type { AssetTransferInstructions, RecipientResolved, KeetaNetAccount, Rail } from '../../asset-movement/common.js';
 import type { AssetLocationLike, PickChainLocation } from '../../asset-movement/lib/location.js';
-import type { KeetaStorageAnchorSession } from '../client.js';
+import type { KeetaStorageAnchorSession, StorageSubClientConfig } from '../client.js';
 import type { Logger } from '../../../lib/log/index.js';
 import type { StorageObjectMetadata } from '../common.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
@@ -182,9 +182,9 @@ export class StorageContactsClient implements ContactsClient {
 	readonly #session: KeetaStorageAnchorSession;
 	readonly #logger?: Logger | undefined;
 
-	constructor(session: KeetaStorageAnchorSession, logger?: Logger) {
-		this.#session = session;
-		this.#logger = logger;
+	constructor(config: StorageSubClientConfig) {
+		this.#session = config.session;
+		this.#logger = config.logger;
 	}
 
 	deriveId(address: ContactAddress): string {

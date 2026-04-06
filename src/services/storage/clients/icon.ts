@@ -1,4 +1,4 @@
-import type { KeetaStorageAnchorSession } from '../client.js';
+import type { KeetaStorageAnchorSession, StorageSubClientConfig } from '../client.js';
 import type { Logger } from '../../../lib/log/index.js';
 import type { Buffer } from '../../../lib/utils/buffer.js';
 import { Errors } from '../common.js';
@@ -40,9 +40,9 @@ export class StorageIconsClient implements IconsClient {
 	readonly #session: KeetaStorageAnchorSession;
 	readonly #logger?: Logger | undefined;
 
-	constructor(session: KeetaStorageAnchorSession, logger?: Logger) {
-		this.#session = session;
-		this.#logger = logger;
+	constructor(config: StorageSubClientConfig) {
+		this.#session = config.session;
+		this.#logger = config.logger;
 	}
 
 	async set(icon: IconData): Promise<void> {
