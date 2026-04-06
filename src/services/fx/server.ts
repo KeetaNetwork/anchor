@@ -373,10 +373,12 @@ function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1
 		};
 	};
 
+	const account = request.account.publicKeyString.get();
+	const block = Buffer.from(request.block.toBytes()).toString('base64');
 	const retval: KeetaFXAnchorQueueStage1RequestJSON = {
 		version: 1,
-		account: request.account.publicKeyString.get(),
-		block: Buffer.from(request.block.toBytes()).toString('base64'),
+		account,
+		block,
 		request: request.request,
 		expected: expected
 	};
