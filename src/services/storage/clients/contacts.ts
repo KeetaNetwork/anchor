@@ -218,12 +218,12 @@ export class StorageContactsClient implements ContactsClient {
 		rail?: Rail | undefined;
 	}): Promise<Contact> {
 		const id = this.deriveId(options.address);
-		const contact: Contact = {
+		const contact: Contact = assertContact({
 			id,
 			label: options.label,
 			address: options.address,
 			...(options.rail !== undefined ? { rail: options.rail } : {})
-		};
+		});
 
 		await this.#session.put(id, this.#serialize(contact), {
 			mimeType: MIME_TYPE,
@@ -260,12 +260,12 @@ export class StorageContactsClient implements ContactsClient {
 		const newAddress = options.address ?? existing.address;
 		const newId = this.deriveId(newAddress);
 
-		const updated: Contact = {
+		const updated: Contact = assertContact({
 			id: newId,
 			label: options.label ?? existing.label,
 			address: newAddress,
 			...(existing.rail !== undefined ? { rail: existing.rail } : {})
-		};
+		});
 
 		await this.#session.put(newId, this.#serialize(updated), {
 			mimeType: MIME_TYPE,
@@ -300,12 +300,15 @@ export class StorageContactsClient implements ContactsClient {
 		}
 
 		const searchResult = await this.#session.search(criteria);
-
 		const contacts: ContactWithMetadata[] = [];
 		for (const metadata of searchResult.results) {
 			const result = await this.#session.get(metadata.path);
 			if (result) {
-				contacts.push(this.#deserialize(result.data, metadata));
+				try {
+					contacts.push(this.#deserialize(result.data, metadata));
+				} catch {
+					// corrupt/non-parseable contact -- skip
+				}
 			}
 		}
 
