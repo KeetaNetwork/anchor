@@ -4,14 +4,17 @@ import type { Contact, ContactAddress, ContactWithMetadata } from './contacts.js
 import type { Rail } from '../../asset-movement/common.js';
 import type { Account } from '../test-utils.js';
 import type KeetaStorageAnchorClient from '../client.js';
+import type { KeetaStorageAnchorProvider } from '../client.js';
 import { StorageContactsClient } from './contacts.js';
 import { Errors } from '../common.js';
+import { Buffer } from '../../../lib/utils/buffer.js';
 import { randomSeed, withStorageProvider } from '../test-utils.js';
 
 // #region Test Harness
 
 interface ContactsTestContext {
 	contactsClient: StorageContactsClient;
+	provider: KeetaStorageAnchorProvider;
 	account: Account;
 	storageClient: KeetaStorageAnchorClient;
 }
@@ -23,7 +26,7 @@ async function withContacts(
 	await withStorageProvider(seed, async function({ provider, account, storageClient }) {
 		const pubkey = account.publicKeyString.get();
 		const contactsClient = provider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
-		await testFunction({ contactsClient, account, storageClient });
+		await testFunction({ contactsClient, provider, account, storageClient });
 	});
 }
 
@@ -135,6 +138,18 @@ const updateCases: {
 	}
 ];
 
+const invalidCreateInputs: { name: string; label: unknown; address: unknown }[] = [
+	{ name: 'non-string recipient', label: 'Bad', address: { recipient: 12345 }},
+	{ name: 'missing recipient', label: 'Bad', address: {}},
+	{ name: 'non-string label', label: 99, address: keetaAddress }
+];
+
+const corruptPayloads: { name: string; data: string }[] = [
+	{ name: 'invalid JSON', data: 'not valid json {{{' },
+	{ name: 'wrong schema', data: JSON.stringify({ wrong: 'shape' }) },
+	{ name: 'empty object', data: JSON.stringify({}) }
+];
+
 // #endregion
 
 // #region Tests
@@ -150,6 +165,15 @@ describe('Contacts Client - CRUD per address type', function() {
 
 			const retrieved = await contactsClient.get(created.id);
 			expect(retrieved).toEqual(created);
+		}));
+	});
+
+	test.each(invalidCreateInputs)('create rejects invalid input: $name', function({ label, address }) {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			await expect(contactsClient.create({
+				label: label as string, // eslint-disable-line @typescript-eslint/consistent-type-assertions
+				address: address as ContactAddress // eslint-disable-line @typescript-eslint/consistent-type-assertions
+			})).rejects.toThrow();
 		}));
 	});
 });
@@ -233,6 +257,19 @@ describe('Contacts Client - List', function() {
 			for (const contact of listed) {
 				expect(contact.createdAt).toBeTypeOf('string');
 			}
+		}));
+	});
+
+	test.each(corruptPayloads)('list skips corrupt entry: $name', function({ data }) {
+		return(withContacts(randomSeed(), async function({ contactsClient, provider, account }) {
+			const created = await contactsClient.create({ label: 'Valid', address: keetaAddress });
+			const pubkey = account.publicKeyString.get();
+			const rawSession = provider.beginSession({ account, workingDirectory: `/user/${pubkey}/contacts/` });
+			await rawSession.put('corrupt-entry', Buffer.from(data), { mimeType: 'application/json' });
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(1);
+			expect(listed[0]?.id).toBe(created.id);
 		}));
 	});
 
