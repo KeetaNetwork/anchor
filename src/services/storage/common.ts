@@ -1303,14 +1303,6 @@ export interface MetadataPolicyContext extends PathPolicyContextBase {
 }
 
 /**
- * Context for search operations.
- */
-export interface SearchPolicyContext extends PathPolicyContextBase {
-	operation: 'search';
-	criteria: SearchCriteria;
-}
-
-/**
  * Discriminated union of all policy validation contexts.
  * Narrows on `operation` to access operation-specific fields.
  */
@@ -1319,8 +1311,7 @@ export type PathPolicyContext =
 	| UpdateMetadataPolicyContext
 	| GetPolicyContext
 	| DeletePolicyContext
-	| MetadataPolicyContext
-	| SearchPolicyContext;
+	| MetadataPolicyContext;
 
 /**
  * Generic interface for path policies.
