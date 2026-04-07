@@ -961,6 +961,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureInvalid('Signature verification failed'));
 			}
 
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'get', account: signerAccount });
+			}
+
 			const result = await requireObject(objectPath);
 			if (result.metadata.visibility !== 'public') {
 				throw(new Errors.AccessDenied('Object is not public'));
