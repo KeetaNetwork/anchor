@@ -1,6 +1,8 @@
 import { expect, test, describe } from 'vitest';
-import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount, StoragePutMetadata, StorageObjectVisibility } from './common.js';
+
+import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount, PathPolicyContext, StorageObjectVisibility } from './common.js';
 import type { KeetaAnchorStorageServerConfig } from './server.js';
+import type { TestParsedPath } from './test-utils.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
@@ -10,7 +12,6 @@ import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearch
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { TestPathPolicy, testPathPolicy, testMetadata } from './test-utils.js';
-import type { TestParsedPath } from './test-utils.js';
 
 // #region Test Harness
 
@@ -1015,7 +1016,7 @@ describe('Storage Server', function() {
 				expectedStatus: 400
 			},
 			{
-				name: 'enforces validateMetadata from path policy',
+				name: 'enforces validateContext from path policy',
 				createObject: true,
 				useAttacker: false,
 				relativePath: 'public/file.txt',
@@ -1054,14 +1055,17 @@ describe('Storage Server', function() {
 		});
 	});
 
-	describe('validateContainer Hook', function() {
+	describe('validateContext Hook', function() {
 		class PrincipalCheckPolicy extends TestPathPolicy {
-			validateContainer(parsed: TestParsedPath, container: EncryptedContainer, _ignoreMetadata: StoragePutMetadata): void {
-				const hasOwner = container.principals.some(function(p) {
-					return(p.publicKeyString.get() === parsed.owner);
-				});
-				if (!hasOwner) {
-					throw(new Errors.InvalidMetadata('Owner must be a principal'));
+			override validateContext(parsed: TestParsedPath, context: PathPolicyContext): void {
+				super.validateContext(parsed, context);
+				if (context.operation === 'put') {
+					const hasOwner = context.container.principals.some(function(p) {
+						return(p.publicKeyString.get() === parsed.owner);
+					});
+					if (!hasOwner) {
+						throw(new Errors.InvalidMetadata('Owner must be a principal'));
+					}
 				}
 			}
 		}

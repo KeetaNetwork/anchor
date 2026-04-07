@@ -1250,6 +1250,70 @@ export type FullStorageBackend = StorageBackend & SearchableStorage & QuotaManag
 // #region Path Policy
 
 /**
+ * Operations that can be performed on storage objects.
+ */
+export type StorageOperation = 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata';
+
+/**
+ * Shared fields available to all policy context variants.
+ */
+export interface PathPolicyContextBase {
+	account: KeetaNetAccount;
+}
+
+/**
+ * Context for PUT operations.
+ * Contains the metadata being written and the encrypted container.
+ */
+export interface PutPolicyContext extends PathPolicyContextBase {
+	operation: 'put';
+	metadata: StoragePutMetadata;
+	container: EncryptedContainer;
+}
+
+/**
+ * Context for metadata update operations.
+ * Contains the new metadata values and the current object metadata before mutation.
+ */
+export interface UpdateMetadataPolicyContext extends PathPolicyContextBase {
+	operation: 'updateMetadata';
+	metadata: StoragePutMetadata;
+	current: StorageObjectMetadata;
+}
+
+/**
+ * Context for GET operations.
+ */
+export interface GetPolicyContext extends PathPolicyContextBase {
+	operation: 'get';
+}
+
+/**
+ * Context for DELETE operations.
+ */
+export interface DeletePolicyContext extends PathPolicyContextBase {
+	operation: 'delete';
+}
+
+/**
+ * Context for metadata read operations.
+ */
+export interface MetadataPolicyContext extends PathPolicyContextBase {
+	operation: 'metadata';
+}
+
+/**
+ * Discriminated union of all policy validation contexts.
+ * Narrows on `operation` to access operation-specific fields.
+ */
+export type PathPolicyContext =
+	| PutPolicyContext
+	| UpdateMetadataPolicyContext
+	| GetPolicyContext
+	| DeletePolicyContext
+	| MetadataPolicyContext;
+
+/**
  * Generic interface for path policies.
  * Each implementation defines its own parsed type and access control logic.
  * Storage Anchors are free to implement whatever pathname structure they wish.
@@ -1276,7 +1340,7 @@ export interface PathPolicy<TPathInfo> {
 	 * Check if the account has access to perform the operation on the parsed path.
 	 * @returns true if access is allowed, false otherwise
 	 */
-	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata'): boolean;
+	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: StorageOperation): boolean;
 
 	/**
 	 * Get the account authorized to sign pre-signed URLs for this path.
@@ -1287,26 +1351,13 @@ export interface PathPolicy<TPathInfo> {
 	getAuthorizedSigner(parsed: TPathInfo): KeetaNetAccount | null;
 
 	/**
-	 * Validate metadata for a path.
-	 * Called during PUT and metadata update operations.
-	 * @param parsed - The parsed path info
-	 * @param metadata - The metadata to validate
-	 * @throws Errors.InvalidMetadata if metadata violates path constraints
-	 */
-	validateMetadata?(parsed: TPathInfo, metadata: StoragePutMetadata): void;
-
-	/**
-	 * Validate the encrypted container during PUT.
-	 * Called after the container is parsed from the raw buffer but before decryption.
-	 * The container's principals getter returns all recipient public keys from the
-	 * ASN.1 header without requiring decryption.
+	 * Validate the request context for a path.
 	 *
 	 * @param parsed - The parsed path info
-	 * @param container - The encrypted container parsed from the uploaded data
-	 * @param metadata - The metadata associated with the upload
-	 * @throws Errors.InvalidMetadata if the container violates policy constraints
+	 * @param context - The operation-specific validation context
+	 * @throws Errors.InvalidMetadata if the context violates policy constraints
 	 */
-	validateContainer?(parsed: TPathInfo, container: EncryptedContainer, metadata: StoragePutMetadata): void;
+	validateContext?(parsed: TPathInfo, context: PathPolicyContext): void;
 }
 
 // #endregion
