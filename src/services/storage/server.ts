@@ -244,13 +244,16 @@ async function authorizeURLAccess<T>(
 	buildRequest: (path: string, accountPubKey: string) => T
 ): Promise<{ account: Account; objectPath: string; policy: PathPolicy<unknown>; parsed: unknown }> {
 	const objectPath = extractObjectPath(params);
-	parsePath(pathPolicies, objectPath);
+	const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
 	const account = await verifyURLAuth(url, getSigningData, function(pubKey) {
 		return(buildRequest(objectPath, pubKey));
 	});
 
-	const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, operation);
+	if (!policy.checkAccess(account, parsed, operation)) {
+		throw(new Errors.AccessDenied('Can only access your own namespace'));
+	}
+
 	return({ account, objectPath, policy, parsed });
 }
 
