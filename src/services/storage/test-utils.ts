@@ -1,5 +1,6 @@
 import type {
 	PathPolicy,
+	PathPolicyContext,
 	FullStorageBackend,
 	StorageObjectMetadata,
 	StoragePutMetadata,
@@ -87,10 +88,11 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(KeetaNet.lib.Account.fromPublicKeyString(parsed.owner).assertAccount());
 	}
 
-	validateMetadata(parsed: TestParsedPath, metadata: StoragePutMetadata): void {
-		// Require public visibility for paths under public/
-		if (parsed.relativePath.startsWith('public/') && metadata.visibility !== 'public') {
-			throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+	validateContext(parsed: TestParsedPath, context: PathPolicyContext): void {
+		if (context.operation === 'put' || context.operation === 'updateMetadata') {
+			if (parsed.relativePath.startsWith('public/') && context.metadata.visibility !== 'public') {
+				throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+			}
 		}
 	}
 
@@ -125,6 +127,25 @@ export function testMetadata(
 		owner,
 		tags: [],
 		visibility: 'private',
+		...overrides
+	});
+}
+
+/**
+ * Create test object metadata with sensible defaults.
+ */
+export function testObjectMetadata(
+	path: string,
+	owner: string,
+	overrides?: Partial<StorageObjectMetadata>
+): StorageObjectMetadata {
+	return({
+		path,
+		owner,
+		tags: [],
+		visibility: 'private',
+		size: 0,
+		createdAt: new Date().toISOString(),
 		...overrides
 	});
 }

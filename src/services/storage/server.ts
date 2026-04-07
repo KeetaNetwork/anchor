@@ -13,6 +13,8 @@ import type {
 	KeetaStorageAnchorQuotaResponse,
 	FullStorageBackend,
 	QuotaConfig,
+	QuotaLimits,
+	StorageOperation,
 	StorageObjectVisibility,
 	StorageObjectMetadata,
 	PathPolicy,
@@ -78,7 +80,7 @@ function assertPathAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	account: Account,
 	path: string,
-	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata'
+	operation: StorageOperation
 ): { policy: PathPolicy<unknown>; parsed: unknown } {
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
@@ -237,10 +239,10 @@ async function authorizeURLAccess<T>(
 	pathPolicies: PathPolicy<unknown>[],
 	params: Map<string, string>,
 	url: URL | string,
-	operation: 'get' | 'put' | 'delete' | 'metadata',
+	operation: StorageOperation,
 	getSigningData: (req: T) => Signable,
 	buildRequest: (path: string, accountPubKey: string) => T
-): Promise<{ account: Account; objectPath: string }> {
+): Promise<{ account: Account; objectPath: string; policy: PathPolicy<unknown>; parsed: unknown }> {
 	const objectPath = extractObjectPath(params);
 	parsePath(pathPolicies, objectPath);
 
@@ -248,9 +250,8 @@ async function authorizeURLAccess<T>(
 		return(buildRequest(objectPath, pubKey));
 	});
 
-	assertPathAccess(pathPolicies, account, objectPath, operation);
-
-	return({ account, objectPath });
+	const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, operation);
+	return({ account, objectPath, policy, parsed });
 }
 
 // #endregion
@@ -600,16 +601,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				// Validate path format, metadata, and ownership
 				const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
 				const owner = account.publicKeyString.get();
-				if (policy.validateMetadata) {
-					policy.validateMetadata(parsed, { owner, tags, visibility });
-				}
 
 				// Resolve per-user quota limits, falling back to global config
-				const userLimits = backend.getQuotaLimits
-					? await backend.getQuotaLimits(owner)
-					: null;
-				const effectiveLimits = userLimits ?? quotas;
+				let userLimits: QuotaLimits | null = null;
+				if (backend.getQuotaLimits) {
+					userLimits = await backend.getQuotaLimits(owner);
+				}
 
+				const effectiveLimits = userLimits ?? quotas;
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
 				const objectSize = data.byteLength;
@@ -622,14 +621,14 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 
 				const needsValidation = requiresValidation(objectPath, validators);
-				const needsContainerValidation = !!policy.validateContainer;
+				const needsContextValidation = !!policy.validateContext;
 				const needsAnchorDecryption = needsValidation || visibility === 'public';
-				if (needsContainerValidation || needsAnchorDecryption) {
+				if (needsContextValidation || needsAnchorDecryption) {
 					try {
 						const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
 
-						if (policy.validateContainer) {
-							policy.validateContainer(parsed, container, { owner, tags, visibility });
+						if (policy.validateContext) {
+							policy.validateContext(parsed, { operation: 'put', account, metadata: { owner, tags, visibility }, container });
 						}
 
 						if (needsAnchorDecryption) {
@@ -705,7 +704,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/object/* - Retrieve an object
 		routes['GET /api/object/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
@@ -715,6 +714,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
 				}
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'get', account });
+			}
 
 			const headers: { [key: string]: string } = {};
 			if (authenticatedCorsOrigin) {
@@ -731,7 +734,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// DELETE /api/object/* - Delete an object
 		routes['DELETE /api/object/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
@@ -741,6 +744,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					return({ path, account: pubKey });
 				}
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'delete', account });
+			}
 
 			const deleted = await backend.delete(objectPath);
 			const response: KeetaStorageAnchorDeleteResponse = {
@@ -753,7 +760,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/metadata/* - Get object metadata
 		routes['GET /api/metadata/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
@@ -763,6 +770,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
 				}
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'metadata', account });
+			}
 
 			const result = await requireObject(objectPath);
 			return(jsonResponse({ ok: true, object: result.metadata }, assertKeetaStorageAnchorPutResponse));
@@ -789,8 +800,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			// Confirm object exists and preserve existing owner
 			const existing = await requireObject(objectPath);
-			if (policy.validateMetadata) {
-				policy.validateMetadata(parsed, { owner: existing.metadata.owner, tags, visibility });
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'updateMetadata', account, metadata: { owner: existing.metadata.owner, tags, visibility }, current: existing.metadata });
 			}
 
 			if (!backend.updateMetadata) {
@@ -857,11 +868,12 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 			// Get current usage from backend and compute remaining using per-user or global limits
 			const owner = account.publicKeyString.get();
-			const userLimits = backend.getQuotaLimits
-				? await backend.getQuotaLimits(owner)
-				: null;
-			const effectiveLimits = userLimits ?? quotas;
+			let userLimits: QuotaLimits | null = null;
+			if (backend.getQuotaLimits) {
+				userLimits = await backend.getQuotaLimits(owner);
+			}
 
+			const effectiveLimits = userLimits ?? quotas;
 			const backendStatus = await backend.getQuotaStatus(owner);
 
 			// Compute remaining from config limits
