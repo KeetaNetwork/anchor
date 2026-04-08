@@ -539,22 +539,21 @@ export class AnchorGraph {
 
 		const nodes = await this.computeGraphNodes();
 
-		// Build forward adjacency same logic as findPaths
-		const nodesWithNext: { node: GraphNodeLike; next: number[] }[] = nodes.map(node => ({ node, next: [] }));
-		for (let i = 0; i < nodesWithNext.length; i++) {
-			for (let j = 0; j < nodesWithNext.length; j++) {
-				const ni = nodesWithNext[i];
-				const nj = nodesWithNext[j];
-
+		// Build forward (next) and backward (prev) adjacency in a single pass.
+		const nodesWithAdj: { node: GraphNodeLike; next: number[]; prev: number[] }[] = nodes.map(node => ({ node, next: [], prev: [] }));
+		for (let i = 0; i < nodesWithAdj.length; i++) {
+			for (let j = 0; j < nodesWithAdj.length; j++) {
+				const ni = nodesWithAdj[i];
+				const nj = nodesWithAdj[j];
 				if (!ni || !nj) {
 					throw(new Error(`Invalid node index during adjacency construction: ${i} or ${j}`));
 				}
-
 				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
 					continue;
 				}
 				if (nodeSideSupports(ni.node.to, nj.node.from)) {
 					ni.next.push(j);
+					nj.prev.push(i);
 				}
 			}
 		}
@@ -576,101 +575,56 @@ export class AnchorGraph {
 		};
 
 		const reachable = new Set<string>();
-		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) =>
-			`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`;
+		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
+			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+		}
+
 		const markReachable = (side: GraphNodeLike['from' | 'to']) => reachable.add(assetLocationKey(side));
 
-		if (fromFilter !== undefined) {
-			const visitedGlobal = new Set<number>();
-			const visitForward = (nodeIdx: number, depth: number) => {
-				if (visitedGlobal.has(nodeIdx)) {
-					return;
-				}
-				const item = nodesWithNext[nodeIdx];
-				if (!item) {
-					throw(new Error(`Invalid node index during forward traversal: ${nodeIdx}`));
-				}
-
-				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
-					return;
-				}
-				visitedGlobal.add(nodeIdx);
-				markReachable(item.node.to);
-				if (maxStepCount === undefined || depth < maxStepCount) {
-					for (const nextIdx of item.next) {
-						visitForward(nextIdx, depth + 1);
-					}
-				}
-			};
-			for (let i = 0; i < nodesWithNext.length; i++) {
-				const toCheck = nodesWithNext[i];
-
-				if (!toCheck) {
-					throw(new Error(`Invalid node index during forward traversal: ${i}`));
-				}
-
-				if (sideMatchesFilter(toCheck.node.from, fromFilter)) {
-					visitForward(i, 1);
+		// Unified traversal: 'next'+'to' = forward, 'prev'+'from' = backward.
+		const visit = (visited: Set<number>, adjacency: 'next' | 'prev', markSide: 'from' | 'to', nodeIdx: number, depth: number) => {
+			if (visited.has(nodeIdx)) {
+				return;
+			}
+			const item = nodesWithAdj[nodeIdx];
+			if (!item) {
+				throw(new Error(`Invalid node index during traversal: ${nodeIdx}`));
+			}
+			if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+				return;
+			}
+			visited.add(nodeIdx);
+			markReachable(item.node[markSide]);
+			if (maxStepCount === undefined || depth < maxStepCount) {
+				for (const neighborIdx of item[adjacency]) {
+					visit(visited, adjacency, markSide, neighborIdx, depth + 1);
 				}
 			}
-		} else if (toFilter !== undefined) {
-			const prevOf: number[][] = nodes.map(() => []);
-			for (let i = 0; i < nodesWithNext.length; i++) {
-				const item = nodesWithNext[i];
-				if (!item) {
-					throw(new Error(`Invalid node index during reverse adjacency construction: ${i}`));
-				}
+		};
 
-				for (const nextIdx of item.next) {
-					const nextItem = prevOf[nextIdx];
-					if (!nextItem) {
-						throw(new Error(`Invalid node index during reverse adjacency construction: ${nextIdx}`));
-					}
-					nextItem.push(i);
-				}
+		const visited = new Set<number>();
+		for (let i = 0; i < nodesWithAdj.length; i++) {
+			const item = nodesWithAdj[i];
+			if (!item) {
+				throw(new Error(`Invalid node index: ${i}`));
 			}
-			const visitedGlobal = new Set<number>();
-			const visitBackward = (nodeIdx: number, depth: number) => {
-				if (visitedGlobal.has(nodeIdx)) {
-					return;
-				}
-				const item = nodesWithNext[nodeIdx];
 
-				if (!item) {
-					throw(new Error(`Invalid node index during backward traversal: ${nodeIdx}`));
-				}
-
-				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
-					return;
-				}
-				visitedGlobal.add(nodeIdx);
-				markReachable(item.node.from);
-				if (maxStepCount === undefined || depth < maxStepCount) {
-					const prevItem = prevOf[nodeIdx];
-					if (!prevItem) {
-						throw(new Error(`Invalid node index during backward traversal: ${nodeIdx}`));
+			if (fromFilter || toFilter) {
+				if (fromFilter) {
+					if (sideMatchesFilter(item.node.from, fromFilter)) {
+						visit(visited, 'next', 'to', i, 1);
 					}
-					for (const prevIdx of prevItem) {
-						visitBackward(prevIdx, depth + 1);
+				} else if (toFilter) {
+					if (sideMatchesFilter(item.node.to, toFilter)) {
+						visit(visited, 'prev', 'from', i, 1);
 					}
+				} else {
+					throw(new Error(`Invalid filter state: at least one of fromFilter or toFilter must be defined`));
 				}
-			};
-			for (let i = 0; i < nodesWithNext.length; i++) {
-				const item = nodesWithNext[i];
-
-				if (!item) {
-					throw(new Error(`Invalid node index during backward traversal: ${i}`));
-				}
-
-				if (sideMatchesFilter(item.node.to, toFilter)) {
-					visitBackward(i, 1);
-				}
-			}
-		} else {
-			for (const { node } of nodesWithNext) {
-				if (!onlyAllowFXLike || isFXLikeNode(node)) {
-					markReachable(node.from);
-					markReachable(node.to);
+			} else {
+				if (!onlyAllowFXLike || isFXLikeNode(item.node)) {
+					markReachable(item.node.from);
+					markReachable(item.node.to);
 				}
 			}
 		}
@@ -688,7 +642,7 @@ export class AnchorGraph {
 			return(resultObj);
 		};
 
-		for (const { node } of nodesWithNext) {
+		for (const { node } of nodesWithAdj) {
 			if (onlyAllowFXLike && !isFXLikeNode(node)) {
 				continue;
 			}
