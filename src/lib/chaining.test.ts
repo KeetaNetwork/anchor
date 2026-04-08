@@ -13,8 +13,7 @@ import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
 
-
-const DEBUG = true;
+const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
