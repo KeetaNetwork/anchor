@@ -247,12 +247,6 @@ type TestFXServerConfig = Omit<KeetaAnchorFXServerConfig, 'fx'> & {
 	client: KeetaNet.UserClient;
 };
 
-/**
- * FX server with per-call rate control.
- * Defaults to 0.88 forward / ~1.136 reverse; call setRate() or
- * setGetConversionRateAndFee() to change it. Call failNextExchange() to
- * make the exchange-phase call throw while still letting estimate/quote succeed.
- */
 class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	private readonly _rateRef: { fn: RateFn };
 	private readonly _giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
