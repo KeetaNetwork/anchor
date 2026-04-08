@@ -1,4 +1,4 @@
-import { test, expect, describe } from 'vitest';
+import { test, expect, describe, assert } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
@@ -6,8 +6,10 @@ import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
+import { parseContainerPayload } from './common.js';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 import { testPathPolicy } from './test-utils.js';
+import { EncryptedContainer } from '../../lib/encrypted-container.js';
 
 // #region Test Harness
 
@@ -186,6 +188,32 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(after).toBeNull();
 		}));
 	});
+
+	test('put with additionalPrincipals allows recipient to decrypt', function() {
+		return(withClient(randomSeed(), async function({ provider, account, backend, makePath }) {
+			const recipientAccount = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const testData = Buffer.from('shared secret');
+			const path = makePath('shared.txt');
+
+			await provider.put({
+				path,
+				data: testData,
+				mimeType: 'text/plain',
+				visibility: 'private',
+				account,
+				additionalPrincipals: [recipientAccount]
+			});
+
+			const rawEntry = await backend.get(path);
+			assert(rawEntry);
+
+			const container = EncryptedContainer.fromEncryptedBuffer(rawEntry.data, [recipientAccount]);
+			const plaintext = await container.getPlaintext();
+			const { mimeType, content } = parseContainerPayload(plaintext);
+			expect(content.toString()).toBe('shared secret');
+			expect(mimeType).toBe('text/plain');
+		}));
+	});
 });
 
 describe('Storage Client - Public Objects', function() {
@@ -241,6 +269,33 @@ describe('Storage Client - Public Objects', function() {
 			expect(response.status).toBe(200);
 			const responseText = await response.text();
 			expect(responseText).toBe('Publicly accessible');
+		}));
+	});
+});
+
+describe('Storage Client - Update Metadata', function() {
+	test('updateMetadata updates tags and visibility', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath, putText }) {
+			await putText('meta.txt', 'content', { tags: ['old'], visibility: 'private' });
+			const path = makePath('meta.txt');
+
+			const result = await provider.updateMetadata({ path, tags: ['new', 'updated'], visibility: 'private', account });
+			expect(result).not.toBeNull();
+			expect(result?.tags).toEqual(['new', 'updated']);
+			expect(result?.visibility).toBe('private');
+		}));
+	});
+
+	test('updateMetadata returns null for non-existent object', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
+			const result = await provider.updateMetadata({
+				path: makePath('missing.txt'),
+				tags: ['tag'],
+				visibility: 'private',
+				account
+			});
+
+			expect(result).toBeNull();
 		}));
 	});
 });
@@ -365,6 +420,33 @@ describe('Storage Client - Session API', function() {
 			const results = await session.search({ tags: ['searchable'] });
 			expect(results.results).toHaveLength(1);
 			expect(results.results[0]?.tags).toContain('searchable');
+		}));
+	});
+
+	test('session updateMetadata with relative path', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory });
+
+			await session.put('update-meta.txt', Buffer.from('data'), { mimeType: 'text/plain', tags: ['original'] });
+
+			const result = await session.updateMetadata('update-meta.txt', { tags: ['replaced'], visibility: 'private' });
+			expect(result).not.toBeNull();
+			expect(result?.tags).toEqual(['replaced']);
+			expect(result?.path).toBe(`${workingDirectory}update-meta.txt`);
+		}));
+	});
+
+	test('session updateMetadata uses default visibility', function() {
+		return(withClient(randomSeed(), async function({ provider, account }) {
+			const workingDirectory = testPathPolicy.getNamespacePrefix(account.publicKeyString.get());
+			const session = provider.beginSession({ account, workingDirectory, defaultVisibility: 'private' });
+
+			await session.put('vis-test.txt', Buffer.from('data'), { mimeType: 'text/plain' });
+
+			const result = await session.updateMetadata('vis-test.txt', { tags: ['tag'] });
+			expect(result).not.toBeNull();
+			expect(result?.visibility).toBe('private');
 		}));
 	});
 

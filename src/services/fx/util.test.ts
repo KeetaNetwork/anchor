@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import { parseFXCostToken } from './common.js';
 import { KeetaNet } from '../../client/index.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
@@ -263,4 +264,34 @@ test('assertExchangeBlockParameters', async function() {
 
 		expect(passed).toEqual(check.pass);
 	}
+});
+
+
+test('parseFXCostToken', function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const token = account.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN, undefined, 0);
+	const tokenPubKeyString = token.publicKeyString.get();
+
+	const checks: {
+		input: typeof token | string;
+		matchesToken: typeof token;
+	}[] = [
+		{
+			input: token,
+			matchesToken: token
+		},
+		{
+			input: tokenPubKeyString,
+			matchesToken: token
+		}
+	];
+
+	for (const check of checks) {
+		const result = parseFXCostToken(check.input);
+		expect(KeetaNet.lib.Account.isInstance(result)).toEqual(true);
+		expect(result.comparePublicKey(check.matchesToken)).toEqual(true);
+	}
+
+	expect(function() { parseFXCostToken('USD'); }).toThrow();
+	expect(function() { parseFXCostToken('evm:0x1234'); }).toThrow();
 });

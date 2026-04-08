@@ -28,7 +28,8 @@ import type {
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
-	KeetaPersistentForwardingAddressDetails
+	KeetaPersistentForwardingAddressDetails,
+	KeetaAssetMovementAnchorInitiateTransferResponse
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadata,
@@ -270,9 +271,9 @@ class KeetaAssetMovementAnchorBase {
 class KeetaAssetMovementTransfer {
 	private readonly provider: KeetaAssetMovementAnchorProvider;
 	private request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
-	private transfer:  { id: string, instructionChoices: AssetTransferInstructions[] }
+	private transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>;
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: { id: string, instructionChoices: AssetTransferInstructions[] }) {
+	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
@@ -451,8 +452,9 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			endpoint: 'initiateTransfer',
 			account: request.account,
 			serializeRequest(body) {
+				const { account, ...rest } = body;
 				return({
-					...body,
+					...rest,
 					value: String(body.value),
 					from: {
 						location: convertAssetLocationToString(body.from.location)
@@ -462,7 +464,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 						recipient: body.to.recipient
 					},
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
 				})
 			},
 			body: request,
@@ -472,8 +474,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
-		const anchorTransfer = new KeetaAssetMovementTransfer(this, request, { id: requestInformationJSON.id, instructionChoices: requestInformationJSON.instructionChoices });
-		return(anchorTransfer);
+		return(new KeetaAssetMovementTransfer(this, request, requestInformationJSON));
 	}
 
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
@@ -503,11 +504,12 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			endpoint: 'createPersistentForwardingTemplate',
 			account: request.account,
 			serializeRequest(body) {
+				const { account, ...rest }	= body;
 				return({
-					...body,
+					...rest,
 					location: convertAssetLocationToString(body.location),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
 				})
 			},
 			body: request,
@@ -571,7 +573,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body: request,
 			serializeRequest(body) {
 				return({
-					account: body.account?.assertAccount().publicKeyString.get(),
+					...(body.account ? { account: body.account.assertAccount().publicKeyString.get() } : {}),
 					asset: body.asset?.map(a => convertAssetSearchInputToCanonical(a)),
 					location: body.location?.map(l => convertAssetLocationToString(l))
 				});
@@ -747,7 +749,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				return({
 					account: body.account.assertAccount().publicKeyString.get(),
 					attributes: attributes,
-					tosAgreement: body.tosAgreement
+					...(body.tosAgreement ? { tosAgreement: body.tosAgreement } : {})
 				});
 			},
 			body: request,
@@ -819,8 +821,8 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		return(providers);
 	}
 
-	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		return(await this.#lookup(request));
+	async getProvidersForTransfer(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		return(await this.#lookup(request, shared));
 	}
 
 	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {

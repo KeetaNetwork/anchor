@@ -88,6 +88,7 @@ export default {
 		'promiseerror',
 		'Retryable',
 		'retval',
+		'satoshis',
 		'secp',
 		'SEPA',
 		'singleworker',
@@ -117,7 +118,8 @@ export default {
 		'VALUIZABLE',
 		'wrongpath',
 		'refetched',
-		'pipeable'
+		'pipeable',
+		'renderable'
 	],
 	flagWords: [
 		'recieve'
@@ -158,7 +160,28 @@ export default {
 				'Oldsmar',
 				'vitest'
 			]
-		}
+		},
+		{
+			filename: [ 'src/services/asset-movement/lib/data/**/*.ts', 'src/services/asset-movement/common.ts' ],
+			words: [
+				'interac',
+				'airtel',
+				'kash',
+				'finja',
+				'nagad',
+				'naya',
+				'sada',
+				'venmo',
+				'duit',
+				'nric'
+			]
+		},
+		{
+			filename: [ 'src/lib/chaining-graph.cli.ts' ],
+			words: [
+				'rankdir', 'fontname', 'darkorange', 'steelblue'
+			]
+		},
 	],
 	useGitignore: true
 };

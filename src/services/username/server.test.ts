@@ -111,7 +111,7 @@ test('username server enforces default validation rules', async () => {
 
 	const baseURL = new URL(server.url);
 
-	const invalidCharResponse = await fetch(new URL('/api/resolve/漢', baseURL));
+	const invalidCharResponse = await fetch(new URL('/api/resolve/\u6f22', baseURL));
 
 	expect(invalidCharResponse.status).toBe(400);
 	expect(await invalidCharResponse.json()).toMatchObject({

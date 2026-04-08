@@ -1,123 +1,75 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
-import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import * as CurrencyInfo from '@keetanetwork/currency-info';
-import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type * as CurrencyInfo from '@keetanetwork/currency-info';
+import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert, createAssertEquals, createIs } from 'typia';
 import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
+import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
+import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
+
+export * from './lib/data/addresses/types.generated.js';
 
 export * from './lib/location.js';
 
-type HexString = `0x${string}`;
+export type {
+	HexString,
+	KeetaNetAccount,
+	KeetaNetTokenPublicKeyString,
+	EVMAsset,
+	TronAsset,
+	SolanaAsset,
+	ChainAssetString,
+	MovableAssetSearchInput,
+	MovableAssetSearchCanonical,
+	MovableAsset,
+	CurrencySearchCanonical,
+	CurrencySearchInput,
+	TokenSearchInput,
+	TokenSearchCanonical
+} from '../../lib/asset.js';
 
-
-export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
-export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+export {
+	toEVMAsset,
+	parseEVMAsset,
+	isEVMAsset,
+	toTronAsset,
+	parseTronAsset,
+	isTronAsset,
+	toSolanaAsset,
+	parseSolanaAsset,
+	isSolanaAsset,
+	convertAssetSearchInputToCanonical,
+	isExternalChainAsset
+} from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
 
-type CurrencySearchCanonical = CurrencyInfo.ISOCurrencyCode | `$${string}`; /* XXX:TODO */
-type CurrencySearchInput = CurrencySearchCanonical | CurrencyInfo.Currency;
+type RailOrRails = Rail | Rail[];
 
-type TokenSearchInput = TokenAddress | TokenPublicKeyString;
-type TokenSearchCanonical = TokenPublicKeyString;
-
-export type EVMAsset = `evm:${HexString}`;
-export type TronAsset = `tron:${string}`;
-export type SolanaAsset = `solana:${string}`;
-export type ExternalChainAsset = EVMAsset | TronAsset | SolanaAsset;
-export type ChainAssetString = ExternalChainAsset | TokenPublicKeyString;
-export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
-export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
-export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | ChainAssetString;
-
-export function toEVMAsset(input: HexString): EVMAsset {
-	return(`evm:${input}`);
-}
-
-function isHexString(input: unknown): input is HexString {
-	if (typeof input === 'string' && input.startsWith('0x')) {
-		return(true);
-	}
-
-	return(false);
-}
-
-export function parseEVMAsset(input: EVMAsset): HexString {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'evm') {
-		throw(new Error('Invalid EVMAsset string'));
-	}
-
-	const value = parts[1];
-	if (!isHexString(value)) {
-		throw(new Error('Invalid hex string in EVMAsset'));
-	}
-
-	return(value);
-}
-
-export function isEVMAsset(input: unknown): input is EVMAsset {
-	return(typeof input === 'string' && input.startsWith('evm:0x'));
-}
-
-export function toTronAsset(input: string): TronAsset {
-	return(`tron:${input}`);
-}
-
-export function parseTronAsset(input: TronAsset): string {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'tron') {
-		throw(new Error('Invalid TronAsset string'));
-	}
-
-	const value = parts[1];
-	if (!value || typeof value !== 'string' || value.length === 0) {
-		throw(new Error('Invalid hex string in TronAsset'));
-	}
-
-	return(value);
-}
-
-export function isTronAsset(input: unknown): input is TronAsset {
-	return(typeof input === 'string' && input.startsWith('tron:'));
-}
-
-export function toSolanaAsset(input: string): SolanaAsset {
-	return(`solana:${input}`);
-}
-
-export function parseSolanaAsset(input: SolanaAsset): string {
-	const parts = input.split(':');
-	if (parts.length !== 2 || parts[0] !== 'solana') {
-		throw(new Error('Invalid SolanaAsset string'));
-	}
-	const value = parts[1];
-	if (!value || typeof value !== 'string' || value.length === 0) {
-		throw(new Error('Invalid string in SolanaAsset'));
-	}
-	return(value);
-}
-
-export function isSolanaAsset(input: unknown): input is SolanaAsset {
-	return(typeof input === 'string' && input.startsWith('solana:'));
-}
-
-export function isExternalChainAsset(input: unknown): input is ExternalChainAsset {
-	return(isEVMAsset(input) || isTronAsset(input) || isSolanaAsset(input));
-}
+/**
+ * Search criteria for filtering asset movement rails when searching for supported rails for a given transfer.
+ * This can be either a single rail or an array of rails, and can be specified for inbound, outbound or common rails.
+ *
+ * If a single rail or array of rails is provided, it will be applied to both inbound and outbound rails.
+ * If separate inbound and outbound rails are provided, they will be applied to their respective directions.
+ *
+ * For both methods, this will look for providers that support at least one of the specified rails in the respective direction(s).
+ * For example, if { inbound: ['ACH', 'WIRE'] } is provided, it will match providers that support either ACH or WIRE inbound rails.
+ */
+export type AssetMovementRailSearchInput = RailOrRails | ({ inbound: RailOrRails; outbound?: RailOrRails } | { inbound?: RailOrRails; outbound: RailOrRails });
 
 export type ProviderSearchInput = {
 	asset?: MovableAsset | AssetPair;
 	from?: AssetLocationInput;
 	to?: AssetLocationInput;
-	rail?: Rail | Rail[];
+	rail?: AssetMovementRailSearchInput;
 }
 
 // A given asset should have a location and ID for the contract or public key for that asset
@@ -129,8 +81,8 @@ export interface Asset {
 	id: string;
 }
 
-type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'WIRE_RECEIVE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'CLABE_PUSH' | 'SEPA_PUSH';
-type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
+export type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'CARD_PULL' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH';
+export type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
 
 // Rails can be inbound, outbound or common (inbound and outbound)
@@ -169,6 +121,13 @@ export interface SupportedAssetsMetadata {
 	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
 }
+
+/**
+ * This is the type of content that can be rendered directly in a client application.
+ *
+ * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
+ */
+export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 export interface RailWithExtendedDetails {
 	rail: Rail;
@@ -214,6 +173,21 @@ export interface RailWithExtendedDetails {
 		 */
 		variableFeeBps?: number;
 	}
+
+	/**
+	 * Supported operations for this rail
+	 */
+	supportedOperations?: {
+		/**
+		 * Whether this rail supports creating persistent forwarding addresses for (unmanaged) transfers
+		 */
+		createPersistentForwarding?: boolean;
+
+		/**
+		 * Whether this rail supports initiating (managed) transfers
+		 */
+		initiateTransfer?: boolean;
+	}
 }
 
 export type RailOrRailWithExtendedDetails = Rail | RailWithExtendedDetails;
@@ -231,7 +205,15 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
-type SignableObjectInput = { [key: string | number | symbol]: SignableObjectInput } | SignableObjectInput[] | Signable[number] | undefined | null | boolean;
+type SignableObjectInput =
+	// PhysicalAddress/MonthYearDateInput/RecipientResolved should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
+	PhysicalAddress | MonthYearDateInput | RecipientResolved |
+	{ [key: string | number | symbol]: SignableObjectInput } |
+	SignableObjectInput[] |
+	Signable[number] |
+	undefined |
+	null |
+	boolean;
 
 /**
  * The maximum queue length for the commonToSignable function to prevent DoS attacks
@@ -286,25 +268,6 @@ function commonToSignable(item: SignableObjectInput): Signable {
 	return(result.map(item => item[1]));
 }
 
-export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {
-	if (input instanceof CurrencyInfo.Currency || CurrencyInfo.Currency.isCurrencyCode(input) || CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
-		if (CurrencyInfo.Currency.isCurrencyCode(input)) {
-			return(input);
-		} else if (CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
-			input = new CurrencyInfo.Currency(input);
-		}
-
-		return(input.code);
-	} else {
-		if (typeof input === 'string') {
-			return(input);
-		}
-
-		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
-		return(input.publicKeyString.get());
-	}
-}
-
 export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
 export type AssetOrPair = MovableAsset | AssetPair;
 
@@ -344,6 +307,10 @@ export type OperationNames = keyof Operations;
 
 export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
 
+/**
+ * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
+ */
+type AddressDepositMessage = string;
 
 type ConvertToExternalRequest<
 	Internal extends object,
@@ -376,7 +343,11 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	/**
 	 * The destination location and recipient for the asset transfer
 	 */
-	to: { location: AssetLocationLike; recipient: RecipientResolved; };
+	to: {
+		location: AssetLocationLike;
+		recipient: RecipientResolved;
+		depositMessage?: AddressDepositMessage;
+	};
 
 	/**
 	 * The amount of the asset to transfer, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -395,7 +366,7 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
 	from: { location: AssetLocationCanonical; };
-	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
+	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
@@ -520,17 +491,14 @@ export type AssetTransferInstructions = ({
 	 */
 	contractMethodArgs: string[];
 } | {
-	type: 'WIRE' | 'ACH' | 'SEPA_PUSH';
+	type: FiatRails;
 
 	/**
 	 * The resolved bank account address details to send funds to
 	 */
 	account: BankAccountAddressResolved;
 
-	/**
-	 * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
-	 */
-	depositMessage?: string;
+	depositMessage?: AddressDepositMessage;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -709,6 +677,13 @@ export type KeetaAssetMovementTransaction = {
 	} | null;
 
 	/**
+	 * Additional details about this rail that (optionally) can be rendered in the client application.
+	 *
+	 * Ex: If there is a proprietary block explorer for a chain involved in the transfer, this field could contain a URL to view the transaction on that explorer.
+	 */
+	additionalTransferDetails?: ClientRenderableContent;
+
+	/**
 	 * Timestamp for when the transaction was created
 	 */
 	createdAt: string;
@@ -727,107 +702,9 @@ export type KeetaAssetMovementAnchorGetTransferStatusResponse = ({
 	error: string;
 });
 
-type PhysicalAddress = {
-	line1: string;
-	line2?: string;
-	country: ISOCountryCode;
-	postalCode: string;
-	subdivision: string;
-	city: string;
-};
-
-type USBankAccountType = 'checking' | 'savings';
-
-export type BankAccountAddressResolved = {
-	type: 'bank-account';
-	accountAddress?: PhysicalAddress | string;
-	obfuscated?: false;
-
-	bankName?: string;
-
-	accountOwner: {
-		type: 'individual';
-		firstName: string;
-		lastName: string;
-	} | {
-		type: 'business';
-		businessName: string;
-	} | {
-		type: 'unknown';
-		beneficiaryName: string;
-	}
-} & ({
-	accountType: 'us';
-
-	accountNumber: string;
-	routingNumber: string;
-	accountTypeDetail: USBankAccountType;
-} | {
-	accountType: 'iban-swift';
-
-
-	country?: ISOCountryCode;
-
-	accountNumber?: string;
-	bic?: string;
-
-	iban?: string;
-
-	bankAddress?: PhysicalAddress;
-
-	swift?: {
-		category: string;
-		purposeOfFunds: string[];
-		businessDescription: string;
-	}
-} | {
-	accountType: 'clabe';
-
-	accountNumber: string;
-} | ({
-	accountType: 'pix';
-	document?: {
-		type?: 'cpf' | 'cnpj';
-		number: string;
-	}
-} & ({
-	brCode: string;
-} | {
-	pixKey: string;
-})));
-
-export type BankAccountAddressObfuscated = {
-	type: 'bank-account';
-	obfuscated: true;
-
-	accountOwner?: {
-		type?: 'individual' | 'business';
-		name?: string;
-		businessName?: string;
-	}
-
-	bankName?: string;
-
-	accountNumberEnding?: string;
-} & ({
-	accountType: 'us';
-
-	routingNumber: string;
-	accountTypeDetail?: USBankAccountType;
-
-} | {
-	accountType: 'iban-swift';
-	country?: ISOCountryCode;
-	bic?: string;
-} | {
-	accountType: 'clabe';
-} | {
-	accountType: 'pix';
-})
-
 type CryptoAddress = string;
-type AddressResolved = BankAccountAddressResolved | CryptoAddress;
-type AddressObfuscated = BankAccountAddressObfuscated | CryptoAddress;
+type AddressResolved = BankAccountAddressResolved | MobileWalletAddressResolved | CryptoAddress;
+type AddressObfuscated = BankAccountAddressObfuscated | MobileWalletAddressObfuscated | CryptoAddress;
 
 export type PersistentAddressTemplateData = {
 	id: string;
@@ -897,6 +774,7 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 export type KeetaPersistentForwardingAddressDetails = {
 	id?: string;
 	address: AddressObfuscated | AddressResolved;
+	depositMessage?: AddressDepositMessage;
 	asset?: AssetOrPair;
 	sourceLocation?: AssetLocationLike;
 	destinationLocation?: AssetLocationLike;
@@ -1280,9 +1158,96 @@ class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserEr
 	}
 }
 
+
+export interface KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
+	forAsset?: AssetOrPair | undefined;
+	forRail?: Rail | undefined;
+}
+
+export const assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties>();
+
+type KeetaAssetMovementAnchorOperationNotSupportedErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties;
+
+class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUserError implements KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
+	static override readonly name: string = 'KeetaAssetMovementAnchorOperationNotSupportedError';
+	private readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID = 'b613cd80-57ac-4be5-ad4a-bb8644d50de6';
+
+	readonly forAsset: AssetOrPair | undefined;
+	readonly forRail: Rail | undefined;
+
+	constructor(args: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, message?: string) {
+		super(message ?? `Operation not supported`);
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorOperationNotSupportedError.KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.forAsset = args.forAsset;
+		this.forRail = args.forRail;
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorOperationNotSupportedError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID', KeetaAssetMovementAnchorOperationNotSupportedError.KeetaAssetMovementAnchorOperationNotSupportedErrorObjectTypeID));
+	}
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { forAsset, forRail } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED',
+				data: { forAsset, forRail },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	toJSON(): KeetaAssetMovementAnchorOperationNotSupportedErrorJSON {
+		return({
+			...super.toJSON(),
+			forRail: this.forRail,
+			forAsset: this.forAsset ? convertAssetOrPairSearchInputToCanonical(this.forAsset) : undefined
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorOperationNotSupportedError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorOperationNotSupportedError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties(other.data);
+
+		const error = new this(
+			{
+				forAsset: parsed.forAsset,
+				forRail: parsed.forRail
+			},
+			message
+		);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
 	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
+	OperationNotSupported: typeof KeetaAssetMovementAnchorOperationNotSupportedError;
 } = {
 	/**
 	 * The user is required to share KYC details
@@ -1292,5 +1257,10 @@ export const Errors: {
 	/**
 	 * The user is required to complete additional KYC steps
 	 */
-	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError
+	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError,
+
+	/**
+	 * The requested operation is not supported
+	 */
+	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError
 };

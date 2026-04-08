@@ -35,10 +35,10 @@ function checkPackagePublished() {
 	npm_view_exit=$?
 
 	if [ $npm_view_exit -eq 0 ]; then
-		echo "✓ ${package_name}@${package_version} found in registry"
+		echo $'\u2713'" ${package_name}@${package_version} found in registry"
 		return 0
 	else
-		echo "✗ ${package_name}@${package_version} NOT found in registry"
+		echo $'\u2717'" ${package_name}@${package_version} NOT found in registry"
 		if echo "$npm_view_output" | grep -q "401\|403\|authentication"; then
 			echo "  Authentication error: Please check your .npmrc configuration"
 			echo "  You need a GitHub Personal Access Token with read:packages permission"

@@ -12,7 +12,7 @@ afterEach(async function() {
 	}));
 });
 
-type CreateNodeAndClientResponse = {
+export type CreateNodeAndClientResponse = {
 	node: InstanceType<typeof KeetaNetNode.lib.Node>;
 	client: InstanceType<typeof KeetaNetClient.Client>;
 	userClient?: InstanceType<typeof KeetaNetClient.UserClient>;

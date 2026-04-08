@@ -1,6 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
+import type { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
@@ -259,6 +260,21 @@ export type ContactsClientConfig = {
 };
 
 /**
+ * Configuration for an icons client.
+ * The icon is stored as a single file under the base path.
+ */
+export type IconsClientConfig = {
+	/**
+	 * The account to use for the icons client.
+	 */
+	account: KeetaNetAccount;
+	/**
+	 * The base path for the icons client (e.g., `/user/<pubkey>/`).
+	 */
+	basePath: string;
+};
+
+/**
  * Generic response type for storage operations.
  */
 export type StorageResponse<T> = ({ ok: true } & T) | { ok: false; error: string };
@@ -272,6 +288,32 @@ export function getKeetaStorageAnchorPutRequestSigningData(
 	const tags: string[] = input.tags ?? [];
 	const sortedTags = [...tags].sort();
 	return(['put', input.path, visibility, ...sortedTags]);
+}
+
+// #endregion
+
+// #region Update Metadata
+
+/**
+ * Server-side request to update object metadata.
+ * Path is derived from the URL, not the body.
+ */
+export type KeetaStorageAnchorUpdateMetadataRequest = {
+	account?: string;
+	signed?: HTTPSignedField;
+	tags: string[];
+	visibility: StorageObjectVisibility;
+};
+
+/**
+ * Build signing data for an update-metadata request.
+ * Tags are sorted with localeCompare for deterministic signatures.
+ */
+export function getKeetaStorageAnchorUpdateMetadataRequestSigningData(
+	input: { path: string; visibility: StorageObjectVisibility; tags: string[] }
+): Signable {
+	const sortedTags = [...input.tags].sort(function(a, b) { return(a.localeCompare(b)); });
+	return(['updateMetadata', input.path, input.visibility, ...sortedTags]);
 }
 
 // #endregion
@@ -1127,6 +1169,12 @@ export interface StorageBackend {
 	 * Delete an object by path
 	 */
 	delete(path: string): Promise<boolean>;
+
+	/**
+	 * Update metadata for an existing object without re-uploading data.
+	 * @returns Updated metadata, or null if the object does not exist
+	 */
+	updateMetadata?(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null>;
 }
 
 /**
@@ -1202,6 +1250,70 @@ export type FullStorageBackend = StorageBackend & SearchableStorage & QuotaManag
 // #region Path Policy
 
 /**
+ * Operations that can be performed on storage objects.
+ */
+export type StorageOperation = 'get' | 'put' | 'delete' | 'search' | 'metadata' | 'updateMetadata';
+
+/**
+ * Shared fields available to all policy context variants.
+ */
+export interface PathPolicyContextBase {
+	account: KeetaNetAccount;
+}
+
+/**
+ * Context for PUT operations.
+ * Contains the metadata being written and the encrypted container.
+ */
+export interface PutPolicyContext extends PathPolicyContextBase {
+	operation: 'put';
+	metadata: StoragePutMetadata;
+	container: EncryptedContainer;
+}
+
+/**
+ * Context for metadata update operations.
+ * Contains the new metadata values and the current object metadata before mutation.
+ */
+export interface UpdateMetadataPolicyContext extends PathPolicyContextBase {
+	operation: 'updateMetadata';
+	metadata: StoragePutMetadata;
+	current: StorageObjectMetadata;
+}
+
+/**
+ * Context for GET operations.
+ */
+export interface GetPolicyContext extends PathPolicyContextBase {
+	operation: 'get';
+}
+
+/**
+ * Context for DELETE operations.
+ */
+export interface DeletePolicyContext extends PathPolicyContextBase {
+	operation: 'delete';
+}
+
+/**
+ * Context for metadata read operations.
+ */
+export interface MetadataPolicyContext extends PathPolicyContextBase {
+	operation: 'metadata';
+}
+
+/**
+ * Discriminated union of all policy validation contexts.
+ * Narrows on `operation` to access operation-specific fields.
+ */
+export type PathPolicyContext =
+	| PutPolicyContext
+	| UpdateMetadataPolicyContext
+	| GetPolicyContext
+	| DeletePolicyContext
+	| MetadataPolicyContext;
+
+/**
  * Generic interface for path policies.
  * Each implementation defines its own parsed type and access control logic.
  * Storage Anchors are free to implement whatever pathname structure they wish.
@@ -1228,7 +1340,7 @@ export interface PathPolicy<TPathInfo> {
 	 * Check if the account has access to perform the operation on the parsed path.
 	 * @returns true if access is allowed, false otherwise
 	 */
-	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'): boolean;
+	checkAccess(account: KeetaNetAccount, parsed: TPathInfo, operation: StorageOperation): boolean;
 
 	/**
 	 * Get the account authorized to sign pre-signed URLs for this path.
@@ -1239,13 +1351,13 @@ export interface PathPolicy<TPathInfo> {
 	getAuthorizedSigner(parsed: TPathInfo): KeetaNetAccount | null;
 
 	/**
-	 * Validate metadata for a path.
-	 * Called during PUT and metadata update operations.
+	 * Validate the request context for a path.
+	 *
 	 * @param parsed - The parsed path info
-	 * @param metadata - The metadata to validate
-	 * @throws Errors.InvalidMetadata if metadata violates path constraints
+	 * @param context - The operation-specific validation context
+	 * @throws Errors.InvalidMetadata if the context violates policy constraints
 	 */
-	validateMetadata?(parsed: TPathInfo, metadata: StoragePutMetadata): void;
+	validateContext?(parsed: TPathInfo, context: PathPolicyContext): void;
 }
 
 // #endregion

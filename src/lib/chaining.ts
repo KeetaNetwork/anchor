@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
-import type { AssetLocationLike, AssetWithRails, ExternalChainAsset, MovableAssetSearchCanonical, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
-import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isExternalChainAsset } from "../services/asset-movement/common.js";
+import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatRails, MovableAssetSearchCanonical, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
+import { convertAssetLocationToString, convertAssetSearchInputToCanonical } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
@@ -9,16 +9,100 @@ import { Currency } from '@keetanetwork/currency-info';
 import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { isAssetLocationLike } from '../services/asset-movement/lib/location.generated.js';
 import type { ToValuizable } from './resolver.js';
-import { isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
+import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
+import { assertNever } from './utils/never.js';
+import KeetaFXAnchorClient from '../services/fx/client.js';
+import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
+import type { ExternalChainAsset } from './asset.js';
+import { isExternalChainAsset } from './asset.js';
+import type { Logger } from './log/index.js';
 
 
-interface AnchorChainingAssetAndLocation {
-	asset: AnchorChainingAsset;
+type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
+type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
+type AssetMovementTransfer = Awaited<ReturnType<AssetMovementProvider['initiateTransfer']>>;
+type FXExchange = Awaited<ReturnType<FXQuoteOrEstimate['createExchange']>>;
+
+interface ChainStepResolutionBase<Type extends 'fx' | 'assetMovement'> {
+	type: Type;
+	valueIn: bigint;
+	valueOut: bigint;
+	step: Extract<GraphNodeLike, { type: Type }>;
+}
+
+export interface ChainStepResolutionFX extends ChainStepResolutionBase<'fx'> {
+	type: 'fx';
+	result: FXQuoteOrEstimate;
+};
+
+type SendingToType = 'SELF' | 'NEXT_STEP' | 'FINAL_DESTINATION';;
+
+export interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'assetMovement'> {
+	usingInstruction: AssetTransferInstructions;
+	sendingTo: SendingToType;
+	transfer: AssetMovementTransfer;
+};
+
+export type ChainStepResolution = ChainStepResolutionFX | ChainStepResolutionAssetMovement;
+
+export type AnchorChainingPathComputeStepsResult = {
+	steps: ChainStepResolution[];
+	totalValueIn: bigint;
+	totalValueOut: bigint;
+};
+
+export type ExecutedStepFX = {
+	type: 'fx';
+	plan: ChainStepResolutionFX;
+	exchange: FXExchange;
+};
+
+export type ExecutedStepAssetMovement = {
+	type: 'assetMovement';
+	plan: ChainStepResolutionAssetMovement;
+};
+
+export type ExecutedStep = ExecutedStepFX | ExecutedStepAssetMovement;
+
+export type AnchorChainingPathExecuteResult = {
+	steps: ExecutedStep[];
+};
+
+export type AnchorChainingPathState =
+	| { status: 'idle' }
+	| { status: 'executing'; completedSteps: ExecutedStep[]; currentStepIndex: number }
+	| { status: 'completed'; result: AnchorChainingPathExecuteResult }
+	| { status: 'failed'; error: Error; completedSteps: ExecutedStep[]; failedAtStepIndex: number };
+
+interface StepNeededActionEventAssetMovement {
+	actionType: 'assetMovementUserExecutionRequired';
+	assetMovementTransfer: AssetMovementTransfer;
+}
+
+type StepNeededActionEvent = StepNeededActionEventAssetMovement;
+
+interface StepNeededActionEventPayload {
+	markCompleted: () => void;
+	markFailed: (error?: unknown) => void;
+
+	action: StepNeededActionEvent;
+}
+
+export type AnchorChainingPathEventMap = {
+	stateChange: [state: AnchorChainingPathState];
+	stepExecuted: [step: ExecutedStep, index: number];
+	completed: [result: AnchorChainingPathExecuteResult];
+	failed: [error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number];
+	stepNeedsAction: [StepNeededActionEventPayload];
+};
+
+interface AnchorChainingAssetAndLocation<AssetType extends AnchorChainingAsset = AnchorChainingAsset> {
+	asset: AssetType;
 	location: AssetLocationLike;
 	rail: Rail;
 }
 
-interface AnchorChainingSource extends AnchorChainingAssetAndLocation {
+interface AnchorChainingLocationWithValue extends AnchorChainingAssetAndLocation {
 	value: bigint;
 }
 
@@ -27,7 +111,7 @@ interface AnchorChainingDestination extends AnchorChainingAssetAndLocation {
 }
 
 interface AnchorChainingPathInput {
-	source: AnchorChainingSource;
+	source: AnchorChainingLocationWithValue;
 	destination: AnchorChainingDestination;
 }
 
@@ -36,20 +120,54 @@ export interface AnchorChainingConfig {
 	resolver?: Resolver;
 	signer?: InstanceType<typeof KeetaNetLib.Account>;
 	account?: InstanceType<typeof KeetaNetLib.Account>;
+	logger?: Logger;
 }
 
-interface GraphNodeLike {
-	provider: {
-		type: 'fx' | 'assetMovement';
-		id: string;
+interface BaseGraphNodeLike<Type extends 'fx' | 'assetMovement', AssetType extends AnchorChainingAsset> {
+	type: Type;
+	providerID: string;
+
+	from: AnchorChainingAssetAndLocation<AssetType>;
+	to: AnchorChainingAssetAndLocation<AssetType>;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface FXGraphNode extends BaseGraphNodeLike<'fx', Exclude<AnchorChainingAsset, ExternalChainAsset>> {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface AssetMovementGraphNode extends BaseGraphNodeLike<'assetMovement', AnchorChainingAsset> {}
+export type GraphNodeLike = FXGraphNode | AssetMovementGraphNode;
+
+export type AnchorChainingAsset = TokenAddress | ISOCurrencyCode | ExternalChainAsset;
+
+function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAsset): boolean {
+	if (typeof a === 'string' && typeof b === 'string') {
+		return(a === b);
+	} else if (KeetaNet.lib.Account.isInstance(a) && KeetaNet.lib.Account.isInstance(b)) {
+		return(a.publicKeyString.get() === b.publicKeyString.get());
+	} else {
+		return(false);
 	}
-
-	from: AnchorChainingAssetAndLocation;
-	to: AnchorChainingAssetAndLocation;
 }
 
+function nodeSideSupports(side: AnchorChainingAssetAndLocation, required: AnchorChainingAssetAndLocation): boolean {
+	return(side.rail === required.rail &&
+		convertAssetLocationToString(side.location) === convertAssetLocationToString(required.location) &&
+		isAnchorChainingAssetEqual(side.asset, required.asset));
+}
 
-type AnchorChainingAsset = TokenAddress | ISOCurrencyCode | ExternalChainAsset;
+/**
+ * Returns true for nodes that keep assets on Keeta: FX nodes, plus
+ * asset-movement nodes whose from and to share the same Keeta chain location
+ * (custodial FX anchors that don't actually move funds off-chain).
+ */
+function isFXLikeNode(node: GraphNodeLike): boolean {
+	if (node.type === 'fx') {
+		return(true);
+	}
+	const fromStr = convertAssetLocationToString(node.from.location);
+	const toStr = convertAssetLocationToString(node.to.location);
+	return(fromStr === toStr && fromStr.startsWith('chain:keeta:'));
+}
 
 interface AssetMovementResolvedRails {
 	common: Rail[];
@@ -57,13 +175,40 @@ interface AssetMovementResolvedRails {
 	outbound: Rail[];
 }
 
-class AnchorGraph {
+type AnchorChainingListAssetsSideFilter = {
+	location?: AssetLocationLike;
+	asset?: AnchorChainingAsset;
+	rail?: Rail;
+};
+
+type AnchorChainingListAssetsShared = {
+	maxStepCount?: number;
+	onlyAllowFXLike?: boolean;
+};
+
+export type AnchorChainingListAssetsFilter =
+	| ({ from: AnchorChainingListAssetsSideFilter; to?: never } & AnchorChainingListAssetsShared)
+	| ({ to: AnchorChainingListAssetsSideFilter; from?: never } & AnchorChainingListAssetsShared)
+	| ({ from?: never; to?: never } & AnchorChainingListAssetsShared);
+
+export interface AnchorChainingAssetInfo {
+	asset: AnchorChainingAsset;
+	location: AssetLocationLike;
+	rails: {
+		inbound: Rail[];
+		outbound: Rail[];
+	};
+}
+
+export class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
+	logger?: Logger | undefined;
 
-	constructor(args: { client: KeetaNet.UserClient, resolver: Resolver }) {
+	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger; }) {
 		this.resolver = args.resolver;
 		this.client = args.client;
+		this.logger = args.logger;
 	}
 
 	async #computeFXNodes() {
@@ -75,7 +220,7 @@ class AnchorGraph {
 
 		const networkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
 
-		const providerLookupResult = await Promise.all(Object.entries(fxServices).map(async ([ providerId, service ]) => {
+		const providerLookupResult = await Promise.all(Object.entries(fxServices).map(async ([ providerID, service ]) => {
 			const fromEntries = await service.from('array');
 
 			if (!fromEntries) {
@@ -113,7 +258,8 @@ class AnchorGraph {
 						}
 
 						pathNodesResult.push({
-							provider: { type: 'fx', id: providerId },
+							type: 'fx',
+							providerID: providerID,
 							from: { asset: fromAccount, location: networkLocation, rail: 'KEETA_SEND' },
 							to: { asset: toAccount, location: networkLocation, rail: 'KEETA_SEND' }
 						});
@@ -228,7 +374,7 @@ class AnchorGraph {
 			return([]);
 		}
 
-		const providerResults = await Promise.all(Object.entries(assetMovementServices).map(async ([ providerId, service ]) => {
+		const providerResults = await Promise.all(Object.entries(assetMovementServices).map(async ([ providerID, service ]) => {
 			const supportedAssetsEntries = await service.supportedAssets('array');
 
 			if (!supportedAssetsEntries) {
@@ -239,7 +385,7 @@ class AnchorGraph {
 				const parsedEntry = await assetEntry('object');
 
 				const pathsResolved = await parsedEntry.paths('array');
-				const allPaths = await Promise.all(pathsResolved.map(async (pathResolvedInput): Promise<GraphNodeLike[]> => {
+				const pathPromises = await Promise.allSettled(pathsResolved.map(async (pathResolvedInput): Promise<GraphNodeLike[]> => {
 					const pathResolved = await pathResolvedInput('object');
 
 					const pairResolved = await pathResolved.pair('array');
@@ -257,7 +403,8 @@ class AnchorGraph {
 						for (const inboundRail of [ ...(src.rails.common ?? []), ...(src.rails.inbound ?? []) ]) {
 							for (const outboundRail of [ ...(dest.rails.common ?? []), ...(dest.rails.outbound ?? []) ]) {
 								pathNodes.push({
-									provider: { type: 'assetMovement', id: providerId },
+									type: 'assetMovement',
+									providerID: providerID,
 									from: { asset: src.id, location: src.location, rail: inboundRail },
 									to: { asset: dest.id, location: dest.location, rail: outboundRail }
 								});
@@ -269,7 +416,17 @@ class AnchorGraph {
 					return(pathNodes);
 				}));
 
-				return(allPaths.flat());
+				const allPaths = [];
+
+				for (const resolved of pathPromises) {
+					if (resolved.status === 'rejected') {
+						this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `error fetching nodes for ... TODO`, resolved.reason);
+					} else {
+						allPaths.push(...resolved.value);
+					}
+				}
+
+				return(allPaths);
 			}));
 
 			return(pathNodesResult.flat());
@@ -278,7 +435,7 @@ class AnchorGraph {
 		return(providerResults.flat().filter((node): node is GraphNodeLike => !!node));
 	}
 
-	async #computeGraphNodes() {
+	async computeGraphNodes(): Promise<GraphNodeLike[]> {
 		const receivedNodes = await Promise.all([
 			this.#computeFXNodes(),
 			this.#computeAssetMovementNodes()
@@ -288,35 +445,9 @@ class AnchorGraph {
 	}
 
 	async findPaths(input: AnchorChainingPathInput): Promise<GraphNodeLike[][]> {
-		const graph = await this.#computeGraphNodes();
+		const graph = await this.computeGraphNodes();
 
-		function compareAsset(assetA: AnchorChainingAsset, assetB: AnchorChainingAsset): boolean {
-			if (typeof assetA === 'string' && typeof assetB === 'string') {
-				return(assetA === assetB);
-			} else if (KeetaNet.lib.Account.isInstance(assetA) && KeetaNet.lib.Account.isInstance(assetB)) {
-				return(assetA.publicKeyString.get() === assetB.publicKeyString.get());
-			} else {
-				return(false);
-			}
-		}
-
-		function nodeSideSupports(input: GraphNodeLike['from' | 'to'], required: AnchorChainingAssetAndLocation): boolean {
-			if (input.rail !== required.rail) {
-				return(false);
-			}
-
-			if (input.location !== required.location) {
-				return(false);
-			}
-
-			if (!(compareAsset(input.asset, required.asset))) {
-				return(false);
-			}
-
-			return(true);
-		}
-
-		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node, index) {
+		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
 			return({ node, next: [] });
 		});
 
@@ -328,8 +459,8 @@ class AnchorGraph {
 				}
 
 				// We can ignore chaining one fx anchor to itself
-				if (node.node.provider.type === 'fx') {
-					if (node.node.provider.type === nodeJ.node.provider.type && node.node.provider.id === nodeJ.node.provider.id) {
+				if (node.node.type === 'fx') {
+					if (node.node.type === nodeJ.node.type && node.node.providerID === nodeJ.node.providerID) {
 						continue;
 					}
 				}
@@ -392,32 +523,271 @@ class AnchorGraph {
 
 		return(paths);
 	}
+
+	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
+		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
+
+		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
+
+		// When onlyAllowFXLike, default omitted locations to the Keeta network location
+		const fromFilter = (onlyAllowFXLike && fromFilterInput !== undefined && fromFilterInput.location === undefined)
+			? { ...fromFilterInput, location: keetaNetworkLocation }
+			: fromFilterInput;
+		const toFilter = (onlyAllowFXLike && toFilterInput !== undefined && toFilterInput.location === undefined)
+			? { ...toFilterInput, location: keetaNetworkLocation }
+			: toFilterInput;
+
+		const nodes = await this.computeGraphNodes();
+
+		// Build forward adjacency same logic as findPaths
+		const nodesWithNext: { node: GraphNodeLike; next: number[] }[] = nodes.map(node => ({ node, next: [] }));
+		for (let i = 0; i < nodesWithNext.length; i++) {
+			for (let j = 0; j < nodesWithNext.length; j++) {
+				const ni = nodesWithNext[i];
+				const nj = nodesWithNext[j];
+
+				if (!ni || !nj) {
+					throw(new Error(`Invalid node index during adjacency construction: ${i} or ${j}`));
+				}
+
+				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
+					continue;
+				}
+				if (nodeSideSupports(ni.node.to, nj.node.from)) {
+					ni.next.push(j);
+				}
+			}
+		}
+
+		const sideMatchesFilter = (
+			side: GraphNodeLike['from' | 'to'],
+			f: AnchorChainingListAssetsSideFilter
+		): boolean => {
+			if (f.location !== undefined && convertAssetLocationToString(side.location) !== convertAssetLocationToString(f.location)) {
+				return(false);
+			}
+			if (f.asset !== undefined && !isAnchorChainingAssetEqual(side.asset, f.asset)) {
+				return(false);
+			}
+			if (f.rail !== undefined && side.rail !== f.rail) {
+				return(false);
+			}
+			return(true);
+		};
+
+		const reachable = new Set<string>();
+		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) =>
+			`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`;
+		const markReachable = (side: GraphNodeLike['from' | 'to']) => reachable.add(assetLocationKey(side));
+
+		if (fromFilter !== undefined) {
+			const visitedGlobal = new Set<number>();
+			const visitForward = (nodeIdx: number, depth: number) => {
+				if (visitedGlobal.has(nodeIdx)) {
+					return;
+				}
+				const item = nodesWithNext[nodeIdx];
+				if (!item) {
+					throw(new Error(`Invalid node index during forward traversal: ${nodeIdx}`));
+				}
+
+				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+					return;
+				}
+				visitedGlobal.add(nodeIdx);
+				markReachable(item.node.to);
+				if (maxStepCount === undefined || depth < maxStepCount) {
+					for (const nextIdx of item.next) {
+						visitForward(nextIdx, depth + 1);
+					}
+				}
+			};
+			for (let i = 0; i < nodesWithNext.length; i++) {
+				const toCheck = nodesWithNext[i];
+
+				if (!toCheck) {
+					throw(new Error(`Invalid node index during forward traversal: ${i}`));
+				}
+
+				if (sideMatchesFilter(toCheck.node.from, fromFilter)) {
+					visitForward(i, 1);
+				}
+			}
+		} else if (toFilter !== undefined) {
+			const prevOf: number[][] = nodes.map(() => []);
+			for (let i = 0; i < nodesWithNext.length; i++) {
+				const item = nodesWithNext[i];
+				if (!item) {
+					throw(new Error(`Invalid node index during reverse adjacency construction: ${i}`));
+				}
+
+				for (const nextIdx of item.next) {
+					const nextItem = prevOf[nextIdx];
+					if (!nextItem) {
+						throw(new Error(`Invalid node index during reverse adjacency construction: ${nextIdx}`));
+					}
+					nextItem.push(i);
+				}
+			}
+			const visitedGlobal = new Set<number>();
+			const visitBackward = (nodeIdx: number, depth: number) => {
+				if (visitedGlobal.has(nodeIdx)) {
+					return;
+				}
+				const item = nodesWithNext[nodeIdx];
+
+				if (!item) {
+					throw(new Error(`Invalid node index during backward traversal: ${nodeIdx}`));
+				}
+
+				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+					return;
+				}
+				visitedGlobal.add(nodeIdx);
+				markReachable(item.node.from);
+				if (maxStepCount === undefined || depth < maxStepCount) {
+					const prevItem = prevOf[nodeIdx];
+					if (!prevItem) {
+						throw(new Error(`Invalid node index during backward traversal: ${nodeIdx}`));
+					}
+					for (const prevIdx of prevItem) {
+						visitBackward(prevIdx, depth + 1);
+					}
+				}
+			};
+			for (let i = 0; i < nodesWithNext.length; i++) {
+				const item = nodesWithNext[i];
+
+				if (!item) {
+					throw(new Error(`Invalid node index during backward traversal: ${i}`));
+				}
+
+				if (sideMatchesFilter(item.node.to, toFilter)) {
+					visitBackward(i, 1);
+				}
+			}
+		} else {
+			for (const { node } of nodesWithNext) {
+				if (!onlyAllowFXLike || isFXLikeNode(node)) {
+					markReachable(node.from);
+					markReachable(node.to);
+				}
+			}
+		}
+
+		// Second pass: collect inbound/outbound rails for every reachable (asset, location) pair
+		// from ALL graph nodes, not just those on the traversal path.
+		const resultMap = new Map<string, AnchorChainingAssetInfo>();
+		const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
+			const key = assetLocationKey(side);
+			let resultObj = resultMap.get(key);
+			if (!resultObj) {
+				resultObj = { asset: side.asset, location: side.location, rails: { inbound: [], outbound: [] }};
+				resultMap.set(key, resultObj);
+			}
+			return(resultObj);
+		};
+
+		for (const { node } of nodesWithNext) {
+			if (onlyAllowFXLike && !isFXLikeNode(node)) {
+				continue;
+			}
+			const toKey = assetLocationKey(node.to);
+			const fromKey = assetLocationKey(node.from);
+			if (reachable.has(toKey)) {
+				const entry = getOrCreate(node.to);
+				if (!entry.rails.inbound.includes(node.to.rail)) {
+					entry.rails.inbound.push(node.to.rail);
+				}
+			}
+			if (reachable.has(fromKey)) {
+				const entry = getOrCreate(node.from);
+				if (!entry.rails.outbound.includes(node.from.rail)) {
+					entry.rails.outbound.push(node.from.rail);
+				}
+			}
+		}
+
+		// When onlyAllowFXLike, exclude the filter asset from the result set so that
+		// "what can USDC be swapped to?" doesn't include USDC itself via a round-trip.
+		if (onlyAllowFXLike) {
+			if (fromFilter?.asset !== undefined) {
+				resultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
+			}
+			if (toFilter?.asset !== undefined) {
+				resultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
+			}
+		}
+
+		return(Array.from(resultMap.values()));
+	}
 }
 
-class AnchorChainingPath {
+export class AnchorChainingPath {
 	readonly request: AnchorChainingPathInput;
 	readonly path: GraphNodeLike[];
 	readonly parent: AnchorChaining;
+
+	#state: AnchorChainingPathState = { status: 'idle' };
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	#listeners = new Map<string, Set<((...args: any[]) => void)>>();
 
 	constructor(input: {
 		request: AnchorChainingPathInput;
 		path: GraphNodeLike[];
 		parent: AnchorChaining;
 	}) {
-		if (input.path.length < 1) {
-			throw(new Error(`Path must have at least one node`));
-		}
-
 		this.request = input.request;
 		this.path = input.path;
 		this.parent = input.parent;
+	}
+
+	get state(): AnchorChainingPathState {
+		return(this.#state);
+	}
+
+	on<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
+		let listenerSet = this.#listeners.get(event);
+		if (!listenerSet) {
+			listenerSet = new Set();
+			this.#listeners.set(event, listenerSet);
+		}
+		listenerSet.add(listener);
+	}
+
+	off<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
+		this.#listeners.get(event)?.delete(listener);
+	}
+
+	#setState(state: AnchorChainingPathState): void {
+		this.#state = state;
+		this.#emit('stateChange', state);
+	}
+
+	get logger(): Logger | undefined {
+		return(this.parent['logger']);
+	}
+
+	#emit<E extends keyof AnchorChainingPathEventMap>(event: E, ...args: AnchorChainingPathEventMap[E]): { sendCount: number; } {
+		let sendCount = 0;
+
+		for (const listener of (this.#listeners.get(event) ?? [])) {
+			try {
+				listener(...args);
+				sendCount++;
+			} catch (err) {
+				this.logger?.debug(`AnchorChainingPath::emit`, `Error in listener for event '${event}'`, err);
+			}
+		}
+
+		return({ sendCount });
 	}
 
 	private _debugGetPathReadable() {
 		return(this.path.map(function(node) {
 			const fromAssetLocation = `${convertAssetSearchInputToCanonical(node.from.asset)}@${convertAssetLocationToString(node.from.location)}`;
 			const toAssetLocation = `${convertAssetSearchInputToCanonical(node.to.asset)}@${convertAssetLocationToString(node.to.location)}`;
-			return(`${node.provider.type}:${node.provider.id} (${fromAssetLocation} -> ${toAssetLocation} via ${node.to.rail})`);
+			return(`${node.type}:${node.providerID} (${fromAssetLocation} -> ${toAssetLocation} via ${node.to.rail})`);
 		}));
 	}
 
@@ -425,8 +795,460 @@ class AnchorChainingPath {
 		return(this.path.length > 1);
 	}
 
-	async execute(): Promise<void> {
-		throw(new Error(`Not implemented yet`));
+	async #awaitStepCompletion(step: Omit<StepNeededActionEventPayload, 'markCompleted' | 'markFailed'>): Promise<void> {
+		let didComplete = false;
+
+		function assertDidNotComplete() {
+			if (didComplete) {
+				throw(new Error(`Step was already marked as completed or failed`));
+			}
+
+			didComplete = true;
+		}
+
+		let resolveFn: undefined | StepNeededActionEventPayload['markCompleted'];
+		let rejectFn: undefined | StepNeededActionEventPayload['markFailed'];
+
+		const promise = new Promise<void>(function(resolve, reject) {
+			resolveFn = () => {
+				assertDidNotComplete();
+				resolve();
+			};
+
+			rejectFn = (error) => {
+				assertDidNotComplete();
+
+				let usingErr = error;
+				if (!usingErr) {
+					usingErr = new Error(`Step marked as failed without error`);
+				}
+
+				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+				reject(error);
+			}
+		});
+
+		if (!resolveFn || !rejectFn) {
+			throw(new Error(`Failed to create step completion promise`));
+		}
+
+		const { sendCount } = this.#emit('stepNeedsAction', {
+			...step,
+			markCompleted: resolveFn,
+			markFailed: rejectFn
+		});
+
+		if (sendCount === 0) {
+			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.action.actionType}) is awaiting completion`));
+		}
+
+		await promise;
+	}
+
+	async computeSteps(options?: {
+		affinity?: 'from' | 'to';
+		receiveAmount?: bigint;
+	}): Promise<AnchorChainingPathComputeStepsResult> {
+		const resolver = this.parent['resolver'];
+
+		const fxClient = new KeetaFXAnchorClient(this.parent['client'], { resolver });
+
+		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], { resolver });
+
+		const affinity = options?.affinity ?? 'from';
+
+		const findInstruction = <R extends AssetTransferInstructions['type']>(allInstructions: AssetTransferInstructions[], type: R): Extract<AssetTransferInstructions, { type: R }> => {
+			const found = allInstructions.find((instr): instr is Extract<AssetTransferInstructions, { type: R }> => {
+				return(instr.type === type);
+			});
+
+			if (!found) {
+				throw(new Error(`Expected to find instruction of type ${type} in next step's instructions`));
+			}
+
+			return(found);
+		};
+
+		const stepPromises: Promise<ChainStepResolution>[] = [];
+		const resolveStep = async (index: number): Promise<ChainStepResolution> => {
+			const step = this.path[index];
+
+			if (!step) {
+				throw(new Error(`Step ${index} is not defined`));
+			}
+
+			let promise: Promise<ChainStepResolution> | undefined = stepPromises[index];
+
+			if (!promise) {
+				promise = (async (): Promise<ChainStepResolution> => {
+					if (step.type === 'fx') {
+						let amount;
+
+						if (affinity === 'from') {
+							if (index === 0) {
+								amount = this.request.source.value;
+							} else {
+								const previous = await resolveStep(index - 1);
+								amount = previous.valueOut;
+							}
+						} else if (affinity === 'to') {
+							if (index === (this.path.length - 1)) {
+								// XXX:TODO Move this to destination
+								amount = this.request.source.value;
+							} else {
+								const next = await resolveStep(index + 1);
+								amount = next.valueIn;
+							}
+						} else {
+							assertNever(affinity);
+						}
+
+						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
+							{ from: step.from.asset, to: step.to.asset, amount, affinity },
+							undefined,
+							{ providerIDs: [ step.providerID ] }
+						);
+
+						if (!quotesOrEstimates?.[0] || quotesOrEstimates.length === 0) {
+							throw(new Error(`Could not get FX quote/estimate for provider ${step.providerID}`));
+						}
+
+						const result = quotesOrEstimates[0];
+
+						const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
+
+						let valueIn;
+						let valueOut;
+
+						if (affinity === 'to') {
+							valueOut = amount;
+							valueIn = convertedAmount;
+						} else if (affinity === 'from') {
+							valueOut = convertedAmount;
+							valueIn = amount;
+						} else {
+							assertNever(affinity);
+						}
+
+						return({ type: 'fx', step, valueIn, valueOut, result });
+					} else if (step.type === 'assetMovement') {
+						let recipient;
+						let sendingToType: SendingToType;
+						if (index === this.path.length - 1) {
+							recipient = this.request.destination.recipient;
+							sendingToType = 'FINAL_DESTINATION';
+						} else {
+							const nextPathStep = this.path[index + 1];
+							if (nextPathStep?.type === 'fx') {
+								throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+							}
+
+							const nextStep = await resolveStep(index + 1);
+
+							if (nextStep.type === 'assetMovement') {
+								if (nextStep.usingInstruction.type !== step.to.rail) {
+									throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
+								}
+
+								const foundInstruction = nextStep.usingInstruction;
+
+								const isFiatRailFoundInstruction = (input: AssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatRails; }> => {
+									return(isFiatRail(input.type));
+								}
+
+								if (foundInstruction.type === 'KEETA_SEND') {
+									if (!KeetaNet.lib.Account.isInstance(step.to.asset)) {
+										throw(new Error(`Expected asset to be a token account for KEETA_SEND rail`));
+									}
+
+									if (!step.to.asset.comparePublicKey(foundInstruction.tokenAddress)) {
+										throw(new Error(`Recipient token account ${foundInstruction.tokenAddress.toString()} does not match expected ${step.to.asset.publicKeyString.get()}`));
+									}
+
+									if (foundInstruction.external) {
+										throw(new Error(`Expected KEETA_SEND instruction to not have external value`));
+									}
+
+									// XXX:TODO assert value here matches
+
+									sendingToType = 'NEXT_STEP';
+									recipient = KeetaNet.lib.Account.fromPublicKeyString(foundInstruction.sendToAddress);
+								} else if (isFiatRailFoundInstruction(foundInstruction)) {
+									if (foundInstruction.depositMessage) {
+										throw(new Error(`Deposit message outbound is not currently supported for chaining`));
+									}
+									sendingToType = 'NEXT_STEP';
+									recipient = foundInstruction.account;
+								} else {
+									throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
+								}
+							} else if (nextStep.type === 'fx') {
+								throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+							} else {
+								assertNever(nextStep);
+							}
+						}
+
+						if (!recipient) {
+							throw(new Error(`Recipient must be defined for asset movement step at index ${index}`));
+						}
+
+						const assetPair = { from: step.from.asset, to: step.to.asset };
+
+						const providers = await assetMovementClient.getProvidersForTransfer(
+							{ asset: assetPair, from: step.from.location, to: step.to.location },
+							{ providerIDs: [ step.providerID ] }
+						);
+
+						if (!providers?.[0] || providers.length === 0) {
+							throw(new Error(`Could not get asset movement provider ${step.providerID}`));
+						}
+
+						let depositValue;
+
+						if (affinity === 'to') {
+							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+						} else {
+							if (index === 0) {
+								depositValue = this.request.source.value;
+							} else {
+								const previous = await resolveStep(index - 1);
+								depositValue = previous.valueOut;
+							}
+						}
+
+						const transfer = await providers[0].initiateTransfer({
+							asset: assetPair,
+							from: { location: step.from.location },
+							to: {
+								location: step.to.location,
+								recipient: (() => {
+									if (KeetaNet.lib.Account.isInstance(recipient)) {
+										return(recipient.publicKeyString.get());
+									} else {
+										return(recipient);
+									}
+								})()
+							},
+							value: depositValue
+						});
+
+						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
+
+						if (!usingInstruction.totalReceiveAmount) {
+							throw(new Error(`totalReceiveAmount must be defined for chaining`));
+						}
+
+						return({
+							type: 'assetMovement',
+							step,
+							valueIn: depositValue,
+							usingInstruction: usingInstruction,
+							transfer: transfer,
+							sendingTo: sendingToType,
+							valueOut: BigInt(usingInstruction.totalReceiveAmount)
+						})
+					} else {
+						assertNever(step);
+					}
+				})();
+
+				stepPromises[index] = promise;
+			}
+
+			return(await promise);
+		}
+
+		const steps: ChainStepResolution[] = await Promise.all(this.path.map(async function(_, index) {
+			return(await resolveStep(index));
+		}));
+
+		// Direct same-location/same-asset send: no provider steps needed.
+		if (steps.length === 0) {
+			return({
+				steps: [],
+				totalValueIn: this.request.source.value,
+				totalValueOut: this.request.source.value
+			});
+		}
+
+		const firstStep = steps[0];
+		const lastStep = steps[steps.length - 1];
+
+		if (!firstStep || !lastStep) {
+			throw(new Error(`Steps array is empty`));
+		}
+
+		if (firstStep.valueIn !== this.request.source.value) {
+			throw(new Error(`Computed valueIn for first step ${firstStep.valueIn} does not match request source value ${this.request.source.value}`));
+		}
+
+		if (lastStep.valueOut <= 0n) {
+			throw(new Error(`Computed valueOut for last step must be greater than 0, got ${lastStep.valueOut}`));
+		}
+
+		return({
+			steps,
+			totalValueIn: firstStep.valueIn,
+			totalValueOut: lastStep.valueOut
+		});
+	}
+
+	async #pollTransferStatus(
+		transfer: AssetMovementTransfer,
+		options?: { intervalMs?: number; timeoutMs?: number }
+	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
+		const intervalMs = options?.intervalMs ?? 2000;
+		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const deadline = Date.now() + timeoutMs;
+
+		while (true) {
+			const status = await transfer.getTransferStatus();
+			if (status.transaction.status === 'COMPLETED') {
+				return(status);
+			}
+			if (Date.now() >= deadline) {
+				throw(new Error(`Timed out waiting for transfer ${transfer.transferId} to complete`));
+			}
+			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+		}
+	}
+
+	async #pollExchangeStatus(
+		exchange: FXExchange,
+		options?: { intervalMs?: number; timeoutMs?: number }
+	): Promise<Awaited<ReturnType<FXExchange['getExchangeStatus']>>> {
+		const intervalMs = options?.intervalMs ?? 2000;
+		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const deadline = Date.now() + timeoutMs;
+
+		while (true) {
+			const status = await exchange.getExchangeStatus();
+			if (status.status === 'completed') {
+				return(status);
+			}
+			if (status.status === 'failed') {
+				throw(new Error(`FX exchange ${exchange.exchange.exchangeID} failed`));
+			}
+			if (Date.now() >= deadline) {
+				throw(new Error(`Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
+			}
+			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+		}
+	}
+
+	async execute(computed: AnchorChainingPathComputeStepsResult): Promise<AnchorChainingPathExecuteResult> {
+		if (this.#state.status !== 'idle') {
+			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
+		}
+
+		const executedSteps: ExecutedStep[] = [];
+		this.#setState({ status: 'executing', completedSteps: [], currentStepIndex: 0 });
+
+		// Actual output value from each completed step, used for equality checking.
+		let prevActualValueOut: bigint | null = null;
+
+		let index = 0;
+		try {
+			let prev = null;
+			for (index = 0; index < computed.steps.length; index++) {
+				const onStepCompleted = (step: ExecutedStep) => {
+					executedSteps.push(step);
+					this.#emit('stepExecuted', step, index);
+				}
+
+				this.#setState({ status: 'executing', completedSteps: [...executedSteps], currentStepIndex: index });
+
+				const step = computed.steps[index];
+
+				if (!step) {
+					throw(new Error(`Step ${index} is not defined`));
+				}
+
+				// Verify the actual output from the previous step matches the expected
+				// input for this step. A mismatch indicates a provider delivered a
+				// different amount than was negotiated in computeSteps.
+				if (index > 0 && prevActualValueOut !== null) {
+					if (prevActualValueOut !== step.valueIn) {
+						throw(new Error(
+							`Value mismatch at step ${index}: ` +
+							`expected ${step.valueIn} but previous step produced ${prevActualValueOut}`
+						));
+					}
+				}
+
+				if (step.type === 'fx') {
+					const exchange = await step.result.createExchange();
+					await this.#pollExchangeStatus(exchange);
+					prevActualValueOut = step.valueOut;
+					onStepCompleted({ type: 'fx', plan: step, exchange });
+				} else if (step.type === 'assetMovement') {
+					let userInitiatedTransferRequired;
+					if (prev && prev.type === 'assetMovement') {
+						if (prev.sendingTo === 'NEXT_STEP') {
+							userInitiatedTransferRequired = false;
+						} else if (prev.sendingTo === 'FINAL_DESTINATION') {
+							throw(new Error(`Invalid path: step ${index - 1} is sending to final destination, but is followed by another step`));
+						} else if (prev.sendingTo === 'SELF') {
+							userInitiatedTransferRequired = true;
+						} else {
+							assertNever(prev.sendingTo);
+						}
+					} else {
+						userInitiatedTransferRequired = true;
+					}
+
+					if (userInitiatedTransferRequired) {
+						if (step.usingInstruction.type === 'KEETA_SEND') {
+							await this.parent['client'].send(
+								step.usingInstruction.sendToAddress,
+								BigInt(step.usingInstruction.value),
+								step.usingInstruction.tokenAddress,
+								step.usingInstruction.external
+							);
+						} else if (index === 0) {
+							await this.#awaitStepCompletion({
+								action: { actionType: 'assetMovementUserExecutionRequired', assetMovementTransfer: step.transfer }
+							});
+						} else {
+							throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
+						}
+					}
+
+					const status = await this.#pollTransferStatus(step.transfer);
+					prevActualValueOut = BigInt(status.transaction.to.value);
+
+					onStepCompleted({ type: 'assetMovement', plan: step });
+				} else {
+					assertNever(step);
+				}
+
+				prev = step;
+			}
+
+			// Direct same-location/same-asset send: the loop ran zero iterations,
+			// so just publish the on-chain transfer directly.
+			if (this.path.length === 0) {
+				if (!KeetaNet.lib.Account.isInstance(this.request.source.asset)) {
+					throw(new Error(`Direct send requires a Keeta token address as the source asset`));
+				}
+				const recipient = this.request.destination.recipient;
+				if (typeof recipient !== 'string') {
+					throw(new Error(`Direct Keeta send requires a crypto address as the recipient`));
+				}
+				await this.parent['client'].send(recipient, this.request.source.value, this.request.source.asset);
+			}
+		} catch (err) {
+			const error = err instanceof Error ? err : new Error(String(err));
+			this.#setState({ status: 'failed', error, completedSteps: [...executedSteps], failedAtStepIndex: index });
+			this.#emit('failed', error, [...executedSteps], index);
+			throw(error);
+		}
+
+		const result: AnchorChainingPathExecuteResult = { steps: executedSteps };
+		this.#setState({ status: 'completed', result });
+		this.#emit('completed', result);
+		return(result);
 	}
 }
 
@@ -435,7 +1257,8 @@ export class AnchorChaining {
 	private resolver: Resolver;
 	private signer: InstanceType<typeof KeetaNetLib.Account> | undefined;
 	private account: InstanceType<typeof KeetaNetLib.Account> | undefined;
-	private graph: AnchorGraph;
+	readonly graph: AnchorGraph;
+	private logger?: Logger;
 
 	constructor(config: AnchorChainingConfig) {
 		this.client = config.client;
@@ -447,9 +1270,23 @@ export class AnchorChaining {
 		this.signer = config.signer ?? config.account ?? config.client.signer ?? config.client.account;
 		this.account = config.account ?? config.client.account;
 		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client });
+		if (config.logger !== undefined) {
+			this.logger = config.logger;
+		}
 	}
 
 	async computeChainingPath(input: AnchorChainingPathInput): Promise<AnchorChainingPath[] | null> {
+		// Direct send: same Keeta location, same asset, same rail no providers needed.
+		if (
+			input.source.rail === 'KEETA_SEND' &&
+			input.destination.rail === 'KEETA_SEND' &&
+			convertAssetLocationToString(input.source.location) === convertAssetLocationToString(input.destination.location) &&
+			convertAssetLocationToString(input.source.location).startsWith('chain:keeta:') &&
+			isAnchorChainingAssetEqual(input.source.asset, input.destination.asset)
+		) {
+			return([new AnchorChainingPath({ request: input, path: [], parent: this })]);
+		}
+
 		const foundPaths = await this.graph.findPaths(input);
 
 		if (foundPaths.length === 0) {
@@ -465,4 +1302,3 @@ export class AnchorChaining {
 		return(retval);
 	}
 }
-

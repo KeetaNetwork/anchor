@@ -1,6 +1,6 @@
-import { KeetaNet } from '../../client/index.js';
 import type {
 	PathPolicy,
+	PathPolicyContext,
 	FullStorageBackend,
 	StorageObjectMetadata,
 	StoragePutMetadata,
@@ -12,8 +12,14 @@ import type {
 	QuotaLimits,
 	UploadReservation
 } from './common.js';
+import type { KeetaStorageAnchorProvider } from './client.js';
+import { KeetaNet } from '../../client/index.js';
+import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node.js';
+import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { Errors } from './common.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+import KeetaAnchorResolver from '../../lib/resolver.js';
+import KeetaStorageAnchorClient from './client.js';
 
 // #region Test Path Policy
 
@@ -82,10 +88,11 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(KeetaNet.lib.Account.fromPublicKeyString(parsed.owner).assertAccount());
 	}
 
-	validateMetadata(parsed: TestParsedPath, metadata: StoragePutMetadata): void {
-		// Require public visibility for paths under public/
-		if (parsed.relativePath.startsWith('public/') && metadata.visibility !== 'public') {
-			throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+	validateContext(parsed: TestParsedPath, context: PathPolicyContext): void {
+		if (context.operation === 'put' || context.operation === 'updateMetadata') {
+			if (parsed.relativePath.startsWith('public/') && context.metadata.visibility !== 'public') {
+				throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+			}
 		}
 	}
 
@@ -120,6 +127,25 @@ export function testMetadata(
 		owner,
 		tags: [],
 		visibility: 'private',
+		...overrides
+	});
+}
+
+/**
+ * Create test object metadata with sensible defaults.
+ */
+export function testObjectMetadata(
+	path: string,
+	owner: string,
+	overrides?: Partial<StorageObjectMetadata>
+): StorageObjectMetadata {
+	return({
+		path,
+		owner,
+		tags: [],
+		visibility: 'private',
+		size: 0,
+		createdAt: new Date().toISOString(),
 		...overrides
 	});
 }
@@ -316,6 +342,24 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		return(this.storage.delete(path));
 	}
 
+	async updateMetadata(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null> {
+		const entry = this.storage.get(path);
+		if (!entry) {
+			return(null);
+		}
+
+		const now = new Date().toISOString();
+		const updated: StorageObjectMetadata = {
+			...entry.metadata,
+			tags: metadata.tags,
+			visibility: metadata.visibility,
+			updatedAt: now
+		};
+
+		this.storage.set(path, { data: entry.data, metadata: updated });
+		return(updated);
+	}
+
 	async search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults> {
 		return(searchStorage(this.storage, criteria, pagination));
 	}
@@ -477,6 +521,76 @@ export class MemoryStorageBackend implements FullStorageBackend {
 	get size(): number {
 		return(this.storage.size);
 	}
+}
+
+// #endregion
+
+// #region Shared Test Harness
+
+export type Account = InstanceType<typeof KeetaNet.lib.Account>;
+
+export function randomSeed(): string | ArrayBuffer {
+	return(KeetaNet.lib.Account.generateRandomSeed());
+}
+
+export interface StorageProviderTestContext {
+	provider: KeetaStorageAnchorProvider;
+	account: Account;
+	storageClient: KeetaStorageAnchorClient;
+}
+
+/**
+ * Shared test harness that stands up a storage server, resolves a provider,
+ * and passes the provider context to the test function.
+ */
+export async function withStorageProvider(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
+): Promise<void> {
+	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const anchorAccount = KeetaNet.lib.Account.fromSeed(seed, 50);
+
+	await using nodeAndClient = await createNodeAndClient(account);
+
+	const userClient = nodeAndClient.userClient;
+	nodeAndClient.fees.disable();
+
+	const backend = new MemoryStorageBackend();
+
+	await using server = new KeetaNetStorageAnchorHTTPServer({
+		backend,
+		anchorAccount,
+		pathPolicies: [testPathPolicy]
+	});
+
+	await server.start();
+
+	const rootAccount = KeetaNet.lib.Account.fromSeed(seed, 100);
+	const serviceMetadata = await server.serviceMetadata();
+
+	await setResolverInfo(rootAccount, userClient, {
+		version: 1,
+		currencyMap: {},
+		services: {
+			storage: {
+				'test-provider': serviceMetadata
+			}
+		}
+	});
+
+	const resolver = new KeetaAnchorResolver({
+		root: rootAccount,
+		client: userClient,
+		trustedCAs: []
+	});
+
+	const storageClient = new KeetaStorageAnchorClient(userClient, { resolver });
+	const maybeProvider = await storageClient.getProviderByID('test-provider');
+	if (!maybeProvider) {
+		throw(new Error('Provider not found'));
+	}
+
+	await testFunction({ provider: maybeProvider, account, storageClient });
 }
 
 // #endregion

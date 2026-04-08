@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
@@ -7,11 +7,31 @@ import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type {
+	KeetaNetAccount,
+	KeetaNetStorageAccount,
+	KeetaNetToken,
+	KeetaNetTokenPublicKeyString
+} from '../../lib/asset.js';
 
-export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
-export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
-export type KeetaNetToken = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>;
-export type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
+export type {
+	KeetaNetAccount,
+	KeetaNetStorageAccount,
+	KeetaNetToken,
+	KeetaNetTokenPublicKeyString
+} from '../../lib/asset.js';
+
+/**
+ * Parses a cost token from its serialized public key string form,
+ * reconstituting a KeetaNetToken instance.
+ */
+export function parseFXCostToken(input: KeetaNetToken | string): KeetaNetToken {
+	if (KeetaNetLib.Account.isInstance(input)) {
+		return(input);
+	}
+
+	return(KeetaNetLib.Account.fromPublicKeyString(input).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN));
+}
 
 export type ConversionInput = {
 	/**
@@ -34,10 +54,17 @@ export type ConversionInput = {
 	 * (i.e., the user wants this much).
 	 */
 	affinity: 'from' | 'to';
+
+	/**
+	 * Optional preferred token in which the fee/cost should be
+	 * denominated. Must be one of the operator's advertised
+	 * acceptedCostAssets, if specified.
+	 */
+	preferredCostAsset?: KeetaNetTokenPublicKeyString;
 };
 
 export type ConversionInputCanonical = {
-	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : ConversionInput[k];
+	[k in keyof ConversionInput]: k extends 'amount' ? bigint : k extends 'from' ? KeetaNetToken : k extends 'to' ? KeetaNetToken : ConversionInput[k] extends undefined ? never : ConversionInput[k];
 };
 
 export type ConversionInputCanonicalJSON = ToJSONSerializable<ConversionInputCanonical>;
@@ -86,22 +113,34 @@ export type KeetaFXAnchorEstimate = {
 		max: bigint;
 		token: KeetaNetToken;
 	};
-} & ({
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange
-	 */
-	requiresQuote: false;
+} & (
+	{
+		/**
+		 * Indicates that the exchange cannot be performed if false, and no quote can be issued
+		 */
+		canPerformExchange: false;
+	} | ({
+		/**
+		 * Indicates that the exchange can be performed if true or undefined, but a quote may or may not be required before proceeding with the exchange
+		 */
+		canPerformExchange?: true;
+	} & ({
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange
+		 */
+		requiresQuote: false;
 
-	/**
-	 * Liquidity provider account if the user is not going to request a quote before the exchange
-	 */
-	account: KeetaNetAccount | KeetaNetStorageAccount;
-} | {
-	/**
-	 * Indicates that a quote is required before proceeding with the exchange, defaults to true
-	 */
-	requiresQuote?: true;
-});
+		/**
+		 * Liquidity provider account if the user is not going to request a quote before the exchange
+		 */
+		account: KeetaNetAccount | KeetaNetStorageAccount;
+	} | {
+		/**
+		 * Indicates that a quote is required before proceeding with the exchange, defaults to true
+		 */
+		requiresQuote?: true;
+	}))
+);
 
 export type KeetaFXAnchorEstimateResponse = ({
 	ok: true;
