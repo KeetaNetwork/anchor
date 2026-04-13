@@ -6,7 +6,7 @@ import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
 import { Currency } from '@keetanetwork/currency-info';
-import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { Account, GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { isAssetLocationLike } from '../services/asset-movement/lib/location.generated.js';
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
@@ -162,9 +162,19 @@ function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAss
 }
 
 function nodeSideSupports(side: AnchorChainingAssetAndLocation, required: AnchorChainingAssetAndLocation): boolean {
-	return(side.rail === required.rail &&
-		convertAssetLocationToString(side.location) === convertAssetLocationToString(required.location) &&
-		isAnchorChainingAssetEqual(side.asset, required.asset));
+	if (side.rail !== required.rail) {
+		return(false);
+	}
+
+	if (convertAssetLocationToString(side.location) !== convertAssetLocationToString(required.location)) {
+		return(false);
+	}
+
+	if (!isAnchorChainingAssetEqual(side.asset, required.asset)) {
+		return(false);
+	}
+
+	return(true);
 }
 
 /**
@@ -212,13 +222,23 @@ export interface AnchorChainingAssetInfo {
 	};
 }
 
+type GetAccountForActionPayload = {
+	type: 'assetMovement';
+	providerMethod: 'initiateTransfer';
+	provider: AssetMovementProvider;
+}
+
+interface AnchorChainingAccountOverrides {
+	account?: Account | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
+}
+
 export class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
 	logger?: Logger | undefined;
 	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
 
-	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger; }) {
+	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
 		this.client = args.client;
 		this.logger = args.logger;
@@ -400,6 +420,7 @@ export class AnchorGraph {
 			const supportedAssetsEntries = await service.supportedAssets('array');
 
 			if (!supportedAssetsEntries) {
+				this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `No supported assets found for provider ${providerID}`);
 				return(null);
 			}
 
@@ -416,6 +437,10 @@ export class AnchorGraph {
 						this.#computeAssetMovementPairSide(pairResolved[0]),
 						this.#computeAssetMovementPairSide(pairResolved[1])
 					]);
+
+					if (fromResolved.id === 'USD' || toResolved.id === 'USD') {
+						console.log('fromResolved, toResolved', fromResolved, toResolved);
+					}
 
 					const pathNodes: GraphNodeLike[] = [];
 					for (const [ src, dest ] of [
@@ -472,6 +497,8 @@ export class AnchorGraph {
 		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
 			return({ node, next: [] });
 		});
+
+		console.log('nodesWithNext', nodesWithNext);
 
 		for (const node of nodesWithNext) {
 			for (let secondNodeIdx = 0; secondNodeIdx < nodesWithNext.length; secondNodeIdx++) {
@@ -842,9 +869,31 @@ export class AnchorChainingPath {
 		await this.parent['client'].send(sendToAddress, value, token, external);
 	}
 
+	async #getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<Account | undefined> {
+		let found;
+
+		if (this.parent['client'].account.isAccount()) {
+			found = this.parent['client'].account;
+		} else if (this.parent['client'].signer !== null) {
+			found = this.parent['client'].signer;
+		}
+
+		if (overrides?.account) {
+			if (typeof overrides.account === 'function') {
+				found = await overrides.account(action);
+			} else {
+				found = overrides.account;
+			}
+		}
+
+		return(found);
+	}
+
 	async computeSteps(options?: {
 		affinity?: 'from' | 'to';
 		receiveAmount?: bigint;
+
+		overrides?: AnchorChainingAccountOverrides
 	}): Promise<AnchorChainingPathComputeStepsResult> {
 		const resolver = this.parent['resolver'];
 
@@ -1015,6 +1064,11 @@ export class AnchorChainingPath {
 						}
 
 						const transfer = await providers[0].initiateTransfer({
+							account: await this.#getAccountForAction({
+								type: 'assetMovement',
+								providerMethod: 'initiateTransfer',
+								provider: providers[0],
+							}, options?.overrides),
 							asset: assetPair,
 							from: { location: step.from.location },
 							to: {
@@ -1270,7 +1324,7 @@ export class AnchorChaining {
 		}
 		this.signer = config.signer ?? config.account ?? config.client.signer ?? config.client.account;
 		this.account = config.account ?? config.client.account;
-		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client });
+		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client, logger: config.logger });
 		if (config.logger !== undefined) {
 			this.logger = config.logger;
 		}
