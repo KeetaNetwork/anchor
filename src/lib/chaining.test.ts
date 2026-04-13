@@ -997,7 +997,13 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		const path = await getBankUSPath(h);
 		const computed = await path.computeSteps();
 
-		path.on('stepNeedsAction', ({ markCompleted }: { markCompleted: () => void }) => markCompleted());
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted()
+			}
+		});
 		const result = await path.execute(computed);
 
 		expect(result.steps.length).toEqual(1);
@@ -1022,7 +1028,13 @@ describe('AnchorChainingPath ACH fiat path', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		path.on('stepNeedsAction', ({ markCompleted }: { markCompleted: () => void }) => markCompleted());
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted()
+			}
+		});
 		await expect(path.execute(computed)).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
@@ -1035,6 +1047,142 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		if (!failedEvent) {throw(new Error('Expected failed event'));}
 		expect(failedEvent.index).toEqual(0);
 		expect(failedEvent.completedSteps.length).toEqual(0);
+	});
+});
+
+describe('AnchorChainingPath keetaSendAuthRequired', function() {
+	// Uses the FX+AM path (USDC -> EURC via FXOne, then EURC -> EUR bank via BankEU).
+	// The AM step has a KEETA_SEND instruction, so execute() calls client.send() internally.
+	// With requireSendAuth: true, a keetaSendAuthRequired event fires before that send.
+
+	test('no stepNeedsAction listener throws when requireSendAuth is set', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		const path = await h.getPathVia('FXOne');
+		const computed = await path.computeSteps();
+		await expect(path.execute(computed, { requireSendAuth: true })).rejects.toThrow('No listeners for stepNeedsAction');
+	});
+
+	test('markCompleted({ sent: true }): event fires with correct payload and execute succeeds', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		const path = await h.getPathVia('FXOne');
+		const computed = await path.computeSteps();
+
+		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
+
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				capturedActions.push(payload.action);
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await path.execute(computed, { requireSendAuth: true });
+
+		expect(result.steps).toHaveLength(2);
+		expect(capturedActions).toHaveLength(1);
+		const action = capturedActions[0];
+		if (!action) { throw(new Error('Expected keetaSendAuthRequired action')); }
+
+		// sendToAddress is the bank server's Keeta account
+		expect(KeetaNet.lib.Account.isInstance(action.sendToAddress)).toBe(true);
+		// value is the post-FX EURC amount: 100 * 0.88 = 88
+		expect(action.value).toBe(88n);
+		// token is the EURC token
+		expect(action.token.publicKeyString.get()).toBe(h.tokens.EURC.publicKeyString.get());
+		// external is the bank transfer ID used to match the on-chain send
+		expect(typeof action.external).toBe('string');
+	});
+
+	test('markCompleted({ sent: false }): execute still proceeds (sent value is advisory)', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		const path = await h.getPathVia('FXOne');
+		const computed = await path.computeSteps();
+
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				payload.markCompleted({ sent: false });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await path.execute(computed, { requireSendAuth: true });
+		expect(result.steps).toHaveLength(2);
+	});
+
+	test('markFailed: execute rejects with the provided error', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		const path = await h.getPathVia('FXOne');
+		const computed = await path.computeSteps();
+
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				payload.markFailed(new Error('send rejected by user'));
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const failedEvents: { error: Error; completedSteps: ExecutedStep[]; index: number }[] = [];
+		path.on('failed', (error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number) => {
+			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
+		});
+
+		await expect(path.execute(computed, { requireSendAuth: true })).rejects.toThrow('send rejected by user');
+		expect(path.state.status).toBe('failed');
+		expect(failedEvents).toHaveLength(1);
+		const failedEvent = failedEvents[0];
+		if (!failedEvent) { throw(new Error('Expected failed event')); }
+		// FX step (index 0) completed; rejection happened at AM step (index 1)
+		expect(failedEvent.index).toBe(1);
+		expect(failedEvent.completedSteps[0]?.type).toBe('fx');
+	});
+
+	test('direct send: keetaSendAuthRequired fires with correct sendToAddress and value', async function() {
+		await using h = await createChainingTestHarness();
+		const recipient = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		await h.giveTokens(h.client.account, 500n, h.tokens.USDC);
+
+		const paths = await h.anchorChaining.computeChainingPath({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 200n, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: recipient.publicKeyString.get(), rail: 'KEETA_SEND' }
+		});
+		if (!paths?.[0]) { throw(new Error('Expected direct-send path')); }
+		const path = paths[0];
+		const computed = await path.computeSteps();
+		expect(computed.steps).toHaveLength(0);
+
+		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
+
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				capturedActions.push(payload.action);
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await path.execute(computed, { requireSendAuth: true });
+		expect(result.steps).toHaveLength(0);
+
+		expect(capturedActions).toHaveLength(1);
+		const action = capturedActions[0];
+		if (!action) { throw(new Error('Expected keetaSendAuthRequired action')); }
+
+		expect(action.sendToAddress.publicKeyString.get()).toBe(recipient.publicKeyString.get());
+		expect(action.value).toBe(200n);
+		expect(action.token.publicKeyString.get()).toBe(h.tokens.USDC.publicKeyString.get());
+		expect(action.external).toBeUndefined();
+
+		const balance = await h.client.client.getBalance(recipient, h.tokens.USDC);
+		expect(balance).toBe(200n);
 	});
 });
 

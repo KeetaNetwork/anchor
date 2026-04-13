@@ -2437,6 +2437,7 @@ class Resolver {
 				return(null);
 			}
 		} else {
+			console.trace('Performing reverse lookup for token public key', tokenPublicKey);
 			this.#logger?.debug(`Resolver:${this.id}`, 'Performing reverse lookup for token public key', tokenPublicKey);
 
 			/*

@@ -6,7 +6,7 @@ import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
 import { Currency } from '@keetanetwork/currency-info';
-import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { isAssetLocationLike } from '../services/asset-movement/lib/location.generated.js';
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
@@ -16,7 +16,7 @@ import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js
 import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
 import type { Logger } from './log/index.js';
-
+import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -68,25 +68,37 @@ export type AnchorChainingPathExecuteResult = {
 	steps: ExecutedStep[];
 };
 
+export type AnchorChainingPathExecuteOptions = {
+	requireSendAuth?: boolean;
+};
+
 export type AnchorChainingPathState =
 	| { status: 'idle' }
 	| { status: 'executing'; completedSteps: ExecutedStep[]; currentStepIndex: number }
 	| { status: 'completed'; result: AnchorChainingPathExecuteResult }
 	| { status: 'failed'; error: Error; completedSteps: ExecutedStep[]; failedAtStepIndex: number };
 
-interface StepNeededActionEventAssetMovement {
-	actionType: 'assetMovementUserExecutionRequired';
-	assetMovementTransfer: AssetMovementTransfer;
-}
+interface StepNeededActionEventPayloadBase<ActionType, ActionPayload, CompletedPayload extends readonly unknown[] = []> {
+	type: ActionType;
 
-type StepNeededActionEvent = StepNeededActionEventAssetMovement;
-
-interface StepNeededActionEventPayload {
-	markCompleted: () => void;
+	markCompleted: (...args: CompletedPayload) => void;
 	markFailed: (error?: unknown) => void;
 
-	action: StepNeededActionEvent;
+	action: ActionPayload;
 }
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface StepNeededActionEventAssetMovement extends StepNeededActionEventPayloadBase<'assetMovementUserExecutionRequired', { assetMovementTransfer: AssetMovementTransfer; }, []> {}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBase<'keetaSendAuthRequired', {
+	sendToAddress: GenericAccount;
+	value: bigint;
+	token: TokenAddress;
+	external?: string;
+}, [ { sent: boolean | BlockHash; }]> {}
+
+type StepNeededActionEventPayload = StepNeededActionEventKeetaSend | StepNeededActionEventAssetMovement;
 
 export type AnchorChainingPathEventMap = {
 	stateChange: [state: AnchorChainingPathState];
@@ -204,6 +216,7 @@ export class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
 	logger?: Logger | undefined;
+	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger; }) {
 		this.resolver = args.resolver;
@@ -276,22 +289,31 @@ export class AnchorGraph {
 	}
 
 	async #resolveAssetName(name: MovableAssetSearchCanonical): Promise<ISOCurrencyCode | TokenAddress | ExternalChainAsset> {
-		if (isExternalChainAsset(name)) {
-			return(name);
-		}
-		if (Currency.isCurrencyCode(name)) {
-			return(name);
-		} else if (Currency.isISOCurrencyNumber(name)) {
-			return(new Currency(name).code);
-		}
-
-		const found = await this.resolver.lookupToken(name);
-
+		let found = this.#assetNameCache.get(name);
 		if (found) {
-			return(KeetaNet.lib.Account.toAccount(found.token));
+			return(found);
 		}
 
-		throw(new Error(`Unable to resolve asset name: ${name}`));
+		if (isExternalChainAsset(name)) {
+			found = name;
+		} else if (Currency.isCurrencyCode(name)) {
+			found = name;
+		} else if (Currency.isISOCurrencyNumber(name)) {
+			found = new Currency(name).code;
+		} else {
+			const lookupRet = await this.resolver.lookupToken(name);
+			if (lookupRet) {
+				found = KeetaNet.lib.Account.toAccount(lookupRet.token);
+			}
+		}
+
+		if (!found) {
+			throw(new Error(`Unable to resolve asset name: ${name}`));
+		}
+
+		this.#assetNameCache.set(name, found);
+
+		return(found);
 	}
 
 	async #computeAssetRails(assetInput: ToValuizable<RailOrRailWithExtendedDetails>): Promise<{ rail: Rail }> {
@@ -749,7 +771,10 @@ export class AnchorChainingPath {
 		return(this.path.length > 1);
 	}
 
-	async #awaitStepCompletion(step: Omit<StepNeededActionEventPayload, 'markCompleted' | 'markFailed'>): Promise<void> {
+	async #awaitStepCompletion<
+		Type extends StepNeededActionEventPayload['type'],
+		Ret extends Parameters<Extract<StepNeededActionEventPayload, { action: { type: Type }}>['markCompleted']>
+	>(step: Pick<Extract<StepNeededActionEventPayload, { type: Type }>, 'action' | 'type'>): Promise<Ret> {
 		let didComplete = false;
 
 		function assertDidNotComplete() {
@@ -763,10 +788,10 @@ export class AnchorChainingPath {
 		let resolveFn: undefined | StepNeededActionEventPayload['markCompleted'];
 		let rejectFn: undefined | StepNeededActionEventPayload['markFailed'];
 
-		const promise = new Promise<void>(function(resolve, reject) {
-			resolveFn = () => {
+		const promise = new Promise<Ret>(function(resolve, reject) {
+			resolveFn = (...args: Ret) => {
 				assertDidNotComplete();
-				resolve();
+				resolve(args);
 			};
 
 			rejectFn = (error) => {
@@ -786,17 +811,35 @@ export class AnchorChainingPath {
 			throw(new Error(`Failed to create step completion promise`));
 		}
 
+		// Typescript Cannot infer the correct payload type for the stepNeedsAction event, so we have to assert it here. We ensure type safety by constraining the step parameter to the correct action type, which guarantees that the payload will match the expected structure for that action type.
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const { sendCount } = this.#emit('stepNeedsAction', {
 			...step,
 			markCompleted: resolveFn,
 			markFailed: rejectFn
-		});
+		} as Extract<StepNeededActionEventPayload, { action: { type: Type }}>);
 
 		if (sendCount === 0) {
-			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.action.actionType}) is awaiting completion`));
+			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.type}) is awaiting completion`));
 		}
 
-		await promise;
+		return(await promise);
+	}
+
+	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<void> {
+		if (options?.requireSendAuth) {
+			await this.#awaitStepCompletion({
+				type: 'keetaSendAuthRequired',
+				action: {
+					sendToAddress: KeetaNet.lib.Account.toAccount(sendToAddress),
+					value,
+					token: KeetaNet.lib.Account.toAccount(token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					...(external !== undefined ? { external } : {})
+				}
+			});
+		}
+
+		await this.parent['client'].send(sendToAddress, value, token, external);
 	}
 
 	async computeSteps(options?: {
@@ -1091,7 +1134,7 @@ export class AnchorChainingPath {
 		}
 	}
 
-	async execute(computed: AnchorChainingPathComputeStepsResult): Promise<AnchorChainingPathExecuteResult> {
+	async execute(computed: AnchorChainingPathComputeStepsResult, options?: { requireSendAuth?: boolean }): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
 		}
@@ -1154,15 +1197,19 @@ export class AnchorChainingPath {
 
 					if (userInitiatedTransferRequired) {
 						if (step.usingInstruction.type === 'KEETA_SEND') {
-							await this.parent['client'].send(
+							await this.#authorizedSend(
+								options,
 								step.usingInstruction.sendToAddress,
 								BigInt(step.usingInstruction.value),
-								step.usingInstruction.tokenAddress,
+								KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
 								step.usingInstruction.external
 							);
 						} else if (index === 0) {
 							await this.#awaitStepCompletion({
-								action: { actionType: 'assetMovementUserExecutionRequired', assetMovementTransfer: step.transfer }
+								type: 'assetMovementUserExecutionRequired',
+								action: {
+									assetMovementTransfer: step.transfer
+								}
 							});
 						} else {
 							throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
@@ -1190,7 +1237,7 @@ export class AnchorChainingPath {
 				if (typeof recipient !== 'string') {
 					throw(new Error(`Direct Keeta send requires a crypto address as the recipient`));
 				}
-				await this.parent['client'].send(recipient, this.request.source.value, this.request.source.asset);
+				await this.#authorizedSend(options, recipient, this.request.source.value, this.request.source.asset);
 			}
 		} catch (err) {
 			const error = err instanceof Error ? err : new Error(String(err));
