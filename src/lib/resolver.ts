@@ -809,7 +809,7 @@ type URLCacheObjectEntry = {
 /**
  * A cache object
  */
-type URLCacheObject = Map<string, URLCacheObjectEntry | Promise<URLCacheObjectEntry>>;
+type URLCacheObject = Map<string, Promise<URLCacheObjectEntry>>;
 
 
 type ResolverConfig = {
@@ -1223,8 +1223,6 @@ class Metadata implements ValuizableInstance {
 		this.#cache.instance.set(cacheKey, readPromise);
 
 		const resolvedValue = await readPromise;
-
-		this.#cache.instance.set(cacheKey, resolvedValue);
 
 		if (resolvedValue.pass) {
 			return(resolvedValue.value);
