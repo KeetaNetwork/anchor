@@ -576,15 +576,15 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				if ('data' in body) {
 					return({
 						...rest,
-						data: body.data,
-					})
+						data: body.data
+					});
 				} else {
 					return({
 						...rest,
 						location: convertAssetLocationToString(body.location),
 						asset: convertAssetOrPairSearchInputToCanonical(body.asset),
 						...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
-					})
+					});
 				}
 			},
 			body: request,
