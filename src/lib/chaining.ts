@@ -1067,7 +1067,7 @@ export class AnchorChainingPath {
 							account: await this.#getAccountForAction({
 								type: 'assetMovement',
 								providerMethod: 'initiateTransfer',
-								provider: providers[0],
+								provider: providers[0]
 							}, options?.overrides),
 							asset: assetPair,
 							from: { location: step.from.location },
