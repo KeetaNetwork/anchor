@@ -199,14 +199,18 @@ type ServiceMetadata = {
 		assetMovement?: {
 			[id: string]: {
 				operations: {
-					initiateTransfer?: ServiceMetadataEndpoint;
-					getTransferStatus?: ServiceMetadataEndpoint;
-					createPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					listPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					createPersistentForwarding?: ServiceMetadataEndpoint;
-					listPersistentForwarding?: ServiceMetadataEndpoint;
-					listTransactions?: ServiceMetadataEndpoint;
-					shareKYC?: ServiceMetadataEndpoint;
+					[Operation in (
+						'initiateTransfer' |
+						'executeTransfer' |
+						'getTransferStatus' |
+						'initiatePersistentForwardingTemplate' |
+						'createPersistentForwardingTemplate' |
+						'listPersistentForwardingTemplate' |
+						'createPersistentForwarding' |
+						'listPersistentForwarding' |
+						'listTransactions' |
+						'shareKYC'
+					)]?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: SupportedAssetsMetadata[];
