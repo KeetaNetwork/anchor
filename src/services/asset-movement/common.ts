@@ -769,7 +769,6 @@ export type KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateR
 export function getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest): Signable {
 	const pair = toAssetPair(input.asset);
 	return(commonToSignable({
-		'initiate-template': true,
 		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
 		location: convertAssetLocationInputToCanonical(input.location)
 	}));
