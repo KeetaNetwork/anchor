@@ -6,7 +6,7 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -132,7 +132,7 @@ test('Asset Movement Anchor Client Test', async function() {
 								{
 									location: 'chain:keeta:123',
 									id: testCurrencyUSDC.publicKeyString.get(),
-									rails: { inbound: [ extendedKeetaSendDetails ] }
+									rails: { inbound: [ extendedKeetaSendDetails, 'ACH_DEBIT' ] }
 								}
 							]
 						}
@@ -161,10 +161,42 @@ test('Asset Movement Anchor Client Test', async function() {
 				})
 			},
 
+			executeTransfer: async (request) => {
+				if (!request.account) {
+					throw(new KeetaAnchorUserValidationError({ fields: [] }));
+				}
+
+				return({
+					transaction: {
+						...testTransaction,
+						status: 'EXECUTED'
+					}
+				})
+			},
+
 			/**
 			 * Method to initiate a transfer
 			 */
 			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
+				if (request.to.location === 'bank-account:us') {
+					if (typeof request.to.recipient !== 'object' || !('type' in request.to.recipient)) {
+						throw(new Error('Recipient is not a bank account address object'));
+					}
+
+					if (request.to.recipient.type !== 'persistent-address' && request.to.recipient.type !== 'persistent-address-template') {
+						throw(new Error('Recipient is not a persistent address'));
+					}
+
+					return({
+						id: '123',
+						instructionChoices: [{
+							type: 'ACH_DEBIT',
+							pullFrom: request.to.recipient,
+							assetFee: '0'
+						}]
+					})
+				}
+
 				if (typeof request.to.recipient !== 'string') {
 					throw(new Error('Recipient is not a string'));
 				}
@@ -209,6 +241,21 @@ test('Asset Movement Anchor Client Test', async function() {
 					transactions: [testTransaction],
 					total: '1'
 				})
+			},
+
+			/**
+			 * Method to initiate a persistent forwarding address template session
+			 */
+			initiatePersistentForwardingTemplate: async function(_ignored_request): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, { ok: true }>, 'ok'>> {
+				const sessionData: PersistentForwardingTemplateSessionData = {
+					type: 'plaid',
+					plaidLinkToken: 'link-sandbox-test-token'
+				};
+				return({
+					id: 'test-session-id',
+					expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+					data: sessionData
+				});
 			}
 		}
 	});
@@ -521,6 +568,64 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		const transferStatus = await initiatedTransfer.getTransferStatus();
 		expect(transferStatus.transaction.additionalTransferDetails).toEqual({ type: 'markdown', content: 'Custom Transaction Details' });
+	}
+
+	{
+		/**
+		 * Test execute transfer
+		 */
+
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const persistentAddressId = 'TEST_PERSISTENT_ADDRESS_ID'
+
+		const persistentAddress = { type: 'persistent-address', persistentAddressId: persistentAddressId } satisfies PersistentAddressOrTemplateRecipient;
+
+		const persistentAddressTemplateTransfer = await testProvider.initiateTransfer({
+			from: { location: 'chain:keeta:100' },
+			asset: { to: 'USD', from: testCurrencyUSDC.publicKeyString.get() },
+			to: { location: 'bank-account:us', recipient: persistentAddress  },
+			value: '100'
+		});
+
+		if (persistentAddressTemplateTransfer.instructions[0]?.type !== 'ACH_DEBIT') {
+			throw(new Error('Expected ACH_DEBIT instruction'));
+		}
+
+		expect(persistentAddressTemplateTransfer.instructions[0].pullFrom).toEqual(persistentAddress);
+
+		await expect(persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0] })).rejects.toThrow(KeetaAnchorUserValidationError);
+
+		const executed = await persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0], account });
+		expect(executed.transaction.status).toEqual('EXECUTED');
+	}
+
+	{
+		/**
+		 * Test initiatePersistentForwardingTemplate
+		 */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const result = await testProvider.initiatePersistentForwardingTemplate({
+			asset: testCurrencyUSDC,
+			location: 'bank-account:us',
+			account
+		});
+
+		expect(result.id).toBe('test-session-id');
+		expect(result.data).toEqual({
+			type: 'plaid',
+			plaidLinkToken: 'link-sandbox-test-token'
+		});
+		expect(typeof result.expiresAt).toBe('string');
 	}
 });
 

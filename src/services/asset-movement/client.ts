@@ -17,6 +17,9 @@ import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
 	KeetaAssetMovementAnchorInitiateTransferClientRequest,
 	KeetaNetAccount,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
@@ -29,15 +32,19 @@ import type {
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
 	KeetaPersistentForwardingAddressDetails,
-	KeetaAssetMovementAnchorInitiateTransferResponse
+	KeetaAssetMovementAnchorInitiateTransferResponse,
+	KeetaAssetMovementAnchorExecuteTransferClientRequest
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadata,
 	convertAssetLocationToString,
 	convertAssetOrPairSearchInputToCanonical,
 	convertAssetSearchInputToCanonical,
+	getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
+	isKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
@@ -46,6 +53,7 @@ import {
 	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+	isKeetaAssetMovementAnchorExecuteTransferResponse,
 	isKeetaAssetMovementAnchorGetExchangeStatusResponse,
 	isKeetaAssetMovementAnchorInitiateTransferResponse,
 	isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
@@ -284,6 +292,11 @@ class KeetaAssetMovementTransfer {
 		return(await this.provider.getTransferStatus({ id: this.transfer.id, ...account }));
 	}
 
+	async executeTransfer(input: Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		const account = this.request.account ? { account: this.request.account } : undefined;
+		return(await this.provider.executeTransfer({ id: this.transfer.id, ...input, ...account }));
+	}
+
 	get transferId(): string {
 		return(this.transfer.id);
 	}
@@ -477,6 +490,31 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(new KeetaAssetMovementTransfer(this, request, requestInformationJSON));
 	}
 
+	async executeTransfer(request: KeetaAssetMovementAnchorExecuteTransferClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
+
+		const { id, ...rest } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorGetTransferStatusResponse,
+			Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>
+		>({
+			method: 'POST',
+			endpoint: 'executeTransfer',
+			params: { id: request.id },
+			account: request.account,
+			body: rest,
+			getSignedData: (body: Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>) => {
+				return(getKeetaAssetMovementAnchorExecuteTransferRequestSigningData({ id, ...body }));
+			},
+			isResponse: isKeetaAssetMovementAnchorExecuteTransferResponse
+		});
+
+		this.logger?.debug(`asset movement execute transfer successful, transaction ID ${requestInformationJSON.transaction.id}`);
+
+		return(requestInformationJSON);
+	}
+
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'GET',
@@ -492,6 +530,36 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
+	async initiatePersistentForwardingTemplate(request: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse>> {
+		this.logger?.debug(`Initiating persistent forwarding template for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+
+		const result = await this.#makeRequest<
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest,
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest
+		>({
+			method: 'POST',
+			endpoint: 'initiatePersistentForwardingTemplate',
+			account: request.account,
+			serializeRequest(body) {
+				const { account, ...rest } = body;
+				return({
+					...rest,
+					location: convertAssetLocationToString(body.location),
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+				});
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse
+		});
+
+		this.logger?.debug(`initiate persistent forwarding template successful, session ID: ${result.id}`);
+
+		return(result);
+	}
+
 	async createPersistentForwardingTemplate(request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
@@ -505,12 +573,19 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			account: request.account,
 			serializeRequest(body) {
 				const { account, ...rest }	= body;
-				return({
-					...rest,
-					location: convertAssetLocationToString(body.location),
-					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
-				})
+				if ('data' in body) {
+					return({
+						...rest,
+						data: body.data
+					});
+				} else {
+					return({
+						...rest,
+						location: convertAssetLocationToString(body.location),
+						asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+						...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+					});
+				}
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,

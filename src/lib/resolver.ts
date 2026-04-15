@@ -203,6 +203,7 @@ type ServiceMetadata = {
 						'initiateTransfer' |
 						'executeTransfer' |
 						'getTransferStatus' |
+						'initiatePersistentForwardingTemplate' |
 						'createPersistentForwardingTemplate' |
 						'listPersistentForwardingTemplate' |
 						'createPersistentForwarding' |
