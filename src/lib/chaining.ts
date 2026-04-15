@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
-import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatRails, MovableAssetSearchCanonical, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
+import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
@@ -893,7 +893,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 								const foundInstruction = nextStep.usingInstruction;
 
-								const isFiatRailFoundInstruction = (input: AssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatRails; }> => {
+								const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
 									return(isFiatRail(input.type));
 								}
 
@@ -914,7 +914,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 									sendingToType = 'NEXT_STEP';
 									recipient = KeetaNet.lib.Account.fromPublicKeyString(foundInstruction.sendToAddress);
-								} else if (isFiatRailFoundInstruction(foundInstruction)) {
+								} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
 									if (foundInstruction.depositMessage) {
 										throw(new Error(`Deposit message outbound is not currently supported for chaining`));
 									}
