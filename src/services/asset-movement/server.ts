@@ -51,15 +51,22 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
-import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
+import type { ExtractOk, HTTPSignedField, HTTPSignedFieldURLParametersGenericAccount } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import { resolveStorageAccountOwner } from '../../lib/utils/storage-account.js';
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
 	 */
 	homepage?: string | (() => Promise<string> | string);
+
+	/**
+	 * Network client used to resolve storage account owners.
+	 * Required when accepting requests from storage accounts.
+	 */
+	client?: { client: InstanceType<typeof KeetaNet.Client>; } | InstanceType<typeof KeetaNet.UserClient>;
 
 	/**
 	 * Configuration for asset movement operations
@@ -135,15 +142,17 @@ function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAss
 	});
 }
 
-export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Required<KeetaAnchorAssetMovementServerConfig> {
+export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Omit<Required<KeetaAnchorAssetMovementServerConfig>, 'client'> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
+	readonly client: KeetaAnchorAssetMovementServerConfig['client'];
 
 	constructor(config: KeetaAnchorAssetMovementServerConfig) {
 		super(config);
 
 		this.homepage = config.homepage ?? '';
 		this.assetMovement = config.assetMovement;
+		this.client = config.client;
 	}
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
@@ -192,7 +201,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				// Typescript needs any here, but eslint does not like it
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends [ any, Account.Account | null ]) => any ? R : never;
-			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => Partial<HTTPSignedFieldURLParameters>;
+			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => Partial<HTTPSignedFieldURLParametersGenericAccount>;
 		}) {
 			const handler = config.assetMovement[input.handlerName];
 			if (handler === undefined) {
@@ -208,7 +217,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
-					// For GET requests, we do not expect a body
 					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 					request = undefined as SerializedRequest;
 				} else {
@@ -220,7 +228,9 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 				let account: Account.Account | null = null;
 				if (authenticationRequired || (request !== undefined && 'signed' in request)) {
-					let signed;
+					let signed: HTTPSignedField;
+					let requestAccount: InstanceType<typeof KeetaNet.lib.Account>;
+
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
 						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url });
 
@@ -228,7 +238,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 							throw(new KeetaAnchorUserError('Missing authentication information'));
 						}
 
-						account = parsed.account;
+						requestAccount = parsed.account;
 						signed = parsed.signedField;
 					} else if (request) {
 						if (!('account' in request) || !('signed' in request)) {
@@ -239,13 +249,23 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 							throw(new KeetaAnchorUserError('Invalid account public key'));
 						}
 
-						account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
+						requestAccount = KeetaNet.lib.Account.fromPublicKeyString(request.account);
 						signed = assertHTTPSignedField(request.signed);
 					} else {
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'));
 					}
 
-					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
+					let signable = input.getSigningData ? input.getSigningData(request, params) : [];
+					if (requestAccount.isStorage()) {
+						if (!config.client) {
+							throw(new KeetaAnchorUserError('Storage accounts are not supported without a network client configuration'));
+						}
+
+						account = await resolveStorageAccountOwner(config.client.client, requestAccount);
+						signable = [requestAccount, ...signable];
+					} else {
+						account = requestAccount.assertAccount();
+					}
 
 					const valid = await VerifySignedData(account, signable, signed);
 
@@ -351,7 +371,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				return(undefined);
 			},
 			assertResponse: assertKeetaAssetMovementAnchorGetTransferStatusResponse,
-			getSignatureFieldAccountFromRequest: ({ url }) => parseSignatureFromURL(url),
+			getSignatureFieldAccountFromRequest: ({ url }) => parseSignatureFromURL(url, { assertKeyed: false }),
 			parseRequestToArgs: ({ params, account }) => {
 				const id = params.get('id');
 				if (typeof id !== 'string' || id.length === 0) {

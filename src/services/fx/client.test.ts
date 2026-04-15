@@ -1888,3 +1888,141 @@ test('FX Server Converted Amount Bound Validation', async function() {
 		}
 	}
 });
+
+test('FX Client with Storage Account', async function() {
+	const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const liquidityProvider = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const quoteSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	await using nodeAndClient = await createNodeAndClient(ownerAccount);
+	const ownerClient = nodeAndClient.userClient;
+	const baseToken = ownerClient.baseToken;
+	const giveTokens = nodeAndClient.give.bind(nodeAndClient);
+
+	const { account: testCurrencyUSD } = await ownerClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyEUR } = await ownerClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
+		throw(new Error('Test currencies are not tokens'));
+	}
+
+	await ownerClient.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], []) }, { account: testCurrencyUSD });
+	await ownerClient.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], []) }, { account: testCurrencyEUR });
+
+	const { account: storageAccount } = await ownerClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+
+	await ownerClient.updatePermissions(baseToken, new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD']), undefined, undefined, { account: storageAccount });
+	await ownerClient.updatePermissions(testCurrencyUSD, new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD']), undefined, undefined, { account: storageAccount });
+	await ownerClient.updatePermissions(testCurrencyEUR, new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD']), undefined, undefined, { account: storageAccount });
+	await ownerClient.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_DEPOSIT']) }, { account: storageAccount });
+
+	await ownerClient.modTokenSupplyAndBalance(10000n, testCurrencyUSD);
+	await ownerClient.send(storageAccount, 5000n, testCurrencyUSD);
+
+	await giveTokens(storageAccount, 100n);
+	await giveTokens(liquidityProvider, 100n);
+
+	await ownerClient.modTokenSupplyAndBalance(10000n, testCurrencyEUR, { account: liquidityProvider });
+	await ownerClient.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
+
+	await using server = new KeetaNetFXAnchorHTTPServer({
+		logger: logger,
+		account: liquidityProvider,
+		client: { client: ownerClient.client, network: ownerClient.config.network, networkAlias: ownerClient.config.networkAlias },
+		quoteSigner: quoteSigner,
+		storage: {
+			queue: new KeetaAnchorQueueStorageDriverMemory({ logger: logger, id: 'queue' }),
+			autoRun: false
+		},
+		fx: {
+			from: [{
+				currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+				to: [testCurrencyEUR.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function() {
+				return({
+					account: liquidityProvider,
+					convertedAmount: 880n,
+					cost: {
+						amount: 0n,
+						token: baseToken
+					}
+				});
+			}
+		}
+	});
+
+	await server.start();
+	const serverURL = server.url;
+
+	await ownerClient.setInfo({
+		name: 'TEST',
+		description: 'FX Storage Account Test',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				fx: {
+					StorageTest: {
+						from: [{
+							currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+							to: [testCurrencyEUR.publicKeyString.get()]
+						}],
+						operations: {
+							getEstimate: `${serverURL}/api/getEstimate`,
+							getQuote: `${serverURL}/api/getQuote`,
+							createExchange: `${serverURL}/api/createExchange`,
+							getExchangeStatus: `${serverURL}/api/getExchangeStatus/{id}`
+						}
+					}
+				}
+			}
+		})
+	});
+
+	const storageUserClient = new KeetaNet.UserClient({
+		client: ownerClient.client,
+		account: storageAccount,
+		signer: ownerAccount,
+		network: ownerClient.network,
+		networkAlias: ownerClient.config.networkAlias,
+		usePublishAid: false
+	});
+
+	const fxClient = new KeetaNetAnchor.FX.Client(storageUserClient, {
+		root: ownerAccount,
+		logger: logger
+	});
+
+	const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: 1000n, affinity: 'from' });
+	expect(estimates).not.toBeNull();
+	expect(estimates?.length).toBeGreaterThan(0);
+
+	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 1000n, affinity: 'from' });
+	expect(quotes).not.toBeNull();
+	expect(quotes?.length).toBeGreaterThan(0);
+
+	const quote = quotes?.[0];
+	if (!quote) {
+		throw(new Error('Expected at least one quote'));
+	}
+	expect(quote.quote.convertedAmount).toBe(880n);
+
+	const balanceBeforeUSD = await ownerClient.balance(testCurrencyUSD, { account: storageAccount });
+	const balanceBeforeEUR = await ownerClient.balance(testCurrencyEUR, { account: storageAccount });
+
+	const exchange = await quote.createExchange();
+	expect(exchange.exchange.exchangeID).toBeDefined();
+
+	const exchangeStatus = await waitForExchangeToComplete(server, exchange);
+	expect(exchangeStatus.status).toBe('completed');
+	expect(exchangeStatus.blockhash).toBeDefined();
+
+	const balanceAfterUSD = await ownerClient.balance(testCurrencyUSD, { account: storageAccount });
+	const balanceAfterEUR = await ownerClient.balance(testCurrencyEUR, { account: storageAccount });
+	expect(balanceBeforeUSD - balanceAfterUSD).toBe(1000n);
+	expect(balanceAfterEUR - balanceBeforeEUR).toBe(880n);
+}, 30_000);
