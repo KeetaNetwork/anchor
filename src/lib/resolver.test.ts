@@ -611,6 +611,12 @@ test('Concurrent Lookups', async function() {
 		countryCodes: ['US' as const]
 	});
 
+	const initialCacheStats = { ...resolver.stats.cache };
+	expect(initialCacheStats).toEqual({ hit: 0, miss: 8 });
+
+	// Clear cache to ensure that following tests do not read more than the initial read
+	resolver.clearCache();
+
 	const lookupPromises = [];
 	for (let lookupID = 0; lookupID < concurrency; lookupID++) {
 		lookupPromises.push(resolver.lookup('banking', {
@@ -635,9 +641,9 @@ test('Concurrent Lookups', async function() {
 		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
 	}
+
+	expect(resolver.stats.cache.miss).toEqual(initialCacheStats.miss);
 	expect(resolver.stats.reads).toBeGreaterThan(concurrency * 3);
-	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
-	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
 

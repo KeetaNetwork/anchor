@@ -199,14 +199,18 @@ type ServiceMetadata = {
 		assetMovement?: {
 			[id: string]: {
 				operations: {
-					initiateTransfer?: ServiceMetadataEndpoint;
-					getTransferStatus?: ServiceMetadataEndpoint;
-					createPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					listPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					createPersistentForwarding?: ServiceMetadataEndpoint;
-					listPersistentForwarding?: ServiceMetadataEndpoint;
-					listTransactions?: ServiceMetadataEndpoint;
-					shareKYC?: ServiceMetadataEndpoint;
+					[Operation in (
+						'initiateTransfer' |
+						'executeTransfer' |
+						'getTransferStatus' |
+						'initiatePersistentForwardingTemplate' |
+						'createPersistentForwardingTemplate' |
+						'listPersistentForwardingTemplate' |
+						'createPersistentForwarding' |
+						'listPersistentForwarding' |
+						'listTransactions' |
+						'shareKYC'
+					)]?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: SupportedAssetsMetadata[];
@@ -793,10 +797,7 @@ type ValuizeResolvable = JSONSerializablePrimitive | ValuizableObject | Valuizab
  */
 const statsAccessToken = Symbol('statsAccessToken');
 
-/**
- * A cache object
- */
-type URLCacheObject = Map<string, {
+type URLCacheObjectEntry = {
 	pass: true;
 	value: JSONSerializable;
 	expires: Date;
@@ -804,7 +805,12 @@ type URLCacheObject = Map<string, {
 	pass: false;
 	error: unknown;
 	expires: Date;
-}>;
+};
+
+/**
+ * A cache object
+ */
+type URLCacheObject = Map<string, Promise<URLCacheObjectEntry>>;
 
 
 type ResolverConfig = {
@@ -1165,58 +1171,65 @@ class Metadata implements ValuizableInstance {
 		 * Verify that the cache entry is still valid.  If it is not,
 		 * then remove it from the cache.
 		 */
-		let cacheVal = this.#cache.instance.get(cacheKey);
+		const cacheValue = this.#cache.instance.get(cacheKey);
+		if (cacheValue) {
+			const resolvedCacheValue = await cacheValue;
 
-		if (this.#cache.instance.has(cacheKey) && cacheVal !== undefined) {
-			if (cacheVal.expires < new Date()) {
+			if (resolvedCacheValue.expires < new Date()) {
 				this.#cache.instance.delete(cacheKey);
-				cacheVal = undefined;
-			}
-		}
-
-		if (cacheVal !== undefined) {
-			this.#stats.cache.hit++;
-
-			if (cacheVal.pass) {
-				return(cacheVal.value);
 			} else {
-				throw(cacheVal.error);
+				this.#stats.cache.hit++;
+
+				if (resolvedCacheValue.pass) {
+					return(resolvedCacheValue.value);
+				} else {
+					throw(resolvedCacheValue.error);
+				}
 			}
 		}
 
 		this.#stats.cache.miss++;
 
-		let retval: JSONSerializable;
-		try {
-			const protocol = url.protocol;
-			if (protocol === 'keetanet:') {
-				retval = await this.readKeetaNetURL(url);
-			} else if (protocol === 'https:') {
-				retval = await this.readHTTPSURL(url);
-			} else {
-				this.#stats.unsupported.reads++;
-				throw(new Error(`Unsupported protocol: ${protocol}`));
+		const readPromise = (async (): Promise<URLCacheObjectEntry> => {
+			let retval: JSONSerializable;
+			try {
+				const protocol = url.protocol;
+				if (protocol === 'keetanet:') {
+					retval = await this.readKeetaNetURL(url);
+				} else if (protocol === 'https:') {
+					retval = await this.readHTTPSURL(url);
+				} else {
+					this.#stats.unsupported.reads++;
+					throw(new Error(`Unsupported protocol: ${protocol}`));
+				}
+
+				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
+
+				return({
+					pass: true,
+					value: retval,
+					expires: new Date(Date.now() + this.#cache.positiveTTL)
+				});
+			} catch (readError) {
+				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
+
+				return({
+					pass: false,
+					error: readError,
+					expires: new Date(Date.now() + this.#cache.negativeTTL)
+				});
 			}
-		} catch (readError) {
-			this.#cache.instance.set(cacheKey, {
-				pass: false,
-				error: readError,
-				expires: new Date(Date.now() + this.#cache.negativeTTL)
-			});
+		})();
 
-			this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
-			throw(readError);
+		this.#cache.instance.set(cacheKey, readPromise);
+
+		const resolvedValue = await readPromise;
+
+		if (resolvedValue.pass) {
+			return(resolvedValue.value);
+		} else {
+			throw(resolvedValue.error);
 		}
-
-		this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
-
-		this.#cache.instance.set(cacheKey, {
-			pass: true,
-			value: retval,
-			expires: new Date(Date.now() + this.#cache.positiveTTL)
-		});
-
-		return(retval);
 	}
 
 	private async resolveValue<T extends ExternalURL | undefined>(value: T): Promise<JSONSerializable>;

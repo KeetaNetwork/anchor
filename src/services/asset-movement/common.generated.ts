@@ -1,6 +1,50 @@
-import { createIs } from 'typia';
+import { createAssert, createAssertEquals, createIs } from "typia";
 import type { FiatRails, MovableAssetSearchCanonical, Rail } from './common.js';
+import type * as Common from './common.js';
 
 export const isMovableAssetSearchCanonical: (input: unknown) => input is MovableAssetSearchCanonical = createIs<MovableAssetSearchCanonical>();
 export const isRail: (input: unknown) => input is Rail = createIs<Rail>();
 export const isFiatRail: (input: unknown) => input is FiatRails = createIs<FiatRails>();
+
+export const assertKeetaSupportedAssetsMetadata: (input: unknown) => Common.SupportedAssetsMetadata[] = createAssert<Common.SupportedAssetsMetadata[]>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<Common.KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
+export const assertKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => Common.KeetaAssetMovementAnchorInitiateTransferRequest = createAssert<Common.KeetaAssetMovementAnchorInitiateTransferRequest>();
+export const assertKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => Common.KeetaAssetMovementAnchorInitiateTransferResponse = createAssertEquals<Common.KeetaAssetMovementAnchorInitiateTransferResponse>();
+export const assertKeetaAssetMovementAnchorExecuteTransferRequest: (input: unknown) => Common.KeetaAssetMovementAnchorExecuteTransferRequest = createAssert<Common.KeetaAssetMovementAnchorExecuteTransferRequest>();
+export const assertKeetaAssetMovementAnchorExecuteTransferResponse: (input: unknown) => Common.KeetaAssetMovementAnchorExecuteTransferResponse = createAssertEquals<Common.KeetaAssetMovementAnchorExecuteTransferResponse>();
+export const assertKeetaAssetMovementAnchorGetTransferStatusRequest: (input: unknown) => Common.KeetaAssetMovementAnchorGetTransferStatusRequest = createAssert<Common.KeetaAssetMovementAnchorGetTransferStatusRequest>();
+export const assertKeetaAssetMovementAnchorGetTransferStatusResponse: (input: unknown) => Common.KeetaAssetMovementAnchorGetTransferStatusResponse = createAssertEquals<Common.KeetaAssetMovementAnchorGetTransferStatusResponse>();
+export const assertKeetaAssetMovementAnchorlistTransactionsRequest: (input: unknown) => Common.KeetaAssetMovementAnchorlistTransactionsRequest = createAssert<Common.KeetaAssetMovementAnchorlistTransactionsRequest>();
+export const assertKeetaAssetMovementAnchorListPersistentForwardingRequest: (input: unknown) => Common.KeetaAssetMovementAnchorListPersistentForwardingRequest = createAssert<Common.KeetaAssetMovementAnchorListPersistentForwardingRequest>();
+export const assertKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => Common.KeetaAssetMovementAnchorListPersistentForwardingResponse = createAssertEquals<Common.KeetaAssetMovementAnchorListPersistentForwardingResponse>();
+export const assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => Common.KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createAssertEquals<Common.KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
+export const assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest: (input: unknown) => Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest = createAssert<Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest>();
+export const assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse: (input: unknown) => Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse = createAssertEquals<Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = createAssert<Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest>();
+export const assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest: (input: unknown) => Common.KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = createAssert<Common.KeetaAssetMovementAnchorListForwardingAddressTemplateRequest>();
+export const assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse: (input: unknown) => Common.KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = createAssertEquals<Common.KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>();
+export const assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = createAssertEquals<Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>();
+export const assertBankAccountAddressObfuscated: (input: unknown) => Common.BankAccountAddressObfuscated = createAssert<Common.BankAccountAddressObfuscated>();
+export const assertBankAccountAddressResolved: (input: unknown) => Common.BankAccountAddressResolved = createAssert<Common.BankAccountAddressResolved>();
+export const assertKeetaAssetMovementAnchorShareKYCRequest: (input: unknown) => Common.KeetaAssetMovementAnchorShareKYCRequest = createAssert<Common.KeetaAssetMovementAnchorShareKYCRequest>();
+export const assertKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => Common.KeetaAssetMovementAnchorShareKYCResponse = createAssertEquals<Common.KeetaAssetMovementAnchorShareKYCResponse>();
+
+export const isKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => input is Common.KeetaAssetMovementAnchorInitiateTransferRequest = createIs<Common.KeetaAssetMovementAnchorInitiateTransferRequest>();
+export const isKeetaAssetMovementAnchorExecuteTransferRequest: (input: unknown) => input is Common.KeetaAssetMovementAnchorExecuteTransferRequest = createIs<Common.KeetaAssetMovementAnchorExecuteTransferRequest>();
+export const isKeetaAssetMovementAnchorExecuteTransferResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorExecuteTransferResponse = createIs<Common.KeetaAssetMovementAnchorExecuteTransferResponse>();
+export const isKeetaAssetMovementAnchorGetTransferStatusRequest: (input: unknown) => input is Common.KeetaAssetMovementAnchorGetTransferStatusRequest = createIs<Common.KeetaAssetMovementAnchorGetTransferStatusRequest>();
+export const isKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse = createIs<Common.KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse>();
+export const isKeetaAssetMovementAnchorListForwardingAddressTemplateRequest: (input: unknown) => input is Common.KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = createIs<Common.KeetaAssetMovementAnchorListForwardingAddressTemplateRequest>();
+export const isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = createIs<Common.KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>();
+export const isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = createIs<Common.KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>();
+export const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
+export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorInitiateTransferResponse = createIs<Common.KeetaAssetMovementAnchorInitiateTransferResponse>();
+export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<Common.KeetaAssetMovementAnchorGetTransferStatusResponse>();
+export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<Common.KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
+export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorShareKYCResponse = createIs<Common.KeetaAssetMovementAnchorShareKYCResponse>();
+export const isKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorListPersistentForwardingResponse = createIs<Common.KeetaAssetMovementAnchorListPersistentForwardingResponse>();
+
+export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
+export const assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties>();
+export const assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties>();
