@@ -45,7 +45,7 @@ export interface ChainStepResolutionAssetMovement extends ChainStepResolutionBas
 
 export type ChainStepResolution = ChainStepResolutionFX | ChainStepResolutionAssetMovement;
 
-export type AnchorChainingPathComputeStepsResult = {
+export type AnchorChainingPathComputedPlan = {
 	steps: ChainStepResolution[];
 	totalValueIn: bigint;
 	totalValueOut: bigint;
@@ -438,10 +438,6 @@ export class AnchorGraph {
 						this.#computeAssetMovementPairSide(pairResolved[1])
 					]);
 
-					if (fromResolved.id === 'USD' || toResolved.id === 'USD') {
-						console.log('fromResolved, toResolved', fromResolved, toResolved);
-					}
-
 					const pathNodes: GraphNodeLike[] = [];
 					for (const [ src, dest ] of [
 						[ fromResolved, toResolved ],
@@ -497,8 +493,6 @@ export class AnchorGraph {
 		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
 			return({ node, next: [] });
 		});
-
-		console.log('nodesWithNext', nodesWithNext);
 
 		for (const node of nodesWithNext) {
 			for (let secondNodeIdx = 0; secondNodeIdx < nodesWithNext.length; secondNodeIdx++) {
@@ -726,14 +720,17 @@ export class AnchorGraph {
 	}
 }
 
+interface ComputePlanOptions {
+	affinity?: 'from' | 'to';
+	receiveAmount?: bigint;
+
+	overrides?: AnchorChainingAccountOverrides;
+}
+
 export class AnchorChainingPath {
 	readonly request: AnchorChainingPathInput;
 	readonly path: GraphNodeLike[];
 	readonly parent: AnchorChaining;
-
-	#state: AnchorChainingPathState = { status: 'idle' };
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	#listeners = new Map<string, Set<((...args: any[]) => void)>>();
 
 	constructor(input: {
 		request: AnchorChainingPathInput;
@@ -745,131 +742,7 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
-	get state(): AnchorChainingPathState {
-		return(this.#state);
-	}
-
-	on<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
-		let listenerSet = this.#listeners.get(event);
-		if (!listenerSet) {
-			listenerSet = new Set();
-			this.#listeners.set(event, listenerSet);
-		}
-		listenerSet.add(listener);
-	}
-
-	off<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
-		this.#listeners.get(event)?.delete(listener);
-	}
-
-	#setState(state: AnchorChainingPathState): void {
-		this.#state = state;
-		this.#emit('stateChange', state);
-	}
-
-	get logger(): Logger | undefined {
-		return(this.parent['logger']);
-	}
-
-	#emit<E extends keyof AnchorChainingPathEventMap>(event: E, ...args: AnchorChainingPathEventMap[E]): { sendCount: number; } {
-		let sendCount = 0;
-
-		for (const listener of (this.#listeners.get(event) ?? [])) {
-			try {
-				listener(...args);
-				sendCount++;
-			} catch (err) {
-				this.logger?.debug(`AnchorChainingPath::emit`, `Error in listener for event '${event}'`, err);
-			}
-		}
-
-		return({ sendCount });
-	}
-
-	private _debugGetPathReadable() {
-		return(this.path.map(function(node) {
-			const fromAssetLocation = `${convertAssetSearchInputToCanonical(node.from.asset)}@${convertAssetLocationToString(node.from.location)}`;
-			const toAssetLocation = `${convertAssetSearchInputToCanonical(node.to.asset)}@${convertAssetLocationToString(node.to.location)}`;
-			return(`${node.type}:${node.providerID} (${fromAssetLocation} -> ${toAssetLocation} via ${node.to.rail})`);
-		}));
-	}
-
-	get isMultiStep(): boolean {
-		return(this.path.length > 1);
-	}
-
-	async #awaitStepCompletion<
-		Type extends StepNeededActionEventPayload['type'],
-		Ret extends Parameters<Extract<StepNeededActionEventPayload, { action: { type: Type }}>['markCompleted']>
-	>(step: Pick<Extract<StepNeededActionEventPayload, { type: Type }>, 'action' | 'type'>): Promise<Ret> {
-		let didComplete = false;
-
-		function assertDidNotComplete() {
-			if (didComplete) {
-				throw(new Error(`Step was already marked as completed or failed`));
-			}
-
-			didComplete = true;
-		}
-
-		let resolveFn: undefined | StepNeededActionEventPayload['markCompleted'];
-		let rejectFn: undefined | StepNeededActionEventPayload['markFailed'];
-
-		const promise = new Promise<Ret>(function(resolve, reject) {
-			resolveFn = (...args: Ret) => {
-				assertDidNotComplete();
-				resolve(args);
-			};
-
-			rejectFn = (error) => {
-				assertDidNotComplete();
-
-				let usingErr = error;
-				if (!usingErr) {
-					usingErr = new Error(`Step marked as failed without error`);
-				}
-
-				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-				reject(error);
-			}
-		});
-
-		if (!resolveFn || !rejectFn) {
-			throw(new Error(`Failed to create step completion promise`));
-		}
-
-		// Typescript Cannot infer the correct payload type for the stepNeedsAction event, so we have to assert it here. We ensure type safety by constraining the step parameter to the correct action type, which guarantees that the payload will match the expected structure for that action type.
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const { sendCount } = this.#emit('stepNeedsAction', {
-			...step,
-			markCompleted: resolveFn,
-			markFailed: rejectFn
-		} as Extract<StepNeededActionEventPayload, { action: { type: Type }}>);
-
-		if (sendCount === 0) {
-			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.type}) is awaiting completion`));
-		}
-
-		return(await promise);
-	}
-
-	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<void> {
-		if (options?.requireSendAuth) {
-			await this.#awaitStepCompletion({
-				type: 'keetaSendAuthRequired',
-				action: {
-					sendToAddress: KeetaNet.lib.Account.toAccount(sendToAddress),
-					value,
-					token: KeetaNet.lib.Account.toAccount(token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					...(external !== undefined ? { external } : {})
-				}
-			});
-		}
-
-		await this.parent['client'].send(sendToAddress, value, token, external);
-	}
-
-	async #getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<Account | undefined> {
+	protected async getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<Account | undefined> {
 		let found;
 
 		if (this.parent['client'].account.isAccount()) {
@@ -888,18 +761,40 @@ export class AnchorChainingPath {
 
 		return(found);
 	}
+}
 
-	async computeSteps(options?: {
-		affinity?: 'from' | 'to';
-		receiveAmount?: bigint;
+export class AnchorChainingPlan extends AnchorChainingPath {
+	#_plan: AnchorChainingPathComputedPlan | null = null;
 
-		overrides?: AnchorChainingAccountOverrides
-	}): Promise<AnchorChainingPathComputeStepsResult> {
-		const resolver = this.parent['resolver'];
+	#state: AnchorChainingPathState = { status: 'idle' };
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	#listeners = new Map<string, Set<((...args: any[]) => void)>>();
 
-		const fxClient = new KeetaFXAnchorClient(this.parent['client'], { resolver });
+	private constructor(path: AnchorChainingPath) {
+		super({ ...path });
+	}
 
-		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], { resolver });
+	get plan(): AnchorChainingPathComputedPlan {
+		if (!this.#_plan) {
+			throw(new Error(`Steps have not been computed yet`));
+		}
+
+		return(this.#_plan);
+	}
+
+	async #computePlan(options?: ComputePlanOptions) {
+		if (this.#_plan) {
+			throw(new Error(`Steps have already been computed`));
+		}
+
+		const sharedClientOptions = {
+			resolver: this.parent['resolver'],
+			...(this.parent['logger'] ? { logger: this.parent['logger'] } : {})
+		} as const;
+
+		const fxClient = new KeetaFXAnchorClient(this.parent['client'], sharedClientOptions);
+
+		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
 
 		const affinity = options?.affinity ?? 'from';
 
@@ -1064,7 +959,7 @@ export class AnchorChainingPath {
 						}
 
 						const transfer = await providers[0].initiateTransfer({
-							account: await this.#getAccountForAction({
+							account: await this.getAccountForAction({
 								type: 'assetMovement',
 								providerMethod: 'initiateTransfer',
 								provider: providers[0]
@@ -1145,6 +1040,124 @@ export class AnchorChainingPath {
 		});
 	}
 
+	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingPlan> {
+		const instance = new this(path);
+		instance.#_plan = await instance.#computePlan(options);
+		return(instance);
+	}
+
+	get state(): AnchorChainingPathState {
+		return(this.#state);
+	}
+
+	on<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
+		let listenerSet = this.#listeners.get(event);
+		if (!listenerSet) {
+			listenerSet = new Set();
+			this.#listeners.set(event, listenerSet);
+		}
+		listenerSet.add(listener);
+	}
+
+	off<E extends keyof AnchorChainingPathEventMap>(event: E, listener: (...args: AnchorChainingPathEventMap[E]) => void): void {
+		this.#listeners.get(event)?.delete(listener);
+	}
+
+	#setState(state: AnchorChainingPathState): void {
+		this.#state = state;
+		this.#emit('stateChange', state);
+	}
+
+	get logger(): Logger | undefined {
+		return(this.parent['logger']);
+	}
+
+	#emit<E extends keyof AnchorChainingPathEventMap>(event: E, ...args: AnchorChainingPathEventMap[E]): { sendCount: number; } {
+		let sendCount = 0;
+
+		for (const listener of (this.#listeners.get(event) ?? [])) {
+			try {
+				listener(...args);
+				sendCount++;
+			} catch (err) {
+				this.logger?.debug(`AnchorChainingPath::emit`, `Error in listener for event '${event}'`, err);
+			}
+		}
+
+		return({ sendCount });
+	}
+
+	async #awaitStepCompletion<
+		Type extends StepNeededActionEventPayload['type'],
+		Ret extends Parameters<Extract<StepNeededActionEventPayload, { action: { type: Type }}>['markCompleted']>
+	>(step: Pick<Extract<StepNeededActionEventPayload, { type: Type }>, 'action' | 'type'>): Promise<Ret> {
+		let didComplete = false;
+
+		function assertDidNotComplete() {
+			if (didComplete) {
+				throw(new Error(`Step was already marked as completed or failed`));
+			}
+
+			didComplete = true;
+		}
+
+		let resolveFn: undefined | StepNeededActionEventPayload['markCompleted'];
+		let rejectFn: undefined | StepNeededActionEventPayload['markFailed'];
+
+		const promise = new Promise<Ret>(function(resolve, reject) {
+			resolveFn = (...args: Ret) => {
+				assertDidNotComplete();
+				resolve(args);
+			};
+
+			rejectFn = (error) => {
+				assertDidNotComplete();
+
+				let usingErr = error;
+				if (!usingErr) {
+					usingErr = new Error(`Step marked as failed without error`);
+				}
+
+				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+				reject(error);
+			}
+		});
+
+		if (!resolveFn || !rejectFn) {
+			throw(new Error(`Failed to create step completion promise`));
+		}
+
+		// Typescript Cannot infer the correct payload type for the stepNeedsAction event, so we have to assert it here. We ensure type safety by constraining the step parameter to the correct action type, which guarantees that the payload will match the expected structure for that action type.
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const { sendCount } = this.#emit('stepNeedsAction', {
+			...step,
+			markCompleted: resolveFn,
+			markFailed: rejectFn
+		} as Extract<StepNeededActionEventPayload, { action: { type: Type }}>);
+
+		if (sendCount === 0) {
+			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.type}) is awaiting completion`));
+		}
+
+		return(await promise);
+	}
+
+	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<void> {
+		if (options?.requireSendAuth) {
+			await this.#awaitStepCompletion({
+				type: 'keetaSendAuthRequired',
+				action: {
+					sendToAddress: KeetaNet.lib.Account.toAccount(sendToAddress),
+					value,
+					token: KeetaNet.lib.Account.toAccount(token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+					...(external !== undefined ? { external } : {})
+				}
+			});
+		}
+
+		await this.parent['client'].send(sendToAddress, value, token, external);
+	}
+
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
 		options?: { intervalMs?: number; timeoutMs?: number }
@@ -1188,7 +1201,7 @@ export class AnchorChainingPath {
 		}
 	}
 
-	async execute(computed: AnchorChainingPathComputeStepsResult, options?: { requireSendAuth?: boolean }): Promise<AnchorChainingPathExecuteResult> {
+	async execute(options?: { requireSendAuth?: boolean }): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
 		}
@@ -1202,7 +1215,7 @@ export class AnchorChainingPath {
 		let index = 0;
 		try {
 			let prev = null;
-			for (index = 0; index < computed.steps.length; index++) {
+			for (index = 0; index < this.plan.steps.length; index++) {
 				const onStepCompleted = (step: ExecutedStep) => {
 					executedSteps.push(step);
 					this.#emit('stepExecuted', step, index);
@@ -1210,7 +1223,7 @@ export class AnchorChainingPath {
 
 				this.#setState({ status: 'executing', completedSteps: [...executedSteps], currentStepIndex: index });
 
-				const step = computed.steps[index];
+				const step = this.plan.steps[index];
 
 				if (!step) {
 					throw(new Error(`Step ${index} is not defined`));
@@ -1330,7 +1343,7 @@ export class AnchorChaining {
 		}
 	}
 
-	async computeChainingPath(input: AnchorChainingPathInput): Promise<AnchorChainingPath[] | null> {
+	async getPaths(input: AnchorChainingPathInput): Promise<AnchorChainingPath[] | null> {
 		// Direct send: same Keeta location, same asset, same rail no providers needed.
 		if (
 			input.source.rail === 'KEETA_SEND' &&
@@ -1355,5 +1368,30 @@ export class AnchorChaining {
 		}
 
 		return(retval);
+	}
+
+	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions): Promise<AnchorChainingPlan[] | null> {
+		const paths = await this.getPaths(input);
+
+		if (!paths) {
+			return(null);
+		}
+
+		const result = await Promise.allSettled(paths.map(async function(path) {
+			return(await AnchorChainingPlan.create(path, options));
+		}));
+
+		const ret = [];
+
+
+		for (const plan of result) {
+			if (plan.status === 'fulfilled') {
+				ret.push(plan.value);
+			} else {
+				this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+			}
+		}
+
+		return(ret);
 	}
 }

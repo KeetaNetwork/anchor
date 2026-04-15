@@ -7,7 +7,7 @@ import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetCon
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining } from './chaining.js';
+import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
@@ -314,13 +314,15 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 		const lp          = this._lp;
 		const giveTokens  = this._giveTokens;
 		const keetaClient = this._keetaClient;
-		this._rateRef.fn = async (request) => {
+		this._rateRef.fn = async (request, context) => {
 			const effectiveRate   = request.affinity === 'to' ? 1 / rate : rate;
 			const convertedAmount = BigInt(Math.round(Number(request.amount) * effectiveRate));
 			const balance = await keetaClient.client.getBalance(lp, request.to);
-			if (balance < convertedAmount * 2n) {
-				const token = KeetaNet.lib.Account.fromPublicKeyString(request.to).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-				await giveTokens(lp, convertedAmount * 2n, token);
+			if (context.purpose === 'exchange' || context.purpose === 'quote') {
+				if (balance < convertedAmount * 2n) {
+					const token = KeetaNet.lib.Account.fromPublicKeyString(request.to).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+					await giveTokens(lp, convertedAmount * 2n, token);
+				}
 			}
 			return({
 				account: lp,
@@ -558,7 +560,7 @@ test('Asset Movement Anchor Client Test', async function({ expect }) {
 		})
 	});
 
-	const paths = await anchorChaining.computeChainingPath({
+	const paths = await anchorChaining.getPaths({
 		source: {
 			asset: 'USD',
 			location: 'bank-account:us',
@@ -580,7 +582,6 @@ test('Asset Movement Anchor Client Test', async function({ expect }) {
 
 	expect(paths.length).toEqual(1);
 
-	expect(path.isMultiStep).toEqual(true);
 	expect(path.path.length).toEqual(3);
 
 	expect(toJSONSerializable([
@@ -716,13 +717,29 @@ async function createChainingTestHarness() {
 	});
 
 	const getPathVia = async (fxProviderID: 'FXOne' | 'FXTwo') => {
-		const paths = await anchorChaining.computeChainingPath({
+		const paths = await anchorChaining.getPaths({
 			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
 		});
-		if (!paths || paths.length === 0) {throw(new Error('No paths found'));}
-		const path = paths.find(p => p.path.some(n => n.type === 'fx' && n.providerID === fxProviderID));
-		if (!path) {throw(new Error(`No path found using ${fxProviderID}`));}
+		const path = paths?.find(p => p.path.some(n => n.type === 'fx' && n.providerID === fxProviderID));
+		if (!path) {
+			throw(new Error(`No path found using ${fxProviderID}`));
+		}
+		return(path);
+	};
+
+	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo') => {
+		const plans = await anchorChaining.getPlans({
+			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		});
+
+		const path = plans?.find(p => p.plan.steps.some(n => n.type === 'fx' && n.step.providerID === fxProviderID));
+
+		if (!path) {
+			throw(new Error(`No path found using ${fxProviderID}`));
+		}
+
 		return(path);
 	};
 
@@ -737,6 +754,7 @@ async function createChainingTestHarness() {
 		fxServerTwo,
 		anchorChaining,
 		giveTokens,
+		getPlanVia,
 		getPathVia,
 		[Symbol.asyncDispose]: async function() {
 			await bankServerUS[Symbol.asyncDispose]?.();
@@ -753,19 +771,18 @@ describe('AnchorChainingPath computeSteps', function() {
 		{ providerID: 'FXTwo' as const, expectedFxOut: 85n, totalOut: 75n }
 	])('FX rate comparison: $providerID', async function({ providerID, expectedFxOut, totalOut }) {
 		await using h = await createChainingTestHarness();
-		const path = await h.getPathVia(providerID);
-		const result = await path.computeSteps();
+		const path = await h.getPlanVia(providerID);
 
-		expect(result.steps.length).toEqual(2);
-		expect(result.totalValueIn).toEqual(100n);
-		expect(result.totalValueOut).toEqual(totalOut);
+		expect(path.plan.steps.length).toEqual(2);
+		expect(path.plan.totalValueIn).toEqual(100n);
+		expect(path.plan.totalValueOut).toEqual(totalOut);
 
-		const fxStep = result.steps.find(s => s.type === 'fx');
+		const fxStep = path.plan.steps.find(s => s.type === 'fx');
 		if (fxStep?.type === 'fx') {expect(fxStep.valueOut).toEqual(expectedFxOut);}
 
-		for (let i = 0; i < result.steps.length - 1; i++) {
-			const valueOut = result.steps[i]?.valueOut;
-			const valueIn = result.steps[i + 1]?.valueIn;
+		for (let i = 0; i < path.plan.steps.length - 1; i++) {
+			const valueOut = path.plan.steps[i]?.valueOut;
+			const valueIn = path.plan.steps[i + 1]?.valueIn;
 			if (!valueIn || !valueOut) {
 				throw(new Error(`Missing valueIn or valueOut for step ${i}`));
 			}
@@ -776,25 +793,25 @@ describe('AnchorChainingPath computeSteps', function() {
 	test('affinity:to is unsupported for paths with AM steps', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await h.getPathVia('FXOne');
-		await expect(path.computeSteps({ affinity: 'to' })).rejects.toThrow('not currently supported for asset movement steps');
+		await expect(AnchorChainingPlan.create(path, { affinity: 'to' })).rejects.toThrow('not currently supported for asset movement steps');
 	});
 
 	test('BankEU initiateTransfer failure propagates from computeSteps', async function() {
 		await using h = await createChainingTestHarness();
-		const path = await h.getPathVia('FXOne');
 		h.bankServerEU.failNextInitiate('Bank EU initiate failed');
-		await expect(path.computeSteps()).rejects.toThrow('Bank EU initiate failed');
+		const path = await h.getPathVia('FXOne');
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Bank EU initiate failed');
 	});
 
 	test('AM->FX chaining is unsupported', async function() {
 		await using h = await createChainingTestHarness();
-		const paths = await h.anchorChaining.computeChainingPath({
+		const paths = await h.anchorChaining.getPaths({
 			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
 		});
 		const threeStepPath = paths?.find(p => p.path.length === 3);
 		if (!threeStepPath) {throw(new Error('No 3-step path found'));}
-		await expect(threeStepPath.computeSteps()).rejects.toThrow('Cannot currently chain from asset movement to fx step');
+		await expect(AnchorChainingPlan.create(threeStepPath)).rejects.toThrow('Cannot currently chain from asset movement to fx step');
 	});
 });
 
@@ -802,7 +819,7 @@ describe('AnchorChainingPath execute', function() {
 	test('success: step structure, events, state transitions, and guard rails', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
+		const path = await h.getPlanVia('FXOne');
 		expect(path.state.status).toEqual('idle');
 
 		const stateHistory: AnchorChainingPathState['status'][] = [];
@@ -820,8 +837,7 @@ describe('AnchorChainingPath execute', function() {
 		path.on('stepExecuted', removedListener);
 		path.off('stepExecuted', removedListener);
 
-		const computed = await path.computeSteps();
-		const result = await path.execute(computed);
+		const result = await path.execute();
 
 		// Step structure and server-side verification
 		expect(result.steps.length).toEqual(2);
@@ -864,14 +880,13 @@ describe('AnchorChainingPath execute', function() {
 		expect(removedListenerCallCount).toEqual(0);
 
 		// Re-executing a completed path throws
-		await expect(path.execute(computed)).rejects.toThrow('Cannot execute');
+		await expect(path.execute()).rejects.toThrow('Cannot execute');
 	});
 
 	test('FX step failure: failed event, state, and double-execute guard', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
+		const path = await h.getPlanVia('FXOne');
 
 		h.fxServerOne.failNextExchange('FX step 0 failed');
 
@@ -880,7 +895,7 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		await expect(path.execute(computed)).rejects.toThrow('FX step 0 failed');
+		await expect(path.execute()).rejects.toThrow('FX step 0 failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(0);
@@ -893,14 +908,13 @@ describe('AnchorChainingPath execute', function() {
 		expect(failedEvent.completedSteps.length).toEqual(0);
 
 		// Re-executing a failed path throws
-		await expect(path.execute(computed)).rejects.toThrow('Cannot execute');
+		await expect(path.execute()).rejects.toThrow('Cannot execute');
 	});
 
 	test('AM step failure: failed event carries the completed FX step', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
+		const path = await h.getPlanVia('FXOne');
 
 		// Arm failure after computeSteps so initiation succeeds but status polling throws.
 		h.bankServerEU.failNextTransferStatus('AM step 1 poll failed');
@@ -913,7 +927,7 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		await expect(path.execute(computed)).rejects.toThrow('AM step 1 poll failed');
+		await expect(path.execute()).rejects.toThrow('AM step 1 poll failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);
@@ -939,7 +953,7 @@ describe('AnchorChainingPath direct send', function() {
 		const recipient = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		await h.giveTokens(h.client.account, 500n, h.tokens.USDC);
 
-		const paths = await h.anchorChaining.computeChainingPath({
+		const paths = await h.anchorChaining.getPlans({
 			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 200n, rail: 'KEETA_SEND' },
 			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: recipient.publicKeyString.get(), rail: 'KEETA_SEND' }
 		});
@@ -951,15 +965,13 @@ describe('AnchorChainingPath direct send', function() {
 		const path = paths[0];
 
 		expect(path.path.length).toEqual(0);
-		expect(path.isMultiStep).toEqual(false);
 
-		const computed = await path.computeSteps();
-		expect(computed.steps.length).toEqual(0);
-		expect(computed.totalValueIn).toEqual(200n);
-		expect(computed.totalValueOut).toEqual(200n);
+		expect(path.plan.steps.length).toEqual(0);
+		expect(path.plan.totalValueIn).toEqual(200n);
+		expect(path.plan.totalValueOut).toEqual(200n);
 
 		expect(path.state.status).toEqual('idle');
-		const result = await path.execute(computed);
+		const result = await path.execute();
 		expect(result.steps.length).toEqual(0);
 		expect(path.state.status).toEqual('completed');
 
@@ -970,7 +982,7 @@ describe('AnchorChainingPath direct send', function() {
 
 describe('AnchorChainingPath ACH fiat path', function() {
 	async function getBankUSPath(h: Awaited<ReturnType<typeof createChainingTestHarness>>) {
-		const paths = await h.anchorChaining.computeChainingPath({
+		const paths = await h.anchorChaining.getPlans({
 			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
 			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
 		});
@@ -982,20 +994,18 @@ describe('AnchorChainingPath ACH fiat path', function() {
 	test('no stepNeedsAction listener causes execute to throw', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
-		const computed = await path.computeSteps();
 
-		expect(computed.steps[0]?.type).toEqual('assetMovement');
-		if (computed.steps[0]?.type === 'assetMovement') {
-			expect(computed.steps[0].usingInstruction.type).toEqual('ACH');
+		expect(path.plan.steps[0]?.type).toEqual('assetMovement');
+		if (path.plan.steps[0]?.type === 'assetMovement') {
+			expect(path.plan.steps[0].usingInstruction.type).toEqual('ACH');
 		}
 
-		await expect(path.execute(computed)).rejects.toThrow('No listeners for stepNeedsAction');
+		await expect(path.execute()).rejects.toThrow('No listeners for stepNeedsAction');
 	});
 
 	test('markCompleted signals completion; server records transfer as COMPLETED', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
-		const computed = await path.computeSteps();
 
 		path.on('stepNeedsAction', (payload) => {
 			if (payload.type === 'keetaSendAuthRequired') {
@@ -1004,7 +1014,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		const result = await path.execute(computed);
+		const result = await path.execute();
 
 		expect(result.steps.length).toEqual(1);
 		expect(result.steps[0]?.type).toEqual('assetMovement');
@@ -1019,7 +1029,6 @@ describe('AnchorChainingPath ACH fiat path', function() {
 	test('transfer status polling failure emits failed event at step 0', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
-		const computed = await path.computeSteps();
 
 		h.bankServerUS.failNextTransferStatus('ACH poll failed');
 
@@ -1035,7 +1044,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		await expect(path.execute(computed)).rejects.toThrow('ACH poll failed');
+		await expect(path.execute()).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
@@ -1058,16 +1067,14 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 	test('no stepNeedsAction listener throws when requireSendAuth is set', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
-		await expect(path.execute(computed, { requireSendAuth: true })).rejects.toThrow('No listeners for stepNeedsAction');
+		const path = await h.getPlanVia('FXOne');
+		await expect(path.execute({ requireSendAuth: true })).rejects.toThrow('No listeners for stepNeedsAction');
 	});
 
 	test('markCompleted({ sent: true }): event fires with correct payload and execute succeeds', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
+		const path = await h.getPlanVia('FXOne');
 
 		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
 
@@ -1080,7 +1087,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 			}
 		});
 
-		const result = await path.execute(computed, { requireSendAuth: true });
+		const result = await path.execute({ requireSendAuth: true });
 
 		expect(result.steps).toHaveLength(2);
 		expect(capturedActions).toHaveLength(1);
@@ -1100,8 +1107,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 	test('markCompleted({ sent: false }): execute still proceeds (sent value is advisory)', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
+		const path = await h.getPlanVia('FXOne');
 
 		path.on('stepNeedsAction', (payload) => {
 			if (payload.type === 'keetaSendAuthRequired') {
@@ -1111,15 +1117,14 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 			}
 		});
 
-		const result = await path.execute(computed, { requireSendAuth: true });
+		const result = await path.execute({ requireSendAuth: true });
 		expect(result.steps).toHaveLength(2);
 	});
 
 	test('markFailed: execute rejects with the provided error', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const path = await h.getPathVia('FXOne');
-		const computed = await path.computeSteps();
+		const path = await h.getPlanVia('FXOne');
 
 		path.on('stepNeedsAction', (payload) => {
 			if (payload.type === 'keetaSendAuthRequired') {
@@ -1134,7 +1139,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		await expect(path.execute(computed, { requireSendAuth: true })).rejects.toThrow('send rejected by user');
+		await expect(path.execute({ requireSendAuth: true })).rejects.toThrow('send rejected by user');
 		expect(path.state.status).toBe('failed');
 		expect(failedEvents).toHaveLength(1);
 		const failedEvent = failedEvents[0];
@@ -1149,14 +1154,13 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		const recipient = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		await h.giveTokens(h.client.account, 500n, h.tokens.USDC);
 
-		const paths = await h.anchorChaining.computeChainingPath({
+		const paths = await h.anchorChaining.getPlans({
 			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 200n, rail: 'KEETA_SEND' },
 			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: recipient.publicKeyString.get(), rail: 'KEETA_SEND' }
 		});
 		if (!paths?.[0]) { throw(new Error('Expected direct-send path')); }
 		const path = paths[0];
-		const computed = await path.computeSteps();
-		expect(computed.steps).toHaveLength(0);
+		expect(path.plan.steps).toHaveLength(0);
 
 		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
 
@@ -1169,7 +1173,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 			}
 		});
 
-		const result = await path.execute(computed, { requireSendAuth: true });
+		const result = await path.execute({ requireSendAuth: true });
 		expect(result.steps).toHaveLength(0);
 
 		expect(capturedActions).toHaveLength(1);
