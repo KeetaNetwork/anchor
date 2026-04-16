@@ -69,7 +69,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
-	#url: undefined | string | URL | ((object: this) => string);
+	#url: undefined | string | URL | ((object: KeetaNetAnchorHTTPServer) => string);
 	readonly #config: ConfigType;
 
 	constructor(config: ConfigType) {
@@ -83,18 +83,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				this.#url = config.url;
 				this.#urlParts = undefined;
 			} else if (typeof config.url === 'function') {
-				/**
-				 * The parameter for the call back is typed as
-				 * `this`, which means any subclass is typed
-				 * but the interface can't identify that --
-				 * instead it types it as the base class
-				 * (KeetaNetAnchorHTTPServer), which means it
-				 * can't be assigned to the type of `#url`
-				 * without overriding the type check. However,
-				 * we know that `this` will be at least
-				 * compatible with the base class.
-				 */
-				// @ts-ignore
 				this.#url = config.url;
 				this.#urlParts = undefined;
 			} else {
@@ -651,10 +639,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	 * setting a custom URL.
 	 */
 	get url(): string {
-		if (this.port === 0 || this.#server === undefined) {
-			throw(new Error('Server not started'));
-		}
-
 		if (this.#url !== undefined) {
 			let newURL: string;
 			if (typeof this.#url === 'string') {
@@ -662,6 +646,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			} else if (this.#url instanceof URL || ('port' in this.#url && 'hostname' in this.#url && 'toString' in this.#url)) {
 				newURL = this.#url.toString();
 			} else if (typeof this.#url === 'function') {
+				if (this.port === 0 || this.#server === undefined) {
+					throw(new Error('Server not started'));
+				}
 				newURL = this.#url(this);
 			} else {
 				assertNever(this.#url);
@@ -671,9 +658,11 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			newURLObj.pathname = '/';
 			newURLObj.search = '';
 
-			const retval = newURLObj.toString();
+			return(newURLObj.toString());
+		}
 
-			return(retval);
+		if (this.port === 0 || this.#server === undefined) {
+			throw(new Error('Server not started'));
 		}
 
 		const urlObj = new URL('http://localhost');
@@ -683,17 +672,84 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		urlObj.pathname = '/';
 		urlObj.search = '';
 
-		const retval = urlObj.toString();
-
-		return(retval);
+		return(urlObj.toString());
 	}
 
-	set url(value: undefined | string | URL | ((object: this) => string)) {
+	set url(value: undefined | string | URL | ((object: KeetaNetAnchorHTTPServer) => string)) {
 		this.#urlParts = undefined;
 		this.#url = value;
 	}
 
+	/**
+	 * Build the routes for this server by calling initRoutes with the
+	 * config that was provided at construction time. This is used
+	 * internally by KeetaNetCombinedAnchorHTTPServer to gather routes
+	 * from each child server.
+	 */
+	protected buildRoutes(): Promise<Routes> {
+		return(this.initRoutes(this.#config));
+	}
+
+	/**
+	 * Static helper that allows KeetaNetCombinedAnchorHTTPServer (and other
+	 * subclasses) to invoke buildRoutes() on an arbitrary
+	 * KeetaNetAnchorHTTPServer instance.  Protected access is valid here
+	 * because we are inside the KeetaNetAnchorHTTPServer class body.
+	 */
+	protected static callBuildRoutes(server: KeetaNetAnchorHTTPServer): Promise<Routes> {
+		return(server.buildRoutes());
+	}
+
 	[Symbol.asyncDispose](): Promise<void> {
 		return(this.stop());
+	}
+}
+
+export interface KeetaAnchorCombinedHTTPServerConfig extends KeetaAnchorHTTPServerConfig {
+	/**
+	 * The list of servers whose routes should be combined.
+	 */
+	servers: KeetaNetAnchorHTTPServer[];
+}
+
+/**
+ * A KeetaNetAnchorHTTPServer that combines the routes of multiple
+ * KeetaNetAnchorHTTPServer instances into a single HTTP server.
+ *
+ * When the combined server starts it propagates its URL to all child
+ * server instances so that callers holding references to those children
+ * can retrieve the correct URL via child.url.
+ */
+export class KeetaNetCombinedAnchorHTTPServer extends KeetaNetAnchorHTTPServer<KeetaAnchorCombinedHTTPServerConfig> {
+	readonly #children: KeetaNetAnchorHTTPServer[];
+
+	constructor(config: KeetaAnchorCombinedHTTPServerConfig) {
+		super(config);
+		this.#children = [...config.servers];
+	}
+
+	protected async initRoutes(_ignoreConfig: KeetaAnchorCombinedHTTPServerConfig): Promise<Routes> {
+		const combined: Routes = {};
+
+		for (const child of this.#children) {
+			const childRoutes: Routes = await KeetaNetCombinedAnchorHTTPServer.callBuildRoutes(child);
+			Object.assign(combined, childRoutes);
+		}
+
+		return(combined);
+	}
+
+	override async start(): Promise<void> {
+		await super.start();
+
+		/*
+		 * Propagate the combined server's URL to all child server
+		 * instances so that code holding a reference to a child can
+		 * call child.url and receive the correct address.
+		 */
+		const url = this.url;
+		for (const child of this.#children) {
+			child.url = url;
+		}
 	}
 }
