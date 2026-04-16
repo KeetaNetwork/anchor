@@ -57,7 +57,10 @@ function getConfig(args: string[]): GraphCLIArgs {
 		} else {
 			throw(new Error(`Unexpected argument: ${arg}`));
 		}
+	}
 
+	if (flag !== null) {
+		throw(new Error(`Missing value for flag: ${flag}`));
 	}
 
 	return(retval);

@@ -13,7 +13,7 @@ import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
 
-const DEBUG = true;
+const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
@@ -166,9 +166,10 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	setInitiateTransfer(fn: InitiateTransferFn | null): this {
 		if (!fn) {
 			fn = this.#defaultInitiateRef.fn;
-		} else {
-			this._initiateRef.fn = fn;
 		}
+
+		this._initiateRef.fn = fn;
+
 		return(this);
 	}
 
@@ -603,7 +604,7 @@ test('Asset Movement Anchor Client Test', async function({ expect }) {
 			from: { asset: tokens.EURC, location: keetaLocation, rail: 'KEETA_SEND' },
 			to: { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }
 		}
-	]));
+	])).toEqual(toJSONSerializable(path.path));
 });
 
 async function createChainingTestHarness() {

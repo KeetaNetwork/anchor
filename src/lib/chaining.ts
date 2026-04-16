@@ -171,11 +171,27 @@ export type AnchorChainingStepLike = GraphNodeLike | KeetaSendStepLike;
 
 export type AnchorChainingAsset = TokenAddress | ISOCurrencyCode | ExternalChainAsset;
 
+function areBothTokenAndEqual(a: string | TokenAddress, b: string | TokenAddress): boolean {
+	try {
+		const aParsed = KeetaNet.lib.Account.toAccount(a);
+		const bParsed = KeetaNet.lib.Account.toAccount(b);
+
+		if (!aParsed.isToken() || !bParsed.isToken()) {
+			return(false);
+		}
+
+
+		return(aParsed.comparePublicKey(bParsed));
+	} catch {
+		return(false);
+	}
+}
+
 function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAsset): boolean {
-	if (typeof a === 'string' && typeof b === 'string') {
-		return(a === b);
-	} else if (KeetaNet.lib.Account.isInstance(a) && KeetaNet.lib.Account.isInstance(b)) {
-		return(a.publicKeyString.get() === b.publicKeyString.get());
+	if (typeof a === 'string' && typeof b === 'string' && a === b) {
+		return(true);
+	} else if (areBothTokenAndEqual(a, b)) {
+		return(true);
 	} else {
 		return(false);
 	}
@@ -536,8 +552,12 @@ class AnchorGraph {
 
 		const paths: GraphNodeLike[][] = [];
 
-		function getAssetLocationString(input: GraphNodeLike['to']) {
-			return(`${convertAssetSearchInputToCanonical(input.asset)}@${convertAssetLocationToString(input.location)}`)
+		function getAssetLocationString(input: GraphNodeLike['to'], includeRail = false) {
+			let railStr = '';
+			if (includeRail) {
+				railStr = `#${input.rail}`;
+			}
+			return(`${convertAssetSearchInputToCanonical(input.asset)}@${convertAssetLocationToString(input.location)}${railStr}`)
 		}
 
 		function dfs(
@@ -552,7 +572,7 @@ class AnchorGraph {
 				throw(new Error(`Invalid node index: ${currentIndex}`));
 			}
 
-			const assetLocationStr = getAssetLocationString(cur.node.from);
+			const assetLocationStr = getAssetLocationString(cur.node.from, true);
 			if (visitedAssets.has(assetLocationStr)) {
 				return;
 			}
@@ -1202,7 +1222,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-				reject(error);
+				reject(usingErr);
 			}
 		});
 
@@ -1356,7 +1376,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							);
 						} else if (index === 0) {
 							if (step.type !== 'assetMovement') {
-								throw(new Error('Unexpected asset movement step at index ${index} for user-initiated transfer'));
+								throw(new Error(`Unexpected asset movement step at index ${index} for user-initiated transfer`));
 							}
 
 							await this.#awaitStepCompletion({
