@@ -13,7 +13,7 @@ import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
 
-const DEBUG = false;
+const DEBUG = true;
 const logger = DEBUG ? console : undefined;
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
@@ -1166,15 +1166,15 @@ describe('AnchorChainingPath direct send', function() {
 		expect(paths.length).toEqual(1);
 		const path = paths[0];
 
-		expect(path.path.length).toEqual(0);
+		expect(path.path.length).toEqual(1);
 
-		expect(path.plan.steps.length).toEqual(0);
+		expect(path.plan.steps.length).toEqual(1);
 		expect(path.plan.totalValueIn).toEqual(200n);
 		expect(path.plan.totalValueOut).toEqual(200n);
 
 		expect(path.state.status).toEqual('idle');
 		const result = await path.execute();
-		expect(result.steps.length).toEqual(0);
+		expect(result.steps.length).toEqual(1);
 		expect(path.state.status).toEqual('completed');
 
 		const balance = await h.client.client.getBalance(recipient, h.tokens.USDC);
@@ -1362,7 +1362,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		});
 		if (!paths?.[0]) { throw(new Error('Expected direct-send path')); }
 		const path = paths[0];
-		expect(path.plan.steps).toHaveLength(0);
+		expect(path.plan.steps).toHaveLength(1);
 
 		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
 
@@ -1376,7 +1376,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		});
 
 		const result = await path.execute({ requireSendAuth: true });
-		expect(result.steps).toHaveLength(0);
+		expect(result.steps).toHaveLength(1);
 
 		expect(capturedActions).toHaveLength(1);
 		const action = capturedActions[0];
