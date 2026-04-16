@@ -896,8 +896,8 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		return(providers);
 	}
 
-	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		return(await this.#lookup(request));
+	async getProvidersForTransfer(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		return(await this.#lookup(request, shared));
 	}
 
 	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {

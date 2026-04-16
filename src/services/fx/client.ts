@@ -892,6 +892,10 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 		for (const quoteOrEstimate of quotesAndEstimates) {
 			if (!quoteOrEstimate.quote) {
+				if (quoteOrEstimate.error && !FXErrors.QuoteIssuanceDisabled.isInstance(quoteOrEstimate.error)) {
+					this.logger?.debug(`Failed to get quote from provider ${String(quoteOrEstimate.provider.providerID)}:`, quoteOrEstimate.error);
+				}
+
 				continue;
 			}
 

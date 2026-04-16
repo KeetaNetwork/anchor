@@ -743,8 +743,8 @@ interface ValuizableMethod extends ValuizableMethodBase, ToValuizableExpectPrimi
 	(expect: 'boolean'): Promise<boolean>;
 };
 
-interface ToValuizableExpectString extends ValuizableMethodBase, ToValuizableExpectPrimitive<string> {
-	(expect: 'string'): Promise<string>;
+interface ToValuizableExpectString<T extends string> extends ValuizableMethodBase, ToValuizableExpectPrimitive<T> {
+	(expect: 'string'): Promise<T>;
 };
 
 interface ToValuizableExpectNumber extends ValuizableMethodBase, ToValuizableExpectPrimitive<number> {
@@ -764,8 +764,8 @@ interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodB
 }
 
 /* eslint-disable @stylistic/indent */
-type ToValuizable<T> =
-	T extends string ? ToValuizableExpectString :
+export type ToValuizable<T> =
+	T extends string ? ToValuizableExpectString<T> :
 	T extends number ? ToValuizableExpectNumber :
 	T extends boolean ? ToValuizableExpectBoolean :
 	T extends JSONSerializablePrimitive ? ToValuizableExpectPrimitive<T> :

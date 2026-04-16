@@ -176,6 +176,12 @@ export default {
 				'nric'
 			]
 		},
+		{
+			filename: [ 'src/lib/chaining-graph.cli.ts' ],
+			words: [
+				'rankdir', 'fontname', 'darkorange', 'steelblue'
+			]
+		},
 	],
 	useGitignore: true
 };

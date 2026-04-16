@@ -250,3 +250,7 @@ export function toAssetLocation(input: AssetLocationInput): AssetLocation {
 		return(input);
 	}
 }
+
+export function isAssetLocationEqual(a: AssetLocationInput, b: AssetLocationInput): boolean {
+	return(convertAssetLocationInputToCanonical(a) === convertAssetLocationInputToCanonical(b));
+}

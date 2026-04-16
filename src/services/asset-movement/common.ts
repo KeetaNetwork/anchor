@@ -47,7 +47,8 @@ export {
 	toSolanaAsset,
 	parseSolanaAsset,
 	isSolanaAsset,
-	convertAssetSearchInputToCanonical
+	convertAssetSearchInputToCanonical,
+	isExternalChainAsset
 } from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
