@@ -30,43 +30,43 @@ interface ChainStepResolutionBase<Type extends 'fx' | 'assetMovement' | 'keetaSe
 	step: Type extends 'keetaSend' ? null : Extract<GraphNodeLike, { type: Type }>;
 }
 
-export interface ChainStepResolutionFX extends ChainStepResolutionBase<'fx'> {
+interface ChainStepResolutionFX extends ChainStepResolutionBase<'fx'> {
 	type: 'fx';
 	result: FXQuoteOrEstimate;
 };
 
-type SendingToType = 'SELF' | 'NEXT_STEP' | 'FINAL_DESTINATION';;
+type SendingToType = 'SELF' | 'NEXT_STEP' | 'FINAL_DESTINATION';
 
-export interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'assetMovement'> {
+interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'assetMovement'> {
 	usingInstruction: AssetTransferInstructions;
 	sendingTo: SendingToType;
 	transfer: AssetMovementTransfer;
 };
 
-export interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSend'> {
+interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSend'> {
 	usingInstruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>;
 };
 
 export type ChainStepResolution = ChainStepResolutionFX | ChainStepResolutionAssetMovement | ChainStepResolutionKeetaSend;
 
-export type AnchorChainingPathComputedPlan = {
+type AnchorChainingPathComputedPlan = {
 	steps: ChainStepResolution[];
 	totalValueIn: bigint;
 	totalValueOut: bigint;
 };
 
-export type ExecutedStepFX = {
+type ExecutedStepFX = {
 	type: 'fx';
 	plan: ChainStepResolutionFX;
 	exchange: FXExchange;
 };
 
-export type ExecutedStepAssetMovement = {
+type ExecutedStepAssetMovement = {
 	type: 'assetMovement';
 	plan: ChainStepResolutionAssetMovement;
 };
 
-export type ExecutedStepKeetaSend = {
+type ExecutedStepKeetaSend = {
 	type: 'keetaSend';
 	plan: ChainStepResolutionKeetaSend;
 };
@@ -110,13 +110,13 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
 
 type StepNeededActionEventPayload = StepNeededActionEventKeetaSend | StepNeededActionEventAssetMovement;
 
-export type AnchorChainingPathEventMap = {
+type AnchorChainingPathEventMap = {
 	stateChange: [state: AnchorChainingPathState];
 	stepExecuted: [step: ExecutedStep, index: number];
 	completed: [result: AnchorChainingPathExecuteResult];
 	failed: [error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number];
 	stepNeedsAction: [StepNeededActionEventPayload];
-};
+}
 
 interface AnchorChainingAssetAndLocation<AssetType extends AnchorChainingAsset = AnchorChainingAsset, Location extends AssetLocationLike = AssetLocationLike> {
 	asset: AssetType;
@@ -252,7 +252,7 @@ interface AnchorChainingAccountOverrides {
 	account?: Account | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
 }
 
-export class AnchorGraph {
+class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
 	logger?: Logger | undefined;
@@ -1423,8 +1423,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
 	private resolver: Resolver;
-	private signer: InstanceType<typeof KeetaNetLib.Account> | undefined;
-	private account: InstanceType<typeof KeetaNetLib.Account> | undefined;
 	readonly graph: AnchorGraph;
 	private logger?: Logger;
 
@@ -1435,8 +1433,6 @@ export class AnchorChaining {
 		} else {
 			this.resolver = getDefaultResolver(config.client);
 		}
-		this.signer = config.signer ?? config.account ?? config.client.signer ?? config.client.account;
-		this.account = config.account ?? config.client.account;
 		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client, logger: config.logger });
 		if (config.logger !== undefined) {
 			this.logger = config.logger;
@@ -1471,8 +1467,6 @@ export class AnchorChaining {
 			foundPaths = await this.graph.findPaths(input);
 		}
 
-		console.log('foundPaths', foundPaths);
-
 		if (foundPaths.length === 0) {
 			return(null);
 		}
@@ -1483,15 +1477,11 @@ export class AnchorChaining {
 			retval.push(new AnchorChainingPath({ request: input, path, parent: this }));
 		}
 
-		console.log('retval', retval);
-
 		return(retval);
 	}
 
 	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions): Promise<AnchorChainingPlan[] | null> {
 		const paths = await this.getPaths(input);
-
-		console.log('getPlans paths', paths);
 
 		if (!paths) {
 			return(null);
@@ -1501,10 +1491,7 @@ export class AnchorChaining {
 			return(await AnchorChainingPlan.create(path, options));
 		}));
 
-		console.log('getPlans result', result);
-
 		const ret = [];
-
 
 		for (const plan of result) {
 			if (plan.status === 'fulfilled') {
