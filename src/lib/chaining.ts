@@ -112,10 +112,8 @@ interface AnchorChainingAssetAndLocation<AssetType extends AnchorChainingAsset =
 	asset: AssetType;
 	location: AssetLocationLike;
 	rail: Rail;
-}
+	value?: bigint;
 
-interface AnchorChainingLocationWithValue extends AnchorChainingAssetAndLocation {
-	value: bigint;
 }
 
 interface AnchorChainingDestination extends AnchorChainingAssetAndLocation {
@@ -123,7 +121,7 @@ interface AnchorChainingDestination extends AnchorChainingAssetAndLocation {
 }
 
 interface AnchorChainingPathInput {
-	source: AnchorChainingLocationWithValue;
+	source: AnchorChainingAssetAndLocation;
 	destination: AnchorChainingDestination;
 }
 
@@ -721,9 +719,6 @@ export class AnchorGraph {
 }
 
 interface ComputePlanOptions {
-	affinity?: 'from' | 'to';
-	receiveAmount?: bigint;
-
 	overrides?: AnchorChainingAccountOverrides;
 }
 
@@ -796,7 +791,25 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
 
-		const affinity = options?.affinity ?? 'from';
+		let affinityAndAmount: { affinity: 'to' | 'from'; amount: bigint } | undefined = undefined;
+
+		if (this.request.source.value !== undefined && this.request.destination.value !== undefined) {
+			throw(new Error('Must have source.value or destination.value but not both'));
+		} else if (this.request.source.value !== undefined) {
+			affinityAndAmount = {
+				affinity: 'from',
+				amount: this.request.source.value
+			}
+		} else if (this.request.destination.value !== undefined) {
+			affinityAndAmount = {
+				affinity: 'to',
+				amount: this.request.destination.value
+			}
+		} else {
+			throw(new Error('Must have source.value or destination.value'));
+		}
+
+		const { affinity } = affinityAndAmount
 
 		const findInstruction = <R extends AssetTransferInstructions['type']>(allInstructions: AssetTransferInstructions[], type: R): Extract<AssetTransferInstructions, { type: R }> => {
 			const found = allInstructions.find((instr): instr is Extract<AssetTransferInstructions, { type: R }> => {
@@ -827,7 +840,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						if (affinity === 'from') {
 							if (index === 0) {
-								amount = this.request.source.value;
+								amount = affinityAndAmount.amount;
 							} else {
 								const previous = await resolveStep(index - 1);
 								amount = previous.valueOut;
@@ -835,7 +848,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						} else if (affinity === 'to') {
 							if (index === (this.path.length - 1)) {
 								// XXX:TODO Move this to destination
-								amount = this.request.source.value;
+								amount = affinityAndAmount.amount;
 							} else {
 								const next = await resolveStep(index + 1);
 								amount = next.valueIn;
@@ -951,7 +964,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
 						} else {
 							if (index === 0) {
-								depositValue = this.request.source.value;
+								depositValue = affinityAndAmount.amount;
 							} else {
 								const previous = await resolveStep(index - 1);
 								depositValue = previous.valueOut;
@@ -1013,8 +1026,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		if (steps.length === 0) {
 			return({
 				steps: [],
-				totalValueIn: this.request.source.value,
-				totalValueOut: this.request.source.value
+				totalValueIn: affinityAndAmount.amount,
+				totalValueOut: affinityAndAmount.amount
 			});
 		}
 
@@ -1025,8 +1038,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			throw(new Error(`Steps array is empty`));
 		}
 
-		if (firstStep.valueIn !== this.request.source.value) {
-			throw(new Error(`Computed valueIn for first step ${firstStep.valueIn} does not match request source value ${this.request.source.value}`));
+		if (affinity === 'from') {
+			if (firstStep.valueIn !== this.request.source.value) {
+				throw(new Error(`Computed valueIn for first step ${firstStep.valueIn} does not match request source value ${this.request.source.value}`));
+			}
+		} else if (affinity === 'to') {
+			if (lastStep.valueOut !== this.request.destination.value) {
+				throw(new Error(`Computed valueOut for last step ${lastStep.valueOut} does not match requested destination value ${this.request.destination.value}`));
+			}
 		}
 
 		if (lastStep.valueOut <= 0n) {
@@ -1297,6 +1316,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			// Direct same-location/same-asset send: the loop ran zero iterations,
 			// so just publish the on-chain transfer directly.
 			if (this.path.length === 0) {
+				const sendValue = this.request.source.value ?? this.request.destination.value;
+				if (!sendValue) {
+					throw(new Error(`Direct send requires a value for source or destination`));
+				}
+
 				if (!KeetaNet.lib.Account.isInstance(this.request.source.asset)) {
 					throw(new Error(`Direct send requires a Keeta token address as the source asset`));
 				}
@@ -1304,7 +1328,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				if (typeof recipient !== 'string') {
 					throw(new Error(`Direct Keeta send requires a crypto address as the recipient`));
 				}
-				await this.#authorizedSend(options, recipient, this.request.source.value, this.request.source.asset);
+				await this.#authorizedSend(options, recipient, sendValue, this.request.source.asset);
 			}
 		} catch (err) {
 			const error = err instanceof Error ? err : new Error(String(err));

@@ -716,10 +716,10 @@ async function createChainingTestHarness() {
 		resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
 	});
 
-	const getPathVia = async (fxProviderID: 'FXOne' | 'FXTwo') => {
+	const getPathVia = async (fxProviderID: 'FXOne' | 'FXTwo', affinity: 'to' | 'from' = 'from') => {
 		const paths = await anchorChaining.getPaths({
-			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
-			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+			source: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND', ...(affinity === 'from' ? { value: 100n } : {}) },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH', ...(affinity === 'to' ? { value: 100n } : {}) }
 		});
 		const path = paths?.find(p => p.path.some(n => n.type === 'fx' && n.providerID === fxProviderID));
 		if (!path) {
@@ -792,8 +792,8 @@ describe('AnchorChainingPath computeSteps', function() {
 
 	test('affinity:to is unsupported for paths with AM steps', async function() {
 		await using h = await createChainingTestHarness();
-		const path = await h.getPathVia('FXOne');
-		await expect(AnchorChainingPlan.create(path, { affinity: 'to' })).rejects.toThrow('not currently supported for asset movement steps');
+		const path = await h.getPathVia('FXOne', 'to');
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('not currently supported for asset movement steps');
 	});
 
 	test('BankEU initiateTransfer failure propagates from computeSteps', async function() {
@@ -812,6 +812,208 @@ describe('AnchorChainingPath computeSteps', function() {
 		const threeStepPath = paths?.find(p => p.path.length === 3);
 		if (!threeStepPath) {throw(new Error('No 3-step path found'));}
 		await expect(AnchorChainingPlan.create(threeStepPath)).rejects.toThrow('Cannot currently chain from asset movement to fx step');
+	});
+});
+
+describe('AnchorChainingPath computeSteps for fx with "to" affinity', function() {
+	test('destination.value on FX-only path computes correct values', async function() {
+		await using h = await createChainingTestHarness();
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const plan = plans?.find(p => p.path.length === 1 && p.path[0]?.type === 'fx' && p.path[0]?.providerID === 'FXOne');
+		if (!plan) { throw(new Error('No single-step FX path found')); }
+
+		const result = plan.plan
+
+		expect(result.steps.length).toEqual(1);
+		expect(result.totalValueOut).toEqual(100n);
+		expect(result.totalValueIn).toEqual(114n);
+	});
+
+	test.each([
+		{ providerID: 'FXOne' as const, expectedValueIn: 114n },
+		{ providerID: 'FXTwo' as const, expectedValueIn: 118n }
+	])('destination.value FX-only path via $providerID', async function({ providerID, expectedValueIn }) {
+		await using h = await createChainingTestHarness();
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const plan = plans?.find(p => p.path.some(n => n.type === 'fx' && n.providerID === providerID));
+		if (!plan) { throw(new Error(`No FX path found for ${providerID}`)); }
+
+		const result = plan.plan
+
+		expect(result.totalValueOut).toEqual(100n);
+		expect(result.totalValueIn).toEqual(expectedValueIn);
+	});
+
+	test('destination.value FX-only path with different amount chains backward correctly', async function() {
+		await using h = await createChainingTestHarness();
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 50n }
+		});
+
+		const plan = plans?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'FXOne');
+		if (!plan) { throw(new Error('No FX path found')); }
+
+		const result = plan.plan
+
+		expect(result.totalValueIn).toEqual(57n);
+		expect(result.totalValueOut).toEqual(50n);
+
+		for (let i = 0; i < result.steps.length - 1; i++) {
+			expect(result.steps[i]?.valueOut).toEqual(result.steps[i + 1]?.valueIn);
+		}
+	});
+})
+
+describe('AnchorChainingPath execute with destination.value (to affinity)', function() {
+	test('FX-only path: executes successfully with correct amounts', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const path = plans?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'FXOne');
+		if (!path) { throw(new Error('No FX path found')); }
+
+		const computed = path.plan
+		expect(computed.totalValueIn).toEqual(114n);
+		expect(computed.totalValueOut).toEqual(100n);
+
+		const result = await path.execute();
+
+		expect(result.steps.length).toEqual(1);
+		expect(result.steps[0]?.type).toEqual('fx');
+		if (result.steps[0]?.type === 'fx') {
+			const exchangeStatus = await result.steps[0].exchange.getExchangeStatus();
+			expect(exchangeStatus.status).toEqual('completed');
+		}
+		expect(path.state.status).toEqual('completed');
+	});
+
+	test.each([
+		{ providerID: 'FXOne' as const, expectedValueIn: 114n },
+		{ providerID: 'FXTwo' as const, expectedValueIn: 118n }
+	])('FX-only path via $providerID: state transitions and events', async function({ providerID, expectedValueIn }) {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const path = plans?.find(p => p.path.some(n => n.type === 'fx' && n.providerID === providerID));
+		if (!path) { throw(new Error(`No FX path found for ${providerID}`)); }
+
+		const stateHistory: AnchorChainingPathState['status'][] = [];
+		path.on('stateChange', (state: AnchorChainingPathState) => stateHistory.push(state.status));
+
+		const emittedSteps: { step: ExecutedStep; index: number }[] = [];
+		path.on('stepExecuted', (step: ExecutedStep, index: number) => emittedSteps.push({ step, index }));
+
+		let completedResult: Awaited<ReturnType<typeof path.execute>> | null = null;
+		path.on('completed', (result: Awaited<ReturnType<typeof path.execute>>) => { completedResult = result; });
+
+		const computed = path.plan
+		expect(computed.totalValueIn).toEqual(expectedValueIn);
+		expect(computed.totalValueOut).toEqual(100n);
+
+		const result = await path.execute();
+
+		expect(result.steps.length).toEqual(1);
+		expect(path.state.status).toEqual('completed');
+		expect(stateHistory[0]).toEqual('executing');
+		expect(stateHistory[stateHistory.length - 1]).toEqual('completed');
+		expect(emittedSteps.length).toEqual(1);
+		expect(emittedSteps[0]?.step).toBe(result.steps[0]);
+		expect(completedResult).toBe(result);
+	});
+
+	test('FX-only path: exchange failure emits failed event', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const plan = plans?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'FXOne');
+		if (!plan) { throw(new Error('No FX path found')); }
+
+		const computed = plan.plan
+		expect(computed.totalValueIn).toEqual(114n);
+		expect(computed.totalValueOut).toEqual(100n);
+
+		h.fxServerOne.failNextExchange('FX to-affinity exchange failed');
+
+		const failedEvents: { error: Error; completedSteps: ExecutedStep[]; index: number }[] = [];
+		plan.on('failed', (error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number) => {
+			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
+		});
+
+		await expect(plan.execute()).rejects.toThrow('FX to-affinity exchange failed');
+		expect(plan.state.status).toEqual('failed');
+		if (plan.state.status === 'failed') {
+			expect(plan.state.failedAtStepIndex).toEqual(0);
+			expect(plan.state.completedSteps.length).toEqual(0);
+		}
+		expect(failedEvents).toHaveLength(1);
+		const failedEvent = failedEvents[0];
+		if (!failedEvent) { throw(new Error('Expected failed event')); }
+		expect(failedEvent.index).toEqual(0);
+		expect(failedEvent.completedSteps.length).toEqual(0);
+	});
+
+	test('FX-only path: re-executing after completion throws', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND', value: 100n }
+		});
+
+		const plan = plans?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'FXOne');
+		if (!plan) { throw(new Error('No FX path found')); }
+
+		await plan.execute();
+
+		await expect(plan.execute()).rejects.toThrow('Cannot execute');
+	});
+
+	test('providing both source.value and destination.value throws', async function() {
+		await using h = await createChainingTestHarness();
+		const path = await h.getPathVia('FXOne');
+
+		path.request.source.value = 100n;
+		path.request.destination.value = 100n;
+
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value but not both');
+	});
+
+	test('providing neither source.value nor destination.value throws', async function() {
+		await using h = await createChainingTestHarness();
+		const path = await h.getPathVia('FXOne');
+
+		delete path.request.source.value;
+		delete path.request.destination.value;
+
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value');
 	});
 });
 
