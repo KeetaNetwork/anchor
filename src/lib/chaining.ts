@@ -345,6 +345,18 @@ class AnchorGraph {
 	}
 
 	async #resolveAssetName(name: MovableAssetSearchCanonical): Promise<ISOCurrencyCode | TokenAddress | ExternalChainAsset> {
+		if (KeetaNet.lib.Account.isInstance(name) && name.isToken()) {
+			return(name);
+		}
+
+		if (typeof name === 'string') {
+			try {
+				return(KeetaNet.lib.Account.fromPublicKeyString(name).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN));
+			} catch {
+				/* ignore error and continue with other resolution methods */
+			}
+		}
+
 		let found = this.#assetNameCache.get(name);
 		if (found) {
 			return(found);
@@ -866,6 +878,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		};
 
 		const stepPromises: Promise<ChainStepResolution>[] = [];
+		const resolvingSteps = new Set<number>();
 		const resolveStep = async (index: number): Promise<ChainStepResolution> => {
 			const step = this.path[index];
 
@@ -876,6 +889,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			let promise: Promise<ChainStepResolution> | undefined = stepPromises[index];
 
 			if (!promise) {
+				resolvingSteps.add(index);
+
 				promise = (async (): Promise<ChainStepResolution> => {
 					if (step.type === 'fx') {
 						let amount;
@@ -1034,6 +1049,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							value: depositValue
 						});
 
+						console.log('Transfer initiated for step', index, 'with transfer details', transfer);
+
 						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
 
 						if (!usingInstruction.totalReceiveAmount) {
@@ -1096,15 +1113,19 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 				})();
 
+				promise.then(() => resolvingSteps.delete(index), () => resolvingSteps.delete(index));
 				stepPromises[index] = promise;
+			} else if (resolvingSteps.has(index)) {
+				throw(new Error(`Cyclic dependency detected in resolveStep: step ${index} is already being resolved`));
 			}
 
 			return(await promise);
 		}
 
-		const steps: ChainStepResolution[] = await Promise.all(this.path.map(async function(_, index) {
-			return(await resolveStep(index));
-		}));
+		const steps = [];
+		for (let index = 0; index < this.path.length; index++) {
+			steps.push(await resolveStep(index));
+		}
 
 		// Direct same-location/same-asset send: no provider steps needed.
 		if (steps.length === 0) {
