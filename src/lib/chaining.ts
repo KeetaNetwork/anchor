@@ -1049,8 +1049,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							value: depositValue
 						});
 
-						console.log('Transfer initiated for step', index, 'with transfer details', transfer);
-
 						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
 
 						if (!usingInstruction.totalReceiveAmount) {
