@@ -658,7 +658,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			newURLObj.pathname = '/';
 			newURLObj.search = '';
 
-			return(newURLObj.toString());
+			const retval = newURLObj.toString();
+
+			return(retval);
 		}
 
 		if (this.port === 0 || this.#server === undefined) {
@@ -672,12 +674,22 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		urlObj.pathname = '/';
 		urlObj.search = '';
 
-		return(urlObj.toString());
+		const retval = urlObj.toString();
+
+		return(retval);
 	}
 
 	set url(value: undefined | string | URL | ((object: KeetaNetAnchorHTTPServer) => string)) {
 		this.#urlParts = undefined;
 		this.#url = value;
+	}
+
+	/**
+	 * Expose the config so that subclasses can access it without
+	 * needing to maintain their own copy of the same data.
+	 */
+	protected get config(): ConfigType {
+		return(this.#config);
 	}
 
 	/**
@@ -711,13 +723,6 @@ export interface KeetaAnchorCombinedHTTPServerConfig extends KeetaAnchorHTTPServ
  * can retrieve the correct URL via child.url.
  */
 export class KeetaNetCombinedAnchorHTTPServer extends KeetaNetAnchorHTTPServer<KeetaAnchorCombinedHTTPServerConfig> {
-	readonly #children: KeetaNetAnchorHTTPServer[];
-
-	constructor(config: KeetaAnchorCombinedHTTPServerConfig) {
-		super(config);
-		this.#children = [...config.servers];
-	}
-
 	protected async initRoutes(config: KeetaAnchorCombinedHTTPServerConfig): Promise<Routes> {
 		const combined: Routes = {};
 
@@ -742,11 +747,14 @@ export class KeetaNetCombinedAnchorHTTPServer extends KeetaNetAnchorHTTPServer<K
 		 * If a child already has a URL set it must match the combined server's
 		 * URL; a mismatch indicates a misconfiguration.
 		 */
-		for (const child of this.#children) {
+		for (const child of this.config.servers) {
 			let childURL: string | undefined;
 			try {
 				childURL = child.url;
-			} catch {
+			} catch (err) {
+				if (!(err instanceof Error && err.message === 'Server not started')) {
+					throw(err);
+				}
 				/* child has no static URL set; the URL will be propagated below */
 			}
 
