@@ -242,6 +242,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						logger?.debug('Serialization failure or deadlock detected');
 
 						// Track serialization retries for instrumentation
+						console.error('Serialization failure or deadlock detected, retrying operation', error);
 						this.serializationRetryCount++;
 
 						const minBackoff = 100;
