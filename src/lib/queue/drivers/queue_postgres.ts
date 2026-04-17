@@ -78,9 +78,16 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			const client = await pool.connect();
 			try {
-				// Use advisory lock to ensure only one process migrates at a time
-				// Lock ID: hash of 'queue_schema_migration'
-				const lockId = 0x71756575; // 'queu' in hex
+				/*
+				 * Random lock key (32-bit integer), to ensure
+				 * that multiple instances of this driver
+				 * (potentially across different
+				 * instances/process) will run the migration
+				 * sequentially to avoid multiple concurrent
+				 * migrations from competing with each other
+				 * and causing delays
+				 */
+				const lockId = 0x24995E48;
 				logger?.debug('Acquiring advisory lock for schema migration');
 				await client.query('SELECT pg_advisory_lock($1)', [lockId]);
 
@@ -155,7 +162,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						await client.query('CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_entries_path_status_updated ON queue_entries(path, status, updated)');
 						await client.query('CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_idempotent_keys_path_idempotent_id ON queue_idempotent_keys(path, idempotent_id)');
 
-						// Now transactionally drop old indexes and record version
+						// Now drop old indexes and record version
 						await client.query('BEGIN');
 						try {
 							// Drop old indexes that are now redundant (these will fail gracefully if indexes don't exist)
