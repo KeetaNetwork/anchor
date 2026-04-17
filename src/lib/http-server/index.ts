@@ -690,16 +690,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		return(this.initRoutes(this.#config));
 	}
 
-	/**
-	 * Static helper that allows KeetaNetCombinedAnchorHTTPServer (and other
-	 * subclasses) to invoke buildRoutes() on an arbitrary
-	 * KeetaNetAnchorHTTPServer instance.  Protected access is valid here
-	 * because we are inside the KeetaNetAnchorHTTPServer class body.
-	 */
-	protected static callBuildRoutes(server: KeetaNetAnchorHTTPServer): Promise<Routes> {
-		return(server.buildRoutes());
-	}
-
 	[Symbol.asyncDispose](): Promise<void> {
 		return(this.stop());
 	}
@@ -728,11 +718,14 @@ export class KeetaNetCombinedAnchorHTTPServer extends KeetaNetAnchorHTTPServer<K
 		this.#children = [...config.servers];
 	}
 
-	protected async initRoutes(_ignoreConfig: KeetaAnchorCombinedHTTPServerConfig): Promise<Routes> {
+	protected async initRoutes(config: KeetaAnchorCombinedHTTPServerConfig): Promise<Routes> {
 		const combined: Routes = {};
 
-		for (const child of this.#children) {
-			const childRoutes: Routes = await KeetaNetCombinedAnchorHTTPServer.callBuildRoutes(child);
+		for (const child of config.servers) {
+			// buildRoutes() is protected; bracket notation is used here to access
+			// it on an arbitrary KeetaNetAnchorHTTPServer instance.
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const childRoutes: Routes = await (child as unknown as { buildRoutes(): Promise<Routes> }).buildRoutes();
 			Object.assign(combined, childRoutes);
 		}
 
@@ -742,13 +735,25 @@ export class KeetaNetCombinedAnchorHTTPServer extends KeetaNetAnchorHTTPServer<K
 	override async start(): Promise<void> {
 		await super.start();
 
-		/*
-		 * Propagate the combined server's URL to all child server
-		 * instances so that code holding a reference to a child can
-		 * call child.url and receive the correct address.
-		 */
 		const url = this.url;
+
+		/*
+		 * Propagate the combined server's URL to all child server instances.
+		 * If a child already has a URL set it must match the combined server's
+		 * URL; a mismatch indicates a misconfiguration.
+		 */
 		for (const child of this.#children) {
+			let childURL: string | undefined;
+			try {
+				childURL = child.url;
+			} catch {
+				/* child has no static URL set; the URL will be propagated below */
+			}
+
+			if (childURL !== undefined && childURL !== url) {
+				throw(new Error(`Child server url "${childURL}" does not match combined server url "${url}"`));
+			}
+
 			child.url = url;
 		}
 	}

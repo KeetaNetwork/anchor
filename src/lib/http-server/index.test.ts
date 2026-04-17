@@ -703,3 +703,27 @@ test('KeetaNetCombinedAnchorHTTPServer: url set on combined server propagates to
 	 */
 	expect(child.url).toBe(customURL);
 }, 30000);
+
+test('KeetaNetCombinedAnchorHTTPServer: throws when a child has a conflicting URL', async function() {
+	const conflictingURL = 'https://other.example.com/';
+
+	const child = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /health': async function() {
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0, url: conflictingURL });
+
+	const customURL = 'https://anchor.example.com/';
+
+	await using combined = new HTTPServer.KeetaNetCombinedAnchorHTTPServer({
+		port: 0,
+		url: customURL,
+		servers: [child]
+	});
+
+	await expect(combined.start()).rejects.toThrow(`Child server url "${conflictingURL}" does not match combined server url "${customURL}"`);
+}, 30000);
