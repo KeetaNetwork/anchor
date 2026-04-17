@@ -40,9 +40,25 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
+type KeetaAnchorQueueStorageDriverPostgresOptions = {
+	/**
+	 * Function that returns a Postgres connection pool.
+	 */
+	pool: () => Promise<pg.Pool>;
+
+	/**
+	 * The prefix to use for the database tables. Defaults to 'queue',
+	 * resulting in table names 'queue_entries' and 'queue_idempotent_keys'.
+	 */
+	tablePrefix?: string;
+};
+
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
 	private readonly logger: Logger | undefined;
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
+	private tablePrefix: string | undefined;
+	private tableNameEntries: string;
+	private tableNameIdempotentKeys: string;
 	private dbInitializationPromise: Promise<boolean> | null = null;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverPostgres';
@@ -51,13 +67,17 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	private readonly pathStr: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
-	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { pool: () => Promise<pg.Pool>; }) {
+	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger
+		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		Object.freeze(this.path);
+
+		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
+		this.tableNameIdempotentKeys = `${this.tablePrefix ?? 'queue'}_idempotent_keys`;
 
 		this.methodLogger('new')?.debug('Initialized Postgres queue storage driver');
 	}
@@ -73,12 +93,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}
 
 		this.dbInitializationPromise = (async () => {
-			logger?.debug('Initializing DB schema for queue storage driver');
+			logger?.debug('Initializing DB schema for queue storage driver on tables', [this.tableNameEntries, this.tableNameIdempotentKeys]);
 
 			const client = await pool.connect();
 			try {
 				await client.query(`
-					CREATE TABLE IF NOT EXISTS queue_entries (
+					CREATE TABLE IF NOT EXISTS ${this.tableNameEntries} (
 						id TEXT NOT NULL,
 						path TEXT NOT NULL,
 						request TEXT NOT NULL,
@@ -93,18 +113,18 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					)`);
 
 				await client.query(`
-					CREATE TABLE IF NOT EXISTS queue_idempotent_keys (
+					CREATE TABLE IF NOT EXISTS ${this.tableNameIdempotentKeys} (
 						entry_id TEXT NOT NULL,
 						idempotent_id TEXT NOT NULL,
 						path TEXT NOT NULL,
 						UNIQUE (idempotent_id, path),
 						PRIMARY KEY (entry_id, idempotent_id, path),
-						FOREIGN KEY (entry_id, path) REFERENCES queue_entries(id, path)
+						FOREIGN KEY (entry_id, path) REFERENCES ${this.tableNameEntries}(id, path)
 					)`);
 
-				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status)');
-				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated)');
-				await client.query('CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id)');
+				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_status ON ${this.tableNameEntries}(status)`);
+				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_updated ON ${this.tableNameEntries}(updated)`);
+				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_idempotent_id ON ${this.tableNameIdempotentKeys}(idempotent_id)`);
 			} finally {
 				client.release();
 			}
@@ -228,7 +248,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
 			let entryID = ConvertStringToRequestID(info?.id);
 			if (entryID) {
-				const existingEntry = await client.query<{ id: string }>('SELECT id FROM queue_entries WHERE id = $1 AND path = $2', [entryID, this.pathStr]);
+				const existingEntry = await client.query<{ id: string }>(`SELECT id FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`, [entryID, this.pathStr]);
 				if (existingEntry.rows.length > 0) {
 					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
 					return(entryID);
@@ -242,7 +262,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
 				for (const idempotentID of idempotentIDs) {
 					const idempotentEntryExists = await client.query<IdempotentRow>(
-						'SELECT idempotent_id FROM queue_idempotent_keys WHERE idempotent_id = $1 AND path = $2',
+						`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE idempotent_id = $1 AND path = $2`,
 						[idempotentID, this.pathStr]
 					);
 					if (idempotentEntryExists.rows.length > 0) {
@@ -270,14 +290,14 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			const status = info?.status ?? 'pending';
 
 			await client.query(
-				`INSERT INTO queue_entries (id, path, request, output, last_error, status, created, updated, worker, failures)
+				`INSERT INTO ${this.tableNameEntries} (id, path, request, output, last_error, status, created, updated, worker, failures)
 				 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
 				[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
 			);
 
 			if (idempotentIDs && idempotentIDs.size > 0) {
 				for (const idempotentID of idempotentIDs) {
-					await client.query('INSERT INTO queue_idempotent_keys (entry_id, path, idempotent_id) VALUES ($1, $2, $3)', [entryID, this.pathStr, idempotentID]);
+					await client.query(`INSERT INTO ${this.tableNameIdempotentKeys} (entry_id, path, idempotent_id) VALUES ($1, $2, $3)`, [entryID, this.pathStr, idempotentID]);
 				}
 			}
 
@@ -289,7 +309,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		const { oldStatus } = ancillary ?? {};
 
 		return(await this.dbTransaction('setStatus', async (client, logger): Promise<void> => {
-			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>('SELECT status, failures, last_error, output FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
+			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>(`SELECT status, failures, last_error, output FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`, [id, this.pathStr]);
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
@@ -312,12 +332,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			let updateParams: (KeetaAnchorQueueRequestID | string | number | null)[];
 
 			if (oldStatus) {
-				updateQuery = `UPDATE queue_entries
+				updateQuery = `UPDATE ${this.tableNameEntries}
 				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
 				               WHERE id = $7 AND path = $8 AND status = $9`;
 				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr, oldStatus];
 			} else {
-				updateQuery = `UPDATE queue_entries
+				updateQuery = `UPDATE ${this.tableNameEntries}
 				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
 				               WHERE id = $7 AND path = $8`;
 				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr];
@@ -328,7 +348,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			await this.toctouDelay?.();
 
 			if (oldStatus && result.rowCount === 0) {
-				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>('SELECT status FROM queue_entries WHERE id = $1 AND path = $2', [id, this.pathStr]);
+				const currentEntry = await client.query<{ status: KeetaAnchorQueueStatus }>(`SELECT status FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`, [id, this.pathStr]);
 				const currentStatus = currentEntry.rows[0]?.status;
 				if (currentEntry.rows.length > 0) {
 					if (currentStatus === undefined) {
@@ -346,7 +366,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		return(await this.dbTransaction('get', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
 			const row = await client.query<QueueEntryRow>(
 				`SELECT id, request, output, last_error, status, created, updated, worker, failures
-				 FROM queue_entries WHERE id = $1 AND path = $2`,
+				 FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`,
 				[id, this.pathStr]
 			);
 
@@ -360,7 +380,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			}
 
 			const idempotentRows = await client.query<IdempotentRow>(
-				'SELECT idempotent_id FROM queue_idempotent_keys WHERE entry_id = $1 AND path = $2',
+				`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
 				[id, this.pathStr]
 			);
 
@@ -409,7 +429,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				params.push(filter.updatedBefore.getTime());
 			}
 
-			let query = 'SELECT id, request, output, last_error, status, created, updated, worker, failures FROM queue_entries';
+			let query = `SELECT id, request, output, last_error, status, created, updated, worker, failures FROM ${this.tableNameEntries}`;
 
 			if (conditions.length > 0) {
 				query += ' WHERE ' + conditions.join(' AND ');
@@ -426,7 +446,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			for (const row of rows.rows) {
 				const idempotentRows = await client.query<IdempotentRow>(
-					'SELECT idempotent_id FROM queue_idempotent_keys WHERE entry_id = $1 AND path = $2',
+					`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
 					[row.id, this.pathStr]
 				);
 

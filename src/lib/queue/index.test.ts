@@ -286,15 +286,18 @@ const drivers: {
 					database: dbName
 				});
 
+				const randomKey = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16).slice(16);
+
 				const queue = new KeetaAnchorQueueStorageDriverPostgres({
+					id: key,
+					logger: logger,
+					tablePrefix: `test_${randomKey}`,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
 						}
 						return(pool);
-					},
-					id: key,
-					logger: logger
+					}
 				});
 
 				return({
