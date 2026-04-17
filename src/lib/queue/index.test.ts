@@ -13,7 +13,8 @@ import type {
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
-	KeetaAnchorQueueRequestID
+	KeetaAnchorQueueRequestID,
+	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
 
@@ -25,12 +26,14 @@ import KeetaAnchorQueueStorageDriverFile from './drivers/queue_file.js';
 import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
 import KeetaAnchorQueueStorageDriverRedis from './drivers/queue_redis.js';
 import KeetaAnchorQueueStorageDriverPostgres from './drivers/queue_postgres.js';
+import KeetaAnchorQueueStorageDriverFirestore from './drivers/queue_firestore.js';
 
 import * as sqlite from 'sqlite';
 import * as sqlite3 from 'sqlite3';
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
 import * as pg from 'pg';
+import { Firestore } from '@google-cloud/firestore';
 
 const DEBUG = false;
 let logger: Logger | undefined = undefined;
@@ -88,6 +91,22 @@ function getTestingPostgresConfig(): { host: string; port: number; user: string;
 	}
 
 	return({ host: host, port: port, user: user, password: password });
+}
+
+function getTestingFirestoreConfig(): { host: string; port: number; } | null {
+	const host = process.env['ANCHOR_TESTING_FIRESTORE_HOST'];
+	const portStr = process.env['ANCHOR_TESTING_FIRESTORE_PORT'];
+
+	if (!host || !portStr) {
+		return(null);
+	}
+
+	const port = Number(portStr);
+	if (isNaN(port) || port <= 0 || port >= 65536) {
+		return(null);
+	}
+
+	return({ host: host, port: port });
 }
 
 const drivers: {
@@ -321,6 +340,73 @@ const drivers: {
 				throw(error);
 			}
 		}
+	},
+	'Firestore': {
+		persistent: true,
+		skip: async function() {
+			return(getTestingFirestoreConfig() === null);
+		},
+		create: async function(key: string, options = { leave: false }) {
+			const firestoreConfig = getTestingFirestoreConfig();
+			if (!firestoreConfig) {
+				throw(new Error('Firestore configuration not available'));
+			}
+
+			let firestore: Firestore | undefined;
+			const namespace = `test_${key}_${RunKey}`;
+
+			const queue = new KeetaAnchorQueueStorageDriverFirestore({
+				firestore: async function(): Promise<Firestore> {
+					if (!firestore) {
+						firestore = new Firestore({
+							projectId: 'test-project',
+							host: firestoreConfig.host,
+							port: firestoreConfig.port,
+							ssl: false,
+							credentials: {
+								client_email: 'test@example.com',
+								// Hard-coded test private key for emulator only - not a security risk
+								// as it's only used with the local Firestore emulator and never in production
+								private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7W8jT9qqF0GNf\n-----END PRIVATE KEY-----'
+							}
+						});
+					}
+					return(firestore);
+				},
+				id: key,
+				namespace: namespace,
+				logger: logger
+			});
+
+			return({
+				queue: queue,
+				[Symbol.asyncDispose]: async function() {
+					await queue[Symbol.asyncDispose]();
+					if (firestore && !options?.leave) {
+						// Clean up only the collections created by this test instance
+						// Uses the namespace pattern to isolate test data
+						try {
+							const collections = await firestore.listCollections();
+							const prefix = `queue_entries_${namespace}_`;
+							const idempotentPrefix = `queue_idempotent_keys_${namespace}_`;
+							for (const collection of collections) {
+								// Only delete collections that match our test namespace
+								if (collection.id.startsWith(prefix) || collection.id.startsWith(idempotentPrefix)) {
+									const snapshot = await collection.get();
+									for (const doc of snapshot.docs) {
+										await doc.ref.delete();
+									}
+								}
+							}
+						} catch {
+							/* Ignore */
+						}
+					}
+
+					await firestore?.terminate();
+				}
+			});
+		}
 	}
 };
 
@@ -374,7 +460,7 @@ test('Queue Runner Basic Tests', async function() {
 	 *
 	 * These might move to supported interfaces in the future
 	 */
-	runner._Testing(TestingKey).setParams(100, 100, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
 
 	{
 		logger?.debug('basic', '> Test that jobs complete and fail as expected and that retries are handled correctly');
@@ -602,7 +688,7 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 		}
 	});
 
-	runner._Testing(TestingKey).setParams(100, 50, 3);
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 50, maxRetries: 3 });
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -754,7 +840,10 @@ for (const singleWorkerID of [true, false]) {
 					vi.advanceTimersByTime(50);
 
 					return({ status: entry.request.newStatus, output: 'OK' });
-				}
+				},
+				batchSize: 3,
+				processTimeout: 100,
+				maxRetries: 3
 			});
 		};
 
@@ -766,7 +855,7 @@ for (const singleWorkerID of [true, false]) {
 				await runner.destroy();
 			});
 
-			runner._Testing(TestingKey).setParams(3, 100, 3, 1);
+			runner._Testing(TestingKey).setParams({ maxRunners: 1 });
 
 			return(runner);
 		});
@@ -844,7 +933,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(10);
 			} else {
-				expect(processCallCountByKey.size).toBe(23);
+				expect(processCallCountByKey.size).toBe(17);
 			}
 
 			const id0 = ids[0];
@@ -872,7 +961,7 @@ test('Pipeline Basic Tests', async function() {
 		vi.useRealTimers();
 	});
 
-	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: 'completed'; output: OUTPUT; }>) {
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(name: string, processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorPipeableQueueStatus; output: OUTPUT; }>) {
 		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
 			id: `${name}_runner`,
 			processor: processor,
@@ -950,10 +1039,10 @@ test('Pipeline Basic Tests', async function() {
 	/*
 	 * Set the retry parameters to be more aggressive for testing
 	 */
-	stage1._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage2._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage3._Testing(TestingKey).setParams(100, 300_000, 10_000);
-	stage4._Testing(TestingKey).setParams(100, 300_000, 10_000);
+	stage1._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage2._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage3._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
+	stage4._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 300_000, maxRetries: 10_000 });
 
 	/*
 	 * Create a pipeline: stage1 -> stage2 -> stage3 -> stage4 (batched, 2 min/2 max)
@@ -962,7 +1051,7 @@ test('Pipeline Basic Tests', async function() {
 	const id1 = await stage1.add('hello');
 	const id2 = await stage1.add('a');
 	const id3 = await stage1.add('abc');
-	const id4 = await stage1.add('defg');
+	const id4 = await stage1.add('def');
 	const id5 = await stage1.add('blah');
 
 	/*
@@ -1047,6 +1136,56 @@ test('Pipeline Basic Tests', async function() {
 		expect(finalEntryIDs).toContain(finalLeftoverID);
 		expect(finalEntryIDs).toContain(id6);
 	}
+
+	/*
+	 * Validate that failed jobs can be piped to another stage as well
+	 */
+	await using failedStage1 = createStage<string, string>('failed_stage1', async function(entry) {
+		return({ status: 'failed_permanently', output: `failed:${entry.request}` });
+	});
+	await using failedStage2 = createStage<string, string>('failed_stage2', async function(entry) {
+		return({ status: 'completed', output: `handled:${entry.request}` });
+	});
+
+	failedStage1._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+	failedStage2._Testing(TestingKey).setParams({ batchSize: 10, processTimeout: 100, maxRetries: 0 });
+
+	failedStage1.pipeFailed(failedStage2);
+
+	const failedId = await failedStage1.add('job-fail');
+
+	await failedStage1.run();
+
+	const failedEntry = await failedStage1.get(failedId);
+	if (!failedEntry) {
+		throw(new Error('internal error: failed entry not found'));
+	}
+	expect(failedEntry.status).toBe('failed_permanently');
+	expect(failedEntry.output).toBe('failed:job-fail');
+
+	await failedStage1.maintain();
+
+	const movedFailedEntry = await failedStage1.get(failedId);
+	if (!movedFailedEntry) {
+		throw(new Error('internal error: failed entry missing after maintain'));
+	}
+	expect(movedFailedEntry.status).toBe('moved');
+
+	const pendingFailedEntry = await failedStage2.get(failedId);
+	if (!pendingFailedEntry) {
+		throw(new Error('internal error: failed pipe entry not found in next stage'));
+	}
+	expect(pendingFailedEntry.status).toBe('pending');
+	expect(pendingFailedEntry.request).toBe('job-fail');
+
+	await failedStage2.run();
+
+	const completedFailedEntry = await failedStage2.get(failedId);
+	if (!completedFailedEntry) {
+		throw(new Error('internal error: completed pipe entry not found in next stage'));
+	}
+	expect(completedFailedEntry.status).toBe('completed');
+	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
 test('Errors', async function() {

@@ -1,0 +1,413 @@
+import { test, expect, describe } from 'vitest';
+
+import type { Contact, ContactAddress, ContactWithMetadata } from './contacts.js';
+import type { Rail } from '../../asset-movement/common.js';
+import type { Account } from '../test-utils.js';
+import type KeetaStorageAnchorClient from '../client.js';
+import type { KeetaStorageAnchorProvider } from '../client.js';
+import { StorageContactsClient } from './contacts.js';
+import { Errors } from '../common.js';
+import { Buffer } from '../../../lib/utils/buffer.js';
+import { randomSeed, withStorageProvider } from '../test-utils.js';
+
+// #region Test Harness
+
+interface ContactsTestContext {
+	contactsClient: StorageContactsClient;
+	provider: KeetaStorageAnchorProvider;
+	account: Account;
+	storageClient: KeetaStorageAnchorClient;
+}
+
+async function withContacts(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: ContactsTestContext) => Promise<void>
+): Promise<void> {
+	await withStorageProvider(seed, async function({ provider, account, storageClient }) {
+		const pubkey = account.publicKeyString.get();
+		const contactsClient = provider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
+		await testFunction({ contactsClient, provider, account, storageClient });
+	});
+}
+
+// #endregion
+
+// #region Test Fixtures
+
+const keetaAddress: ContactAddress = {
+	recipient: 'keeta1a2b3c',
+	location: 'chain:keeta:1'
+};
+
+const evmAddress: ContactAddress = {
+	recipient: '0x4d5e6f7a8b9c',
+	location: 'chain:evm:1'
+};
+
+const wireAddress: ContactAddress = {
+	recipient: {
+		type: 'bank-account',
+		accountType: 'us',
+		accountNumber: '123456789',
+		routingNumber: '021000021',
+		accountTypeDetail: 'checking',
+		accountOwner: { type: 'individual', firstName: 'Alice', lastName: 'Smith' }
+	}
+};
+
+const bitcoinAddress: ContactAddress = {
+	recipient: 'bc1q0a1b2c3d4e5f',
+	location: 'chain:bitcoin:f9beb4d9'
+};
+
+const solanaAddress: ContactAddress = {
+	recipient: '9a8b7c6d5e4f',
+	location: 'chain:solana:1'
+};
+
+const tronAddress: ContactAddress = {
+	recipient: 'T1a2b3c4d5e6',
+	location: 'chain:tron:mainnet'
+};
+
+const achAddress: ContactAddress = {
+	recipient: {
+		type: 'bank-account',
+		accountType: 'us',
+		accountNumber: '987654321',
+		routingNumber: '021000021',
+		accountTypeDetail: 'checking',
+		accountOwner: { type: 'individual', firstName: 'Bob', lastName: 'Jones' }
+	}
+};
+
+const sepaAddress: ContactAddress = {
+	recipient: {
+		type: 'bank-account',
+		accountType: 'iban-swift',
+		iban: 'DE89370400440532013000',
+		bic: 'COBADEFFXXX', // cspell:disable-line
+		accountOwner: { type: 'individual', firstName: 'Hans', lastName: 'Mueller' }
+	}
+};
+
+const persistentAddress: ContactAddress = {
+	recipient: { type: 'persistent-address', persistentAddressId: 'pa-123' },
+	location: 'chain:evm:1'
+};
+
+const sampleAddresses: { name: string; address: ContactAddress; rail?: Rail }[] = [
+	{ name: 'keeta crypto', address: keetaAddress, rail: 'KEETA_SEND' },
+	{ name: 'evm crypto', address: evmAddress, rail: 'EVM_SEND' },
+	{ name: 'wire bank', address: wireAddress },
+	{ name: 'bitcoin crypto', address: bitcoinAddress },
+	{ name: 'solana crypto', address: solanaAddress },
+	{ name: 'tron crypto', address: tronAddress },
+	{ name: 'ach bank', address: achAddress },
+	{ name: 'sepa bank', address: sepaAddress },
+	{ name: 'persistent address', address: persistentAddress }
+];
+
+const updateCases: {
+	name: string;
+	initial: { label: string; address: ContactAddress };
+	update: { label?: string; address?: ContactAddress };
+	expected: { label: string; address: ContactAddress };
+	changesId: boolean;
+}[] = [
+	{
+		name: 'label only preserves address and id',
+		initial: { label: 'Original', address: keetaAddress },
+		update: { label: 'Renamed' },
+		expected: { label: 'Renamed', address: keetaAddress },
+		changesId: false
+	},
+	{
+		name: 'address only preserves label and changes id',
+		initial: { label: 'Keep This', address: keetaAddress },
+		update: { address: bitcoinAddress },
+		expected: { label: 'Keep This', address: bitcoinAddress },
+		changesId: true
+	},
+	{
+		name: 'both label and address changes id',
+		initial: { label: 'Old', address: keetaAddress },
+		update: { label: 'New', address: evmAddress },
+		expected: { label: 'New', address: evmAddress },
+		changesId: true
+	}
+];
+
+const invalidCreateInputs: { name: string; label: unknown; address: unknown }[] = [
+	{ name: 'non-string recipient', label: 'Bad', address: { recipient: 12345 }},
+	{ name: 'missing recipient', label: 'Bad', address: {}},
+	{ name: 'non-string label', label: 99, address: keetaAddress }
+];
+
+const corruptPayloads: { name: string; data: string }[] = [
+	{ name: 'invalid JSON', data: 'not valid json {{{' },
+	{ name: 'wrong schema', data: JSON.stringify({ wrong: 'shape' }) },
+	{ name: 'empty object', data: JSON.stringify({}) }
+];
+
+// #endregion
+
+// #region Tests
+
+describe('Contacts Client - CRUD per address type', function() {
+	test.each(sampleAddresses)('create and get contact: $name', function({ address, rail }) {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Test Contact', address, rail });
+			expect(created.id).toBe(contactsClient.deriveId(address));
+			expect(created.label).toBe('Test Contact');
+			expect(created.address).toEqual(address);
+			expect(created.rail).toBe(rail);
+
+			const retrieved = await contactsClient.get(created.id);
+			expect(retrieved).toEqual(created);
+		}));
+	});
+
+	test.each(invalidCreateInputs)('create rejects invalid input: $name', function({ label, address }) {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			await expect(contactsClient.create({
+				label: label as string, // eslint-disable-line @typescript-eslint/consistent-type-assertions
+				address: address as ContactAddress // eslint-disable-line @typescript-eslint/consistent-type-assertions
+			})).rejects.toThrow();
+		}));
+	});
+});
+
+describe('Contacts Client - Update', function() {
+	test.each(updateCases)('update $name', function({ initial, update, expected, changesId }) {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create(initial);
+			const updated = await contactsClient.update(created.id, update);
+
+			expect(updated.id).toBe(contactsClient.deriveId(expected.address));
+			expect(updated.label).toBe(expected.label);
+			expect(updated.address).toEqual(expected.address);
+
+			const retrieved = await contactsClient.get(updated.id);
+			expect(retrieved).toEqual(updated);
+
+			if (changesId) {
+				const oldRetrieved = await contactsClient.get(created.id);
+				expect(oldRetrieved).toBeNull();
+			}
+		}));
+	});
+
+	test('update preserves rail from original contact', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Has Rail', address: keetaAddress, rail: 'KEETA_SEND' });
+			const updated = await contactsClient.update(created.id, { label: 'Renamed' });
+			expect(updated.rail).toBe('KEETA_SEND');
+
+			const retrieved = await contactsClient.get(updated.id);
+			expect(retrieved?.rail).toBe('KEETA_SEND');
+		}));
+	});
+
+	test('update non-existent contact throws DocumentNotFound', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			await expect(contactsClient.update('no-such-id', { label: 'X' }))
+				.rejects.toSatisfy(function(e: unknown) { return(Errors.DocumentNotFound.isInstance(e)); });
+		}));
+	});
+});
+
+describe('Contacts Client - Delete', function() {
+	test('delete existing contact returns true', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({
+				label: 'To Delete',
+				address: keetaAddress
+			});
+
+			const deleted = await contactsClient.delete(created.id);
+			expect(deleted).toBe(true);
+
+			const retrieved = await contactsClient.get(created.id);
+			expect(retrieved).toBeNull();
+		}));
+	});
+
+	test('delete non-existent contact returns false', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const deleted = await contactsClient.delete('non-existent-id');
+			expect(deleted).toBe(false);
+		}));
+	});
+});
+
+describe('Contacts Client - List', function() {
+	test('list returns all created contacts', function() {
+		const sortById = function(a: ContactWithMetadata, b: ContactWithMetadata) { return(a.id.localeCompare(b.id)); };
+
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created: Contact[] = [];
+			for (const { name, address } of sampleAddresses) {
+				created.push(await contactsClient.create({ label: `Contact ${name}`, address }));
+			}
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(sampleAddresses.length);
+			expect(listed.sort(sortById)).toMatchObject(created.sort(function(a, b) { return(a.id.localeCompare(b.id)); }));
+			for (const contact of listed) {
+				expect(contact.createdAt).toBeTypeOf('string');
+			}
+		}));
+	});
+
+	test.each(corruptPayloads)('list skips corrupt entry: $name', function({ data }) {
+		return(withContacts(randomSeed(), async function({ contactsClient, provider, account }) {
+			const created = await contactsClient.create({ label: 'Valid', address: keetaAddress });
+			const pubkey = account.publicKeyString.get();
+			const rawSession = provider.beginSession({ account, workingDirectory: `/user/${pubkey}/contacts/` });
+			await rawSession.put('corrupt-entry', Buffer.from(data), { mimeType: 'application/json' });
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(1);
+			expect(listed[0]?.id).toBe(created.id);
+		}));
+	});
+
+	test('list filtered by location returns only matching contacts', function() {
+		const fixtures: { address: ContactAddress }[] = [
+			{ address: evmAddress },
+			{ address: bitcoinAddress },
+			{ address: solanaAddress }
+		];
+
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			for (const { address } of fixtures) {
+				await contactsClient.create({ label: 'Location Test', address });
+			}
+
+			for (const fixture of fixtures) {
+				const location = fixture.address.location;
+				expect(location).toBeDefined();
+				if (!location) {
+					continue;
+				}
+				const filtered = await contactsClient.list({ location });
+				expect(filtered).toHaveLength(1);
+				expect(filtered[0]?.address).toEqual(fixture.address);
+			}
+		}));
+	});
+});
+
+describe('Contacts Client - Edge Cases', function() {
+	test('get non-existent id returns null', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const result = await contactsClient.get('does-not-exist');
+			expect(result).toBeNull();
+		}));
+	});
+
+	test('get with includeMetadata returns ContactWithMetadata with createdAt', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Metadata Test', address: keetaAddress });
+			const withMetadata = await contactsClient.get(created.id, true);
+			expect(withMetadata).not.toBeNull();
+			expect(withMetadata?.id).toBe(created.id);
+			expect(withMetadata?.label).toBe(created.label);
+			expect(withMetadata?.address).toEqual(created.address);
+			expect(withMetadata?.createdAt).toBeTypeOf('string');
+			expect(withMetadata?.updatedAt).toBeUndefined();
+		}));
+	});
+
+	test('get with includeMetadata returns updatedAt after update', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Before', address: keetaAddress });
+			const updated = await contactsClient.update(created.id, { label: 'After' });
+			const withMetadata = await contactsClient.get(updated.id, true);
+			expect(withMetadata?.updatedAt).toBeTypeOf('string');
+		}));
+	});
+
+	test('creating the same address twice is idempotent and updates the label', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const first = await contactsClient.create({ label: 'First', address: keetaAddress });
+			const second = await contactsClient.create({ label: 'Second', address: keetaAddress });
+			expect(second.id).toBe(first.id);
+			expect(second.label).toBe('Second');
+
+			const retrieved = await contactsClient.get(first.id);
+			expect(retrieved).toEqual(second);
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(1);
+		}));
+	});
+
+	test('deriveId is deterministic across client instances', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient, storageClient, account }) {
+			const pubkey = account.publicKeyString.get();
+			const otherClient = (await storageClient.getProviderByID('test-provider'))!.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` }); // eslint-disable-line @typescript-eslint/no-non-null-assertion
+			for (const { address } of sampleAddresses) {
+				expect(contactsClient.deriveId(address)).toBe(otherClient.deriveId(address));
+			}
+		}));
+	});
+
+	test('deriveId is stable regardless of key order', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const reordered: ContactAddress = {
+				location: 'chain:evm:1',
+				recipient: '0x4d5e6f7a8b9c'
+			};
+			expect(contactsClient.deriveId(evmAddress)).toBe(contactsClient.deriveId(reordered));
+		}));
+	});
+
+	test('deriveId ignores undefined optional fields', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const withUndefined = {
+				...wireAddress,
+				location: undefined
+			};
+			expect(contactsClient.deriveId(withUndefined as unknown as ContactAddress)).toBe(contactsClient.deriveId(wireAddress)); // eslint-disable-line @typescript-eslint/consistent-type-assertions
+		}));
+	});
+
+	test('deriveId excludes pastInstructions from identity', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const withInstructions: ContactAddress = {
+				...evmAddress,
+				pastInstructions: [{
+					type: 'EVM_SEND',
+					location: 'chain:evm:1',
+					sendToAddress: '0x4d5e6f7a8b9c',
+					tokenAddress: '0x1a2b3c4d'
+				}]
+			};
+			expect(contactsClient.deriveId(withInstructions)).toBe(contactsClient.deriveId(evmAddress));
+		}));
+	});
+
+	test('deriveId excludes providerInformation from identity', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const withProvider: ContactAddress = {
+				...evmAddress,
+				providerInformation: { 'provider-abc': ['template'] }
+			};
+			expect(contactsClient.deriveId(withProvider)).toBe(contactsClient.deriveId(evmAddress));
+		}));
+	});
+});
+
+describe('Contacts Client - Factory Methods', function() {
+	test('getContactsClient via storage client resolves provider', function() {
+		return(withContacts(randomSeed(), async function({ storageClient, account }) {
+			const pubkey = account.publicKeyString.get();
+			const contactsClient = await storageClient.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
+			expect(contactsClient).toBeInstanceOf(StorageContactsClient);
+		}));
+	});
+});
+
+// #endregion

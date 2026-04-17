@@ -13,12 +13,16 @@ import type {
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingRequest,
 	KeetaAssetMovementAnchorListPersistentForwardingResponse,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorShareKYCRequest,
-	KeetaAssetMovementAnchorShareKYCResponse
+	KeetaAssetMovementAnchorShareKYCResponse,
+	KeetaAssetMovementAnchorExecuteTransferRequest,
+	KeetaAssetMovementAnchorExecuteTransferResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -30,6 +34,9 @@ import {
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
 	assertKeetaAssetMovementAnchorListPersistentForwardingResponse,
+	assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest,
+	assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
+	getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
@@ -45,7 +52,10 @@ import {
 	commonJSONStringify,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 	getKeetaAssetMovementAnchorlistTransactionsRequestSigningData,
-	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData
+	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
+	assertKeetaAssetMovementAnchorExecuteTransferRequest,
+	assertKeetaAssetMovementAnchorExecuteTransferResponse
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -62,11 +72,6 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 	homepage?: string | (() => Promise<string> | string);
 
 	/**
-	 * The network client to use for submitting blocks
-	 */
-	client: { client: KeetaNet.Client; network: bigint; networkAlias: typeof KeetaNet.Client.Config.networksArray[number] } | KeetaNet.UserClient;
-
-	/**
 	 * Configuration for asset movement operations
 	 */
 	assetMovement: {
@@ -78,7 +83,14 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		authenticationRequired?: boolean;
 
 		/**
-		 * Method to create a persistent forwarding address template
+		 * Method to initiate the two-step creation of a persistent forwarding address template.
+		 * Returns a session ID and provider-specific data (e.g. a Plaid link token) for the client to complete.
+		 */
+		initiatePersistentForwardingTemplate?: (request: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse>>;
+
+		/**
+		 * Method to create a persistent forwarding address template.
+		 * Accepts either a direct resolved address or a session completion payload (e.g. Plaid public token).
 		 */
 		createPersistentForwardingTemplate?: (request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>>;
 
@@ -116,6 +128,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		 * Method to share KYC (Know Your Customer) information
 		 */
 		shareKYC?: (request: KeetaAssetMovementAnchorShareKYCRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>>;
+
+		/**
+		 * Method to execute a transfer instruction, used for pull based transactions
+		 */
+		executeTransfer?: (request: KeetaAssetMovementAnchorExecuteTransferRequest & { id: string; }) => Promise<ExtractOk<KeetaAssetMovementAnchorExecuteTransferResponse>>;
 	}
 };
 
@@ -142,14 +159,12 @@ function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAss
 
 export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorAssetMovementServerConfig> implements Required<KeetaAnchorAssetMovementServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
-	readonly client: KeetaAnchorAssetMovementServerConfig['client'];
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
 
 	constructor(config: KeetaAnchorAssetMovementServerConfig) {
 		super(config);
 
 		this.homepage = config.homepage ?? '';
-		this.client = config.client;
 		this.assetMovement = config.assetMovement;
 	}
 
@@ -193,12 +208,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			getSigningData?: (data: SerializedRequest, params: Map<string, string>) => Signable;
 			parseRequestToArgs?: (params: {
 				params: Map<string, string>;
-				body: JSONSerializable | SerializedRequest | undefined,
+				body: SerializedRequest | undefined,
 				url: URL,
 				account: Account.Account | null
 				// Typescript needs any here, but eslint does not like it
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends [ any, Account.Account | null ]) => any ? R : never;
+			}) => NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement'][HandlerName]> extends (...args: infer R extends any[]) => any ? R : never;
 			getSignatureFieldAccountFromRequest?: (params: { body: JSONSerializable | undefined, url: URL }) => Partial<HTTPSignedFieldURLParameters>;
 		}) {
 			const handler = config.assetMovement[input.handlerName];
@@ -262,13 +277,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				}
 
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				let parsedRequest: [ any, Account.Account | null ];
+				let parsedRequest: any[];
 				if (input.parseRequestToArgs) {
 					parsedRequest = input.parseRequestToArgs({ body: request, params, url, account: account ?? null });
 				} else {
 					parsedRequest = [ request, account ];
 				}
 
+				// @ts-ignore
 				// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 				const result = await handler(...parsedRequest);
 
@@ -347,6 +363,42 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		});
 
 		addRoute({
+			method: 'POST',
+			handlerName: 'executeTransfer',
+			pathName: 'executeTransfer/:id',
+			getSigningData: function(data, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+				return(getKeetaAssetMovementAnchorExecuteTransferRequestSigningData({
+					id: id,
+					...data
+				}));
+			},
+			parseRequestToArgs: ({ body, params }) => {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				if (!body) {
+					throw(new KeetaAnchorUserError('Missing or invalid request body'));
+				}
+
+				return([ { id, ...body } ] as const);
+			},
+			assertRequest: assertKeetaAssetMovementAnchorExecuteTransferRequest,
+			assertResponse: assertKeetaAssetMovementAnchorExecuteTransferResponse,
+			serializeResponse(data) {
+				return({
+					...data,
+					transaction: serializeTransactionResponse(data.transaction)
+				});
+			}
+		});
+
+		addRoute({
 			method: 'GET',
 			handlerName: 'getTransferStatus',
 			pathName: 'getTransferStatus/:id',
@@ -399,6 +451,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 		addRoute({
 			method: 'POST',
+			handlerName: 'initiatePersistentForwardingTemplate',
+			assertRequest: assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest,
+			assertResponse: assertKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
+			getSigningData: getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData
+		});
+
+		addRoute({
+			method: 'POST',
 			handlerName: 'createPersistentForwardingTemplate',
 			assertRequest: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 			assertResponse: assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
@@ -442,12 +502,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		const routes = [
 			'initiateTransfer',
 			'listTransactions',
+			'initiatePersistentForwardingTemplate',
 			'createPersistentForwardingTemplate',
 			'listPersistentForwardingTemplate',
 			'createPersistentForwarding',
 			'listPersistentForwarding',
 			'shareKYC',
-			[ 'getTransferStatus', 'getTransferStatus/{id}' ]
+			[ 'getTransferStatus', 'getTransferStatus/{id}' ],
+			[ 'executeTransfer', 'executeTransfer/{id}' ]
 		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
 
 		for (const routeInput of routes) {

@@ -4,24 +4,7 @@ import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { createAssert } from 'typia';
 import Resolver from './resolver.js';
 import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
-import { createNodeAndClient } from './utils/tests/node.js';
-
-async function setInfo(account: ReturnType<typeof KeetaNetClient.lib.Account.fromSeed>, userClient: KeetaNetClient.UserClient, value: Parameters<typeof Resolver.Metadata.formatMetadata>[0]): Promise<void> {
-	const testAccountExternalUserClient = new KeetaNetClient.UserClient({
-		client: userClient.client,
-		signer: account,
-		usePublishAid: false,
-		network: userClient.network,
-		/* XXX:TODO: Need to be able to get this from the UserClient/Client */
-		networkAlias: 'test'
-	});
-
-	await testAccountExternalUserClient.setInfo({
-		name: '',
-		description: '',
-		metadata: Resolver.Metadata.formatMetadata(value)
-	});
-}
+import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
 
 async function setupForResolverTests() {
 	const testAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
@@ -628,6 +611,12 @@ test('Concurrent Lookups', async function() {
 		countryCodes: ['US' as const]
 	});
 
+	const initialCacheStats = { ...resolver.stats.cache };
+	expect(initialCacheStats).toEqual({ hit: 0, miss: 8 });
+
+	// Clear cache to ensure that following tests do not read more than the initial read
+	resolver.clearCache();
+
 	const lookupPromises = [];
 	for (let lookupID = 0; lookupID < concurrency; lookupID++) {
 		lookupPromises.push(resolver.lookup('banking', {
@@ -652,9 +641,9 @@ test('Concurrent Lookups', async function() {
 		const createAccount = await operations?.createAccount?.('string');
 		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
 	}
+
+	expect(resolver.stats.cache.miss).toEqual(initialCacheStats.miss);
 	expect(resolver.stats.reads).toBeGreaterThan(concurrency * 3);
-	expect(resolver.stats.cache.hit).toBeGreaterThan(resolver.stats.cache.miss);
-	expect(resolver.stats.cache.miss).toBeLessThan(concurrency * 2);
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
 
