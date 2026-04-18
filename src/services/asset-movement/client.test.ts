@@ -10,6 +10,7 @@ import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCrea
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -94,9 +95,17 @@ test('Asset Movement Anchor Client Test', async function() {
 		return(true);
 	}
 
+	const testLegalField: SharedAnchorMetadataLegalExtension['legal'] = {
+		disclaimers: [
+			{ purpose: 'general', content: { type: 'markdown', content: 'Test Disclaimer' }}
+		]
+	};
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		assetMovement: {
+			legal: testLegalField,
+
 			/**
 			 * Supported assets and their configurations
 			 */
@@ -389,6 +398,11 @@ test('Asset Movement Anchor Client Test', async function() {
 		expect(providerIDs.sort()).toEqual(expectedProviderIDs.sort());
 	}
 
+	{
+		/* Expect legal field to be parsed properly on the client side */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+	}
 
 	const baseTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
 	const baseTokenProvider = baseTokenProviderList?.[0];
