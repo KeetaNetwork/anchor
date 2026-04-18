@@ -6,7 +6,7 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -101,10 +101,39 @@ test('Asset Movement Anchor Client Test', async function() {
 		]
 	};
 
+	const validLocationMetadata = {
+		'chain:evm:1': {
+			assets: {
+				'evm:0x5': {
+					decimalPlaces: 20,
+					displayName: 'Cool Token',
+					ticker: '$COOL',
+					logoURI: 'https://example.com/logo.png'
+				}
+			}
+		},
+		'chain:solana:ffffffffffffffffffffffffffffffffffffffffffff': {
+			assets: {
+				'solana:So11111111111111111111111111111111111111112': {
+					decimalPlaces: 9
+				}
+			}
+		}
+	} satisfies AnchorCustomLocationMetadata;
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		assetMovement: {
 			legal: testLegalField,
+			locationMetadata: {
+				...validLocationMetadata,
+				'chain:evm:1': {
+					...validLocationMetadata['chain:evm:1'],
+					// @ts-expect-error
+					'solana:test': { decimalPlaces: 20 }
+				},
+				'chain:solana:two': {}
+			},
 
 			/**
 			 * Supported assets and their configurations
@@ -399,9 +428,29 @@ test('Asset Movement Anchor Client Test', async function() {
 	}
 
 	{
-		/* Expect legal field to be parsed properly on the client side */
+		/* Metadata checks */
 		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		/* Expect legal field to be parsed properly on the client side */
 		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+
+		/* Expect custom token metadata to be resolved correctly */
+		expect(testProvider.serviceInfo.locationMetadata).toEqual(validLocationMetadata);
+
+		const evm0x5Metadata = validLocationMetadata['chain:evm:1']['assets']['evm:0x5'];
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'evm', chainId: 1n }}, 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x0')).toEqual(null);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'solana:test')).toEqual(null);
+		const solanaGenesis = 'ffffffffffffffffffffffffffffffffffffffffffff';
+		const testSolanaAssetID: SolanaAsset = 'solana:So11111111111111111111111111111111111111112';
+		const testSolanaAssetMetadata = validLocationMetadata[`chain:solana:${solanaGenesis}`]['assets']['solana:So11111111111111111111111111111111111111112'];
+		expect(testProvider.getAssetMetadataForLocation(`chain:solana:${solanaGenesis}`, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'solana', genesisHash: solanaGenesis }}, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
 	}
 
 	const baseTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });

@@ -7,13 +7,14 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
+import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
+import type { TokenMetadata } from '../../lib/token-metadata.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -120,6 +121,23 @@ export interface AssetPath {
 	 */
 	kycProviders?: string[];
 };
+
+export interface AnchorTokenLocationMetadata extends TokenMetadata {
+	displayName?: string;
+	ticker?: `$${string}`;
+}
+
+export type PerChainLocationMetadata<Chain extends ExternalChainLocationType = ExternalChainLocationType> = {
+	assets?: {
+		[AssetId in ExternalChainAsset<Chain>]?: AnchorTokenLocationMetadata | undefined;
+	}
+};
+
+export type AnchorCustomLocationMetadata = {
+	[Chain in ExternalChainLocationType]?: {
+		[Location in ChainLocationString<Chain>]?: PerChainLocationMetadata<Chain> | undefined;
+	};
+}[ExternalChainLocationType];
 
 export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
 export interface SupportedAssetsMetadata {
