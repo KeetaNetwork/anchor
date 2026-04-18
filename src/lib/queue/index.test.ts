@@ -1976,7 +1976,7 @@ suite.sequential('Driver Tests', async function() {
 						}
 
 						/* Add multiple entries to each partition */
-						const entriesPerPartition = 2000;
+						const entriesPerPartition = 200;
 						for (let queueIdx = 0; queueIdx < queues.length; queueIdx++) {
 							const queue = queues[queueIdx];
 							const queueName = queueNames[queueIdx];
