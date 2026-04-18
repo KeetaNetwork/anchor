@@ -80,9 +80,9 @@ export type ProviderSearchInput = {
 export interface Asset {
 	location?: AssetLocationString;
 	/**
-	 * Keeta token public key string, evm contract address, or a currency code
+	 * Keeta token public key string, external chain asset, ticker, or a currency code
 	 */
-	id: string;
+	id: AssetMetadataTargetValue;
 }
 
 export type FiatPullRails = 'ACH_DEBIT' | 'CARD_PULL';
@@ -139,7 +139,7 @@ export type AnchorCustomLocationMetadata = {
 	};
 }[ExternalChainLocationType];
 
-export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
+export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}` | ExternalChainAsset;
 export interface SupportedAssetsMetadata {
 	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
