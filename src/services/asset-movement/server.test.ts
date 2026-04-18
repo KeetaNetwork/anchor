@@ -12,11 +12,11 @@ test('Asset Movement Server Tests', async function() {
 				asset: asset.publicKeyString.get(),
 				paths: [{
 					pair: [{
-						id: 'foo',
+						id: 'evm:0xfoo',
 						location: 'chain:evm:123',
 						rails: { inbound: [ 'KEETA_SEND' ] }
 					}, {
-						id: 'bar',
+						id: asset.publicKeyString.get(),
 						location: 'chain:keeta:123',
 						rails: { outbound: [ 'KEETA_SEND' ] }
 					}]
