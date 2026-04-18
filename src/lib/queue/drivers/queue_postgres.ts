@@ -1,3 +1,5 @@
+// cspell:ignore seqscan
+
 import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueStorageDriverConstructor,
@@ -45,6 +47,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
 	private dbInitializationPromise: Promise<boolean> | null = null;
 	private serializationRetryCount = 0;
+	private debugForceIndexScan = false;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverPostgres';
 	readonly id: string;
@@ -242,7 +245,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						logger?.debug('Serialization failure or deadlock detected');
 
 						// Track serialization retries for instrumentation
-						console.error('Serialization failure or deadlock detected, retrying operation', error);
 						this.serializationRetryCount++;
 
 						const minBackoff = 100;
@@ -284,6 +286,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		const pool = await this.newDBConnection();
 		const logger = this.methodLogger(className);
 
+		const debugForceIndexScan = this.debugForceIndexScan;
+
 		const result = await this.runWithRetry(async function() {
 			const client = await pool.connect();
 
@@ -291,6 +295,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				logger?.debug('Starting DB transaction');
 				await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
 				logger?.debug('DB transaction started');
+
+				if (debugForceIndexScan) {
+					await client.query('SET LOCAL enable_seqscan TO off');
+				}
 
 				const retval = await fn(client, logger);
 
@@ -588,6 +596,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		unsetToctouDelay(): void;
 		getSerializationRetryCount(): number;
 		resetSerializationRetryCount(): void;
+		enableDebugForceIndexScan(): void;
+		disableDebugForceIndexScan(): void;
 	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
@@ -607,6 +617,12 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			},
 			resetSerializationRetryCount: (): void => {
 				this.serializationRetryCount = 0;
+			},
+			enableDebugForceIndexScan: (): void => {
+				this.debugForceIndexScan = true;
+			},
+			disableDebugForceIndexScan: (): void => {
+				this.debugForceIndexScan = false;
 			}
 		});
 	}

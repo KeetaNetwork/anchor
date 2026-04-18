@@ -1991,6 +1991,18 @@ suite.sequential('Driver Tests', async function() {
 							}
 						}
 
+						/*
+						 * Ensure all drivers disable sequential scans (force index scans)
+						 *
+						 * Because of the small amount of test data, sometimes PostgreSQL
+						 * decides a sequential scan is better than an index scan, which
+						 * can break our test assumptions and causes serialization conflicts
+						 */
+						rootQueue._Testing(TestingKey).enableDebugForceIndexScan();
+						partition1._Testing(TestingKey).enableDebugForceIndexScan();
+						partition2._Testing(TestingKey).enableDebugForceIndexScan();
+						partition3._Testing(TestingKey).enableDebugForceIndexScan();
+
 						/* Reset counters after setup, before concurrent processing test */
 						rootQueue._Testing(TestingKey).resetSerializationRetryCount();
 						partition1._Testing(TestingKey).resetSerializationRetryCount();
