@@ -146,7 +146,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						{
 							pair: [
 								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ { rail: 'KEETA_SEND' } ] }},
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
 							]
 						}
 					]
@@ -156,7 +156,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					paths: [
 						{
 							pair: [
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
 								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
@@ -327,7 +327,7 @@ test('Asset Movement Anchor Client Test', async function() {
 									{
 									// @ts-expect-error
 										pair: [
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+											{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
 								]
@@ -357,7 +357,7 @@ test('Asset Movement Anchor Client Test', async function() {
 								paths: [
 									{
 										pair: [
-											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
+											{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
 											{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
@@ -805,7 +805,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						{
 							pair: [
 								{ location: `chain:keeta:${client.network}`, id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'ACH' ] }},
-								{ location: 'bank-account:us', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
+								{ location: 'bank-account:us', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
 					]
