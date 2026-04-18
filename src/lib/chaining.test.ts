@@ -206,7 +206,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				instructionChoices: [{
 					type: 'KEETA_SEND' as const,
 					location: request.from.location,
-					sendToAddress: request.to.recipient,
+					sendToAddress: KeetaNet.lib.Account.fromPublicKeyString(request.to.recipient).publicKeyString.get(),
 					value: value.toString(),
 					tokenAddress: tokenAddress,
 					assetFee: fee.toString(),

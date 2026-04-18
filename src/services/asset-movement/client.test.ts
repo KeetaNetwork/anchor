@@ -252,7 +252,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: KeetaNet.lib.Account.fromPublicKeyString(request.to.recipient).publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 
@@ -837,7 +837,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: KeetaNet.lib.Account.fromPublicKeyString(request.to.recipient).publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 
