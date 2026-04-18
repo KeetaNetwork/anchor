@@ -94,7 +94,9 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 							sendToAddress: bankAccount.publicKeyString.get(),
 							external: txId,
 							value: value.toString(),
-							tokenAddress: tokenAddress,
+							tokenAddress: KeetaNet.lib.Account.fromPublicKeyString(tokenAddress)
+								.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+								.publicKeyString.get(),
 							assetFee: fee.toString(),
 							totalReceiveAmount: receive.toString()
 						}]
@@ -208,7 +210,9 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 					location: request.from.location,
 					sendToAddress: KeetaNet.lib.Account.fromPublicKeyString(request.to.recipient).publicKeyString.get(),
 					value: value.toString(),
-					tokenAddress: tokenAddress,
+					tokenAddress: KeetaNet.lib.Account.fromPublicKeyString(tokenAddress)
+						.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+						.publicKeyString.get(),
 					assetFee: fee.toString(),
 					totalReceiveAmount: receive.toString()
 				}]
