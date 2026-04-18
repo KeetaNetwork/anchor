@@ -458,7 +458,7 @@ export type AssetTransferInstructions = ({
 	/**
 	 * The token address to send.
 	 */
-	tokenAddress: string;
+	tokenAddress: TokenPublicKeyString;
 
 	/**
 	 * If provided, the value to put in the external field of the send operation.
