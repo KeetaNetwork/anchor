@@ -21,6 +21,7 @@ const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
 test('Asset Movement Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -252,7 +253,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: sendToAddress.publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 
@@ -506,7 +507,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					type: 'KEETA_SEND',
 					location: 'chain:keeta:100',
 
-					sendToAddress: account.publicKeyString.get(),
+					sendToAddress: sendToAddress.publicKeyString.get(),
 					value: '100',
 					tokenAddress: baseToken.publicKeyString.get(),
 
@@ -694,6 +695,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -837,7 +839,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: sendToAddress.publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 

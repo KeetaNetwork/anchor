@@ -1,6 +1,6 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type * as CurrencyInfo from '@keetanetwork/currency-info';
-import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { AccountKeyAlgorithm, GenericAccount, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -446,9 +446,9 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	/**
-	 * The keeta public key address to send to
+	 * The keeta wallet address to send to
 	 */
-	sendToAddress: string;
+	sendToAddress: ReturnType<GenericAccount['publicKeyString']['get']>;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit.
@@ -458,10 +458,10 @@ export type AssetTransferInstructions = ({
 	/**
 	 * The token address to send.
 	 */
-	tokenAddress: string;
+	tokenAddress: TokenPublicKeyString;
 
 	/**
-	 * If provided, the value to put in the external keeta transfer.
+	 * If provided, the value to put in the external field of the send operation.
 	 */
 	external?: string;
 } | {
