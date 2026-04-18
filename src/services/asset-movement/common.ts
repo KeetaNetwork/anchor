@@ -13,6 +13,7 @@ import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWa
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
+import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -126,12 +127,6 @@ export interface SupportedAssetsMetadata {
 	paths: AssetPath[];
 }
 
-/**
- * This is the type of content that can be rendered directly in a client application.
- *
- * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
- */
-export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 export interface RailWithExtendedDetails {
 	rail: Rail;

@@ -73,6 +73,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { KeetaNet } from '../../client/index.js';
+import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 // const PARANOID = true;
 
@@ -145,7 +146,7 @@ type KeetaAssetMovementAnchorOperations = {
 /**
  * The service information for a KYC Anchor service.
  */
-type KeetaAssetMovementServiceInfo = {
+interface KeetaAssetMovementServiceInfo extends SharedAnchorMetadataLegalExtension {
 	operations: {
 		[operation in keyof KeetaAssetMovementAnchorOperations]: Promise<KeetaAssetMovementAnchorOperations[operation]>;
 	};
@@ -247,6 +248,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
 			{
+				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger })),
 				operations: operationsFunctions,
 				supportedAssets: supportedAssets
 			}

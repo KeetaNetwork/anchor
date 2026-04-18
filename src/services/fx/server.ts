@@ -33,6 +33,7 @@ import * as typia from 'typia';
 import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.
@@ -127,7 +128,7 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAn
 	/**
 	 * Configuration for FX handling
 	 */
-	fx: {
+	fx: SharedAnchorMetadataLegalExtension & {
 		/**
 		 * Supported conversions
 		 */
@@ -1163,6 +1164,10 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 
 		if (this.fx.acceptedCostAssets) {
 			metadata.acceptedCostAssets = this.fx.acceptedCostAssets;
+		}
+
+		if (this.fx.legal) {
+			metadata.legal = this.fx.legal;
 		}
 
 		return(metadata);

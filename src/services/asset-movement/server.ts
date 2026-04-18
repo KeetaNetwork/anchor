@@ -64,6 +64,7 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -74,7 +75,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 	/**
 	 * Configuration for asset movement operations
 	 */
-	assetMovement: {
+	assetMovement: SharedAnchorMetadataLegalExtension & {
 		/**
 		 * Supported assets and their configurations
 		 */
@@ -540,6 +541,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			throw(new KeetaAnchorUserError('No operations are supported on this server'));
 		}
 		return({
+			...(this.assetMovement.legal ? { legal: this.assetMovement.legal } : {}),
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets
 		});

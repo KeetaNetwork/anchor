@@ -12,6 +12,7 @@ import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCa
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
+import type { SharedAnchorMetadataLegalExtension } from './metadata.types.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -116,7 +117,7 @@ type ServiceMetadata = {
 			/**
 			 * Provider ID which identifies the FX provider
 			 */
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataLegalExtension & {
 				operations: {
 					/**
 					 * Get an estimate for a currency
@@ -197,7 +198,7 @@ type ServiceMetadata = {
 			}
 		};
 		assetMovement?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataLegalExtension & {
 				operations: {
 					[Operation in (
 						'initiateTransfer' |

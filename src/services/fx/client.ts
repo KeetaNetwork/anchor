@@ -27,6 +27,8 @@ import type {
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
+import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -92,7 +94,7 @@ type KeetaFXAnchorOperations = {
 	[operation in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => URL;
 };
 
-type KeetaFXServiceInfo = {
+interface KeetaFXServiceInfo extends SharedAnchorMetadataLegalExtension {
 	operations: {
 		[operation in keyof KeetaFXAnchorOperations]: Promise<KeetaFXAnchorOperations[operation]>;
 	},
@@ -105,7 +107,13 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to' | 'affinity'>> & Pick<GetProvidersOptions, 'requiredOperations'>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>, sharedCriteria?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+async function getEndpoints(
+	resolver: Resolver,
+	request: Partial<Pick<ConversionInputCanonical, 'from' | 'to' | 'affinity'>> & Pick<GetProvidersOptions, 'requiredOperations'>,
+	_ignored_account: InstanceType<typeof KeetaNetLib.Account>,
+	sharedCriteria?: SharedLookupCriteria,
+	options?: { logger?: Logger | undefined; }
+): Promise<GetEndpointsResult | null> {
 	const criteria: ServiceSearchCriteria<'fx'> = {};
 	if (request.from !== undefined) {
 		criteria.inputCurrencyCode = request.from.publicKeyString.get();
@@ -186,6 +194,7 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
 			{
+				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger: options?.logger })),
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				operations: operationsFunctions as KeetaFXServiceInfo['operations'],
 				from: allFrom
@@ -747,7 +756,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 		const conversion = await this.canonicalizeConversionTokens(input);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria, { logger: this.logger });
 		if (providerEndpoints === null) {
 			return(null);
 		}
@@ -782,7 +791,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	async getBaseProvidersForConversion(request: ConversionInput, options: GetProvidersOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria, { logger: this.logger });
 		if (providerEndpoints === null) {
 			return(null);
 		}
