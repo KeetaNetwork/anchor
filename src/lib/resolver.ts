@@ -9,7 +9,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
-import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput } from '../services/asset-movement/common.js';
+import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { SharedAnchorMetadataLegalExtension } from './metadata.types.js';
@@ -215,6 +215,8 @@ type ServiceMetadata = {
 				};
 
 				supportedAssets: SupportedAssetsMetadata[];
+
+				locationMetadata?: AnchorCustomLocationMetadata | undefined;
 			}
 		};
 		cards?: {

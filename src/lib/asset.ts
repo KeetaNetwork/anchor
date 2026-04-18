@@ -1,6 +1,7 @@
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
+import type { ChainLocationType } from '../services/asset-movement/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
@@ -15,10 +16,21 @@ export type CurrencySearchInput = CurrencySearchCanonical | CurrencyInfo.Currenc
 export type TokenSearchInput = TokenAddress | TokenPublicKeyString;
 export type TokenSearchCanonical = TokenPublicKeyString;
 
-export type EVMAsset = `evm:${HexString}`;
-export type TronAsset = `tron:${string}`;
-export type SolanaAsset = `solana:${string}`;
-export type ExternalChainAsset = EVMAsset | TronAsset | SolanaAsset;
+type ChainAssetType = {
+	evm: HexString;
+} & {
+	[K in 'solana' | 'bitcoin' | 'tron']: string;
+}
+
+export type ExternalChainLocationType = Exclude<ChainLocationType, 'keeta'>;
+export type ExternalChainAsset<T extends ExternalChainLocationType = ExternalChainLocationType> = {
+	[K in T]: `${K}:${ChainAssetType[K]}`
+}[T];
+
+export type EVMAsset = ExternalChainAsset<'evm'>;
+export type TronAsset = ExternalChainAsset<'tron'>;
+export type SolanaAsset = ExternalChainAsset<'solana'>;
+export type BitcoinAsset = ExternalChainAsset<'bitcoin'>;
 export type ChainAssetString = ExternalChainAsset | TokenPublicKeyString;
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
@@ -98,8 +110,26 @@ export function isSolanaAsset(input: unknown): input is SolanaAsset {
 	return(typeof input === 'string' && input.startsWith('solana:'));
 }
 
-export function isExternalChainAsset(input: unknown): input is ExternalChainAsset {
-	return(isEVMAsset(input) || isTronAsset(input) || isSolanaAsset(input));
+export function isBitcoinAsset(input: unknown): input is BitcoinAsset {
+	return(typeof input === 'string' && input.startsWith('bitcoin:'));
+}
+
+// XXX:TODO We should eventually refactor these to be shared between location and asset, so we can have one source of truth per location
+export function isExternalChainAsset<T extends ExternalChainLocationType = ExternalChainLocationType>(input: unknown, type?: T): input is ExternalChainAsset<T> {
+	const checks: {
+		[K in ExternalChainLocationType]: (input: unknown) => boolean;
+	} = {
+		evm: isEVMAsset,
+		solana: isSolanaAsset,
+		tron: isTronAsset,
+		bitcoin: isBitcoinAsset
+	};
+
+	if (type) {
+		return(checks[type](input));
+	} else {
+		return(Object.values(checks).some(check => check(input)));
+	}
 }
 
 export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {

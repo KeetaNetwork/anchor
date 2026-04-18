@@ -33,7 +33,12 @@ import type {
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
 	KeetaPersistentForwardingAddressDetails,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
-	KeetaAssetMovementAnchorExecuteTransferClientRequest
+	KeetaAssetMovementAnchorExecuteTransferClientRequest,
+	AnchorTokenLocationMetadata,
+	AnchorCustomLocationMetadata,
+	ChainLocationString,
+	AssetLocationLike,
+	PerChainLocationMetadata
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadata,
@@ -59,7 +64,10 @@ import {
 	isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorListPersistentForwardingResponse,
 	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
-	isKeetaAssetMovementAnchorShareKYCResponse
+	isKeetaAssetMovementAnchorShareKYCResponse,
+	toAssetLocationFromString,
+	isExternalChainAsset,
+	isAnchorTokenLocationMetadata
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
@@ -74,6 +82,7 @@ import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { KeetaNet } from '../../client/index.js';
 import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
 
 // const PARANOID = true;
 
@@ -152,6 +161,7 @@ interface KeetaAssetMovementServiceInfo extends SharedAnchorMetadataLegalExtensi
 	};
 
 	supportedAssets: SupportedAssetsMetadata[];
+	locationMetadata?: AnchorCustomLocationMetadata;
 };
 
 /**
@@ -191,6 +201,130 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
 		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
 		const supportedAssets = assertKeetaSupportedAssetsMetadata(supportedAssetsMetadata);
+
+		const locationMetadata = await (async () => {
+			let locationMetadataVal;
+			if (serviceInfo.locationMetadata) {
+				locationMetadataVal = await serviceInfo.locationMetadata('object');
+			}
+
+			if (!locationMetadataVal) {
+				return(undefined);
+			}
+
+			const chainsResult = await Promise.allSettled(Object.entries(locationMetadataVal).map(async ([ location, assetsValue ]) => {
+				const parsedLocation = toAssetLocationFromString(location);
+
+				if (parsedLocation.type !== 'chain') {
+					throw(new Error(`Invalid location type in AssetLocation string: ${parsedLocation.type}`));
+				}
+
+				if (parsedLocation.chain.type === 'keeta') {
+					throw(new Error('Keeta chain type is not supported in AssetLocation metadata')) ;
+				}
+
+				const chainType = parsedLocation.chain.type;
+
+				// We can assert here as we have validated the chain type in the parsing function
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const locationString = convertAssetLocationToString(parsedLocation) as ChainLocationString<ExternalChainLocationType>;
+
+				let resolvedAssetsObject = undefined;
+				if (assetsValue) {
+					resolvedAssetsObject = await assetsValue('object');
+				}
+
+				if (!resolvedAssetsObject) {
+					return(null);
+				}
+
+				let assets: {
+					[AssetId in ExternalChainAsset<typeof chainType>]?: AnchorTokenLocationMetadata | undefined;
+				} | undefined;
+
+				if (resolvedAssetsObject.assets) {
+					const assetsValue = await resolvedAssetsObject.assets('object');
+					const resolvedAssets = await Promise.allSettled(Object.entries(assetsValue).map(async ([ assetId, assetMetadata ]) => {
+						if (!isExternalChainAsset(assetId, chainType)) {
+							throw(new Error(`Invalid asset ID for chain type ${chainType}: ${assetId}`));
+						}
+
+						let assetMetadataVal;
+						if (assetMetadata) {
+							assetMetadataVal = await assetMetadata('object');
+						}
+
+						if (!assetMetadataVal) {
+							return(null);
+						}
+
+						const anchorTokenLocationMetadata = {
+							displayName: await assetMetadataVal.displayName?.('string'),
+							ticker: await assetMetadataVal.ticker?.('string'),
+							logoURI: await assetMetadataVal.logoURI?.('string'),
+							decimalPlaces: await assetMetadataVal.decimalPlaces?.('primitive')
+						};
+
+						if (!isAnchorTokenLocationMetadata(anchorTokenLocationMetadata)) {
+							throw(new Error(`Invalid asset metadata for asset ID ${assetId} in chain type ${chainType}`));
+						}
+
+						return([ assetId, anchorTokenLocationMetadata ] as const);
+					}));
+
+					for (const result of resolvedAssets) {
+						if (result.status === 'rejected') {
+							logger?.debug('Failed to resolve asset metadata', result.reason);
+							continue;
+						}
+
+						if (!result.value) {
+							continue;
+						}
+
+						if (!assets) {
+							assets = {};
+						}
+
+
+						assets[result.value[0]] = result.value[1];
+					}
+				}
+
+				return([
+					locationString,
+					{
+						...(assets ? { assets } : {})
+					}
+				] as const)
+			}));
+
+			let chains: AnchorCustomLocationMetadata | undefined;
+			for (const result of chainsResult) {
+				if (result.status === 'rejected') {
+					logger?.debug('Failed to resolve location metadata', result.reason);
+					continue;
+				}
+
+				if (!result.value) {
+					continue;
+				}
+
+				if (!chains) {
+					chains = {};
+				}
+
+				// XXX:TODO Add comment
+				// @ts-ignore
+				chains[result.value[0]] = result.value[1];
+			}
+
+			if (!chains) {
+				return(undefined);
+			}
+
+			return(chains);
+		})();
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
@@ -250,7 +384,8 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			{
 				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger })),
 				operations: operationsFunctions,
-				supportedAssets: supportedAssets
+				supportedAssets: supportedAssets,
+				...(locationMetadata ? { locationMetadata } : {})
 			}
 		]);
 	});
@@ -850,6 +985,35 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		this.logger?.debug(`done sharing KYC attributes`);
+	}
+
+	getAssetMetadataForLocation(location: AssetLocationLike, asset: ExternalChainAsset): AnchorTokenLocationMetadata | null {
+		const locationMetadata = this.serviceInfo.locationMetadata;
+		if (!locationMetadata) {
+			return(null);
+		}
+
+		const locationString = convertAssetLocationToString(location);
+
+		if (!(locationString in locationMetadata)) {
+			return(null);
+		}
+
+		// We can assert here as we have validated the key is included above
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const locationSpecificMetadata = (locationMetadata as { [key: string]: PerChainLocationMetadata })[locationString];
+
+		if (!locationSpecificMetadata?.assets || !(asset in locationSpecificMetadata.assets)) {
+			return(null);
+		}
+
+		const assetMetadata = locationSpecificMetadata.assets[asset];
+
+		if (!assetMetadata) {
+			return(null);
+		}
+
+		return(assetMetadata);
 	}
 }
 

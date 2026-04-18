@@ -66,6 +66,8 @@ import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-ser
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
+type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
+
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -75,12 +77,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 	/**
 	 * Configuration for asset movement operations
 	 */
-	assetMovement: SharedAnchorMetadataLegalExtension & {
-		/**
-		 * Supported assets and their configurations
-		 */
-		supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'];
-
+	assetMovement: SharedAnchorMetadataLegalExtension & Pick<AssetMovementServiceMetadata, 'supportedAssets' | 'locationMetadata'> & {
 		authenticationRequired?: boolean;
 
 		/**
@@ -542,6 +539,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 		}
 		return({
 			...(this.assetMovement.legal ? { legal: this.assetMovement.legal } : {}),
+			...(this.assetMovement.locationMetadata ? { locationMetadata: this.assetMovement.locationMetadata } : {}),
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets
 		});
