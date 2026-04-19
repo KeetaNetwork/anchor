@@ -41,7 +41,7 @@ import type {
 	PerChainLocationMetadata
 } from './common.js';
 import {
-	assertKeetaSupportedAssetsMetadata,
+	assertKeetaSupportedAssetsMetadataItem,
 	convertAssetLocationToString,
 	convertAssetOrPairSearchInputToCanonical,
 	convertAssetSearchInputToCanonical,
@@ -200,7 +200,19 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
 		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssetsMetadata(supportedAssetsMetadata);
+
+		if (!Array.isArray(supportedAssetsMetadata)) {
+			throw(new Error('Invalid supportedAssets metadata: expected an array'));
+		}
+
+		const supportedAssets = [];
+		for (const item of supportedAssetsMetadata) {
+			try {
+				supportedAssets.push(assertKeetaSupportedAssetsMetadataItem(item));
+			} catch (error) {
+				logger?.debug('getEndpoints', `Failed to resolve supportedAssets metadata item for provider ${id}`, error, item);
+			}
+		}
 
 		const locationMetadata = await (async () => {
 			let locationMetadataVal;
