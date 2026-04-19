@@ -1485,4 +1485,36 @@ describe('AnchorChaining listAssets', function() {
 		expect(keys).toContain(`USD@bank-account:us`);
 		expect(keys).toContain(`EUR@bank-account:iban-swift`);
 	});
+
+	test('from filter populates distance.pathLength with shortest hop count', async function() {
+		await using h = await createChainingTestHarness();
+		const assets = await h.anchorChaining.graph.listAssets({
+			from: { asset: h.tokens.USDC, location: h.keetaLocation }
+		});
+
+		const distanceByKey = new Map(assets.map(a => [resultKey(a), a.distance?.pathLength]));
+		expect(distanceByKey.get(`${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`)).toBe(1n);
+		expect(distanceByKey.get(`USD@bank-account:us`)).toBe(1n);
+		expect(distanceByKey.get(`EUR@bank-account:iban-swift`)).toBe(2n);
+	});
+
+	test('to filter populates distance.pathLength with shortest hop count', async function() {
+		await using h = await createChainingTestHarness();
+		const assets = await h.anchorChaining.graph.listAssets({
+			to: { location: 'bank-account:us' },
+			maxStepCount: 1
+		});
+
+		expect(assets).toHaveLength(1);
+		expect(assets[0]?.distance).toEqual({ pathLength: 1n });
+	});
+
+	test('no filter returns distance null for all assets', async function() {
+		await using h = await createChainingTestHarness();
+		const assets = await h.anchorChaining.graph.listAssets();
+
+		for (const asset of assets) {
+			expect(asset.distance).toBeNull();
+		}
+	});
 });

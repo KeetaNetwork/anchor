@@ -256,6 +256,10 @@ export interface AnchorChainingAssetInfo {
 		inbound: Rail[];
 		outbound: Rail[];
 	};
+
+	distance: {
+		pathLength: bigint;
+	} | null;
 }
 
 type GetAccountForActionPayload = {
@@ -674,52 +678,65 @@ class AnchorGraph {
 			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 		}
 
-		const markReachable = (side: GraphNodeLike['from' | 'to']) => reachable.add(assetLocationKey(side));
-
-		// Unified traversal: 'next'+'to' = forward, 'prev'+'from' = backward.
-		const visit = (visited: Set<number>, adjacency: 'next' | 'prev', markSide: 'from' | 'to', nodeIdx: number, depth: number) => {
-			if (visited.has(nodeIdx)) {
-				return;
-			}
-			const item = nodesWithAdj[nodeIdx];
-			if (!item) {
-				throw(new Error(`Invalid node index during traversal: ${nodeIdx}`));
-			}
-			if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
-				return;
-			}
-			visited.add(nodeIdx);
-			markReachable(item.node[markSide]);
-			if (maxStepCount === undefined || depth < maxStepCount) {
-				for (const neighborIdx of item[adjacency]) {
-					visit(visited, adjacency, markSide, neighborIdx, depth + 1);
+		const distances = new Map<string, bigint>();
+		const markReachable = (side: GraphNodeLike['from' | 'to'], depth?: bigint) => {
+			const key = assetLocationKey(side);
+			reachable.add(key);
+			if (depth !== undefined) {
+				const existing = distances.get(key);
+				if (existing === undefined || depth < existing) {
+					distances.set(key, depth);
 				}
 			}
 		};
 
-		const visited = new Set<number>();
-		for (let i = 0; i < nodesWithAdj.length; i++) {
-			const item = nodesWithAdj[i];
-			if (!item) {
-				throw(new Error(`Invalid node index: ${i}`));
-			}
-
-			if (fromFilter || toFilter) {
-				if (fromFilter) {
-					if (sideMatchesFilter(item.node.from, fromFilter)) {
-						visit(visited, 'next', 'to', i, 1);
-					}
-				} else if (toFilter) {
-					if (sideMatchesFilter(item.node.to, toFilter)) {
-						visit(visited, 'prev', 'from', i, 1);
-					}
-				} else {
-					throw(new Error(`Invalid filter state: at least one of fromFilter or toFilter must be defined`));
+		const bfs = (
+			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
+			adjacency: 'next' | 'prev',
+			markSide: 'from' | 'to'
+		) => {
+			const nodeVisited = new Set<number>();
+			const queue: { nodeIdx: number; depth: bigint }[] = [];
+			for (let i = 0; i < nodesWithAdj.length; i++) {
+				const item = nodesWithAdj[i];
+				if (!item) {
+					throw(new Error(`Invalid node index during BFS initialization: ${i}`));
 				}
-			} else {
-				if (!onlyAllowFXLike || isFXLikeNode(item.node)) {
-					markReachable(item.node.from);
-					markReachable(item.node.to);
+				if (startCondition(item) && !nodeVisited.has(i)) {
+					nodeVisited.add(i);
+					queue.push({ nodeIdx: i, depth: 1n });
+				}
+			}
+			while (queue.length > 0) {
+				const { nodeIdx, depth } = queue.shift()!;
+				const item = nodesWithAdj[nodeIdx];
+				if (!item) {
+					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
+				}
+				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+					continue;
+				}
+				markReachable(item.node[markSide], depth);
+				if (maxStepCount === undefined || depth < maxStepCount) {
+					for (const neighborIdx of item[adjacency]) {
+						if (!nodeVisited.has(neighborIdx)) {
+							nodeVisited.add(neighborIdx);
+							queue.push({ nodeIdx: neighborIdx, depth: depth + 1n });
+						}
+					}
+				}
+			}
+		};
+
+		if (fromFilter) {
+			bfs(item => sideMatchesFilter(item.node.from, fromFilter), 'next', 'to');
+		} else if (toFilter) {
+			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from');
+		} else {
+			for (const { node } of nodesWithAdj) {
+				if (!onlyAllowFXLike || isFXLikeNode(node)) {
+					markReachable(node.from);
+					markReachable(node.to);
 				}
 			}
 		}
@@ -731,7 +748,17 @@ class AnchorGraph {
 			const key = assetLocationKey(side);
 			let resultObj = resultMap.get(key);
 			if (!resultObj) {
-				resultObj = { asset: side.asset, location: side.location, rails: { inbound: [], outbound: [] }};
+				let distanceObj: AnchorChainingAssetInfo['distance'] = null;
+				const distanceValue = distances.get(key);
+				if (distanceValue !== undefined) {
+					distanceObj = { pathLength: distanceValue };
+				}
+				resultObj = {
+					asset: side.asset,
+					location: side.location,
+					rails: { inbound: [], outbound: [] },
+					distance: distanceObj
+				};
 				resultMap.set(key, resultObj);
 			}
 			return(resultObj);
