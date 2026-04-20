@@ -1506,7 +1506,7 @@ describe('AnchorChaining listAssets', function() {
 		});
 
 		expect(assets).toHaveLength(1);
-		expect(assets[0]?.distance).toEqual({ pathLength: 1n });
+		expect(assets[0]?.distance).toEqual({ pathLength: 1 });
 	});
 
 	test('no filter returns distance null for all assets', async function() {
