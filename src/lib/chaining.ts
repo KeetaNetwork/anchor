@@ -270,7 +270,7 @@ export interface AnchorChainingAssetInfo {
 	};
 
 	distance: {
-		pathLength: bigint;
+		pathLength: number;
 	} | null;
 }
 
@@ -691,12 +691,12 @@ class AnchorGraph {
 
 		// Separate reachable sets and distance maps for backward (from) and forward (to) traversals.
 		const fromReachable = new Set<string>();
-		const fromDistances = new Map<string, bigint>();
+		const fromDistances = new Map<string, number>();
 		const toReachable = new Set<string>();
-		const toDistances = new Map<string, bigint>();
+		const toDistances = new Map<string, number>();
 
-		const makeMarkFn = (reachable: Set<string>, distances: Map<string, bigint>) =>
-			(side: GraphNodeLike['from' | 'to'], depth?: bigint) => {
+		const makeMarkFn = (reachable: Set<string>, distances: Map<string, number>) =>
+			(side: GraphNodeLike['from' | 'to'], depth?: number) => {
 				const key = assetLocationKey(side);
 				reachable.add(key);
 				if (depth !== undefined) {
@@ -714,10 +714,10 @@ class AnchorGraph {
 			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
 			adjacency: 'next' | 'prev',
 			markSide: 'from' | 'to',
-			markFn: (side: GraphNodeLike['from' | 'to'], depth: bigint) => void
+			markFn: (side: GraphNodeLike['from' | 'to'], depth: number) => void
 		) => {
 			const nodeVisited = new Set<number>();
-			const queue: { nodeIdx: number; depth: bigint }[] = [];
+			const queue: { nodeIdx: number; depth: number }[] = [];
 			for (let i = 0; i < nodesWithAdj.length; i++) {
 				const item = nodesWithAdj[i];
 				if (!item) {
@@ -725,7 +725,7 @@ class AnchorGraph {
 				}
 				if (startCondition(item) && !nodeVisited.has(i)) {
 					nodeVisited.add(i);
-					queue.push({ nodeIdx: i, depth: 1n });
+					queue.push({ nodeIdx: i, depth: 1 });
 				}
 			}
 			while (queue.length > 0) {
@@ -746,7 +746,7 @@ class AnchorGraph {
 					for (const neighborIdx of item[adjacency]) {
 						if (!nodeVisited.has(neighborIdx)) {
 							nodeVisited.add(neighborIdx);
-							queue.push({ nodeIdx: neighborIdx, depth: depth + 1n });
+							queue.push({ nodeIdx: neighborIdx, depth: depth + 1 });
 						}
 					}
 				}
@@ -774,7 +774,7 @@ class AnchorGraph {
 		// (asset, location) pair from ALL graph nodes, not just those on the traversal path.
 		const buildResultMap = (
 			reachable: Set<string>,
-			distances: Map<string, bigint>
+			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
 			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {

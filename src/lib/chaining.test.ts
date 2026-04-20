@@ -1535,7 +1535,7 @@ describe('AnchorChaining resolveAssets', function() {
 			return(`${assetStr}@${convertAssetLocationToString(item.location)}`);
 		};
 
-		type ExpectedAsset = { key: string; distance: bigint | null };
+		type ExpectedAsset = { key: string; distance: number | null };
 
 		const testCases: {
 			name: string;
@@ -1548,10 +1548,10 @@ describe('AnchorChaining resolveAssets', function() {
 				expected: {
 					from: [],
 					to: [
-						{ key: eurcKey, distance: 1n },
-						{ key: usdKey,  distance: 1n },
-						{ key: eurKey,  distance: 2n },
-						{ key: usdcKey, distance: 2n }
+						{ key: eurcKey, distance: 1 },
+						{ key: usdKey,  distance: 1 },
+						{ key: eurKey,  distance: 2 },
+						{ key: usdcKey, distance: 2 }
 					]
 				}
 			},
@@ -1559,7 +1559,7 @@ describe('AnchorChaining resolveAssets', function() {
 				name: 'to only with maxStepCount: 1',
 				args: { to: { location: 'bank-account:us' }, maxStepCount: 1 },
 				expected: {
-					from: [{ key: usdcKey, distance: 1n }],
+					from: [{ key: usdcKey, distance: 1 }],
 					to:   []
 				}
 			},
@@ -1586,10 +1586,10 @@ describe('AnchorChaining resolveAssets', function() {
 				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:us' }},
 				expected: {
 					from: [
-						{ key: usdcKey, distance: 1n },
-						{ key: eurcKey, distance: 2n }
+						{ key: usdcKey, distance: 1 },
+						{ key: eurcKey, distance: 2 }
 					],
-					to: [{ key: usdKey, distance: 1n }]
+					to: [{ key: usdKey, distance: 1 }]
 				}
 			},
 			{
@@ -1597,20 +1597,20 @@ describe('AnchorChaining resolveAssets', function() {
 				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }},
 				expected: {
 					from: [
-						{ key: eurcKey, distance: 1n },
-						{ key: usdcKey, distance: 2n }
+						{ key: eurcKey, distance: 1 },
+						{ key: usdcKey, distance: 2 }
 					],
-					to: [{ key: eurKey, distance: 1n }]
+					to: [{ key: eurKey, distance: 1 }]
 				}
 			},
 			{
 				name: 'from+to: from.rail ACH limits from assets to those with ACH outbound',
 				args: { from: { rail: 'ACH' }, to: { location: h.keetaLocation }},
 				expected: {
-					from: [{ key: usdKey, distance: 1n }],
+					from: [{ key: usdKey, distance: 1 }],
 					to: [
-						{ key: usdcKey, distance: 1n },
-						{ key: eurcKey, distance: 2n }
+						{ key: usdcKey, distance: 1 },
+						{ key: eurcKey, distance: 2 }
 					]
 				}
 			}
