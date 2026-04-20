@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
@@ -363,7 +363,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	}
 }
 
-test('Asset Movement Anchor Client Test', async function({ expect }) {
+test('Asset Movement Chaining Test', async function({ expect }) {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const { userClient: client } = await createNodeAndClient(account);
 
@@ -1515,6 +1515,116 @@ describe('AnchorChaining listAssets', function() {
 
 		for (const asset of assets) {
 			expect(asset.distance).toBeNull();
+		}
+	});
+});
+
+describe('AnchorChaining resolveAssets', function() {
+	test('all cases', async function() {
+		await using h = await createChainingTestHarness();
+
+		const usdcKey = `${h.tokens.USDC.publicKeyString.get()}@${h.keetaLocation}`;
+		const eurcKey = `${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`;
+		const usdKey = `USD@bank-account:us`;
+		const eurKey = `EUR@bank-account:iban-swift`;
+
+		const resultKey = (item: AnchorChainingAssetInfo): string => {
+			const assetStr = KeetaNet.lib.Account.isInstance(item.asset)
+				? item.asset.publicKeyString.get()
+				: String(item.asset);
+			return(`${assetStr}@${convertAssetLocationToString(item.location)}`);
+		};
+
+		type ExpectedAsset = { key: string; distance: bigint | null };
+
+		const testCases: {
+			name: string;
+			args: AnchorChainingResolveAssetsFilter;
+			expected: { from: ExpectedAsset[]; to: ExpectedAsset[] };
+		}[] = [
+			{
+				name: 'from only',
+				args: { from: { asset: h.tokens.USDC, location: h.keetaLocation }},
+				expected: {
+					from: [],
+					to: [
+						{ key: eurcKey, distance: 1n },
+						{ key: usdKey,  distance: 1n },
+						{ key: eurKey,  distance: 2n },
+						{ key: usdcKey, distance: 2n }
+					]
+				}
+			},
+			{
+				name: 'to only with maxStepCount: 1',
+				args: { to: { location: 'bank-account:us' }, maxStepCount: 1 },
+				expected: {
+					from: [{ key: usdcKey, distance: 1n }],
+					to:   []
+				}
+			},
+			{
+				name: 'no filter',
+				args: {},
+				expected: {
+					from: [
+						{ key: usdcKey, distance: null },
+						{ key: eurcKey, distance: null },
+						{ key: usdKey,  distance: null },
+						{ key: eurKey,  distance: null }
+					],
+					to: [
+						{ key: usdcKey, distance: null },
+						{ key: eurcKey, distance: null },
+						{ key: usdKey,  distance: null },
+						{ key: eurKey,  distance: null }
+					]
+				}
+			},
+			{
+				name: 'from+to: keeta -> bank-account:us',
+				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:us' }},
+				expected: {
+					from: [
+						{ key: usdcKey, distance: 1n },
+						{ key: eurcKey, distance: 2n }
+					],
+					to: [{ key: usdKey, distance: 1n }]
+				}
+			},
+			{
+				name: 'from+to: to.rail SEPA_PUSH filters to EU corridor',
+				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }},
+				expected: {
+					from: [
+						{ key: eurcKey, distance: 1n },
+						{ key: usdcKey, distance: 2n }
+					],
+					to: [{ key: eurKey, distance: 1n }]
+				}
+			},
+			{
+				name: 'from+to: from.rail ACH limits from assets to those with ACH outbound',
+				args: { from: { rail: 'ACH' }, to: { location: h.keetaLocation }},
+				expected: {
+					from: [{ key: usdKey, distance: 1n }],
+					to: [
+						{ key: usdcKey, distance: 1n },
+						{ key: eurcKey, distance: 2n }
+					]
+				}
+			}
+		];
+
+		for (const { name, args, expected } of testCases) {
+			const result = await h.anchorChaining.graph.resolveAssets(args);
+			const toActual = (side: AnchorChainingAssetInfo[]): ExpectedAsset[] =>
+				side.map(a => ({ key: resultKey(a), distance: a.distance?.pathLength ?? null }));
+
+			expect(toActual(result.from), `${name}: from`).toEqual(expect.arrayContaining(expected.from));
+			expect(result.from, `${name}: from length`).toHaveLength(expected.from.length);
+			expect(toActual(result.to), `${name}: to`).toEqual(expect.arrayContaining(expected.to));
+			expect(result.to, `${name}: to length`).toHaveLength(expected.to.length);
 		}
 	});
 });

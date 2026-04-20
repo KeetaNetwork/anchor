@@ -233,7 +233,7 @@ interface AssetMovementResolvedRails {
 	outbound: Rail[];
 }
 
-type AnchorChainingListAssetsSideFilter = {
+export type AnchorChainingListAssetsSideFilter = {
 	location?: AssetLocationLike;
 	asset?: AnchorChainingAsset;
 	rail?: Rail;
@@ -248,6 +248,18 @@ export type AnchorChainingListAssetsFilter =
 	| ({ from: AnchorChainingListAssetsSideFilter; to?: never } & AnchorChainingListAssetsShared)
 	| ({ to: AnchorChainingListAssetsSideFilter; from?: never } & AnchorChainingListAssetsShared)
 	| ({ from?: never; to?: never } & AnchorChainingListAssetsShared);
+
+export type AnchorChainingResolveAssetsFilter = {
+	from?: AnchorChainingListAssetsSideFilter;
+	to?: AnchorChainingListAssetsSideFilter;
+	maxStepCount?: number;
+	onlyAllowFXLike?: boolean;
+};
+
+export interface AnchorChainingResolveAssetsResult {
+	from: AnchorChainingAssetInfo[];
+	to: AnchorChainingAssetInfo[];
+}
 
 export interface AnchorChainingAssetInfo {
 	asset: AnchorChainingAsset;
@@ -623,7 +635,7 @@ class AnchorGraph {
 		return(paths);
 	}
 
-	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
+	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
 
 		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
@@ -657,6 +669,10 @@ class AnchorGraph {
 			}
 		}
 
+		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
+			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+		};
+
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
 			f: AnchorChainingListAssetsSideFilter
@@ -673,27 +689,32 @@ class AnchorGraph {
 			return(true);
 		};
 
-		const reachable = new Set<string>();
-		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
-		}
+		// Separate reachable sets and distance maps for backward (from) and forward (to) traversals.
+		const fromReachable = new Set<string>();
+		const fromDistances = new Map<string, bigint>();
+		const toReachable = new Set<string>();
+		const toDistances = new Map<string, bigint>();
 
-		const distances = new Map<string, bigint>();
-		const markReachable = (side: GraphNodeLike['from' | 'to'], depth?: bigint) => {
-			const key = assetLocationKey(side);
-			reachable.add(key);
-			if (depth !== undefined) {
-				const existing = distances.get(key);
-				if (existing === undefined || depth < existing) {
-					distances.set(key, depth);
+		const makeMarkFn = (reachable: Set<string>, distances: Map<string, bigint>) =>
+			(side: GraphNodeLike['from' | 'to'], depth?: bigint) => {
+				const key = assetLocationKey(side);
+				reachable.add(key);
+				if (depth !== undefined) {
+					const existing = distances.get(key);
+					if (existing === undefined || depth < existing) {
+						distances.set(key, depth);
+					}
 				}
-			}
-		};
+			};
+
+		const markFromReachable = makeMarkFn(fromReachable, fromDistances);
+		const markToReachable = makeMarkFn(toReachable, toDistances);
 
 		const bfs = (
 			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
 			adjacency: 'next' | 'prev',
-			markSide: 'from' | 'to'
+			markSide: 'from' | 'to',
+			markFn: (side: GraphNodeLike['from' | 'to'], depth: bigint) => void
 		) => {
 			const nodeVisited = new Set<number>();
 			const queue: { nodeIdx: number; depth: bigint }[] = [];
@@ -720,7 +741,7 @@ class AnchorGraph {
 				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
 					continue;
 				}
-				markReachable(item.node[markSide], depth);
+				markFn(item.node[markSide], depth);
 				if (maxStepCount === undefined || depth < maxStepCount) {
 					for (const neighborIdx of item[adjacency]) {
 						if (!nodeVisited.has(neighborIdx)) {
@@ -733,73 +754,116 @@ class AnchorGraph {
 		};
 
 		if (fromFilter) {
-			bfs(item => sideMatchesFilter(item.node.from, fromFilter), 'next', 'to');
-		} else if (toFilter) {
-			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from');
-		} else {
+			bfs(item => sideMatchesFilter(item.node.from, fromFilter), 'next', 'to', markToReachable);
+		}
+		if (toFilter) {
+			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from', markFromReachable);
+		}
+		if (!fromFilter && !toFilter) {
 			for (const { node } of nodesWithAdj) {
 				if (!onlyAllowFXLike || isFXLikeNode(node)) {
-					markReachable(node.from);
-					markReachable(node.to);
+					markFromReachable(node.from);
+					markFromReachable(node.to);
+					markToReachable(node.from);
+					markToReachable(node.to);
 				}
 			}
 		}
 
-		// Second pass: collect inbound/outbound rails for every reachable (asset, location) pair
-		// from ALL graph nodes, not just those on the traversal path.
-		const resultMap = new Map<string, AnchorChainingAssetInfo>();
-		const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
-			const key = assetLocationKey(side);
-			let resultObj = resultMap.get(key);
-			if (!resultObj) {
-				let distanceObj: AnchorChainingAssetInfo['distance'] = null;
-				const distanceValue = distances.get(key);
-				if (distanceValue !== undefined) {
-					distanceObj = { pathLength: distanceValue };
+		// Second pass: build result maps by collecting inbound/outbound rails for every reachable
+		// (asset, location) pair from ALL graph nodes, not just those on the traversal path.
+		const buildResultMap = (
+			reachable: Set<string>,
+			distances: Map<string, bigint>
+		): Map<string, AnchorChainingAssetInfo> => {
+			const resultMap = new Map<string, AnchorChainingAssetInfo>();
+			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
+				const key = assetLocationKey(side);
+				let resultObj = resultMap.get(key);
+				if (!resultObj) {
+					const distanceValue = distances.get(key);
+					resultObj = {
+						asset: side.asset,
+						location: side.location,
+						rails: { inbound: [], outbound: [] },
+						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
+					};
+					resultMap.set(key, resultObj);
 				}
-				resultObj = {
-					asset: side.asset,
-					location: side.location,
-					rails: { inbound: [], outbound: [] },
-					distance: distanceObj
-				};
-				resultMap.set(key, resultObj);
+				return(resultObj);
+			};
+			for (const { node } of nodesWithAdj) {
+				if (onlyAllowFXLike && !isFXLikeNode(node)) {
+					continue;
+				}
+				if (reachable.has(assetLocationKey(node.to))) {
+					const entry = getOrCreate(node.to);
+					if (!entry.rails.inbound.includes(node.to.rail)) {
+						entry.rails.inbound.push(node.to.rail);
+					}
+				}
+				if (reachable.has(assetLocationKey(node.from))) {
+					const entry = getOrCreate(node.from);
+					if (!entry.rails.outbound.includes(node.from.rail)) {
+						entry.rails.outbound.push(node.from.rail);
+					}
+				}
 			}
-			return(resultObj);
+			return(resultMap);
 		};
 
-		for (const { node } of nodesWithAdj) {
-			if (onlyAllowFXLike && !isFXLikeNode(node)) {
-				continue;
-			}
-			const toKey = assetLocationKey(node.to);
-			const fromKey = assetLocationKey(node.from);
-			if (reachable.has(toKey)) {
-				const entry = getOrCreate(node.to);
-				if (!entry.rails.inbound.includes(node.to.rail)) {
-					entry.rails.inbound.push(node.to.rail);
-				}
-			}
-			if (reachable.has(fromKey)) {
-				const entry = getOrCreate(node.from);
-				if (!entry.rails.outbound.includes(node.from.rail)) {
-					entry.rails.outbound.push(node.from.rail);
-				}
-			}
-		}
+		const fromResultMap = buildResultMap(fromReachable, fromDistances);
+		const toResultMap = buildResultMap(toReachable, toDistances);
 
 		// When onlyAllowFXLike, exclude the filter asset from the result set so that
 		// "what can USDC be swapped to?" doesn't include USDC itself via a round-trip.
 		if (onlyAllowFXLike) {
 			if (fromFilter?.asset !== undefined) {
-				resultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
+				toResultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
 			}
 			if (toFilter?.asset !== undefined) {
-				resultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
+				fromResultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
 			}
 		}
 
-		return(Array.from(resultMap.values()));
+		const filterMap = (
+			map: Map<string, AnchorChainingAssetInfo>,
+			f: AnchorChainingListAssetsSideFilter,
+			railSide: 'inbound' | 'outbound'
+		): AnchorChainingAssetInfo[] =>
+			Array.from(map.values()).filter(info => {
+				if (f.location !== undefined && convertAssetLocationToString(info.location) !== convertAssetLocationToString(f.location)) {
+					return(false);
+				}
+				if (f.asset !== undefined && !isAnchorChainingAssetEqual(info.asset, f.asset)) {
+					return(false);
+				}
+				if (f.rail !== undefined && !info.rails[railSide].includes(f.rail)) {
+					return(false);
+				}
+				return(true);
+			});
+
+		const fromAssets = (fromFilter !== undefined && toFilter !== undefined)
+			? filterMap(fromResultMap, fromFilter, 'outbound')
+			: Array.from(fromResultMap.values());
+		const toAssets = (fromFilter !== undefined && toFilter !== undefined)
+			? filterMap(toResultMap, toFilter, 'inbound')
+			: Array.from(toResultMap.values());
+
+		return({ from: fromAssets, to: toAssets });
+	}
+
+	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
+		const result = await this.resolveAssets(filter);
+
+		if (filter.from) {
+			return(result.to);
+		} else if (filter.to) {
+			return(result.from);
+		} else {
+			return(result.to);
+		}
 	}
 }
 
