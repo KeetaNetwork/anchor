@@ -1493,9 +1493,9 @@ describe('AnchorChaining listAssets', function() {
 		});
 
 		const distanceByKey = new Map(assets.map(a => [resultKey(a), a.distance?.pathLength]));
-		expect(distanceByKey.get(`${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`)).toBe(1n);
-		expect(distanceByKey.get(`USD@bank-account:us`)).toBe(1n);
-		expect(distanceByKey.get(`EUR@bank-account:iban-swift`)).toBe(2n);
+		expect(distanceByKey.get(`${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`)).toBe(1);
+		expect(distanceByKey.get(`USD@bank-account:us`)).toBe(1);
+		expect(distanceByKey.get(`EUR@bank-account:iban-swift`)).toBe(2);
 	});
 
 	test('to filter populates distance.pathLength with shortest hop count', async function() {
