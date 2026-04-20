@@ -708,7 +708,11 @@ class AnchorGraph {
 				}
 			}
 			while (queue.length > 0) {
-				const { nodeIdx, depth } = queue.shift()!;
+				const queueItem = queue.shift();
+				if (!queueItem) {
+					throw(new Error(`Unexpected empty queue during BFS processing`));
+				}
+				const { nodeIdx, depth } = queueItem;
 				const item = nodesWithAdj[nodeIdx];
 				if (!item) {
 					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
