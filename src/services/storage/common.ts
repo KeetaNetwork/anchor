@@ -101,7 +101,7 @@ export type SearchCriteria = {
 	name?: string;
 
 	/**
-	 * Filter by owner's public key
+	 * Filter by owner's identifier
 	 */
 	owner?: string;
 
@@ -1353,7 +1353,7 @@ export interface PathPolicy<TPathInfo> {
 	/**
 	 * Resolve the owner of a path.
 	 *
-	 * @returns The owner's public key string
+	 * @returns The owner's identifier
 	 */
 	getOwner(path: string): string;
 
