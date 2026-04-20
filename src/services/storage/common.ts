@@ -1351,6 +1351,13 @@ export interface PathPolicy<TPathInfo> {
 	getAuthorizedSigner(parsed: TPathInfo): KeetaNetAccount | null;
 
 	/**
+	 * Resolve the owner of a path.
+	 *
+	 * @returns The owner's public key string
+	 */
+	getOwner(path: string): string;
+
+	/**
 	 * Validate the request context for a path.
 	 *
 	 * @param parsed - The parsed path info

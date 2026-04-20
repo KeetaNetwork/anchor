@@ -88,6 +88,10 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(KeetaNet.lib.Account.fromPublicKeyString(parsed.owner).assertAccount());
 	}
 
+	getOwner(path: string): string {
+		return(this.validate(path).owner);
+	}
+
 	validateContext(parsed: TestParsedPath, context: PathPolicyContext): void {
 		if (context.operation === 'put' || context.operation === 'updateMetadata') {
 			if (parsed.relativePath.startsWith('public/') && context.metadata.visibility !== 'public') {
