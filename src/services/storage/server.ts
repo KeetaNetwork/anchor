@@ -603,7 +603,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 				// Validate path format, metadata, and ownership
 				const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
-				const owner = account.publicKeyString.get();
+				const owner = policy.getOwner(objectPath);
 
 				// Resolve per-user quota limits, falling back to global config
 				let userLimits: QuotaLimits | null = null;

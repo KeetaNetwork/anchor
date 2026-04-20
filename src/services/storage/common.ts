@@ -101,7 +101,7 @@ export type SearchCriteria = {
 	name?: string;
 
 	/**
-	 * Filter by owner's public key
+	 * Filter by owner's identifier
 	 */
 	owner?: string;
 
@@ -1349,6 +1349,13 @@ export interface PathPolicy<TPathInfo> {
 	 * @returns The account if only that account can sign (owner-restricted), or `null` if any account can sign
 	 */
 	getAuthorizedSigner(parsed: TPathInfo): KeetaNetAccount | null;
+
+	/**
+	 * Resolve the owner of a path.
+	 *
+	 * @returns The owner's identifier
+	 */
+	getOwner(path: string): string;
 
 	/**
 	 * Validate the request context for a path.
