@@ -1,19 +1,11 @@
-import type { Schema } from "../../json-schema.js";
 import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
-const interacDestinationType = { type: "string", enum: [ 'email', 'phone' ] } satisfies Schema;
-
-const sharedInteracFields = {
-	destinationType: interacDestinationType,
-	destinationValue: { type: "string" }
-} satisfies { [key: string]: Schema };
-
-const interacSchema: AccountAddressSchema = {
+const uaeBankAccountSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
 		accountOwner: true,
-		bankName: false,
+		bankName: true,
 		accountNumberEnding: true
 	},
 
@@ -21,15 +13,27 @@ const interacSchema: AccountAddressSchema = {
 		resolved: {
 			type: "object",
 			properties: {
-				...sharedInteracFields,
+				bankAccountNumber: {
+					type: "string",
+					description: "IBAN",
+					minLength: 23,
+					maxLength: 23,
+					pattern: "^[a-zA-Z0-9]{23}$"
+				},
+				swiftCode: {
+					type: "string",
+					description: "Transit Code",
+					maxLength: 11,
+					minLength: 8,
+					pattern: "^[A-Za-z0-9]{8}$|^[A-Za-z0-9]{11}$"
+				},
 				accountAddress: sharedSchemaReferences.PhysicalAddress
 			},
-			required: [ 'destinationValue' ]
+			required: [ 'bankAccountNumber', 'swiftCode' ]
 		},
 		obfuscated: {
 			type: "object",
 			properties: {
-				...sharedInteracFields,
 				accountAddress: {
 					oneOf: [
 						{ type: 'string' },
@@ -41,4 +45,4 @@ const interacSchema: AccountAddressSchema = {
 	}
 }
 
-export default interacSchema;
+export default uaeBankAccountSchema;
