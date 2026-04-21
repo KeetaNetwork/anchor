@@ -18,7 +18,7 @@ const canadaBankAccountSchema: AccountAddressSchema = {
 					description: "Institution Number",
 					maxLength: 3,
 					minLength: 3,
-					pattern: "^\\d{3}$"
+					pattern: "^\\\\d{3}$"
 				},
 				bankAccountNumber: {
 					type: "string",
@@ -29,7 +29,7 @@ const canadaBankAccountSchema: AccountAddressSchema = {
 					description: "Transit Code",
 					maxLength: 5,
 					minLength: 5,
-					pattern: "^\\d{5}$"
+					pattern: "^\\\\d{5}$"
 				},
 				accountAddress: sharedSchemaReferences.PhysicalAddress
 			},
