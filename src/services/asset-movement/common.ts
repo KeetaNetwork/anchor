@@ -86,7 +86,7 @@ export interface Asset {
 }
 
 export type FiatPullRails = 'ACH_DEBIT' | 'CARD_PULL';
-export type FiatPushRails = 'ACH' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH';
+export type FiatPushRails = 'ACH' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH' | 'CA_PUSH' | 'AE_PUSH';
 export type FiatRails = FiatPullRails | FiatPushRails;
 export type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
