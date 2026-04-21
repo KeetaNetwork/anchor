@@ -133,11 +133,11 @@ export type PerChainLocationMetadata<Chain extends ExternalChainLocationType = E
 	}
 };
 
+type ExtractLocationTypeFromString<I extends ChainLocationString> = I extends ChainLocationString<infer R extends ExternalChainLocationType> ? R : never;
+
 export type AnchorCustomLocationMetadata = {
-	[Chain in ExternalChainLocationType]?: {
-		[Location in ChainLocationString<Chain>]?: PerChainLocationMetadata<Chain> | undefined;
-	};
-}[ExternalChainLocationType];
+	[Location in ChainLocationString<ExternalChainLocationType>]?: PerChainLocationMetadata<ExtractLocationTypeFromString<Location>> | undefined;
+};
 
 export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}` | ExternalChainAsset;
 export interface SupportedAssetsMetadata {
