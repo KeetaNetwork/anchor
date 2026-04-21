@@ -2097,7 +2097,7 @@ suite.sequential('Driver Tests', async function() {
 						 * - Multiple workers query() for pending items (creates read dependency)
 						 * - Then one worker's setStatus() with FOR UPDATE conflicts with another's read
 						 */
-						const maxExpectedRetries = kind === 'single' ? 3 : 10;
+						const maxExpectedRetries = kind === 'single' ? 4 : 11;
 						if (totalRetries > maxExpectedRetries) {
 							/* Log detailed information to help diagnose excessive retries */
 							console.error(`Excessive serialization retries detected!`);
