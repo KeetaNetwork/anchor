@@ -75,7 +75,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
-		this.logger = options?.logger
+		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
