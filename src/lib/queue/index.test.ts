@@ -113,7 +113,7 @@ const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean }) => Promise<{
+		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; }) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
 		}>;
@@ -294,12 +294,17 @@ const drivers: {
 					database: dbName
 				});
 
-				const randomKey = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16).slice(16);
+				let tablePrefix: string | undefined;
+				if (options?.randomBackingName !== false) {
+					const randomKey = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString(16).slice(0, 16);
+
+					tablePrefix = `test_${randomKey}`;
+				}
 
 				const queue = new KeetaAnchorQueueStorageDriverPostgres({
 					id: key,
 					logger: logger,
-					tablePrefix: `test_${randomKey}`,
+					tablePrefix: tablePrefix,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
@@ -1876,7 +1881,7 @@ suite.sequential('Driver Tests', async function() {
 			if (driverConfig.persistent) {
 				testRunner('Persistence Tests', async function() {
 					const id1 = await (async function() {
-						await using driverInstance = await driverConfig.create('persistence_test', { leave: true });
+						await using driverInstance = await driverConfig.create('persistence_test', { leave: true, randomBackingName: false });
 						const queue = driverInstance.queue;
 
 						const id = await queue.add({ foo: 'bar' });
@@ -1885,7 +1890,7 @@ suite.sequential('Driver Tests', async function() {
 					})();
 
 					const entry = await (async function() {
-						await using driverInstance = await driverConfig.create('persistence_test');
+						await using driverInstance = await driverConfig.create('persistence_test', { randomBackingName: false });
 						const queue = driverInstance.queue;
 						const entry = await queue.get(id1);
 						return(entry);
@@ -1897,7 +1902,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(entry?.id).toBe(id1);
 
 					const [ part0_id1, part1_id1, part11_id1, part111_id1 ] = await (async function() {
-						await using driverInstance = await driverConfig.create('partition_persistence_test', { leave: true });
+						await using driverInstance = await driverConfig.create('partition_persistence_test', { leave: true, randomBackingName: false });
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
@@ -1918,7 +1923,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(part111_id1).toBeDefined();
 
 					const [ part0_entry, part1_entry, part11_entry, part111_entry ] = await (async function() {
-						await using driverInstance = await driverConfig.create('partition_persistence_test');
+						await using driverInstance = await driverConfig.create('partition_persistence_test', { randomBackingName: false });
 						const queue = driverInstance.queue;
 
 						await using partition = await queue.partition('part1');
