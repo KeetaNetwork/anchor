@@ -64,6 +64,9 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+
+type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	/**
@@ -74,12 +77,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 	/**
 	 * Configuration for asset movement operations
 	 */
-	assetMovement: {
-		/**
-		 * Supported assets and their configurations
-		 */
-		supportedAssets: NonNullable<ServiceMetadata['services']['assetMovement']>[string]['supportedAssets'];
-
+	assetMovement: SharedAnchorMetadataLegalExtension & Pick<AssetMovementServiceMetadata, 'supportedAssets' | 'locationMetadata'> & {
 		authenticationRequired?: boolean;
 
 		/**
@@ -540,6 +538,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			throw(new KeetaAnchorUserError('No operations are supported on this server'));
 		}
 		return({
+			...(this.assetMovement.legal ? { legal: this.assetMovement.legal } : {}),
+			...(this.assetMovement.locationMetadata ? { locationMetadata: this.assetMovement.locationMetadata } : {}),
 			operations: operations,
 			supportedAssets: this.assetMovement.supportedAssets
 		});

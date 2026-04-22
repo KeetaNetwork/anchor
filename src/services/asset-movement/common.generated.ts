@@ -5,8 +5,10 @@ import type * as Common from './common.js';
 export const isMovableAssetSearchCanonical: (input: unknown) => input is MovableAssetSearchCanonical = createIs<MovableAssetSearchCanonical>();
 export const isRail: (input: unknown) => input is Rail = createIs<Rail>();
 export const isFiatRail: (input: unknown) => input is FiatRails = createIs<FiatRails>();
+export const isAnchorTokenLocationMetadata: (input: unknown) => input is Common.AnchorTokenLocationMetadata = createIs<Common.AnchorTokenLocationMetadata>();
 
 export const assertKeetaSupportedAssetsMetadata: (input: unknown) => Common.SupportedAssetsMetadata[] = createAssert<Common.SupportedAssetsMetadata[]>();
+export const assertKeetaSupportedAssetsMetadataItem: (input: unknown) => Common.SupportedAssetsMetadata = createAssert<Common.SupportedAssetsMetadata>();
 export const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<Common.KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
 export const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<Common.KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
 export const assertKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => Common.KeetaAssetMovementAnchorInitiateTransferRequest = createAssert<Common.KeetaAssetMovementAnchorInitiateTransferRequest>();

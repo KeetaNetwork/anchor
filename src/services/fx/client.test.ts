@@ -16,6 +16,7 @@ import type { Routes } from '../../lib/http-server/index.js';
 import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
 import type { GetPricesArgs } from './client.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -47,6 +48,15 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 	}
 	return(exchangeStatus);
 }
+
+const testingLegalField: SharedAnchorMetadataLegalExtension = {
+	legal: {
+		disclaimers: [
+			{ purpose: 'general', content: { type: 'plaintext', content: 'Test disclaimer' }},
+			{ purpose: 'general', content: { type: 'markdown', content: 'Test disclaimer' }}
+		]
+	}
+};
 
 for (const useDeprecated of [false, true]) {
 	let addName = '';
@@ -161,6 +171,21 @@ for (const useDeprecated of [false, true]) {
 				autoRun: false
 			},
 			fx: {
+				...testingLegalField,
+				from: [
+					{
+						currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+						to: [testCurrencyEUR.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()]
+					},
+					{
+						currencyCodes: [testCurrencyEUR.publicKeyString.get()],
+						to: [testCurrencyUSD.publicKeyString.get()]
+					},
+					{
+						currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+						to: [testCurrencyBTC.publicKeyString.get()]
+					}
+				],
 				getConversionRateAndFee: async function(request) {
 					let rate = 0.88;
 					if (request.affinity === 'to') {
@@ -214,28 +239,9 @@ for (const useDeprecated of [false, true]) {
 								getExchangeStatus: 'https://example.com/createVerification.json'
 							}
 						},
-						Test: {
-							from: [
-								{
-									currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-									to: [testCurrencyEUR.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()]
-								},
-								{
-									currencyCodes: [testCurrencyEUR.publicKeyString.get()],
-									to: [testCurrencyUSD.publicKeyString.get()]
-								},
-								{
-									currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-									to: [testCurrencyBTC.publicKeyString.get()]
-								}
-							],
-							operations: {
-								getEstimate: `${serverURL}/api/getEstimate`,
-								getQuote: `${serverURL}/api/getQuote`,
-								createExchange: `${serverURL}/api/createExchange`,
-								getExchangeStatus: `${serverURL}/api/getExchangeStatus/{id}`
-							}
-						},
+						// XXX:TODO Figure out why this type is not assignable to ServiceMetadataExternalizable
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions
+						Test: await server.serviceMetadata() as any,
 						Test2: {
 							from: [
 								{
@@ -407,6 +413,19 @@ for (const useDeprecated of [false, true]) {
 			root: account,
 			logger: logger
 		});
+
+		{
+			// Ensure legal field is properly exposed on client metadata
+			const providers = await fxClient.getBaseProvidersForConversion({
+				from: 'USD',
+				to: 'EUR',
+				amount: 100n,
+				affinity: 'from'
+			}, undefined, { providerIDs: [ 'Test' ] });
+
+			expect(providers?.length).toEqual(1);
+			expect(providers?.[0]?.serviceInfo.legal).toEqual(testingLegalField.legal);
+		}
 
 		/* Get Estimate from Currency Codes */
 		const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
@@ -670,6 +689,7 @@ for (const useDeprecated of [false, true]) {
 		}
 	}, 30_000);
 }
+
 
 test('createExchange handles missing status field', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);

@@ -233,7 +233,7 @@ interface AssetMovementResolvedRails {
 	outbound: Rail[];
 }
 
-type AnchorChainingListAssetsSideFilter = {
+export type AnchorChainingListAssetsSideFilter = {
 	location?: AssetLocationLike;
 	asset?: AnchorChainingAsset;
 	rail?: Rail;
@@ -249,6 +249,18 @@ export type AnchorChainingListAssetsFilter =
 	| ({ to: AnchorChainingListAssetsSideFilter; from?: never } & AnchorChainingListAssetsShared)
 	| ({ from?: never; to?: never } & AnchorChainingListAssetsShared);
 
+export type AnchorChainingResolveAssetsFilter = {
+	from?: AnchorChainingListAssetsSideFilter;
+	to?: AnchorChainingListAssetsSideFilter;
+	maxStepCount?: number;
+	onlyAllowFXLike?: boolean;
+};
+
+export interface AnchorChainingResolveAssetsResult {
+	from: AnchorChainingAssetInfo[];
+	to: AnchorChainingAssetInfo[];
+}
+
 export interface AnchorChainingAssetInfo {
 	asset: AnchorChainingAsset;
 	location: AssetLocationLike;
@@ -256,6 +268,10 @@ export interface AnchorChainingAssetInfo {
 		inbound: Rail[];
 		outbound: Rail[];
 	};
+
+	distance: {
+		pathLength: number;
+	} | null;
 }
 
 type GetAccountForActionPayload = {
@@ -619,7 +635,7 @@ class AnchorGraph {
 		return(paths);
 	}
 
-	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
+	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
 
 		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
@@ -653,6 +669,10 @@ class AnchorGraph {
 			}
 		}
 
+		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
+			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+		};
+
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
 			f: AnchorChainingListAssetsSideFilter
@@ -669,106 +689,181 @@ class AnchorGraph {
 			return(true);
 		};
 
-		const reachable = new Set<string>();
-		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
-		}
+		// Separate reachable sets and distance maps for backward (from) and forward (to) traversals.
+		const fromReachable = new Set<string>();
+		const fromDistances = new Map<string, number>();
+		const toReachable = new Set<string>();
+		const toDistances = new Map<string, number>();
 
-		const markReachable = (side: GraphNodeLike['from' | 'to']) => reachable.add(assetLocationKey(side));
+		const makeMarkFn = (reachable: Set<string>, distances: Map<string, number>) =>
+			(side: GraphNodeLike['from' | 'to'], depth?: number) => {
+				const key = assetLocationKey(side);
+				reachable.add(key);
+				if (depth !== undefined) {
+					const existing = distances.get(key);
+					if (existing === undefined || depth < existing) {
+						distances.set(key, depth);
+					}
+				}
+			};
 
-		// Unified traversal: 'next'+'to' = forward, 'prev'+'from' = backward.
-		const visit = (visited: Set<number>, adjacency: 'next' | 'prev', markSide: 'from' | 'to', nodeIdx: number, depth: number) => {
-			if (visited.has(nodeIdx)) {
-				return;
+		const markFromReachable = makeMarkFn(fromReachable, fromDistances);
+		const markToReachable = makeMarkFn(toReachable, toDistances);
+
+		const bfs = (
+			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
+			adjacency: 'next' | 'prev',
+			markSide: 'from' | 'to',
+			markFn: (side: GraphNodeLike['from' | 'to'], depth: number) => void
+		) => {
+			const nodeVisited = new Set<number>();
+			const queue: { nodeIdx: number; depth: number }[] = [];
+			for (let i = 0; i < nodesWithAdj.length; i++) {
+				const item = nodesWithAdj[i];
+				if (!item) {
+					throw(new Error(`Invalid node index during BFS initialization: ${i}`));
+				}
+				if (startCondition(item) && !nodeVisited.has(i)) {
+					nodeVisited.add(i);
+					queue.push({ nodeIdx: i, depth: 1 });
+				}
 			}
-			const item = nodesWithAdj[nodeIdx];
-			if (!item) {
-				throw(new Error(`Invalid node index during traversal: ${nodeIdx}`));
-			}
-			if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
-				return;
-			}
-			visited.add(nodeIdx);
-			markReachable(item.node[markSide]);
-			if (maxStepCount === undefined || depth < maxStepCount) {
-				for (const neighborIdx of item[adjacency]) {
-					visit(visited, adjacency, markSide, neighborIdx, depth + 1);
+			while (queue.length > 0) {
+				const queueItem = queue.shift();
+				if (!queueItem) {
+					throw(new Error(`Unexpected empty queue during BFS processing`));
+				}
+				const { nodeIdx, depth } = queueItem;
+				const item = nodesWithAdj[nodeIdx];
+				if (!item) {
+					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
+				}
+				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+					continue;
+				}
+				markFn(item.node[markSide], depth);
+				if (maxStepCount === undefined || depth < maxStepCount) {
+					for (const neighborIdx of item[adjacency]) {
+						if (!nodeVisited.has(neighborIdx)) {
+							nodeVisited.add(neighborIdx);
+							queue.push({ nodeIdx: neighborIdx, depth: depth + 1 });
+						}
+					}
 				}
 			}
 		};
 
-		const visited = new Set<number>();
-		for (let i = 0; i < nodesWithAdj.length; i++) {
-			const item = nodesWithAdj[i];
-			if (!item) {
-				throw(new Error(`Invalid node index: ${i}`));
-			}
-
-			if (fromFilter || toFilter) {
-				if (fromFilter) {
-					if (sideMatchesFilter(item.node.from, fromFilter)) {
-						visit(visited, 'next', 'to', i, 1);
-					}
-				} else if (toFilter) {
-					if (sideMatchesFilter(item.node.to, toFilter)) {
-						visit(visited, 'prev', 'from', i, 1);
-					}
-				} else {
-					throw(new Error(`Invalid filter state: at least one of fromFilter or toFilter must be defined`));
-				}
-			} else {
-				if (!onlyAllowFXLike || isFXLikeNode(item.node)) {
-					markReachable(item.node.from);
-					markReachable(item.node.to);
+		if (fromFilter) {
+			bfs(item => sideMatchesFilter(item.node.from, fromFilter), 'next', 'to', markToReachable);
+		}
+		if (toFilter) {
+			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from', markFromReachable);
+		}
+		if (!fromFilter && !toFilter) {
+			for (const { node } of nodesWithAdj) {
+				if (!onlyAllowFXLike || isFXLikeNode(node)) {
+					markFromReachable(node.from);
+					markFromReachable(node.to);
+					markToReachable(node.from);
+					markToReachable(node.to);
 				}
 			}
 		}
 
-		// Second pass: collect inbound/outbound rails for every reachable (asset, location) pair
-		// from ALL graph nodes, not just those on the traversal path.
-		const resultMap = new Map<string, AnchorChainingAssetInfo>();
-		const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
-			const key = assetLocationKey(side);
-			let resultObj = resultMap.get(key);
-			if (!resultObj) {
-				resultObj = { asset: side.asset, location: side.location, rails: { inbound: [], outbound: [] }};
-				resultMap.set(key, resultObj);
+		// Second pass: build result maps by collecting inbound/outbound rails for every reachable
+		// (asset, location) pair from ALL graph nodes, not just those on the traversal path.
+		const buildResultMap = (
+			reachable: Set<string>,
+			distances: Map<string, number>
+		): Map<string, AnchorChainingAssetInfo> => {
+			const resultMap = new Map<string, AnchorChainingAssetInfo>();
+			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
+				const key = assetLocationKey(side);
+				let resultObj = resultMap.get(key);
+				if (!resultObj) {
+					const distanceValue = distances.get(key);
+					resultObj = {
+						asset: side.asset,
+						location: side.location,
+						rails: { inbound: [], outbound: [] },
+						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
+					};
+					resultMap.set(key, resultObj);
+				}
+				return(resultObj);
+			};
+			for (const { node } of nodesWithAdj) {
+				if (onlyAllowFXLike && !isFXLikeNode(node)) {
+					continue;
+				}
+				if (reachable.has(assetLocationKey(node.to))) {
+					const entry = getOrCreate(node.to);
+					if (!entry.rails.inbound.includes(node.to.rail)) {
+						entry.rails.inbound.push(node.to.rail);
+					}
+				}
+				if (reachable.has(assetLocationKey(node.from))) {
+					const entry = getOrCreate(node.from);
+					if (!entry.rails.outbound.includes(node.from.rail)) {
+						entry.rails.outbound.push(node.from.rail);
+					}
+				}
 			}
-			return(resultObj);
+			return(resultMap);
 		};
 
-		for (const { node } of nodesWithAdj) {
-			if (onlyAllowFXLike && !isFXLikeNode(node)) {
-				continue;
-			}
-			const toKey = assetLocationKey(node.to);
-			const fromKey = assetLocationKey(node.from);
-			if (reachable.has(toKey)) {
-				const entry = getOrCreate(node.to);
-				if (!entry.rails.inbound.includes(node.to.rail)) {
-					entry.rails.inbound.push(node.to.rail);
-				}
-			}
-			if (reachable.has(fromKey)) {
-				const entry = getOrCreate(node.from);
-				if (!entry.rails.outbound.includes(node.from.rail)) {
-					entry.rails.outbound.push(node.from.rail);
-				}
-			}
-		}
+		const fromResultMap = buildResultMap(fromReachable, fromDistances);
+		const toResultMap = buildResultMap(toReachable, toDistances);
 
 		// When onlyAllowFXLike, exclude the filter asset from the result set so that
 		// "what can USDC be swapped to?" doesn't include USDC itself via a round-trip.
 		if (onlyAllowFXLike) {
 			if (fromFilter?.asset !== undefined) {
-				resultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
+				toResultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
 			}
 			if (toFilter?.asset !== undefined) {
-				resultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
+				fromResultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
 			}
 		}
 
-		return(Array.from(resultMap.values()));
+		const filterMap = (
+			map: Map<string, AnchorChainingAssetInfo>,
+			f: AnchorChainingListAssetsSideFilter,
+			railSide: 'inbound' | 'outbound'
+		): AnchorChainingAssetInfo[] =>
+			Array.from(map.values()).filter(info => {
+				if (f.location !== undefined && convertAssetLocationToString(info.location) !== convertAssetLocationToString(f.location)) {
+					return(false);
+				}
+				if (f.asset !== undefined && !isAnchorChainingAssetEqual(info.asset, f.asset)) {
+					return(false);
+				}
+				if (f.rail !== undefined && !info.rails[railSide].includes(f.rail)) {
+					return(false);
+				}
+				return(true);
+			});
+
+		const fromAssets = (fromFilter !== undefined && toFilter !== undefined)
+			? filterMap(fromResultMap, fromFilter, 'outbound')
+			: Array.from(fromResultMap.values());
+		const toAssets = (fromFilter !== undefined && toFilter !== undefined)
+			? filterMap(toResultMap, toFilter, 'inbound')
+			: Array.from(toResultMap.values());
+
+		return({ from: fromAssets, to: toAssets });
+	}
+
+	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
+		const result = await this.resolveAssets(filter);
+
+		if (filter.from) {
+			return(result.to);
+		} else if (filter.to) {
+			return(result.from);
+		} else {
+			return(result.to);
+		}
 	}
 }
 

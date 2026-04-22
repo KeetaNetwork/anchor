@@ -1,3 +1,5 @@
+// cspell:ignore seqscan
+
 import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueStorageDriverConstructor,
@@ -48,9 +50,10 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 
 	/**
 	 * The prefix to use for the database tables. Defaults to 'queue',
-	 * resulting in table names 'queue_entries' and 'queue_idempotent_keys'.
+	 * resulting in table names 'queue_entries', 'queue_idempotent_keys',
+	 * and `queue_schema_version`.
 	 */
-	tablePrefix?: string;
+	tablePrefix?: string | undefined;
 };
 
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
@@ -58,8 +61,11 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	private poolInternal: (() => Promise<pg.Pool>) | null = null;
 	private tablePrefix: string | undefined;
 	private tableNameEntries: string;
+	private tableNameSchemaVersion: string;
 	private tableNameIdempotentKeys: string;
 	private dbInitializationPromise: Promise<boolean> | null = null;
+	private serializationRetryCount = 0;
+	private debugForceIndexScan = false;
 
 	readonly name = 'KeetaAnchorQueueStorageDriverPostgres';
 	readonly id: string;
@@ -78,6 +84,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
 		this.tableNameIdempotentKeys = `${this.tablePrefix ?? 'queue'}_idempotent_keys`;
+		this.tableNameSchemaVersion = `${this.tablePrefix ?? 'queue'}_schema_version`;
 
 		this.methodLogger('new')?.debug('Initialized Postgres queue storage driver');
 	}
@@ -97,34 +104,121 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			const client = await pool.connect();
 			try {
-				await client.query(`
-					CREATE TABLE IF NOT EXISTS ${this.tableNameEntries} (
-						id TEXT NOT NULL,
-						path TEXT NOT NULL,
-						request TEXT NOT NULL,
-						output TEXT,
-						last_error TEXT,
-						status TEXT NOT NULL,
-						created BIGINT NOT NULL,
-						updated BIGINT NOT NULL,
-						worker BIGINT,
-						failures INTEGER NOT NULL DEFAULT 0,
-						PRIMARY KEY (id, path)
-					)`);
+				/*
+				 * Random lock key (32-bit integer), to ensure
+				 * that multiple instances of this driver
+				 * (potentially across different
+				 * instances/process) will run the migration
+				 * sequentially to avoid multiple concurrent
+				 * migrations from competing with each other
+				 * and causing delays
+				 */
+				const lockId = 0x24995E48;
+				logger?.debug('Acquiring advisory lock for schema migration');
+				await client.query('SELECT pg_advisory_lock($1)', [lockId]);
 
-				await client.query(`
-					CREATE TABLE IF NOT EXISTS ${this.tableNameIdempotentKeys} (
-						entry_id TEXT NOT NULL,
-						idempotent_id TEXT NOT NULL,
-						path TEXT NOT NULL,
-						UNIQUE (idempotent_id, path),
-						PRIMARY KEY (entry_id, idempotent_id, path),
-						FOREIGN KEY (entry_id, path) REFERENCES ${this.tableNameEntries}(id, path)
-					)`);
+				try {
+					// Create schema version table if it doesn't exist
+					await client.query(`
+						CREATE TABLE IF NOT EXISTS ${this.tableNameSchemaVersion} (
+							version INTEGER NOT NULL,
+							applied_at BIGINT NOT NULL,
+							PRIMARY KEY (version)
+						)`);
 
-				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_status ON ${this.tableNameEntries}(status)`);
-				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_updated ON ${this.tableNameEntries}(updated)`);
-				await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_idempotent_id ON ${this.tableNameIdempotentKeys}(idempotent_id)`);
+					// Check current schema version
+					const versionResult = await client.query<{ version: number }>(`SELECT MAX(version) as version FROM ${this.tableNameSchemaVersion}`);
+					const currentVersion = versionResult.rows[0]?.version ?? 0;
+
+					logger?.debug(`Current queue schema version: ${currentVersion}`);
+
+					// Version 1: Initial schema
+					if (currentVersion < 1) {
+						logger?.debug('Applying schema version 1: Initial tables and indexes');
+
+						await client.query('BEGIN');
+						try {
+							await client.query(`
+								CREATE TABLE IF NOT EXISTS ${this.tableNameEntries} (
+									id TEXT NOT NULL,
+									path TEXT NOT NULL,
+									request TEXT NOT NULL,
+									output TEXT,
+									last_error TEXT,
+									status TEXT NOT NULL,
+									created BIGINT NOT NULL,
+									updated BIGINT NOT NULL,
+									worker BIGINT,
+									failures INTEGER NOT NULL DEFAULT 0,
+									PRIMARY KEY (id, path)
+								)`);
+
+							await client.query(`
+								CREATE TABLE IF NOT EXISTS ${this.tableNameIdempotentKeys} (
+									entry_id TEXT NOT NULL,
+									idempotent_id TEXT NOT NULL,
+									path TEXT NOT NULL,
+									UNIQUE (idempotent_id, path),
+									PRIMARY KEY (entry_id, idempotent_id, path),
+									FOREIGN KEY (entry_id, path) REFERENCES ${this.tableNameEntries}(id, path)
+								)`);
+
+							// Old single-column indexes (for pre-version-2 schemas)
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_status ON ${this.tableNameEntries}(status)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_updated ON ${this.tableNameEntries}(updated)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_idempotent_id ON ${this.tableNameIdempotentKeys}(idempotent_id)`);
+
+							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (1, $1)`, [Date.now()]);
+							await client.query('COMMIT');
+							logger?.debug('Applied schema version 1');
+						} catch (error) {
+							await client.query('ROLLBACK');
+							throw(error);
+						}
+					}
+
+					// Version 2: Partition-aware composite indexes
+					if (currentVersion < 2) {
+						logger?.debug('Applying schema version 2: Partition-aware composite indexes');
+
+						// Create new partition-aware indexes (CONCURRENTLY must be outside transaction)
+						logger?.debug('Creating partition-aware indexes...');
+						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status ON ${this.tableNameEntries}(path, status)`);
+						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_updated ON ${this.tableNameEntries}(path, updated)`);
+						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated ON ${this.tableNameEntries}(path, status, updated)`);
+						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
+
+						// Now drop old indexes and record version
+						await client.query('BEGIN');
+						try {
+							// Drop old indexes that are now redundant (these will fail gracefully if indexes don't exist)
+							logger?.debug('Dropping old single-column indexes...');
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_status`);
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_updated`);
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameIdempotentKeys}_idempotent_id`);
+
+							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (2, $1)`, [Date.now()]);
+							await client.query('COMMIT');
+							logger?.debug('Applied schema version 2');
+						} catch (error) {
+							await client.query('ROLLBACK');
+							throw(error);
+						}
+					}
+
+					logger?.debug('Schema is up to date');
+				} finally {
+					// Always release the advisory lock
+					// Note: Advisory locks are session-based and auto-release on disconnect,
+					// but we explicitly unlock for clarity and to avoid holding locks longer than needed
+					try {
+						logger?.debug('Releasing advisory lock');
+						await client.query('SELECT pg_advisory_unlock($1)', [lockId]);
+					} catch (unlockError) {
+						// Log but don't throw - the lock will be auto-released when connection closes
+						logger?.debug('Failed to explicitly release advisory lock (will auto-release on disconnect):', unlockError);
+					}
+				}
 			} finally {
 				client.release();
 			}
@@ -173,6 +267,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					if (errorCode === '40001' || errorCode === '40P01') {
 						logger?.debug('Serialization failure or deadlock detected');
 
+						// Track serialization retries for instrumentation
+						this.serializationRetryCount++;
+
 						const minBackoff = 100;
 						const maxBackoff = 30_000;
 						const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
@@ -212,6 +309,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		const pool = await this.newDBConnection();
 		const logger = this.methodLogger(className);
 
+		const debugForceIndexScan = this.debugForceIndexScan;
+
 		const result = await this.runWithRetry(async function() {
 			const client = await pool.connect();
 
@@ -219,6 +318,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				logger?.debug('Starting DB transaction');
 				await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
 				logger?.debug('DB transaction started');
+
+				if (debugForceIndexScan) {
+					await client.query('SET LOCAL enable_seqscan TO off');
+				}
 
 				const retval = await fn(client, logger);
 
@@ -309,7 +412,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		const { oldStatus } = ancillary ?? {};
 
 		return(await this.dbTransaction('setStatus', async (client, logger): Promise<void> => {
-			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>(`SELECT status, failures, last_error, output FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`, [id, this.pathStr]);
+			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>(`SELECT status, failures, last_error, output FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2 FOR UPDATE`, [id, this.pathStr]);
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
@@ -435,6 +538,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				query += ' WHERE ' + conditions.join(' AND ');
 			}
 
+			// Use random ordering to prevent multiple workers from contending for the same rows
+			// This spreads the load when multiple workers query simultaneously
+			query += ' ORDER BY RANDOM()';
+
 			if (filter?.limit !== undefined) {
 				query += ` LIMIT $${paramIndex++}`;
 				params.push(filter.limit);
@@ -490,7 +597,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			pool: this.poolInternal,
-			path: [...this.path, path]
+			path: [...this.path, path],
+			tablePrefix: this.tablePrefix
 		});
 
 		return(retval);
@@ -510,6 +618,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	_Testing(key: string): {
 		setToctouDelay(delay: number): void;
 		unsetToctouDelay(): void;
+		getSerializationRetryCount(): number;
+		resetSerializationRetryCount(): void;
+		enableDebugForceIndexScan(): void;
+		disableDebugForceIndexScan(): void;
 	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
@@ -523,6 +635,18 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			},
 			unsetToctouDelay: (): void => {
 				this.toctouDelay = undefined;
+			},
+			getSerializationRetryCount: (): number => {
+				return(this.serializationRetryCount);
+			},
+			resetSerializationRetryCount: (): void => {
+				this.serializationRetryCount = 0;
+			},
+			enableDebugForceIndexScan: (): void => {
+				this.debugForceIndexScan = true;
+			},
+			disableDebugForceIndexScan: (): void => {
+				this.debugForceIndexScan = false;
 			}
 		});
 	}

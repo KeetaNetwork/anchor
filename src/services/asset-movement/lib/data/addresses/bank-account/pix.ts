@@ -1,11 +1,14 @@
+import type { Schema } from "../../json-schema.js";
 import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
+
+const pixKeyType = { type: "string", enum: [ 'random', 'email', 'phone' ] } satisfies Schema;
 
 const pixSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
 		accountOwner: true,
-		bankName: true,
+		bankName: false,
 		accountNumberEnding: true
 	},
 
@@ -14,7 +17,7 @@ const pixSchema: AccountAddressSchema = {
 			type: "object",
 			properties: {
 				brCode: { type: "string" },
-				pixKeyType: { type: "string", enum: [ 'random', 'email', 'phone' ] },
+				pixKeyType: pixKeyType,
 				pixKey: { type: "string" },
 				accountAddress: sharedSchemaReferences.PhysicalAddress,
 				document: {

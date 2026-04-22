@@ -6,10 +6,11 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -20,6 +21,7 @@ const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
 test('Asset Movement Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -94,9 +96,46 @@ test('Asset Movement Anchor Client Test', async function() {
 		return(true);
 	}
 
+	const testLegalField: SharedAnchorMetadataLegalExtension['legal'] = {
+		disclaimers: [
+			{ purpose: 'general', content: { type: 'markdown', content: 'Test Disclaimer' }}
+		]
+	};
+
+	const validLocationMetadata = {
+		'chain:evm:1': {
+			assets: {
+				'evm:0x5': {
+					decimalPlaces: 20,
+					displayName: 'Cool Token',
+					ticker: '$COOL',
+					logoURI: 'https://example.com/logo.png'
+				}
+			}
+		},
+		'chain:solana:ffffffffffffffffffffffffffffffffffffffffffff': {
+			assets: {
+				'solana:So11111111111111111111111111111111111111112': {
+					decimalPlaces: 9
+				}
+			}
+		}
+	} satisfies AnchorCustomLocationMetadata;
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		assetMovement: {
+			legal: testLegalField,
+			locationMetadata: {
+				...validLocationMetadata,
+				'chain:evm:1': {
+					...validLocationMetadata['chain:evm:1'],
+					// @ts-expect-error
+					'solana:test': { decimalPlaces: 20 }
+				},
+				'chain:solana:two': {}
+			},
+
 			/**
 			 * Supported assets and their configurations
 			 */
@@ -107,7 +146,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						{
 							pair: [
 								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ { rail: 'KEETA_SEND' } ] }},
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
 							]
 						}
 					]
@@ -117,7 +156,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					paths: [
 						{
 							pair: [
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
 								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
@@ -214,7 +253,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: sendToAddress.publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 
@@ -288,7 +327,7 @@ test('Asset Movement Anchor Client Test', async function() {
 									{
 									// @ts-expect-error
 										pair: [
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+											{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
 								]
@@ -318,7 +357,7 @@ test('Asset Movement Anchor Client Test', async function() {
 								paths: [
 									{
 										pair: [
-											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
+											{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
 											{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
@@ -389,6 +428,31 @@ test('Asset Movement Anchor Client Test', async function() {
 		expect(providerIDs.sort()).toEqual(expectedProviderIDs.sort());
 	}
 
+	{
+		/* Metadata checks */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		/* Expect legal field to be parsed properly on the client side */
+		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+
+		/* Expect custom token metadata to be resolved correctly */
+		expect(testProvider.serviceInfo.locationMetadata).toEqual(validLocationMetadata);
+
+		const evm0x5Metadata = validLocationMetadata['chain:evm:1']['assets']['evm:0x5'];
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'evm', chainId: 1n }}, 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x0')).toEqual(null);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'solana:test')).toEqual(null);
+		const solanaGenesis = 'ffffffffffffffffffffffffffffffffffffffffffff';
+		const testSolanaAssetID: SolanaAsset = 'solana:So11111111111111111111111111111111111111112';
+		const testSolanaAssetMetadata = validLocationMetadata[`chain:solana:${solanaGenesis}`]['assets']['solana:So11111111111111111111111111111111111111112'];
+		expect(testProvider.getAssetMetadataForLocation(`chain:solana:${solanaGenesis}`, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'solana', genesisHash: solanaGenesis }}, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
+	}
 
 	const baseTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
 	const baseTokenProvider = baseTokenProviderList?.[0];
@@ -443,7 +507,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					type: 'KEETA_SEND',
 					location: 'chain:keeta:100',
 
-					sendToAddress: account.publicKeyString.get(),
+					sendToAddress: sendToAddress.publicKeyString.get(),
 					value: '100',
 					tokenAddress: baseToken.publicKeyString.get(),
 
@@ -631,6 +695,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -740,7 +805,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						{
 							pair: [
 								{ location: `chain:keeta:${client.network}`, id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'ACH' ] }},
-								{ location: 'bank-account:us', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
+								{ location: 'bank-account:us', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
 					]
@@ -774,7 +839,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: sendToAddress.publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 

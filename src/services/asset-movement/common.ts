@@ -1,18 +1,20 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type * as CurrencyInfo from '@keetanetwork/currency-info';
-import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { AccountKeyAlgorithm, GenericAccount, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
+import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
+import type { ClientRenderableContent } from '../../lib/metadata.types.js';
+import type { TokenMetadata } from '../../lib/token-metadata.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -78,13 +80,13 @@ export type ProviderSearchInput = {
 export interface Asset {
 	location?: AssetLocationString;
 	/**
-	 * Keeta token public key string, evm contract address, or a currency code
+	 * Keeta token public key string, external chain asset, ticker, or a currency code
 	 */
-	id: string;
+	id: AssetMetadataTargetValue;
 }
 
 export type FiatPullRails = 'ACH_DEBIT' | 'CARD_PULL';
-export type FiatPushRails = 'ACH' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH';
+export type FiatPushRails = 'ACH' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH' | 'CA_PUSH' | 'AE_PUSH';
 export type FiatRails = FiatPullRails | FiatPushRails;
 export type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
@@ -120,18 +122,29 @@ export interface AssetPath {
 	kycProviders?: string[];
 };
 
-export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
+export interface AnchorTokenLocationMetadata extends TokenMetadata {
+	displayName?: string;
+	ticker?: `$${string}`;
+}
+
+export type PerChainLocationMetadata<Chain extends ExternalChainLocationType = ExternalChainLocationType> = {
+	assets?: {
+		[AssetId in ExternalChainAsset<Chain>]?: AnchorTokenLocationMetadata | undefined;
+	}
+};
+
+type ExtractLocationTypeFromString<I extends ChainLocationString> = I extends ChainLocationString<infer R extends ExternalChainLocationType> ? R : never;
+
+export type AnchorCustomLocationMetadata = {
+	[Location in ChainLocationString<ExternalChainLocationType>]?: PerChainLocationMetadata<ExtractLocationTypeFromString<Location>> | undefined;
+};
+
+export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}` | ExternalChainAsset;
 export interface SupportedAssetsMetadata {
 	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
 }
 
-/**
- * This is the type of content that can be rendered directly in a client application.
- *
- * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
- */
-export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 export interface RailWithExtendedDetails {
 	rail: Rail;
@@ -433,9 +446,9 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	/**
-	 * The keeta public key address to send to
+	 * The keeta wallet address to send to
 	 */
-	sendToAddress: string;
+	sendToAddress: ReturnType<GenericAccount['publicKeyString']['get']>;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit.
@@ -445,10 +458,10 @@ export type AssetTransferInstructions = ({
 	/**
 	 * The token address to send.
 	 */
-	tokenAddress: string;
+	tokenAddress: TokenPublicKeyString;
 
 	/**
-	 * If provided, the value to put in the external keeta transfer.
+	 * If provided, the value to put in the external field of the send operation.
 	 */
 	external?: string;
 } | {
