@@ -722,7 +722,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			account: request.account,
 			serializeRequest(body) {
 				const { account, ...rest }	= body;
-				
+
 				const sharedFields = {
 					...rest,
 					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
