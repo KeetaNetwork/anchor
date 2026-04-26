@@ -725,7 +725,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				
 				const sharedFields = {
 					...rest,
-					...(account ? { account: account.assertAccount().publicKeyString.get() } : {});
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
 				}
 
 				if ('data' in body) {
