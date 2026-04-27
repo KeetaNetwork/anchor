@@ -234,9 +234,9 @@ interface AssetMovementResolvedRails {
 }
 
 export type AnchorChainingListAssetsSideFilter = {
-	location?: AssetLocationLike;
-	asset?: AnchorChainingAsset;
-	rail?: Rail;
+	location?: AssetLocationLike | undefined;
+	asset?: AnchorChainingAsset | undefined;
+	rail?: Rail | undefined;
 };
 
 type AnchorChainingListAssetsShared = {

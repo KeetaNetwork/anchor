@@ -1519,105 +1519,130 @@ describe('AnchorChaining listAssets', function() {
 	});
 });
 
-describe('AnchorChaining resolveAssets', function() {
-	test('all cases', async function() {
-		await using h = await createChainingTestHarness();
+test('AnchorChaining resolveAssets', async function() {
+	await using h = await createChainingTestHarness();
 
-		const usdcKey = `${h.tokens.USDC.publicKeyString.get()}@${h.keetaLocation}`;
-		const eurcKey = `${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`;
-		const usdKey = `USD@bank-account:us`;
-		const eurKey = `EUR@bank-account:iban-swift`;
+	const usdcKey = `${h.tokens.USDC.publicKeyString.get()}@${h.keetaLocation}`;
+	const eurcKey = `${h.tokens.EURC.publicKeyString.get()}@${h.keetaLocation}`;
+	const usdKey = `USD@bank-account:us`;
+	const eurKey = `EUR@bank-account:iban-swift`;
 
-		const resultKey = (item: AnchorChainingAssetInfo): string => {
-			const assetStr = KeetaNet.lib.Account.isInstance(item.asset)
-				? item.asset.publicKeyString.get()
-				: String(item.asset);
-			return(`${assetStr}@${convertAssetLocationToString(item.location)}`);
-		};
+	const resultKey = (item: AnchorChainingAssetInfo): string => {
+		const assetStr = KeetaNet.lib.Account.isInstance(item.asset)
+			? item.asset.publicKeyString.get()
+			: String(item.asset);
+		return(`${assetStr}@${convertAssetLocationToString(item.location)}`);
+	};
 
-		type ExpectedAsset = { key: string; distance: number | null };
+	type ExpectedAsset = { key: string; distance: number | null };
 
-		const testCases: {
-			name: string;
-			args: AnchorChainingResolveAssetsFilter;
-			expected: { from: ExpectedAsset[]; to: ExpectedAsset[] };
-		}[] = [
-			{
-				name: 'from only',
-				args: { from: { asset: h.tokens.USDC, location: h.keetaLocation }},
-				expected: {
-					from: [],
-					to: [
-						{ key: eurcKey, distance: 1 },
-						{ key: usdKey,  distance: 1 },
-						{ key: eurKey,  distance: 2 },
-						{ key: usdcKey, distance: 2 }
-					]
-				}
-			},
-			{
-				name: 'to only with maxStepCount: 1',
-				args: { to: { location: 'bank-account:us' }, maxStepCount: 1 },
-				expected: {
-					from: [{ key: usdcKey, distance: 1 }],
-					to:   []
-				}
-			},
-			{
-				name: 'no filter',
-				args: {},
-				expected: {
-					from: [
-						{ key: usdcKey, distance: null },
-						{ key: eurcKey, distance: null },
-						{ key: usdKey,  distance: null },
-						{ key: eurKey,  distance: null }
-					],
-					to: [
-						{ key: usdcKey, distance: null },
-						{ key: eurcKey, distance: null },
-						{ key: usdKey,  distance: null },
-						{ key: eurKey,  distance: null }
-					]
-				}
-			},
-			{
-				name: 'from+to: keeta -> bank-account:us',
-				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:us' }},
-				expected: {
-					from: [
-						{ key: usdcKey, distance: 1 },
-						{ key: eurcKey, distance: 2 }
-					],
-					to: [{ key: usdKey, distance: 1 }]
-				}
-			},
-			{
-				name: 'from+to: to.rail SEPA_PUSH filters to EU corridor',
-				args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }},
-				expected: {
-					from: [
-						{ key: eurcKey, distance: 1 },
-						{ key: usdcKey, distance: 2 }
-					],
-					to: [{ key: eurKey, distance: 1 }]
-				}
-			},
-			{
-				name: 'from+to: from.rail ACH limits from assets to those with ACH outbound',
-				args: { from: { rail: 'ACH' }, to: { location: h.keetaLocation }},
-				expected: {
-					from: [{ key: usdKey, distance: 1 }],
-					to: [
-						{ key: usdcKey, distance: 1 },
-						{ key: eurcKey, distance: 2 }
-					]
-				}
+	const testCases: {
+		name: string;
+		args: AnchorChainingResolveAssetsFilter | AnchorChainingResolveAssetsFilter[];
+		expected: { from: ExpectedAsset[]; to: ExpectedAsset[] };
+	}[] = [
+		{
+			name: 'from only',
+			args: { from: { asset: h.tokens.USDC, location: h.keetaLocation }},
+			expected: {
+				from: [],
+				to: [
+					{ key: eurcKey, distance: 1 },
+					{ key: usdKey,  distance: 1 },
+					{ key: eurKey,  distance: 2 },
+					{ key: usdcKey, distance: 2 }
+				]
 			}
-		];
+		},
+		{
+			name: 'to only with maxStepCount: 1',
+			args: { to: { location: 'bank-account:us' }, maxStepCount: 1 },
+			expected: {
+				from: [{ key: usdcKey, distance: 1 }],
+				to:   []
+			}
+		},
+		{
+			name: 'no filter',
+			args: {},
+			expected: {
+				from: [
+					{ key: usdcKey, distance: null },
+					{ key: eurcKey, distance: null },
+					{ key: usdKey,  distance: null },
+					{ key: eurKey,  distance: null }
+				],
+				to: [
+					{ key: usdcKey, distance: null },
+					{ key: eurcKey, distance: null },
+					{ key: usdKey,  distance: null },
+					{ key: eurKey,  distance: null }
+				]
+			}
+		},
+		{
+			name: 'from+to: keeta -> bank-account:us',
+			args: [
+				{ from: { location: h.keetaLocation }, to: { location: 'bank-account:us' }},
+				{ from: { location: h.keetaLocation, rail: 'KEETA_SEND' }, to: { location: 'bank-account:us' }},
+				{ from: { location: h.keetaLocation }, to: { location: 'bank-account:us', rail: 'ACH' }},
+				{ from: { location: h.keetaLocation, rail: 'KEETA_SEND' }, to: { location: 'bank-account:us', rail: 'ACH' }},
+				{ from: { location: h.keetaLocation, rail: undefined }, to: { location: 'bank-account:us', rail: 'ACH' }},
+				{ from: { location: h.keetaLocation, rail: undefined }, to: { location: 'bank-account:us', rail: undefined }}
+			],
+			expected: {
+				from: [
+					{ key: usdcKey, distance: 1 },
+					{ key: eurcKey, distance: 2 }
+				],
+				to: [{ key: usdKey, distance: 1 }]
+			}
+		},
+		{
+			name: 'from+to: keeta -> bank-account:us with invalid rail',
+			args: [
+				{ from: { location: h.keetaLocation }, to: { location: 'bank-account:us', rail: 'BITCOIN_SEND' }},
+				{ from: { location: h.keetaLocation, rail: 'ACH' }, to: { location: 'bank-account:us' }}
+			],
+			expected: {
+				from: [],
+				to: []
+			}
+		},
+		{
+			name: 'from+to: to.rail SEPA_PUSH filters to EU corridor',
+			args: { from: { location: h.keetaLocation }, to: { location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }},
+			expected: {
+				from: [
+					{ key: eurcKey, distance: 1 },
+					{ key: usdcKey, distance: 2 }
+				],
+				to: [{ key: eurKey, distance: 1 }]
+			}
+		},
+		{
+			name: 'from+to: from.rail ACH limits from assets to those with ACH outbound',
+			args: { from: { rail: 'ACH' }, to: { location: h.keetaLocation }},
+			expected: {
+				from: [{ key: usdKey, distance: 1 }],
+				to: [
+					{ key: usdcKey, distance: 1 },
+					{ key: eurcKey, distance: 2 }
+				]
+			}
+		}
+	];
 
-		for (const { name, args, expected } of testCases) {
-			const result = await h.anchorChaining.graph.resolveAssets(args);
+	for (const { name, args, expected } of testCases) {
+		let argsArray;
+		if (Array.isArray(args)) {
+			argsArray = args;
+		} else {
+			argsArray = [ args ];
+		}
+
+		for (const argValue of argsArray) {
+			const result = await h.anchorChaining.graph.resolveAssets(argValue);
 			const toActual = (side: AnchorChainingAssetInfo[]): ExpectedAsset[] =>
 				side.map(a => ({ key: resultKey(a), distance: a.distance?.pathLength ?? null }));
 
@@ -1626,5 +1651,5 @@ describe('AnchorChaining resolveAssets', function() {
 			expect(toActual(result.to), `${name}: to`).toEqual(expect.arrayContaining(expected.to));
 			expect(result.to, `${name}: to length`).toHaveLength(expected.to.length);
 		}
-	});
+	}
 });
