@@ -667,7 +667,8 @@ test('Asset Movement Anchor Client Test', async function() {
 		const executed = await persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0], account });
 		expect(executed.transaction.status).toEqual('EXECUTED');
 
-		const prevTestTransaction = JSON.parse(JSON.stringify(testTransaction));
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const prevTestTransaction = JSON.parse(JSON.stringify(testTransaction)) as typeof testTransaction;
 
 		testTransaction = {
 			...testTransaction,
