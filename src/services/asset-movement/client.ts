@@ -722,17 +722,22 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			account: request.account,
 			serializeRequest(body) {
 				const { account, ...rest }	= body;
+
+				const sharedFields = {
+					...rest,
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+				}
+
 				if ('data' in body) {
 					return({
-						...rest,
+						...sharedFields,
 						data: body.data
 					});
 				} else {
 					return({
-						...rest,
+						...sharedFields,
 						location: convertAssetLocationToString(body.location),
-						asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-						...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+						asset: convertAssetOrPairSearchInputToCanonical(body.asset)
 					});
 				}
 			},
