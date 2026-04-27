@@ -6,7 +6,7 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateRecipient, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -39,7 +39,7 @@ test('Asset Movement Anchor Client Test', async function() {
 	const initialAccountBalanceUSDC = await client.balance(testCurrencyUSDC);
 	expect(initialAccountBalanceUSDC).toEqual(initialAccountUSDCBalance);
 
-	const testTransaction: KeetaAssetMovementTransaction = {
+	let testTransaction: KeetaAssetMovementTransaction = {
 		id: '123',
 		status: 'COMPLETED',
 		asset: baseToken.publicKeyString.get(),
@@ -217,12 +217,12 @@ test('Asset Movement Anchor Client Test', async function() {
 			 * Method to initiate a transfer
 			 */
 			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
-				if (request.to.location === 'bank-account:us') {
-					if (typeof request.to.recipient !== 'object' || !('type' in request.to.recipient)) {
-						throw(new Error('Recipient is not a bank account address object'));
+				if (request.from.location === 'bank-account:us') {
+					if (!request.from.source || typeof request.from.source !== 'object' || !('type' in request.from.source)) {
+						throw(new Error('request.from.source is not a persistent address template object'));
 					}
 
-					if (request.to.recipient.type !== 'persistent-address' && request.to.recipient.type !== 'persistent-address-template') {
+					if (request.from.source.type !== 'persistent-address' && request.from.source.type !== 'persistent-address-template') {
 						throw(new Error('Recipient is not a persistent address'));
 					}
 
@@ -230,7 +230,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						id: '123',
 						instructionChoices: [{
 							type: 'ACH_DEBIT',
-							pullFrom: request.to.recipient,
+							pullFrom: request.from.source,
 							assetFee: '0'
 						}]
 					})
@@ -583,8 +583,8 @@ test('Asset Movement Anchor Client Test', async function() {
 			[
 				() => testProvider?.initiateTransfer({
 					asset: { from: testCurrencyUSDC, to: 'USD' },
-					from: { location: 'bank-account:us' },
-					to: { location: 'chain:keeta:123', recipient: 'test-recipient' },
+					from: { location: 'chain:keeta:123' },
+					to: { location: 'bank-account:us', recipient: 'test-recipient' },
 					value: '1000'
 				}),
 				{
@@ -647,12 +647,12 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		const persistentAddressId = 'TEST_PERSISTENT_ADDRESS_ID'
 
-		const persistentAddress = { type: 'persistent-address', persistentAddressId: persistentAddressId } satisfies PersistentAddressOrTemplateRecipient;
+		const persistentAddress = { type: 'persistent-address', persistentAddressId: persistentAddressId } satisfies PersistentAddressOrTemplateReference;
 
 		const persistentAddressTemplateTransfer = await testProvider.initiateTransfer({
-			from: { location: 'chain:keeta:100' },
+			from: { location: 'bank-account:us', source: persistentAddress },
 			asset: { to: 'USD', from: testCurrencyUSDC.publicKeyString.get() },
-			to: { location: 'bank-account:us', recipient: persistentAddress  },
+			to: { location: 'chain:keeta:100', recipient: account.publicKeyString.get()  },
 			value: '100'
 		});
 
@@ -666,6 +666,22 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		const executed = await persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0], account });
 		expect(executed.transaction.status).toEqual('EXECUTED');
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const prevTestTransaction = JSON.parse(JSON.stringify(testTransaction)) as typeof testTransaction;
+
+		testTransaction = {
+			...testTransaction,
+			from: {
+				...testTransaction.from,
+				source: persistentAddress
+			}
+		}
+
+		const readStatus = await testProvider.getTransferStatus({ id: 'test' });
+		expect(readStatus.transaction.from.source).toEqual(persistentAddress);
+
+		testTransaction = prevTestTransaction;
 	}
 
 	{

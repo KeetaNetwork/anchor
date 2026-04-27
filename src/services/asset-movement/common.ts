@@ -322,10 +322,10 @@ export function convertAssetOrPairSearchInputToCanonical(input: AssetOrPair): As
 export type Operations = NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
-export type PersistentAddressRecipient = { type: 'persistent-address'; persistentAddressId: string; };
-export type PersistentAddressTemplateRecipient = { type: 'persistent-address-template'; persistentAddressTemplateId: string; };
-export type PersistentAddressOrTemplateRecipient = PersistentAddressRecipient | PersistentAddressTemplateRecipient;
-export type RecipientResolved = AddressResolved | PersistentAddressOrTemplateRecipient;
+export type PersistentAddressReference = { type: 'persistent-address'; persistentAddressId: string; };
+export type PersistentAddressTemplateReference = { type: 'persistent-address-template'; persistentAddressTemplateId: string; };
+export type PersistentAddressOrTemplateReference = PersistentAddressReference | PersistentAddressTemplateReference;
+export type RecipientResolved = AddressResolved | PersistentAddressOrTemplateReference;
 
 /**
  * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
@@ -345,6 +345,8 @@ type ConvertToExternalRequest<
  * The client-side request type for initiating an asset transfer via the Keeta Asset Movement Anchor service
  */
 export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+	simulate?: boolean;
+
 	/**
 	 * Optional KeetaNet account to use for signing the request
 	 */
@@ -358,7 +360,14 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	/**
 	 * The source location for the asset transfer
 	 */
-	from: { location: AssetLocationLike; };
+	from: {
+		location: AssetLocationLike;
+
+		/**
+		 * If sending from a persistent address (ex ACH pull), this would be the account the user wants to debit from
+		 */
+		source?: PersistentAddressOrTemplateReference;
+	};
 
 	/**
 	 * The destination location and recipient for the asset transfer
@@ -385,7 +394,7 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
  */
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
-	from: { location: AssetLocationCanonical; };
+	from: { location: AssetLocationCanonical; source?: PersistentAddressOrTemplateReference; };
 	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
@@ -535,7 +544,7 @@ export type AssetTransferInstructions = ({
 	/**
 	 * The previously created persistent address template or persistent address to pull funds from
 	 */
-	pullFrom: PersistentAddressOrTemplateRecipient;
+	pullFrom: PersistentAddressOrTemplateReference;
 } | {
 	type: 'TRON_SEND';
 	location: AssetLocationLike;
@@ -663,6 +672,8 @@ type TransactionIds<T extends string> = {
 	[type in T]: TransactionId | null;
 };
 
+export type TransactionSourceObfuscated = AddressObfuscated | PersistentAddressOrTemplateReference;
+
 /**
  * Representation of an asset movement transaction in the Asset Movement Anchor's system.
  */
@@ -702,6 +713,11 @@ export type KeetaAssetMovementTransaction = {
 		 * A list of transaction IDs related to the source chain.
 		 */
 		transactions: TransactionIds<'persistentForwarding' | 'deposit' | 'finalization'>;
+
+		/**
+		 * A reference to the sender of the transaction, this can be a reference to a persistent address, or general recipient information
+		 */
+		source?: TransactionSourceObfuscated;
 	};
 
 	/**
