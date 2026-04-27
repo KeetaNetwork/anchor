@@ -619,7 +619,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					...rest,
 					value: String(body.value),
 					from: {
-						location: convertAssetLocationToString(body.from.location)
+						location: convertAssetLocationToString(body.from.location),
+						...(request.from.source ? { source: request.from.source } : {})
 					},
 					to: {
 						location: convertAssetLocationToString(body.to.location),
