@@ -15,6 +15,7 @@ import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
+import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -345,8 +346,6 @@ type ConvertToExternalRequest<
  * The client-side request type for initiating an asset transfer via the Keeta Asset Movement Anchor service
  */
 export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
-	simulate?: boolean;
-
 	/**
 	 * Optional KeetaNet account to use for signing the request
 	 */
@@ -389,6 +388,8 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	allowedRails?: Rail[];
 }
 
+export type KeetaAssetMovementAnchorSimulateTransferClientRequest = KeetaAssetMovementAnchorInitiateTransferClientRequest;
+
 /**
  * The serialized HTTP Body for the {@link KeetaAssetMovementAnchorInitiateTransferClientRequest} request
  */
@@ -398,6 +399,8 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalR
 	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
+export type KeetaAssetMovementAnchorSimulateTransferRequest = KeetaAssetMovementAnchorInitiateTransferRequest;
+
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
 	return(commonToSignable({
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
@@ -406,6 +409,11 @@ export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(in
 		value: String(input.value)
 	}));
 }
+
+export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(input: KeetaAssetMovementAnchorSimulateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferRequest): Signable {
+	return(getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input));
+}
+
 
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
@@ -615,11 +623,21 @@ export type AssetTransferInstructions = ({
 	persistentAddressId?: string;
 });
 
-export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
+export type SimulatedAssetTransferInstructions = DistributiveOmit<AssetTransferInstructions, 'sendToAddress'>;
+
+export type KeetaAssetMovementAnchorSimulateTransferResponse = {
+	ok: true;
+	instructionChoices: SimulatedAssetTransferInstructions[];
+} | {
+	ok: false;
+	error: string;
+}
+
+export type KeetaAssetMovementAnchorInitiateTransferResponse = {
 	ok: true;
 	id: string;
 	instructionChoices: AssetTransferInstructions[];
-}) | ({
+} | ({
 	ok: false;
 	error: string;
 })

@@ -202,6 +202,7 @@ type ServiceMetadata = {
 				operations: {
 					[Operation in (
 						'initiateTransfer' |
+						'simulateTransfer' |
 						'executeTransfer' |
 						'getTransferStatus' |
 						'initiatePersistentForwardingTemplate' |

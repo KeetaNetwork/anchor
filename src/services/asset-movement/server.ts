@@ -22,7 +22,9 @@ import type {
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorExecuteTransferRequest,
-	KeetaAssetMovementAnchorExecuteTransferResponse
+	KeetaAssetMovementAnchorExecuteTransferResponse,
+	KeetaAssetMovementAnchorSimulateTransferRequest,
+	KeetaAssetMovementAnchorSimulateTransferResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -55,7 +57,10 @@ import {
 	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
 	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	assertKeetaAssetMovementAnchorExecuteTransferRequest,
-	assertKeetaAssetMovementAnchorExecuteTransferResponse
+	assertKeetaAssetMovementAnchorExecuteTransferResponse,
+	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
+	assertKeetaAssetMovementAnchorSimulateTransferRequest,
+	assertKeetaAssetMovementAnchorSimulateTransferResponse
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -111,6 +116,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorHTTPSer
 		 * Method to initiate a transfer
 		 */
 		initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
+
+		/**
+		 * Method to initiate a transfer
+		 */
+		simulateTransfer?: (request: KeetaAssetMovementAnchorSimulateTransferRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
 
 		/**
 		 * Method to get the status of a transfer
@@ -200,6 +210,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			method: 'GET' | 'POST';
 			handlerName: HandlerName;
 			pathName?: string;
+			overrideAllowUnauthenticated?: boolean;
 			assertRequest?: (data: unknown) => SerializedRequest;
 			serializeResponse?: (data: ExtractOk<Response>) => unknown;
 			assertResponse: (data: unknown) => Response;
@@ -223,7 +234,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 				throw(new Error(`internal error: handler for ${String(input.handlerName)} is not a function`));
 			}
 
-			const authenticationRequired = config.assetMovement.authenticationRequired === true;
+			const authenticationRequired = config.assetMovement.authenticationRequired === true && (input.overrideAllowUnauthenticated !== true);
 
 			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
 				let request: SerializedRequest;
@@ -345,6 +356,28 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 			getSigningData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 			assertRequest: assertKeetaAssetMovementAnchorInitiateTransferRequest,
 			assertResponse: assertKeetaAssetMovementAnchorInitiateTransferResponse,
+			serializeResponse(data) {
+				return({
+					...data,
+					instructionChoices: data.instructionChoices.map(function(choice) {
+						const ret = { ...choice };
+						if ('location' in ret) {
+							ret.location = convertAssetLocationToString(ret.location);
+						}
+
+						return(ret);
+					})
+				})
+			}
+		});
+
+		addRoute({
+			method: 'POST',
+			handlerName: 'simulateTransfer',
+			overrideAllowUnauthenticated: true,
+			getSigningData: getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
+			assertRequest: assertKeetaAssetMovementAnchorSimulateTransferRequest,
+			assertResponse: assertKeetaAssetMovementAnchorSimulateTransferResponse,
 			serializeResponse(data) {
 				return({
 					...data,
@@ -499,6 +532,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorHTTPServer
 
 		const routes = [
 			'initiateTransfer',
+			'simulateTransfer',
 			'listTransactions',
 			'initiatePersistentForwardingTemplate',
 			'createPersistentForwardingTemplate',
