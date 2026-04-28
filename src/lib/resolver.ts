@@ -856,7 +856,7 @@ type ResolverConfig = {
 	/**
 	 * Additional configuration for reading metadata
 	 */
-	metadataConfig?: Pick<MetadataConfig, 'supportInsecureProtocol'>;
+	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols'>;
 }
 
 
@@ -876,7 +876,7 @@ type MetadataConfig = {
 	 * Flag indicating if the resolver should read from insecure protocols (ex: http)
 	 * Defaults to false
 	 */
-	supportInsecureProtocol?: boolean;
+	allowInsecureProtocols?: boolean;
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
@@ -896,7 +896,7 @@ class Metadata implements ValuizableInstance {
 	readonly #url: URL;
 	readonly #resolver: Resolver;
 	readonly #stats: ResolverStats;
-	readonly #supportInsecureProtocols: boolean;
+	readonly #allowInsecureProtocols: boolean;
 
 	private readonly seenURLs: Set<string>;
 
@@ -1067,7 +1067,7 @@ class Metadata implements ValuizableInstance {
 		this.#client = config.client;
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
-		this.#supportInsecureProtocols = config.supportInsecureProtocol ?? false;
+		this.#allowInsecureProtocols = config.allowInsecureProtocols ?? false;
 
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
 		if (config.parent !== undefined) {
@@ -1215,7 +1215,7 @@ class Metadata implements ValuizableInstance {
 				const protocol = url.protocol;
 				if (protocol === 'keetanet:') {
 					retval = await this.readKeetaNetURL(url);
-				} else if (protocol === 'https:' || (protocol === 'http:' && this.#supportInsecureProtocols)) {
+				} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
 					retval = await this.readHTTPSURL(url);
 				} else {
 					this.#stats.unsupported.reads++;
@@ -1343,7 +1343,7 @@ class Metadata implements ValuizableInstance {
 						logger: this.#logger,
 						resolver: this.#resolver,
 						cache: this.#cache,
-						supportInsecureProtocol: this.#supportInsecureProtocols,
+						allowInsecureProtocols: this.#allowInsecureProtocols,
 						parent: this
 					});
 
