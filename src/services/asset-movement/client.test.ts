@@ -6,11 +6,12 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { ExtractOk } from '../../lib/http-server/common.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -122,6 +123,56 @@ test('Asset Movement Anchor Client Test', async function() {
 		}
 	} satisfies AnchorCustomLocationMetadata;
 
+	async function serverInitiateSimulateTransferHandler(simulate: false, request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
+	async function serverInitiateSimulateTransferHandler(simulate: true, request: KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
+	// eslint-disable-next-line @typescript-eslint/no-duplicate-type-constituents
+	async function serverInitiateSimulateTransferHandler(simulate: boolean, request: KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse> | ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
+		if (request.from.location === 'bank-account:us') {
+			if (!request.from.source || typeof request.from.source !== 'object' || !('type' in request.from.source)) {
+				throw(new Error('request.from.source is not a persistent address template object'));
+			}
+
+			if (request.from.source.type !== 'persistent-address' && request.from.source.type !== 'persistent-address-template') {
+				throw(new Error('Recipient is not a persistent address'));
+			}
+
+			return({
+				...(simulate ? {} : { id: '123' }),
+				instructionChoices: [{
+					type: 'ACH_DEBIT',
+					pullFrom: request.from.source,
+					assetFee: '0'
+				}]
+			})
+		}
+
+		if (typeof request.to.recipient !== 'string') {
+			throw(new Error('Recipient is not a string'));
+		}
+
+		if (shouldOperationFailExtendedKeetaSend(request.asset)) {
+			throw(new Errors.OperationNotSupported({
+				forAsset: 'USD',
+				forRail: extendedKeetaSendDetails.rail
+			}));
+		}
+
+		return({
+			...(simulate ? {} : { id: '123' }),
+			instructionChoices: [{
+				type: 'KEETA_SEND',
+				location: request.from.location,
+
+				...(simulate ? {} : { sendToAddress: sendToAddress.publicKeyString.get() }),
+				value: request.value.toString(),
+				tokenAddress: baseToken.publicKeyString.get(),
+
+				external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
+				assetFee: '10'
+			}]
+		})
+	}
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		assetMovement: {
@@ -213,54 +264,15 @@ test('Asset Movement Anchor Client Test', async function() {
 				})
 			},
 
+			simulateTransfer: async (request: KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> => {
+				return(await serverInitiateSimulateTransferHandler(true, request));
+			},
+
 			/**
 			 * Method to initiate a transfer
 			 */
-			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
-				if (request.from.location === 'bank-account:us') {
-					if (!request.from.source || typeof request.from.source !== 'object' || !('type' in request.from.source)) {
-						throw(new Error('request.from.source is not a persistent address template object'));
-					}
-
-					if (request.from.source.type !== 'persistent-address' && request.from.source.type !== 'persistent-address-template') {
-						throw(new Error('Recipient is not a persistent address'));
-					}
-
-					return({
-						id: '123',
-						instructionChoices: [{
-							type: 'ACH_DEBIT',
-							pullFrom: request.from.source,
-							assetFee: '0'
-						}]
-					})
-				}
-
-				if (typeof request.to.recipient !== 'string') {
-					throw(new Error('Recipient is not a string'));
-				}
-
-				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
-					throw(new Errors.OperationNotSupported({
-						forAsset: 'USD',
-						forRail: extendedKeetaSendDetails.rail
-					}));
-				}
-
-				return({
-					id: '123',
-					instructionChoices: [{
-						type: 'KEETA_SEND',
-						location: request.from.location,
-
-						sendToAddress: sendToAddress.publicKeyString.get(),
-						value: request.value.toString(),
-						tokenAddress: baseToken.publicKeyString.get(),
-
-						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
-						assetFee: '10'
-					}]
-				})
+			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
+				return(await serverInitiateSimulateTransferHandler(false, request));
 			},
 
 			/**
@@ -707,6 +719,37 @@ test('Asset Movement Anchor Client Test', async function() {
 		});
 		expect(typeof result.expiresAt).toBe('string');
 	}
+
+	{
+		/**
+		 * Test initiatePersistentForwardingTemplate
+		 */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const simulated = await testProvider.simulateTransfer({
+			asset: testCurrencyUSDC,
+			from: { location: 'chain:keeta:123' },
+			to: { location: 'bank-account:us', recipient: 'test-recipient' },
+			value: '1000'
+		});
+
+		expect('id' in simulated).toEqual(false);
+
+		const createdTransfer = await simulated.createTransfer();
+
+		if (!createdTransfer.instructions[0] || createdTransfer.instructions[0].type !== 'KEETA_SEND') {
+			throw(new Error('expected keeta send as first instruction'))
+		}
+
+		expect(createdTransfer.instructions[0]).toEqual({
+			...simulated.instructions[0],
+			sendToAddress: createdTransfer.instructions[0].sendToAddress
+		})
+	}
 });
 
 test('Asset Movement Anchor Authenticated Client Test', async function() {
@@ -838,6 +881,26 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 				return({
 					address: request.destinationAddress
+				})
+			},
+
+			simulateTransfer: async function(request) {
+				if (typeof request.to.recipient !== 'string') {
+					throw(new Error('Recipient is not a string'));
+				}
+
+				return({
+					instructionChoices: [{
+						type: 'KEETA_SEND',
+						location: request.from.location,
+
+						sendToAddress: undefined,
+						value: request.value.toString(),
+						tokenAddress: baseToken.publicKeyString.get(),
+
+						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
+						assetFee: '10'
+					}]
 				})
 			},
 
