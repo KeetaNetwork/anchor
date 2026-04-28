@@ -2060,7 +2060,6 @@ class Resolver {
 		for (const root of this.#roots) {
 			const rootURL = new URL(`keetanet://${root.publicKeyString.get()}/metadata`);
 			const metadata = new Metadata(rootURL, {
-				// this.,
 				...this.#metadataConfig,
 				trustedCAs: this.#trustedCAs,
 				client: this.#client,
