@@ -852,6 +852,11 @@ type ResolverConfig = {
 	 * Caching Parameters
 	 */
 	cache?: Omit<NonNullable<MetadataConfig['cache']>, 'instance'>;
+
+	/**
+	 * Additional configuration for reading metadata
+	 */
+	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols'>;
 }
 
 
@@ -866,6 +871,12 @@ type MetadataConfig = {
 		negativeTTL?: number;
 	};
 	parent?: Metadata;
+
+	/**
+	 * Flag indicating if the resolver should read from insecure protocols (ex: http)
+	 * Defaults to false
+	 */
+	allowInsecureProtocols?: boolean;
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
@@ -885,6 +896,8 @@ class Metadata implements ValuizableInstance {
 	readonly #url: URL;
 	readonly #resolver: Resolver;
 	readonly #stats: ResolverStats;
+	readonly #allowInsecureProtocols: boolean;
+
 	private readonly seenURLs: Set<string>;
 
 	private static readonly instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
@@ -1054,6 +1067,8 @@ class Metadata implements ValuizableInstance {
 		this.#client = config.client;
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
+		this.#allowInsecureProtocols = config.allowInsecureProtocols ?? false;
+
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
 		if (config.parent !== undefined) {
 			this.seenURLs = config.parent.seenURLs;
@@ -1200,7 +1215,7 @@ class Metadata implements ValuizableInstance {
 				const protocol = url.protocol;
 				if (protocol === 'keetanet:') {
 					retval = await this.readKeetaNetURL(url);
-				} else if (protocol === 'https:') {
+				} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
 					retval = await this.readHTTPSURL(url);
 				} else {
 					this.#stats.unsupported.reads++;
@@ -1328,6 +1343,7 @@ class Metadata implements ValuizableInstance {
 						logger: this.#logger,
 						resolver: this.#resolver,
 						cache: this.#cache,
+						allowInsecureProtocols: this.#allowInsecureProtocols,
 						parent: this
 					});
 
@@ -1415,6 +1431,7 @@ class Resolver {
 	readonly #logger: Logger | undefined;
 	readonly #stats: ResolverStats;
 	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
+	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
 	readonly id: string;
 
@@ -1463,6 +1480,7 @@ class Resolver {
 			...config.cache,
 			instance: new Map()
 		};
+		this.#metadataConfig = config.metadataConfig;
 
 		this.id = config.id ?? crypto.randomUUID();
 
@@ -2042,6 +2060,7 @@ class Resolver {
 		for (const root of this.#roots) {
 			const rootURL = new URL(`keetanet://${root.publicKeyString.get()}/metadata`);
 			const metadata = new Metadata(rootURL, {
+				...this.#metadataConfig,
 				trustedCAs: this.#trustedCAs,
 				client: this.#client,
 				logger: this.#logger,
