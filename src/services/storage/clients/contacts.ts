@@ -83,6 +83,8 @@ interface SharedStorageObjectMetadata extends Pick<StorageObjectMetadata, 'creat
 
 export interface ContactWithMetadata extends Contact, SharedStorageObjectMetadata {}
 
+interface ContactOptions extends Omit<Contact, 'id'>, Partial<Pick<Contact, 'id'>> {}
+
 // #endregion
 
 // #region Interface
@@ -93,11 +95,7 @@ export interface ContactWithMetadata extends Contact, SharedStorageObjectMetadat
 export interface ContactsClient {
 	deriveId(address: ContactAddress): string;
 
-	create(options: {
-		label: string;
-		address: ContactAddress;
-		rail?: Rail;
-	}): Promise<Contact>;
+	create(options: ContactOptions): Promise<Contact>;
 
 	get(id: string): Promise<Contact | null>;
 
@@ -215,12 +213,8 @@ export class StorageContactsClient implements ContactsClient {
 		}
 	}
 
-	async create(options: {
-		label: string;
-		address: ContactAddress;
-		rail?: Rail | undefined;
-	}): Promise<Contact> {
-		const id = this.deriveId(options.address);
+	async create(options: ContactOptions): Promise<Contact> {
+		const id = options.id ?? this.deriveId(options.address);
 		this.#logger?.debug('StorageContactsClient::create', `Creating contact ${id}`);
 
 		const contact: Contact = assertContact({
