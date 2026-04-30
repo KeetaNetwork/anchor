@@ -75,7 +75,7 @@ export interface Contact {
 	id: string;
 	label: string;
 	address: ContactAddress;
-	rail?: Rail;
+	rail?: Rail | undefined;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
