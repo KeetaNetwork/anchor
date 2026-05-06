@@ -1090,6 +1090,106 @@ describe('AnchorChainingPath execute', function() {
 		await expect(path.execute()).rejects.toThrow('Cannot execute');
 	});
 
+	test('success: step structure, events, state transitions, and guard rails for storage accounts', async function() {
+		await using h = await createChainingTestHarness();
+
+		const { account: storageAccount } = await h.client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+
+		await h.client.setInfo({
+			name: '',
+			description: 'Storage account with permissions from user account',
+			metadata: '',
+			defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT'])
+		}, { account: storageAccount });
+
+		await h.giveTokens(h.client.account, 2000n, h.tokens.USDC);
+		await h.client.send(storageAccount, 1000n, h.tokens.USDC);
+		await h.client.send(storageAccount, 10n, h.client.baseToken);
+
+		const userSendTokenBalancePre = await h.client.balance(h.tokens.USDC);
+		const storageSendTokenBalancePre = await h.client.balance(h.tokens.USDC, { account: storageAccount });
+		const userReceiveTokenBalancePre = await h.client.balance(h.tokens.EURC);
+		const storageReceiveTokenBalancePre = await h.client.balance(h.tokens.EURC, { account: storageAccount });
+
+		// Same location FX: storage accounts on AM are not supported
+		const paths = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+		}, { overrides: { account: storageAccount }});
+
+		const path = paths?.[0];
+		if (!path) {
+			throw(new Error(`No path found`));
+		}
+
+		expect(path.state.status).toEqual('idle');
+
+		const stateHistory: AnchorChainingPathState['status'][] = [];
+		path.on('stateChange', (state: AnchorChainingPathState) => stateHistory.push(state.status));
+
+		const emittedSteps: { step: ExecutedStep; index: number }[] = [];
+		path.on('stepExecuted', (step: ExecutedStep, index: number) => emittedSteps.push({ step, index }));
+
+		let completedResult: Awaited<ReturnType<typeof path.execute>> | null = null;
+		path.on('completed', (result: Awaited<ReturnType<typeof path.execute>>) => { completedResult = result; });
+
+		// Register then immediately remove a listener to verify off() is effective
+		let removedListenerCallCount = 0;
+		const removedListener = () => { removedListenerCallCount++; };
+		path.on('stepExecuted', removedListener);
+		path.off('stepExecuted', removedListener);
+
+		// Plan totals from FX rate (0.88 forward)
+		expect(path.plan.totalValueIn).toEqual(100n);
+		expect(path.plan.totalValueOut).toEqual(88n);
+
+		const result = await path.execute();
+
+		// Step structure and server-side verification
+		expect(result.steps.length).toEqual(1);
+		const [step0] = result.steps;
+		expect(step0?.type).toEqual('fx');
+		if (step0?.type === 'fx') {
+			expect(step0.exchange.exchange.exchangeID).toBeTruthy();
+			const exchangeStatus = await step0.exchange.getExchangeStatus();
+			expect(exchangeStatus.status).toEqual('completed');
+			if (exchangeStatus.status === 'completed') {
+				expect(exchangeStatus.blockhash).toBeTruthy();
+			}
+		}
+
+		// State transitions: idle -> executing -> completed
+		expect(path.state.status).toEqual('completed');
+		expect(stateHistory[0]).toEqual('executing');
+		expect(stateHistory[stateHistory.length - 1]).toEqual('completed');
+		if (path.state.status === 'completed') {
+			expect(path.state.result).toBe(result);
+		}
+
+		const userSendTokenBalancePost = await h.client.balance(h.tokens.USDC);
+		const storageSendTokenBalancePost = await h.client.balance(h.tokens.USDC, { account: storageAccount });
+		const userReceiveTokenBalancePost = await h.client.balance(h.tokens.EURC);
+		const storageReceiveTokenBalancePost = await h.client.balance(h.tokens.EURC, { account: storageAccount });
+
+		expect(storageSendTokenBalancePre - storageSendTokenBalancePost).toEqual(100n);
+		expect(storageReceiveTokenBalancePost - storageReceiveTokenBalancePre).toEqual(88n);
+		expect(userSendTokenBalancePre).toEqual(userSendTokenBalancePost);
+		expect(userReceiveTokenBalancePre).toEqual(userReceiveTokenBalancePost);
+
+		// stepExecuted fired once per step, each with the correct step reference
+		expect(emittedSteps.length).toEqual(result.steps.length);
+		emittedSteps.forEach(({ step, index }) => expect(step).toBe(result.steps[index]));
+
+		// completed event carries the result object
+		expect(completedResult).toBe(result);
+
+		// Removed listener was never called
+		expect(removedListenerCallCount).toEqual(0);
+
+		// Re-executing a completed path throws
+		await expect(path.execute()).rejects.toThrow('Cannot execute');
+	});
+
 	test('FX step failure: failed event, state, and double-execute guard', async function() {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);

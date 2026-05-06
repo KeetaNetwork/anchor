@@ -231,9 +231,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
 	readonly conversion: ConversionInputCanonical;
+	readonly options: Pick<AccountOptions, 'account'> | undefined;
 	private readonly parent: KeetaFXAnchorClient;
 
-	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient) {
+	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient, options?: Pick<AccountOptions, 'account'>) {
 		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
 		super(parentPrivate);
 
@@ -241,6 +242,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.providerID = providerID;
 		this.conversion = conversion;
 		this.parent = parent;
+		this.options = options
 	}
 
 	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {
@@ -447,16 +449,16 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			if ('quote' in input) {
 				/* If cost is required then send the required amount as well */
 				if (input.quote.cost.amount > 0) {
-					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token);
+					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token, undefined, this.options);
 				}
 			} else if ('estimate' in input) {
 				if (input.estimate.expectedCost.max > 0) {
-					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token);
+					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token, undefined, this.options);
 				}
 			}
 
-			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
-			builder.send(liquidityProvider, sendAmount, request.from);
+			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to', undefined, this.options);
+			builder.send(liquidityProvider, sendAmount, request.from, undefined, this.options);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {
@@ -797,7 +799,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
-			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
+			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this, options));
 		});
 
 		return(providers);

@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { type lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
 import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
@@ -53,6 +53,7 @@ type AnchorChainingPathComputedPlan = {
 	steps: ChainStepResolution[];
 	totalValueIn: bigint;
 	totalValueOut: bigint;
+	options?: ComputePlanOptions | undefined;
 };
 
 type ExecutedStepFX = {
@@ -277,11 +278,14 @@ export interface AnchorChainingAssetInfo {
 type GetAccountForActionPayload = {
 	type: 'assetMovement';
 	providerMethod: 'initiateTransfer';
-	provider: AssetMovementProvider;
+	provider?: AssetMovementProvider;
+} | {
+	type: 'fx';
+	providerMethod: 'getAccountForAction';
 }
 
 interface AnchorChainingAccountOverrides {
-	account?: Account | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
+	account?: InstanceType<typeof KeetaNetLib.Account> | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
 }
 
 class AnchorGraph {
@@ -867,7 +871,7 @@ class AnchorGraph {
 	}
 }
 
-interface ComputePlanOptions {
+export interface ComputePlanOptions {
 	overrides?: AnchorChainingAccountOverrides;
 }
 
@@ -886,8 +890,8 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
-	protected async getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<Account | undefined> {
-		let found;
+	protected async getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<InstanceType<typeof KeetaNetLib.Account>> {
+		let found: InstanceType<typeof KeetaNetLib.Account> | undefined = undefined;
 
 		if (this.parent['client'].account.isAccount()) {
 			found = this.parent['client'].account;
@@ -901,6 +905,10 @@ export class AnchorChainingPath {
 			} else {
 				found = overrides.account;
 			}
+		}
+
+		if (!found) {
+			throw(new Error(`Could not get account for ${action.type} action ${action.providerMethod}`));
 		}
 
 		return(found);
@@ -1011,7 +1019,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
 							{ from: step.from.asset, to: step.to.asset, amount, affinity },
-							undefined,
+							{
+								signer: this.parent['client'].account,
+								account: await this.getAccountForAction({
+									type: 'fx',
+									providerMethod: 'getAccountForAction'
+								}, options?.overrides)
+							},
 							{ providerIDs: [ step.providerID ] }
 						);
 
@@ -1253,7 +1267,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return({
 			steps,
 			totalValueIn: firstStep.valueIn,
-			totalValueOut: lastStep.valueOut
+			totalValueOut: lastStep.valueOut,
+			options
 		});
 	}
 
@@ -1372,7 +1387,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			});
 		}
 
-		await this.parent['client'].send(sendToAddress, value, token, external);
+		const account = await this.getAccountForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#_plan?.options?.overrides);
+		await this.parent['client'].send(sendToAddress, value, token, external, { account: account });
 	}
 
 	async #pollTransferStatus(

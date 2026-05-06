@@ -1403,6 +1403,64 @@ test('FX Server Estimate to Exchange Test', async function() {
 				expect(sendTokenBalancePre - sendTokenBalancePost).toBe(testCase.expectedChange.sendToken);
 			}
 		}
+
+		{
+			/** Exchanges can be completed using funds from storage accounts */
+			const { account: storageAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+
+			await client.setInfo({
+				name: '',
+				description: 'Storage account with permissions from user account',
+				metadata: '',
+				defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT'])
+			}, { account: storageAccount });
+
+			const request = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' } as const;
+			const quote = { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1001n }
+
+			serverDoesNotRequireQuoteReturnValue.convertedAmount = quote.convertedAmount;
+			serverDoesNotRequireQuoteReturnValue.convertedAmountBound = quote.convertedAmount;
+			serverDoesNotRequireQuoteReturnValue.cost = quote.cost;
+
+			await client.send(storageAccount, 1000n, testCurrencyUSD);
+			await client.send(storageAccount, 10n, client.baseToken);
+
+			const estimates = await fxClient.getEstimates(
+				request,
+				{ account: storageAccount },
+				{ providerIDs: ['TestDoesNotRequireDoesNotIssueQuote'] }
+			);
+
+			const singleEstimate = estimates?.[0];
+			if (singleEstimate === undefined) {
+				throw(new Error('Could not get estimate from TestDoesNotRequireDoesNotIssueQuote'));
+			}
+			if (singleEstimate.estimate.canPerformExchange === false || singleEstimate.estimate.requiresQuote !== false) {
+				throw(new Error('Estimate should not require quote and should be able to perform exchange'));
+			}
+
+			await client.send(singleEstimate.estimate.account, 10000n, testCurrencyEUR);
+
+			const userFromTokenBalancePre = await client.balance(request.from);
+			const userToTokenBalancePre = await client.balance(request.to);
+			const storageFromTokenBalancePre = await client.balance(request.from, { account: storageAccount });
+			const storageToTokenBalancePre = await client.balance(request.to, { account: storageAccount });
+
+			const exchange = await singleEstimate.createExchange();
+			const completedStatus = await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
+			expect(completedStatus.status).toBe('completed');
+
+			const userFromTokenBalancePost = await client.balance(request.from);
+			const userToTokenBalancePost = await client.balance(request.to);
+			const storageFromTokenBalancePost = await client.balance(request.from, { account: storageAccount });
+			const storageToTokenBalancePost = await client.balance(request.to, { account: storageAccount });
+
+			expect(storageFromTokenBalancePre - storageFromTokenBalancePost).toBe(request.amount);
+			expect(storageToTokenBalancePost - storageToTokenBalancePre).toBe(quote.convertedAmount);
+
+			expect(userFromTokenBalancePre).toBe(userFromTokenBalancePost);
+			expect(userToTokenBalancePre).toBe(userToTokenBalancePost);
+		}
 	}
 });
 
