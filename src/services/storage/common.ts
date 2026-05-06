@@ -1303,6 +1303,15 @@ export interface MetadataPolicyContext extends PathPolicyContextBase {
 }
 
 /**
+ * Context passed to `PathPolicy.afterCommit` after a successful PUT.
+ */
+export interface AfterCommitPolicyContext extends PathPolicyContextBase {
+	operation: 'afterCommitPut';
+	metadata: StoragePutMetadata;
+	object: StorageObjectMetadata;
+}
+
+/**
  * Discriminated union of all policy validation contexts.
  * Narrows on `operation` to access operation-specific fields.
  */
@@ -1365,6 +1374,12 @@ export interface PathPolicy<TPathInfo> {
 	 * @throws Errors.InvalidMetadata if the context violates policy constraints
 	 */
 	validateContext?(parsed: TPathInfo, context: PathPolicyContext): void;
+
+	/**
+	 * OPTIONAL post-commit event hook. Invoked by the PUT route AFTER
+	 * `backend.commitUpload` succeeds and BEFORE the HTTP response is sent.
+	 */
+	afterCommit?(parsed: TPathInfo, context: AfterCommitPolicyContext): Promise<void>;
 }
 
 // #endregion

@@ -274,6 +274,13 @@ type ServiceMetadata = {
 					createSubscription?: ServiceMetadataEndpoint;
 					listSubscriptions?: ServiceMetadataEndpoint;
 					deleteSubscription?: ServiceMetadataEndpoint;
+
+					/**
+					 * Endpoint for the SEND operation, used by external
+					 * publishers to push events through this notification
+					 * anchor.
+					 */
+					send?: ServiceMetadataEndpoint;
 				};
 			}
 		};

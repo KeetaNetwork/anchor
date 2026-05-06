@@ -12,6 +12,8 @@ import type {
 	KeetaNotificationAnchorDeleteSubscriptionResponseJSON,
 	KeetaNotificationAnchorListSubscriptionsRequestJSON,
 	KeetaNotificationAnchorListSubscriptionsResponseJSON,
+	KeetaNotificationAnchorSendRequestJSON,
+	KeetaNotificationAnchorSendResponseJSON,
 	NotificationChannelType,
 	NotificationSubscriptionType
 } from './common.js';
@@ -29,6 +31,9 @@ export const assertKeetaNotificationAnchorListSubscriptionsRequestJSON: ReturnTy
 export const isKeetaNotificationAnchorCreateSubscriptionResponseJSON: (input: unknown) => input is KeetaNotificationAnchorCreateSubscriptionResponseJSON = createIs<KeetaNotificationAnchorCreateSubscriptionResponseJSON>();
 export const isKeetaNotificationAnchorDeleteSubscriptionResponseJSON: (input: unknown) => input is KeetaNotificationAnchorDeleteSubscriptionResponseJSON = createIs<KeetaNotificationAnchorDeleteSubscriptionResponseJSON>();
 export const isKeetaNotificationAnchorListSubscriptionsResponseJSON: (input: unknown) => input is KeetaNotificationAnchorListSubscriptionsResponseJSON = createIs<KeetaNotificationAnchorListSubscriptionsResponseJSON>();
+
+export const assertKeetaNotificationAnchorSendRequestJSON: ReturnType<typeof createAssertEquals<KeetaNotificationAnchorSendRequestJSON>> = createAssertEquals<KeetaNotificationAnchorSendRequestJSON>();
+export const isKeetaNotificationAnchorSendResponseJSON: (input: unknown) => input is KeetaNotificationAnchorSendResponseJSON = createIs<KeetaNotificationAnchorSendResponseJSON>();
 
 export const assertNotificationChannelType: (input: unknown) => NotificationChannelType = createAssertEquals<NotificationChannelType>();
 export const assertNotificationSubscriptionType: (input: unknown) => NotificationSubscriptionType = createAssertEquals<NotificationSubscriptionType>();

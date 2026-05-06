@@ -1,6 +1,6 @@
 import { expect, test, describe } from 'vitest';
 
-import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount, PathPolicyContext, StorageObjectVisibility } from './common.js';
+import type { KeetaStorageAnchorSearchRequest, KeetaNetAccount, PathPolicyContext, StorageObjectVisibility, AfterCommitPolicyContext } from './common.js';
 import type { KeetaAnchorStorageServerConfig } from './server.js';
 import type { TestParsedPath } from './test-utils.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
@@ -1051,6 +1051,113 @@ describe('Storage Server', function() {
 
 				const json: unknown = await response.json();
 				expectNotOk(json);
+			}));
+		});
+	});
+
+	describe('afterCommit Hook', function() {
+		type AfterCommitCall = { parsed: TestParsedPath; context: AfterCommitPolicyContext };
+		type KeyPairAccount = ReturnType<typeof KeetaNet.lib.Account.fromSeed>;
+
+		class CapturingHookPolicy extends TestPathPolicy {
+			readonly calls: AfterCommitCall[] = [];
+			readonly errorOnPath: string | null;
+
+			constructor(errorOnPath: string | null = null) {
+				super();
+				this.errorOnPath = errorOnPath;
+			}
+
+			async afterCommit(parsed: TestParsedPath, context: AfterCommitPolicyContext): Promise<void> {
+				this.calls.push({ parsed, context });
+				if (this.errorOnPath !== null && parsed.path === this.errorOnPath) {
+					throw(new Error('synthetic afterCommit failure'));
+				}
+			}
+		}
+
+		type HookTestContext = {
+			url: string;
+			backend: MemoryStorageBackend;
+			anchorAccount: KeyPairAccount;
+		};
+
+		async function withHookServer(
+			policy: TestPathPolicy,
+			fn: (ctx: HookTestContext) => Promise<void>
+		): Promise<void> {
+			const backend = new MemoryStorageBackend();
+			const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+			await using server = new KeetaNetStorageAnchorHTTPServer({
+				backend,
+				anchorAccount,
+				pathPolicies: [policy]
+			});
+			await server.start();
+			await fn({ url: server.url, backend, anchorAccount });
+		}
+
+		async function performPut(url: string, signer: KeyPairAccount, anchorAccount: KeyPairAccount, objectPath: string): Promise<Response> {
+			const payload = { mimeType: 'text/plain', data: Buffer.from('hello').toString('base64') };
+			const container = EncryptedContainer.fromPlaintext(JSON.stringify(payload), [signer, anchorAccount], { signer });
+			const binaryData = Buffer.from(await container.getEncodedBuffer());
+			const signedField = await SignData(signer, getKeetaStorageAnchorPutRequestSigningData({ path: objectPath, visibility: 'private' }));
+
+			const baseUrl = new URL(`/api/object${objectPath}`, url);
+			baseUrl.searchParams.set('visibility', 'private');
+
+			const requestUrl = addSignatureToURL(baseUrl, { signedField, account: signer });
+			const result = await fetch(requestUrl, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/octet-stream', 'Accept': 'application/json' },
+				body: bufferToArrayBuffer(binaryData)
+			});
+			return(result);
+		}
+
+		test('invokes afterCommit exactly once on successful PUT', function() {
+			const policy = new CapturingHookPolicy();
+			return(withHookServer(policy, async function({ url, anchorAccount }) {
+				const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const userPubKey = userAccount.publicKeyString.get();
+				const objectPath = `/user/${userPubKey}/file.txt`;
+
+				const response = await performPut(url, userAccount, anchorAccount, objectPath);
+				expect(response.status).toBe(200);
+				expect(policy.calls).toHaveLength(1);
+				expect(policy.calls[0]?.parsed.path).toBe(objectPath);
+				expect(policy.calls[0]?.context.operation).toBe('afterCommitPut');
+				expect(policy.calls[0]?.context.metadata.owner).toBe(userPubKey);
+				expect(policy.calls[0]?.context.object.size).toBeGreaterThan(0);
+			}));
+		});
+
+		test('afterCommit failure does not roll back PUT', function() {
+			const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const userPubKey = userAccount.publicKeyString.get();
+			const objectPath = `/user/${userPubKey}/file.txt`;
+			const policy = new CapturingHookPolicy(objectPath);
+
+			return(withHookServer(policy, async function({ url, anchorAccount, backend }) {
+				const response = await performPut(url, userAccount, anchorAccount, objectPath);
+				expect(response.status).toBe(200);
+				const stored = await backend.get(objectPath);
+				expect(stored).not.toBeNull();
+			}));
+		});
+
+		test('absence of afterCommit hook does not affect PUT (existing policies unchanged)', function() {
+			return(withHookServer(new TestPathPolicy(), async function({ url, anchorAccount, backend }) {
+				const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+				const userPubKey = userAccount.publicKeyString.get();
+				const objectPath = `/user/${userPubKey}/file.txt`;
+
+				const response = await performPut(url, userAccount, anchorAccount, objectPath);
+				expect(response.status).toBe(200);
+
+				const stored = await backend.get(objectPath);
+				expect(stored).not.toBeNull();
 			}));
 		});
 	});

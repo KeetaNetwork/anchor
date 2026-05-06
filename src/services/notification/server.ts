@@ -11,6 +11,7 @@ import type {
 	KeetaNotificationAnchorDeleteSubscriptionClientRequest,
 	KeetaNotificationAnchorDeleteSubscriptionRequest,
 	KeetaNotificationAnchorListSubscriptionsClientRequest,
+	KeetaNotificationAnchorSendClientRequest,
 	SubscriptionDetails,
 	NotificationSubscriptionArguments,
 	NotificationSubscriptionType,
@@ -27,13 +28,91 @@ import {
 	getNotificationCreateSubscriptionRequestSignable,
 	assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON,
 	getNotificationDeleteSubscriptionRequestSignable,
-	getNotificationListSubscriptionsRequestSignable
+	getNotificationListSubscriptionsRequestSignable,
+	assertKeetaNotificationAnchorSendRequestJSON,
+	getNotificationSendRequestSignable,
+	NOTIFICATION_SEND_LIMITS,
+	NOTIFICATION_SEND_NONCE_REGEX
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import * as Signing from '../../lib/utils/signing.js';
 import { parseSignatureFromURL } from '../../lib/http-server/common.js';
+import { Buffer } from '../../lib/utils/buffer.js';
+
+/**
+ * ASCII control characters (U+0000-U+001F and U+007F). Publisher-supplied
+ * SEND payload strings containing any of these MUST be rejected (not
+ * stripped — silently mutating publisher input would invalidate the
+ * publisher's signature over the payload). Rejection prevents terminal,
+ * log, and header injection in downstream consumers.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHAR_REGEX = /[\u0000-\u001F\u007F]/;
+
+function rejectControlChars(field: string, value: string): void {
+	if (CONTROL_CHAR_REGEX.test(value)) {
+		throw(new KeetaAnchorUserError(`SEND payload field "${field}" contains disallowed control characters`));
+	}
+}
+
+function validateSendKind(kind: string): void {
+	if (kind.length === 0) {
+		throw(new KeetaAnchorUserError('SEND kind MUST be non-empty'));
+	}
+
+	if (kind.length > NOTIFICATION_SEND_LIMITS.kindMaxLength) {
+		throw(new KeetaAnchorUserError(`SEND kind exceeds maximum length of ${NOTIFICATION_SEND_LIMITS.kindMaxLength}`));
+	}
+
+	rejectControlChars('kind', kind);
+}
+
+function validateSendNonce(nonce: string): void {
+	if (!NOTIFICATION_SEND_NONCE_REGEX.test(nonce)) {
+		throw(new KeetaAnchorUserError(`SEND nonce MUST match ${NOTIFICATION_SEND_NONCE_REGEX.source}`));
+	}
+}
+
+function validateSendPayload(payload: { title: string; body: string; data?: { [key: string]: string }}): void {
+	if (payload.title.length === 0) {
+		throw(new KeetaAnchorUserError('SEND payload.title MUST be non-empty'));
+	}
+
+	if (payload.title.length > NOTIFICATION_SEND_LIMITS.titleMaxLength) {
+		throw(new KeetaAnchorUserError(`SEND payload.title exceeds maximum length of ${NOTIFICATION_SEND_LIMITS.titleMaxLength}`));
+	}
+
+	rejectControlChars('payload.title', payload.title);
+
+	if (payload.body.length === 0) {
+		throw(new KeetaAnchorUserError('SEND payload.body MUST be non-empty'));
+	}
+
+	if (payload.body.length > NOTIFICATION_SEND_LIMITS.bodyMaxLength) {
+		throw(new KeetaAnchorUserError(`SEND payload.body exceeds maximum length of ${NOTIFICATION_SEND_LIMITS.bodyMaxLength}`));
+	}
+
+	rejectControlChars('payload.body', payload.body);
+
+	if (payload.data !== undefined) {
+		const entries = Object.entries(payload.data);
+		if (entries.length > NOTIFICATION_SEND_LIMITS.dataMaxEntries) {
+			throw(new KeetaAnchorUserError(`SEND payload.data exceeds maximum entries of ${NOTIFICATION_SEND_LIMITS.dataMaxEntries}`));
+		}
+
+		const serializedSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');
+		if (serializedSize > NOTIFICATION_SEND_LIMITS.dataMaxBytes) {
+			throw(new KeetaAnchorUserError(`SEND payload.data exceeds maximum serialized size of ${NOTIFICATION_SEND_LIMITS.dataMaxBytes} bytes`));
+		}
+
+		for (const [key, value] of entries) {
+			rejectControlChars(`payload.data["${key}"]`, key);
+			rejectControlChars(`payload.data["${key}"]`, value);
+		}
+	}
+}
 
 export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
 	homepage?: string | (() => Promise<string> | string);
@@ -45,6 +124,12 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServ
 		createSubscription?: (args: Required<KeetaNotificationAnchorCreateSubscriptionClientRequest>) => Promise<{ id: string; }>;
 		listSubscriptions?: (args: Required<KeetaNotificationAnchorListSubscriptionsClientRequest>) => Promise<{ subscriptions: SubscriptionDetails[]; }>;
 		deleteSubscription?: (args: Required<KeetaNotificationAnchorDeleteSubscriptionClientRequest>) => Promise<{ ok: boolean; }>;
+
+		/**
+		 * Receive a publisher-signed SEND request and dispatch the resulting
+		 * notification to all subscribers of the publisher+kind.
+		 */
+		send?: (args: Required<KeetaNotificationAnchorSendClientRequest>) => Promise<{ dispatched: boolean; }>;
 
 		supportedChannels?: SupportedChannelConfigurationMetadata;
 		supportedSubscriptions?: NotificationSubscriptionType[];
@@ -201,6 +286,14 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 							: {}),
 						...(raw.subscription.locale ? { locale: new Intl.Locale(raw.subscription.locale) } : {})
 					};
+				} else if (raw.subscription.type === 'EXTERNAL') {
+					subscription = {
+						type: 'EXTERNAL',
+						target: raw.subscription.target,
+						publisher: KeetaNet.lib.Account.fromPublicKeyString(raw.subscription.publisher),
+						...(raw.subscription.kind !== undefined ? { kind: raw.subscription.kind } : {}),
+						...(raw.subscription.locale ? { locale: new Intl.Locale(raw.subscription.locale) } : {})
+					};
 				} else {
 					throw(new KeetaAnchorUserError(`Unsupported subscription type`));
 				}
@@ -263,6 +356,47 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 						ok: true,
 						subscriptions: subscriptionsJSON
 					})),
+					contentType: 'application/json'
+				});
+			};
+		}
+
+		const sendHandler = this.notification.send;
+		if (sendHandler) {
+			routes['POST /api/send'] = async (_params, body) => {
+				const raw = assertKeetaNotificationAnchorSendRequestJSON(body);
+				if (raw.version !== 1) {
+					throw(new KeetaAnchorUserError(`Unsupported send version: ${raw.version}`));
+				}
+
+				validateSendKind(raw.kind);
+				validateSendNonce(raw.nonce);
+				validateSendPayload(raw.payload);
+
+				const account = KeetaNet.lib.Account.fromPublicKeyString(raw.account).assertAccount();
+				const recipient = KeetaNet.lib.Account.fromPublicKeyString(raw.recipient).assertAccount();
+				const request: Required<KeetaNotificationAnchorSendClientRequest> = {
+					version: raw.version,
+					account,
+					recipient,
+					kind: raw.kind,
+					payload: raw.payload,
+					nonce: raw.nonce
+				};
+
+				const verifiedSignature = await Signing.VerifySignedData(
+					account,
+					getNotificationSendRequestSignable(request),
+					raw.signed
+				);
+
+				if (!verifiedSignature) {
+					throw(new KeetaAnchorUserError('Invalid signature'));
+				}
+
+				const sendResponse = await sendHandler(request);
+				return({
+					output: JSON.stringify({ ok: true, dispatched: sendResponse.dispatched }),
 					contentType: 'application/json'
 				});
 			};
@@ -332,6 +466,10 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 
 		if (this.notification.deleteSubscription) {
 			retval.operations.deleteSubscription = { url: (new URL('/api/delete-subscription', this.url)).toString(), options: { authentication }};
+		}
+
+		if (this.notification.send) {
+			retval.operations.send = { url: (new URL('/api/send', this.url)).toString(), options: { authentication }};
 		}
 
 		if (this.notification.supportedChannels) {

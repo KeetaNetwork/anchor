@@ -696,6 +696,25 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					throw(e);
 				}
 
+				/*
+				 * Hook implementations MUST be idempotent.
+				 */
+				if (policy.afterCommit) {
+					try {
+						await policy.afterCommit(parsed, {
+							operation: 'afterCommitPut',
+							account,
+							metadata: { owner, tags, visibility },
+							object: objectMetadata
+						});
+					} catch (afterCommitError) {
+						logger?.warn('PathPolicy.afterCommit hook failed; commit retained', {
+							path: objectPath,
+							error: afterCommitError
+						});
+					}
+				}
+
 				const response: KeetaStorageAnchorPutResponse = {
 					ok: true,
 					object: objectMetadata

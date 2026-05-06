@@ -50,10 +50,27 @@ interface ReceiveFundsNotificationSubscriptionArguments extends BaseNotification
 	toAddress?: GenericAccount;
 }
 
-export type NotificationSubscriptionArguments = ReceiveFundsNotificationSubscriptionArguments;
-export type NotificationSubscriptionArgumentsJSON = ToJSONSerializable<Omit<NotificationSubscriptionArguments, 'locale'>> & {
+/**
+ * Subscription arguments for notifications produced by an external publisher.
+ */
+interface ExternalNotificationSubscriptionArguments extends BaseNotificationSubscriptionArguments<'EXTERNAL'> {
+	publisher: GenericAccount;
+	kind?: string;
+}
+
+export type NotificationSubscriptionArguments = ReceiveFundsNotificationSubscriptionArguments | ExternalNotificationSubscriptionArguments;
+
+type ReceiveFundsNotificationSubscriptionArgumentsJSON = ToJSONSerializable<Omit<ReceiveFundsNotificationSubscriptionArguments, 'locale'>> & {
 	locale?: string | undefined;
 };
+
+type ExternalNotificationSubscriptionArgumentsJSON = ToJSONSerializable<Omit<ExternalNotificationSubscriptionArguments, 'locale'>> & {
+	locale?: string | undefined;
+};
+
+export type NotificationSubscriptionArgumentsJSON =
+	| ReceiveFundsNotificationSubscriptionArgumentsJSON
+	| ExternalNotificationSubscriptionArgumentsJSON;
 export type NotificationSubscriptionType = NotificationSubscriptionArguments['type'];
 
 export type SupportedChannelConfigurationMetadata = {
@@ -186,8 +203,11 @@ export function getNotificationCreateSubscriptionRequestSignable(request: Pick<K
 
 	if (request.subscription.type === 'RECEIVE_FUNDS') {
 		parts.push(request.subscription.toAddress ?? 'NO_ADDRESS');
+	} else if (request.subscription.type === 'EXTERNAL') {
+		parts.push(request.subscription.publisher);
+		parts.push(request.subscription.kind ?? 'NO_KIND');
 	} else {
-		assertNever(request.subscription.type);
+		assertNever(request.subscription);
 	}
 
 	parts.push(request.subscription.target.provider ?? 'NO_PROVIDER');
@@ -238,17 +258,17 @@ export type SubscriptionDetailsJSON = ToJSONSerializable<Omit<SubscriptionDetail
 }
 
 export function parseSubscriptionDetailsWithID(input: SubscriptionDetailsJSON | SubscriptionDetails): SubscriptionDetails {
+	let locale: Intl.Locale | undefined;
+	if (input.subscription.locale) {
+		if (typeof input.subscription.locale === 'string') {
+			locale = new Intl.Locale(input.subscription.locale);
+		} else {
+			locale = input.subscription.locale;
+		}
+	}
+
 	let subscription: NotificationSubscriptionArguments;
 	if (input.subscription.type === 'RECEIVE_FUNDS') {
-		let locale;
-		if (input.subscription.locale) {
-			if (typeof input.subscription.locale === 'string') {
-				locale = new Intl.Locale(input.subscription.locale);
-			} else {
-				locale = input.subscription.locale;
-			}
-		}
-
 		subscription = {
 			type: 'RECEIVE_FUNDS',
 			target: input.subscription.target,
@@ -257,8 +277,16 @@ export function parseSubscriptionDetailsWithID(input: SubscriptionDetailsJSON | 
 				? { toAddress: KeetaNet.lib.Account.toAccount(input.subscription.toAddress) }
 				: {})
 		};
+	} else if (input.subscription.type === 'EXTERNAL') {
+		subscription = {
+			type: 'EXTERNAL',
+			target: input.subscription.target,
+			publisher: KeetaNet.lib.Account.toAccount(input.subscription.publisher),
+			...(locale ? { locale } : {}),
+			...(input.subscription.kind !== undefined ? { kind: input.subscription.kind } : {})
+		};
 	} else {
-		assertNever(input.subscription.type);
+		assertNever(input.subscription);
 	}
 
 	return({ id: input.id, subscription });
@@ -286,6 +314,150 @@ export function getNotificationListSubscriptionsRequestSignable(_ignore_request?
 		notificationNamespace,
 		'LIST_SUBSCRIPTIONS'
 	]);
+}
+
+/**
+ * Maximum payload field sizes for the SEND operation.
+ */
+export const NOTIFICATION_SEND_LIMITS = {
+	/**
+	 * Max characters in `payload.title`.
+	 */
+	titleMaxLength: 64,
+	/**
+	 * Max characters in `payload.body`.
+	 */
+	bodyMaxLength: 240,
+	/**
+	 * Max number of entries in `payload.data`.
+	 */
+	dataMaxEntries: 32,
+	/**
+	 * Max byte size of `payload.data` once serialized as JSON.
+	 */
+	dataMaxBytes: 4096,
+	/**
+	 * Min characters in `nonce`.
+	 */
+	nonceMinLength: 8,
+	/**
+	 * Max characters in `nonce`.
+	 */
+	nonceMaxLength: 128,
+	/**
+	 * Max characters in `kind`.
+	 */
+	kindMaxLength: 64
+} as const;
+
+/**
+ * Regex `nonce` MUST satisfy. Restricting to URL-safe ASCII keeps nonces
+ * usable as path/query components and as deterministic queue idempotency
+ * tokens without further encoding.
+ */
+// eslint-disable-next-line @typescript-eslint/no-inferrable-types
+export const NOTIFICATION_SEND_NONCE_REGEX: RegExp = /^[A-Za-z0-9._-]{8,128}$/;
+
+/**
+ * Payload of a SEND request. Publisher-supplied content delivered to the
+ * recipient's subscribed channels.
+ */
+export interface KeetaNotificationAnchorSendPayload {
+	title: string;
+	body: string;
+	data?: { [key: string]: string };
+}
+
+/**
+ * Client-side request shape for the SEND operation. The publisher (signer)
+ * is identified by `account` once populated; on the wire it is the public
+ * key string of the publisher.
+ *
+ * `version` is pinned to `1`. Future breaking changes to the SEND protocol
+ * MUST bump this and reject older versions on the server.
+ */
+export interface KeetaNotificationAnchorSendClientRequest {
+	version: 1;
+	/**
+	 * Publisher account. Optional when relying on a default account on the client.
+	 */
+	account?: Account;
+	/**
+	 * Recipient account whose subscriptions will be matched.
+	 */
+	recipient: Account;
+	/**
+	 * Publisher-defined event class (e.g. `'inbox'`, `'order_shipped'`).
+	 */
+	kind: string;
+	/**
+	 * Publisher-supplied notification payload. Validated against {@link NOTIFICATION_SEND_LIMITS}.
+	 */
+	payload: KeetaNotificationAnchorSendPayload;
+	/**
+	 * Publisher-controlled idempotency token. MUST satisfy
+	 * {@link NOTIFICATION_SEND_NONCE_REGEX}. Two SEND calls with the same
+	 * `(publisher, recipient, kind, payload, nonce)` MUST produce at most
+	 * one delivery.
+	 */
+	nonce: string;
+}
+
+export interface KeetaNotificationAnchorSendRequest extends KeetaNotificationAnchorSendClientRequest {
+	account: Account;
+	signed: HTTPSignedField;
+}
+
+export type KeetaNotificationAnchorSendRequestJSON = ToJSONSerializable<KeetaNotificationAnchorSendRequest>;
+
+export type KeetaNotificationAnchorSendResponse = ({
+	ok: true;
+	/** True if at least one channel target was enqueued for delivery. */
+	dispatched: boolean;
+}) | ({
+	ok: false;
+	error: string;
+});
+
+export type KeetaNotificationAnchorSendResponseJSON = ToJSONSerializable<KeetaNotificationAnchorSendResponse>;
+
+/**
+ * Build the canonical bytes a publisher signs for a SEND request. Binds
+ * `version`, `recipient`, `kind`, `nonce`, and the full `payload` so that
+ * neither party can mutate any of those fields without invalidating the
+ * signature.
+ *
+ * Data entries are sorted by key for determinism.
+ */
+export function getNotificationSendRequestSignable(request: Pick<KeetaNotificationAnchorSendClientRequest, 'version' | 'recipient' | 'kind' | 'payload' | 'nonce'>): Signable {
+	const parts: Signable = [
+		notificationNamespace,
+		'SEND',
+		String(request.version),
+		request.recipient,
+		request.kind,
+		request.nonce,
+		request.payload.title,
+		request.payload.body
+	];
+
+	const data = request.payload.data;
+	if (data === undefined) {
+		parts.push('NO_DATA');
+	} else {
+		parts.push('BEGIN_DATA');
+		const keys = Object.keys(data).sort();
+		for (const key of keys) {
+			const value = data[key];
+			if (value === undefined) {
+				continue;
+			}
+			parts.push(key, value);
+		}
+		parts.push('END_DATA');
+	}
+
+	return(parts);
 }
 
 interface KeetaNotificationAnchorMethodNotSupportedErrorProperties {

@@ -1,9 +1,59 @@
 import type { Account } from "@keetanetwork/keetanet-client/lib/account.js";
-import { KeetaAnchorUserError } from "../error.js";
+import { KeetaAnchorError, KeetaAnchorUserError } from "../error.js";
 import { KeetaNet } from "../../client/index.js";
 import { createAssertEquals } from "typia";
 
 export type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>;
+
+/**
+ * Error thrown by anchor HTTP client wrappers when an outbound HTTP request
+ * receives a non-2xx response.
+ */
+export class KeetaAnchorHTTPRequestError extends KeetaAnchorError {
+	static override readonly name: string = 'KeetaAnchorHTTPRequestError';
+	private readonly keetaAnchorHTTPRequestErrorObjectTypeID!: string;
+	private static readonly keetaAnchorHTTPRequestErrorObjectTypeID = 'a3f9c1d2-7b4e-4a6c-9d1f-3e5b8c0a2d4f';
+	readonly httpStatus: number;
+	override readonly cause?: unknown;
+
+	constructor(httpStatus: number, message: string, cause?: unknown) {
+		super(message);
+		this.httpStatus = httpStatus;
+		this.retryable = httpStatus === 429 || (httpStatus >= 500 && httpStatus < 600);
+
+		if (cause !== undefined) {
+			this.cause = cause;
+		}
+
+		Object.defineProperty(this, 'keetaAnchorHTTPRequestErrorObjectTypeID', {
+			value: KeetaAnchorHTTPRequestError.keetaAnchorHTTPRequestErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaAnchorHTTPRequestError {
+		return(this.hasPropWithValue(input, 'keetaAnchorHTTPRequestErrorObjectTypeID', KeetaAnchorHTTPRequestError.keetaAnchorHTTPRequestErrorObjectTypeID));
+	}
+}
+
+/**
+ * Classify whether an error from an outbound HTTP request is retryable.
+ */
+export function isRetryableHttpError(input: unknown): boolean {
+	if (KeetaAnchorError.isInstance(input)) {
+		return(input.retryable);
+	}
+	if (input instanceof TypeError) {
+		return(true);
+	}
+	if (input instanceof Error) {
+		if (input.name === 'AbortError' || input.name === 'TimeoutError' || input.name === 'NetworkError') {
+			return(true);
+		}
+	}
+
+	return(false);
+}
 
 export interface HTTPSignedField {
 	nonce: string;
