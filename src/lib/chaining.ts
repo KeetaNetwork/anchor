@@ -1160,7 +1160,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
 
-						if (!usingInstruction.totalReceiveAmount) {
+						let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
+						if (totalReceiveAmount === undefined && 'value' in usingInstruction) {
+							totalReceiveAmount = usingInstruction.value;
+						}
+						if (totalReceiveAmount === undefined) {
 							throw(new Error(`totalReceiveAmount must be defined for chaining`));
 						}
 
@@ -1171,7 +1175,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							usingInstruction: usingInstruction,
 							transfer: transfer,
 							sendingTo: sendingToType,
-							valueOut: BigInt(usingInstruction.totalReceiveAmount)
+							valueOut: BigInt(totalReceiveAmount)
 						})
 					} else if (step.type === 'keetaSend') {
 						if (this.path.length !== 1) {
