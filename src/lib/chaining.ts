@@ -1142,7 +1142,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								type: 'assetMovement',
 								providerMethod: 'initiateTransfer',
 								provider: providers[0]
-							}, options?.overrides),
+							}),
 							asset: assetPair,
 							from: { location: step.from.location },
 							to: {

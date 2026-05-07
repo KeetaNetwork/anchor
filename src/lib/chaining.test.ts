@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
@@ -733,11 +733,11 @@ async function createChainingTestHarness() {
 		return(path);
 	};
 
-	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo') => {
+	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo', options?: ComputePlanOptions) => {
 		const plans = await anchorChaining.getPlans({
 			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
-		});
+		}, options);
 
 		const path = plans?.find(p => p.plan.steps.some(n => n.type === 'fx' && n.step.providerID === fxProviderID));
 
@@ -1109,18 +1109,8 @@ describe('AnchorChainingPath execute', function() {
 		const userSendTokenBalancePre = await h.client.balance(h.tokens.USDC);
 		const storageSendTokenBalancePre = await h.client.balance(h.tokens.USDC, { account: storageAccount });
 		const userReceiveTokenBalancePre = await h.client.balance(h.tokens.EURC);
-		const storageReceiveTokenBalancePre = await h.client.balance(h.tokens.EURC, { account: storageAccount });
 
-		// Same location FX: storage accounts on AM are not supported
-		const paths = await h.anchorChaining.getPlans({
-			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
-			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
-		}, { overrides: { account: storageAccount }});
-
-		const path = paths?.[0];
-		if (!path) {
-			throw(new Error(`No path found`));
-		}
+		const path = await h.getPlanVia('FXOne', { overrides: { account: storageAccount }});
 
 		expect(path.state.status).toEqual('idle');
 
@@ -1141,13 +1131,13 @@ describe('AnchorChainingPath execute', function() {
 
 		// Plan totals from FX rate (0.88 forward)
 		expect(path.plan.totalValueIn).toEqual(100n);
-		expect(path.plan.totalValueOut).toEqual(88n);
+		expect(path.plan.totalValueOut).toEqual(78n);
 
 		const result = await path.execute();
 
 		// Step structure and server-side verification
-		expect(result.steps.length).toEqual(1);
-		const [step0] = result.steps;
+		expect(result.steps.length).toEqual(2);
+		const [step0, step1] = result.steps;
 		expect(step0?.type).toEqual('fx');
 		if (step0?.type === 'fx') {
 			expect(step0.exchange.exchange.exchangeID).toBeTruthy();
@@ -1158,6 +1148,14 @@ describe('AnchorChainingPath execute', function() {
 			}
 		}
 
+		expect(step1?.type).toEqual('assetMovement');
+		if (step1?.type === 'assetMovement') {
+			expect(step1.plan.transfer.transferId).toBeTruthy();
+			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
+			const transferStatus = await step1.plan.transfer.getTransferStatus();
+			expect(transferStatus.transaction.status).toEqual('COMPLETED');
+			expect(transferStatus.transaction.to.value).toEqual('78');
+		}
 		// State transitions: idle -> executing -> completed
 		expect(path.state.status).toEqual('completed');
 		expect(stateHistory[0]).toEqual('executing');
@@ -1169,10 +1167,8 @@ describe('AnchorChainingPath execute', function() {
 		const userSendTokenBalancePost = await h.client.balance(h.tokens.USDC);
 		const storageSendTokenBalancePost = await h.client.balance(h.tokens.USDC, { account: storageAccount });
 		const userReceiveTokenBalancePost = await h.client.balance(h.tokens.EURC);
-		const storageReceiveTokenBalancePost = await h.client.balance(h.tokens.EURC, { account: storageAccount });
 
 		expect(storageSendTokenBalancePre - storageSendTokenBalancePost).toEqual(100n);
-		expect(storageReceiveTokenBalancePost - storageReceiveTokenBalancePre).toEqual(88n);
 		expect(userSendTokenBalancePre).toEqual(userSendTokenBalancePost);
 		expect(userReceiveTokenBalancePre).toEqual(userReceiveTokenBalancePost);
 
