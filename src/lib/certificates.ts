@@ -7,7 +7,8 @@ import type { CertificateAttributeValue } from '../services/kyc/iso20022.generat
 import { CertificateAttributeOIDDB, CertificateAttributeSchema } from '../services/kyc/iso20022.generated.js';
 import { lookupByOID } from './utils/oid.js';
 import { EncryptedContainer } from './encrypted-container.js';
-import { assertSharableCertificateAttributesContentsSchema } from './certificates.generated.js';
+import { assertSharableCertificateAttributesContentsSchema, assertKeetaAnchorCertificateRequiredErrorJSONProperties } from './certificates.generated.js';
+import { KeetaAnchorUserError } from './error.js';
 import { checkHashWithOID } from './utils/external.js';
 import { SensitiveAttribute, encodeForSensitive, encodeAttribute, type CertificateAttributeNames } from './sensitive-attribute.js';
 export { SensitiveAttribute } from './sensitive-attribute.js';
@@ -1232,6 +1233,219 @@ export class SharableCertificateAttributes {
 
 // @ts-ignore
 Certificate.SharableAttributes = SharableCertificateAttributes;
+
+/**
+ * Verify that the supplied account has at least one on-chain certificate
+ * whose chain terminates at one of the supplied trusted issuers.
+ */
+export type CertificateChainStatus = 'trusted' | 'no-certs' | 'untrusted';
+
+export async function verifyAccountCertificateChain(args: {
+	account: KeetaNetAccount;
+	client: InstanceType<typeof KeetaNetClient.Client>;
+	trustedIssuers: Certificate[];
+}): Promise<CertificateChainStatus> {
+	const { account, client, trustedIssuers } = args;
+	const records = await client.getAllCertificates(account);
+	if (records.length === 0) {
+		return('no-certs');
+	}
+
+	if (trustedIssuers.length === 0) {
+		return('untrusted');
+	}
+
+	const rootSet = new Set<BaseCertificate>(trustedIssuers);
+	for (const record of records) {
+		let intermediate: Set<BaseCertificate>;
+		if (record.intermediates === null) {
+			intermediate = new Set<BaseCertificate>();
+		} else {
+			intermediate = new Set<BaseCertificate>(record.intermediates.getCertificates());
+		}
+
+		let candidate: Certificate;
+		try {
+			candidate = new Certificate(record.certificate.toPEM(), {
+				store: { root: rootSet, intermediate }
+			});
+		} catch {
+			continue;
+		}
+
+		if (candidate.trusted) {
+			return('trusted');
+		}
+	}
+
+	return('untrusted');
+}
+
+// #region Server Gate
+
+/**
+ * Failure mode for the certificate-chain gate.
+ */
+export type KeetaAnchorCertificateRequiredKind = 'missing' | 'untrusted';
+
+export interface KeetaAnchorCertificateRequiredErrorJSONProperties {
+	/**
+	 * Outer array: any-of (OR). Inner array: all-of (AND).
+	 */
+	acceptedIssuers: { name: string; value: string; }[][];
+	kind: KeetaAnchorCertificateRequiredKind;
+}
+
+type KeetaAnchorCertificateRequiredErrorJSON =
+	ReturnType<KeetaAnchorUserError['toJSON']>
+	& KeetaAnchorCertificateRequiredErrorJSONProperties;
+
+export class KeetaAnchorCertificateRequiredError extends KeetaAnchorUserError implements KeetaAnchorCertificateRequiredErrorJSONProperties {
+	static override readonly name: string = 'KeetaAnchorCertificateRequiredError';
+	private readonly KeetaAnchorCertificateRequiredErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorCertificateRequiredErrorObjectTypeID = 'b8c5b6df-2f4d-4f60-9d6c-2f4d8a6b1f01';
+
+	readonly acceptedIssuers: { name: string; value: string; }[][];
+	readonly kind: KeetaAnchorCertificateRequiredKind;
+
+	constructor(args: KeetaAnchorCertificateRequiredErrorJSONProperties, message?: string) {
+		super(message ?? KeetaAnchorCertificateRequiredError.defaultMessage(args.kind));
+		if (args.kind === 'missing') {
+			this.statusCode = 401;
+		} else {
+			this.statusCode = 403;
+		}
+
+		Object.defineProperty(this, 'KeetaAnchorCertificateRequiredErrorObjectTypeID', {
+			value: KeetaAnchorCertificateRequiredError.KeetaAnchorCertificateRequiredErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.acceptedIssuers = args.acceptedIssuers;
+		this.kind = args.kind;
+	}
+
+	private static defaultMessage(kind: KeetaAnchorCertificateRequiredKind): string {
+		if (kind === 'missing') {
+			return('No certificate has been published for the signing account');
+		}
+
+		return('Published certificates do not chain to an accepted issuer');
+	}
+
+	static override isInstance(input: unknown): input is KeetaAnchorCertificateRequiredError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorCertificateRequiredErrorObjectTypeID', KeetaAnchorCertificateRequiredError.KeetaAnchorCertificateRequiredErrorObjectTypeID));
+	}
+
+	override asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				data: { acceptedIssuers: this.acceptedIssuers, kind: this.kind },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	override toJSON(): KeetaAnchorCertificateRequiredErrorJSON {
+		return({
+			...super.toJSON(),
+			acceptedIssuers: this.acceptedIssuers,
+			kind: this.kind
+		});
+	}
+
+	static override async fromJSON(input: unknown): Promise<KeetaAnchorCertificateRequiredError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAnchorCertificateRequiredError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAnchorCertificateRequiredErrorJSONProperties(other.data);
+		const error = new this({ acceptedIssuers: parsed.acceptedIssuers, kind: parsed.kind }, message);
+
+		error.restoreFromJSON(other);
+
+		return(error);
+	}
+}
+
+/**
+ * Public configuration for the on-chain certificate-chain gate. Pass on a
+ * server config (`requireCertificateChain`) to require that every authenticated
+ * caller has at least one published certificate chaining to one of `trustedIssuers`.
+ */
+export interface CertificateChainConfig {
+	trustedIssuers: Certificate[];
+	client: InstanceType<typeof KeetaNetClient.Client>;
+}
+
+/**
+ * Post-validation form of {@link CertificateChainConfig}. `acceptedIssuerDNs`
+ * is precomputed once so error payloads don't re-walk `trustedIssuers`.
+ */
+export interface ResolvedCertificateChainRequirement {
+	readonly trustedIssuers: Certificate[];
+	readonly client: InstanceType<typeof KeetaNetClient.Client>;
+	readonly acceptedIssuerDNs: { name: string; value: string; }[][];
+}
+
+/**
+ * Validate and freeze a `CertificateChainConfig`.
+ */
+export function resolveCertificateChainConfig(config: CertificateChainConfig | undefined): ResolvedCertificateChainRequirement | undefined {
+	if (config === undefined) {
+		return(undefined);
+	}
+	if (config.trustedIssuers.length === 0) {
+		throw(new Error('requireCertificateChain.trustedIssuers must contain at least one issuer'));
+	}
+
+	return({
+		trustedIssuers: config.trustedIssuers,
+		client: config.client,
+		acceptedIssuerDNs: config.trustedIssuers.map(function(cert) { return(cert.subjectDN); })
+	});
+}
+
+/**
+ * Verify the signing account's on-chain certificate chain against the
+ * resolved requirement.
+ */
+export async function assertAccountCertificateChain(account: KeetaNetAccount, requirement: ResolvedCertificateChainRequirement | undefined): Promise<void> {
+	if (requirement === undefined) {
+		return;
+	}
+
+	const status = await verifyAccountCertificateChain({
+		account,
+		client: requirement.client,
+		trustedIssuers: requirement.trustedIssuers
+	});
+	if (status === 'trusted') {
+		return;
+	}
+
+	let kind: KeetaAnchorCertificateRequiredKind;
+	if (status === 'no-certs') {
+		kind = 'missing';
+	} else {
+		kind = 'untrusted';
+	}
+
+	throw(new KeetaAnchorCertificateRequiredError({ acceptedIssuers: requirement.acceptedIssuerDNs, kind }));
+}
+
+// #endregion
 
 /** @internal */
 export const _Testing = {

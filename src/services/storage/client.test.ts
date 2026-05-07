@@ -1,15 +1,19 @@
 import { test, expect, describe, assert } from 'vitest';
+
+import type { KeetaAnchorStorageServerConfig } from './server.js';
+import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
+import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+import type { KeetaStorageAnchorProvider } from './client.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node.js';
-import KeetaAnchorResolver from '../../lib/resolver.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
-import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './test-utils.js';
-import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
-import { parseContainerPayload } from './common.js';
-import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+import { parseContainerPayload, Errors } from './common.js';
 import { testPathPolicy } from './test-utils.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import { Certificate } from '../../lib/certificates.js';
+import KeetaAnchorResolver from '../../lib/resolver.js';
+import KeetaStorageAnchorClient from './client.js';
 
 // #region Test Harness
 
@@ -18,6 +22,97 @@ type Account = InstanceType<typeof KeetaNet.lib.Account>;
 /** Generate a random seed for test isolation */
 function randomSeed() {
 	return(KeetaNet.lib.Account.generateRandomSeed());
+}
+
+type CertBuilderParams = NonNullable<ConstructorParameters<typeof Certificate.Builder>[0]>;
+type CertBuilderRequired = Required<CertBuilderParams>;
+
+/**
+ * Build a certificate.
+ */
+async function buildCert(opts: {
+	issuer: CertBuilderRequired['issuer'];
+	subject: CertBuilderRequired['subject'];
+	issuerDN?: CertBuilderRequired['issuerDN'];
+	serial: CertBuilderRequired['serial'];
+	validForMs: number;
+	isCA?: CertBuilderRequired['isCA'];
+}): Promise<Certificate> {
+	const now = Date.now();
+	const builderParams: CertBuilderParams = {
+		issuer: opts.issuer,
+		subject: opts.subject,
+		serial: opts.serial,
+		validFrom: new Date(now - 60_000),
+		validTo: new Date(now + opts.validForMs)
+	};
+	if (opts.issuerDN !== undefined) {
+		builderParams.issuerDN = opts.issuerDN;
+	}
+	if (opts.isCA !== undefined) {
+		builderParams.isCA = opts.isCA;
+	}
+
+	return(await new Certificate.Builder(builderParams).build());
+}
+
+interface BuildChainBaseOpts {
+	rootIssuer: CertBuilderRequired['issuer'];
+	leafSubject: CertBuilderRequired['subject'];
+}
+interface BuildChainWithIntermediateOpts extends BuildChainBaseOpts {
+	intermediateIssuer: CertBuilderRequired['issuer'];
+}
+interface BuildChainResult {
+	root: Certificate;
+	leaf: Certificate;
+}
+interface BuildChainWithIntermediateResult extends BuildChainResult {
+	intermediate: Certificate;
+}
+
+/**
+ * Mint a self-signed root, an optional intermediate CA, and a leaf certificate.
+ */
+async function buildChain(opts: BuildChainBaseOpts): Promise<BuildChainResult>;
+async function buildChain(opts: BuildChainWithIntermediateOpts): Promise<BuildChainWithIntermediateResult>;
+async function buildChain(opts: BuildChainBaseOpts | BuildChainWithIntermediateOpts): Promise<BuildChainResult | BuildChainWithIntermediateResult> {
+	const oneDayMs = 1000 * 60 * 60 * 24;
+
+	const root = await buildCert({
+		issuer: opts.rootIssuer,
+		subject: opts.rootIssuer,
+		serial: 1,
+		validForMs: oneDayMs * 365
+	});
+
+	if ('intermediateIssuer' in opts) {
+		const intermediate = await buildCert({
+			issuer: opts.rootIssuer,
+			subject: opts.intermediateIssuer,
+			issuerDN: root.subjectDN,
+			serial: 2,
+			validForMs: oneDayMs * 180,
+			isCA: true
+		});
+		const leaf = await buildCert({
+			issuer: opts.intermediateIssuer,
+			subject: opts.leafSubject,
+			issuerDN: intermediate.subjectDN,
+			serial: 3,
+			validForMs: oneDayMs
+		});
+		return({ root, intermediate, leaf });
+	}
+
+	const leaf = await buildCert({
+		issuer: opts.rootIssuer,
+		subject: opts.leafSubject,
+		issuerDN: root.subjectDN,
+		serial: 2,
+		validForMs: oneDayMs
+	});
+	return({ root, leaf });
 }
 
 interface ClientTestContext {
@@ -40,6 +135,14 @@ type ClientTestFunction = (context: ClientTestContext) => Promise<void>;
 
 interface WithClientOptions {
 	providerName?: string;
+	/**
+	 * When true, server requires a cert chain. The harness mints
+	 * `root CA -> intermediate CA -> leaf(account)` and publishes the leaf
+	 * (with the intermediate as the supplied chain) on-chain for `account`.
+	 * The trust set is `[rootCA]`, so verification succeeds via the
+	 * supplied intermediate.
+	 */
+	useCertChain?: boolean;
 }
 
 /**
@@ -56,11 +159,26 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 
 	const backend = new MemoryStorageBackend();
 
-	await using server = new KeetaNetStorageAnchorHTTPServer({
+	const serverConfig: KeetaAnchorStorageServerConfig = {
 		backend,
 		anchorAccount,
 		pathPolicies: [testPathPolicy]
-	});
+	};
+
+	if (options.useCertChain) {
+		const { root, intermediate, leaf } = await buildChain({
+			rootIssuer: KeetaNet.lib.Account.fromSeed(seed, 200),
+			intermediateIssuer: KeetaNet.lib.Account.fromSeed(seed, 201),
+			leafSubject: account
+		});
+
+		const bundle = new KeetaNet.lib.Utils.Certificate.CertificateBundle([intermediate]);
+		await userClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, leaf, bundle);
+
+		serverConfig.requireCertificateChain = { trustedIssuers: [root], client: userClient.client };
+	}
+
+	await using server = new KeetaNetStorageAnchorHTTPServer(serverConfig);
 
 	await server.start();
 
@@ -141,7 +259,7 @@ describe('Storage Client - Provider Discovery', function() {
 });
 
 describe('Storage Client - Private Object CRUD', function() {
-	test('put and get private object with encrypted container', function() {
+	test('put and get private object with encrypted container (cert-chain enforced)', function() {
 		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
 			const testData = Buffer.from('Hello, World!');
 			const path = makePath('test.txt');
@@ -165,7 +283,46 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Hello, World!');
 			expect(getResult?.mimeType).toBe('text/plain');
-		}));
+
+			/*
+			 * An account without a published cert chain is rejected with 401.
+			 */
+			const nonCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			await expect(provider.get({ path, account: nonCertAccount }))
+				.rejects.toSatisfy(function(error: unknown) {
+					return(Errors.CertificateRequired.isInstance(error) && error.kind === 'missing' && error.statusCode === 401);
+				});
+		}, { useCertChain: true }));
+	});
+
+	test('cert-chain enforcement rejects account whose cert does not chain to a trusted issuer (403)', function() {
+		return(withClient(randomSeed(), async function({ provider, userClient, makePath }) {
+			const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const untrustedRootIssuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+			const { leaf: untrustedLeaf } = await buildChain({
+				rootIssuer: untrustedRootIssuer,
+				leafSubject: otherAccount
+			});
+
+			const otherUserClient = new KeetaNet.UserClient({
+				client: userClient.client,
+				signer: otherAccount,
+				usePublishAid: false,
+				network: userClient.network,
+				networkAlias: 'test'
+			});
+			await otherUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, untrustedLeaf, null);
+
+			/*
+			 * An account with a cert chain that does not chain to a trusted issuer is rejected with 403.
+			 */
+			const path = makePath('any.txt');
+			await expect(provider.get({ path, account: otherAccount }))
+				.rejects.toSatisfy(function(error: unknown) {
+					return(Errors.CertificateRequired.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
+				});
+		}, { useCertChain: true }));
 	});
 
 	test('delete removes object', function() {

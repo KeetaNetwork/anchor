@@ -1,6 +1,7 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { NamespaceValidator } from './lib/validators.js';
+import type { ResolvedCertificateChainRequirement } from '../../lib/certificates.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import { KeetaNet } from '../../client/index.js';
 import {
@@ -44,6 +45,7 @@ import {
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
+import { assertAccountCertificateChain } from '../../lib/certificates.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators } from './lib/validators.js';
@@ -136,7 +138,8 @@ function parsePath(
  */
 async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
 	request: T,
-	getSigningData: (req: T) => Signable
+	getSigningData: (req: T) => Signable,
+	certificateChain?: ResolvedCertificateChainRequirement
 ): Promise<Account> {
 	if (!request.account || !request.signed) {
 		throw(new KeetaAnchorUserError('Authentication required'));
@@ -150,6 +153,8 @@ async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
+
+	await assertAccountCertificateChain(account, certificateChain);
 
 	return(account);
 }
@@ -172,7 +177,8 @@ async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
 async function verifyURLAuth<T>(
 	url: URL | string,
 	getSigningData: (req: T) => Signable,
-	buildRequest: (accountPubKey: string) => T
+	buildRequest: (accountPubKey: string) => T,
+	certificateChain?: ResolvedCertificateChainRequirement
 ): Promise<Account> {
 	let urlString: string;
 	if (typeof url === 'string') {
@@ -193,6 +199,8 @@ async function verifyURLAuth<T>(
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
+
+	await assertAccountCertificateChain(parsed.account, certificateChain);
 
 	return(parsed.account);
 }
@@ -241,14 +249,15 @@ async function authorizeURLAccess<T>(
 	url: URL | string,
 	operation: StorageOperation,
 	getSigningData: (req: T) => Signable,
-	buildRequest: (path: string, accountPubKey: string) => T
+	buildRequest: (path: string, accountPubKey: string) => T,
+	certificateChain?: ResolvedCertificateChainRequirement
 ): Promise<{ account: Account; objectPath: string; policy: PathPolicy<unknown>; parsed: unknown }> {
 	const objectPath = extractObjectPath(params);
 	const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
 	const account = await verifyURLAuth(url, getSigningData, function(pubKey) {
 		return(buildRequest(objectPath, pubKey));
-	});
+	}, certificateChain);
 
 	if (!policy.checkAccess(account, parsed, operation)) {
 		throw(new Errors.AccessDenied('Can only access your own namespace'));
@@ -407,7 +416,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly authenticatedCorsOrigin: string;
 	readonly pathPolicies: PathPolicy<unknown>[];
 	readonly tagValidation: Required<NonNullable<KeetaAnchorStorageServerConfig['tagValidation']>>;
-
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
 
@@ -473,6 +481,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const publicCorsOrigin = this.publicCorsOrigin;
 		const authenticatedCorsOrigin = this.authenticatedCorsOrigin;
 		const pathPolicies = this.pathPolicies;
+		const requireCertificateChain = this.resolvedCertificateChainRequirement;
 		const tagValidation = this.tagValidation;
 		const logger = this.logger;
 
@@ -596,7 +605,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				// Verify signature
 				const account = await verifyURLAuth(url, getKeetaStorageAnchorPutRequestSigningData, function() {
 					return({ path: objectPath, visibility, tags: rawTags });
-				});
+				}, requireCertificateChain);
 
 				validateTags(rawTags);
 				const tags = rawTags;
@@ -715,7 +724,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				getKeetaStorageAnchorGetRequestSigningData,
 				function(path, pubKey) {
 					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -745,7 +755,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				getKeetaStorageAnchorDeleteRequestSigningData,
 				function(path, pubKey) {
 					return({ path, account: pubKey });
-				}
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -771,7 +782,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				getKeetaStorageAnchorGetRequestSigningData,
 				function(path, pubKey) {
 					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -792,7 +804,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				visibility: request.visibility,
 				tags: request.tags
 			});
-			const account = await verifyBodyAuth(request, function() { return(signable); });
+			const account = await verifyBodyAuth(request, function() {
+				return(signable);
+			}, requireCertificateChain);
 
 			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'updateMetadata');
 
@@ -822,7 +836,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// POST /api/search - Search for objects
 		routes['POST /api/search'] = async function(_params, postData) {
 			const request = assertKeetaStorageAnchorSearchRequest(postData);
-			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
+			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData, requireCertificateChain);
 			const accountPubKey = account.publicKeyString.get();
 
 			// Check if searching for public objects outside namespace
@@ -866,7 +880,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			const account = await verifyURLAuth(
 				url,
 				getKeetaStorageAnchorQuotaRequestSigningData,
-				function() { return({}); }
+				function() { return({}); },
+				requireCertificateChain
 			);
 
 			// Get current usage from backend and compute remaining using per-user or global limits
