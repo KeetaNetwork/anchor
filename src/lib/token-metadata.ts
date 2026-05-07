@@ -22,7 +22,7 @@ function parseDecimalPlaces(input: number | string): number {
 		value = Number(value);
 	}
 
-	if (Number.isFinite(value) || value < 0 || value > 1024 || !Number.isInteger(value)) {
+	if (!Number.isFinite(value) || value < 0 || value > 1024 || !Number.isInteger(value)) {
 		valid = false;
 	}
 
