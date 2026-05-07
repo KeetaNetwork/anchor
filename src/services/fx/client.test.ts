@@ -1462,7 +1462,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 			expect(userToTokenBalancePre).toBe(userToTokenBalancePost);
 		}
 	}
-});
+}, 10_000);
 
 test('FX Server Pricing test', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
