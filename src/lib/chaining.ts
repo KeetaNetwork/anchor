@@ -284,8 +284,10 @@ type GetAccountForActionPayload = {
 	providerMethod: 'getAccountForAction';
 }
 
+type AccountLike = InstanceType<typeof KeetaNetLib.Account> | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
 interface AnchorChainingAccountOverrides {
-	account?: InstanceType<typeof KeetaNetLib.Account> | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
+	account?: AccountLike;
+	signer?: AccountLike;
 }
 
 class AnchorGraph {
@@ -890,7 +892,7 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
-	protected async getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<InstanceType<typeof KeetaNetLib.Account>> {
+	protected async getAccountLike(action: GetAccountForActionPayload, override?: AccountLike): Promise<InstanceType<typeof KeetaNetLib.Account>> {
 		let found: InstanceType<typeof KeetaNetLib.Account> | undefined = undefined;
 
 		if (this.parent['client'].account.isAccount()) {
@@ -899,11 +901,11 @@ export class AnchorChainingPath {
 			found = this.parent['client'].signer;
 		}
 
-		if (overrides?.account) {
-			if (typeof overrides.account === 'function') {
-				found = await overrides.account(action);
+		if (override) {
+			if (typeof override === 'function') {
+				found = await override(action);
 			} else {
-				found = overrides.account;
+				found = override;
 			}
 		}
 
@@ -912,6 +914,15 @@ export class AnchorChainingPath {
 		}
 
 		return(found);
+	}
+
+	protected async getAccountsForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; signer: InstanceType<typeof KeetaNetLib.Account> }> {
+		const [signer, account] = await Promise.all([
+			await this.getAccountLike(action, overrides?.signer),
+			await this.getAccountLike(action, overrides?.account)
+		]);
+
+		return({ signer, account });
 	}
 }
 
@@ -1017,15 +1028,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							assertNever(affinity);
 						}
 
+						const fxAccountOptions = await this.getAccountsForAction({
+							type: 'fx',
+							providerMethod: 'getAccountForAction'
+						}, options?.overrides);
+
 						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
 							{ from: step.from.asset, to: step.to.asset, amount, affinity },
-							{
-								signer: this.parent['client'].account,
-								account: await this.getAccountForAction({
-									type: 'fx',
-									providerMethod: 'getAccountForAction'
-								}, options?.overrides)
-							},
+							fxAccountOptions,
 							{ providerIDs: [ step.providerID ] }
 						);
 
@@ -1136,13 +1146,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								depositValue = previous.valueOut;
 							}
 						}
+						const { signer } = await this.getAccountsForAction({
+							type: 'assetMovement',
+							providerMethod: 'initiateTransfer',
+							provider: providers[0]
+						}, options?.overrides);
 
 						const transfer = await providers[0].initiateTransfer({
-							account: await this.getAccountForAction({
-								type: 'assetMovement',
-								providerMethod: 'initiateTransfer',
-								provider: providers[0]
-							}),
+							account: signer,
 							asset: assetPair,
 							from: { location: step.from.location },
 							to: {
@@ -1391,8 +1402,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			});
 		}
 
-		const account = await this.getAccountForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#_plan?.options?.overrides);
-		await this.parent['client'].send(sendToAddress, value, token, external, { account: account });
+		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#_plan?.options?.overrides);
+		await this.parent['client'].send(sendToAddress, value, token, external, { account });
 	}
 
 	async #pollTransferStatus(
