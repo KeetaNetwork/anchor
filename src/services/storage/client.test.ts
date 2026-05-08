@@ -325,6 +325,28 @@ describe('Storage Client - Private Object CRUD', function() {
 		}, { useCertChain: true }));
 	});
 
+	test('cert-chain enforcement does not gate pre-signed public URLs (anonymous fetch)', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount, makePath }) {
+			const path = makePath('public.txt');
+			const data = Buffer.from('public via signed url under cert gate');
+
+			await provider.put({
+				path,
+				data,
+				mimeType: 'text/plain',
+				visibility: 'public',
+				account,
+				anchorAccount
+			});
+
+			const publicUrl = await provider.getPublicUrl({ path, ttl: 3600, account });
+			const response = await fetch(publicUrl);
+
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe('public via signed url under cert gate');
+		}, { useCertChain: true }));
+	});
+
 	test('delete removes object', function() {
 		return(withClient(randomSeed(), async function({ provider, account, makePath, putText }) {
 			const path = makePath('to-delete.txt');
