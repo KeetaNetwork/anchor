@@ -1416,7 +1416,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		while (true) {
 			const status = await transfer.getTransferStatus();
-			if (status.transaction.status === 'COMPLETED') {
+			if (status.transaction.status === 'COMPLETE') {
 				return(status);
 			}
 			if (Date.now() >= deadline) {
