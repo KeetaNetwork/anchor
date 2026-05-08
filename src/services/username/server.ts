@@ -316,6 +316,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 	}
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
+		const authCertificateCa = this.authCertificateCaPEM();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
 			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()
 		};
@@ -345,7 +346,8 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 
 		return({
 			operations,
-			...(this.#usernamePattern ? { usernamePattern: this.#usernamePattern.source } : {})
+			...(this.#usernamePattern ? { usernamePattern: this.#usernamePattern.source } : {}),
+			...(authCertificateCa !== undefined && { authCertificateCa })
 		});
 	}
 }

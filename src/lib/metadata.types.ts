@@ -26,6 +26,15 @@ export interface SharedAnchorMetadataLegalExtension {
 	legal?: AnchorMetadataLegalField;
 }
 
+export type SharedAnchorAuthCertificateMetadata = {
+	/**
+	 * PEM-encoded CA certificates that this anchor accepts as trusted issuers
+	 * for caller authentication. When present, callers MUST present an
+	 * on-chain certificate that chains to one of these CAs.
+	 */
+	authCertificateCa?: string[];
+};
+
 async function resolveClientRenderableContent(content: ToValuizable<ClientRenderableContent>): Promise<ClientRenderableContent> {
 	const resolved = await content('object');
 

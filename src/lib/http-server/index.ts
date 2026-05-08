@@ -135,6 +135,20 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		await assertAccountCertificateChain(account, this.resolvedCertificateChainRequirement);
 	}
 
+	/**
+	 * PEM-encoded trusted-issuer certificates from `requireCertificateChain`.
+	 * Returns `undefined` when the gate is not configured.
+	 */
+	protected authCertificateCaPEM(): string[] | undefined {
+		const requirement = this.resolvedCertificateChainRequirement;
+		if (requirement === undefined) {
+			return(undefined);
+		}
+
+		const cert = requirement.trustedIssuers.map(function(cert) { return(cert.toPEM()); });
+		return(cert);
+	}
+
 	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; wildcard?: { prefixLength: number }} | { match: false }) {
 		const requestURLPaths = requestURL.pathname.split('/');
 		const routeURLPaths = routeURL.pathname.split('/');
