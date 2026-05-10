@@ -136,7 +136,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					if (currentVersion < 1) {
 						logger?.debug('Applying schema version 1: Initial tables and indexes');
 
-						await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							await client.query(`
 								CREATE TABLE IF NOT EXISTS ${this.tableNameEntries} (
@@ -189,7 +189,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
 
 						// Now drop old indexes and record version
-						await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							// Drop old indexes that are now redundant (these will fail gracefully if indexes don't exist)
 							logger?.debug('Dropping old single-column indexes...');
