@@ -103,7 +103,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger?.debug('Initializing DB schema for queue storage driver on tables', [this.tableNameEntries, this.tableNameIdempotentKeys]);
 
 			const client = await pool.connect();
-			let operationSuccessful = false;
 			try {
 				/*
 				 * Random lock key (32-bit integer), to ensure
@@ -182,16 +181,17 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					if (currentVersion < 2) {
 						logger?.debug('Applying schema version 2: Partition-aware composite indexes');
 
-						// Create new partition-aware indexes (CONCURRENTLY must be outside transaction)
-						logger?.debug('Creating partition-aware indexes...');
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status ON ${this.tableNameEntries}(path, status)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_updated ON ${this.tableNameEntries}(path, updated)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated ON ${this.tableNameEntries}(path, status, updated)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
-
 						// Now drop old indexes and record version
 						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
+							// Create new partition-aware indexes
+							logger?.debug('Creating partition-aware indexes...');
+
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status ON ${this.tableNameEntries}(path, status)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_updated ON ${this.tableNameEntries}(path, updated)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated ON ${this.tableNameEntries}(path, status, updated)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
+
 							// Drop old indexes that are now redundant (these will fail gracefully if indexes don't exist)
 							logger?.debug('Dropping old single-column indexes...');
 							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_status`);
@@ -208,8 +208,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 
 					logger?.debug('Schema is up to date');
-
-					operationSuccessful = true;
 				} finally {
 					// Always release the advisory lock
 					// Note: Advisory locks are session-based and auto-release on disconnect,
@@ -223,7 +221,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 				}
 			} finally {
-				client.release(!operationSuccessful);
+				client.release();
 			}
 
 			logger?.debug('Completed DB schema initialization for queue storage driver');
@@ -318,7 +316,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 		const debugForceIndexScan = this.debugForceIndexScan;
 
-		let operationSuccessful = false;
 		const result = await this.runWithRetry(async function() {
 			const client = await pool.connect();
 
@@ -337,8 +334,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				await client.query('COMMIT');
 				logger?.debug('DB transaction committed');
 
-				operationSuccessful = true;
-
 				return(retval);
 			} catch (error: unknown) {
 				try {
@@ -350,7 +345,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				}
 				throw(error);
 			} finally {
-				client.release(!operationSuccessful);
+				client.release();
 			}
 		});
 
