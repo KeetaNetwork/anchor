@@ -136,7 +136,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					if (currentVersion < 1) {
 						logger?.debug('Applying schema version 1: Initial tables and indexes');
 
-						await client.query('BEGIN');
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							await client.query(`
 								CREATE TABLE IF NOT EXISTS ${this.tableNameEntries} (
@@ -181,16 +181,17 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					if (currentVersion < 2) {
 						logger?.debug('Applying schema version 2: Partition-aware composite indexes');
 
-						// Create new partition-aware indexes (CONCURRENTLY must be outside transaction)
-						logger?.debug('Creating partition-aware indexes...');
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status ON ${this.tableNameEntries}(path, status)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_updated ON ${this.tableNameEntries}(path, updated)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated ON ${this.tableNameEntries}(path, status, updated)`);
-						await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
-
 						// Now drop old indexes and record version
-						await client.query('BEGIN');
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
+							// Create new partition-aware indexes
+							logger?.debug('Creating partition-aware indexes...');
+
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status ON ${this.tableNameEntries}(path, status)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_updated ON ${this.tableNameEntries}(path, updated)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated ON ${this.tableNameEntries}(path, status, updated)`);
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameIdempotentKeys}_path_idempotent_id ON ${this.tableNameIdempotentKeys}(path, idempotent_id)`);
+
 							// Drop old indexes that are now redundant (these will fail gracefully if indexes don't exist)
 							logger?.debug('Dropping old single-column indexes...');
 							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_status`);
@@ -262,24 +263,28 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			} catch (error: unknown) {
 				lastError = error;
 
+				let detectedRetryableError = false;
 				if (error instanceof Error) {
 					const errorCode = 'code' in error ? error.code : null;
 					if (errorCode === '40001' || errorCode === '40P01') {
-						logger?.debug('Serialization failure or deadlock detected');
-
 						// Track serialization retries for instrumentation
 						this.serializationRetryCount++;
 
-						const minBackoff = 100;
-						const maxBackoff = 30_000;
-						const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
-						const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
-
-						this.methodLogger('runWithRetry')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
-						await asleep(backoff);
-
-						continue;
+						detectedRetryableError = true;
+						logger?.debug('Detected retryable error with code', errorCode);
 					}
+				}
+
+				if (detectedRetryableError) {
+					const minBackoff = 100;
+					const maxBackoff = 30_000;
+					const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
+					const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
+
+					this.methodLogger('runWithRetry')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
+					await asleep(backoff);
+
+					continue;
 				}
 
 				throw(error);
@@ -316,7 +321,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 			try {
 				logger?.debug('Starting DB transaction');
-				await client.query('BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+				await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 				logger?.debug('DB transaction started');
 
 				if (debugForceIndexScan) {
@@ -350,36 +355,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
 		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
 			let entryID = ConvertStringToRequestID(info?.id);
-			if (entryID) {
-				const existingEntry = await client.query<{ id: string }>(`SELECT id FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2`, [entryID, this.pathStr]);
-				if (existingEntry.rows.length > 0) {
-					logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
-					return(entryID);
-				}
-
-				await this.toctouDelay?.();
-			}
-
-			const idempotentIDs = info?.idempotentKeys;
-			if (idempotentIDs) {
-				const matchingIdempotentEntries = new Set<KeetaAnchorQueueRequestID>();
-				for (const idempotentID of idempotentIDs) {
-					const idempotentEntryExists = await client.query<IdempotentRow>(
-						`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE idempotent_id = $1 AND path = $2`,
-						[idempotentID, this.pathStr]
-					);
-					if (idempotentEntryExists.rows.length > 0) {
-						matchingIdempotentEntries.add(idempotentID);
-					}
-				}
-
-				if (matchingIdempotentEntries.size !== 0) {
-					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', matchingIdempotentEntries));
-				}
-
-				await this.toctouDelay?.();
-			}
-
 			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
 			logger?.debug(`Enqueuing request with id ${String(entryID)}`);
@@ -392,16 +367,44 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			 */
 			const status = info?.status ?? 'pending';
 
-			await client.query(
-				`INSERT INTO ${this.tableNameEntries} (id, path, request, output, last_error, status, created, updated, worker, failures)
-				 VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)`,
-				[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]
-			);
 
+			const insertedEntry = await client.query<{ id: string }>(`
+				INSERT INTO ${this.tableNameEntries} (
+					id, path, request, output, last_error, status,
+					created, updated, worker, failures
+				) VALUES ($1, $2, $3, NULL, NULL, $4, $5, $6, NULL, 0)
+				ON CONFLICT (id, path) DO NOTHING
+				RETURNING id`,
+			[entryID, this.pathStr, requestJSON, status, currentTime, currentTime]);
+
+			if (insertedEntry.rows.length === 0) {
+				logger?.debug(`Request with id ${String(entryID)} already exists, ignoring`);
+				return(entryID);
+			}
+
+			await this.toctouDelay?.();
+
+			const idempotentIDs = info?.idempotentKeys;
 			if (idempotentIDs && idempotentIDs.size > 0) {
-				for (const idempotentID of idempotentIDs) {
-					await client.query(`INSERT INTO ${this.tableNameIdempotentKeys} (entry_id, path, idempotent_id) VALUES ($1, $2, $3)`, [entryID, this.pathStr, idempotentID]);
+				const keys = Array.from(idempotentIDs);
+
+				const insertedKeys = await client.query<{ idempotent_id: string }>(`
+					INSERT INTO ${this.tableNameIdempotentKeys}(entry_id, path, idempotent_id)
+					SELECT $1, $2, unnest($3::text[])
+					ON CONFLICT (idempotent_id, path) DO NOTHING
+					RETURNING idempotent_id`,
+				[entryID, this.pathStr, keys]);
+
+				const foundKeySet = new Set(keys);
+				for (const row of insertedKeys.rows) {
+					foundKeySet.delete(ConvertStringToRequestID(row.idempotent_id));
 				}
+
+				if (insertedKeys.rows.length !== keys.length) {
+					throw(new Errors.IdempotentExistsError('One or more idempotent entries already exist in the queue', foundKeySet));
+				}
+
+				await this.toctouDelay?.();
 			}
 
 			return(entryID);
