@@ -384,8 +384,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			await this.toctouDelay?.();
 
 			const idempotentIDs = info?.idempotentKeys;
-			if (idempotentIDs) {
-				const keys = [...new Set(idempotentIDs)];
+			if (idempotentIDs && idempotentIDs.size > 0) {
+				const keys = Array.from(idempotentIDs);
 
 				const insertedKeys = await client.query<{ idempotent_id: string }>(`
 					INSERT INTO ${this.tableNameIdempotentKeys}(entry_id, path, idempotent_id)
