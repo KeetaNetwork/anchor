@@ -103,6 +103,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger?.debug('Initializing DB schema for queue storage driver on tables', [this.tableNameEntries, this.tableNameIdempotentKeys]);
 
 			const client = await pool.connect();
+			let operationSuccessful = false;
 			try {
 				/*
 				 * Random lock key (32-bit integer), to ensure
@@ -207,6 +208,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 
 					logger?.debug('Schema is up to date');
+
+					operationSuccessful = true;
 				} finally {
 					// Always release the advisory lock
 					// Note: Advisory locks are session-based and auto-release on disconnect,
@@ -220,7 +223,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 				}
 			} finally {
-				client.release();
+				client.release(!operationSuccessful);
 			}
 
 			logger?.debug('Completed DB schema initialization for queue storage driver');
@@ -315,6 +318,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 		const debugForceIndexScan = this.debugForceIndexScan;
 
+		let operationSuccessful = false;
 		const result = await this.runWithRetry(async function() {
 			const client = await pool.connect();
 
@@ -333,6 +337,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				await client.query('COMMIT');
 				logger?.debug('DB transaction committed');
 
+				operationSuccessful = true;
+
 				return(retval);
 			} catch (error: unknown) {
 				try {
@@ -344,7 +350,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				}
 				throw(error);
 			} finally {
-				client.release();
+				client.release(!operationSuccessful);
 			}
 		});
 
