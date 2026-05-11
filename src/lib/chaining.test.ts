@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
@@ -70,8 +70,8 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 										throw(new KeetaAnchorUserError(`Invalid transfer amount: expected ${value}, got ${op.amount}`));
 									}
 									const existing = statusMap.get(txId);
-									if (existing && existing.status !== 'COMPLETED') {
-										statusMap.set(txId, { ...existing, status: 'COMPLETED', updatedAt: new Date().toISOString() });
+									if (existing && existing.status !== 'COMPLETE') {
+										statusMap.set(txId, { ...existing, status: 'COMPLETE', updatedAt: new Date().toISOString() });
 									}
 									listenerHandle?.remove();
 									return({ requiresWork: false });
@@ -104,7 +104,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				} else {
 					statusMap.set(txId, {
 						id: txId,
-						status: 'COMPLETED',
+						status: 'COMPLETE',
 						asset: request.asset,
 						from: { location: request.from.location, value: value.toString(), transactions: { deposit: null, persistentForwarding: null, finalization: null }},
 						to:   { location: request.to.location,   value: receive.toString(), transactions: { withdraw: null }},
@@ -182,7 +182,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 			const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 			this._statusMap.set(txId, {
 				id: txId,
-				status: 'COMPLETED',
+				status: 'COMPLETE',
 				asset: request.asset,
 				from: { location: request.from.location, value: value.toString(), transactions: { deposit: null, persistentForwarding: null, finalization: null }},
 				to:   { location: request.to.location,   value: receive.toString(), transactions: { withdraw: null }},
@@ -733,11 +733,11 @@ async function createChainingTestHarness() {
 		return(path);
 	};
 
-	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo') => {
+	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo', options?: ComputePlanOptions) => {
 		const plans = await anchorChaining.getPlans({
 			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
-		});
+		}, options);
 
 		const path = plans?.find(p => p.plan.steps.some(n => n.type === 'fx' && n.step.providerID === fxProviderID));
 
@@ -1064,7 +1064,7 @@ describe('AnchorChainingPath execute', function() {
 			expect(step1.plan.transfer.transferId).toBeTruthy();
 			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
 			const transferStatus = await step1.plan.transfer.getTransferStatus();
-			expect(transferStatus.transaction.status).toEqual('COMPLETED');
+			expect(transferStatus.transaction.status).toEqual('COMPLETE');
 			expect(transferStatus.transaction.to.value).toEqual('78');
 		}
 
@@ -1075,6 +1075,102 @@ describe('AnchorChainingPath execute', function() {
 		if (path.state.status === 'completed') {
 			expect(path.state.result).toBe(result);
 		}
+
+		// stepExecuted fired once per step, each with the correct step reference
+		expect(emittedSteps.length).toEqual(result.steps.length);
+		emittedSteps.forEach(({ step, index }) => expect(step).toBe(result.steps[index]));
+
+		// completed event carries the result object
+		expect(completedResult).toBe(result);
+
+		// Removed listener was never called
+		expect(removedListenerCallCount).toEqual(0);
+
+		// Re-executing a completed path throws
+		await expect(path.execute()).rejects.toThrow('Cannot execute');
+	});
+
+	test('success: step structure, events, state transitions, and guard rails for storage accounts', async function() {
+		await using h = await createChainingTestHarness();
+
+		const { account: storageAccount } = await h.client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+
+		await h.client.setInfo({
+			name: '',
+			description: 'Storage account with permissions from user account',
+			metadata: '',
+			defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT'])
+		}, { account: storageAccount });
+
+		await h.giveTokens(h.client.account, 2000n, h.tokens.USDC);
+		await h.client.send(storageAccount, 1000n, h.tokens.USDC);
+		await h.client.send(storageAccount, 10n, h.client.baseToken);
+
+		const userSendTokenBalancePre = await h.client.balance(h.tokens.USDC);
+		const storageSendTokenBalancePre = await h.client.balance(h.tokens.USDC, { account: storageAccount });
+		const userReceiveTokenBalancePre = await h.client.balance(h.tokens.EURC);
+
+		const path = await h.getPlanVia('FXOne', { overrides: { account: storageAccount }});
+
+		expect(path.state.status).toEqual('idle');
+
+		const stateHistory: AnchorChainingPathState['status'][] = [];
+		path.on('stateChange', (state: AnchorChainingPathState) => stateHistory.push(state.status));
+
+		const emittedSteps: { step: ExecutedStep; index: number }[] = [];
+		path.on('stepExecuted', (step: ExecutedStep, index: number) => emittedSteps.push({ step, index }));
+
+		let completedResult: Awaited<ReturnType<typeof path.execute>> | null = null;
+		path.on('completed', (result: Awaited<ReturnType<typeof path.execute>>) => { completedResult = result; });
+
+		// Register then immediately remove a listener to verify off() is effective
+		let removedListenerCallCount = 0;
+		const removedListener = () => { removedListenerCallCount++; };
+		path.on('stepExecuted', removedListener);
+		path.off('stepExecuted', removedListener);
+
+		// Plan totals from FX rate (0.88 forward)
+		expect(path.plan.totalValueIn).toEqual(100n);
+		expect(path.plan.totalValueOut).toEqual(78n);
+
+		const result = await path.execute();
+
+		// Step structure and server-side verification
+		expect(result.steps.length).toEqual(2);
+		const [step0, step1] = result.steps;
+		expect(step0?.type).toEqual('fx');
+		if (step0?.type === 'fx') {
+			expect(step0.exchange.exchange.exchangeID).toBeTruthy();
+			const exchangeStatus = await step0.exchange.getExchangeStatus();
+			expect(exchangeStatus.status).toEqual('completed');
+			if (exchangeStatus.status === 'completed') {
+				expect(exchangeStatus.blockhash).toBeTruthy();
+			}
+		}
+
+		expect(step1?.type).toEqual('assetMovement');
+		if (step1?.type === 'assetMovement') {
+			expect(step1.plan.transfer.transferId).toBeTruthy();
+			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
+			const transferStatus = await step1.plan.transfer.getTransferStatus();
+			expect(transferStatus.transaction.status).toEqual('COMPLETE');
+			expect(transferStatus.transaction.to.value).toEqual('78');
+		}
+		// State transitions: idle -> executing -> completed
+		expect(path.state.status).toEqual('completed');
+		expect(stateHistory[0]).toEqual('executing');
+		expect(stateHistory[stateHistory.length - 1]).toEqual('completed');
+		if (path.state.status === 'completed') {
+			expect(path.state.result).toBe(result);
+		}
+
+		const userSendTokenBalancePost = await h.client.balance(h.tokens.USDC);
+		const storageSendTokenBalancePost = await h.client.balance(h.tokens.USDC, { account: storageAccount });
+		const userReceiveTokenBalancePost = await h.client.balance(h.tokens.EURC);
+
+		expect(storageSendTokenBalancePre - storageSendTokenBalancePost).toEqual(100n);
+		expect(userSendTokenBalancePre).toEqual(userSendTokenBalancePost);
+		expect(userReceiveTokenBalancePre).toEqual(userReceiveTokenBalancePost);
 
 		// stepExecuted fired once per step, each with the correct step reference
 		expect(emittedSteps.length).toEqual(result.steps.length);
@@ -1210,7 +1306,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		await expect(path.execute()).rejects.toThrow('No listeners for stepNeedsAction');
 	});
 
-	test('markCompleted signals completion; server records transfer as COMPLETED', async function() {
+	test('markCompleted signals completion; server records transfer as COMPLETE', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
 
@@ -1228,7 +1324,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		if (result.steps[0]?.type === 'assetMovement') {
 			// value = 100 - 10 fee = 90
 			const transferStatus = await result.steps[0].plan.transfer.getTransferStatus();
-			expect(transferStatus.transaction.status).toEqual('COMPLETED');
+			expect(transferStatus.transaction.status).toEqual('COMPLETE');
 			expect(transferStatus.transaction.to.value).toEqual('90');
 		}
 	});
