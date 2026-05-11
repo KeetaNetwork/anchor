@@ -444,21 +444,21 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			/* Construct the required operations for the swap request */
-			const builder = this.client.initBuilder();
+			const builder = this.client.initBuilder(this.options);
 
 			if ('quote' in input) {
 				/* If cost is required then send the required amount as well */
 				if (input.quote.cost.amount > 0) {
-					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token, undefined, this.options);
+					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token, undefined);
 				}
 			} else if ('estimate' in input) {
 				if (input.estimate.expectedCost.max > 0) {
-					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token, undefined, this.options);
+					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token, undefined);
 				}
 			}
 
-			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to', undefined, this.options);
-			builder.send(liquidityProvider, sendAmount, request.from, undefined, this.options);
+			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to', undefined);
+			builder.send(liquidityProvider, sendAmount, request.from, undefined);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {
