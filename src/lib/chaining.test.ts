@@ -1519,6 +1519,57 @@ describe('AnchorChaining listAssets', function() {
 	});
 });
 
+test('AnchorChaining getPlans includeAllOutput', async function() {
+	await using h = await createChainingTestHarness();
+
+	const input = {
+		source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+		destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+	};
+
+	const allOk = await h.anchorChaining.getPlans(input, { includeAllOutput: true });
+	expect(allOk).not.toBeNull();
+	expect(allOk).toHaveLength(2);
+	for (const result of allOk ?? []) {
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.plan).toBeDefined();
+			expect(result.path).toBeDefined();
+		}
+	}
+
+	h.fxServerOne.setGetConversionRateAndFee(async () => {
+		throw(new Error('FXOne rate unavailable'));
+	});
+
+	const mixed = await h.anchorChaining.getPlans(input, { includeAllOutput: true });
+	expect(mixed).not.toBeNull();
+	expect(mixed).toHaveLength(2);
+
+	const failed    = mixed?.find(r => !r.success);
+	const succeeded = mixed?.find(r => r.success);
+
+	expect(failed).toBeDefined();
+	if (!failed || failed.success) {
+		throw(new Error('Expected a failed result'));
+	}
+	expect(failed.error).toBeTruthy();
+	expect(failed.path).toBeDefined();
+
+	expect(succeeded).toBeDefined();
+	if (!succeeded || !succeeded.success) {
+		throw(new Error('Expected a successful result'));
+	}
+	expect(succeeded.plan).toBeDefined();
+	expect(succeeded.path).toBeDefined();
+	expect(succeeded.plan.plan.steps.some(s => s.type === 'fx' && s.step.providerID === 'FXTwo')).toBe(true);
+
+	const defaultResults = await h.anchorChaining.getPlans(input);
+	expect(defaultResults).not.toBeNull();
+	expect(defaultResults).toHaveLength(1);
+	expect(defaultResults?.[0]?.plan.steps.some(s => s.type === 'fx' && s.step.providerID === 'FXTwo')).toBe(true);
+});
+
 test('AnchorChaining resolveAssets', async function() {
 	await using h = await createChainingTestHarness();
 
