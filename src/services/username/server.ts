@@ -1,6 +1,5 @@
 import { KeetaNet } from '../../client/index.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
-import type { KeetaUsernameAnchorClaimContext } from './common.js';
 import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
 	KeetaUsernameAnchorAccountResolutionContext,
@@ -8,7 +7,9 @@ import type {
 	KeetaUsernameAnchorClaimRequestPayload,
 	KeetaUsernameAnchorSearchRequestParameters,
 	KeetaUsernameAnchorUsernameWithAccount,
-	KeetaUsernameAnchorSearchResponseJSON } from './common.js';
+	KeetaUsernameAnchorSearchResponseJSON,
+	KeetaUsernameAnchorClaimContext
+} from './common.js';
 import {
 	getUsernameClaimSignable,
 	validateUsernameDefault,
