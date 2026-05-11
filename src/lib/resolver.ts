@@ -1795,7 +1795,6 @@ class Resolver {
 
 					let matchFound = false;
 
-
 					for (const channel of criteria.supportedChannels) {
 						const criteriaChannelValue = await serviceArray[channel]?.('any');
 						if (criteriaChannelValue === undefined) {
@@ -1837,121 +1836,104 @@ class Resolver {
 			let matchFound = false;
 
 			for (const path of supportedAsset.paths) {
-				const pairSorted: typeof path.pair = [ ...path.pair ];
-
-				if (fromCanonical) {
-					if (pairSorted[0]?.location !== fromCanonical) {
-						pairSorted.reverse();
+				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+					if (fromCanonical && fromCanonical !== fromAsset.location) {
+						continue;
 					}
-				} else if (toCanonical) {
-					if (pairSorted[1]?.location !== toCanonical) {
-						pairSorted.reverse();
+
+					if (toCanonical && toCanonical !== toAsset.location) {
+						continue;
 					}
-				}
 
-				if (fromCanonical && pairSorted[0].location !== fromCanonical) {
-					continue;
-				}
-
-				if (toCanonical && pairSorted[1].location !== toCanonical) {
-					continue;
-				}
-
-				if (assetCanonical) {
-					if (typeof assetCanonical === 'string') {
-						if (!([ pairSorted[0].id, pairSorted[1].id ].includes(assetCanonical))) {
+					if (assetCanonical) {
+						if (typeof assetCanonical === 'string') {
+							if (!([ fromAsset.id, toAsset.id ].includes(assetCanonical))) {
+								continue;
+							}
+						} else if (fromAsset.id !== assetCanonical.from || toAsset.id !== assetCanonical.to) {
 							continue;
 						}
-					} else {
-						if (fromCanonical || toCanonical) {
-							if (pairSorted[0].id !== assetCanonical.from || pairSorted[1].id !== assetCanonical.to) {
-								continue;
-							}
-						} else {
-							const eitherId = new Set([ pairSorted[0].id, pairSorted[1].id ]);
-							if (!(eitherId.has(assetCanonical.from)) || !(eitherId.has(assetCanonical.to))) {
-								continue;
-							}
-						}
-					}
-				}
-
-				const [ from, to ] = pairSorted;
-
-				const supportedRails = {
-					inbound: [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ],
-					outbound: [ ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ]
-				}
-
-				if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
-					continue;
-				}
-
-				const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
-					for (const checkRail of searchIn) {
-						if (typeof checkRail === 'string') {
-							if (checkRail === searchFor) {
-								return(true);
-							}
-						} else {
-							if (checkRail.rail === searchFor) {
-								return(true);
-							}
-						}
 					}
 
-					return(false);
-				}
+					const supportedRails = {
+						inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
+						outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
+					}
 
-				if (criteria.rail !== undefined) {
-					let railMatchFound = false;
-					for (const direction of ['inbound', 'outbound'] as const) {
-						let searchFor;
-						let searchIn;
-						let eitherDirectionSharedSearch;
+					if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
+						continue;
+					}
 
-						if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
-							searchFor = criteria.rail[direction];
-							searchIn = supportedRails[direction];
-							eitherDirectionSharedSearch = false;
-						} else {
-							searchFor = criteria.rail;
-							searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
-							eitherDirectionSharedSearch = true;
-						}
-
-
-						if (searchFor !== undefined) {
-							if (typeof searchFor === 'string') {
-								railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+					const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+						for (const checkRail of searchIn) {
+							if (typeof checkRail === 'string') {
+								if (checkRail === searchFor) {
+									return(true);
+								}
 							} else {
-								for (const checkRail of searchFor) {
-									railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
-
-									if (railMatchFound) {
-										break;
-									}
+								if (checkRail.rail === searchFor) {
+									return(true);
 								}
 							}
 						}
 
-						// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
-						if (eitherDirectionSharedSearch) {
-							break;
+						return(false);
+					}
+
+					if (criteria.rail !== undefined) {
+						let railMatchFound = false;
+						for (const direction of ['inbound', 'outbound'] as const) {
+							let searchFor;
+							let searchIn;
+							let eitherDirectionSharedSearch;
+
+							if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+								searchFor = criteria.rail[direction];
+								searchIn = supportedRails[direction];
+								eitherDirectionSharedSearch = false;
+							} else {
+								searchFor = criteria.rail;
+								searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+								eitherDirectionSharedSearch = true;
+							}
+
+
+							if (searchFor !== undefined) {
+								if (typeof searchFor === 'string') {
+									railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+								} else {
+									for (const checkRail of searchFor) {
+										railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+										if (railMatchFound) {
+											break;
+										}
+									}
+								}
+							}
+
+							// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+							if (eitherDirectionSharedSearch) {
+								break;
+							}
+
+							if (railMatchFound) {
+								break;
+							}
 						}
 
-						if (railMatchFound) {
-							break;
+						if (!railMatchFound) {
+							continue;
 						}
 					}
 
-					if (!railMatchFound) {
-						continue;
-					}
+					matchFound = true;
+					break;
 				}
 
-				matchFound = true;
-				break;
+				if (matchFound) {
+					break;
+				}
 			}
 
 			if (matchFound) {
