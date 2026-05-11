@@ -1554,6 +1554,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 }
 
+type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
+
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
 	private resolver: Resolver;
@@ -1614,7 +1616,9 @@ export class AnchorChaining {
 		return(retval);
 	}
 
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions): Promise<AnchorChainingPlan[] | null> {
+	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options: ComputePlanOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: boolean }): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
 		const paths = await this.getPaths(input);
 
 		if (!paths) {
@@ -1625,13 +1629,28 @@ export class AnchorChaining {
 			return(await AnchorChainingPlan.create(path, options));
 		}));
 
-		const ret = [];
+		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
 
-		for (const plan of result) {
-			if (plan.status === 'fulfilled') {
-				ret.push(plan.value);
+		for (let i = 0; i < paths.length; i++) {
+			const path = paths[i];
+			const plan = result[i];
+
+			if (!path || !plan) {
+				continue;
+			}
+
+			if (options?.includeAllOutput) {
+				if (plan.status === 'rejected') {
+					ret.push({ success: false, error: plan.reason, path });
+				} else {
+					ret.push({ success: true, plan: plan.value, path });
+				}
 			} else {
-				this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				if (plan.status === 'rejected') {
+					this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				} else {
+					ret.push(plan.value);
+				}
 			}
 		}
 
