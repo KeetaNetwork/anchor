@@ -1013,7 +1013,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
 		const authRequired = { options: { authentication: { type: 'required' as const, method: 'keeta-account' as const }}};
-		const authCertificateCa = this.authCertificateCaPEM();
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['storage']>[string]['operations'] = {
 			put: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			get: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
@@ -1031,7 +1031,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			quotas: this.quotas,
 			signedUrlDefaultTTL: this.signedUrlDefaultTTL,
 			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix'],
-			...(authCertificateCa !== undefined && { authCertificateCa })
+			...(acceptedIssuerDNs !== undefined && { acceptedIssuerDNs })
 		});
 	}
 }

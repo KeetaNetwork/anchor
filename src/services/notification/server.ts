@@ -342,9 +342,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 			retval.supportedSubscriptions = this.notification.supportedSubscriptions;
 		}
 
-		const authCertificateCa = this.authCertificateCaPEM();
-		if (authCertificateCa !== undefined) {
-			retval.authCertificateCa = authCertificateCa;
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
+		if (acceptedIssuerDNs !== undefined) {
+			retval.acceptedIssuerDNs = acceptedIssuerDNs;
 		}
 
 		return(retval);

@@ -26,13 +26,14 @@ export interface SharedAnchorMetadataLegalExtension {
 	legal?: AnchorMetadataLegalField;
 }
 
-export type SharedAnchorAuthCertificateMetadata = {
+export type SharedAnchorAcceptedIssuerDNsMetadata = {
 	/**
-	 * PEM-encoded CA certificates that this anchor accepts as trusted issuers
-	 * for caller authentication. When present, callers MUST present an
-	 * on-chain certificate that chains to one of these CAs.
+	 * Issuer DNs this anchor accepts for caller authentication. Outer array
+	 * is any-of (OR), inner array is all-of (AND) within a single DN.
+	 * When present, callers MUST present an on-chain certificate that chains
+	 * to an issuer whose subject DN matches one of these.
 	 */
-	authCertificateCa?: string[];
+	acceptedIssuerDNs?: { name: string; value: string }[][];
 };
 
 async function resolveClientRenderableContent(content: ToValuizable<ClientRenderableContent>): Promise<ClientRenderableContent> {

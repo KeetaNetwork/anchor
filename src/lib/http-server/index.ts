@@ -132,17 +132,15 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	}
 
 	/**
-	 * PEM-encoded trusted-issuer certificates from `requireCertificateChain`.
-	 * Returns `undefined` when the gate is not configured.
+	 * Trusted-issuer DNs metadata. Is `undefined` when the gate is not configured.
 	 */
-	protected authCertificateCaPEM(): string[] | undefined {
+	protected acceptedIssuerDNs(): { name: string; value: string }[][] | undefined {
 		const requirement = this.resolvedCertificateChainRequirement;
 		if (requirement === undefined) {
 			return(undefined);
 		}
 
-		const cert = requirement.trustedIssuers.map(function(cert) { return(cert.toPEM()); });
-		return(cert);
+		return(requirement.acceptedIssuerDNs);
 	}
 
 	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; wildcard?: { prefixLength: number }} | { match: false }) {
