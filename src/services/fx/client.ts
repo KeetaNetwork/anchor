@@ -242,7 +242,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.providerID = providerID;
 		this.conversion = conversion;
 		this.parent = parent;
-		this.options = options
+		this.options = options;
 	}
 
 	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {

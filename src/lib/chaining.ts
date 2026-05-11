@@ -53,7 +53,6 @@ type AnchorChainingPathComputedPlan = {
 	steps: ChainStepResolution[];
 	totalValueIn: bigint;
 	totalValueOut: bigint;
-	options?: ComputePlanOptions | undefined;
 };
 
 type ExecutedStepFX = {
@@ -932,9 +931,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	#state: AnchorChainingPathState = { status: 'idle' };
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	#listeners = new Map<string, Set<((...args: any[]) => void)>>();
+	#options: ComputePlanOptions | undefined = undefined;
 
-	private constructor(path: AnchorChainingPath) {
+	private constructor(path: AnchorChainingPath, options?: ComputePlanOptions) {
 		super({ ...path });
+		this.#options = options;
 	}
 
 	get plan(): AnchorChainingPathComputedPlan {
@@ -945,7 +946,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(this.#_plan);
 	}
 
-	async #computePlan(options?: ComputePlanOptions) {
+	async #computePlan() {
 		if (this.#_plan) {
 			throw(new Error(`Steps have already been computed`));
 		}
@@ -1031,7 +1032,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						const fxAccountOptions = await this.getAccountsForAction({
 							type: 'fx',
 							providerMethod: 'getAccountForAction'
-						}, options?.overrides);
+						}, this.#options?.overrides);
 
 						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
 							{ from: step.from.asset, to: step.to.asset, amount, affinity },
@@ -1150,7 +1151,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							type: 'assetMovement',
 							providerMethod: 'initiateTransfer',
 							provider: providers[0]
-						}, options?.overrides);
+						}, this.#options?.overrides);
 
 						const transfer = await providers[0].initiateTransfer({
 							account: signer,
@@ -1282,14 +1283,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return({
 			steps,
 			totalValueIn: firstStep.valueIn,
-			totalValueOut: lastStep.valueOut,
-			options
+			totalValueOut: lastStep.valueOut
 		});
 	}
 
 	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingPlan> {
-		const instance = new this(path);
-		instance.#_plan = await instance.#computePlan(options);
+		const instance = new this(path, options);
+		instance.#_plan = await instance.#computePlan();
 		return(instance);
 	}
 
@@ -1402,7 +1402,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			});
 		}
 
-		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#_plan?.options?.overrides);
+		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
 		await this.parent['client'].send(sendToAddress, value, token, external, { account });
 	}
 
