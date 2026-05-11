@@ -26,7 +26,7 @@ export interface SharedAnchorMetadataLegalExtension {
 	legal?: AnchorMetadataLegalField;
 }
 
-export type SharedAnchorAcceptedIssuerDNsMetadata = {
+export type SharedAnchorCallerCertificateRequirementMetadata = {
 	/**
 	 * Issuer DNs this anchor accepts for caller authentication. Outer array
 	 * is any-of (OR), inner array is all-of (AND) within a single DN.

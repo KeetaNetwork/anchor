@@ -9,11 +9,11 @@ import type { Logger, LogLevel } from '../log/index.js';
 import type {
 	CertificateChainConfig,
 	ResolvedCertificateChainRequirement
-} from '../certificates.js';
+} from '../utils/certificate-network.js';
 import { Log } from '../log/index.js';
 import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
-import { resolveCertificateChainConfig } from '../certificates.js';
+import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 

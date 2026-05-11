@@ -3,7 +3,7 @@ import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
-import { KeetaAnchorCertificateRequiredError } from '../../lib/certificates.js';
+import { KeetaAnchorCertificateRequiredError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 /**
