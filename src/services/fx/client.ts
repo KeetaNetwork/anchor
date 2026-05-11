@@ -449,16 +449,16 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			if ('quote' in input) {
 				/* If cost is required then send the required amount as well */
 				if (input.quote.cost.amount > 0) {
-					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token, undefined);
+					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token);
 				}
 			} else if ('estimate' in input) {
 				if (input.estimate.expectedCost.max > 0) {
-					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token, undefined);
+					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token);
 				}
 			}
 
-			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to', undefined);
-			builder.send(liquidityProvider, sendAmount, request.from, undefined);
+			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
+			builder.send(liquidityProvider, sendAmount, request.from);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {

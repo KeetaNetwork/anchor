@@ -917,8 +917,8 @@ export class AnchorChainingPath {
 
 	protected async getAccountsForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; signer: InstanceType<typeof KeetaNetLib.Account> }> {
 		const [signer, account] = await Promise.all([
-			await this.getAccountLike(action, overrides?.signer),
-			await this.getAccountLike(action, overrides?.account)
+			this.getAccountLike(action, overrides?.signer),
+			this.getAccountLike(action, overrides?.account)
 		]);
 
 		return({ signer, account });
