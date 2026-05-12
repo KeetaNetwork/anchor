@@ -6,7 +6,6 @@ export interface TokenMetadata {
 	logoURI?: string;
 }
 
-
 export interface TokenMetadataJSON extends Omit<TokenMetadata, "decimalPlaces"> {
 	decimalPlaces: number | string;
 }
@@ -23,7 +22,7 @@ function parseDecimalPlaces(input: number | string): number {
 		value = Number(value);
 	}
 
-	if (Number.isNaN(value) || value < 0 || !Number.isInteger(value)) {
+	if (!Number.isFinite(value) || value < 0 || value > 1024 || !Number.isInteger(value)) {
 		valid = false;
 	}
 

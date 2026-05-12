@@ -1,4 +1,4 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import { type lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
 import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
@@ -277,11 +277,16 @@ export interface AnchorChainingAssetInfo {
 type GetAccountForActionPayload = {
 	type: 'assetMovement';
 	providerMethod: 'initiateTransfer';
-	provider: AssetMovementProvider;
+	provider?: AssetMovementProvider;
+} | {
+	type: 'fx';
+	providerMethod: 'getAccountForAction';
 }
 
+type AccountLike = InstanceType<typeof KeetaNetLib.Account> | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
 interface AnchorChainingAccountOverrides {
-	account?: Account | undefined | ((providerMethodPayload: GetAccountForActionPayload) => Promise<Account> | Account);
+	account?: AccountLike;
+	signer?: AccountLike;
 }
 
 class AnchorGraph {
@@ -867,7 +872,7 @@ class AnchorGraph {
 	}
 }
 
-interface ComputePlanOptions {
+export interface ComputePlanOptions {
 	overrides?: AnchorChainingAccountOverrides;
 }
 
@@ -886,8 +891,8 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
-	protected async getAccountForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<Account | undefined> {
-		let found;
+	protected async getAccountLike(action: GetAccountForActionPayload, override?: AccountLike): Promise<InstanceType<typeof KeetaNetLib.Account>> {
+		let found: InstanceType<typeof KeetaNetLib.Account> | undefined = undefined;
 
 		if (this.parent['client'].account.isAccount()) {
 			found = this.parent['client'].account;
@@ -895,15 +900,28 @@ export class AnchorChainingPath {
 			found = this.parent['client'].signer;
 		}
 
-		if (overrides?.account) {
-			if (typeof overrides.account === 'function') {
-				found = await overrides.account(action);
+		if (override) {
+			if (typeof override === 'function') {
+				found = await override(action);
 			} else {
-				found = overrides.account;
+				found = override;
 			}
 		}
 
+		if (!found) {
+			throw(new Error(`Could not get account for ${action.type} action ${action.providerMethod}`));
+		}
+
 		return(found);
+	}
+
+	protected async getAccountsForAction(action: GetAccountForActionPayload, overrides?: AnchorChainingAccountOverrides): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; signer: InstanceType<typeof KeetaNetLib.Account> }> {
+		const [signer, account] = await Promise.all([
+			this.getAccountLike(action, overrides?.signer),
+			this.getAccountLike(action, overrides?.account)
+		]);
+
+		return({ signer, account });
 	}
 }
 
@@ -913,9 +931,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	#state: AnchorChainingPathState = { status: 'idle' };
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	#listeners = new Map<string, Set<((...args: any[]) => void)>>();
+	#options: ComputePlanOptions | undefined = undefined;
 
-	private constructor(path: AnchorChainingPath) {
+	private constructor(path: AnchorChainingPath, options?: ComputePlanOptions) {
 		super({ ...path });
+		this.#options = options;
 	}
 
 	get plan(): AnchorChainingPathComputedPlan {
@@ -926,7 +946,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(this.#_plan);
 	}
 
-	async #computePlan(options?: ComputePlanOptions) {
+	async #computePlan() {
 		if (this.#_plan) {
 			throw(new Error(`Steps have already been computed`));
 		}
@@ -1009,9 +1029,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							assertNever(affinity);
 						}
 
+						const fxAccountOptions = await this.getAccountsForAction({
+							type: 'fx',
+							providerMethod: 'getAccountForAction'
+						}, this.#options?.overrides);
+
 						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
 							{ from: step.from.asset, to: step.to.asset, amount, affinity },
-							undefined,
+							fxAccountOptions,
 							{ providerIDs: [ step.providerID ] }
 						);
 
@@ -1122,13 +1147,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								depositValue = previous.valueOut;
 							}
 						}
+						const { signer } = await this.getAccountsForAction({
+							type: 'assetMovement',
+							providerMethod: 'initiateTransfer',
+							provider: providers[0]
+						}, this.#options?.overrides);
 
 						const transfer = await providers[0].initiateTransfer({
-							account: await this.getAccountForAction({
-								type: 'assetMovement',
-								providerMethod: 'initiateTransfer',
-								provider: providers[0]
-							}, options?.overrides),
+							account: signer,
 							asset: assetPair,
 							from: { location: step.from.location },
 							to: {
@@ -1146,7 +1172,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
 
-						if (!usingInstruction.totalReceiveAmount) {
+						let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
+						if (totalReceiveAmount === undefined && 'value' in usingInstruction) {
+							totalReceiveAmount = usingInstruction.value;
+						}
+						if (totalReceiveAmount === undefined) {
 							throw(new Error(`totalReceiveAmount must be defined for chaining`));
 						}
 
@@ -1157,7 +1187,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							usingInstruction: usingInstruction,
 							transfer: transfer,
 							sendingTo: sendingToType,
-							valueOut: BigInt(usingInstruction.totalReceiveAmount)
+							valueOut: BigInt(totalReceiveAmount)
 						})
 					} else if (step.type === 'keetaSend') {
 						if (this.path.length !== 1) {
@@ -1258,8 +1288,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingPlan> {
-		const instance = new this(path);
-		instance.#_plan = await instance.#computePlan(options);
+		const instance = new this(path, options);
+		instance.#_plan = await instance.#computePlan();
 		return(instance);
 	}
 
@@ -1372,7 +1402,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			});
 		}
 
-		await this.parent['client'].send(sendToAddress, value, token, external);
+		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
+		await this.parent['client'].send(sendToAddress, value, token, external, { account });
 	}
 
 	async #pollTransferStatus(
@@ -1385,7 +1416,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		while (true) {
 			const status = await transfer.getTransferStatus();
-			if (status.transaction.status === 'COMPLETED') {
+			if (status.transaction.status === 'COMPLETE') {
 				return(status);
 			}
 			if (Date.now() >= deadline) {
@@ -1554,6 +1585,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 }
 
+type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
+
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
 	private resolver: Resolver;
@@ -1614,7 +1647,9 @@ export class AnchorChaining {
 		return(retval);
 	}
 
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions): Promise<AnchorChainingPlan[] | null> {
+	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options: ComputePlanOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: boolean }): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
 		const paths = await this.getPaths(input);
 
 		if (!paths) {
@@ -1625,13 +1660,28 @@ export class AnchorChaining {
 			return(await AnchorChainingPlan.create(path, options));
 		}));
 
-		const ret = [];
+		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
 
-		for (const plan of result) {
-			if (plan.status === 'fulfilled') {
-				ret.push(plan.value);
+		for (let i = 0; i < paths.length; i++) {
+			const path = paths[i];
+			const plan = result[i];
+
+			if (!path || !plan) {
+				continue;
+			}
+
+			if (options?.includeAllOutput) {
+				if (plan.status === 'rejected') {
+					ret.push({ success: false, error: plan.reason, path });
+				} else {
+					ret.push({ success: true, plan: plan.value, path });
+				}
 			} else {
-				this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				if (plan.status === 'rejected') {
+					this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				} else {
+					ret.push(plan.value);
+				}
 			}
 		}
 

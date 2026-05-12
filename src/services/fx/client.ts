@@ -231,9 +231,10 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
 	readonly conversion: ConversionInputCanonical;
+	readonly options: Pick<AccountOptions, 'account'> | undefined;
 	private readonly parent: KeetaFXAnchorClient;
 
-	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient) {
+	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient, options?: Pick<AccountOptions, 'account'>) {
 		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
 		super(parentPrivate);
 
@@ -241,6 +242,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.providerID = providerID;
 		this.conversion = conversion;
 		this.parent = parent;
+		this.options = options;
 	}
 
 	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {
@@ -442,7 +444,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			/* Construct the required operations for the swap request */
-			const builder = this.client.initBuilder();
+			const builder = this.client.initBuilder(this.options);
 
 			if ('quote' in input) {
 				/* If cost is required then send the required amount as well */
@@ -797,7 +799,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
-			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
+			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this, options));
 		});
 
 		return(providers);
