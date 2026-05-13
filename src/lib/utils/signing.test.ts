@@ -222,36 +222,55 @@ test('objectToSignable: equivalent inputs produce a verifiable signature against
 	expect(isValid).toBe(true);
 });
 
-const signedObject = { a: 'first', m: 'middle', '{': 'a', '}': '{' };
-const forgeryAttempts: { name: string; forged: Signing.SignableInput; expected: boolean }[] = [
+const forgerySignedObject: Signing.SignableInput = { a: 'first', m: 'middle', '{': 'a', '}': '{' };
+const forgeryAccount = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
+const forgeryAttempts: { name: string; original: Signing.SignableInput; forged: Signing.SignableInput; expected: boolean }[] = [
 	{
 		name: 'reordered keys verify',
+		original: forgerySignedObject,
 		forged: { '}': '{', '{': 'a', m: 'middle', a: 'first' },
 		expected: true
 	},
 	{
 		name: 'changed value fails',
+		original: forgerySignedObject,
 		forged: { a: 'first', m: 'middle', '{': 'b', '}': '{' },
 		expected: false
 	},
 	{
 		name: 'added key fails',
+		original: forgerySignedObject,
 		forged: { a: 'first', m: 'middle', '{': 'a', '}': '{', extra: 'x' },
 		expected: false
 	},
 	{
 		name: 'removed key fails',
+		original: forgerySignedObject,
 		forged: { a: 'first', m: 'middle', '{': 'a' },
 		expected: false
 	},
 	{
 		name: 'swapped values across keys fails',
+		original: forgerySignedObject,
 		forged: { a: 'middle', m: 'first', '{': 'a', '}': '{' },
 		expected: false
 	},
 	{
 		name: 'reshape into a nested object with the same scalars fails',
+		original: forgerySignedObject,
 		forged: { a: 'first', m: 'middle', n: { '{': 'a', '}': '{' }},
+		expected: false
+	},
+	{
+		name: 'array forged as object with index keys fails',
+		original: [ 'x', 'y' ],
+		forged: { '0': 'x', '1': 'y' },
+		expected: false
+	},
+	{
+		name: 'Account forged as the empty object fails',
+		original: forgeryAccount,
+		forged: {},
 		expected: false
 	}
 ];
@@ -259,7 +278,7 @@ const forgeryAttempts: { name: string; forged: Signing.SignableInput; expected: 
 for (const attempt of forgeryAttempts) {
 	test(`VerifySignedData forgery resistance: ${attempt.name}`, async function() {
 		const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
-		const signed = await Signing.SignData(account, Signing.objectToSignable(signedObject));
+		const signed = await Signing.SignData(account, Signing.objectToSignable(attempt.original));
 
 		const result = await Signing.VerifySignedData(account, Signing.objectToSignable(attempt.forged), signed);
 		expect(result).toBe(attempt.expected);
