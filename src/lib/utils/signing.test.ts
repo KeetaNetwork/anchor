@@ -128,34 +128,49 @@ const verifyOptionsCases = [
 
 const objectToSignableCases: { name: string; input: Signing.SignableInput; expected: Signing.Signable }[] = [
 	{
-		name: 'flat object sorts keys lexicographically',
+		name: 'flat object emits sorted (key, value) pairs inside object framing',
 		input: { z: 1, a: 'first', m: 'middle' },
-		expected: ['first', 'middle', 1]
+		expected: ['{', 'a', 'first', 'm', 'middle', 'z', 1, '}']
 	},
 	{
-		name: 'nested object flattens with dot-prefixed keys',
+		name: 'nested object preserves structure via nested framing',
 		input: { outer: { inner: 'v' }, top: 't' },
-		expected: ['v', 't']
+		expected: ['{', 'outer', '{', 'inner', 'v', '}', 'top', 't', '}']
 	},
 	{
-		name: 'arrays preserve index order via [i] suffix',
+		name: 'arrays emit values in index order inside array framing',
 		input: { items: ['a', 'b', 'c'] },
-		expected: ['a', 'b', 'c']
+		expected: ['{', 'items', '[', 'a', 'b', 'c', ']', '}']
 	},
 	{
-		name: 'undefined and null entries are dropped',
+		name: 'object keys whose values are undefined or null are dropped',
 		input: { a: 'kept', b: undefined, c: null },
-		expected: ['kept']
+		expected: ['{', 'a', 'kept', '}']
 	},
 	{
 		name: 'booleans encode as 1/0',
 		input: { yes: true, no: false },
-		expected: [0, 1]
+		expected: ['{', 'no', 0, 'yes', 1, '}']
 	},
 	{
 		name: 'object key insertion order does not affect output',
 		input: { b: 2, a: 1 },
-		expected: [1, 2]
+		expected: ['{', 'a', 1, 'b', 2, '}']
+	},
+	{
+		name: 'top-level scalar passes through without framing',
+		input: 'lonely',
+		expected: ['lonely']
+	},
+	{
+		name: 'top-level array uses array framing',
+		input: ['x', 'y'],
+		expected: ['[', 'x', 'y', ']']
+	},
+	{
+		name: 'array null and undefined entries become NULL_MARKER preserving index',
+		input: ['x', null, undefined, 'y'],
+		expected: ['[', 'x', 'null', 'null', 'y', ']']
 	}
 ];
 
@@ -166,27 +181,45 @@ for (const testCase of objectToSignableCases) {
 	});
 }
 
-test('objectToSignable: equivalent inputs produce identical sign-and-verify output', async function() {
-	const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
+const objectToSignableDistinctCases: { name: string; a: Signing.SignableInput; b: Signing.SignableInput }[] = [
+	{
+		name: 'object with numeric-string key vs array',
+		a: { '0': 'x' },
+		b: ['x']
+	},
+	{
+		name: 'nested object vs flat object using dot separator',
+		a: { a: { b: 'x' }},
+		b: { 'a.b': 'x' }
+	},
+	{
+		name: 'array with null entry vs array without it',
+		a: ['x', null, 'y'],
+		b: ['x', 'y']
+	}
+];
 
+for (const testCase of objectToSignableDistinctCases) {
+	test(`objectToSignable distinct: ${testCase.name}`, function() {
+		const a = Signing.objectToSignable(testCase.a);
+		const b = Signing.objectToSignable(testCase.b);
+		expect(a).not.toEqual(b);
+	});
+}
+
+test('objectToSignable: equivalent inputs produce a verifiable signature against either form', async function() {
+	const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
 	const a = Signing.objectToSignable({ a: 1, b: { c: 'x', d: 'y' }});
 	const b = Signing.objectToSignable({ b: { d: 'y', c: 'x' }, a: 1 });
-	expect(a).toEqual(b);
-
 	const signed = await Signing.SignData(account, a);
+
 	const isValid = await Signing.VerifySignedData(account, b, signed);
 	expect(isValid).toBe(true);
 });
 
-test('objectToSignable: omitted-undefined and dropped-key produce identical bytes', function() {
-	const withUndefined = Signing.objectToSignable({ a: 'kept', b: undefined });
-	const withoutKey = Signing.objectToSignable({ a: 'kept' });
-	expect(withUndefined).toEqual(withoutKey);
-});
-
-test('objectToSignable: throws when queue exceeds DoS guard', function() {
+test('objectToSignable: throws when token count exceeds DoS guard', function() {
 	const big: { [key: string]: string } = {};
-	for (let i = 0; i < 300; i++) {
+	for (let i = 0; i < 600; i++) {
 		big[`k${i}`] = `v${i}`;
 	}
 

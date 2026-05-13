@@ -7,7 +7,7 @@ import type {
 import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { assertNever } from '../../lib/utils/never.js';
-import { KeetaAnchorUserError } from '../error.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from '../error.js';
 
 export type SignableAccount = ReturnType<InstanceType<typeof KeetaNetLib.Account>['assertAccount']>;
 export type VerifiableAccount = InstanceType<typeof KeetaNetLib.Account>;
@@ -17,69 +17,95 @@ export type Signable = (string | number | bigint | InstanceType<typeof KeetaNetL
  * Structural input to {@link objectToSignable}.
  */
 export type SignableInput =
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	{ [key: string | number | symbol]: any } |
+	{ [key: string | number | symbol]: unknown } |
 	SignableInput[] |
 	Signable[number] |
 	undefined |
 	null |
 	boolean;
 
-/** DoS guard for {@link objectToSignable}. */
-const TO_SIGNABLE_MAX_QUEUE_LENGTH = 250;
+const TO_SIGNABLE_MAX_TOKENS = 1000;
+
+const OBJECT_OPEN = '{';
+const OBJECT_CLOSE = '}';
+const ARRAY_OPEN = '[';
+const ARRAY_CLOSE = ']';
+const NULL_MARKER = 'null';
 
 /**
- * Canonicalize a tree into a deterministic {@link Signable}.
+ * Canonicalize a tree into a flat {@link Signable}.
  *
- * Drops `undefined`/`null`, encodes booleans as 1/0, sorts the flattened
- * dot/index key path with a stable locale comparator.
+ * Objects: sort keys by codepoint, frame with `{`/`}`, drop nullish values.
+ * Arrays: keep index order, frame with `[`/`]`, replace nullish entries
+ * with {@link NULL_MARKER}. Booleans become `1`/`0`.
  */
 export function objectToSignable(item: SignableInput): Signable {
-	const queue: [ string, SignableInput ][] = [[ '', item ]];
-	const result: [ string, Signable[number] ][] = [];
+	const result: Signable = [];
 
-	while (queue.length > 0) {
-		const next = queue.shift();
-		if (!next) {
-			continue;
-		}
-
-		const [ prefix, current ] = next;
-		if (current === null || current === undefined) {
-			continue;
-		}
-
-		if (typeof current === 'boolean') {
-			result.push([ prefix, current ? 1 : 0 ]);
-		} else if (Array.isArray(current)) {
-			for (let i = 0; i < current.length; i++) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				queue.push([ `${prefix}[${i}]`, current[i] as SignableInput ]);
-			}
-		} else if (typeof current === 'object') {
-			for (const [ key, value ] of Object.entries(current)) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableInput ]);
-			}
-		} else {
-			result.push([ prefix, current ]);
-		}
-
-		if (queue.length > TO_SIGNABLE_MAX_QUEUE_LENGTH) {
+	function emit(token: Signable[number]): void {
+		result.push(token);
+		if (result.length > TO_SIGNABLE_MAX_TOKENS) {
 			throw(new KeetaAnchorUserError('Too much data to sign in objectToSignable'));
 		}
 	}
 
-	result.sort((a, b) => {
-		return(a[0].localeCompare(b[0], 'en-US', {
-			usage: 'sort',
-			numeric: true,
-			sensitivity: 'case',
-			ignorePunctuation: false
-		}));
-	});
+	function walk(current: unknown): void {
+		if (current === null || current === undefined) {
+			emit(NULL_MARKER);
+			return;
+		}
 
-	return(result.map(item => item[1]));
+		if (typeof current === 'boolean') {
+			emit(current ? 1 : 0);
+			return;
+		}
+
+		if (Array.isArray(current)) {
+			emit(ARRAY_OPEN);
+
+			for (const value of current) {
+				walk(value);
+			}
+
+			emit(ARRAY_CLOSE);
+			return;
+		}
+
+		if (typeof current === 'object' && !KeetaNetLib.Account.isInstance(current)) {
+			emit(OBJECT_OPEN);
+
+			const entries = Object.entries(current).filter(([ , value ]) => value !== null && value !== undefined);
+			entries.sort(([ a ], [ b ]) => {
+				if (a < b) {
+					return(-1);
+				}
+				if (a > b) {
+					return(1);
+				}
+
+				return(0);
+			});
+
+			for (const [ key, value ] of entries) {
+				emit(key);
+				walk(value);
+			}
+
+			emit(OBJECT_CLOSE);
+			return;
+		}
+
+		if (typeof current === 'string' || typeof current === 'number' || typeof current === 'bigint' || KeetaNetLib.Account.isInstance(current)) {
+			emit(current);
+			return;
+		}
+
+		throw(new KeetaAnchorError('Unsupported value type in objectToSignable'));
+	}
+
+	walk(item);
+
+	return(result);
 }
 
 /**
