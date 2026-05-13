@@ -1,7 +1,8 @@
 import { KeetaNet } from '../../client/index.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -19,6 +20,7 @@ import {
 } from './common.js';
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 
 const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
 
@@ -29,7 +31,7 @@ const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba9
  */
 type BaseCertificate = InstanceType<typeof KeetaNet.lib.Utils.Certificate.Certificate>;
 
-export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
 	 */
@@ -146,7 +148,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorHTTPServer.KeetaA
 	routes?: KeetaAnchorHTTPServer.Routes;
 };
 
-export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorKYCServerConfig> implements Required<KeetaAnchorKYCServerConfig> {
+export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['kyc']>[string], KeetaAnchorKYCServerConfig> implements Required<KeetaAnchorKYCServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorKYCServerConfig['homepage']>;
 	readonly client: KeetaAnchorKYCServerConfig['client'];
 	readonly signer: NonNullable<KeetaAnchorKYCServerConfig['signer']>;
@@ -330,7 +332,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetA
 		});
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['kyc']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['kyc']>[string]> {
 		return({
 			ca: this.ca.toPEM(),
 			countryCodes: this.#countryCodes?.map(function(country) {

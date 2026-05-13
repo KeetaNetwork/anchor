@@ -1,5 +1,6 @@
 import { KeetaNet } from '../../client/index.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
 	KeetaUsernameAnchorAccountResolutionContext,
@@ -22,6 +23,7 @@ import {
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { verifyBodyAuth } from '../../lib/http-server/common.js';
 import * as Signing from '../../lib/utils/signing.js';
@@ -45,7 +47,7 @@ function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
 type ClaimHandlerResponse = { ok: true; } | { ok: false; taken?: false; } | { ok: false; taken: true; };
 type SearchHandlerResponse = { results: KeetaUsernameAnchorUsernameWithAccount[] };
 
-export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorMetadataServerConfig {
 	homepage?: string | (() => Promise<string> | string);
 	usernames: {
 		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
@@ -60,7 +62,7 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 	usernamePattern?: string | RegExp;
 }
 
-export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorUsernameServerConfig> {
+export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['username']>[string], KeetaAnchorUsernameServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorUsernameServerConfig['homepage']>;
 	readonly usernames: KeetaAnchorUsernameServerConfig['usernames'];
 	readonly routes: NonNullable<KeetaAnchorUsernameServerConfig['routes']>;
@@ -299,7 +301,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
 		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
 			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()

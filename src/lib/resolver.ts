@@ -12,7 +12,12 @@ import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCa
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
-import type { SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension } from './metadata.types.js';
+import type { SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import type { VerifiableAccount } from './utils/signing.js';
+import type { HTTPSignedField } from './http-server/common.js';
+import type { SignableServiceMetadata } from './anchor-metadata-server.js';
+import { assertHTTPSignedField } from './http-server/common.js';
+import { verifyMetadataSignature } from './anchor-metadata-server.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -57,7 +62,7 @@ type ServiceMetadata = {
 	};
 	services: {
 		banking?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					createAccount?: string;
 				};
@@ -67,7 +72,7 @@ type ServiceMetadata = {
 			};
 		};
 		kyc?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Check if the KYC provider can
@@ -117,7 +122,7 @@ type ServiceMetadata = {
 			/**
 			 * Provider ID which identifies the FX provider
 			 */
-			[id: string]: SharedAnchorMetadataLegalExtension & {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Get an estimate for a currency
@@ -182,7 +187,7 @@ type ServiceMetadata = {
 			}
 		};
 		username?: {
-			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					resolve: ServiceMetadataEndpoint;
 					claim?: ServiceMetadataEndpoint;
@@ -198,7 +203,7 @@ type ServiceMetadata = {
 			}
 		};
 		assetMovement?: {
-			[id: string]: SharedAnchorMetadataLegalExtension & {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					[Operation in (
 						'initiateTransfer' |
@@ -227,7 +232,7 @@ type ServiceMetadata = {
 			};
 		};
 		storage?: {
-			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					put?: ServiceMetadataEndpoint;
 					get?: ServiceMetadataEndpoint;
@@ -263,7 +268,7 @@ type ServiceMetadata = {
 			};
 		};
 		notification?: {
-			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				supportedChannels?: Partial<SupportedChannelConfigurationMetadata>;
 				supportedSubscriptions?: NotificationSubscriptionType[];
 
@@ -1424,6 +1429,82 @@ type ResolverStats = {
 
 type SharedLookupCriteria = { providerIDs?: string[]; };
 
+/**
+ * Wraps a resolved object so subsequent `('object')` calls hit the cached
+ * value instead of re-entering {@link Metadata.value} (which short-circuits
+ * to `null` on a second call due to the circular-reference guard).
+ */
+function wrapResolvedAsValuizableMethod(resolved: ValuizableObject): ValuizableMethod {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return((async function(expect: ValuizableKind = 'any') {
+		if (expect === 'any' || expect === 'object') {
+			return(resolved);
+		}
+
+		throw(new Error(`expected ${expect}, got object`));
+	}) as ValuizableMethod);
+}
+
+/**
+ * Casts a fully-resolved `JSONSerializable` to its expected typed shape.
+ */
+function asResolved<T>(value: JSONSerializable): T {
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(value as T);
+}
+
+/**
+ * Verify the optional metadata signature on a service entry.
+ *
+ * @returns boolean:
+ * - `true` when the entry has neither `account` nor `signed`.
+ * - `false` when one is present without the other or when verification fails.
+ */
+async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logger?: Logger): Promise<boolean> {
+	const accountValuizable = entry['account'];
+	const signedValuizable = entry['signed'];
+
+	if (accountValuizable === undefined && signedValuizable === undefined) {
+		return(true);
+	}
+	if (accountValuizable === undefined || signedValuizable === undefined) {
+		return(false);
+	}
+
+	const accountString = await accountValuizable('string');
+	let account: VerifiableAccount;
+	try {
+		account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
+	} catch {
+		return(false);
+	}
+
+	const signedRaw = await Metadata.fullyResolveValuizable(signedValuizable);
+	let signed: HTTPSignedField;
+	try {
+		signed = assertHTTPSignedField(signedRaw);
+	} catch {
+		return(false);
+	}
+
+	const operationsValuizable = entry['operations'];
+	if (operationsValuizable === undefined) {
+		return(false);
+	}
+
+	const operations = asResolved<SignableServiceMetadata['operations']>(await Metadata.fullyResolveValuizable(operationsValuizable));
+	const metadata: SignableServiceMetadata = { operations };
+	const legalValuizable = entry['legal'];
+	if (legalValuizable !== undefined) {
+		const legal = await Metadata.fullyResolveValuizable(legalValuizable);
+		if (legal !== null) {
+			metadata.legal = asResolved<NonNullable<SignableServiceMetadata['legal']>>(legal);
+		}
+	}
+
+	return(await verifyMetadataSignature(account, metadata, signed));
+}
+
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -2486,6 +2567,49 @@ class Resolver {
 		});
 	}
 
+	/**
+	 * Drop service entries whose signature does not verify. Entries without
+	 * `account` pass through. Resolved values are wrapped to avoid a second
+	 * URL fetch by downstream service search.
+	 */
+	async #filterSignedServiceEntries(servicesByID: ValuizableObject | undefined): Promise<ValuizableObject | undefined> {
+		if (servicesByID === undefined) {
+			return(undefined);
+		}
+
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			let resolved: ValuizableObject;
+			try {
+				resolved = await entry('object');
+			} catch (resolveError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Could not pre-resolve service entry', id, 'for signature verification:', resolveError);
+
+				retval[id] = entry;
+				continue;
+			}
+
+			try {
+				const valid = await verifyServiceEntrySignature(resolved, this.#logger);
+				if (!valid) {
+					this.#logger?.debug(`Resolver:${this.id}`, 'Dropping service entry', id, 'due to invalid signature');
+					continue;
+				}
+			} catch (verifyError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error verifying signature for service entry', id, ':', verifyError, ' -- dropping');
+				continue;
+			}
+
+			retval[id] = wrapResolvedAsValuizableMethod(resolved);
+		}
+
+		return(retval);
+	}
+
 	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
@@ -2514,6 +2638,8 @@ class Resolver {
 		} else {
 			filteredDefinedServicesObject = definedServicesObject;
 		}
+
+		filteredDefinedServicesObject = await this.#filterSignedServiceEntries(filteredDefinedServicesObject);
 
 		const serviceLookup = this.lookupMap[service].search;
 

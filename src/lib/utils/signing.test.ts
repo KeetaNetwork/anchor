@@ -126,6 +126,73 @@ const verifyOptionsCases = [
 	}
 ];
 
+const objectToSignableCases: { name: string; input: Signing.SignableInput; expected: Signing.Signable }[] = [
+	{
+		name: 'flat object sorts keys lexicographically',
+		input: { z: 1, a: 'first', m: 'middle' },
+		expected: ['first', 'middle', 1]
+	},
+	{
+		name: 'nested object flattens with dot-prefixed keys',
+		input: { outer: { inner: 'v' }, top: 't' },
+		expected: ['v', 't']
+	},
+	{
+		name: 'arrays preserve index order via [i] suffix',
+		input: { items: ['a', 'b', 'c'] },
+		expected: ['a', 'b', 'c']
+	},
+	{
+		name: 'undefined and null entries are dropped',
+		input: { a: 'kept', b: undefined, c: null },
+		expected: ['kept']
+	},
+	{
+		name: 'booleans encode as 1/0',
+		input: { yes: true, no: false },
+		expected: [0, 1]
+	},
+	{
+		name: 'object key insertion order does not affect output',
+		input: { b: 2, a: 1 },
+		expected: [1, 2]
+	}
+];
+
+for (const testCase of objectToSignableCases) {
+	test(`objectToSignable: ${testCase.name}`, function() {
+		const out = Signing.objectToSignable(testCase.input);
+		expect(out).toEqual(testCase.expected);
+	});
+}
+
+test('objectToSignable: equivalent inputs produce identical sign-and-verify output', async function() {
+	const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
+
+	const a = Signing.objectToSignable({ a: 1, b: { c: 'x', d: 'y' }});
+	const b = Signing.objectToSignable({ b: { d: 'y', c: 'x' }, a: 1 });
+	expect(a).toEqual(b);
+
+	const signed = await Signing.SignData(account, a);
+	const isValid = await Signing.VerifySignedData(account, b, signed);
+	expect(isValid).toBe(true);
+});
+
+test('objectToSignable: omitted-undefined and dropped-key produce identical bytes', function() {
+	const withUndefined = Signing.objectToSignable({ a: 'kept', b: undefined });
+	const withoutKey = Signing.objectToSignable({ a: 'kept' });
+	expect(withUndefined).toEqual(withoutKey);
+});
+
+test('objectToSignable: throws when queue exceeds DoS guard', function() {
+	const big: { [key: string]: string } = {};
+	for (let i = 0; i < 300; i++) {
+		big[`k${i}`] = `v${i}`;
+	}
+
+	expect(() => Signing.objectToSignable(big)).toThrow();
+});
+
 for (const testCase of verifyOptionsCases) {
 	test(`VerifySignedData: ${testCase.name}`, async function() {
 		const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);

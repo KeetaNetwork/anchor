@@ -4,13 +4,83 @@ import type {
 	ASN1AnyJS as KeetaNetASN1AnyJS
 } from '@keetanetwork/keetanet-client/lib/utils/asn1.js';
 
-import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
+import { Buffer, bufferToArrayBuffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import crypto from '../../lib/utils/crypto.js';
 import { assertNever } from '../../lib/utils/never.js';
+import { KeetaAnchorUserError } from '../error.js';
 
 export type SignableAccount = ReturnType<InstanceType<typeof KeetaNetLib.Account>['assertAccount']>;
 export type VerifiableAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type Signable = (string | number | bigint | InstanceType<typeof KeetaNetLib.Account>)[];
+
+/**
+ * Structural input to {@link objectToSignable}.
+ */
+export type SignableInput =
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	{ [key: string | number | symbol]: any } |
+	SignableInput[] |
+	Signable[number] |
+	undefined |
+	null |
+	boolean;
+
+/** DoS guard for {@link objectToSignable}. */
+const TO_SIGNABLE_MAX_QUEUE_LENGTH = 250;
+
+/**
+ * Canonicalize a tree into a deterministic {@link Signable}.
+ *
+ * Drops `undefined`/`null`, encodes booleans as 1/0, sorts the flattened
+ * dot/index key path with a stable locale comparator.
+ */
+export function objectToSignable(item: SignableInput): Signable {
+	const queue: [ string, SignableInput ][] = [[ '', item ]];
+	const result: [ string, Signable[number] ][] = [];
+
+	while (queue.length > 0) {
+		const next = queue.shift();
+		if (!next) {
+			continue;
+		}
+
+		const [ prefix, current ] = next;
+		if (current === null || current === undefined) {
+			continue;
+		}
+
+		if (typeof current === 'boolean') {
+			result.push([ prefix, current ? 1 : 0 ]);
+		} else if (Array.isArray(current)) {
+			for (let i = 0; i < current.length; i++) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				queue.push([ `${prefix}[${i}]`, current[i] as SignableInput ]);
+			}
+		} else if (typeof current === 'object') {
+			for (const [ key, value ] of Object.entries(current)) {
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableInput ]);
+			}
+		} else {
+			result.push([ prefix, current ]);
+		}
+
+		if (queue.length > TO_SIGNABLE_MAX_QUEUE_LENGTH) {
+			throw(new KeetaAnchorUserError('Too much data to sign in objectToSignable'));
+		}
+	}
+
+	result.sort((a, b) => {
+		return(a[0].localeCompare(b[0], 'en-US', {
+			usage: 'sort',
+			numeric: true,
+			sensitivity: 'case',
+			ignorePunctuation: false
+		}));
+	});
+
+	return(result.map(item => item[1]));
+}
 
 /**
  * Options for signature verification
@@ -72,7 +142,7 @@ export function FormatData(account: VerifiableAccount, data: Signable, nonce?: s
 	return({
 		nonce: nonce,
 		timestamp: timestampString,
-		verificationData: Buffer.from(verificationData.toBER())
+		verificationData: arrayBufferLikeToBuffer(verificationData.toBER())
 	});
 }
 

@@ -5,6 +5,8 @@ import { createAssert } from 'typia';
 import Resolver from './resolver.js';
 import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
 import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
+import { SignData, objectToSignable } from './utils/signing.js';
+import { extractSignedFields } from './anchor-metadata-server.js';
 
 async function setupForResolverTests() {
 	const testAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
@@ -12,6 +14,7 @@ async function setupForResolverTests() {
 	const testAccountExternal = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const testAccountExternalRef = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const testAccountLoop = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const metadataSigner = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0).assertAccount();
 	const testCurrencyUSD = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyMXN = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyBTC = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -51,6 +54,40 @@ async function setupForResolverTests() {
 		external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 		url: `keetanet://${testAccountLoop.publicKeyString.get()}/metadata`
 	});
+
+	/*
+	 * Banking entries that exercise the metadata signature gate:
+	 * - keeta_signed: valid signature, MUST appear in lookups
+	 * - keeta_signed_tampered: signature does not cover the published
+	 *   operations, MUST be dropped
+	 * - keeta_signed_missing: account present without `signed`, MUST be dropped
+	 */
+	const signedBankingOperations = {
+		createAccount: 'https://banchor.signed.com/api/v1/createAccount'
+	};
+	const signedBankingAccount = metadataSigner.publicKeyString.get();
+	const signedBankingFields = extractSignedFields(signedBankingAccount, { operations: signedBankingOperations });
+	const signedBankingSignable = objectToSignable(signedBankingFields);
+	const signedBankingSignature = await SignData(metadataSigner, signedBankingSignable);
+	const signedBankingEntry = {
+		operations: signedBankingOperations,
+		countryCodes: ['US'],
+		currencyCodes: ['USD'],
+		kycProviders: ['Keeta'],
+		account: signedBankingAccount,
+		signed: signedBankingSignature
+	};
+	const tamperedBankingEntry = {
+		...signedBankingEntry,
+		operations: { createAccount: 'https://banchor.attacker.com/api/v1/createAccount' }
+	};
+	const missingSignatureBankingEntry = {
+		operations: { createAccount: 'https://banchor.missing-signature.com/api/v1/createAccount' },
+		countryCodes: ['US'],
+		currencyCodes: ['USD'],
+		kycProviders: ['Keeta'],
+		account: metadataSigner.publicKeyString.get()
+	};
 
 	/*
 	 * Set the metadata for the root account
@@ -99,6 +136,9 @@ async function setupForResolverTests() {
 						currencyCodes: ['MXN'],
 						kycProviders: ['Keeta']
 					},
+					keeta_signed: signedBankingEntry,
+					keeta_signed_tampered: tamperedBankingEntry,
+					keeta_signed_missing: missingSignatureBankingEntry,
 					keeta_https: {
 						/* HTTPS Link */
 						external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
@@ -173,7 +213,7 @@ async function setupForResolverTests() {
 		 */
 		brokenServiceMetadata: {
 			services: {
-				banking: ['keeta_https', testAccountLoop.publicKeyString.get(), 'keeta_broken1', 'keeta_broken2', 'keeta_broken3', 'keeta_broken4', 'keeta_nomatch1', 'keeta_nomatch2']
+				banking: ['keeta_https', testAccountLoop.publicKeyString.get(), 'keeta_broken1', 'keeta_broken2', 'keeta_broken3', 'keeta_broken4', 'keeta_nomatch1', 'keeta_nomatch2', 'keeta_signed_tampered', 'keeta_signed_missing']
 			}
 		}
 	});
@@ -191,12 +231,12 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: ['US' as const]
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const]
@@ -212,7 +252,7 @@ test('Basic Tests', async function() {
 				countryCodes: ['US' as const],
 				currencyCodes: ['USD' as const]
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				countryCodes: ['MX' as const] ,
@@ -268,31 +308,31 @@ test('Basic Tests', async function() {
 			input: {
 				countryCodes: undefined
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				// @ts-expect-error
 				currencyCodes: null
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			// @ts-expect-error
 			input: {
 				countryCodes: undefined
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				// @ts-expect-error
 				countryCodes: null
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}, {
 			input: {
 				// @ts-expect-error
 				countryCodes: '123'
 			},
-			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount']
+			createAccount: ['https://banchor.testaccountexternal.com/api/v1/createAccount', 'https://banchor.signed.com/api/v1/createAccount']
 		}],
 		kyc: [],
 		fx: []
@@ -631,15 +671,21 @@ test('Concurrent Lookups', async function() {
 			throw(new Error('internal error: lookupResults is undefined'));
 		}
 
-		/*
-		 * Just look at the first result
-		 */
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const lookupResult = lookupResults[Object.keys(lookupResults)[0] as keyof typeof lookupResults];
+		const foundCreateAccountURLs: string[] = [];
+		for (const lookupResultID of Object.keys(lookupResults)) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const lookupResult = lookupResults[lookupResultID as keyof typeof lookupResults];
+			const operations = await lookupResult?.operations('object');
+			const createAccount = await operations?.createAccount?.('string');
+			if (createAccount !== undefined) {
+				foundCreateAccountURLs.push(createAccount);
+			}
+		}
 
-		const operations = await lookupResult?.operations('object');
-		const createAccount = await operations?.createAccount?.('string');
-		expect(createAccount).toEqual('https://banchor.testaccountexternal.com/api/v1/createAccount');
+		expect(foundCreateAccountURLs.sort()).toEqual([
+			'https://banchor.signed.com/api/v1/createAccount',
+			'https://banchor.testaccountexternal.com/api/v1/createAccount'
+		]);
 	}
 
 	expect(resolver.stats.cache.miss).toEqual(initialCacheStats.miss);

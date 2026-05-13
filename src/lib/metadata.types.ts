@@ -26,6 +26,19 @@ export interface SharedAnchorMetadataLegalExtension {
 	legal?: AnchorMetadataLegalField;
 }
 
+/**
+ * Signature over `{ operations, legal }` for a service entry. When `account`
+ * is set, `signed` MUST be present and verify against it.
+ */
+export type SharedAnchorMetadataSignedExtension = {
+	account?: string;
+	signed?: {
+		nonce: string;
+		timestamp: string;
+		signature: string;
+	};
+};
+
 export type SharedAnchorCallerCertificateRequirementMetadata = {
 	/**
 	 * Issuer DNs this anchor accepts for caller authentication. Outer array

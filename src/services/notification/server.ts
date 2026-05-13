@@ -1,5 +1,6 @@
 import { KeetaNet } from '../../client/index.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
 	KeetaNotificationAnchorRegisterTargetClientRequest,
 	KeetaNotificationAnchorListTargetsClientRequest,
@@ -31,10 +32,11 @@ import {
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
 import type { Routes } from '../../lib/http-server/index.js';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import { verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
 
-export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorMetadataServerConfig {
 	homepage?: string | (() => Promise<string> | string);
 	notification: {
 		registerTarget?: (args: Required<KeetaNotificationAnchorRegisterTargetClientRequest>) => Promise<{ id: string; }>;
@@ -51,7 +53,7 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServ
 	routes?: Routes;
 }
 
-export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorNotificationServerConfig> {
+export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['notification']>[string], KeetaAnchorNotificationServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorNotificationServerConfig['homepage']>;
 	readonly notification: KeetaAnchorNotificationServerConfig['notification'];
 	readonly routes: NonNullable<KeetaAnchorNotificationServerConfig['routes']>;
@@ -223,7 +225,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['notification']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['notification']>[string]> {
 		const retval: NonNullable<ServiceMetadata['services']['notification']>[string] = { operations: {}};
 
 		const authentication: ServiceMetadataAuthenticationType = {
