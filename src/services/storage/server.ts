@@ -1,11 +1,9 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { NamespaceValidator } from './lib/validators.js';
+import type { ResolvedCertificateChainRequirement } from '../../lib/utils/certificate-network.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
-import { KeetaNet } from '../../client/index.js';
-import {
-	KeetaAnchorUserError
-} from '../../lib/error.js';
+import type { KeetaNet } from '../../client/index.js';
 import type {
 	KeetaStorageAnchorDeleteResponse,
 	KeetaStorageAnchorPutResponse,
@@ -44,7 +42,7 @@ import {
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
-import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
+import { parseSignatureFromURL, verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
 import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators } from './lib/validators.js';
 import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
@@ -121,83 +119,6 @@ function parsePath(
 }
 
 /**
- * Verify a signed request from POST body.
- * Extracts account and signature from the request, verifies the signature,
- * and returns the authenticated account.
- *
- * @typeParam T - Request type containing optional account and signed fields
- *
- * @param request - The request object containing account and signed fields
- * @param getSigningData - Function to extract signable data from the request
- *
- * @returns The authenticated account
- *
- * @throws KeetaAnchorUserError if authentication is missing or invalid
- */
-async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
-	request: T,
-	getSigningData: (req: T) => Signable
-): Promise<Account> {
-	if (!request.account || !request.signed) {
-		throw(new KeetaAnchorUserError('Authentication required'));
-	}
-
-	const account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
-	const signable = getSigningData(request);
-	const signed = assertHTTPSignedField(request.signed);
-
-	const valid = await VerifySignedData(account, signable, signed);
-	if (!valid) {
-		throw(new KeetaAnchorUserError('Invalid signature'));
-	}
-
-	return(account);
-}
-
-/**
- * Verify a signed request from URL query parameters.
- * Parses signature from URL, builds a request object, verifies the signature,
- * and returns the authenticated account.
- *
- * @typeParam T - Request type to build from the account public key
- *
- * @param url - The URL containing signature query parameters
- * @param getSigningData - Function to extract signable data from the request
- * @param buildRequest - Function to build a request object from the account public key
- *
- * @returns The authenticated account
- *
- * @throws KeetaAnchorUserError if authentication is missing or invalid
- */
-async function verifyURLAuth<T>(
-	url: URL | string,
-	getSigningData: (req: T) => Signable,
-	buildRequest: (accountPubKey: string) => T
-): Promise<Account> {
-	let urlString: string;
-	if (typeof url === 'string') {
-		urlString = url;
-	} else {
-		urlString = url.href;
-	}
-
-	const parsed = parseSignatureFromURL(urlString);
-	if (!parsed.account || !parsed.signedField) {
-		throw(new KeetaAnchorUserError('Authentication required'));
-	}
-
-	const request = buildRequest(parsed.account.publicKeyString.get());
-	const signable = getSigningData(request);
-
-	const valid = await VerifySignedData(parsed.account, signable, parsed.signedField);
-	if (!valid) {
-		throw(new KeetaAnchorUserError('Invalid signature'));
-	}
-
-	return(parsed.account);
-}
-
-/**
  * Extract object path from wildcard route parameter.
  * Prepends a leading slash to create a valid storage path.
  *
@@ -220,35 +141,24 @@ function extractObjectPath(params: Map<string, string>): string {
  * Authorize access to an object path via URL-signed request.
  * Combines path validation, signature verification, and access control.
  *
- * @typeParam T - Request type to build from path and account
- *
- * @param pathPolicies - Array of path policies to check against
- * @param params - Route parameters containing the wildcard path
- * @param url - The URL containing signature query parameters
- * @param operation - The operation being authorized
- * @param getSigningData - Function to extract signable data from the request
- * @param buildRequest - Function to build a request object from path and account
- *
- * @returns The authenticated account and validated object path
- *
  * @throws InvalidPath if path is invalid or doesn't match any policy
  * @throws AccessDenied if user doesn't have access to the path
  * @throws KeetaAnchorUserError if signature is invalid
  */
-async function authorizeURLAccess<T>(
+async function authorizeURLAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	params: Map<string, string>,
 	url: URL | string,
 	operation: StorageOperation,
-	getSigningData: (req: T) => Signable,
-	buildRequest: (path: string, accountPubKey: string) => T
+	getSignable: (objectPath: string, account: Account) => Signable,
+	certificateChain?: ResolvedCertificateChainRequirement
 ): Promise<{ account: Account; objectPath: string; policy: PathPolicy<unknown>; parsed: unknown }> {
 	const objectPath = extractObjectPath(params);
 	const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
-	const account = await verifyURLAuth(url, getSigningData, function(pubKey) {
-		return(buildRequest(objectPath, pubKey));
-	});
+	const account = await verifyURLAuth(url, function(account) {
+		return(getSignable(objectPath, account));
+	}, certificateChain);
 
 	if (!policy.checkAccess(account, parsed, operation)) {
 		throw(new Errors.AccessDenied('Can only access your own namespace'));
@@ -407,7 +317,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly authenticatedCorsOrigin: string;
 	readonly pathPolicies: PathPolicy<unknown>[];
 	readonly tagValidation: Required<NonNullable<KeetaAnchorStorageServerConfig['tagValidation']>>;
-
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
 
@@ -473,6 +382,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const publicCorsOrigin = this.publicCorsOrigin;
 		const authenticatedCorsOrigin = this.authenticatedCorsOrigin;
 		const pathPolicies = this.pathPolicies;
+		const requireCertificateChain = this.resolvedCertificateChainRequirement;
 		const tagValidation = this.tagValidation;
 		const logger = this.logger;
 
@@ -594,9 +504,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					});
 
 				// Verify signature
-				const account = await verifyURLAuth(url, getKeetaStorageAnchorPutRequestSigningData, function() {
-					return({ path: objectPath, visibility, tags: rawTags });
-				});
+				const account = await verifyURLAuth(url, function() {
+					return(getKeetaStorageAnchorPutRequestSigningData({ path: objectPath, visibility, tags: rawTags }));
+				}, requireCertificateChain);
 
 				validateTags(rawTags);
 				const tags = rawTags;
@@ -712,10 +622,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				params,
 				url,
 				'get',
-				getKeetaStorageAnchorGetRequestSigningData,
-				function(path, pubKey) {
-					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorGetRequestSigningData(assertKeetaStorageAnchorGetRequest({ path, account: signingAccount.publicKeyString.get() })));
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -742,10 +652,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				params,
 				url,
 				'delete',
-				getKeetaStorageAnchorDeleteRequestSigningData,
-				function(path, pubKey) {
-					return({ path, account: pubKey });
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorDeleteRequestSigningData({ path, account: signingAccount.publicKeyString.get() }));
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -768,10 +678,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				params,
 				url,
 				'metadata',
-				getKeetaStorageAnchorGetRequestSigningData,
-				function(path, pubKey) {
-					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorGetRequestSigningData(assertKeetaStorageAnchorGetRequest({ path, account: signingAccount.publicKeyString.get() })));
+				},
+				requireCertificateChain
 			);
 
 			if (policy.validateContext) {
@@ -792,7 +702,9 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				visibility: request.visibility,
 				tags: request.tags
 			});
-			const account = await verifyBodyAuth(request, function() { return(signable); });
+			const account = await verifyBodyAuth(request, function() {
+				return(signable);
+			}, requireCertificateChain);
 
 			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'updateMetadata');
 
@@ -822,7 +734,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		// POST /api/search - Search for objects
 		routes['POST /api/search'] = async function(_params, postData) {
 			const request = assertKeetaStorageAnchorSearchRequest(postData);
-			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
+			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData, requireCertificateChain);
 			const accountPubKey = account.publicKeyString.get();
 
 			// Check if searching for public objects outside namespace
@@ -865,8 +777,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		routes['GET /api/quota'] = async function(_params, _postData, _headers, url) {
 			const account = await verifyURLAuth(
 				url,
-				getKeetaStorageAnchorQuotaRequestSigningData,
-				function() { return({}); }
+				function() { return(getKeetaStorageAnchorQuotaRequestSigningData({})); },
+				requireCertificateChain
 			);
 
 			// Get current usage from backend and compute remaining using per-user or global limits
@@ -998,6 +910,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
 		const authRequired = { options: { authentication: { type: 'required' as const, method: 'keeta-account' as const }}};
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['storage']>[string]['operations'] = {
 			put: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			get: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
@@ -1014,7 +927,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			anchorAccount: this.anchorAccount.publicKeyString.get(),
 			quotas: this.quotas,
 			signedUrlDefaultTTL: this.signedUrlDefaultTTL,
-			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix']
+			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix'],
+			...(acceptedIssuerDNs !== undefined && { acceptedIssuerDNs })
 		});
 	}
 }

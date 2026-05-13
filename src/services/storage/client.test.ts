@@ -1,15 +1,19 @@
 import { test, expect, describe, assert } from 'vitest';
+
+import type { KeetaAnchorStorageServerConfig } from './server.js';
+import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
+import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+import type { KeetaStorageAnchorProvider } from './client.js';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient, setResolverInfo } from '../../lib/utils/tests/node.js';
-import KeetaAnchorResolver from '../../lib/resolver.js';
+import { buildChain } from '../../lib/utils/tests/certificates.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
-import KeetaStorageAnchorClient, { type KeetaStorageAnchorProvider } from './client.js';
 import { MemoryStorageBackend } from './test-utils.js';
-import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
-import { parseContainerPayload } from './common.js';
-import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
+import { parseContainerPayload, Errors } from './common.js';
 import { testPathPolicy } from './test-utils.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import KeetaAnchorResolver from '../../lib/resolver.js';
+import KeetaStorageAnchorClient from './client.js';
 
 // #region Test Harness
 
@@ -40,6 +44,14 @@ type ClientTestFunction = (context: ClientTestContext) => Promise<void>;
 
 interface WithClientOptions {
 	providerName?: string;
+	/**
+	 * When true, server requires a cert chain. The harness mints
+	 * `root CA -> intermediate CA -> leaf(account)` and publishes the leaf
+	 * (with the intermediate as the supplied chain) on-chain for `account`.
+	 * The trust set is `[rootCA]`, so verification succeeds via the
+	 * supplied intermediate.
+	 */
+	useCertChain?: boolean;
 }
 
 /**
@@ -56,11 +68,26 @@ async function withClient(seed: string | ArrayBuffer, testFunction: ClientTestFu
 
 	const backend = new MemoryStorageBackend();
 
-	await using server = new KeetaNetStorageAnchorHTTPServer({
+	const serverConfig: KeetaAnchorStorageServerConfig = {
 		backend,
 		anchorAccount,
 		pathPolicies: [testPathPolicy]
-	});
+	};
+
+	if (options.useCertChain) {
+		const { root, intermediate, leaf } = await buildChain({
+			rootIssuer: KeetaNet.lib.Account.fromSeed(seed, 200),
+			intermediateIssuer: KeetaNet.lib.Account.fromSeed(seed, 201),
+			leafSubject: account
+		});
+
+		const bundle = new KeetaNet.lib.Utils.Certificate.CertificateBundle([intermediate]);
+		await userClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, leaf, bundle);
+
+		serverConfig.requireCertificateChain = { trustedIssuers: [root], client: userClient.client };
+	}
+
+	await using server = new KeetaNetStorageAnchorHTTPServer(serverConfig);
 
 	await server.start();
 
@@ -141,7 +168,7 @@ describe('Storage Client - Provider Discovery', function() {
 });
 
 describe('Storage Client - Private Object CRUD', function() {
-	test('put and get private object with encrypted container', function() {
+	test('put and get private object with encrypted container (cert-chain enforced)', function() {
 		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
 			const testData = Buffer.from('Hello, World!');
 			const path = makePath('test.txt');
@@ -165,7 +192,68 @@ describe('Storage Client - Private Object CRUD', function() {
 			expect(getResult).not.toBeNull();
 			expect(getResult?.data.toString()).toBe('Hello, World!');
 			expect(getResult?.mimeType).toBe('text/plain');
-		}));
+
+			/*
+			 * An account without a published cert chain is rejected with 401.
+			 */
+			const nonCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			await expect(provider.get({ path, account: nonCertAccount }))
+				.rejects.toSatisfy(function(error: unknown) {
+					return(Errors.CertificateRequired.isInstance(error) && error.kind === 'missing' && error.statusCode === 401);
+				});
+		}, { useCertChain: true }));
+	});
+
+	test('cert-chain enforcement rejects account whose cert does not chain to a trusted issuer (403)', function() {
+		return(withClient(randomSeed(), async function({ provider, userClient, makePath }) {
+			const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+			const untrustedRootIssuer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+			const { leaf: untrustedLeaf } = await buildChain({
+				rootIssuer: untrustedRootIssuer,
+				leafSubject: otherAccount
+			});
+
+			const otherUserClient = new KeetaNet.UserClient({
+				client: userClient.client,
+				signer: otherAccount,
+				usePublishAid: false,
+				network: userClient.network,
+				networkAlias: 'test'
+			});
+			await otherUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, untrustedLeaf, null);
+
+			/*
+			 * An account with a cert chain that does not chain to a trusted issuer is rejected with 403.
+			 */
+			const path = makePath('any.txt');
+			await expect(provider.get({ path, account: otherAccount }))
+				.rejects.toSatisfy(function(error: unknown) {
+					return(Errors.CertificateRequired.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
+				});
+		}, { useCertChain: true }));
+	});
+
+	test('cert-chain enforcement does not gate pre-signed public URLs (anonymous fetch)', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount, makePath }) {
+			const path = makePath('public.txt');
+			const data = Buffer.from('public via signed url under cert gate');
+
+			await provider.put({
+				path,
+				data,
+				mimeType: 'text/plain',
+				visibility: 'public',
+				account,
+				anchorAccount
+			});
+
+			const publicUrl = await provider.getPublicUrl({ path, ttl: 3600, account });
+			const response = await fetch(publicUrl);
+
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe('public via signed url under cert gate');
+		}, { useCertChain: true }));
 	});
 
 	test('delete removes object', function() {

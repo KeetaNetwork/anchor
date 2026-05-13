@@ -2,7 +2,7 @@ import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { EncryptedContainer } from '../../lib/encrypted-container.js';
-import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
+import { KeetaAnchorUserError, KeetaAnchorUserValidationError, KeetaAnchorCertificateRequiredError } from '../../lib/error.js';
 import { Buffer, arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 
 /**
@@ -1006,6 +1006,7 @@ export const Errors: {
 	InvariantViolation: typeof KeetaStorageAnchorInvariantViolationError;
 	InvalidTag: typeof KeetaStorageAnchorInvalidTagError;
 	InvalidMetadata: typeof KeetaStorageAnchorInvalidMetadataError;
+	CertificateRequired: typeof KeetaAnchorCertificateRequiredError;
 } = {
 	/**
 	 * The requested document/object was not found
@@ -1100,7 +1101,13 @@ export const Errors: {
 	/**
 	 * Metadata validation failed against path policy constraints
 	 */
-	InvalidMetadata: KeetaStorageAnchorInvalidMetadataError
+	InvalidMetadata: KeetaStorageAnchorInvalidMetadataError,
+
+	/**
+	 * Caller account does not have a certificate chaining to a configured
+	 * trusted issuer.
+	 */
+	CertificateRequired: KeetaAnchorCertificateRequiredError
 };
 
 // #endregion

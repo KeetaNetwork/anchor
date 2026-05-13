@@ -26,6 +26,16 @@ export interface SharedAnchorMetadataLegalExtension {
 	legal?: AnchorMetadataLegalField;
 }
 
+export type SharedAnchorCallerCertificateRequirementMetadata = {
+	/**
+	 * Issuer DNs this anchor accepts for caller authentication. Outer array
+	 * is any-of (OR), inner array is all-of (AND) within a single DN.
+	 * When present, callers MUST present an on-chain certificate that chains
+	 * to an issuer whose subject DN matches one of these.
+	 */
+	acceptedIssuerDNs?: { name: string; value: string }[][];
+};
+
 async function resolveClientRenderableContent(content: ToValuizable<ClientRenderableContent>): Promise<ClientRenderableContent> {
 	const resolved = await content('object');
 
