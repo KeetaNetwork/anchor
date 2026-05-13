@@ -176,12 +176,11 @@ test('notification client registers, lists, and deletes targets through resolver
 type NetworkAccount = ReturnType<typeof KeetaNet.lib.Account.fromSeed>;
 type AnchorClient = NonNullable<Awaited<ReturnType<typeof createNodeAndClient>>['userClient']>;
 
-interface GatedNotificationFixture {
+interface GatedNotificationFixture extends AsyncDisposable {
 	client: AnchorClient;
 	network: NetworkAccount;
 	rootCA: Awaited<ReturnType<typeof buildCert>>;
 	makeCaller: (account: NetworkAccount) => Promise<() => Promise<{ id: string }>>;
-	dispose: () => Promise<void>;
 }
 
 /**
@@ -237,50 +236,48 @@ async function setupGatedNotificationServer(seed: string | ArrayBuffer): Promise
 		}));
 	}
 
-	async function dispose() {
-		await server[Symbol.asyncDispose]();
-		await nodeAndClient[Symbol.asyncDispose]();
-	}
-
-	return({ client, network: providerAccount, rootCA, makeCaller, dispose });
+	return({
+		client,
+		network: providerAccount,
+		rootCA,
+		makeCaller,
+		async [Symbol.asyncDispose]() {
+			await server[Symbol.asyncDispose]();
+			await nodeAndClient[Symbol.asyncDispose]();
+		}
+	});
 }
 
 test('notification cert-gate: account without published cert is rejected (401 missing)', async () => {
-	const gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed());
-	try {
-		const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-		const registerTarget = await gate.makeCaller(noCertAccount);
-		await expect(registerTarget()).rejects.toSatisfy(function(error: unknown) {
-			return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'missing' && error.statusCode === 401);
-		});
-	} finally {
-		await gate.dispose();
-	}
+	await using gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed());
+
+	const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const registerTarget = await gate.makeCaller(noCertAccount);
+	await expect(registerTarget()).rejects.toSatisfy(function(error: unknown) {
+		return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'missing' && error.statusCode === 401);
+	});
 }, 20_000);
 
 test('notification cert-gate: account with cert outside trust set is rejected (403 untrusted)', async () => {
-	const gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed());
-	try {
-		const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-		const { leaf: untrustedLeaf } = await buildChain({
-			rootIssuer: otherAccount,
-			leafSubject: otherAccount
-		});
+	await using gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed());
 
-		const otherUserClient = new KeetaNet.UserClient({
-			client: gate.client.client,
-			signer: otherAccount,
-			usePublishAid: false,
-			network: gate.client.network,
-			networkAlias: 'test'
-		});
-		await otherUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, untrustedLeaf, null);
+	const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { leaf: untrustedLeaf } = await buildChain({
+		rootIssuer: otherAccount,
+		leafSubject: otherAccount
+	});
 
-		const registerTarget = await gate.makeCaller(otherAccount);
-		await expect(registerTarget()).rejects.toSatisfy(function(error: unknown) {
-			return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
-		});
-	} finally {
-		await gate.dispose();
-	}
+	const otherUserClient = new KeetaNet.UserClient({
+		client: gate.client.client,
+		signer: otherAccount,
+		usePublishAid: false,
+		network: gate.client.network,
+		networkAlias: 'test'
+	});
+	await otherUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, untrustedLeaf, null);
+
+	const registerTarget = await gate.makeCaller(otherAccount);
+	await expect(registerTarget()).rejects.toSatisfy(function(error: unknown) {
+		return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
+	});
 }, 20_000);
