@@ -1185,74 +1185,82 @@ class Metadata implements ValuizableInstance {
 		 * To ensure any circular references are handled correctly, we
 		 * keep track of a chain of accessed URLs.  If we see the same
 		 * URL twice, then we have a circular reference.
+		 *
+		 * The URL is removed from the set in the `finally` below once
+		 * this resolution returns, so the set tracks only the active
+		 * recursion chain rather than the lifetime history.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
 			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
-		/*
-		 * Verify that the cache entry is still valid.  If it is not,
-		 * then remove it from the cache.
-		 */
-		const cacheValue = this.#cache.instance.get(cacheKey);
-		if (cacheValue) {
-			const resolvedCacheValue = await cacheValue;
+		try {
+			/*
+			 * Verify that the cache entry is still valid.  If it is not,
+			 * then remove it from the cache.
+			 */
+			const cacheValue = this.#cache.instance.get(cacheKey);
+			if (cacheValue) {
+				const resolvedCacheValue = await cacheValue;
 
-			if (resolvedCacheValue.expires < new Date()) {
-				this.#cache.instance.delete(cacheKey);
+				if (resolvedCacheValue.expires < new Date()) {
+					this.#cache.instance.delete(cacheKey);
+				} else {
+					this.#stats.cache.hit++;
+
+					if (resolvedCacheValue.pass) {
+						return(resolvedCacheValue.value);
+					} else {
+						throw(resolvedCacheValue.error);
+					}
+				}
+			}
+
+			this.#stats.cache.miss++;
+
+			const readPromise = (async (): Promise<URLCacheObjectEntry> => {
+				let retval: JSONSerializable;
+				try {
+					const protocol = url.protocol;
+					if (protocol === 'keetanet:') {
+						retval = await this.readKeetaNetURL(url);
+					} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
+						retval = await this.readHTTPSURL(url);
+					} else {
+						this.#stats.unsupported.reads++;
+						throw(new Error(`Unsupported protocol: ${protocol}`));
+					}
+
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
+
+					return({
+						pass: true,
+						value: retval,
+						expires: new Date(Date.now() + this.#cache.positiveTTL)
+					});
+				} catch (readError) {
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
+
+					return({
+						pass: false,
+						error: readError,
+						expires: new Date(Date.now() + this.#cache.negativeTTL)
+					});
+				}
+			})();
+
+			this.#cache.instance.set(cacheKey, readPromise);
+
+			const resolvedValue = await readPromise;
+
+			if (resolvedValue.pass) {
+				return(resolvedValue.value);
 			} else {
-				this.#stats.cache.hit++;
-
-				if (resolvedCacheValue.pass) {
-					return(resolvedCacheValue.value);
-				} else {
-					throw(resolvedCacheValue.error);
-				}
+				throw(resolvedValue.error);
 			}
-		}
-
-		this.#stats.cache.miss++;
-
-		const readPromise = (async (): Promise<URLCacheObjectEntry> => {
-			let retval: JSONSerializable;
-			try {
-				const protocol = url.protocol;
-				if (protocol === 'keetanet:') {
-					retval = await this.readKeetaNetURL(url);
-				} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
-					retval = await this.readHTTPSURL(url);
-				} else {
-					this.#stats.unsupported.reads++;
-					throw(new Error(`Unsupported protocol: ${protocol}`));
-				}
-
-				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
-
-				return({
-					pass: true,
-					value: retval,
-					expires: new Date(Date.now() + this.#cache.positiveTTL)
-				});
-			} catch (readError) {
-				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
-
-				return({
-					pass: false,
-					error: readError,
-					expires: new Date(Date.now() + this.#cache.negativeTTL)
-				});
-			}
-		})();
-
-		this.#cache.instance.set(cacheKey, readPromise);
-
-		const resolvedValue = await readPromise;
-
-		if (resolvedValue.pass) {
-			return(resolvedValue.value);
-		} else {
-			throw(resolvedValue.error);
+		} finally {
+			this.seenURLs.delete(cacheKey);
 		}
 	}
 
@@ -1430,30 +1438,6 @@ type ResolverStats = {
 type SharedLookupCriteria = { providerIDs?: string[]; };
 
 /**
- * Wraps a resolved object so subsequent `('object')` calls hit the cached
- * value instead of re-entering {@link Metadata.value} (which short-circuits
- * to `null` on a second call due to the circular-reference guard).
- */
-function wrapResolvedAsValuizableMethod(resolved: ValuizableObject): ValuizableMethod {
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	return((async function(expect: ValuizableKind = 'any') {
-		if (expect === 'any' || expect === 'object') {
-			return(resolved);
-		}
-
-		throw(new Error(`expected ${expect}, got object`));
-	}) as ValuizableMethod);
-}
-
-/**
- * Casts a fully-resolved `JSONSerializable` to its expected typed shape.
- */
-function asResolved<T>(value: JSONSerializable): T {
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	return(value as T);
-}
-
-/**
  * Verify the optional metadata signature on a service entry.
  *
  * @returns boolean:
@@ -1496,15 +1480,17 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Log
 		return(false);
 	}
 
-	const operations = asResolved<SignableServiceMetadata['operations']>(await Metadata.fullyResolveValuizable(operationsValuizable));
+	/* eslint-disable @typescript-eslint/consistent-type-assertions -- wire JSON to typed shape */
+	const operations = (await Metadata.fullyResolveValuizable(operationsValuizable)) as SignableServiceMetadata['operations'];
 	const metadata: SignableServiceMetadata = { operations };
 	const legalValuizable = entry['legal'];
 	if (legalValuizable !== undefined) {
 		const legal = await Metadata.fullyResolveValuizable(legalValuizable);
 		if (legal !== null) {
-			metadata.legal = asResolved<NonNullable<SignableServiceMetadata['legal']>>(legal);
+			metadata.legal = legal as NonNullable<SignableServiceMetadata['legal']>;
 		}
 	}
+	/* eslint-enable @typescript-eslint/consistent-type-assertions */
 
 	const valid = await verifyMetadataSignature(account, metadata, signed);
 	if (!valid) {
@@ -2578,8 +2564,8 @@ class Resolver {
 
 	/**
 	 * Drop service entries whose signature does not verify. Entries without
-	 * `account` pass through. Resolved values are wrapped to avoid a second
-	 * URL fetch by downstream service search.
+	 * `account` pass through. Entries that fail to resolve pass through so
+	 * downstream asserters surface the resolution error to the caller.
 	 */
 	async #filterSignedServiceEntries(servicesByID: ValuizableObject | undefined): Promise<ValuizableObject | undefined> {
 		if (servicesByID === undefined) {
@@ -2605,15 +2591,14 @@ class Resolver {
 			try {
 				const valid = await verifyServiceEntrySignature(resolved, this.#logger);
 				if (!valid) {
-					this.#logger?.debug(`Resolver:${this.id}`, 'Dropping service entry', id, 'due to invalid signature');
 					continue;
 				}
 			} catch (verifyError) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error verifying signature for service entry', id, ':', verifyError, ' -- dropping');
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error verifying signature for service entry', id, ':', verifyError, '-- dropping');
 				continue;
 			}
 
-			retval[id] = wrapResolvedAsValuizableMethod(resolved);
+			retval[id] = entry;
 		}
 
 		return(retval);

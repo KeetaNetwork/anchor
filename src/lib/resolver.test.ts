@@ -652,7 +652,7 @@ test('Concurrent Lookups', async function() {
 	});
 
 	const initialCacheStats = { ...resolver.stats.cache };
-	expect(initialCacheStats).toEqual({ hit: 0, miss: 8 });
+	expect(initialCacheStats).toEqual({ hit: 6, miss: 8 });
 
 	// Clear cache to ensure that following tests do not read more than the initial read
 	resolver.clearCache();
