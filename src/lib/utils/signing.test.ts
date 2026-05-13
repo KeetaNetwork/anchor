@@ -171,6 +171,11 @@ const objectToSignableCases: { name: string; input: Signing.SignableInput; expec
 		name: 'array null and undefined entries become NULL_MARKER preserving index',
 		input: ['x', null, undefined, 'y'],
 		expected: ['[', 'x', 'null', 'null', 'y', ']']
+	},
+	{
+		name: 'marker characters as keys and values are passed through unchanged',
+		input: { a: 'first', m: 'middle', '{': 'a', '}': '{' },
+		expected: ['{', 'a', 'first', 'm', 'middle', '{', 'a', '}', '{', '}']
 	}
 ];
 
@@ -216,6 +221,50 @@ test('objectToSignable: equivalent inputs produce a verifiable signature against
 	const isValid = await Signing.VerifySignedData(account, b, signed);
 	expect(isValid).toBe(true);
 });
+
+const signedObject = { a: 'first', m: 'middle', '{': 'a', '}': '{' };
+const forgeryAttempts: { name: string; forged: Signing.SignableInput; expected: boolean }[] = [
+	{
+		name: 'reordered keys verify',
+		forged: { '}': '{', '{': 'a', m: 'middle', a: 'first' },
+		expected: true
+	},
+	{
+		name: 'changed value fails',
+		forged: { a: 'first', m: 'middle', '{': 'b', '}': '{' },
+		expected: false
+	},
+	{
+		name: 'added key fails',
+		forged: { a: 'first', m: 'middle', '{': 'a', '}': '{', extra: 'x' },
+		expected: false
+	},
+	{
+		name: 'removed key fails',
+		forged: { a: 'first', m: 'middle', '{': 'a' },
+		expected: false
+	},
+	{
+		name: 'swapped values across keys fails',
+		forged: { a: 'middle', m: 'first', '{': 'a', '}': '{' },
+		expected: false
+	},
+	{
+		name: 'reshape into a nested object with the same scalars fails',
+		forged: { a: 'first', m: 'middle', n: { '{': 'a', '}': '{' }},
+		expected: false
+	}
+];
+
+for (const attempt of forgeryAttempts) {
+	test(`VerifySignedData forgery resistance: ${attempt.name}`, async function() {
+		const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
+		const signed = await Signing.SignData(account, Signing.objectToSignable(signedObject));
+
+		const result = await Signing.VerifySignedData(account, Signing.objectToSignable(attempt.forged), signed);
+		expect(result).toBe(attempt.expected);
+	});
+}
 
 test('objectToSignable: throws when token count exceeds DoS guard', function() {
 	const big: { [key: string]: string } = {};
