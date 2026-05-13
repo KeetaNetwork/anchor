@@ -1460,7 +1460,7 @@ function asResolved<T>(value: JSONSerializable): T {
  * - `true` when the entry has neither `account` nor `signed`.
  * - `false` when one is present without the other or when verification fails.
  */
-async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logger?: Logger): Promise<boolean> {
+async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Logger): Promise<boolean> {
 	const accountValuizable = entry['account'];
 	const signedValuizable = entry['signed'];
 
@@ -1468,6 +1468,7 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logg
 		return(true);
 	}
 	if (accountValuizable === undefined || signedValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: one of `account`/`signed` present without the other');
 		return(false);
 	}
 
@@ -1475,7 +1476,8 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logg
 	let account: VerifiableAccount;
 	try {
 		account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
-	} catch {
+	} catch (parseError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: invalid account public key', accountString, parseError);
 		return(false);
 	}
 
@@ -1483,12 +1485,14 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logg
 	let signed: HTTPSignedField;
 	try {
 		signed = assertHTTPSignedField(signedRaw);
-	} catch {
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `signed` field for account', accountString, assertError);
 		return(false);
 	}
 
 	const operationsValuizable = entry['operations'];
 	if (operationsValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: missing `operations` for signed account', accountString);
 		return(false);
 	}
 
@@ -1502,7 +1506,12 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, _ignore_logg
 		}
 	}
 
-	return(await verifyMetadataSignature(account, metadata, signed));
+	const valid = await verifyMetadataSignature(account, metadata, signed);
+	if (!valid) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: signature does not verify for account', accountString);
+	}
+
+	return(valid);
 }
 
 class Resolver {
