@@ -9,13 +9,14 @@ import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
-import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
+import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
+import { objectToSignable } from '../../lib/utils/signing.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -223,69 +224,6 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
-type SignableObjectInput =
-	// PhysicalAddress/MonthYearDateInput/RecipientResolved should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
-	PhysicalAddress | MonthYearDateInput | RecipientResolved |
-	{ [key: string | number | symbol]: SignableObjectInput } |
-	SignableObjectInput[] |
-	Signable[number] |
-	undefined |
-	null |
-	boolean;
-
-/**
- * The maximum queue length for the commonToSignable function to prevent DoS attacks
- */
-const TO_SIGNABLE_MAX_QUEUE_LENGTH = 250;
-
-function commonToSignable(item: SignableObjectInput): Signable {
-	const queue: [ string, SignableObjectInput ][] = [[ '', item ]];
-	const result: [ string, Signable[number] ][] = [];
-
-	while (queue.length > 0) {
-		const next = queue.shift();
-
-		if (!next) {
-			continue;
-		}
-
-		const [ prefix, current ] = next;
-		if (current === null || current === undefined) {
-			continue;
-		}
-
-		if (typeof current === 'boolean') {
-			result.push([ prefix, current ? 1 : 0 ]);
-		} else if (Array.isArray(current)) {
-			for (let i = 0; i < current.length; i++) {
-				queue.push([ `${prefix}[${i}]`, current[i] ]);
-			}
-		} else if (typeof current === 'object') {
-			for (const [ key, value ] of Object.entries(current)) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableObjectInput ]);
-			}
-		} else {
-			result.push([ prefix, current ]);
-		}
-
-		if (queue.length > TO_SIGNABLE_MAX_QUEUE_LENGTH) {
-			throw(new KeetaAnchorUserError('Too much data to sign in commonToSignable'));
-		}
-	}
-
-	result.sort((a, b) => {
-		return(a[0].localeCompare(b[0], 'en-US', {
-			usage: 'sort',
-			numeric: true,
-			sensitivity: 'case',
-			ignorePunctuation: false
-		}));
-	});
-
-	return(result.map(item => item[1]));
-}
-
 export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
 export type AssetOrPair = MovableAsset | AssetPair;
 
@@ -402,7 +340,7 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalR
 export type KeetaAssetMovementAnchorSimulateTransferRequest = KeetaAssetMovementAnchorInitiateTransferRequest;
 
 export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
-	return(commonToSignable({
+	return(objectToSignable({
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		from: { location: convertAssetLocationInputToCanonical(input.from.location) },
 		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient },
@@ -658,7 +596,7 @@ export interface KeetaAssetMovementAnchorExecuteTransferClientRequest {
 export type KeetaAssetMovementAnchorExecuteTransferRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>, unknown>;
 
 export function getKeetaAssetMovementAnchorExecuteTransferRequestSigningData(input: (KeetaAssetMovementAnchorExecuteTransferRequest | KeetaAssetMovementAnchorExecuteTransferClientRequest) & { id: string; }): Signable {
-	return(commonToSignable({
+	return(objectToSignable({
 		id: input.id,
 		instruction: input.instruction
 	}));
@@ -816,7 +754,7 @@ export type KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateR
 
 export function getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest): Signable {
 	const pair = toAssetPair(input.asset);
-	return(commonToSignable({
+	return(objectToSignable({
 		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
 		location: convertAssetLocationInputToCanonical(input.location)
 	}));
@@ -870,13 +808,13 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateReq
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
 	if ('data' in input) {
-		return(commonToSignable({
+		return(objectToSignable({
 			id: input.id,
 			data: input.data
 		}));
 	}
 	const pair = toAssetPair(input.asset);
-	return(commonToSignable({
+	return(objectToSignable({
 		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
 		location: convertAssetLocationInputToCanonical(input.location),
 		address: input.address
@@ -956,7 +894,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 });
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
-	return(commonToSignable({
+	return(objectToSignable({
 		sourceLocation: convertAssetLocationInputToCanonical(input.sourceLocation),
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		outgoingRail: input.outgoingRail,

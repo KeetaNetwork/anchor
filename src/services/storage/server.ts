@@ -2,7 +2,7 @@ import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { NamespaceValidator } from './lib/validators.js';
 import type { ResolvedCertificateChainRequirement } from '../../lib/utils/certificate-network.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type { KeetaNet } from '../../client/index.js';
 import type {
 	KeetaStorageAnchorDeleteResponse,
@@ -20,6 +20,7 @@ import type {
 	StorageGetResult,
 	SearchPagination
 } from './common.ts';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import {
 	assertKeetaStorageAnchorDeleteResponse,
 	assertKeetaStorageAnchorPutResponse,
@@ -41,6 +42,7 @@ import {
 	CONTENT_TYPE_OCTET_STREAM,
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
 import { parseSignatureFromURL, verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
 import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
@@ -223,7 +225,7 @@ async function authorizeURLAccess(
  *         |                                   | get(), decrypt ----------------->|
  *         |<--------------------------------- | Plaintext content                |
  */
-export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorStorageServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
 	 */
@@ -306,7 +308,7 @@ const DEFAULT_TAG_VALIDATION = {
 	pattern: /^[a-zA-Z0-9_-]+$/
 };
 
-export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
+export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['storage']>[string], KeetaAnchorStorageServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorStorageServerConfig['homepage']>;
 	readonly backend: FullStorageBackend;
 	readonly anchorAccount: Account;
@@ -908,7 +910,7 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
 		const authRequired = { options: { authentication: { type: 'required' as const, method: 'keeta-account' as const }}};
 		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['storage']>[string]['operations'] = {

@@ -1,4 +1,5 @@
 import { assertClientRenderableContentType } from "./metadata.types.generated.js";
+import type { HTTPSignedField } from "./http-server/common.js";
 import type { Logger } from "./log/index.js";
 import type { ToValuizable } from "./resolver.js";
 
@@ -10,6 +11,19 @@ import type { ToValuizable } from "./resolver.js";
  */
 export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
+
+/**
+ * Authentication requirement attached to a service operation endpoint.
+ */
+export type ServiceMetadataAuthenticationType = {
+	method: 'keeta-account';
+	type: 'required' | 'optional' | 'none';
+};
+
+/**
+ * Operation endpoint exposed by a service.
+ */
+export type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }};
 
 export interface AnchorMetadataLegalField {
 	disclaimers?: {
@@ -25,6 +39,18 @@ export interface SharedAnchorMetadataLegalExtension {
 	 */
 	legal?: AnchorMetadataLegalField;
 }
+
+/**
+ * Signature over `{ operations, legal }` for a service entry. `account` and
+ * `signed` are coupled at runtime: either both are absent (unsigned entry)
+ * or both are present (signed entry that MUST verify). The coupling cannot
+ * be expressed at the type level without breaking `JSONSerializable`
+ * compatibility, so consumers MUST treat one-sided forms as malformed.
+ */
+export type SharedAnchorMetadataSignedExtension = {
+	account?: string;
+	signed?: HTTPSignedField;
+};
 
 export type SharedAnchorCallerCertificateRequirementMetadata = {
 	/**
