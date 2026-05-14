@@ -131,7 +131,7 @@ function canonicalizeJson(value: unknown): string {
 
 /**
  * Canonicalize a tree into a {@link Signable} via {@link canonicalizeJson}.
- * {@link KeetaNetLib.Account} instances are replaced by their publicKeyAndTypeString`.
+ * {@link KeetaNetLib.Account} instances are replaced by their `publicKeyAndTypeString`.
  * {@link Date} instances are replaced by their ISO 8601 string.
  */
 export function objectToSignable(item: SignableInput): Signable {
