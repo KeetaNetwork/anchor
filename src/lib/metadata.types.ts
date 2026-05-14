@@ -1,4 +1,5 @@
 import { assertClientRenderableContentType } from "./metadata.types.generated.js";
+import type { HTTPSignedField } from "./http-server/common.js";
 import type { Logger } from "./log/index.js";
 import type { ToValuizable } from "./resolver.js";
 
@@ -32,11 +33,7 @@ export interface SharedAnchorMetadataLegalExtension {
  */
 export type SharedAnchorMetadataSignedExtension = {
 	account?: string;
-	signed?: {
-		nonce: string;
-		timestamp: string;
-		signature: string;
-	};
+	signed?: HTTPSignedField;
 };
 
 export type SharedAnchorCallerCertificateRequirementMetadata = {
