@@ -31,7 +31,6 @@ import {
 	getNotificationListSubscriptionsRequestSignable
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
-import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import { verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
@@ -50,7 +49,7 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorMetadata
 		supportedChannels?: SupportedChannelConfigurationMetadata;
 		supportedSubscriptions?: NotificationSubscriptionType[];
 	};
-	routes?: Routes;
+	routes?: KeetaAnchorHTTPServer.Routes;
 }
 
 export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['notification']>[string], KeetaAnchorNotificationServerConfig> {
