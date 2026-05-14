@@ -202,6 +202,7 @@ async function setupForResolverTests() {
 
 	return({
 		resolver: resolver,
+		signedBankingAccount: signedBankingAccount,
 		tokens: {
 			USD: testCurrencyUSD,
 			MXN: testCurrencyMXN,
@@ -889,4 +890,64 @@ test('Multi-Root Resolver Tests', async function() {
 	});
 	expect(bankingServicesUSReverse).toBeDefined();
 	expect(Object.keys(bankingServicesUSReverse ?? {})).toContain('bank_root1');
+});
+
+type AccountsFilterCase = {
+	name: string;
+	criteria: ServiceSearchCriteria<'banking'>;
+	shared: { accounts?: string[]; providerIDs?: string[] };
+	expected: string[] | undefined;
+};
+
+function summarizeBankingLookup(result: Awaited<ReturnType<Resolver['lookup']>>): string[] | undefined {
+	if (result === undefined) {
+		return(undefined);
+	}
+
+	return(Object.keys(result));
+}
+
+test('SharedLookupCriteria.accounts: filters banking entries by signing account', async function() {
+	const { resolver, signedBankingAccount } = await setupForResolverTests();
+	const unrelatedAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
+	const unrelatedAccountInstance = KeetaNetClient.lib.Account.fromSeed(unrelatedAccountSeed, 0);
+	const unrelatedAccount = unrelatedAccountInstance.publicKeyString.get();
+
+	const cases: AccountsFilterCase[] = [
+		{
+			name: 'matching account keeps signed entry',
+			criteria: { countryCodes: ['US'] },
+			shared: { accounts: [signedBankingAccount] },
+			expected: ['keeta_signed']
+		},
+		{
+			name: 'non-matching account drops all entries',
+			criteria: { countryCodes: ['US'] },
+			shared: { accounts: [unrelatedAccount] },
+			expected: undefined
+		},
+		{
+			name: 'unsigned entries are dropped when accounts filter is set',
+			criteria: { countryCodes: ['MX'] },
+			shared: { accounts: [unrelatedAccount] },
+			expected: undefined
+		},
+		{
+			name: 'composes with providerIDs (both match)',
+			criteria: { countryCodes: ['US'] },
+			shared: { accounts: [signedBankingAccount], providerIDs: ['keeta_signed'] },
+			expected: ['keeta_signed']
+		},
+		{
+			name: 'composes with providerIDs (no overlap)',
+			criteria: { countryCodes: ['US'] },
+			shared: { accounts: [signedBankingAccount], providerIDs: ['keeta_foo'] },
+			expected: undefined
+		}
+	];
+
+	for (const testCase of cases) {
+		const result = await resolver.lookup('banking', testCase.criteria, testCase.shared);
+		expect(summarizeBankingLookup(result), testCase.name).toEqual(testCase.expected);
+	}
 });

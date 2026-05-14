@@ -1432,7 +1432,14 @@ type ResolverStats = {
 	}
 };
 
-type SharedLookupCriteria = { providerIDs?: string[]; };
+type SharedLookupCriteria = {
+	providerIDs?: string[];
+	/**
+	 * Restrict to entries signed by one of the listed account public keys.
+	 * Entries without a matching `account` are filtered out.
+	 */
+	accounts?: string[];
+};
 
 /**
  * Verify the optional metadata signature on a service entry.
@@ -2570,6 +2577,61 @@ class Resolver {
 	}
 
 	/**
+	 * Resolve a service entry to its object form. Returns `undefined` and
+	 * logs at debug if resolution fails. `context` describes the caller
+	 * for the log message.
+	 */
+	async #resolveServiceEntry(id: string, entry: ValuizableMethod, context: string): Promise<ValuizableObject | undefined> {
+		try {
+			return(await entry('object'));
+		} catch (resolveError) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Could not pre-resolve service entry', id, context, resolveError);
+			return(undefined);
+		}
+	}
+
+	/**
+	 * Keep only service entries whose `account` is in `accounts`. Entries
+	 * without `account`, with an unresolvable `account`, or that fail to
+	 * resolve are dropped.
+	 */
+	async #filterByAccounts(servicesByID: ValuizableObject, accounts: string[]): Promise<ValuizableObject> {
+		const allowed = new Set(accounts);
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for account filter:');
+			if (resolved === undefined) {
+				continue;
+			}
+
+			const accountValuizable = resolved['account'];
+			if (accountValuizable === undefined) {
+				continue;
+			}
+
+			let entryAccount: string;
+			try {
+				entryAccount = await accountValuizable('string');
+			} catch (resolveError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Could not resolve `account` for service entry', id, ':', resolveError);
+				continue;
+			}
+
+			if (!allowed.has(entryAccount)) {
+				continue;
+			}
+
+			retval[id] = entry;
+		}
+
+		return(retval);
+	}
+
+	/**
 	 * Drop service entries whose signature does not verify. Entries without
 	 * `account` pass through. Entries that fail to resolve pass through so
 	 * downstream asserters surface the resolution error to the caller.
@@ -2585,12 +2647,8 @@ class Resolver {
 				continue;
 			}
 
-			let resolved: ValuizableObject;
-			try {
-				resolved = await entry('object');
-			} catch (resolveError) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Could not pre-resolve service entry', id, 'for signature verification:', resolveError);
-
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for signature verification:');
+			if (resolved === undefined) {
 				retval[id] = entry;
 				continue;
 			}
@@ -2638,6 +2696,10 @@ class Resolver {
 			}
 		} else {
 			filteredDefinedServicesObject = definedServicesObject;
+		}
+
+		if (sharedCriteria?.accounts !== undefined && filteredDefinedServicesObject !== undefined) {
+			filteredDefinedServicesObject = await this.#filterByAccounts(filteredDefinedServicesObject, sharedCriteria.accounts);
 		}
 
 		filteredDefinedServicesObject = await this.#filterSignedServiceEntries(filteredDefinedServicesObject);
