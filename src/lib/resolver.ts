@@ -882,6 +882,8 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
+const assertSignableServiceMetadataOperations = createAssert<SignableServiceMetadata['operations']>();
+const assertSignableServiceMetadataLegal = createAssert<NonNullable<SignableServiceMetadata['legal']>>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -1475,17 +1477,27 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Log
 		return(false);
 	}
 
-	/* eslint-disable @typescript-eslint/consistent-type-assertions -- wire JSON to typed shape */
-	const operations = (await Metadata.fullyResolveValuizable(operationsValuizable)) as SignableServiceMetadata['operations'];
+	let operations: SignableServiceMetadata['operations'];
+	try {
+		operations = assertSignableServiceMetadataOperations(await Metadata.fullyResolveValuizable(operationsValuizable));
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `operations` for account', accountString, assertError);
+		return(false);
+	}
+
 	const metadata: SignableServiceMetadata = { operations };
 	const legalValuizable = entry['legal'];
 	if (legalValuizable !== undefined) {
-		const legal = await Metadata.fullyResolveValuizable(legalValuizable);
-		if (legal !== null) {
-			metadata.legal = legal as NonNullable<SignableServiceMetadata['legal']>;
+		const legalRaw = await Metadata.fullyResolveValuizable(legalValuizable);
+		if (legalRaw !== null) {
+			try {
+				metadata.legal = assertSignableServiceMetadataLegal(legalRaw);
+			} catch (assertError) {
+				logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `legal` for account', accountString, assertError);
+				return(false);
+			}
 		}
 	}
-	/* eslint-enable @typescript-eslint/consistent-type-assertions */
 
 	const valid = await verifyMetadataSignature(account, metadata, signed);
 	if (!valid) {

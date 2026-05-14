@@ -41,13 +41,12 @@ export interface SharedAnchorMetadataLegalExtension {
 }
 
 /**
- * Signature over `{ operations, legal }` for a service entry. When `account`
- * is set, `signed` MUST be present and verify against it.
+ * Signature over `{ operations, legal }` for a service entry.
+ * When `account` is set, `signed` MUST be present and verify against it.
  */
-export type SharedAnchorMetadataSignedExtension = {
-	account?: string;
-	signed?: HTTPSignedField;
-};
+export type SharedAnchorMetadataSignedExtension =
+	| { account?: undefined; signed?: undefined }
+	| { account: string; signed: HTTPSignedField };
 
 export type SharedAnchorCallerCertificateRequirementMetadata = {
 	/**
