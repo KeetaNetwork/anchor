@@ -1,7 +1,7 @@
 import type { KeetaAnchorHTTPServerConfig } from './http-server/index.js';
 import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableAccount, VerifiableAccount } from './utils/signing.js';
-import type { SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import type { ServiceMetadataEndpoint, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import { KeetaNetAnchorHTTPServer } from './http-server/index.js';
 import { SignData, VerifySignedData, objectToSignable } from './utils/signing.js';
 
@@ -15,7 +15,7 @@ export const METADATA_SIGNATURE_NAMESPACE = 'keetanet/anchor/service-metadata/v1
  * by {@link KeetaAnchorMetadataServer}.
  */
 export type SignableServiceMetadata = SharedAnchorMetadataLegalExtension & {
-	operations: { [operationName: string]: unknown };
+	operations: { [operationName: string]: ServiceMetadataEndpoint | undefined };
 };
 
 /**

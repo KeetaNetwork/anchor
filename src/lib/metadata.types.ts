@@ -12,6 +12,19 @@ import type { ToValuizable } from "./resolver.js";
 export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 
+/**
+ * Authentication requirement attached to a service operation endpoint.
+ */
+export type ServiceMetadataAuthenticationType = {
+	method: 'keeta-account';
+	type: 'required' | 'optional' | 'none';
+};
+
+/**
+ * Operation endpoint exposed by a service.
+ */
+export type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }};
+
 export interface AnchorMetadataLegalField {
 	disclaimers?: {
 		purpose: 'general';

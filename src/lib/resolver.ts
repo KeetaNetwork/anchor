@@ -12,7 +12,7 @@ import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCa
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
-import type { SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import type { ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import type { VerifiableAccount } from './utils/signing.js';
 import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableServiceMetadata } from './anchor-metadata-server.js';
@@ -42,11 +42,6 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
-type ServiceMetadataAuthenticationType = {
-	method: 'keeta-account';
-	type: 'required' | 'optional' | 'none';
-};
-type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }}
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure
