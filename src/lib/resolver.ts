@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -1435,10 +1435,12 @@ type ResolverStats = {
 type SharedLookupCriteria = {
 	providerIDs?: string[];
 	/**
-	 * Restrict to entries signed by one of the listed account public keys.
-	 * Entries without a matching `account` are filtered out.
+	 * Restrict to entries signed by one of the listed accounts. Each entry
+	 * may be a {@link KeetaNetGenericAccount} or its public-key string
+	 * form. Entries without a matching `account` are filtered out
+	 * (including unsigned entries).
 	 */
-	accounts?: string[];
+	accounts?: (AccountPublicKeyString | VerifiableAccount)[];
 };
 
 /**
@@ -2595,8 +2597,12 @@ class Resolver {
 	 * without `account`, with an unresolvable `account`, or that fail to
 	 * resolve are dropped.
 	 */
-	async #filterByAccounts(servicesByID: ValuizableObject, accounts: string[]): Promise<ValuizableObject> {
-		const allowed = new Set(accounts);
+	async #filterByAccounts(servicesByID: ValuizableObject, accounts: (AccountPublicKeyString | VerifiableAccount)[]): Promise<ValuizableObject> {
+		const allowedKeys = new Set<string>();
+		for (const allowed of accounts) {
+			allowedKeys.add(KeetaNetClient.lib.Account.toPublicKeyString(allowed));
+		}
+
 		const retval: ValuizableObject = {};
 		for (const [ id, entry ] of Object.entries(servicesByID)) {
 			if (entry === undefined) {
@@ -2613,15 +2619,16 @@ class Resolver {
 				continue;
 			}
 
-			let entryAccount: string;
+			let entryAccountKey: string;
 			try {
-				entryAccount = await accountValuizable('string');
+				const entryAccountString = await accountValuizable('string');
+				entryAccountKey = KeetaNetClient.lib.Account.toPublicKeyString(entryAccountString);
 			} catch (resolveError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Could not resolve `account` for service entry', id, ':', resolveError);
 				continue;
 			}
 
-			if (!allowed.has(entryAccount)) {
+			if (!allowedKeys.has(entryAccountKey)) {
 				continue;
 			}
 

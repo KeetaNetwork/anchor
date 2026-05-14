@@ -3,7 +3,7 @@ import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import { createAssert } from 'typia';
 import Resolver from './resolver.js';
-import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria } from './resolver.ts';
+import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCriteria, SharedLookupCriteria } from './resolver.ts';
 import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
 import { SignData, objectToSignable } from './utils/signing.js';
 import { extractSignedFields } from './anchor-metadata-server.js';
@@ -203,6 +203,7 @@ async function setupForResolverTests() {
 	return({
 		resolver: resolver,
 		signedBankingAccount: signedBankingAccount,
+		signedBankingAccountInstance: metadataSigner,
 		tokens: {
 			USD: testCurrencyUSD,
 			MXN: testCurrencyMXN,
@@ -895,7 +896,7 @@ test('Multi-Root Resolver Tests', async function() {
 type AccountsFilterCase = {
 	name: string;
 	criteria: ServiceSearchCriteria<'banking'>;
-	shared: { accounts?: string[]; providerIDs?: string[] };
+	shared: SharedLookupCriteria;
 	expected: string[] | undefined;
 };
 
@@ -908,16 +909,22 @@ function summarizeBankingLookup(result: Awaited<ReturnType<Resolver['lookup']>>)
 }
 
 test('SharedLookupCriteria.accounts: filters banking entries by signing account', async function() {
-	const { resolver, signedBankingAccount } = await setupForResolverTests();
+	const { resolver, signedBankingAccount, signedBankingAccountInstance } = await setupForResolverTests();
 	const unrelatedAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
-	const unrelatedAccountInstance = KeetaNetClient.lib.Account.fromSeed(unrelatedAccountSeed, 0);
-	const unrelatedAccount = unrelatedAccountInstance.publicKeyString.get();
+	const unrelatedAccount = KeetaNetClient.lib.Account.fromSeed(unrelatedAccountSeed, 0);
+	const unrelatedAccountString = unrelatedAccount.publicKeyString.get();
 
 	const cases: AccountsFilterCase[] = [
 		{
-			name: 'matching account keeps signed entry',
+			name: 'matching account (string form) keeps signed entry',
 			criteria: { countryCodes: ['US'] },
 			shared: { accounts: [signedBankingAccount] },
+			expected: ['keeta_signed']
+		},
+		{
+			name: 'matching account (Account instance) keeps signed entry',
+			criteria: { countryCodes: ['US'] },
+			shared: { accounts: [signedBankingAccountInstance] },
 			expected: ['keeta_signed']
 		},
 		{
@@ -929,7 +936,7 @@ test('SharedLookupCriteria.accounts: filters banking entries by signing account'
 		{
 			name: 'unsigned entries are dropped when accounts filter is set',
 			criteria: { countryCodes: ['MX'] },
-			shared: { accounts: [unrelatedAccount] },
+			shared: { accounts: [unrelatedAccountString] },
 			expected: undefined
 		},
 		{
