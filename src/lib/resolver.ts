@@ -12,7 +12,7 @@ import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCa
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
-import type { ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import type { VerifiableAccount } from './utils/signing.js';
 import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableServiceMetadata } from './anchor-metadata-server.js';
@@ -2733,8 +2733,7 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
-	ServiceMetadataEndpoint,
-	ServiceMetadataAuthenticationType,
 	Services,
 	SharedLookupCriteria
 };
+export type { ServiceMetadataEndpoint, ServiceMetadataAuthenticationType } from './metadata.types.js';
