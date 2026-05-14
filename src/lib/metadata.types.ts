@@ -41,12 +41,16 @@ export interface SharedAnchorMetadataLegalExtension {
 }
 
 /**
- * Signature over `{ operations, legal }` for a service entry.
- * When `account` is set, `signed` MUST be present and verify against it.
+ * Signature over `{ operations, legal }` for a service entry. `account` and
+ * `signed` are coupled at runtime: either both are absent (unsigned entry)
+ * or both are present (signed entry that MUST verify). The coupling cannot
+ * be expressed at the type level without breaking `JSONSerializable`
+ * compatibility, so consumers MUST treat one-sided forms as malformed.
  */
-export type SharedAnchorMetadataSignedExtension =
-	| { account?: undefined; signed?: undefined }
-	| { account: string; signed: HTTPSignedField };
+export type SharedAnchorMetadataSignedExtension = {
+	account?: string;
+	signed?: HTTPSignedField;
+};
 
 export type SharedAnchorCallerCertificateRequirementMetadata = {
 	/**
