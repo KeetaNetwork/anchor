@@ -156,7 +156,16 @@ export function objectToSignable(item: SignableInput): Signable {
 			return(value.publicKeyAndTypeString);
 		}
 		if (Array.isArray(value)) {
-			return(value.map(visit));
+			if (value.length > TO_SIGNABLE_MAX_NODES - nodeCount) {
+				throw(new KeetaAnchorError('Too much data to sign in objectToSignable'));
+			}
+
+			const result: unknown[] = [];
+			for (const child of value) {
+				result.push(visit(child));
+			}
+
+			return(result);
 		}
 		if (typeof value === 'object') {
 			if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
@@ -179,7 +188,7 @@ export function objectToSignable(item: SignableInput): Signable {
 	}
 
 	const canonical = canonicalizeJson(visit(item));
-	if (canonical.length > TO_SIGNABLE_MAX_OUTPUT_BYTES) {
+	if (Buffer.byteLength(canonical, 'utf8') > TO_SIGNABLE_MAX_OUTPUT_BYTES) {
 		throw(new KeetaAnchorError('Canonical output exceeds size limit in objectToSignable'));
 	}
 
