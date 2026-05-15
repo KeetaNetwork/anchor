@@ -12,10 +12,13 @@ import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
-import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties } from './common.generated.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
+import type { ACLRow } from '@keetanetwork/keetanet-client/lib/ledger/types.js';
+import type { Certificate } from '@keetanetwork/keetanet-client/lib/utils/certificate.js';
+import type { UserClientBuilder } from '@keetanetwork/keetanet-client/client/builder.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -1356,10 +1359,187 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	}
 }
 
+export type KeetaAssetMovementAnchorUserAction = ({
+	type: 'add-certificate';
+
+	account?: GenericAccount;
+	certificate: Certificate;
+	intermediates?: Certificate[];
+} | {
+	type: 'grant-permission';
+	permissionToGrant: Omit<ACLRow, 'target' | 'entity'> & Partial<Pick<ACLRow, 'target' | 'entity'>>;
+}) & {
+	details?: ClientRenderableContent;
+}
+
+export type KeetaAssetMovementAnchorUserActionJSON =
+	ToJSONSerializable<Exclude<KeetaAssetMovementAnchorUserAction, { type: 'add-certificate'; }> |
+	(Omit<Extract<KeetaAssetMovementAnchorUserAction, { type: 'add-certificate'; }>, 'certificate' | 'intermediates'> & {
+		certificate: string;
+		intermediates?: string[];
+	})>;
+
+export interface KeetaAssetMovementAnchorUserActionNeededErrorProperties {
+	actionsNeeded: KeetaAssetMovementAnchorUserAction[];
+}
+
+export interface KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties extends Omit<KeetaAssetMovementAnchorUserActionNeededErrorProperties, 'actionsNeeded'> {
+	actionsNeeded: KeetaAssetMovementAnchorUserActionJSON[];
+}
+
+
+type KeetaAssetMovementAnchorUserActionNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties;
+
+class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError implements KeetaAssetMovementAnchorUserActionNeededErrorProperties {
+	static override readonly name: string = 'KeetaAssetMovementAnchorUserActionNeededError';
+	private readonly KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID = 'f2160fd8-a1d3-4a6d-ae22-da0dd642c44e';
+
+	readonly actionsNeeded: KeetaAssetMovementAnchorUserAction[];
+
+	constructor(args: KeetaAssetMovementAnchorUserActionNeededErrorProperties, message?: string) {
+		super(message ?? `Actions are needed to perform operation`);
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorUserActionNeededError.KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.actionsNeeded = args.actionsNeeded;
+	}
+
+	static #parseJSONActions(actions: KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties['actionsNeeded']): KeetaAssetMovementAnchorUserActionNeededErrorProperties['actionsNeeded'] {
+		return(actions.map(function(action): KeetaAssetMovementAnchorUserAction {
+			const shared = {
+				...(action.details ? { details: action.details } : {})
+			} as const;
+
+			if (action.type === 'add-certificate') {
+				return({
+					...shared,
+					type: action.type,
+					...(action.account ? { account: KeetaNet.lib.Account.fromPublicKeyString(action.account).assertAccount() } : {}),
+					certificate: new KeetaNet.lib.Utils.Certificate.Certificate(action.certificate),
+					...(action.intermediates ? {
+						intermediates: action.intermediates.map(function(cert) {
+							return(new KeetaNet.lib.Utils.Certificate.Certificate(cert));
+						})
+					} : {})
+				});
+			} else if (action.type === 'grant-permission') {
+				return({
+					...shared,
+					type: action.type,
+					permissionToGrant: {
+						principal: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.principal),
+						...(action.permissionToGrant.entity ? { entity: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.entity) } : {}),
+						...(action.permissionToGrant.target ? { target: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.target) } : {}),
+						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
+					}
+				});
+			} else {
+				throw(new Error('Unsupported action type'));
+			}
+		}));
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorUserActionNeededError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID', KeetaAssetMovementAnchorUserActionNeededError.KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID));
+	}
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { actionsNeeded } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED',
+				data: { actionsNeeded },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	static addOperationsToBuilder(actions: KeetaAssetMovementAnchorUserAction[], builder: UserClientBuilder): void {
+		for (const action of actions) {
+			if (action.type === 'add-certificate') {
+				let intermediates;
+				if (action.intermediates) {
+					intermediates = new KeetaNet.lib.Utils.Certificate.CertificateBundle(action.intermediates);
+				}
+				builder.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, action.certificate, intermediates, action.account ? { account: action.account } : undefined);
+			} else if (action.type === 'grant-permission') {
+				builder.updatePermissions(action.permissionToGrant.principal, action.permissionToGrant.permissions, action.permissionToGrant.target, KeetaNet.lib.Block.AdjustMethod.ADD, action.permissionToGrant.entity ? { account: action.permissionToGrant.entity } : {})
+			}
+		}
+	}
+
+	toJSON(): KeetaAssetMovementAnchorUserActionNeededErrorJSON {
+		return({
+			...super.toJSON(),
+			actionsNeeded: this.actionsNeeded.map(function(action): KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties['actionsNeeded'][number] {
+				const shared = {
+					...(action.details ? { details: action.details } : {})
+				} as const;
+
+				if (action.type === 'add-certificate') {
+					return({
+						...shared,
+						type: action.type,
+						...(action.account ? { account: action.account.publicKeyString.get() } : {}),
+						certificate: action.certificate.toPEM(),
+						...(action.intermediates ? { intermediates: action.intermediates.map(function(cert) {
+							return(cert.toPEM());
+						}) } : {})
+					});
+				} else if (action.type === 'grant-permission') {
+					return({
+						...shared,
+						type: action.type,
+						permissionToGrant: {
+							principal: action.permissionToGrant.principal.publicKeyString.get(),
+							...(action.permissionToGrant.entity ? { entity: action.permissionToGrant.entity.publicKeyString.get() } : {}),
+							...(action.permissionToGrant.target ? { target: action.permissionToGrant.target.publicKeyString.get() } : {}),
+							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
+						}
+					});
+				} else {
+					throw(new Error('Unsupported action type'));
+				}
+			})
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorUserActionNeededError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorUserActionNeededError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties(other.data);
+
+		const error = new this({ actionsNeeded: this.#parseJSONActions(parsed.actionsNeeded) }, message);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
 	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
 	OperationNotSupported: typeof KeetaAssetMovementAnchorOperationNotSupportedError;
+	UserActionNeeded: typeof KeetaAssetMovementAnchorUserActionNeededError;
 } = {
 	/**
 	 * The user is required to share KYC details
@@ -1374,5 +1554,10 @@ export const Errors: {
 	/**
 	 * The requested operation is not supported
 	 */
-	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError
+	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError,
+
+	/**
+	 * An action is required by the user to complete the requested operation
+	 */
+	UserActionNeeded: KeetaAssetMovementAnchorUserActionNeededError
 };
