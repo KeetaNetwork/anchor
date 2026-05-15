@@ -1298,6 +1298,9 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						}
 					]
 				})
+			},
+			{
+				actions: []
 			}
 		];
 
