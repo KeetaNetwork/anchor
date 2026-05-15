@@ -1,4 +1,6 @@
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaNet } from '../../client/index.js';
 import {
 	KeetaAnchorError,
@@ -67,7 +69,7 @@ export type GetConversionRateAndFeeContext = {
 	request: KeetaFXAnchorQueueStage1Request;
 }
 
-export interface KeetaAnchorFXServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorFXServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
 	 */
@@ -988,8 +990,8 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 }
 
-type SharedHTTPServerConfigType = Pick<KeetaAnchorFXServerConfig, 'fx' | 'homepage' | keyof KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig>;
-abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration'> {
+type SharedHTTPServerConfigType = Pick<KeetaAnchorFXServerConfig, 'fx' | 'homepage' | keyof KeetaAnchorMetadataServerConfig>;
+abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['fx']>[string], ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration' | 'metadataSigner'> {
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
 	readonly canPerformExchanges: boolean;
@@ -1152,7 +1154,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	/**
 	 * Return the servers endpoints and possible currency conversions metadata
 	 */
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
 			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
 		};
@@ -1186,7 +1188,7 @@ export class KeetaNetFXAnchorEstimateHTTPServer extends BaseKeetaNetFXAnchorHTTP
 	}
 }
 
-export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions'> {
+export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'metadataSigner'> {
 	readonly client: KeetaAnchorFXServerConfig['client'];
 	readonly accounts: NonNullable<KeetaAnchorFXServerConfig['accounts']>;
 	readonly account: KeetaAnchorFXServerConfig['account'] = undefined;
@@ -1564,8 +1566,8 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		return(routes);
 	}
 
-	override async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
-		const baseMetadata = await super.serviceMetadata();
+	protected override async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
+		const baseMetadata = await super.buildServiceMetadata();
 
 		if (this.quoteConfiguration.requiresQuote || this.quoteConfiguration.issueQuotes) {
 			baseMetadata.operations.getQuote = (new URL('/api/getQuote', this.url)).toString();
