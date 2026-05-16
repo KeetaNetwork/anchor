@@ -38,7 +38,7 @@ const LONE_SURROGATE_PATTERN = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\
  * Serialize a JSON-shaped value following JCS
  * ({@link https://www.rfc-editor.org/rfc/rfc8785 RFC 8785}).
  */
-function canonicalizeJson(value: unknown): string {
+export function canonicalizeJson(value: unknown): string {
 	/**
 	 * Literal serialization (Section 3.2.2.1).
 	 */
