@@ -6,7 +6,7 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse, KeetaAssetMovementAnchorUserAction } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -752,6 +752,8 @@ test('Asset Movement Anchor Client Test', async function() {
 	}
 });
 
+type ResolvedOrCallback<T> = T | (() => Promise<T>);
+
 test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
@@ -805,8 +807,32 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userActionNeededAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	const promisePolling: { [key: string]: number } = {};
+
+	async function makeCertificate(name: string) {
+		const certificateBuilder = new CertificateBuilder({
+			subject: account,
+			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
+			issuer: kycCertificateIssuer,
+			serial: 3,
+			validFrom: new Date(Date.now() - 30_000),
+			validTo: new Date(Date.now() + 120_000)
+		});
+		const firstName = await SensitiveAttribute.create(account, 'firstName', name);
+
+		certificateBuilder.setSensitiveAttribute('firstName', firstName);
+
+		const certificate = await certificateBuilder.build();
+		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
+		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
+		await sharable.grantAccess(kycSharePrincipal);
+
+		return({ name: name, sharable, certificate });
+	}
+
+	let userActionNeededValue: KeetaAssetMovementAnchorUserAction[] = [];
 
 	await using server = new (class extends KeetaNetAssetMovementAnchorHTTPServer {
 		protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<Routes> {
@@ -957,6 +983,12 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					}, 'User requires additional KYC to proceed with asset movement'));
 				}
 
+				if (userActionNeededAccount.comparePublicKey(account)) {
+					throw(new Errors.UserActionNeeded({
+						actionsNeeded: userActionNeededValue
+					}));
+				}
+
 				return({
 					transaction: testTransaction
 				})
@@ -1085,26 +1117,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
 	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
 
-	async function makeCertificate(name: string) {
-		const certificateBuilder = new CertificateBuilder({
-			subject: account,
-			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
-			issuer: kycCertificateIssuer,
-			serial: 3,
-			validFrom: new Date(Date.now() - 30_000),
-			validTo: new Date(Date.now() + 120_000)
-		});
-		const firstName = await SensitiveAttribute.create(account, 'firstName', name);
-
-		certificateBuilder.setSensitiveAttribute('firstName', firstName);
-
-		const certificate = await certificateBuilder.build();
-		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
-		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
-		await sharable.grantAccess(kycSharePrincipal);
-
-		return({ name: name, sharable, certificate });
-	}
 
 	const invalidNameCert = await makeCertificate('Invalid Name');
 
@@ -1253,5 +1265,68 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			],
 			total: 1
 		});
+	}
+
+	{
+		// Test user actions
+
+
+		const userActionTestCases: ResolvedOrCallback<{
+			actions: KeetaAssetMovementAnchorUserAction[]
+		}>[] = [
+			async () => {
+				const certificate = await makeCertificate('User Action Needed');
+				const intermediates = [ (await makeCertificate('intermediate1')).certificate, (await makeCertificate('intermediate2')).certificate ];
+
+				return({
+					actions: [
+						{
+							type: 'grant-permission',
+							details: { type: 'plaintext', content: 'User needs to grant permission to access their account' },
+							permissionToGrant: {
+								target: account,
+								entity: account,
+								principal: account,
+								permissions: new KeetaNet.lib.Permissions([ 'SEND_ON_BEHALF' ])
+							}
+						},
+						{
+							type: 'add-certificate',
+							details: { type: 'plaintext', content: 'User needs to add a certificate to their account' },
+							certificate: certificate.certificate,
+							intermediates: intermediates
+						}
+					]
+				})
+			},
+			{
+				actions: []
+			}
+		];
+
+		for (const input of userActionTestCases) {
+			let testCase;
+			if (typeof input === 'function') {
+				testCase = await input();
+			} else {
+				testCase = input;
+			}
+
+
+			userActionNeededValue = testCase.actions;
+
+			let userActionNeededError;
+			try {
+				await usdcProvider.getTransferStatus({ id: '555', account: userActionNeededAccount });
+			} catch (error) {
+				userActionNeededError = error;
+			}
+
+			if (!(userActionNeededError instanceof Errors.UserActionNeeded)) {
+				throw(new Error('Expected UserActionNeeded error'));
+			}
+
+			expect(toJSONSerializable(userActionNeededError.actionsNeeded)).toEqual(toJSONSerializable(testCase.actions));
+		}
 	}
 });
