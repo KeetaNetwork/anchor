@@ -1,4 +1,4 @@
-import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
 import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
@@ -273,8 +273,8 @@ export interface AnchorChainingAssetInfo {
 		pathLength: number;
 	} | null;
 
-    metadata: AnchorTokenLocationMetadata | null;
-    metadataByProvider: Record<string, AnchorTokenLocationMetadata>;
+	metadata: AnchorTokenLocationMetadata | null;
+	metadataByProvider: { [key: string]: AnchorTokenLocationMetadata }
 }
 
 type GetAccountForActionPayload = {
@@ -299,9 +299,9 @@ class AnchorGraph {
 
 	#assetMovementClient: KeetaAssetMovementAnchorClient;
 	#assetMetadataCache = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
-	#passetMovementProviderCache = new Map<string, Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProviderByID']>>>();
+	#assetMovementProviderCache = new Map<string, Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProviderByID']>>>();
 	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
-	
+
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
 		this.client = args.client;
@@ -315,26 +315,6 @@ class AnchorGraph {
 	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
 		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
-
-	async getAssetMetadata(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<{ metadata: AnchorTokenLocationMetadata | null; metadataByProvider: Record<string, AnchorTokenLocationMetadata>; }> {
-		if (!isExternalChainAsset(asset)) {
-			return { metadata: null, metadataByProvider: {} };
-		}
-
-		await this.computeGraphNodes();
-
-		const key = this.#assetLocationKey({ asset, location });
-		
-		const providerMap = this.#assetMetadataCache.get(key);
-		if (!providerMap) {
-			return { metadata: null, metadataByProvider: {} };
-		}
-
-		return {
-			metadata: providerMap.values().next().value ?? null,
-			metadataByProvider: Object.fromEntries(providerMap)
-		};
-	}
 
 	async #computeFXNodes() {
 		const fxServices = await this.resolver.lookup('fx', {});
@@ -448,10 +428,10 @@ class AnchorGraph {
 			return;
 		}
 
-		let provider = this.#passetMovementProviderCache.get(providerID);
+		let provider = this.#assetMovementProviderCache.get(providerID);
 		if (provider === undefined) {
 			provider = await this.#assetMovementClient.getProviderByID(providerID);
-			this.#passetMovementProviderCache.set(providerID, provider);
+			this.#assetMovementProviderCache.set(providerID, provider);
 		}
 
 		if (!provider) {
