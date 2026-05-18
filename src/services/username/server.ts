@@ -1,17 +1,19 @@
 import { KeetaNet } from '../../client/index.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
 	KeetaUsernameAnchorUsernameResolutionContext,
 	KeetaUsernameAnchorAccountResolutionContext,
 	KeetaUsernameAnchorClaimRequest,
-	KeetaUsernameAnchorReleaseRequest,
+	KeetaUsernameAnchorClaimRequestPayload,
 	KeetaUsernameAnchorSearchRequestParameters,
 	KeetaUsernameAnchorUsernameWithAccount,
-	KeetaUsernameAnchorSearchResponseJSON } from './common.js';
+	KeetaUsernameAnchorSearchResponseJSON,
+	KeetaUsernameAnchorClaimContext
+} from './common.js';
 import {
 	getUsernameClaimSignable,
 	validateUsernameDefault,
-	type KeetaUsernameAnchorClaimContext,
 	Errors,
 	isKeetaNetPublicKeyString,
 	assertKeetaUsernameAnchorClaimRequestJSON,
@@ -21,7 +23,9 @@ import {
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
+import { verifyBodyAuth } from '../../lib/http-server/common.js';
 import * as Signing from '../../lib/utils/signing.js';
 
 function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
@@ -43,7 +47,7 @@ function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
 type ClaimHandlerResponse = { ok: true; } | { ok: false; taken?: false; } | { ok: false; taken: true; };
 type SearchHandlerResponse = { results: KeetaUsernameAnchorUsernameWithAccount[] };
 
-export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorMetadataServerConfig {
 	homepage?: string | (() => Promise<string> | string);
 	usernames: {
 		resolveUsername: (input: KeetaUsernameAnchorUsernameResolutionContext) => Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; } | null>;
@@ -58,7 +62,7 @@ export interface KeetaAnchorUsernameServerConfig extends KeetaAnchorHTTPServer.K
 	usernamePattern?: string | RegExp;
 }
 
-export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorUsernameServerConfig> {
+export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['username']>[string], KeetaAnchorUsernameServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorUsernameServerConfig['homepage']>;
 	readonly usernames: KeetaAnchorUsernameServerConfig['usernames'];
 	readonly routes: NonNullable<KeetaAnchorUsernameServerConfig['routes']>;
@@ -174,58 +178,50 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		const claimHandler = this.usernames.claim;
 		if (claimHandler) {
 			routes['POST /api/claim'] = async (_params, body) => {
+				const raw = assertKeetaUsernameAnchorClaimRequestJSON(body);
 
-				const request: KeetaUsernameAnchorClaimRequest = (() => {
-					const raw = assertKeetaUsernameAnchorClaimRequestJSON(body);
+				this.#assertProviderIssuedNameValid(raw.username);
 
-					const ret: KeetaUsernameAnchorClaimRequest = {
-						username: raw.username,
-						account: KeetaNet.lib.Account.toAccount(raw.account),
-						signed: raw.signed
-					};
-
-					if (raw.transfer) {
-						ret.transfer = {
-							from: KeetaNet.lib.Account.toAccount(raw.transfer.from),
-							signed: raw.transfer.signed
-						};
-					}
-
-					return(ret);
-				})();
-
-				const username = request.username;
-
-				this.#assertProviderIssuedNameValid(username);
-
-				if (request.transfer) {
+				let transfer: KeetaUsernameAnchorClaimRequest['transfer'];
+				if (raw.transfer) {
+					const fromAccount = KeetaNet.lib.Account.toAccount(raw.transfer.from);
+					const toAccount = KeetaNet.lib.Account.toAccount(raw.account);
 					const transferSignable = getUsernameTransferSignable({
-						username: request.username,
-						from: request.transfer.from,
-						to: request.account
+						username: raw.username,
+						from: fromAccount,
+						to: toAccount
 					});
 
-					const verifiedTransfer = await Signing.VerifySignedData(request.transfer.from, transferSignable, request.transfer.signed);
-
+					const verifiedTransfer = await Signing.VerifySignedData(fromAccount, transferSignable, raw.transfer.signed);
 					if (!verifiedTransfer) {
 						throw(new KeetaAnchorUserError('Invalid username claim transfer signature'));
 					}
+
+					transfer = { from: fromAccount, signed: raw.transfer.signed };
 				}
 
-				const verified = await Signing.VerifySignedData(request.account, getUsernameClaimSignable(request), request.signed);
-				if (!verified) {
-					throw(new KeetaAnchorUserError('Invalid username claim signature'));
-				}
+				const account = await verifyBodyAuth(raw, function(req) {
+					const claimAccount = KeetaNet.lib.Account.toAccount(req.account);
+					const claimPayload: KeetaUsernameAnchorClaimRequestPayload = {
+						username: req.username,
+						account: claimAccount
+					};
+					if (transfer) {
+						claimPayload.transfer = transfer;
+					}
+
+					return(getUsernameClaimSignable(claimPayload));
+				}, this.resolvedCertificateChainRequirement);
 
 				const claimResponse = await claimHandler({
-					username: request.username,
-					account: request.account,
-					fromUser: request.transfer?.from ?? null
+					username: raw.username,
+					account,
+					fromUser: transfer?.from ?? null
 				});
 
 				if (!claimResponse.ok) {
 					if (claimResponse.taken) {
-						throw(new Errors.UsernameAlreadyTaken({ username }));
+						throw(new Errors.UsernameAlreadyTaken({ username: raw.username }));
 					} else {
 						throw(new KeetaAnchorUserError('Username claim rejected'));
 					}
@@ -241,22 +237,12 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		const releaseHandler = this.usernames.releaseUsername;
 		if (releaseHandler) {
 			routes['POST /api/release'] = async (_params, body) => {
-				const request: KeetaUsernameAnchorReleaseRequest = (() => {
-					const raw = assertKeetaUsernameAnchorReleaseRequestJSON(body);
+				const raw = assertKeetaUsernameAnchorReleaseRequestJSON(body);
+				const account = await verifyBodyAuth(raw, function(req) {
+					return(getUsernameReleaseSignable({ account: KeetaNet.lib.Account.toAccount(req.account) }));
+				}, this.resolvedCertificateChainRequirement);
 
-					return({
-						account: KeetaNet.lib.Account.toAccount(raw.account),
-						signed: raw.signed
-					});
-				})();
-
-
-				const verified = await Signing.VerifySignedData(request.account, getUsernameReleaseSignable(request), request.signed);
-				if (!verified) {
-					throw(new KeetaAnchorUserError('Invalid username claim signature'));
-				}
-
-				const releaseResponse = await releaseHandler({ account: request.account });
+				const releaseResponse = await releaseHandler({ account });
 
 				if (!releaseResponse.ok) {
 					throw(new KeetaAnchorUserError('Release claim rejected'));
@@ -315,7 +301,8 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
 			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()
 		};
@@ -345,7 +332,8 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorHTTPServer.Keet
 
 		return({
 			operations,
-			...(this.#usernamePattern ? { usernamePattern: this.#usernamePattern.source } : {})
+			...(this.#usernamePattern ? { usernamePattern: this.#usernamePattern.source } : {}),
+			...(acceptedIssuerDNs !== undefined && { acceptedIssuerDNs })
 		});
 	}
 }

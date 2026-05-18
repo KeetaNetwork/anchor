@@ -1,5 +1,6 @@
 import { KeetaNet } from '../../client/index.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
 	KeetaNotificationAnchorRegisterTargetClientRequest,
 	KeetaNotificationAnchorListTargetsClientRequest,
@@ -30,12 +31,11 @@ import {
 	getNotificationListSubscriptionsRequestSignable
 } from './common.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
-import type { Routes } from '../../lib/http-server/index.js';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import * as Signing from '../../lib/utils/signing.js';
-import { parseSignatureFromURL } from '../../lib/http-server/common.js';
+import { verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
 
-export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorMetadataServerConfig {
 	homepage?: string | (() => Promise<string> | string);
 	notification: {
 		registerTarget?: (args: Required<KeetaNotificationAnchorRegisterTargetClientRequest>) => Promise<{ id: string; }>;
@@ -49,10 +49,10 @@ export interface KeetaAnchorNotificationServerConfig extends KeetaAnchorHTTPServ
 		supportedChannels?: SupportedChannelConfigurationMetadata;
 		supportedSubscriptions?: NotificationSubscriptionType[];
 	};
-	routes?: Routes;
+	routes?: KeetaAnchorHTTPServer.Routes;
 }
 
-export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorNotificationServerConfig> {
+export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['notification']>[string], KeetaAnchorNotificationServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorNotificationServerConfig['homepage']>;
 	readonly notification: KeetaAnchorNotificationServerConfig['notification'];
 	readonly routes: NonNullable<KeetaAnchorNotificationServerConfig['routes']>;
@@ -91,25 +91,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		const registerTargetHandler = this.notification.registerTarget;
 		if (registerTargetHandler) {
 			routes['POST /api/target'] = async (_params, body) => {
-				const request: Required<KeetaNotificationAnchorRegisterTargetRequest> = (() => {
-					const raw = assertKeetaNotificationAnchorRegisterTargetRequestJSON(body);
-
-					return({
-						...raw,
-						account: KeetaNet.lib.Account.toAccount(raw.account)
-					});
-				})();
-
-				const signatureVerified = await Signing.VerifySignedData(
-					request.account,
-					getNotificationRegisterTargetRequestSignable(request),
-					request.signed
-				);
-
-				if (!signatureVerified) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
+				const raw = assertKeetaNotificationAnchorRegisterTargetRequestJSON(body);
+				const account = await verifyBodyAuth(raw, getNotificationRegisterTargetRequestSignable, this.resolvedCertificateChainRequirement);
+				const request: Required<KeetaNotificationAnchorRegisterTargetRequest> = { ...raw, account };
 				const registerResponse = await registerTargetHandler(request);
 
 				return({
@@ -125,23 +109,12 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		const listTargetsHandler = this.notification.listTargets;
 		if (listTargetsHandler) {
 			routes['GET /api/targets'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
-				const signatureDetails = parseSignatureFromURL(url);
-
-				if (!signatureDetails.account || !signatureDetails.signedField) {
-					throw(new KeetaAnchorUserError('Missing signature parameters in URL'));
-				}
-
-				const verifiedSignature = await Signing.VerifySignedData(
-					signatureDetails.account,
-					getNotificationListTargetsRequestSignable(),
-					signatureDetails.signedField
+				const account = await verifyURLAuth(
+					url,
+					function() { return(getNotificationListTargetsRequestSignable()); },
+					this.resolvedCertificateChainRequirement
 				);
-
-				if (!verifiedSignature) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
-				const listResponse = await listTargetsHandler({ account: signatureDetails.account });
+				const listResponse = await listTargetsHandler({ account });
 
 				return({
 					output: JSON.stringify({
@@ -157,25 +130,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		if (deleteTargetHandler) {
 			// XXX:TODO should this be post with body or delete with URL param? Delete with URL param is more RESTful but can be more difficult to call from some clients and doesn't allow for a request body (so all data must be in the URL or signature)
 			routes['POST /api/delete-target'] = async (_params, body) => {
-				const request: Required<KeetaNotificationAnchorDeleteTargetRequest> = (() => {
-					const raw = assertKeetaNotificationAnchorDeleteTargetRequestJSON(body);
-
-					return({
-						...raw,
-						account: KeetaNet.lib.Account.toAccount(raw.account)
-					});
-				})();
-
-				const verifiedSignature = await Signing.VerifySignedData(
-					request.account,
-					getNotificationDeleteTargetRequestSignable(request),
-					request.signed
-				);
-
-				if (!verifiedSignature) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
+				const raw = assertKeetaNotificationAnchorDeleteTargetRequestJSON(body);
+				const account = await verifyBodyAuth(raw, getNotificationDeleteTargetRequestSignable, this.resolvedCertificateChainRequirement);
+				const request: Required<KeetaNotificationAnchorDeleteTargetRequest> = { ...raw, account };
 				const deleteResponse = await deleteTargetHandler(request);
 
 				return({
@@ -189,7 +146,6 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		if (createSubscriptionHandler) {
 			routes['POST /api/subscription'] = async (_params, body) => {
 				const raw = assertKeetaNotificationAnchorCreateSubscriptionRequestJSON(body);
-				const account = KeetaNet.lib.Account.fromPublicKeyString(raw.account);
 
 				let subscription: NotificationSubscriptionArguments;
 				if (raw.subscription.type === 'RECEIVE_FUNDS') {
@@ -205,18 +161,11 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 					throw(new KeetaAnchorUserError(`Unsupported subscription type`));
 				}
 
-				const request = { account: account.assertAccount(), subscription, signed: raw.signed };
+				const account = await verifyBodyAuth(raw, function() {
+					return(getNotificationCreateSubscriptionRequestSignable({ subscription }));
+				}, this.resolvedCertificateChainRequirement);
 
-				const signatureVerified = await Signing.VerifySignedData(
-					account,
-					getNotificationCreateSubscriptionRequestSignable({ subscription }),
-					raw.signed
-				);
-
-				if (!signatureVerified) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
+				const request = { account, subscription, signed: raw.signed };
 				const createResponse = await createSubscriptionHandler(request);
 
 				return({
@@ -229,24 +178,13 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		const listSubscriptionsHandler = this.notification.listSubscriptions;
 		if (listSubscriptionsHandler) {
 			routes['GET /api/subscriptions'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
-				const signatureDetails = parseSignatureFromURL(url);
-
-				if (!signatureDetails.account || !signatureDetails.signedField) {
-					throw(new KeetaAnchorUserError('Missing signature parameters in URL'));
-				}
-
-				const verifiedSignature = await Signing.VerifySignedData(
-					signatureDetails.account,
-					getNotificationListSubscriptionsRequestSignable(),
-					signatureDetails.signedField
+				const account = await verifyURLAuth(
+					url,
+					function() { return(getNotificationListSubscriptionsRequestSignable()); },
+					this.resolvedCertificateChainRequirement
 				);
 
-				if (!verifiedSignature) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
-				const listResponse = await listSubscriptionsHandler({ account: signatureDetails.account });
-
+				const listResponse = await listSubscriptionsHandler({ account });
 				const subscriptionsJSON: SubscriptionDetailsJSON[] = listResponse.subscriptions.map(function(subscription): SubscriptionDetailsJSON {
 					const { locale, ...restSubscription } = subscription.subscription;
 					return({
@@ -271,25 +209,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		const deleteSubscriptionHandler = this.notification.deleteSubscription;
 		if (deleteSubscriptionHandler) {
 			routes['POST /api/delete-subscription'] = async (_params, body) => {
-				const request: Required<KeetaNotificationAnchorDeleteSubscriptionRequest> = (() => {
-					const raw = assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON(body);
-
-					return({
-						...raw,
-						account: KeetaNet.lib.Account.toAccount(raw.account).assertAccount()
-					});
-				})();
-
-				const verifiedSignature = await Signing.VerifySignedData(
-					request.account,
-					getNotificationDeleteSubscriptionRequestSignable(request),
-					request.signed
-				);
-
-				if (!verifiedSignature) {
-					throw(new KeetaAnchorUserError('Invalid signature'));
-				}
-
+				const raw = assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON(body);
+				const account = await verifyBodyAuth(raw, getNotificationDeleteSubscriptionRequestSignable, this.resolvedCertificateChainRequirement);
+				const request: Required<KeetaNotificationAnchorDeleteSubscriptionRequest> = { ...raw, account };
 				const deleteResponse = await deleteSubscriptionHandler(request);
 
 				return({
@@ -302,7 +224,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['notification']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['notification']>[string]> {
 		const retval: NonNullable<ServiceMetadata['services']['notification']>[string] = { operations: {}};
 
 		const authentication: ServiceMetadataAuthenticationType = {
@@ -340,6 +262,11 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorHTTPServer.
 
 		if (this.notification.supportedSubscriptions) {
 			retval.supportedSubscriptions = this.notification.supportedSubscriptions;
+		}
+
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
+		if (acceptedIssuerDNs !== undefined) {
+			retval.acceptedIssuerDNs = acceptedIssuerDNs;
 		}
 
 		return(retval);

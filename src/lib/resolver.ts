@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -12,7 +12,12 @@ import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCa
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
-import type { SharedAnchorMetadataLegalExtension } from './metadata.types.js';
+import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import type { VerifiableAccount } from './utils/signing.js';
+import type { HTTPSignedField } from './http-server/common.js';
+import type { SignableServiceMetadata } from './anchor-metadata-server.js';
+import { assertHTTPSignedField } from './http-server/common.js';
+import { verifyMetadataSignature } from './anchor-metadata-server.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -37,11 +42,6 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
-type ServiceMetadataAuthenticationType = {
-	method: 'keeta-account';
-	type: 'required' | 'optional' | 'none';
-};
-type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }}
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure
@@ -57,7 +57,7 @@ type ServiceMetadata = {
 	};
 	services: {
 		banking?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					createAccount?: string;
 				};
@@ -67,7 +67,7 @@ type ServiceMetadata = {
 			};
 		};
 		kyc?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Check if the KYC provider can
@@ -117,7 +117,7 @@ type ServiceMetadata = {
 			/**
 			 * Provider ID which identifies the FX provider
 			 */
-			[id: string]: SharedAnchorMetadataLegalExtension & {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Get an estimate for a currency
@@ -182,7 +182,7 @@ type ServiceMetadata = {
 			}
 		};
 		username?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					resolve: ServiceMetadataEndpoint;
 					claim?: ServiceMetadataEndpoint;
@@ -198,7 +198,7 @@ type ServiceMetadata = {
 			}
 		};
 		assetMovement?: {
-			[id: string]: SharedAnchorMetadataLegalExtension & {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					[Operation in (
 						'initiateTransfer' |
@@ -227,7 +227,7 @@ type ServiceMetadata = {
 			};
 		};
 		storage?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					put?: ServiceMetadataEndpoint;
 					get?: ServiceMetadataEndpoint;
@@ -263,7 +263,7 @@ type ServiceMetadata = {
 			};
 		};
 		notification?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				supportedChannels?: Partial<SupportedChannelConfigurationMetadata>;
 				supportedSubscriptions?: NotificationSubscriptionType[];
 
@@ -882,6 +882,8 @@ type MetadataConfig = {
 type ValuizableInstance = { value: ValuizableMethod };
 
 const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
+const assertSignableServiceMetadataOperations = createAssert<SignableServiceMetadata['operations']>();
+const assertSignableServiceMetadataLegal = createAssert<NonNullable<SignableServiceMetadata['legal']>>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -1180,74 +1182,82 @@ class Metadata implements ValuizableInstance {
 		 * To ensure any circular references are handled correctly, we
 		 * keep track of a chain of accessed URLs.  If we see the same
 		 * URL twice, then we have a circular reference.
+		 *
+		 * The URL is removed from the set in the `finally` below once
+		 * this resolution returns, so the set tracks only the active
+		 * recursion chain rather than the lifetime history.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
 			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
-		/*
-		 * Verify that the cache entry is still valid.  If it is not,
-		 * then remove it from the cache.
-		 */
-		const cacheValue = this.#cache.instance.get(cacheKey);
-		if (cacheValue) {
-			const resolvedCacheValue = await cacheValue;
+		try {
+			/*
+			 * Verify that the cache entry is still valid.  If it is not,
+			 * then remove it from the cache.
+			 */
+			const cacheValue = this.#cache.instance.get(cacheKey);
+			if (cacheValue) {
+				const resolvedCacheValue = await cacheValue;
 
-			if (resolvedCacheValue.expires < new Date()) {
-				this.#cache.instance.delete(cacheKey);
+				if (resolvedCacheValue.expires < new Date()) {
+					this.#cache.instance.delete(cacheKey);
+				} else {
+					this.#stats.cache.hit++;
+
+					if (resolvedCacheValue.pass) {
+						return(resolvedCacheValue.value);
+					} else {
+						throw(resolvedCacheValue.error);
+					}
+				}
+			}
+
+			this.#stats.cache.miss++;
+
+			const readPromise = (async (): Promise<URLCacheObjectEntry> => {
+				let retval: JSONSerializable;
+				try {
+					const protocol = url.protocol;
+					if (protocol === 'keetanet:') {
+						retval = await this.readKeetaNetURL(url);
+					} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
+						retval = await this.readHTTPSURL(url);
+					} else {
+						this.#stats.unsupported.reads++;
+						throw(new Error(`Unsupported protocol: ${protocol}`));
+					}
+
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
+
+					return({
+						pass: true,
+						value: retval,
+						expires: new Date(Date.now() + this.#cache.positiveTTL)
+					});
+				} catch (readError) {
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
+
+					return({
+						pass: false,
+						error: readError,
+						expires: new Date(Date.now() + this.#cache.negativeTTL)
+					});
+				}
+			})();
+
+			this.#cache.instance.set(cacheKey, readPromise);
+
+			const resolvedValue = await readPromise;
+
+			if (resolvedValue.pass) {
+				return(resolvedValue.value);
 			} else {
-				this.#stats.cache.hit++;
-
-				if (resolvedCacheValue.pass) {
-					return(resolvedCacheValue.value);
-				} else {
-					throw(resolvedCacheValue.error);
-				}
+				throw(resolvedValue.error);
 			}
-		}
-
-		this.#stats.cache.miss++;
-
-		const readPromise = (async (): Promise<URLCacheObjectEntry> => {
-			let retval: JSONSerializable;
-			try {
-				const protocol = url.protocol;
-				if (protocol === 'keetanet:') {
-					retval = await this.readKeetaNetURL(url);
-				} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
-					retval = await this.readHTTPSURL(url);
-				} else {
-					this.#stats.unsupported.reads++;
-					throw(new Error(`Unsupported protocol: ${protocol}`));
-				}
-
-				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
-
-				return({
-					pass: true,
-					value: retval,
-					expires: new Date(Date.now() + this.#cache.positiveTTL)
-				});
-			} catch (readError) {
-				this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
-
-				return({
-					pass: false,
-					error: readError,
-					expires: new Date(Date.now() + this.#cache.negativeTTL)
-				});
-			}
-		})();
-
-		this.#cache.instance.set(cacheKey, readPromise);
-
-		const resolvedValue = await readPromise;
-
-		if (resolvedValue.pass) {
-			return(resolvedValue.value);
-		} else {
-			throw(resolvedValue.error);
+		} finally {
+			this.seenURLs.delete(cacheKey);
 		}
 	}
 
@@ -1422,7 +1432,89 @@ type ResolverStats = {
 	}
 };
 
-type SharedLookupCriteria = { providerIDs?: string[]; };
+type SharedLookupCriteria = {
+	providerIDs?: string[];
+	/**
+	 * Restrict to entries signed by one of the listed accounts. Each entry
+	 * may be a {@link KeetaNetGenericAccount} or its public-key string
+	 * form. Entries without a matching `account` are filtered out
+	 * (including unsigned entries).
+	 */
+	accounts?: (AccountPublicKeyString | VerifiableAccount)[];
+};
+
+/**
+ * Verify the optional metadata signature on a service entry.
+ *
+ * @returns boolean:
+ * - `true` when the entry has neither `account` nor `signed`.
+ * - `false` when one is present without the other or when verification fails.
+ */
+async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Logger): Promise<boolean> {
+	const accountValuizable = entry['account'];
+	const signedValuizable = entry['signed'];
+
+	if (accountValuizable === undefined && signedValuizable === undefined) {
+		return(true);
+	}
+	if (accountValuizable === undefined || signedValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: one of `account`/`signed` present without the other');
+		return(false);
+	}
+
+	const accountString = await accountValuizable('string');
+	let account: VerifiableAccount;
+	try {
+		account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
+	} catch (parseError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: invalid account public key', accountString, parseError);
+		return(false);
+	}
+
+	const signedRaw = await Metadata.fullyResolveValuizable(signedValuizable);
+	let signed: HTTPSignedField;
+	try {
+		signed = assertHTTPSignedField(signedRaw);
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `signed` field for account', accountString, assertError);
+		return(false);
+	}
+
+	const operationsValuizable = entry['operations'];
+	if (operationsValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: missing `operations` for signed account', accountString);
+		return(false);
+	}
+
+	let operations: SignableServiceMetadata['operations'];
+	try {
+		operations = assertSignableServiceMetadataOperations(await Metadata.fullyResolveValuizable(operationsValuizable));
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `operations` for account', accountString, assertError);
+		return(false);
+	}
+
+	const metadata: SignableServiceMetadata = { operations };
+	const legalValuizable = entry['legal'];
+	if (legalValuizable !== undefined) {
+		const legalRaw = await Metadata.fullyResolveValuizable(legalValuizable);
+		if (legalRaw !== null) {
+			try {
+				metadata.legal = assertSignableServiceMetadataLegal(legalRaw);
+			} catch (assertError) {
+				logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `legal` for account', accountString, assertError);
+				return(false);
+			}
+		}
+	}
+
+	const valid = await verifyMetadataSignature(account, metadata, signed);
+	if (!valid) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: signature does not verify for account', accountString);
+	}
+
+	return(valid);
+}
 
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
@@ -2486,6 +2578,104 @@ class Resolver {
 		});
 	}
 
+	/**
+	 * Resolve a service entry to its object form. Returns `undefined` and
+	 * logs at debug if resolution fails. `context` describes the caller
+	 * for the log message.
+	 */
+	async #resolveServiceEntry(id: string, entry: ValuizableMethod, context: string): Promise<ValuizableObject | undefined> {
+		try {
+			return(await entry('object'));
+		} catch (resolveError) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Could not pre-resolve service entry', id, context, resolveError);
+			return(undefined);
+		}
+	}
+
+	/**
+	 * Keep only service entries whose `account` is in `accounts`. Entries
+	 * without `account`, with an unresolvable `account`, or that fail to
+	 * resolve are dropped.
+	 */
+	async #filterByAccounts(servicesByID: ValuizableObject, accounts: (AccountPublicKeyString | VerifiableAccount)[]): Promise<ValuizableObject> {
+		const allowedKeys = new Set<string>();
+		for (const allowed of accounts) {
+			allowedKeys.add(KeetaNetClient.lib.Account.toPublicKeyString(allowed));
+		}
+
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for account filter:');
+			if (resolved === undefined) {
+				continue;
+			}
+
+			const accountValuizable = resolved['account'];
+			if (accountValuizable === undefined) {
+				continue;
+			}
+
+			let entryAccountKey: string;
+			try {
+				const entryAccountString = await accountValuizable('string');
+				entryAccountKey = KeetaNetClient.lib.Account.toPublicKeyString(entryAccountString);
+			} catch (resolveError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Could not resolve `account` for service entry', id, ':', resolveError);
+				continue;
+			}
+
+			if (!allowedKeys.has(entryAccountKey)) {
+				continue;
+			}
+
+			retval[id] = entry;
+		}
+
+		return(retval);
+	}
+
+	/**
+	 * Drop service entries whose signature does not verify. Entries without
+	 * `account` pass through. Entries that fail to resolve pass through so
+	 * downstream asserters surface the resolution error to the caller.
+	 */
+	async #filterSignedServiceEntries(servicesByID: ValuizableObject | undefined): Promise<ValuizableObject | undefined> {
+		if (servicesByID === undefined) {
+			return(undefined);
+		}
+
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for signature verification:');
+			if (resolved === undefined) {
+				retval[id] = entry;
+				continue;
+			}
+
+			try {
+				const valid = await verifyServiceEntrySignature(resolved, this.#logger);
+				if (!valid) {
+					continue;
+				}
+			} catch (verifyError) {
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error verifying signature for service entry', id, ':', verifyError, '-- dropping');
+				continue;
+			}
+
+			retval[id] = entry;
+		}
+
+		return(retval);
+	}
+
 	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
@@ -2515,6 +2705,12 @@ class Resolver {
 			filteredDefinedServicesObject = definedServicesObject;
 		}
 
+		if (sharedCriteria?.accounts !== undefined && filteredDefinedServicesObject !== undefined) {
+			filteredDefinedServicesObject = await this.#filterByAccounts(filteredDefinedServicesObject, sharedCriteria.accounts);
+		}
+
+		filteredDefinedServicesObject = await this.#filterSignedServiceEntries(filteredDefinedServicesObject);
+
 		const serviceLookup = this.lookupMap[service].search;
 
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
@@ -2537,8 +2733,7 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
-	ServiceMetadataEndpoint,
-	ServiceMetadataAuthenticationType,
 	Services,
 	SharedLookupCriteria
 };
+export type { ServiceMetadataEndpoint, ServiceMetadataAuthenticationType } from './metadata.types.js';
