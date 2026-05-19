@@ -286,7 +286,7 @@ type ConvertToExternalRequest<
 /**
  * The client-side request type for initiating an asset transfer via the Keeta Asset Movement Anchor service
  */
-export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+export interface KeetaAssetMovementAnchorInitiateTransferClientRequest {
 	/**
 	 * Optional KeetaNet account to use for signing the request
 	 */
@@ -329,7 +329,12 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	allowedRails?: Rail[];
 }
 
-export type KeetaAssetMovementAnchorSimulateTransferClientRequest = KeetaAssetMovementAnchorInitiateTransferClientRequest;
+// Takes in object (T), mark certain keys (K) as optional, and keep the rest required
+type PartialKeys<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>> & Partial<Pick<T, K>>;
+
+export interface KeetaAssetMovementAnchorSimulateTransferClientRequest extends Omit<KeetaAssetMovementAnchorInitiateTransferClientRequest, 'to'> {
+	to: PartialKeys<KeetaAssetMovementAnchorInitiateTransferClientRequest['to'], 'recipient'>;
+}
 
 /**
  * The serialized HTTP Body for the {@link KeetaAssetMovementAnchorInitiateTransferClientRequest} request
@@ -340,13 +345,15 @@ export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalR
 	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
-export type KeetaAssetMovementAnchorSimulateTransferRequest = KeetaAssetMovementAnchorInitiateTransferRequest;
+export type KeetaAssetMovementAnchorSimulateTransferRequest = Omit<KeetaAssetMovementAnchorInitiateTransferRequest, 'to'> & {
+	to: PartialKeys<KeetaAssetMovementAnchorInitiateTransferRequest['to'], 'recipient'>;
+};
 
-export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
+export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest): Signable {
 	return(objectToSignable({
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		from: { location: convertAssetLocationInputToCanonical(input.from.location) },
-		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient },
+		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient, depositMessage: input.to.depositMessage },
 		value: String(input.value)
 	}));
 }

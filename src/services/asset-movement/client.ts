@@ -39,7 +39,9 @@ import type {
 	AssetLocationLike,
 	PerChainLocationMetadata,
 	KeetaAssetMovementAnchorSimulateTransferResponse,
-	KeetaAssetMovementAnchorSimulateTransferClientRequest
+	KeetaAssetMovementAnchorSimulateTransferClientRequest,
+	KeetaAssetMovementAnchorInitiateTransferRequest,
+	KeetaAssetMovementAnchorSimulateTransferRequest
 } from './common.js';
 import {
 	assertKeetaSupportedAssetsMetadataItem,
@@ -70,7 +72,8 @@ import {
 	isExternalChainAsset,
 	isAnchorTokenLocationMetadata,
 	isKeetaAssetMovementAnchorSimulateTransferResponse,
-	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData
+	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
+	Errors
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
@@ -427,18 +430,20 @@ class KeetaAssetMovementAnchorBase {
 
 type SimulationOrTransferResponse = ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse> | ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>;
 
-interface BaseKeetaAssetMovementTransferConstructorArguments<Transfer extends SimulationOrTransferResponse> {
+interface BaseKeetaAssetMovementTransferConstructorArguments<Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest, Transfer extends SimulationOrTransferResponse> {
 	provider: KeetaAssetMovementAnchorProvider;
-	request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
+	request: Request;
 	transfer: Transfer;
 }
 
-class BaseKeetaAssetMovementTransfer<Transfer extends SimulationOrTransferResponse> {
+abstract class BaseKeetaAssetMovementTransfer<Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest, Transfer extends SimulationOrTransferResponse> {
 	readonly provider: KeetaAssetMovementAnchorProvider;
-	readonly request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
+	readonly request: Request;
 	readonly transfer: Transfer;
 
-	constructor({ request, transfer, provider }: BaseKeetaAssetMovementTransferConstructorArguments<Transfer>) {
+	readonly abstract isSimulation: Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest ? false : true;
+
+	constructor({ request, transfer, provider }: BaseKeetaAssetMovementTransferConstructorArguments<Request, Transfer>) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
@@ -452,7 +457,9 @@ class BaseKeetaAssetMovementTransfer<Transfer extends SimulationOrTransferRespon
 /**
  * Represents an in-progress Asset Movement request.
  */
-class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
+class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorInitiateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
+	readonly isSimulation = false as const;
+
 	get transferId(): string {
 		return(this.transfer.id);
 	}
@@ -468,9 +475,28 @@ class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<ExtractO
 	}
 }
 
-class KeetaAssetMovementSimulatedTransfer extends BaseKeetaAssetMovementTransfer<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
-	async createTransfer(): Promise<KeetaAssetMovementTransfer> {
-		return(await this.provider.initiateTransfer(this.request));
+class KeetaAssetMovementSimulatedTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorSimulateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
+	readonly isSimulation = true as const;
+
+	async createTransfer(overrides?: {
+		to: Partial<Pick<KeetaAssetMovementAnchorInitiateTransferClientRequest['to'], 'depositMessage' | 'recipient'>>;
+	}): Promise<KeetaAssetMovementTransfer> {
+		const to = {
+			...this.request.to,
+			...overrides?.to
+		};
+
+		if (!to.recipient) {
+			throw(new Error('Recipient is required to create a transfer from a simulation'));
+		}
+
+		return(await this.provider.initiateTransfer({
+			...this.request,
+			to: {
+				...to,
+				recipient: to.recipient
+			}
+		}));
 	}
 }
 
@@ -497,7 +523,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	async #getOperationData(operationName: keyof KeetaAssetMovementAnchorOperations, params?: { [key: string]: string; }) {
 		const endpoint = await this.serviceInfo.operations[operationName];
 		if (endpoint === undefined) {
-			throw(new Error(`Asset Movement service does not support ${operationName} operation`));
+			throw(new Errors.OperationNotSupported({}, `Asset Movement service does not support ${operationName} operation`));
 		}
 
 		if (endpoint.options.authentication.method !== 'keeta-account') {
@@ -508,6 +534,19 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			url: endpoint.url(params),
 			auth: endpoint.options.authentication
 		})
+	}
+
+	async isOperationSupported(operationName: keyof KeetaAssetMovementAnchorOperations): Promise<boolean> {
+		try {
+			await this.#getOperationData(operationName);
+			return(true);
+		} catch (error) {
+			if (error instanceof Errors.OperationNotSupported) {
+				return(false);
+			}
+
+			throw(error);
+		}
 	}
 
 	async #parseResponseError(data: unknown) {
@@ -624,16 +663,16 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON as Extract<Response, { ok: true }>);
 	}
 
-	async #initiateOrSimulateTransfer(simulate: true, request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementSimulatedTransfer>;
+	async #initiateOrSimulateTransfer(simulate: true, request: KeetaAssetMovementAnchorSimulateTransferClientRequest): Promise<KeetaAssetMovementSimulatedTransfer>;
 	async #initiateOrSimulateTransfer(simulate: false, request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer>;
-	async #initiateOrSimulateTransfer(simulate: boolean, request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer | KeetaAssetMovementSimulatedTransfer> {
+	async #initiateOrSimulateTransfer(simulate: boolean, request: KeetaAssetMovementAnchorSimulateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer | KeetaAssetMovementSimulatedTransfer> {
 		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
 
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
 			endpoint: simulate ? 'simulateTransfer' : 'initiateTransfer',
 			account: request.account,
-			serializeRequest(body) {
+			serializeRequest(body): KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest {
 				const { account, ...rest } = body;
 				return({
 					...rest,
@@ -644,7 +683,8 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 					},
 					to: {
 						location: convertAssetLocationToString(body.to.location),
-						recipient: body.to.recipient
+						...(body.to.recipient ? { recipient: body.to.recipient } : {}),
+						...(body.to.depositMessage ? { depositMessage: body.to.depositMessage } : {})
 					},
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
 					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
@@ -677,9 +717,19 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 
 			this.logger?.debug(`asset movement transfer request successful, request ID ${requestInformationJSON.id}`);
 
+			if (!('recipient' in request.to)) {
+				throw(new Error('Recipient information is required in the request to create a transfer'));
+			}
+
 			return(new KeetaAssetMovementTransfer({
 				provider: this,
-				request,
+				request: {
+					...request,
+					to: {
+						...request.to,
+						recipient: request.to.recipient
+					}
+				},
 				transfer: requestInformationJSON
 			}));
 		}
