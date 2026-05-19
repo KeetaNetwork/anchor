@@ -316,6 +316,26 @@ class AnchorGraph {
 		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
 
+	async getAssetMetadata(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<Pick<AnchorChainingAssetInfo, 'metadata' | 'metadataByProvider'>> {
+		if (!isExternalChainAsset(asset)) {
+			return({ metadata: null, metadataByProvider: {}});
+		}
+
+		await this.computeGraphNodes();
+
+		const key = this.#assetLocationKey({ asset, location });
+
+		const providerMap = this.#assetMetadataCache.get(key);
+		if (!providerMap) {
+			return({ metadata: null, metadataByProvider: {}});
+		}
+
+		return({
+			metadata: providerMap.values().next().value ?? null,
+			metadataByProvider: Object.fromEntries(providerMap)
+		});
+	}
+
 	async #computeFXNodes() {
 		const fxServices = await this.resolver.lookup('fx', {});
 
