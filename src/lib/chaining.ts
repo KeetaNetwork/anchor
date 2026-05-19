@@ -790,7 +790,7 @@ class AnchorGraph {
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
-			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike; }): AnchorChainingAssetInfo => {
+			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
 				const key = assetLocationKey(side);
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
