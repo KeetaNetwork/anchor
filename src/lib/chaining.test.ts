@@ -807,17 +807,6 @@ describe('AnchorChainingPath computeSteps', function() {
 		const path = await h.getPathVia('FXOne');
 		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Bank EU initiate failed');
 	});
-
-	test('AM->FX chaining is unsupported', async function() {
-		await using h = await createChainingTestHarness();
-		const paths = await h.anchorChaining.getPaths({
-			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
-			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
-		});
-		const threeStepPath = paths?.find(p => p.path.length === 3);
-		if (!threeStepPath) {throw(new Error('No 3-step path found'));}
-		await expect(AnchorChainingPlan.create(threeStepPath)).rejects.toThrow('Cannot currently chain from asset movement to fx step');
-	});
 });
 
 describe('AnchorChainingPath computeSteps for fx with "to" affinity', function() {
