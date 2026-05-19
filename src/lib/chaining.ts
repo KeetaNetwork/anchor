@@ -269,8 +269,6 @@ export interface AnchorChainingAssetInfo {
 		outbound: Rail[];
 	};
 
-	supportedProviderIDs: Set<string>;
-
 	distance: {
 		pathLength: number;
 	} | null;
@@ -801,14 +799,11 @@ class AnchorGraph {
 						asset: side.asset,
 						location: side.location,
 						rails: { inbound: [], outbound: [] },
-						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null,
-						supportedProviderIDs: new Set()
+						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
 					};
 
 					resultMap.set(key, resultObj);
 				}
-
-				resultObj.supportedProviderIDs.add(providerID);
 
 				return(resultObj);
 			};
