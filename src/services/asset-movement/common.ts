@@ -1394,7 +1394,7 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 			message = JSON.stringify({
 				ok: false,
 				name: this.name,
-				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED',
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_USER_ACTION_NEEDED',
 				data: { actionsNeeded },
 				error: this.message
 			});

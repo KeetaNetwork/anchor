@@ -39,3 +39,24 @@ export function arrayBufferLikeToBuffer(buffer: ArrayBufferLike | ArrayBufferVie
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(toBuffer(buffer as ArrayBuffer));
 }
+
+/**
+ * Regular expression to match base64 input.
+ */
+const BASE64_INPUT_REGEX = /^[-_A-Za-z0-9+/=\s]*$/;
+
+/**
+ * Decode a base64 string into a {@link Buffer}.
+ */
+export function decodeBase64Strict(input: string): Buffer | undefined {
+	if (!BASE64_INPUT_REGEX.test(input)) {
+		return(undefined);
+	}
+
+	const decoded = Buffer.from(input, 'base64');
+	if (decoded.length === 0) {
+		return(undefined);
+	}
+
+	return(decoded);
+}
