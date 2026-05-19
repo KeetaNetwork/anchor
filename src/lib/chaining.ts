@@ -1093,13 +1093,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 										if (nextStep.usingInstruction.type !== step.to.rail) {
 											throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
 										}
-	
+
 										const foundInstruction = nextStep.usingInstruction;
-	
+
 										const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
 											return(isFiatRail(input.type));
 										}
-	
+
 										if (foundInstruction.type === 'KEETA_SEND') {
 											throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
 										} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
@@ -1465,7 +1465,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		let index = 0;
 		try {
-			let prev = null;
 			for (index = 0; index < this.plan.steps.length; index++) {
 				const onStepCompleted = (step: ExecutedStep) => {
 					executedSteps.push(step);
@@ -1536,8 +1535,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				} else {
 					assertNever(step);
 				}
-
-				prev = step;
 			}
 
 			// Direct same-location/same-asset send: the loop ran zero iterations,

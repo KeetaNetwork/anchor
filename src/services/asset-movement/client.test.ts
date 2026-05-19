@@ -125,7 +125,6 @@ test('Asset Movement Anchor Client Test', async function() {
 
 	async function serverInitiateSimulateTransferHandler(simulate: false, request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
 	async function serverInitiateSimulateTransferHandler(simulate: true, request: KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
-	// eslint-disable-next-line @typescript-eslint/no-duplicate-type-constituents
 	async function serverInitiateSimulateTransferHandler(simulate: boolean, request: KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse> | ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
 		if (request.from.location === 'bank-account:us') {
 			if (!request.from.source || typeof request.from.source !== 'object' || !('type' in request.from.source)) {
