@@ -1077,14 +1077,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								throw(new Error(`Expected next step at index ${index + 1} for asset movement step at index ${index}`));
 							}
 
-							if (nextPathStep?.type === 'fx') {
-								throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
-							}
-
 							if (nextPathStep.from.location === `chain:keeta:${this.parent['client'].network}`) {
 								const { account } = await this.getAccountsForAction({
 									type: 'assetMovement',
-									// XXX:TODO what should this be?
 									providerMethod: 'initiateTransfer'
 								}, this.#options?.overrides);
 
