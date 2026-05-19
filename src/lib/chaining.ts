@@ -790,7 +790,7 @@ class AnchorGraph {
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
-			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike; }, providerID: string): AnchorChainingAssetInfo => {
+			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike; }): AnchorChainingAssetInfo => {
 				const key = assetLocationKey(side);
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
@@ -801,10 +801,8 @@ class AnchorGraph {
 						rails: { inbound: [], outbound: [] },
 						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
 					};
-
 					resultMap.set(key, resultObj);
 				}
-
 				return(resultObj);
 			};
 			for (const { node } of nodesWithAdj) {
@@ -812,13 +810,13 @@ class AnchorGraph {
 					continue;
 				}
 				if (reachable.has(assetLocationKey(node.to))) {
-					const entry = getOrCreate(node.to, node.providerID);
+					const entry = getOrCreate(node.to);
 					if (!entry.rails.inbound.includes(node.to.rail)) {
 						entry.rails.inbound.push(node.to.rail);
 					}
 				}
 				if (reachable.has(assetLocationKey(node.from))) {
-					const entry = getOrCreate(node.from, node.providerID);
+					const entry = getOrCreate(node.from);
 					if (!entry.rails.outbound.includes(node.from.rail)) {
 						entry.rails.outbound.push(node.from.rail);
 					}
