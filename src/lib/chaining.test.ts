@@ -175,6 +175,14 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		return(this);
 	}
 
+	wrapInitiateTransfer(wrapper: (request: Parameters<InitiateTransferFn>[0], next: InitiateTransferFn) => ReturnType<InitiateTransferFn>): this {
+		const saved = this._initiateRef.fn;
+		this._initiateRef.fn = async (request) => {
+			return(await wrapper(request, saved));
+		};
+		return(this);
+	}
+
 	setFee(fee: bigint): this {
 		return(this.setInitiateTransfer(async (request) => {
 			const value = BigInt(request.value);
@@ -1236,6 +1244,77 @@ describe('AnchorChainingPath execute', function() {
 		expect(failedEvent.index).toEqual(1);
 		expect(failedEvent.completedSteps.length).toEqual(1);
 		expect(failedEvent.completedSteps[0]?.type).toEqual('fx');
+	});
+
+	test('AM -> FX -> AM chain: each keeta-side hop holds tokens at the user address', async function() {
+		await using h = await createChainingTestHarness();
+
+		const userAddress = h.client.account.publicKeyString.get();
+		const capturedUSRecipients: (string | undefined)[] = [];
+		const capturedEURecipients: (string | undefined)[] = [];
+
+		h.bankServerUS.wrapInitiateTransfer(async (request, next) => {
+			capturedUSRecipients.push(typeof request.to.recipient === 'string' ? request.to.recipient : undefined);
+			return(await next(request));
+		});
+		h.bankServerEU.wrapInitiateTransfer(async (request, next) => {
+			capturedEURecipients.push(typeof request.to.recipient === 'string' ? request.to.recipient : undefined);
+			return(await next(request));
+		});
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: userAddress, rail: 'SEPA_PUSH' }
+		});
+
+		const path = plans?.find(p =>
+			p.plan.steps.length === 3 && p.plan.steps.some(s => s.type === 'fx' && s.step.providerID === 'FXOne')
+		);
+		if (!path) { throw(new Error('Expected 3-step path via FXOne')); }
+
+		expect(path.plan.steps).toHaveLength(3);
+		expect(path.plan.steps[0]?.type).toBe('assetMovement');
+		expect(path.plan.steps[1]?.type).toBe('fx');
+		expect(path.plan.steps[2]?.type).toBe('assetMovement');
+
+		expect(await h.client.balance(h.tokens.USDC)).toBe(0n);
+		expect(await h.client.balance(h.tokens.EURC)).toBe(0n);
+
+		let afterStep0Balance: { usdc: bigint; eurc: bigint } | null = null;
+		let afterStep1Balance: { usdc: bigint; eurc: bigint } | null = null;
+
+		path.on('stepNeedsAction', async (payload) => {
+			if (payload.type === 'assetMovementUserExecutionRequired') {
+				await h.giveTokens(h.client.account, 90n, h.tokens.USDC);
+				afterStep0Balance = {
+					usdc: await h.client.balance(h.tokens.USDC),
+					eurc: await h.client.balance(h.tokens.EURC)
+				};
+				payload.markCompleted();
+			} else if (payload.type === 'keetaSendAuthRequired') {
+				afterStep1Balance = {
+					usdc: await h.client.balance(h.tokens.USDC),
+					eurc: await h.client.balance(h.tokens.EURC)
+				};
+				payload.markCompleted({ sent: true });
+			}
+		});
+
+		const result = await path.execute({ requireSendAuth: true });
+
+		expect(result.steps).toHaveLength(3);
+		expect(path.state.status).toBe('completed');
+
+		expect(capturedUSRecipients.length).toBeGreaterThan(0);
+		capturedUSRecipients.forEach(r => expect(r).toBe(userAddress));
+		expect(afterStep0Balance).toEqual({ usdc: 90n, eurc: 0n });
+
+		expect(afterStep1Balance).toEqual({ usdc: 0n, eurc: 79n });
+
+		expect(await h.client.balance(h.tokens.USDC)).toBe(0n);
+		expect(await h.client.balance(h.tokens.EURC)).toBe(0n);
+		expect(capturedEURecipients.length).toBeGreaterThan(0);
+		capturedEURecipients.forEach(r => expect(r).toBe(userAddress));
 	});
 });
 
