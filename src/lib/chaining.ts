@@ -294,6 +294,7 @@ class AnchorGraph {
 	resolver: Resolver;
 	logger?: Logger | undefined;
 	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
@@ -548,12 +549,18 @@ class AnchorGraph {
 	}
 
 	async computeGraphNodes(): Promise<GraphNodeLike[]> {
-		const receivedNodes = await Promise.all([
-			this.#computeFXNodes(),
-			this.#computeAssetMovementNodes()
-		]);
+		if (this.#graphNodePromise === null) {
+			this.#graphNodePromise = (async () => {
+				const receivedNodes = await Promise.all([
+					this.#computeFXNodes(),
+					this.#computeAssetMovementNodes()
+				]);
 
-		return(receivedNodes.flat());
+				return(receivedNodes.flat());
+			})();
+		}
+
+		return(await this.#graphNodePromise);
 	}
 
 	async findPaths(input: AnchorChainingPathInput): Promise<GraphNodeLike[][]> {
