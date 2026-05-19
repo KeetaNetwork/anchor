@@ -269,6 +269,8 @@ export interface AnchorChainingAssetInfo {
 		outbound: Rail[];
 	};
 
+	supportedProviderIDs: Set<string>;
+
 	distance: {
 		pathLength: number;
 	} | null;
@@ -294,6 +296,7 @@ class AnchorGraph {
 	resolver: Resolver;
 	logger?: Logger | undefined;
 	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+	#assetMovementProviderCache: Map<string, AssetMovementProvider | null> = new Map();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
@@ -789,7 +792,7 @@ class AnchorGraph {
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
-			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
+			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike; }, providerID: string): AnchorChainingAssetInfo => {
 				const key = assetLocationKey(side);
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
@@ -798,10 +801,15 @@ class AnchorGraph {
 						asset: side.asset,
 						location: side.location,
 						rails: { inbound: [], outbound: [] },
-						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
+						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null,
+						supportedProviderIDs: new Set()
 					};
+
 					resultMap.set(key, resultObj);
 				}
+
+				resultObj.supportedProviderIDs.add(providerID);
+
 				return(resultObj);
 			};
 			for (const { node } of nodesWithAdj) {
@@ -809,13 +817,13 @@ class AnchorGraph {
 					continue;
 				}
 				if (reachable.has(assetLocationKey(node.to))) {
-					const entry = getOrCreate(node.to);
+					const entry = getOrCreate(node.to, node.providerID);
 					if (!entry.rails.inbound.includes(node.to.rail)) {
 						entry.rails.inbound.push(node.to.rail);
 					}
 				}
 				if (reachable.has(assetLocationKey(node.from))) {
-					const entry = getOrCreate(node.from);
+					const entry = getOrCreate(node.from, node.providerID);
 					if (!entry.rails.outbound.includes(node.from.rail)) {
 						entry.rails.outbound.push(node.from.rail);
 					}
@@ -876,6 +884,53 @@ class AnchorGraph {
 		} else {
 			return(result.to);
 		}
+	}
+
+	async #getAssetMovementProvider(providerID: string): Promise<AssetMovementProvider | null> {
+		let found: AssetMovementProvider | null | undefined = this.#assetMovementProviderCache.get(providerID);
+		if (found === undefined) {
+			const assetMovementClient = new KeetaAssetMovementAnchorClient(this.client, {
+				resolver: this.resolver,
+				...(this.logger ? { logger: this.logger } : {})
+			});
+	
+			found = await assetMovementClient.getProviderByID(providerID);
+			this.#assetMovementProviderCache.set(providerID, found);
+		}
+
+		return(found);
+	}
+
+	async getAssetMovementProvidersForAsset(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<null | { [providerID: string]: { provider: AssetMovementProvider; }}> {
+		let retval: null | { [providerID: string]: { provider: AssetMovementProvider; }} = null;
+
+		for (const node of await this.computeGraphNodes()) {
+			if (node.type !== 'assetMovement') {
+				continue;
+			}
+
+			for (const side of [ node.from, node.to ] as const) {
+				if (!isAnchorChainingAssetEqual(side.asset, asset) || convertAssetLocationToString(side.location) !== convertAssetLocationToString(location)) {
+					continue;
+				}
+
+				if (!retval) {
+					retval = {};
+				}
+
+				if (!retval[node.providerID]) {
+					const provider = await this.#getAssetMovementProvider(node.providerID);
+					if (!provider) {
+						this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${node.providerID}, although provider was previously known to exist in the graph nodes`);
+						continue;
+					}
+
+					retval[node.providerID] = { provider };
+				}
+			}
+		}
+
+		return(retval);
 	}
 }
 
