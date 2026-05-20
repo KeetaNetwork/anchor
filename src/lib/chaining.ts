@@ -12,6 +12,7 @@ import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
+import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
@@ -272,10 +273,20 @@ export interface AnchorChainingAssetInfo {
 	distance: {
 		pathLength: number;
 	} | null;
-
-	metadata: AnchorTokenLocationMetadata | null;
-	metadataByProvider: { [key: string]: AnchorTokenLocationMetadata }
 }
+
+type AnchorChainingAssetInfoWithMetadata = AnchorChainingAssetInfo & {
+	metadata?: AnchorTokenLocationMetadata;
+}
+
+interface AnchorChainingResolveAssetsWithMetadataResult {
+	from: AnchorChainingAssetInfoWithMetadata[];
+	to: AnchorChainingAssetInfoWithMetadata[];
+}
+
+type AnchorChainingWithMetadataOptions = {
+	providerID?: string;
+};
 
 type GetAccountForActionPayload = {
 	type: 'assetMovement';
@@ -297,10 +308,9 @@ class AnchorGraph {
 	resolver: Resolver;
 	logger?: Logger | undefined;
 
-	#assetMovementClient: KeetaAssetMovementAnchorClient;
-	#assetMetadataCache = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
-	#assetMovementProviderCache = new Map<string, Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProviderByID']>>>();
-	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+	readonly #assetMovementClient: KeetaAssetMovementAnchorClient;
+	readonly #assetMovementProviderCache = new Map<string, AssetMovementProvider | null>();
+	readonly #assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
@@ -317,24 +327,47 @@ class AnchorGraph {
 		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
 
-	async getAssetMetadata(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<Pick<AnchorChainingAssetInfo, 'metadata' | 'metadataByProvider'>> {
-		if (!isExternalChainAsset(asset)) {
-			return({ metadata: null, metadataByProvider: {}});
+	async #getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
+		let provider: KeetaAssetMovementAnchorProvider | undefined | null = this.#assetMovementProviderCache.get(providerID);
+		if (provider === undefined) {
+			provider = await this.#assetMovementClient.getProviderByID(providerID);
 		}
 
-		await this.computeGraphNodes();
+		this.#assetMovementProviderCache.set(providerID, provider);
 
-		const key = this.#assetLocationKey({ asset, location });
+		return(provider);
+	}
 
-		const providerMap = this.#assetMetadataCache.get(key);
-		if (!providerMap) {
-			return({ metadata: null, metadataByProvider: {}});
+	async getAssetMovementProvidersForAsset(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<null | { [providerID: string]: { provider: AssetMovementProvider; }}> {
+		let retval: null | { [providerID: string]: { provider: AssetMovementProvider; }} = null;
+
+		for (const node of await this.computeGraphNodes()) {
+			if (node.type !== 'assetMovement') {
+				continue;
+			}
+
+			for (const side of [ node.from, node.to ] as const) {
+				if (!isAnchorChainingAssetEqual(side.asset, asset) || convertAssetLocationToString(side.location) !== convertAssetLocationToString(location)) {
+					continue;
+				}
+
+				if (!retval) {
+					retval = {};
+				}
+
+				if (!retval[node.providerID]) {
+					const provider = await this.#getAssetMovementProviderById(node.providerID);
+					if (!provider) {
+						this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${node.providerID}, although provider was previously known to exist in the graph nodes`);
+						continue;
+					}
+
+					retval[node.providerID] = { provider };
+				}
+			}
 		}
 
-		return({
-			metadata: providerMap.values().next().value ?? null,
-			metadataByProvider: Object.fromEntries(providerMap)
-		});
+		return(retval);
 	}
 
 	async #computeFXNodes() {
@@ -439,39 +472,6 @@ class AnchorGraph {
 		this.#assetNameCache.set(name, found);
 
 		return(found);
-	}
-
-	async #resolveExternalAssetMetadata(
-		side: { asset: AnchorChainingAsset; location: AssetLocationLike },
-		providerID: string
-	): Promise<void> {
-		if (!isExternalChainAsset(side.asset)) {
-			return;
-		}
-
-		let provider = this.#assetMovementProviderCache.get(providerID);
-		if (provider === undefined) {
-			provider = await this.#assetMovementClient.getProviderByID(providerID);
-			this.#assetMovementProviderCache.set(providerID, provider);
-		}
-
-		if (!provider) {
-			return;
-		}
-
-		const assetMetadata = provider.getAssetMetadataForLocation(side.location, side.asset);
-		if (!assetMetadata) {
-			return;
-		}
-
-		const key = this.#assetLocationKey(side);
-		let providerMap = this.#assetMetadataCache.get(key);
-		if (!providerMap) {
-			providerMap = new Map();
-			this.#assetMetadataCache.set(key, providerMap);
-		}
-
-		providerMap.set(providerID, assetMetadata);
 	}
 
 	async #computeAssetRails(assetInput: ToValuizable<RailOrRailWithExtendedDetails>): Promise<{ rail: Rail }> {
@@ -581,11 +581,6 @@ class AnchorGraph {
 						[ fromResolved, toResolved ],
 						[ toResolved, fromResolved ]
 					] as const) {
-						await Promise.all([
-							this.#resolveExternalAssetMetadata({ asset: src.id, location: src.location }, providerID),
-							this.#resolveExternalAssetMetadata({ asset: dest.id, location: dest.location }, providerID)
-						]);
-
 						for (const inboundRail of [ ...(src.rails.common ?? []), ...(src.rails.inbound ?? []) ]) {
 							for (const outboundRail of [ ...(dest.rails.common ?? []), ...(dest.rails.outbound ?? []) ]) {
 								pathNodes.push({
@@ -863,17 +858,12 @@ class AnchorGraph {
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
 					const distanceValue = distances.get(key);
-					const providerMap = this.#assetMetadataCache.get(key);
-					const metadataByProvider = providerMap ? Object.fromEntries(providerMap) : {};
-					const firstMetadata = providerMap ? providerMap.values().next().value ?? null : null;
 
 					resultObj = {
 						asset: side.asset,
 						location: side.location,
 						rails: { inbound: [], outbound: [] },
-						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null,
-						metadata: firstMetadata,
-						metadataByProvider
+						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
 					};
 
 					resultMap.set(key, resultObj);
@@ -944,6 +934,77 @@ class AnchorGraph {
 
 	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
 		const result = await this.resolveAssets(filter);
+
+		if (filter.from) {
+			return(result.to);
+		} else if (filter.to) {
+			return(result.from);
+		} else {
+			return(result.to);
+		}
+	}
+
+	async #attachMetadata(assetInfo: AnchorChainingAssetInfo, options?: AnchorChainingWithMetadataOptions): Promise<AnchorChainingAssetInfoWithMetadata> {
+		if (!isExternalChainAsset(assetInfo.asset)) {
+			return(assetInfo);
+		}
+
+		const providers = await this.getAssetMovementProvidersForAsset(assetInfo.asset, assetInfo.location);
+		if (!providers) {
+			return(assetInfo);
+		}
+
+		if (options?.providerID) {
+			const found = providers[options.providerID];
+			if (!found) {
+				return(assetInfo);
+			}
+
+			const metadata = found.provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
+			if (!metadata) {
+				return(assetInfo);
+			}
+
+			return({
+				...assetInfo,
+				metadata
+			});
+		}
+
+		for (const { provider } of Object.values(providers)) {
+			const metadata = provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
+			if (!metadata) {
+				continue;
+			}
+
+			return({
+				...assetInfo,
+				metadata
+			});
+		}
+
+		return(assetInfo)
+	}
+
+	async resolveAssetsWithMetadata(
+		filter: AnchorChainingResolveAssetsFilter = {},
+		options?: AnchorChainingWithMetadataOptions
+	): Promise<AnchorChainingResolveAssetsWithMetadataResult> {
+		const result = await this.resolveAssets(filter);
+
+		const [from, to] = await Promise.all([
+			Promise.all(result.from.map((info) => this.#attachMetadata(info, options))),
+			Promise.all(result.to.map((info) => this.#attachMetadata(info, options)))
+		]);
+
+		return({ from, to });
+	}
+
+	async listAssetsWithMetadata(
+		filter: AnchorChainingListAssetsFilter = {},
+		options?: AnchorChainingWithMetadataOptions
+	): Promise<AnchorChainingAssetInfoWithMetadata[]> {
+		const result = await this.resolveAssetsWithMetadata(filter, options);
 
 		if (filter.from) {
 			return(result.to);

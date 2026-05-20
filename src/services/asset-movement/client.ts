@@ -506,7 +506,7 @@ interface AwaitPromiseURLOptions {
 	abortSignal?: AbortSignal;
 }
 
-class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
+export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	private readonly parent: KeetaAssetMovementAnchorClient;
