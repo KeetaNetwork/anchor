@@ -12,6 +12,7 @@ import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, Anchor
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
+import type { AnchorMetadataLegalField } from './metadata.types.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -642,10 +643,44 @@ async function createChainingTestHarness() {
 	const fxLPOne  = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const fxLPTwo  = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
+	const [usBankProviderID, euBankProviderID] = ['BankUS', 'BankEU'] as const;
+	const bankProviderDisclaimers: {
+		[bankProviderID in typeof usBankProviderID | typeof euBankProviderID]: Exclude<AnchorMetadataLegalField['disclaimers'], undefined>
+	} = {
+		[usBankProviderID]: [
+			{
+				purpose: 'general',
+				content: {
+					type: 'plaintext',
+					content: 'This is a legal disclaimer for the US bank server'
+				}
+			}
+		],
+		[euBankProviderID]: [
+			{
+				purpose: 'general',
+				content: {
+					type: 'plaintext',
+					content: 'This is a legal disclaimer for the EU bank server'
+				}
+			},
+			{
+				purpose: 'general',
+				content: {
+					type: 'markdown',
+					content: 'This is another legal disclaimer for the EU bank server'
+				}
+			}
+		]
+	};
+
 	const bankServerUS = new TestBankServer({
 		...(DEBUG ? { logger } : {}),
 		client,
 		assetMovement: {
+			legal: {
+				disclaimers: bankProviderDisclaimers['BankUS']
+			},
 			supportedAssets: [{
 				asset: [ tokens.USDC.publicKeyString.get(), 'USD' ],
 				paths: [{ pair: [
@@ -660,6 +695,9 @@ async function createChainingTestHarness() {
 		...(DEBUG ? { logger } : {}),
 		client,
 		assetMovement: {
+			legal: {
+				disclaimers: bankProviderDisclaimers['BankEU']
+			},
 			supportedAssets: [{
 				asset: [ tokens.EURC.publicKeyString.get(), 'EUR' ],
 				paths: [{ pair: [
@@ -717,8 +755,8 @@ async function createChainingTestHarness() {
 					FXTwo: await fxServerTwo.serviceMetadata()
 				},
 				assetMovement: {
-					BankUS: await bankServerUS.serviceMetadata(),
-					BankEU: await bankServerEU.serviceMetadata()
+					[usBankProviderID]: await bankServerUS.serviceMetadata(),
+					[euBankProviderID]: await bankServerEU.serviceMetadata()
 				}
 			}
 		} satisfies ServiceMetadataExternalizable)
@@ -766,6 +804,9 @@ async function createChainingTestHarness() {
 		fxServerOne,
 		fxServerTwo,
 		anchorChaining,
+		bankProviderDisclaimers,
+		euBankProviderID,
+		usBankProviderID,
 		giveTokens,
 		getPlanVia,
 		getPathVia,
@@ -2122,5 +2163,75 @@ describe('AnchorChainingAssetInfo metadata', function() {
 		);
 
 		expect(providers).toBeNull();
+	});
+});
+
+describe('AnchorChainingPlan disclaimers', function() {
+	test('anchorChaining paths should return the correct legal disclaimers', async function() {
+		await using h = await createChainingTestHarness();
+
+		// EU Bank Paths
+
+		const euBankPaths = await h.anchorChaining.getPaths({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND', value: 100n },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		});
+
+		if (!euBankPaths || euBankPaths.length === 0) {
+			throw(new Error('Expected at least one valid path'));
+		}
+
+		const euBankDisclaimers = await h.anchorChaining.graph.getProviderDisclaimers(h.euBankProviderID);
+		expect(euBankDisclaimers).toEqual({
+			providerID: h.euBankProviderID,
+			disclaimers: h.bankProviderDisclaimers[h.euBankProviderID]
+		});
+
+		for (const euBankPath of (euBankPaths ?? [])) {
+			const disclaimers = await euBankPath.getDisclaimers();
+			expect(disclaimers.length).toEqual(1);
+			expect(disclaimers).toEqual([euBankDisclaimers]);
+		}
+
+		// US Bank Paths
+
+		const usBankPaths = await h.anchorChaining.getPaths({
+			source: { asset: h.tokens.EURC, location: h.keetaLocation, rail: 'KEETA_SEND', value: 100n },
+			destination: { asset: 'USD', location: 'bank-account:us', recipient: h.client.account.publicKeyString.get(), rail: 'ACH' }
+		});
+
+		if (!usBankPaths || usBankPaths.length === 0) {
+			throw(new Error('Expected at least one valid path'));
+		}
+
+		const usBankDisclaimers = await h.anchorChaining.graph.getProviderDisclaimers(h.usBankProviderID);
+		expect(usBankDisclaimers).toEqual({
+			providerID: h.usBankProviderID,
+			disclaimers: h.bankProviderDisclaimers[h.usBankProviderID]
+		});
+
+		for (const usBankPath of (usBankPaths ?? [])) {
+			const disclaimers = await usBankPath.getDisclaimers();
+			expect(disclaimers.length).toEqual(1);
+			expect(disclaimers).toEqual([usBankDisclaimers]);
+		}
+
+		// Keeta Paths excluding asset movement steps
+
+		const networkPaths = (await h.anchorChaining.getPaths({
+			source: { asset: h.tokens.EURC, location: h.keetaLocation, rail: 'KEETA_SEND', value: 100n },
+			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+		}))?.filter(function(networkPath) {
+			return(networkPath.path.every(step => step.type !== 'assetMovement'));
+		});
+
+		if (!networkPaths || networkPaths.length === 0) {
+			throw(new Error('Expected at least one valid path'));
+		}
+
+		for (const networkPath of (networkPaths ?? [])) {
+			const disclaimers = await networkPath.getDisclaimers();
+			expect(disclaimers.length).toEqual(0);
+		}
 	});
 });

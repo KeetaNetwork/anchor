@@ -18,6 +18,7 @@ import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
+import type { AnchorMetadataLegalField } from './metadata.types.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -47,6 +48,13 @@ interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'asse
 interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSend'> {
 	usingInstruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>;
 };
+
+type Disclaimer = Exclude<AnchorMetadataLegalField['disclaimers'], undefined>[number];
+type ProviderDisclaimers = {
+	providerID: string;
+	disclaimers: Disclaimer[];
+}
+type PlanDisclaimers = ProviderDisclaimers[];
 
 export type ChainStepResolution = ChainStepResolutionFX | ChainStepResolutionAssetMovement | ChainStepResolutionKeetaSend;
 
@@ -368,6 +376,23 @@ class AnchorGraph {
 		}
 
 		return(retval);
+	}
+
+	async getProviderDisclaimers(providerID: string): Promise<ProviderDisclaimers | null> {
+		const provider = await this.#getAssetMovementProviderById(providerID);
+		if (!provider) {
+			return(null);
+		}
+		const disclaimers = provider.serviceInfo.legal?.disclaimers;
+
+		if (!disclaimers || disclaimers.length === 0) {
+			return(null);
+		}
+
+		return({
+			providerID,
+			disclaimers
+		});
 	}
 
 	async #computeFXNodes() {
@@ -1066,6 +1091,31 @@ export class AnchorChainingPath {
 		]);
 
 		return({ signer, account });
+	}
+
+	async getDisclaimers(): Promise<PlanDisclaimers> {
+		const assetMovementProviderIds = new Set(
+			this.path.filter(function(step) {
+				return(step.type === 'assetMovement');
+			}).map(function(stepWithProvider) {
+				return(stepWithProvider.providerID)
+			})
+		);
+
+		const disclaimers = (await Promise.allSettled([...assetMovementProviderIds].map(async (providerId) => {
+			const providerDisclaimers = await this.parent.graph.getProviderDisclaimers(providerId);
+			if (providerDisclaimers === null) {
+				throw(new Error("No provider disclaimer"));
+			}
+
+			return(providerDisclaimers)
+		}))).filter(function(result) {
+			return(result.status === 'fulfilled')
+		}).map(function(fulfilledResult) {
+			return(fulfilledResult.value);
+		});
+
+		return(disclaimers);
 	}
 }
 
