@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
-import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved } from "../services/asset-movement/common.js";
+import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, SimulatedAssetTransferInstructions } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
@@ -301,6 +301,7 @@ class AnchorGraph {
 	#assetMetadataCache = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
 	#assetMovementProviderCache = new Map<string, Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProviderByID']>>>();
 	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
@@ -621,12 +622,18 @@ class AnchorGraph {
 	}
 
 	async computeGraphNodes(): Promise<GraphNodeLike[]> {
-		const receivedNodes = await Promise.all([
-			this.#computeFXNodes(),
-			this.#computeAssetMovementNodes()
-		]);
+		if (this.#graphNodePromise === null) {
+			this.#graphNodePromise = (async () => {
+				const receivedNodes = await Promise.all([
+					this.#computeFXNodes(),
+					this.#computeAssetMovementNodes()
+				]);
 
-		return(receivedNodes.flat());
+				return(receivedNodes.flat());
+			})();
+		}
+
+		return(await this.#graphNodePromise);
 	}
 
 	async findPaths(input: AnchorChainingPathInput): Promise<GraphNodeLike[][]> {
@@ -1139,65 +1146,60 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({ type: 'fx', step, valueIn, valueOut, result });
 					} else if (step.type === 'assetMovement') {
-						let recipient;
+						let recipient: (() => Promise<RecipientResolved | GenericAccount>) | (RecipientResolved | GenericAccount);
 						let sendingToType: SendingToType;
 						if (index === this.path.length - 1) {
 							recipient = this.request.destination.recipient;
 							sendingToType = 'FINAL_DESTINATION';
 						} else {
+							sendingToType = 'NEXT_STEP';
+
 							const nextPathStep = this.path[index + 1];
-							if (nextPathStep?.type === 'fx') {
-								throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+
+							if (!nextPathStep) {
+								throw(new Error(`Expected next step at index ${index + 1} for asset movement step at index ${index}`));
 							}
 
-							const nextStep = await resolveStep(index + 1);
+							if (nextPathStep.from.location === `chain:keeta:${this.parent['client'].network}`) {
+								const { account } = await this.getAccountsForAction({
+									type: 'assetMovement',
+									providerMethod: 'initiateTransfer'
+								}, this.#options?.overrides);
 
-							if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
-								if (nextStep.usingInstruction.type !== step.to.rail) {
-									throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
-								}
-
-								const foundInstruction = nextStep.usingInstruction;
-
-								const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
-									return(isFiatRail(input.type));
-								}
-
-								if (foundInstruction.type === 'KEETA_SEND') {
-									if (!KeetaNet.lib.Account.isInstance(step.to.asset)) {
-										throw(new Error(`Expected asset to be a token account for KEETA_SEND rail`));
-									}
-
-									if (!step.to.asset.comparePublicKey(foundInstruction.tokenAddress)) {
-										throw(new Error(`Recipient token account ${foundInstruction.tokenAddress.toString()} does not match expected ${step.to.asset.publicKeyString.get()}`));
-									}
-
-									if (foundInstruction.external) {
-										throw(new Error(`Expected KEETA_SEND instruction to not have external value`));
-									}
-
-									// XXX:TODO assert value here matches
-
-									sendingToType = 'NEXT_STEP';
-									recipient = KeetaNet.lib.Account.fromPublicKeyString(foundInstruction.sendToAddress);
-								} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
-									if (foundInstruction.depositMessage) {
-										throw(new Error(`Deposit message outbound is not currently supported for chaining`));
-									}
-									sendingToType = 'NEXT_STEP';
-									recipient = foundInstruction.account;
-								} else {
-									throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
-								}
-							} else if (nextStep.type === 'fx') {
-								throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+								// Store funds in-transit in the account instead of forwarding directly to provider.
+								recipient = account;
 							} else {
-								assertNever(nextStep);
-							}
-						}
+								recipient = async (): Promise<RecipientResolved | GenericAccount> => {
+									const nextStep = await resolveStep(index + 1);
 
-						if (!recipient) {
-							throw(new Error(`Recipient must be defined for asset movement step at index ${index}`));
+									if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
+										if (nextStep.usingInstruction.type !== step.to.rail) {
+											throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
+										}
+
+										const foundInstruction = nextStep.usingInstruction;
+
+										const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
+											return(isFiatRail(input.type));
+										}
+
+										if (foundInstruction.type === 'KEETA_SEND') {
+											throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
+										} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
+											if (foundInstruction.depositMessage) {
+												throw(new Error(`Deposit message outbound is not currently supported for chaining`));
+											}
+											return(foundInstruction.account);
+										} else {
+											throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
+										}
+									} else if (nextStep.type === 'fx') {
+										throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+									} else {
+										assertNever(nextStep);
+									}
+								}
+							}
 						}
 
 						const assetPair = { from: step.from.asset, to: step.to.asset };
@@ -1235,11 +1237,19 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							from: { location: step.from.location },
 							to: {
 								location: step.to.location,
-								recipient: (() => {
-									if (KeetaNet.lib.Account.isInstance(recipient)) {
-										return(recipient.publicKeyString.get());
+								recipient: await (async () => {
+									let recipientResolved;
+
+									if (typeof recipient === 'function') {
+										recipientResolved = await recipient();
 									} else {
-										return(recipient);
+										recipientResolved = recipient;
+									}
+
+									if (KeetaNet.lib.Account.isInstance(recipientResolved)) {
+										return(recipientResolved.publicKeyString.get());
+									} else {
+										return(recipientResolved);
 									}
 								})()
 							},
@@ -1538,7 +1548,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		let index = 0;
 		try {
-			let prev = null;
 			for (index = 0; index < this.plan.steps.length; index++) {
 				const onStepCompleted = (step: ExecutedStep) => {
 					executedSteps.push(step);
@@ -1571,44 +1580,27 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					prevActualValueOut = step.valueOut;
 					onStepCompleted({ type: 'fx', plan: step, exchange });
 				} else if (step.type === 'assetMovement' || step.type === 'keetaSend') {
-					let userInitiatedTransferRequired;
-					if (prev && prev.type === 'assetMovement') {
-						if (prev.sendingTo === 'NEXT_STEP') {
-							userInitiatedTransferRequired = false;
-						} else if (prev.sendingTo === 'FINAL_DESTINATION') {
-							throw(new Error(`Invalid path: step ${index - 1} is sending to final destination, but is followed by another step`));
-						} else if (prev.sendingTo === 'SELF') {
-							userInitiatedTransferRequired = true;
-						} else {
-							assertNever(prev.sendingTo);
+					if (step.usingInstruction.type === 'KEETA_SEND') {
+						await this.#authorizedSend(
+							options,
+							step.usingInstruction.sendToAddress,
+							BigInt(step.usingInstruction.value),
+							KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
+							step.usingInstruction.external
+						);
+					} else if (index === 0) {
+						if (step.type !== 'assetMovement') {
+							throw(new Error(`Unexpected asset movement step at index ${index} for user-initiated transfer`));
 						}
-					} else {
-						userInitiatedTransferRequired = true;
-					}
 
-					if (userInitiatedTransferRequired) {
-						if (step.usingInstruction.type === 'KEETA_SEND') {
-							await this.#authorizedSend(
-								options,
-								step.usingInstruction.sendToAddress,
-								BigInt(step.usingInstruction.value),
-								KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-								step.usingInstruction.external
-							);
-						} else if (index === 0) {
-							if (step.type !== 'assetMovement') {
-								throw(new Error(`Unexpected asset movement step at index ${index} for user-initiated transfer`));
+						await this.#awaitStepCompletion({
+							type: 'assetMovementUserExecutionRequired',
+							action: {
+								assetMovementTransfer: step.transfer
 							}
-
-							await this.#awaitStepCompletion({
-								type: 'assetMovementUserExecutionRequired',
-								action: {
-									assetMovementTransfer: step.transfer
-								}
-							});
-						} else {
-							throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
-						}
+						});
+					} else {
+						throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
 					}
 
 					if (step.type === 'assetMovement') {
@@ -1626,8 +1618,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				} else {
 					assertNever(step);
 				}
-
-				prev = step;
 			}
 
 			// Direct same-location/same-asset send: the loop ran zero iterations,
