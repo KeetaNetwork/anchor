@@ -2188,7 +2188,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 		});
 
 		for (const euBankPath of (euBankPaths ?? [])) {
-			const disclaimers = await euBankPath.getDisclaimers();
+			const disclaimers = await euBankPath.getProviderLegalDisclaimers();
 			expect(disclaimers.length).toEqual(1);
 			expect(disclaimers).toEqual([euBankDisclaimers]);
 		}
@@ -2211,7 +2211,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 		});
 
 		for (const usBankPath of (usBankPaths ?? [])) {
-			const disclaimers = await usBankPath.getDisclaimers();
+			const disclaimers = await usBankPath.getProviderLegalDisclaimers();
 			expect(disclaimers.length).toEqual(1);
 			expect(disclaimers).toEqual([usBankDisclaimers]);
 		}
@@ -2230,7 +2230,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 		}
 
 		for (const networkPath of (networkPaths ?? [])) {
-			const disclaimers = await networkPath.getDisclaimers();
+			const disclaimers = await networkPath.getProviderLegalDisclaimers();
 			expect(disclaimers.length).toEqual(0);
 		}
 	});

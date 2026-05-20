@@ -1093,7 +1093,7 @@ export class AnchorChainingPath {
 		return({ signer, account });
 	}
 
-	async getDisclaimers(): Promise<PlanDisclaimers> {
+	async getProviderLegalDisclaimers(): Promise<PlanDisclaimers> {
 		const assetMovementProviderIds = new Set(
 			this.path.filter(function(step) {
 				return(step.type === 'assetMovement');
