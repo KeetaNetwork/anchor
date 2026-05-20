@@ -280,3 +280,22 @@ test('username server validates signed transfers and release requests', async ()
 	expect(invalidReleaseResponse.status).toBeLessThan(600);
 	expect(releaseCalls).toBe(1);
 }, 10_000);
+
+test('username server metadata exposes unencoded resolve URI template', async () => {
+	await using server = new KeetaNetUsernameAnchorHTTPServer({
+		url: 'https://usernames.example.com',
+		usernames: {
+			async resolveUsername() {
+				return(null);
+			},
+			async resolveAccount() {
+				return(null);
+			}
+		}
+	});
+
+	await server.start();
+
+	const metadata = await server.serviceMetadata();
+	expect(metadata.operations.resolve).toBe('https://usernames.example.com/api/resolve/{toResolve}');
+}, 10_000);
