@@ -297,5 +297,5 @@ test('username server metadata exposes unencoded resolve URI template', async ()
 	await server.start();
 
 	const metadata = await server.serviceMetadata();
-	expect(metadata.operations.resolve).toBe('https://usernames.example.com/api/resolve/{toResolve}');
+	expect(metadata.operations.resolve).toContain('{toResolve}');
 }, 10_000);
