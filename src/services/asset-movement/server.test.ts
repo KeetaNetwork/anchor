@@ -51,9 +51,21 @@ test('Asset Movement Server Tests', async function() {
 });
 
 test('Asset Movement Server publishes path-parameter operations with literal placeholders', async function() {
-	const config = makeServerConfig();
-	config.assetMovement.getTransferStatus = async function() { throw(new KeetaAnchorUserError('nyi')); };
-	config.assetMovement.executeTransfer = async function() { throw(new KeetaAnchorUserError('nyi')); };
+	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0).assertAccount();
+
+	const baseConfig = makeServerConfig({ metadataSigner: signer });
+	const config: KeetaAnchorAssetMovementServerConfig = {
+		...baseConfig,
+		assetMovement: {
+			...baseConfig.assetMovement,
+			/**
+			 * Stub out the getTransferStatus and executeTransfer operations
+			 * as they are not used but must be present for the server to start.
+			 */
+			getTransferStatus: async function() { throw(new KeetaAnchorUserError('not implemented')); },
+			executeTransfer: async function() { throw(new KeetaAnchorUserError('not implemented')); }
+		}
+	};
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(config);
 	await server.start();
