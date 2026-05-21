@@ -50,6 +50,21 @@ test('Asset Movement Server Tests', async function() {
 	/* XXX:TODO: Tests */
 });
 
+test('Asset Movement Server publishes path-parameter operations with literal placeholders', async function() {
+	const config = makeServerConfig();
+	config.assetMovement.getTransferStatus = async function() { throw(new KeetaAnchorUserError('nyi')); };
+	config.assetMovement.executeTransfer = async function() { throw(new KeetaAnchorUserError('nyi')); };
+
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await server.start();
+
+	const { operations } = await server.serviceMetadata();
+	for (const endpoint of [ operations.getTransferStatus, operations.executeTransfer ]) {
+		expect(endpoint).toContain('{id}');
+		expect(endpoint).not.toContain('%7B');
+	}
+});
+
 test('Asset Movement Server signs metadata when metadataSigner is configured', async function() {
 	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0).assertAccount();
 
