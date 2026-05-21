@@ -2,7 +2,7 @@ import { test, expect, describe } from 'vitest';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementServerConfig } from '../services/asset-movement/server.js';
-import { convertAssetLocationToString, toAssetLocation, toAssetPair, type AssetLocationLike, type KeetaAssetMovementTransaction } from '../services/asset-movement/common.js';
+import { type AnchorTokenLocationMetadata, convertAssetLocationToString, toAssetLocation, toAssetPair, type AssetLocationLike, type KeetaAssetMovementTransaction } from '../services/asset-movement/common.js';
 import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetConversionRateAndFeeContext, type KeetaFXInternalPriceQuote } from '../services/fx/server.js';
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
@@ -1867,4 +1867,260 @@ test('AnchorChaining resolveAssets', async function() {
 			expect(result.to, `${name}: to length`).toHaveLength(expected.to.length);
 		}
 	}
+});
+
+describe('AnchorChainingAssetInfo metadata', function() {
+	async function createMetadataHarness() {
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const { userClient: client } = await createNodeAndClient(account);
+
+		const makeToken = async () => {
+			const { account } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			return(account.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN));
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+		const evmChainLocation = 'chain:evm:500' as const;
+		const keetaLocation = `chain:keeta:${client.network}` as const;
+		const tokens = { USDC: await makeToken() };
+		const usdcEvmId: AnchorChainingAsset = 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973';
+
+		const bridgeOneMetadata: AnchorTokenLocationMetadata = {
+			displayName: 'Circle USDC',
+			decimalPlaces: 6,
+			ticker: '$USDC',
+			logoURI: 'example.com/usdc-logo'
+		};
+
+		const bridgeTwoMetadata: AnchorTokenLocationMetadata = {
+			displayName: 'USDC (alt)',
+			decimalPlaces: 6,
+			ticker: '$USDC',
+			logoURI: 'example.com/usdc-logo-2'
+		};
+
+		const makeBridge = (metadata: typeof bridgeOneMetadata) => new KeetaNetAssetMovementAnchorHTTPServer({
+			...(logger ? { logger: logger } : {}),
+			assetMovement: {
+				supportedAssets: [
+					{
+						asset: tokens.USDC.publicKeyString.get(),
+						paths: [{
+							pair: [
+								{ location: keetaLocation, id: tokens.USDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+								{ location: evmChainLocation, id: usdcEvmId, rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+							]
+						}]
+					},
+					{
+						asset: '$USDC',
+						paths: [
+							{
+								pair: [
+									{ location: evmChainLocation, id: usdcEvmId, rails: { common: [ 'EVM_SEND' ] }},
+									{ location: keetaLocation, id: tokens.USDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
+								]
+							}
+						]
+					}
+				],
+				locationMetadata: {
+					[evmChainLocation]: {
+						assets: {
+							[usdcEvmId]: metadata
+						}
+					}
+				},
+				async getTransferStatus() {
+					throw(new Error('getTransferStatus not used in metadata tests'));
+				}
+			}
+		});
+
+		const bridgeOne = makeBridge(bridgeOneMetadata);
+		const bridgeTwo = makeBridge(bridgeTwoMetadata);
+
+		await bridgeOne.start();
+		await bridgeTwo.start();
+
+		await client.setInfo({
+			description: 'Metadata Test',
+			name: 'TEST',
+			metadata: Resolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: { '$USDC': tokens.USDC.publicKeyString.get() },
+				services: {
+					assetMovement: {
+						BridgeOne: await bridgeOne.serviceMetadata(),
+						BridgeTwo: await bridgeTwo.serviceMetadata()
+					}
+				}
+			} satisfies ServiceMetadataExternalizable)
+		});
+
+		const anchorChaining = new AnchorChaining({
+			client,
+			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+		});
+
+		return({
+			client,
+			tokens,
+			keetaLocation,
+			evmChainLocation,
+			usdcEvmId,
+			bridgeOneMetadata,
+			bridgeTwoMetadata,
+			anchorChaining,
+			[Symbol.asyncDispose]: async function() {
+				await bridgeOne[Symbol.asyncDispose]?.();
+				await bridgeTwo[Symbol.asyncDispose]?.();
+			}
+		});
+	}
+
+	test('listAssetsWithMetadata populates metadata for external chain assets', async function() {
+		await using h = await createMetadataHarness();
+		const assets = await h.anchorChaining.graph.listAssetsWithMetadata();
+
+		const evmAsset = assets.find(a =>
+			!KeetaNet.lib.Account.isInstance(a.asset) &&
+			String(a.asset) === h.usdcEvmId &&
+			a.location === h.evmChainLocation
+		);
+
+		expect(evmAsset).toBeDefined();
+		expect(evmAsset?.metadata).toBeTruthy();
+		expect(evmAsset?.metadata).toMatchObject({
+			ticker: '$USDC',
+			decimalPlaces: 6
+		});
+	});
+
+	test('listAssetsWithMetadata returns undefined metadata for Keeta-native tokens', async function() {
+		await using h = await createMetadataHarness();
+		const assets = await h.anchorChaining.graph.listAssetsWithMetadata();
+
+		const keetaAsset = assets.find(a =>
+			KeetaNet.lib.Account.isInstance(a.asset) &&
+			a.asset.publicKeyString.get() === h.tokens.USDC.publicKeyString.get()
+		);
+
+		expect(keetaAsset).toBeDefined();
+		expect(keetaAsset?.metadata).toBeUndefined();
+	});
+
+	test('resolveAssetsWithMetadata populates metadata on results', async function() {
+		await using h = await createMetadataHarness();
+		const result = await h.anchorChaining.graph.resolveAssetsWithMetadata({
+			from: { location: h.keetaLocation },
+			to: { location: h.evmChainLocation }
+		});
+
+		const evmAsset = result.to.find(a =>
+			!KeetaNet.lib.Account.isInstance(a.asset) &&
+			String(a.asset) === h.usdcEvmId
+		);
+
+		expect(evmAsset).toBeDefined();
+		expect(evmAsset?.metadata).toBeTruthy();
+		expect(evmAsset?.metadata).toMatchObject({
+			ticker: '$USDC',
+			decimalPlaces: 6
+		});
+
+		const keetaAsset = result.from.find(a =>
+			KeetaNet.lib.Account.isInstance(a.asset) &&
+			a.asset.publicKeyString.get() === h.tokens.USDC.publicKeyString.get()
+		);
+		expect(keetaAsset).toBeDefined();
+		expect(keetaAsset?.metadata).toBeUndefined();
+	});
+
+	test('resolveAssetsWithMetadata with providerID returns that providers metadata', async function() {
+		await using h = await createMetadataHarness();
+
+		const bridgeOneResult = await h.anchorChaining.graph.resolveAssetsWithMetadata(
+			{ to: { location: h.evmChainLocation }, from: { location: h.keetaLocation }},
+			{ providerID: 'BridgeOne' }
+		);
+
+		const bridgeOneEvmAsset = bridgeOneResult.to.find(a =>
+			!KeetaNet.lib.Account.isInstance(a.asset) &&
+			String(a.asset) === h.usdcEvmId &&
+			a.location === h.evmChainLocation
+		);
+
+		expect(bridgeOneEvmAsset).toBeDefined();
+		expect(bridgeOneEvmAsset?.metadata).toEqual(h.bridgeOneMetadata);
+
+		const bridgeTwoResult = await h.anchorChaining.graph.resolveAssetsWithMetadata(
+			{ to: { location: h.evmChainLocation }, from: { location: h.keetaLocation }},
+			{ providerID: 'BridgeTwo' }
+		);
+
+		const bridgeTwoEvmAsset = bridgeTwoResult.to.find(a =>
+			!KeetaNet.lib.Account.isInstance(a.asset) &&
+			String(a.asset) === h.usdcEvmId
+		);
+
+		expect(bridgeTwoEvmAsset).toBeDefined();
+		expect(bridgeTwoEvmAsset?.metadata).toEqual(h.bridgeTwoMetadata);
+	});
+
+	test('listAssetsWithMetadata with unknown providerID returns undefined metadata', async function() {
+		await using h = await createMetadataHarness();
+
+		const assets = await h.anchorChaining.graph.listAssetsWithMetadata(
+			{ to: { location: h.evmChainLocation }},
+			{ providerID: 'NonExistentBridge' }
+		);
+
+		const evmAsset = assets.find(a =>
+			!KeetaNet.lib.Account.isInstance(a.asset) &&
+			String(a.asset) === h.usdcEvmId
+		);
+
+		expect(evmAsset).toBeDefined();
+		expect(evmAsset?.metadata).toBeUndefined();
+	});
+
+	test('getAssetMovementProvidersForAsset returns all providers supporting an asset/location', async function() {
+		await using h = await createMetadataHarness();
+
+		const providers = await h.anchorChaining.graph.getAssetMovementProvidersForAsset(
+			h.usdcEvmId,
+			h.evmChainLocation
+		);
+
+		expect(providers).not.toBeNull();
+		expect(Object.keys(providers ?? {}).sort()).toEqual(['BridgeOne', 'BridgeTwo']);
+
+		for (const entry of Object.values(providers ?? {})) {
+			expect(entry.provider).toBeDefined();
+		}
+	});
+
+	test('getAssetMovementProvidersForAsset finds providers for Keeta-side assets too', async function() {
+		await using h = await createMetadataHarness();
+
+		const providers = await h.anchorChaining.graph.getAssetMovementProvidersForAsset(
+			h.tokens.USDC,
+			h.keetaLocation
+		);
+
+		expect(providers).not.toBeNull();
+		expect(Object.keys(providers ?? {}).sort()).toEqual(['BridgeOne', 'BridgeTwo']);
+	});
+
+	test('getAssetMovementProvidersForAsset returns null for an unknown asset/location pair', async function() {
+		await using h = await createMetadataHarness();
+
+		const providers = await h.anchorChaining.graph.getAssetMovementProvidersForAsset(
+			'evm:0x000000000000000000000000000000000000dEaD',
+			h.evmChainLocation
+		);
+
+		expect(providers).toBeNull();
+	});
 });
