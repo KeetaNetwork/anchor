@@ -28,7 +28,7 @@ import type {
 } from './common.ts';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
-import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -227,7 +227,7 @@ class KeetaFXAnchorBase {
 	}
 }
 
-class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
+export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
 	readonly conversion: ConversionInputCanonical;
@@ -974,6 +974,25 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}));
 
 		return(retval);
+	}
+
+	async getLegalDisclaimersById(providerID: string): Promise<NonNullable<AnchorMetadataLegalField['disclaimers']> | null>{
+		const endpoints = await getEndpoints(this.resolver, {}, this.#account, { providerIDs: [providerID] }, { logger: this.logger });
+		if (endpoints === null) {
+			return(null);
+		}
+
+		const serviceEntry = typedFxServiceEntries(endpoints)[0];
+		if (!serviceEntry) {
+			return(null);
+		}
+
+		const disclaimers = serviceEntry[1].legal?.disclaimers;
+		if (!disclaimers || disclaimers.length === 0) {
+			return(null)
+		}
+
+		return(disclaimers);
 	}
 
 	/** @internal */

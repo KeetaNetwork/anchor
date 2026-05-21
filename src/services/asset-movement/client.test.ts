@@ -449,12 +449,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		/* Expect legal field to be parsed properly on the client side */
 		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
-
-		/* Expect disclaimers on legal field to resolve correctly from the client */
-		const testDisclaimers = await assetTransferClient.getProviderLegalDisclaimersByID('Test');
-		expect(testDisclaimers).toEqual(testLegalField.disclaimers);
-		const test2Disclaimers = await assetTransferClient.getProviderLegalDisclaimersByID('Test2');
-		expect(test2Disclaimers).toBeNull();
+		expect(testProvider.getLegalDisclaimers()).toEqual(testLegalField);
 
 		/* Expect custom token metadata to be resolved correctly */
 		expect(testProvider.serviceInfo.locationMetadata).toEqual(validLocationMetadata);

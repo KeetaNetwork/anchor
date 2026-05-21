@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { BlockListener } from './block-listener.js';
@@ -255,7 +255,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 }
 
 type TestFXServerConfig = Omit<KeetaAnchorFXServerConfig, 'fx'> & {
-	fx: Pick<KeetaAnchorFXServerConfig['fx'], 'from'>;
+	fx: Pick<KeetaAnchorFXServerConfig['fx'], 'from' | 'legal'>;
 	giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
 	/** Must be a UserClient so we can read LP balances and mint tokens on demand. */
 	client: KeetaNet.UserClient;
@@ -708,6 +708,27 @@ async function createChainingTestHarness() {
 		}
 	});
 
+	const [fxOneProviderID, fxTwoProviderID] = ['FXOne', 'FXTwo'] as const;
+	const fxProviderDisclaimers: {
+		[fxProviderID in typeof fxOneProviderID | typeof fxTwoProviderID]: Exclude<AnchorMetadataLegalField['disclaimers'], undefined>
+	} = {
+		[fxOneProviderID]: [
+			{
+				purpose: 'general',
+				content: { type: 'plaintext', content: 'This is a legal disclaimer for FX provider One' }
+			}
+		],
+		[fxTwoProviderID]: [
+			{
+				purpose: 'general',
+				content: { type: 'plaintext', content: 'This is a legal disclaimer for FX provider Two' }
+			},
+			{
+				purpose: 'general',
+				content: { type: 'markdown', content: 'This is another legal disclaimer for FX provider Two' }
+			}
+		]
+	};
 	// fxServerOne: 0.88 rate (primary)
 	const fxServerOne = new TestFXServer({
 		...(DEBUG ? { logger } : {}),
@@ -717,6 +738,7 @@ async function createChainingTestHarness() {
 		client,
 		giveTokens,
 		fx: {
+			legal: { disclaimers: fxProviderDisclaimers[fxOneProviderID] },
 			from: [{ currencyCodes: [ tokens.USDC.publicKeyString.get(), tokens.EURC.publicKeyString.get() ], to: [ tokens.USDC.publicKeyString.get(), tokens.EURC.publicKeyString.get() ] }]
 		}
 	});
@@ -730,6 +752,7 @@ async function createChainingTestHarness() {
 		client,
 		giveTokens,
 		fx: {
+			legal: { disclaimers: fxProviderDisclaimers[fxTwoProviderID] },
 			from: [{ currencyCodes: [ tokens.USDC.publicKeyString.get(), tokens.EURC.publicKeyString.get() ], to: [ tokens.USDC.publicKeyString.get(), tokens.EURC.publicKeyString.get() ] }]
 		}
 	}).setRate(0.85);
@@ -807,6 +830,9 @@ async function createChainingTestHarness() {
 		bankProviderDisclaimers,
 		euBankProviderID,
 		usBankProviderID,
+		fxProviderDisclaimers,
+		fxOneProviderID,
+		fxTwoProviderID,
 		giveTokens,
 		getPlanVia,
 		getPathVia,
@@ -2181,13 +2207,23 @@ describe('AnchorChainingPlan disclaimers', function() {
 			throw(new Error('Expected at least one valid path'));
 		}
 
-		for (const euBankPath of (euBankPaths ?? [])) {
+		for (const euBankPath of euBankPaths) {
+			const expectedProviderDisclaimers = euBankPath.path.map((step) => {
+				if (!step.providerID) {
+					throw(new Error('Expected step to have a provider ID'));
+				}
+
+				const expectedDisclaimersMap: { [key: string]: Disclaimer[] } = step.type === 'assetMovement' ? h.bankProviderDisclaimers : h.fxProviderDisclaimers;
+
+				return({
+					providerID: step.providerID,
+					disclaimers: expectedDisclaimersMap[step.providerID]
+				})
+			})
+
 			const disclaimers = await euBankPath.getProviderLegalDisclaimers();
-			expect(disclaimers.length).toEqual(1);
-			expect(disclaimers).toEqual([{
-				providerID: h.euBankProviderID,
-				disclaimers: h.bankProviderDisclaimers[h.euBankProviderID]
-			}]);
+			expect(disclaimers?.length).toEqual(euBankPath.path.length);
+			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 
 		// US Bank Paths
@@ -2201,31 +2237,48 @@ describe('AnchorChainingPlan disclaimers', function() {
 			throw(new Error('Expected at least one valid path'));
 		}
 
-		for (const usBankPath of (usBankPaths ?? [])) {
+		for (const usBankPath of usBankPaths) {
+			const expectedProviderDisclaimers = usBankPath.path.map((step) => {
+				if (!step.providerID) {
+					throw(new Error('Expected step to have a provider ID'));
+				}
+				const expectedDisclaimersMap: { [key: string]: Disclaimer[] } = step.type === 'assetMovement' ? h.bankProviderDisclaimers : h.fxProviderDisclaimers;
+				return({
+					providerID: step.providerID,
+					disclaimers: expectedDisclaimersMap[step.providerID]
+				})
+			})
+
 			const disclaimers = await usBankPath.getProviderLegalDisclaimers();
-			expect(disclaimers.length).toEqual(1);
-			expect(disclaimers).toEqual([{
-				providerID: h.usBankProviderID,
-				disclaimers: h.bankProviderDisclaimers[h.usBankProviderID]
-			}]);
+			expect(disclaimers?.length).toEqual(usBankPath.path.length);
+			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 
-		// Keeta Paths excluding asset movement steps
+		// Keeta Paths
 
-		const networkPaths = (await h.anchorChaining.getPaths({
+		const networkPaths = await h.anchorChaining.getPaths({
 			source: { asset: h.tokens.EURC, location: h.keetaLocation, rail: 'KEETA_SEND', value: 100n },
 			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
-		}))?.filter(function(networkPath) {
-			return(networkPath.path.every(step => step.type !== 'assetMovement'));
 		});
 
 		if (!networkPaths || networkPaths.length === 0) {
 			throw(new Error('Expected at least one valid path'));
 		}
 
-		for (const networkPath of (networkPaths ?? [])) {
+		for (const networkPath of networkPaths) {
+			const expectedProviderDisclaimers = networkPath.path.slice(0, 2).map((step) => {
+				if (!step.providerID) {
+					throw(new Error('Expected step to have a provider ID'));
+				}
+				const expectedDisclaimersMap: { [key: string]: Disclaimer[] } = step.type === 'assetMovement' ? h.bankProviderDisclaimers : h.fxProviderDisclaimers;
+				return({
+					providerID: step.providerID,
+					disclaimers: expectedDisclaimersMap[step.providerID]
+				})
+			})
 			const disclaimers = await networkPath.getProviderLegalDisclaimers();
-			expect(disclaimers.length).toEqual(0);
+			expect(disclaimers?.length).toEqual(expectedProviderDisclaimers.length);
+			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 	});
 });

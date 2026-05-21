@@ -1136,6 +1136,15 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 		return(assetMetadata);
 	}
+
+	getLegalDisclaimers(): NonNullable<AnchorMetadataLegalField['disclaimers']> | null {
+		const disclaimers = this.serviceInfo.legal?.disclaimers;
+		if (!disclaimers) {
+			return(null);
+		}
+
+		return(disclaimers);
+	}
 }
 
 class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
@@ -1204,6 +1213,11 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		}
 
 		return(disclaimers);
+	}
+
+	async getProviderByAccount(account: NonNullable<SharedLookupCriteria['accounts']>[number]): Promise<KeetaAssetMovementAnchorProvider | null> {
+		const providers = await this.#lookup({}, { accounts: [account] });
+		return(providers?.[0] ?? null);
 	}
 
 	/** @internal */

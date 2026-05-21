@@ -425,6 +425,13 @@ for (const useDeprecated of [false, true]) {
 
 			expect(providers?.length).toEqual(1);
 			expect(providers?.[0]?.serviceInfo.legal).toEqual(testingLegalField.legal);
+
+			const disclaimersFromClient = await fxClient.getLegalDisclaimersById('Test');
+			expect(disclaimersFromClient).toEqual(testingLegalField.legal)
+			expect(disclaimersFromClient).toEqual(providers?.[0]?.serviceInfo.legal)
+
+			const disclaimersFromClientFromTest2 = await fxClient.getLegalDisclaimersById('Test2');
+			expect(disclaimersFromClientFromTest2).toEqual(null)
 		}
 
 		/* Get Estimate from Currency Codes */
