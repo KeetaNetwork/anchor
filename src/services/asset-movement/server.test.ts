@@ -50,6 +50,33 @@ test('Asset Movement Server Tests', async function() {
 	/* XXX:TODO: Tests */
 });
 
+test('Asset Movement Server publishes path-parameter operations with literal placeholders', async function() {
+	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0).assertAccount();
+
+	const baseConfig = makeServerConfig({ metadataSigner: signer });
+	const config: KeetaAnchorAssetMovementServerConfig = {
+		...baseConfig,
+		assetMovement: {
+			...baseConfig.assetMovement,
+			/**
+			 * Stub out the getTransferStatus and executeTransfer operations
+			 * as they are not used but must be present for the server to start.
+			 */
+			getTransferStatus: async function() { throw(new KeetaAnchorUserError('not implemented')); },
+			executeTransfer: async function() { throw(new KeetaAnchorUserError('not implemented')); }
+		}
+	};
+
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await server.start();
+
+	const { operations } = await server.serviceMetadata();
+	for (const endpoint of [ operations.getTransferStatus, operations.executeTransfer ]) {
+		expect(endpoint).toContain('{id}');
+		expect(endpoint).not.toContain('%7B');
+	}
+});
+
 test('Asset Movement Server signs metadata when metadataSigner is configured', async function() {
 	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0).assertAccount();
 
