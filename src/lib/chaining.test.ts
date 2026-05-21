@@ -2181,16 +2181,13 @@ describe('AnchorChainingPlan disclaimers', function() {
 			throw(new Error('Expected at least one valid path'));
 		}
 
-		const euBankDisclaimers = await h.anchorChaining.graph.getProviderDisclaimers(h.euBankProviderID);
-		expect(euBankDisclaimers).toEqual({
-			providerID: h.euBankProviderID,
-			disclaimers: h.bankProviderDisclaimers[h.euBankProviderID]
-		});
-
 		for (const euBankPath of (euBankPaths ?? [])) {
 			const disclaimers = await euBankPath.getProviderLegalDisclaimers();
 			expect(disclaimers.length).toEqual(1);
-			expect(disclaimers).toEqual([euBankDisclaimers]);
+			expect(disclaimers).toEqual([{
+				providerID: h.euBankProviderID,
+				disclaimers: h.bankProviderDisclaimers[h.euBankProviderID]
+			}]);
 		}
 
 		// US Bank Paths
@@ -2204,16 +2201,13 @@ describe('AnchorChainingPlan disclaimers', function() {
 			throw(new Error('Expected at least one valid path'));
 		}
 
-		const usBankDisclaimers = await h.anchorChaining.graph.getProviderDisclaimers(h.usBankProviderID);
-		expect(usBankDisclaimers).toEqual({
-			providerID: h.usBankProviderID,
-			disclaimers: h.bankProviderDisclaimers[h.usBankProviderID]
-		});
-
 		for (const usBankPath of (usBankPaths ?? [])) {
 			const disclaimers = await usBankPath.getProviderLegalDisclaimers();
 			expect(disclaimers.length).toEqual(1);
-			expect(disclaimers).toEqual([usBankDisclaimers]);
+			expect(disclaimers).toEqual([{
+				providerID: h.usBankProviderID,
+				disclaimers: h.bankProviderDisclaimers[h.usBankProviderID]
+			}]);
 		}
 
 		// Keeta Paths excluding asset movement steps
