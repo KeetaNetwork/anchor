@@ -1,6 +1,6 @@
-import { type lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { KeetaNet } from "../client/index.js";
-import type { AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, SimulatedAssetTransferInstructions } from "../services/asset-movement/common.js";
+import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, SimulatedAssetTransferInstructions } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
@@ -12,6 +12,7 @@ import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
+import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
@@ -274,6 +275,19 @@ export interface AnchorChainingAssetInfo {
 	} | null;
 }
 
+type AnchorChainingAssetInfoWithMetadata = AnchorChainingAssetInfo & {
+	metadata?: AnchorTokenLocationMetadata;
+}
+
+interface AnchorChainingResolveAssetsWithMetadataResult {
+	from: AnchorChainingAssetInfoWithMetadata[];
+	to: AnchorChainingAssetInfoWithMetadata[];
+}
+
+type AnchorChainingWithMetadataOptions = {
+	providerID?: string;
+};
+
 type GetAccountForActionPayload = {
 	type: 'assetMovement';
 	providerMethod: 'initiateTransfer';
@@ -293,13 +307,67 @@ class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
 	logger?: Logger | undefined;
-	#assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+
+	readonly #assetMovementClient: KeetaAssetMovementAnchorClient;
+	readonly #assetMovementProviderCache = new Map<string, AssetMovementProvider | null>();
+	readonly #assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
 		this.client = args.client;
 		this.logger = args.logger;
+		this.#assetMovementClient = new KeetaAssetMovementAnchorClient(this.client, {
+			resolver: this.resolver,
+			...(this.logger ? { logger: this.logger } : {})
+		});
+	}
+
+	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
+		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+	};
+
+	async #getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
+		let provider: KeetaAssetMovementAnchorProvider | undefined | null = this.#assetMovementProviderCache.get(providerID);
+		if (provider === undefined) {
+			provider = await this.#assetMovementClient.getProviderByID(providerID);
+		}
+
+		this.#assetMovementProviderCache.set(providerID, provider);
+
+		return(provider);
+	}
+
+	async getAssetMovementProvidersForAsset(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<null | { [providerID: string]: { provider: AssetMovementProvider; }}> {
+		let retval: null | { [providerID: string]: { provider: AssetMovementProvider; }} = null;
+
+		for (const node of await this.computeGraphNodes()) {
+			if (node.type !== 'assetMovement') {
+				continue;
+			}
+
+			for (const side of [ node.from, node.to ] as const) {
+				if (!isAnchorChainingAssetEqual(side.asset, asset) || convertAssetLocationToString(side.location) !== convertAssetLocationToString(location)) {
+					continue;
+				}
+
+				if (!retval) {
+					retval = {};
+				}
+
+				if (!retval[node.providerID]) {
+					const provider = await this.#getAssetMovementProviderById(node.providerID);
+					if (!provider) {
+						this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${node.providerID}, although provider was previously known to exist in the graph nodes`);
+						continue;
+					}
+
+					retval[node.providerID] = { provider };
+				}
+			}
+		}
+
+		return(retval);
 	}
 
 	async #computeFXNodes() {
@@ -681,10 +749,6 @@ class AnchorGraph {
 			}
 		}
 
-		const assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-			return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
-		};
-
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
 			f: AnchorChainingListAssetsSideFilter
@@ -709,7 +773,7 @@ class AnchorGraph {
 
 		const makeMarkFn = (reachable: Set<string>, distances: Map<string, number>) =>
 			(side: GraphNodeLike['from' | 'to'], depth?: number) => {
-				const key = assetLocationKey(side);
+				const key = this.#assetLocationKey(side);
 				reachable.add(key);
 				if (depth !== undefined) {
 					const existing = distances.get(key);
@@ -790,16 +854,18 @@ class AnchorGraph {
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
 			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
-				const key = assetLocationKey(side);
+				const key = this.#assetLocationKey(side);
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
 					const distanceValue = distances.get(key);
+
 					resultObj = {
 						asset: side.asset,
 						location: side.location,
 						rails: { inbound: [], outbound: [] },
 						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
 					};
+
 					resultMap.set(key, resultObj);
 				}
 				return(resultObj);
@@ -808,13 +874,13 @@ class AnchorGraph {
 				if (onlyAllowFXLike && !isFXLikeNode(node)) {
 					continue;
 				}
-				if (reachable.has(assetLocationKey(node.to))) {
+				if (reachable.has(this.#assetLocationKey(node.to))) {
 					const entry = getOrCreate(node.to);
 					if (!entry.rails.inbound.includes(node.to.rail)) {
 						entry.rails.inbound.push(node.to.rail);
 					}
 				}
-				if (reachable.has(assetLocationKey(node.from))) {
+				if (reachable.has(this.#assetLocationKey(node.from))) {
 					const entry = getOrCreate(node.from);
 					if (!entry.rails.outbound.includes(node.from.rail)) {
 						entry.rails.outbound.push(node.from.rail);
@@ -831,10 +897,10 @@ class AnchorGraph {
 		// "what can USDC be swapped to?" doesn't include USDC itself via a round-trip.
 		if (onlyAllowFXLike) {
 			if (fromFilter?.asset !== undefined) {
-				toResultMap.delete(assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
+				toResultMap.delete(this.#assetLocationKey({ asset: fromFilter.asset, location: fromFilter.location ?? keetaNetworkLocation }));
 			}
 			if (toFilter?.asset !== undefined) {
-				fromResultMap.delete(assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
+				fromResultMap.delete(this.#assetLocationKey({ asset: toFilter.asset, location: toFilter.location ?? keetaNetworkLocation }));
 			}
 		}
 
@@ -868,6 +934,77 @@ class AnchorGraph {
 
 	async listAssets(filter: AnchorChainingListAssetsFilter = {}): Promise<AnchorChainingAssetInfo[]> {
 		const result = await this.resolveAssets(filter);
+
+		if (filter.from) {
+			return(result.to);
+		} else if (filter.to) {
+			return(result.from);
+		} else {
+			return(result.to);
+		}
+	}
+
+	async #attachMetadata(assetInfo: AnchorChainingAssetInfo, options?: AnchorChainingWithMetadataOptions): Promise<AnchorChainingAssetInfoWithMetadata> {
+		if (!isExternalChainAsset(assetInfo.asset)) {
+			return(assetInfo);
+		}
+
+		const providers = await this.getAssetMovementProvidersForAsset(assetInfo.asset, assetInfo.location);
+		if (!providers) {
+			return(assetInfo);
+		}
+
+		if (options?.providerID) {
+			const found = providers[options.providerID];
+			if (!found) {
+				return(assetInfo);
+			}
+
+			const metadata = found.provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
+			if (!metadata) {
+				return(assetInfo);
+			}
+
+			return({
+				...assetInfo,
+				metadata
+			});
+		}
+
+		for (const { provider } of Object.values(providers)) {
+			const metadata = provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
+			if (!metadata) {
+				continue;
+			}
+
+			return({
+				...assetInfo,
+				metadata
+			});
+		}
+
+		return(assetInfo)
+	}
+
+	async resolveAssetsWithMetadata(
+		filter: AnchorChainingResolveAssetsFilter = {},
+		options?: AnchorChainingWithMetadataOptions
+	): Promise<AnchorChainingResolveAssetsWithMetadataResult> {
+		const result = await this.resolveAssets(filter);
+
+		const [from, to] = await Promise.all([
+			Promise.all(result.from.map((info) => this.#attachMetadata(info, options))),
+			Promise.all(result.to.map((info) => this.#attachMetadata(info, options)))
+		]);
+
+		return({ from, to });
+	}
+
+	async listAssetsWithMetadata(
+		filter: AnchorChainingListAssetsFilter = {},
+		options?: AnchorChainingWithMetadataOptions
+	): Promise<AnchorChainingAssetInfoWithMetadata[]> {
+		const result = await this.resolveAssetsWithMetadata(filter, options);
 
 		if (filter.from) {
 			return(result.to);
