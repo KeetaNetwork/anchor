@@ -1319,6 +1319,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 												throw(new Error(`Deposit message outbound is not currently supported for chaining`));
 											}
 											return(foundInstruction.account);
+										} else if (foundInstruction.type === 'EVM_SEND') {
+											return(foundInstruction.sendToAddress);
 										} else {
 											throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
 										}
