@@ -18,6 +18,7 @@ import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
+import type { AnchorMetadataLegalField } from './metadata.types.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -47,6 +48,13 @@ interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'asse
 interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSend'> {
 	usingInstruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>;
 };
+
+export type Disclaimer = Exclude<AnchorMetadataLegalField['disclaimers'], undefined>[number];
+type ProviderDisclaimers = {
+	providerID: string;
+	disclaimers: Disclaimer[];
+}
+type PlanDisclaimers = ProviderDisclaimers[];
 
 export type ChainStepResolution = ChainStepResolutionFX | ChainStepResolutionAssetMovement | ChainStepResolutionKeetaSend;
 
@@ -308,7 +316,8 @@ class AnchorGraph {
 	resolver: Resolver;
 	logger?: Logger | undefined;
 
-	readonly #assetMovementClient: KeetaAssetMovementAnchorClient;
+	readonly assetMovementClient: KeetaAssetMovementAnchorClient;
+	readonly fxClient: KeetaFXAnchorClient;
 	readonly #assetMovementProviderCache = new Map<string, AssetMovementProvider | null>();
 	readonly #assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
@@ -317,7 +326,11 @@ class AnchorGraph {
 		this.resolver = args.resolver;
 		this.client = args.client;
 		this.logger = args.logger;
-		this.#assetMovementClient = new KeetaAssetMovementAnchorClient(this.client, {
+		this.assetMovementClient = new KeetaAssetMovementAnchorClient(this.client, {
+			resolver: this.resolver,
+			...(this.logger ? { logger: this.logger } : {})
+		});
+		this.fxClient = new KeetaFXAnchorClient(this.client, {
 			resolver: this.resolver,
 			...(this.logger ? { logger: this.logger } : {})
 		});
@@ -327,10 +340,10 @@ class AnchorGraph {
 		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
 
-	async #getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
+	async getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
 		let provider: KeetaAssetMovementAnchorProvider | undefined | null = this.#assetMovementProviderCache.get(providerID);
 		if (provider === undefined) {
-			provider = await this.#assetMovementClient.getProviderByID(providerID);
+			provider = await this.assetMovementClient.getProviderByID(providerID);
 		}
 
 		this.#assetMovementProviderCache.set(providerID, provider);
@@ -356,7 +369,7 @@ class AnchorGraph {
 				}
 
 				if (!retval[node.providerID]) {
-					const provider = await this.#getAssetMovementProviderById(node.providerID);
+					const provider = await this.getAssetMovementProviderById(node.providerID);
 					if (!provider) {
 						this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${node.providerID}, although provider was previously known to exist in the graph nodes`);
 						continue;
@@ -1035,6 +1048,10 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
+	get logger(): Logger | undefined {
+		return(this.parent['logger']);
+	}
+
 	protected async getAccountLike(action: GetAccountForActionPayload, override?: AccountLike): Promise<InstanceType<typeof KeetaNetLib.Account>> {
 		let found: InstanceType<typeof KeetaNetLib.Account> | undefined = undefined;
 
@@ -1066,6 +1083,53 @@ export class AnchorChainingPath {
 		]);
 
 		return({ signer, account });
+	}
+
+	async getProviderLegalDisclaimers(): Promise<PlanDisclaimers | null> {
+		const legalDisclaimerPromises: { key: string; promise: () => Promise<ProviderDisclaimers | null> }[] = [];
+
+		for (const step of this.path) {
+			if (step.type === 'keetaSend') {
+				continue
+			}
+
+			const key = `${step.type}:${step.providerID}`;
+			if (legalDisclaimerPromises.find(entry => entry.key === key)) {
+				continue
+			}
+
+			const promise = async () => {
+				try {
+					let disclaimers: ProviderDisclaimers['disclaimers'] | null | undefined = null;
+					if (step.type === 'assetMovement') {
+						const provider = await this.parent.graph.getAssetMovementProviderById(step.providerID);
+						disclaimers = provider?.getLegalDisclaimers();
+					} else {
+						disclaimers = await this.parent.graph.fxClient.getLegalDisclaimersById(step.providerID);
+					}
+
+					if (!disclaimers) {
+						return(null);
+					}
+
+					return({ providerID: step.providerID, disclaimers });
+				} catch (error) {
+					this.logger?.debug(`AnchorChainingPath::getProviderLegalDisclaimers`, `Error getting provider disclaimers for providerId: ${step.providerID}`, error);
+					throw(error)
+				}
+			}
+
+			legalDisclaimerPromises.push({ key, promise });
+		}
+
+		try {
+			const disclaimersOrNull = await Promise.all(legalDisclaimerPromises.map((entry) => entry.promise()));
+			const disclaimers = disclaimersOrNull.filter((entry) => entry !== null);
+			return(disclaimers);
+		} catch (error) {
+			this.logger?.debug(`AnchorChainingPath::getProviderLegalDisclaimers`, 'Error getting legal disclaimers for path', error);
+			return(null);
+		}
 	}
 }
 
