@@ -408,7 +408,7 @@ type PersistentForwardingBridgeAddressMeta = {
 type TestPersistentForwardingBridgeServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'assetMovement'> & {
 	assetMovement: Omit<
 		KeetaAnchorAssetMovementServerConfig['assetMovement'],
-		'initiateTransfer' | 'getTransferStatus' | 'createPersistentForwarding' | 'listPersistentForwarding' | 'listTransactions'
+		'initiateTransfer' | 'getTransferStatus' | 'simulateTransfer' | 'createPersistentForwarding' | 'listPersistentForwarding' | 'listTransactions'
 	>;
 	client: KeetaNet.UserClient;
 };
@@ -530,6 +530,51 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 					}
 
 					return({ transaction: tx });
+				},
+
+				async simulateTransfer(request) {
+					const value = BigInt(request.value);
+					const tokenAddress = toAssetPair(request.asset).from;
+					if (typeof tokenAddress !== 'string') {
+						throw(new Error('invalid asset for simulate'));
+					}
+
+					const parsedFrom = toAssetLocation(request.from.location);
+					const isKeetaSource = parsedFrom.type === 'chain' && parsedFrom.chain.type === 'keeta';
+					if (isKeetaSource) {
+						return({
+							instructionChoices: [{
+								type: 'KEETA_SEND' as const,
+								location: request.from.location,
+								value: value.toString(),
+								tokenAddress: KeetaNet.lib.Account.fromPublicKeyString(tokenAddress)
+									.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+									.publicKeyString.get(),
+								assetFee: '0',
+								totalReceiveAmount: value.toString()
+							}]
+						});
+					}
+
+					/*
+					 * EVM-side simulation for the persistent-forwarding leg.
+					 */
+					if (!tokenAddress.startsWith('evm:0x')) {
+						throw(new Error(`invalid evm asset format for simulate: ${tokenAddress}`));
+					}
+
+					/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+					const evmTokenHex = tokenAddress.slice('evm:'.length) as `0x${string}`;
+					return({
+						instructionChoices: [{
+							type: 'EVM_SEND' as const,
+							location: request.from.location,
+							value: value.toString(),
+							tokenAddress: evmTokenHex,
+							assetFee: '0',
+							totalReceiveAmount: value.toString()
+						}]
+					});
 				},
 
 				async createPersistentForwarding(request) {

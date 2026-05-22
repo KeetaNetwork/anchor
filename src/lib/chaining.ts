@@ -653,6 +653,17 @@ class AnchorGraph {
 						[ toResolved, fromResolved ]
 					] as const) {
 						for (const inboundRail of [ ...(src.rails.common ?? []), ...(src.rails.inbound ?? []) ]) {
+							/*
+							 * Drop edges whose source rail explicitly cannot
+							 * initiate a transfer and also cannot create a
+							 * persistent forwarding address.
+							 */
+							const inboundOps = inboundRail.supportedOperations;
+							if (inboundOps?.initiateTransfer === false && inboundOps.createPersistentForwarding !== true) {
+								this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `Skipping ${providerID} edge from ${convertAssetLocationToString(src.location)} via rail ${inboundRail.rail}: neither initiateTransfer nor createPersistentForwarding supported`);
+								continue;
+							}
+
 							for (const outboundRail of [ ...(dest.rails.common ?? []), ...(dest.rails.outbound ?? []) ]) {
 								pathNodes.push({
 									type: 'assetMovement',
@@ -1305,6 +1316,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
 			}
+			if (!await forwardedProvider.isOperationSupported('simulateTransfer')) {
+				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
+			}
 
 			const { signer: forwardedSigner } = await this.getAccountsForAction({
 				type: 'assetMovement',
@@ -1325,7 +1339,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						}]
 					});
 
-					const match = existing.addresses.find(addr => addr.destinationAddress === destinationAddress);
+					/*
+					 * Filter to the exact address this step requires.
+					 */
+					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
+					const destLocationString = convertAssetLocationToString(scanStep.to.location);
+					const match = existing.addresses.find(addr => {
+						if (addr.destinationAddress !== destinationAddress) {
+							return(false);
+						}
+						if (!addr.sourceLocation || convertAssetLocationToString(addr.sourceLocation) !== sourceLocationString) {
+							return(false);
+						}
+						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
+							return(false);
+						}
+
+						return(true);
+					});
 					if (match) {
 						persistentAddress = match;
 					}
@@ -1359,6 +1390,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 			if (!step) {
 				throw(new Error(`Step ${index} is not defined`));
+			}
+
+			/*
+			 * Detect cycles
+			 */
+			if (resolvingSteps.has(index)) {
+				throw(new Error(`Cyclic dependency detected in resolveStep: step ${index} is already being resolved`));
 			}
 
 			let promise: Promise<ChainStepResolution> | undefined = stepPromises[index];
@@ -1610,11 +1648,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								} else if (nextStep.type === 'fx') {
 									throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
 								} else if (nextStep.type === 'forwarded') {
-									/*
-									 * Unreachable: forwarded recipient is resolved earlier via
-									 * the forwardedSteps lookup above.
-									 */
-									throw(new Error(`Internal error: reached simulate-cycle-break for a forwarded next step (index ${index + 1})`));
+									throw(new Error(`Internal invariant violation: forwarded step at index ${index + 1} reached simulate-cycle-break path; expected nextForwardedInfo branch to have handled it`));
 								} else {
 									assertNever(nextStep);
 								}
@@ -1714,8 +1748,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				promise.then(() => resolvingSteps.delete(index), () => resolvingSteps.delete(index));
 				stepPromises[index] = promise;
-			} else if (resolvingSteps.has(index)) {
-				throw(new Error(`Cyclic dependency detected in resolveStep: step ${index} is already being resolved`));
 			}
 
 			return(await promise);
