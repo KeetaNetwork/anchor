@@ -87,7 +87,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { KeetaNet } from '../../client/index.js';
-import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
 import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
 
 // const PARANOID = true;
@@ -1136,6 +1136,15 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 		return(assetMetadata);
 	}
+
+	getLegalDisclaimers(): NonNullable<AnchorMetadataLegalField['disclaimers']> | null {
+		const disclaimers = this.serviceInfo.legal?.disclaimers;
+		if (!disclaimers) {
+			return(null);
+		}
+
+		return(disclaimers);
+	}
 }
 
 class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
@@ -1189,6 +1198,25 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 
 	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {
 		const providers = await this.#lookup({}, { providerIDs: [providerID] });
+		return(providers?.[0] ?? null);
+	}
+
+	async getProviderLegalDisclaimersByID(providerID: string): Promise<Exclude<AnchorMetadataLegalField['disclaimers'], undefined> | null> {
+		const provider = await this.getProviderByID(providerID);
+		if (!provider) {
+			return(null);
+		}
+
+		const disclaimers = provider.serviceInfo.legal?.disclaimers;
+		if (!disclaimers) {
+			return(null);
+		}
+
+		return(disclaimers);
+	}
+
+	async getProviderByAccount(account: NonNullable<SharedLookupCriteria['accounts']>[number]): Promise<KeetaAssetMovementAnchorProvider | null> {
+		const providers = await this.#lookup({}, { accounts: [account] });
 		return(providers?.[0] ?? null);
 	}
 
