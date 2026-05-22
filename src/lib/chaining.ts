@@ -1208,6 +1208,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		const stepPromises: Promise<ChainStepResolution>[] = [];
 		const resolvingSteps = new Set<number>();
+		const precomputedValueOuts = new Map<number, bigint>();
 		const resolveStep = async (index: number): Promise<ChainStepResolution> => {
 			const step = this.path[index];
 
@@ -1281,10 +1282,46 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({ type: 'fx', step, valueIn, valueOut, result });
 					} else if (step.type === 'assetMovement') {
-						let recipient: (() => Promise<RecipientResolved | GenericAccount>) | (RecipientResolved | GenericAccount);
+						if (affinity === 'to') {
+							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+						}
+
+						let depositValue: bigint;
+						if (index === 0) {
+							depositValue = affinityAndAmount.amount;
+						} else {
+							const precomputedPrev = precomputedValueOuts.get(index - 1);
+							if (precomputedPrev !== undefined) {
+								depositValue = precomputedPrev;
+							} else {
+								const previous = await resolveStep(index - 1);
+								depositValue = previous.valueOut;
+							}
+						}
+
+						const assetPair = { from: step.from.asset, to: step.to.asset };
+
+						const providers = await assetMovementClient.getProvidersForTransfer(
+							{ asset: assetPair, from: step.from.location, to: step.to.location },
+							{ providerIDs: [ step.providerID ] }
+						);
+
+						if (!providers?.[0] || providers.length === 0) {
+							throw(new Error(`Could not get asset movement provider ${step.providerID}`));
+						}
+						const provider = providers[0];
+
+						const { signer } = await this.getAccountsForAction({
+							type: 'assetMovement',
+							providerMethod: 'initiateTransfer',
+							provider
+						}, this.#options?.overrides);
+
+						let resolvedRecipient: RecipientResolved | GenericAccount;
 						let sendingToType: SendingToType;
+
 						if (index === this.path.length - 1) {
-							recipient = this.request.destination.recipient;
+							resolvedRecipient = this.request.destination.recipient;
 							sendingToType = 'FINAL_DESTINATION';
 						} else {
 							sendingToType = 'NEXT_STEP';
@@ -1302,93 +1339,81 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								}, this.#options?.overrides);
 
 								// Store funds in-transit in the account instead of forwarding directly to provider.
-								recipient = account;
+								resolvedRecipient = account;
 							} else {
-								recipient = async (): Promise<RecipientResolved | GenericAccount> => {
-									const nextStep = await resolveStep(index + 1);
+								// Break the cycle: resolving the next step's recipient requires
+								// initiateTransfer on N+1, whose value depends on our valueOut.
+								// Simulate this step first to predict valueOut without needing a
+								// recipient, then stash it so N+1 uses it instead of recursing back.
+								if (nextPathStep.type === 'assetMovement') {
+									const simulated = await provider.simulateTransfer({
+										account: signer,
+										asset: assetPair,
+										from: { location: step.from.location },
+										to: { location: step.to.location },
+										value: depositValue
+									});
 
-									if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
-										if (nextStep.usingInstruction.type !== step.to.rail) {
-											throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
-										}
-
-										const foundInstruction = nextStep.usingInstruction;
-
-										const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
-											return(isFiatRail(input.type));
-										}
-
-										if (foundInstruction.type === 'KEETA_SEND') {
-											throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
-										} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
-											if (foundInstruction.depositMessage) {
-												throw(new Error(`Deposit message outbound is not currently supported for chaining`));
-											}
-											return(foundInstruction.account);
-										} else if (foundInstruction.type === 'EVM_SEND') {
-											return(foundInstruction.sendToAddress);
-										} else {
-											throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
-										}
-									} else if (nextStep.type === 'fx') {
-										throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
-									} else {
-										assertNever(nextStep);
+									const simulatedInstruction = simulated.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
+									if (!simulatedInstruction) {
+										throw(new Error(`Simulated transfer for step ${index} did not return an instruction matching rail ${step.from.rail}`));
 									}
+
+									let simulatedTotalReceive: string | undefined = simulatedInstruction.totalReceiveAmount;
+									if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
+										simulatedTotalReceive = simulatedInstruction.value;
+									}
+									if (simulatedTotalReceive === undefined) {
+										throw(new Error(`totalReceiveAmount must be defined for simulated transfer when chaining`));
+									}
+
+									precomputedValueOuts.set(index, BigInt(simulatedTotalReceive));
+								}
+
+								const nextStep = await resolveStep(index + 1);
+
+								if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
+									if (nextStep.usingInstruction.type !== step.to.rail) {
+										throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
+									}
+
+									const foundInstruction = nextStep.usingInstruction;
+
+									const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
+										return(isFiatRail(input.type));
+									}
+
+									if (foundInstruction.type === 'KEETA_SEND') {
+										throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
+									} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
+										if (foundInstruction.depositMessage) {
+											throw(new Error(`Deposit message outbound is not currently supported for chaining`));
+										}
+										resolvedRecipient = foundInstruction.account;
+									} else if (foundInstruction.type === 'EVM_SEND') {
+										resolvedRecipient = foundInstruction.sendToAddress;
+									} else {
+										throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
+									}
+								} else if (nextStep.type === 'fx') {
+									throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+								} else {
+									assertNever(nextStep);
 								}
 							}
 						}
 
-						const assetPair = { from: step.from.asset, to: step.to.asset };
+						const recipientString = KeetaNet.lib.Account.isInstance(resolvedRecipient)
+							? resolvedRecipient.publicKeyString.get()
+							: resolvedRecipient;
 
-						const providers = await assetMovementClient.getProvidersForTransfer(
-							{ asset: assetPair, from: step.from.location, to: step.to.location },
-							{ providerIDs: [ step.providerID ] }
-						);
-
-						if (!providers?.[0] || providers.length === 0) {
-							throw(new Error(`Could not get asset movement provider ${step.providerID}`));
-						}
-
-						let depositValue;
-
-						if (affinity === 'to') {
-							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
-						} else {
-							if (index === 0) {
-								depositValue = affinityAndAmount.amount;
-							} else {
-								const previous = await resolveStep(index - 1);
-								depositValue = previous.valueOut;
-							}
-						}
-						const { signer } = await this.getAccountsForAction({
-							type: 'assetMovement',
-							providerMethod: 'initiateTransfer',
-							provider: providers[0]
-						}, this.#options?.overrides);
-
-						const transfer = await providers[0].initiateTransfer({
+						const transfer = await provider.initiateTransfer({
 							account: signer,
 							asset: assetPair,
 							from: { location: step.from.location },
 							to: {
 								location: step.to.location,
-								recipient: await (async () => {
-									let recipientResolved;
-
-									if (typeof recipient === 'function') {
-										recipientResolved = await recipient();
-									} else {
-										recipientResolved = recipient;
-									}
-
-									if (KeetaNet.lib.Account.isInstance(recipientResolved)) {
-										return(recipientResolved.publicKeyString.get());
-									} else {
-										return(recipientResolved);
-									}
-								})()
+								recipient: recipientString
 							},
 							value: depositValue
 						});
@@ -1403,6 +1428,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							throw(new Error(`totalReceiveAmount must be defined for chaining`));
 						}
 
+						const actualValueOut = BigInt(totalReceiveAmount);
+
+						// If we simulated to break a cycle, the next step's initiateTransfer was
+						// keyed off the simulated valueOut; a mismatch here means the next step
+						// is now misaligned, so fail at plan-time instead of letting execute() catch it.
+						const simulatedValueOut = precomputedValueOuts.get(index);
+						if (simulatedValueOut !== undefined && simulatedValueOut !== actualValueOut) {
+							throw(new Error(`Simulated valueOut ${simulatedValueOut} for step ${index} does not match actual ${actualValueOut} from initiateTransfer`));
+						}
+
 						return({
 							type: 'assetMovement',
 							step,
@@ -1410,7 +1445,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							usingInstruction: usingInstruction,
 							transfer: transfer,
 							sendingTo: sendingToType,
-							valueOut: BigInt(totalReceiveAmount)
+							valueOut: actualValueOut
 						})
 					} else if (step.type === 'keetaSend') {
 						if (this.path.length !== 1) {
