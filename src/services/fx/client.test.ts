@@ -115,6 +115,8 @@ for (const useDeprecated of [false, true]) {
 			await client.modTokenSupplyAndBalance(initialLiquidityProviderEURBalancePerLiquidityProvider, testCurrencyEUR, { account: liquidityProvider });
 			const permissionsPublish = await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
 			expect(permissionsPublish.publish).toBe(true);
+			const permissionsPublishUSD = await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyUSD });
+			expect(permissionsPublishUSD.publish).toBe(true);
 
 			const initialLiquidityProviderBalances = await client.allBalances({ account: liquidityProvider });
 			expect(toJSONSerializable(initialLiquidityProviderBalances)).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: initialLiquidityProviderEURBalancePerLiquidityProvider }]));

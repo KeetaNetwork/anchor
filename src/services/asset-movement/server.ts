@@ -558,7 +558,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			}
 
 			if (this.assetMovement[op] !== undefined) {
-				const computedURL = (new URL(`/api/${url}`, this.url)).toString();
+				const computedURL = (new URL(`/api/${op}`, this.url)).toString() + url.slice(op.length);
 				if (this.assetMovement.authenticationRequired) {
 					operations[op] = {
 						url: computedURL,

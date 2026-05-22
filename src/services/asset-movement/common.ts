@@ -16,7 +16,7 @@ import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, a
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
-import type { ACLRow } from '@keetanetwork/keetanet-client/lib/ledger/types.js';
+import type { ACLPermissionRequirement } from '@keetanetwork/keetanet-client/lib/ledger/types.js';
 import type { Certificate } from '@keetanetwork/keetanet-client/lib/utils/certificate.js';
 import type { UserClientBuilder } from '@keetanetwork/keetanet-client/client/builder.js';
 import { objectToSignable } from '../../lib/utils/signing.js';
@@ -1312,7 +1312,7 @@ export type KeetaAssetMovementAnchorUserAction = ({
 	intermediates?: Certificate[];
 } | {
 	type: 'grant-permission';
-	permissionToGrant: Omit<ACLRow, 'target' | 'entity'> & Partial<Pick<ACLRow, 'target' | 'entity'>>;
+	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
 }) & {
 	details?: ClientRenderableContent;
 }

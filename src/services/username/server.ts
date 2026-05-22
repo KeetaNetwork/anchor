@@ -304,7 +304,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['username']>[string]> {
 		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['username']>[string]['operations'] = {
-			resolve: (new URL('/api/resolve/{toResolve}', this.url)).toString()
+			resolve: (new URL('/api/resolve', this.url)).toString() + '/{toResolve}'
 		};
 
 		const authentication: ServiceMetadataAuthenticationType = {
