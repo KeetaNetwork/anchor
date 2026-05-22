@@ -1254,6 +1254,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						const result = quotesOrEstimates[0];
 
+						if (!result.isQuote && result.estimate.canPerformExchange === false) {
+							throw(new Error(`FX estimate from provider ${step.providerID} indicates exchange cannot be performed`));
+						}
+
 						const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
 
 						let valueIn;
