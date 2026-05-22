@@ -1345,7 +1345,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								// initiateTransfer on N+1, whose value depends on our valueOut.
 								// Simulate this step first to predict valueOut without needing a
 								// recipient, then stash it so N+1 uses it instead of recursing back.
-								if (nextPathStep.type === 'assetMovement') {
+								if (nextPathStep && await provider.isOperationSupported('simulateTransfer')) {
 									const simulated = await provider.simulateTransfer({
 										account: signer,
 										asset: assetPair,
