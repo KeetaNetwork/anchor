@@ -399,6 +399,12 @@ class AnchorGraph {
 				return(null);
 			}
 
+			const operations = await service.operations('object');
+			if (!operations.createExchange) {
+				this.logger?.debug('AnchorGraph::computeFXNodes', `FX service ${providerID} does not support createExchange operation, skipping`);
+				return(null);
+			}
+
 			const pathNodes = await Promise.all(fromEntries.map(async function(fromEntry) {
 				const pathNodesResult: GraphNodeLike[] = [];
 
