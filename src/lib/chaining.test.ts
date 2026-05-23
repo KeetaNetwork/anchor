@@ -466,9 +466,18 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 										throw(new KeetaAnchorUserError(`Invalid transfer amount: expected ${value}, got ${op.amount}`));
 									}
 
+									const withdrawTxId = `withdraw-${txId}`;
 									const existing = transferStatuses.get(txId);
 									if (existing && existing.status !== 'COMPLETE') {
-										transferStatuses.set(txId, { ...existing, status: 'COMPLETE', updatedAt: new Date().toISOString() });
+										transferStatuses.set(txId, {
+											...existing,
+											status: 'COMPLETE',
+											updatedAt: new Date().toISOString(),
+											to: {
+												...existing.to,
+												transactions: { withdraw: { id: withdrawTxId, nonce: '0' }}
+											}
+										});
 									}
 
 									/*
@@ -479,7 +488,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 									const meta = addresses.get(recipientAddress);
 									if (meta) {
 										const list = transactionsByAddress.get(recipientAddress) ?? [];
-										list.push(buildTxRecord({
+										const forwarded = buildTxRecord({
 											id: `persistentForwarding-tx-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 											status: 'COMPLETE',
 											asset: meta.asset,
@@ -487,7 +496,12 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 											toLocation: convertAssetLocationToString(meta.destinationLocation),
 											fromValue: value.toString(),
 											toValue: value.toString()
-										}));
+										});
+										forwarded.from.transactions = {
+											...forwarded.from.transactions,
+											persistentForwarding: { id: withdrawTxId, nonce: '0' }
+										};
+										list.push(forwarded);
 										transactionsByAddress.set(recipientAddress, list);
 									}
 
@@ -642,9 +656,33 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 						const found = transactionsByAddress.get(pf.persistentAddress) ?? [];
 						transactions.push(...found);
 					}
+
+					const txFilters = request.transactions;
+					let filtered = transactions;
+					if (txFilters && txFilters.length > 0) {
+						const wantedIds = new Set(txFilters
+							.map(f => f.transaction.id)
+							.filter((id): id is string => typeof id === 'string'));
+
+						filtered = transactions.filter(tx => {
+							const fromIds = [
+								tx.from.transactions.persistentForwarding?.id,
+								tx.from.transactions.deposit?.id,
+								tx.from.transactions.finalization?.id
+							];
+							const toIds = [ tx.to.transactions.withdraw?.id ];
+							for (const id of [ ...fromIds, ...toIds ]) {
+								if (id && wantedIds.has(id)) {
+									return(true);
+								}
+							}
+							return(false);
+						});
+					}
+
 					return({
-						transactions,
-						total: transactions.length.toString()
+						transactions: filtered,
+						total: filtered.length.toString()
 					});
 				}
 			}

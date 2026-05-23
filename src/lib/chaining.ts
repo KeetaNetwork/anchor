@@ -1934,9 +1934,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 	}
 
+	/**
+	 * Wait for the forwarded transfer the bridge creates after observing the
+	 * prior step's withdraw deposit in the persistent-forwarding address.
+	 */
 	async #pollForwardedTransaction(
 		step: ChainStepResolutionForwarded,
-		sinceMs: number,
+		sourceTransaction: { location: AssetLocationLike; transaction: { id: string }},
 		options?: { intervalMs?: number; timeoutMs?: number }
 	): Promise<KeetaAssetMovementTransaction> {
 		const intervalMs = options?.intervalMs ?? 2000;
@@ -1963,7 +1967,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					persistentAddresses: [{
 						location: step.step.from.location,
 						persistentAddress: pfiAddress
-					}]
+					}],
+					transactions: [ sourceTransaction ]
 				});
 
 				transactions = response.transactions;
@@ -1971,29 +1976,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				this.logger?.debug('AnchorChainingPlan::pollForwardedTransaction', `listTransactions failed for PersistentForwardingRelay address ${pfiAddress}`, error);
 			}
 
-			const candidate = transactions.find(tx => {
-				if (tx.status !== 'COMPLETE') {
-					return(false);
-				}
-
-				const createdAtMs = new Date(tx.createdAt).getTime();
-				if (Number.isFinite(createdAtMs) && createdAtMs < sinceMs) {
-					return(false);
-				}
-
-				try {
-					return(BigInt(tx.from.value) === step.valueIn);
-				} catch {
-					return(false);
-				}
-			});
-
+			const candidate = transactions.find(tx => tx.status === 'COMPLETE');
 			if (candidate) {
 				return(candidate);
 			}
 
 			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} (expected from-value ${step.valueIn})`));
+				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
 			}
 
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
@@ -2033,14 +2022,17 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		this.#setState({ status: 'executing', completedSteps: [], currentStepIndex: 0 });
 
 		/*
-		 * Cutoff for matching forwarded transactions to this execution.
-		 */
-		const executeStartMs = Date.now();
-
-		/*
 		 * Actual output value from each completed step, used for equality checking.
 		 */
 		let prevActualValueOut: bigint | null = null;
+
+		/**
+		 * Source-tx anchor for the next forwarded step's poll. Populated only
+		 * when the prior step is an asset-movement transfer that produced a
+		 * withdraw transaction on its destination chain; reset for any step
+		 * type that cannot deposit into a persistent-forwarding address.
+		 */
+		let prevWithdrawTx: { location: AssetLocationLike; transaction: { id: string }} | null = null;
 
 		let index = 0;
 		try {
@@ -2074,14 +2066,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					const exchange = await step.result.createExchange();
 					await this.#pollExchangeStatus(exchange);
 					prevActualValueOut = step.valueOut;
+					prevWithdrawTx = null;
 					onStepCompleted({ type: 'fx', plan: step, exchange });
 				} else if (step.type === 'forwarded') {
-					/*
-					 * Observe the auto-forwarded transaction triggered by the prior
-					 * step's deposit into the persistent address.
-					 */
-					const observed = await this.#pollForwardedTransaction(step, executeStartMs);
+					if (!prevWithdrawTx) {
+						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
+					}
+
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx);
 					prevActualValueOut = BigInt(observed.to.value);
+					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
 				} else if (step.type === 'assetMovement' || step.type === 'keetaSend') {
 					if (step.usingInstruction.type === 'KEETA_SEND') {
@@ -2110,10 +2104,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					if (step.type === 'assetMovement') {
 						const status = await this.#pollTransferStatus(step.transfer);
 						prevActualValueOut = BigInt(status.transaction.to.value);
+						const withdraw = status.transaction.to.transactions.withdraw;
+						if (withdraw) {
+							prevWithdrawTx = {
+								location: step.step.to.location,
+								transaction: { id: withdraw.id }
+							};
+						} else {
+							prevWithdrawTx = null;
+						}
 						onStepCompleted({ type: 'assetMovement', plan: step });
 					} else if (step.type === 'keetaSend') {
-						// For a direct Keeta send, we don't have a transfer object to poll, so we optimistically assume it completes successfully after the authorized send. We could optionally add a polling mechanism here if the underlying client provides a way to check the status of a Keeta transfer.
+						/*
+						 * Direct Keeta send: optimistically treat as completed since
+						 * there is no provider transfer to poll. Cannot feed a forwarded
+						 * step because it does not produce a bridge withdraw.
+						 */
 						prevActualValueOut = step.valueIn;
+						prevWithdrawTx = null;
 						onStepCompleted({ type: 'keetaSend', plan: step });
 					} else {
 						assertNever(step);
