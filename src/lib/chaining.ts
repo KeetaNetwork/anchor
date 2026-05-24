@@ -1126,6 +1126,10 @@ class AnchorGraph {
 
 export interface ComputePlanOptions {
 	overrides?: AnchorChainingAccountOverrides;
+	/**
+	 * Limit the number of plans to calculate, defaults to 3
+	 */
+	limit?: number;
 }
 
 export class AnchorChainingPath {
@@ -2228,18 +2232,17 @@ export class AnchorChaining {
 			foundPaths = await this.graph.findPaths(input);
 		}
 
+		// Filter out paths with non-chain steps in intermediate positions
 		foundPaths = foundPaths?.filter(path => {
-			let foundNonChainLocation = false;
-			
-			for (const item of path) {
-				const toLocation = toAssetLocation(item.to.location);
-				if (toLocation.type !== 'chain') {
-					if (foundNonChainLocation) {
-						// Multiple bank locations in a path is not currently supported, as it complicates the forwarding logic.
-						return(false);
-					}
+			for (let i = 0; i < path.length - 1; i++) {
+				const item = path[i];
+				if (!item) {
+					continue;
+				}
 
-					foundNonChainLocation = true;
+				const toLocation = toAssetLocation(item.to.location);
+				if (toLocation.type !== 'chain' && i < path.length - 1) {
+					return(false);
 				}
 			}
 
@@ -2268,14 +2271,22 @@ export class AnchorChaining {
 			return(null);
 		}
 
-		const result = await Promise.allSettled(paths.map(async function(path) {
+		const limit = options?.limit ?? 3;
+
+		let usingPaths = paths.sort((a, b) => a.path.length - b.path.length);
+
+		if (usingPaths.length > limit) {
+			usingPaths = usingPaths.slice(0, limit);
+		}
+
+		const result = await Promise.allSettled(usingPaths.map(async function(path) {
 			return(await AnchorChainingPlan.create(path, options));
 		}));
 
 		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
 
-		for (let i = 0; i < paths.length; i++) {
-			const path = paths[i];
+		for (let i = 0; i < usingPaths.length; i++) {
+			const path = usingPaths[i];
 			const plan = result[i];
 
 			if (!path || !plan) {
