@@ -2242,6 +2242,8 @@ export class AnchorChaining {
 					foundNonChainLocation = true;
 				}
 			}
+
+			return(true);
 		});
 
 		if (foundPaths.length === 0) {
