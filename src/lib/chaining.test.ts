@@ -741,6 +741,12 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 					]
 				}
 			],
+			async createPersistentForwarding() {
+				throw(new Error('getTransferStatus not used in metadata tests'));
+			},
+			async initiateTransfer() {
+				throw(new Error('getTransferStatus not used in metadata tests'));
+			},
 
 			async getTransferStatus() {
 				return({
@@ -828,6 +834,12 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 						updatedAt: new Date().toISOString()
 					}
 				})
+			},
+			async createPersistentForwarding() {
+				throw(new Error('getTransferStatus not used in metadata tests'));
+			},
+			async initiateTransfer() {
+				throw(new Error('getTransferStatus not used in metadata tests'));
 			}
 		}
 	});
@@ -2322,6 +2334,12 @@ describe('AnchorChainingAssetInfo metadata', function() {
 					}
 				},
 				async getTransferStatus() {
+					throw(new Error('getTransferStatus not used in metadata tests'));
+				},
+				async createPersistentForwarding() {
+					throw(new Error('getTransferStatus not used in metadata tests'));
+				},
+				async initiateTransfer() {
 					throw(new Error('getTransferStatus not used in metadata tests'));
 				}
 			}
