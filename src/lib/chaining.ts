@@ -626,6 +626,8 @@ class AnchorGraph {
 		}
 
 		const providerResults = await Promise.all(Object.entries(assetMovementServices).map(async ([ providerID, service ]) => {
+			const supportedOperationsMetadata = await service.operations('object');
+
 			const supportedAssetsEntries = await service.supportedAssets('array');
 
 			if (!supportedAssetsEntries) {
@@ -647,6 +649,20 @@ class AnchorGraph {
 						this.#computeAssetMovementPairSide(pairResolved[1])
 					]);
 
+					function getProviderSupportedOperationsForRail(railSpecific?: RailSupportedOperations): RailSupportedOperations {
+						const retval: RailSupportedOperations = {
+							createPersistentForwarding: supportedOperationsMetadata.createPersistentForwarding !== undefined,
+							initiateTransfer: supportedOperationsMetadata.initiateTransfer !== undefined
+						};
+
+						if (railSpecific) {
+							retval.createPersistentForwarding = railSpecific.createPersistentForwarding ?? false;
+							retval.initiateTransfer = railSpecific.initiateTransfer ?? false;
+						}
+
+						return(retval);
+					}
+
 					const pathNodes: GraphNodeLike[] = [];
 					for (const [ src, dest ] of [
 						[ fromResolved, toResolved ],
@@ -658,8 +674,8 @@ class AnchorGraph {
 							 * initiate a transfer and also cannot create a
 							 * persistent forwarding address.
 							 */
-							const inboundOps = inboundRail.supportedOperations;
-							if (inboundOps?.initiateTransfer === false && inboundOps.createPersistentForwarding !== true) {
+							const inboundSupportedOperations = getProviderSupportedOperationsForRail(inboundRail.supportedOperations);
+							if (inboundSupportedOperations.initiateTransfer === false && inboundSupportedOperations.createPersistentForwarding === false) {
 								this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `Skipping ${providerID} edge from ${convertAssetLocationToString(src.location)} via rail ${inboundRail.rail}: neither initiateTransfer nor createPersistentForwarding supported`);
 								continue;
 							}
@@ -672,13 +688,13 @@ class AnchorGraph {
 										asset: src.id,
 										location: src.location,
 										rail: inboundRail.rail,
-										...(inboundRail.supportedOperations ? { supportedOperations: inboundRail.supportedOperations } : {})
+										supportedOperations: getProviderSupportedOperationsForRail(inboundRail.supportedOperations)
 									},
 									to: {
 										asset: dest.id,
 										location: dest.location,
 										rail: outboundRail.rail,
-										...(outboundRail.supportedOperations ? { supportedOperations: outboundRail.supportedOperations } : {})
+										supportedOperations: getProviderSupportedOperationsForRail(outboundRail.supportedOperations)
 									}
 								});
 							}
