@@ -1936,13 +1936,17 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
-		options?: { intervalMs?: number; timeoutMs?: number }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
+			if (options?.abortSignal?.aborted) {
+				throw(new Error(`Aborted while waiting for transfer ${transfer.transferId} to complete`));
+			}
+
 			const status = await transfer.getTransferStatus();
 			if (status.transaction.status === 'COMPLETE') {
 				return(status);
@@ -1961,7 +1965,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	async #pollForwardedTransaction(
 		step: ChainStepResolutionForwarded,
 		sourceTransaction: { location: AssetLocationLike; transaction: { id: string }},
-		options?: { intervalMs?: number; timeoutMs?: number }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<KeetaAssetMovementTransaction> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
@@ -1980,6 +1984,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}, this.#options?.overrides);
 
 		while (true) {
+			if (options?.abortSignal?.aborted) {
+				throw(new Error(`Aborted while waiting for forwarded transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
+			}
+
 			let transactions: KeetaAssetMovementTransaction[] = [];
 			try {
 				const response = await provider.listTransactions({
@@ -2011,13 +2019,17 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollExchangeStatus(
 		exchange: FXExchange,
-		options?: { intervalMs?: number; timeoutMs?: number }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<Awaited<ReturnType<FXExchange['getExchangeStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
+			if (options?.abortSignal?.aborted) {
+				throw(new Error(`Aborted while waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
+			}
+
 			const status = await exchange.getExchangeStatus();
 			if (status.status === 'completed') {
 				return(status);
@@ -2033,7 +2045,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 	}
 
-	async execute(options?: { requireSendAuth?: boolean }): Promise<AnchorChainingPathExecuteResult> {
+	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
 		}
@@ -2057,6 +2069,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		let index = 0;
 		try {
 			for (index = 0; index < this.plan.steps.length; index++) {
+				if (options?.abortSignal?.aborted) {
+					throw(new Error(`Execution aborted`));
+				}
+
 				const onStepCompleted = (step: ExecutedStep) => {
 					executedSteps.push(step);
 					this.#emit('stepExecuted', step, index);
@@ -2093,7 +2109,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 					}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx);
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, {
+						...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
+					});
 					prevActualValueOut = BigInt(observed.to.value);
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
@@ -2122,7 +2140,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 
 					if (step.type === 'assetMovement') {
-						const status = await this.#pollTransferStatus(step.transfer);
+						const status = await this.#pollTransferStatus(step.transfer,  {
+							...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
+						});
 						prevActualValueOut = BigInt(status.transaction.to.value);
 						const withdraw = status.transaction.to.transactions.withdraw;
 						if (withdraw) {
