@@ -2228,6 +2228,22 @@ export class AnchorChaining {
 			foundPaths = await this.graph.findPaths(input);
 		}
 
+		foundPaths = foundPaths?.filter(path => {
+			let foundNonChainLocation = false;
+			
+			for (const item of path) {
+				const toLocation = toAssetLocation(item.to.location);
+				if (toLocation.type !== 'chain') {
+					if (foundNonChainLocation) {
+						// Multiple bank locations in a path is not currently supported, as it complicates the forwarding logic.
+						return(false);
+					}
+
+					foundNonChainLocation = true;
+				}
+			}
+		});
+
 		if (foundPaths.length === 0) {
 			return(null);
 		}
