@@ -2293,21 +2293,60 @@ export class AnchorChaining {
 
 		const limit = options?.limit ?? 3;
 
-		let usingPaths = paths.sort((a, b) => a.path.length - b.path.length);
+		const sortedPaths = paths.sort((a, b) => a.path.length - b.path.length);
 
-		if (usingPaths.length > limit) {
-			usingPaths = usingPaths.slice(0, limit);
+		let successCount = 0;
+		let lowestStepsSuccessCount = Infinity;
+		let lastAttemptedPathIdx = -1;
+
+		const maxAttemptLoops = 3;
+		let currentAttemptLoop = 0;
+
+		const allOutput: PromiseSettledResult<AnchorChainingPlan>[] = [];
+
+		while (successCount < limit && lastAttemptedPathIdx < sortedPaths.length - 1 && currentAttemptLoop < maxAttemptLoops) {
+			currentAttemptLoop++;
+
+			const pathsToTry = sortedPaths.slice(lastAttemptedPathIdx + 1, lastAttemptedPathIdx + 1 + (limit - successCount));
+
+			if (pathsToTry.length === 0 || !pathsToTry[0]) {
+				break;
+			}
+
+			if (pathsToTry[0].path.length > lowestStepsSuccessCount) {
+				break;
+			}
+
+			const currentTry = await Promise.allSettled(pathsToTry.map(async function(path) {
+				return(await AnchorChainingPlan.create(path, options));
+			}));
+
+			allOutput.push(...currentTry);
+
+			for (let i = 0; i < currentTry.length; i++) {
+				const result = currentTry[i];
+				const path = pathsToTry[i];
+
+				if (!result || !path) {
+					continue;
+				}
+				
+				if (result.status === 'fulfilled') {
+					successCount++;
+					if (path && path.path.length < lowestStepsSuccessCount) {
+						lowestStepsSuccessCount = path.path.length;
+					}
+				}
+			}
+
+			lastAttemptedPathIdx += pathsToTry.length;
 		}
-
-		const result = await Promise.allSettled(usingPaths.map(async function(path) {
-			return(await AnchorChainingPlan.create(path, options));
-		}));
 
 		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
 
-		for (let i = 0; i < usingPaths.length; i++) {
-			const path = usingPaths[i];
-			const plan = result[i];
+		for (let i = 0; i < allOutput.length; i++) {
+			const path = sortedPaths[i];
+			const plan = allOutput[i];
 
 			if (!path || !plan) {
 				continue;
