@@ -939,7 +939,7 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 			providerID: 'BankAnchor',
 			type: 'assetMovement',
 			from: { asset: 'USD', location: 'bank-account:us', rail: 'ACH', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS },
-			to:   { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
+			to: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
 		},
 		{
 			from: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND' },
@@ -951,7 +951,7 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 			providerID: 'BankAnchor',
 			type: 'assetMovement',
 			from: { asset: tokens.EURC, location: keetaLocation, rail: 'KEETA_SEND', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS },
-			to:   { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
+			to: { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
 		}
 	])).toEqual(toJSONSerializable(path.path));
 });
