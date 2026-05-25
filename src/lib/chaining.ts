@@ -1310,8 +1310,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!scanStep || scanStep.type !== 'assetMovement') {
 				continue;
 			}
-			if (scanStep.from.supportedOperations?.initiateTransfer !== false) {
+
+			/**
+			 * PFR is selected in two cases:
+			 *   (a) the source rail explicitly cannot accept a managed transfer.
+			 *   (b) the prior step is also an asset-movement step (AMP -> AMP
+			 *       transition) and the source rail supports PFR.
+			 */
+			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
+			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
+			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
+			const initiateForbidden = scanStep.from.supportedOperations?.initiateTransfer === false;
+
+			const shouldUsePFR = initiateForbidden || (isAmpToAmpTransition && pfrSupported);
+			if (!shouldUsePFR) {
 				continue;
+			}
+			if (!pfrSupported) {
+				throw(new Error(`Asset movement provider ${scanStep.providerID} source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
 			}
 
 			if (scanIndex !== this.path.length - 1) {
@@ -2138,7 +2154,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						});
 					} else if (step.usingInstruction.type === 'EVM_SEND') {
 						/* For EVM Sends for now we assume the last step sent to this address */
-						this.logger?.debug(`AnchorChainingPlan::execute`, `Executing EVM_SEND instruction for step ${index} by sending to address ${step.usingInstruction.sendToAddress} with value ${step.usingInstruction.value} and token ${step.usingInstruction.tokenAddress}`);						
+						this.logger?.debug(`AnchorChainingPlan::execute`, `Executing EVM_SEND instruction for step ${index} by sending to address ${step.usingInstruction.sendToAddress} with value ${step.usingInstruction.value} and token ${step.usingInstruction.tokenAddress}`);
 					} else {
 						throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
 					}
@@ -2334,7 +2350,7 @@ export class AnchorChaining {
 				if (!result || !path) {
 					continue;
 				}
-				
+
 				if (result.status === 'fulfilled') {
 					successCount++;
 					if (path && path.path.length < lowestStepsSuccessCount) {
