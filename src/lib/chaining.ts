@@ -2138,7 +2138,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						});
 					} else if (step.usingInstruction.type === 'EVM_SEND') {
 						/* For EVM Sends for now we assume the last step sent to this address */
-						this.logger?.debug(`AnchorChainingPlan::execute`, `Executing EVM_SEND instruction for step ${index} by sending to address ${step.usingInstruction.sendToAddress} with value ${step.usingInstruction.value} and token ${step.usingInstruction.tokenAddress}`);						
+						this.logger?.debug(`AnchorChainingPlan::execute`, `Executing EVM_SEND instruction for step ${index} by sending to address ${step.usingInstruction.sendToAddress} with value ${step.usingInstruction.value} and token ${step.usingInstruction.tokenAddress}`);
 					} else {
 						throw(new Error(`Unsupported instruction type ${step.usingInstruction.type} for user-initiated transfer at step ${index}`));
 					}
@@ -2334,7 +2334,7 @@ export class AnchorChaining {
 				if (!result || !path) {
 					continue;
 				}
-				
+
 				if (result.status === 'fulfilled') {
 					successCount++;
 					if (path && path.path.length < lowestStepsSuccessCount) {
