@@ -2091,10 +2091,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				// different amount than was negotiated in computeSteps.
 				if (index > 0 && prevActualValueOut !== null) {
 					if (prevActualValueOut !== step.valueIn) {
-						throw(new Error(
-							`Value mismatch at step ${index}: ` +
-							`expected ${step.valueIn} but previous step produced ${prevActualValueOut}`
-						));
+						if (prevActualValueOut < step.valueIn) {
+							throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${step.valueIn} but previous step produced ${prevActualValueOut}`));
+						} else {
+							this.logger?.debug(`AnchorChainingPlan::execute`, `Value mismatch at step ${index} is non-critical since previous step produced more (${prevActualValueOut}) than expected (${step.valueIn}), proceeding with execution`);
+						}
 					}
 				}
 
