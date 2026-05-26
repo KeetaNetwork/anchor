@@ -173,6 +173,11 @@ export default {
 				'sada',
 				'venmo',
 				'duit',
+				'Burkina',
+				'Faso',
+				'Rica',
+				'STANBIC',
+				'ZANACO',
 				'nric'
 			]
 		},
