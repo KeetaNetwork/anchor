@@ -957,46 +957,47 @@ class AnchorGraph {
 		}
 	}
 
-	async #attachMetadata(assetInfo: AnchorChainingAssetInfo, options?: AnchorChainingWithMetadataOptions): Promise<AnchorChainingAssetInfoWithMetadata> {
-		if (!isExternalChainAsset(assetInfo.asset)) {
-			return(assetInfo);
+	async getExternalAssetMetadata(
+		asset: AnchorChainingAssetInfo['asset'],
+		location: AnchorChainingAssetInfo['location'],
+		providerID?: string
+	):  Promise<AnchorTokenLocationMetadata | undefined> {
+		if (!isExternalChainAsset(asset)) {
+			return(undefined);
 		}
 
-		const providers = await this.getAssetMovementProvidersForAsset(assetInfo.asset, assetInfo.location);
+		const providers = await this.getAssetMovementProvidersForAsset(asset, location);
 		if (!providers) {
-			return(assetInfo);
+			return(undefined);
 		}
 
-		if (options?.providerID) {
-			const found = providers[options.providerID];
+		if (providerID) {
+			const found = providers[providerID];
 			if (!found) {
-				return(assetInfo);
+				return(undefined);
 			}
-
-			const metadata = found.provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
-			if (!metadata) {
-				return(assetInfo);
-			}
-
-			return({
-				...assetInfo,
-				metadata
-			});
+			return(found.provider.getAssetMetadataForLocation(location, asset) ?? undefined);
 		}
 
 		for (const { provider } of Object.values(providers)) {
-			const metadata = provider.getAssetMetadataForLocation(assetInfo.location, assetInfo.asset);
-			if (!metadata) {
-				continue;
+			const metadata = provider.getAssetMetadataForLocation(location, asset);
+			if (metadata) {
+				return(metadata);
 			}
-
-			return({
-				...assetInfo,
-				metadata
-			});
 		}
 
-		return(assetInfo)
+		return(undefined);
+	}
+
+	async #attachMetadata(
+		assetInfo: AnchorChainingAssetInfo,
+		options?: AnchorChainingWithMetadataOptions
+	): Promise<AnchorChainingAssetInfoWithMetadata> {
+		const metadata = await this.getExternalAssetMetadata(assetInfo.asset, assetInfo.location, options?.providerID);
+		if (!metadata) {
+			return(assetInfo);
+		}
+		return({ ...assetInfo, metadata });
 	}
 
 	async resolveAssetsWithMetadata(
