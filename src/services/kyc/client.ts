@@ -273,6 +273,22 @@ class KeetaKYCVerification {
 			...this.request
 		}));
 	}
+
+	/**
+	 * Wait for the certificates to be available, polling at the given interval
+	 * and timing out after the given timeout period.
+	 */
+	async waitForCertificates(pollInterval: number = 500, timeout: number = 600000): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
+		for (const startTime = Date.now(); Date.now() - startTime < timeout; ) {
+			try {
+				return(await this.getCertificates());
+			} catch (getCertificatesError) {
+				/* XXX:TODO */
+				throw(getCertificatesError);
+			}
+		}
+		throw(new Error('Timeout waiting for KYC certificates'));
+	}
 }
 
 /**
