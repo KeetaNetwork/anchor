@@ -42,6 +42,11 @@ export default {
 		...keetanetNodeWords,
 		// Anchor-specific words
 		'Anchor',
+		'Burkina',
+		'Faso',
+		'Rica',
+		'STANBIC',
+		'ZANACO',
 		'Anchorlist',
 		'ACCOUNTOWNERS',
 		'ASSETMOVEMENT',
