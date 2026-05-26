@@ -1,6 +1,6 @@
 import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
 
-const uaeBankAccountSchema: AccountAddressSchema = {
+const aeBankAccountSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
@@ -45,4 +45,4 @@ const uaeBankAccountSchema: AccountAddressSchema = {
 	}
 }
 
-export default uaeBankAccountSchema;
+export default aeBankAccountSchema;
