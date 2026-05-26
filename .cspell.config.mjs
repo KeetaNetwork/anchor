@@ -42,11 +42,6 @@ export default {
 		...keetanetNodeWords,
 		// Anchor-specific words
 		'Anchor',
-		'Burkina',
-		'Faso',
-		'Rica',
-		'STANBIC',
-		'ZANACO',
 		'Anchorlist',
 		'ACCOUNTOWNERS',
 		'ASSETMOVEMENT',
@@ -178,6 +173,11 @@ export default {
 				'sada',
 				'venmo',
 				'duit',
+				'Burkina',
+				'Faso',
+				'Rica',
+				'STANBIC',
+				'ZANACO',
 				'nric'
 			]
 		},
