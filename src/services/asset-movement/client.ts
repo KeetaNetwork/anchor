@@ -988,7 +988,11 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 						location: convertAssetLocationToString(body.to.location),
 						userAddress: body.to.userAddress,
 						asset: body.to.asset ? convertAssetSearchInputToCanonical(body.to.asset) : undefined
-					} : undefined
+					} : undefined,
+					transactions: body.transactions?.map(tx => ({
+						location: convertAssetLocationToString(tx.location),
+						transaction: tx.transaction
+					}))
 				});
 			},
 			body: request,
