@@ -6,6 +6,7 @@ import { asleep } from './utils/asleep.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
 import type { Block } from '@keetanetwork/keetanet-client/lib/block/index.js';
 import type { BlockOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
+import type { VoteStaple } from "@keetanetwork/keetanet-client/lib/vote.js";
 import type { KeetaAnchorQueueEntry } from './queue/index.js';
 import type { Logger } from './log/index.js';
 
@@ -299,7 +300,7 @@ test('Block Operation Runner shared Listener', async function() {
 	});
 
 	const operationRunner = new (class extends OperationQueueRunner<null, null> {
-		filterOperation(operation: BlockOperations, context: { block: Block; operationIndex: number; }): boolean {
+		filterOperation(operation: BlockOperations, context: { voteStaple: VoteStaple; block: Block; operationIndex: number; }): boolean {
 			// Only process operations from the head block
 			return(context.block.hash.compareHexString(headBlockHash));
 		}
