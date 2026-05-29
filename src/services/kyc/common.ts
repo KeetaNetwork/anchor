@@ -21,7 +21,7 @@ export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
 /**
  * Standard set of KYC verification statuses reported by a KYC Anchor.
  *
- * Providers report one of these values via the `getStatus` operation
+ * Providers report one of these values via the `getVerificationStatus` operation
  * and (where applicable) on certificate issuance flows.
  */
 export enum KYCVerificationStatus {
@@ -96,7 +96,7 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 	error: string;
 });
 
-export type KeetaKYCAnchorGetStatusResponse = ({
+export type KeetaKYCAnchorGetVerificationStatusResponse = ({
 	ok: true;
 	/**
 	 * The verification status reported by the KYC provider.

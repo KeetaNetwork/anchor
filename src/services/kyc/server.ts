@@ -10,7 +10,7 @@ import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse,
-	KeetaKYCAnchorGetStatusResponse
+	KeetaKYCAnchorGetVerificationStatusResponse
 } from './common.ts';
 import {
 	assertCreateVerificationRequest,
@@ -124,7 +124,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		 * If the verification ID is unknown, the implementation should
 		 * throw a `VerificationNotFound` error.
 		 */
-		getStatus: (verificationID: string, requester: { account: Account }) => Promise<Pick<Extract<KeetaKYCAnchorGetStatusResponse, { ok: true; }>, 'status' | 'requiresManualVerification'>>;
+		getVerificationStatus: (verificationID: string, requester: { account: Account }) => Promise<Pick<Extract<KeetaKYCAnchorGetVerificationStatusResponse, { ok: true; }>, 'status' | 'requiresManualVerification'>>;
 
 		/**
 		 * Country codes that this KYC provider can service (default is all country codes)
@@ -316,7 +316,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		/**
 		 * Get the verification status.
 		 */
-		routes['GET /api/getStatus/:verificationID'] = async function(params, _ignore_body, _ignore_headers, requestUrl) {
+		routes['GET /api/getVerificationStatus/:verificationID'] = async function(params, _ignore_body, _ignore_headers, requestUrl) {
 			const verificationID = params.get('verificationID');
 			if (verificationID === undefined) {
 				throw(new KeetaAnchorUserError('No verification ID provided'));
@@ -343,8 +343,8 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 				throw(new KeetaAnchorUserError('Invalid signature'));
 			}
 
-			const result = await config.kyc.getStatus(verificationID, { account });
-			const response: KeetaKYCAnchorGetStatusResponse = {
+			const result = await config.kyc.getVerificationStatus(verificationID, { account });
+			const response: KeetaKYCAnchorGetVerificationStatusResponse = {
 				ok: true,
 				status: result.status
 			};
@@ -394,7 +394,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
 			createVerification: (new URL('/api/createVerification', this.url)).toString(),
 			getCertificates: (new URL('/api/getCertificates', this.url)).toString() + '/{id}',
-			getStatus: (new URL('/api/getStatus', this.url)).toString() + '/{id}'
+			getVerificationStatus: (new URL('/api/getVerificationStatus', this.url)).toString() + '/{id}'
 		};
 
 		return({

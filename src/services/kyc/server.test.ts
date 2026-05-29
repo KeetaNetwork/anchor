@@ -50,7 +50,7 @@ test('KYC Anchor HTTP Server', async function() {
 					certificate: ''
 				}]);
 			},
-			getStatus: async function(verificationID, requester) {
+			getVerificationStatus: async function(verificationID, requester) {
 				if (verificationID !== knownVerificationID) {
 					throw(new Errors.VerificationNotFound());
 				}
