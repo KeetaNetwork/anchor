@@ -93,7 +93,7 @@ type ServiceMetadata = {
 					/**
 					 * Get the verification status
 					 */
-					getStatus?: string;
+					getVerificationStatus?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
