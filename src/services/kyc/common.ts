@@ -8,6 +8,7 @@ import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type { KYCVerificationStatus } from './status.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -17,20 +18,6 @@ export type Operations = NonNullable<ServiceMetadata['services']['kyc']>[string]
 export type OperationNames = keyof Operations;
 
 export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
-
-/**
- * Standard set of KYC verification statuses reported by a KYC Anchor.
- *
- * Providers report one of these values via the `getVerificationStatus` operation
- * and (where applicable) on certificate issuance flows.
- */
-export enum KYCVerificationStatus {
-	PASSED = 'pass',
-	FAILED = 'fail',
-	INCOMPLETE = 'incomplete',
-	PENDING = 'pending',
-	ERROR = 'error'
-}
 
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;

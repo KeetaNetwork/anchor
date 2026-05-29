@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
-import { Errors, KYCVerificationStatus } from './common.js';
+import { Errors } from './common.js';
+import { KYCVerificationStatus } from './status.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import Resolver from '../../lib/resolver.js';

@@ -10,7 +10,8 @@ import {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
 import type { KeetaKYCAnchorCreateVerificationRequest } from './common.ts';
-import { Errors as KeetaAnchorKYCErrors, KYCVerificationStatus } from './common.js';
+import { Errors as KeetaAnchorKYCErrors } from './common.js';
+import { KYCVerificationStatus } from './status.js';
 import * as util from 'util';
 
 const DEBUG = false;

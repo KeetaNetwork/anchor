@@ -17,7 +17,7 @@ import type {
 } from './common.ts';
 import type {
 	KYCVerificationStatus
-} from './common.js';
+} from './status.js';
 import {
 	verifySignedData,
 	generateSignedData
