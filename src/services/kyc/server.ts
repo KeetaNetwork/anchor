@@ -314,8 +314,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		};
 
 		/**
-		 * Get the verification status (without attempting
-		 * to fetch or issue the certificate)
+		 * Get the verification status.
 		 */
 		routes['GET /api/getStatus/:verificationID'] = async function(params, _ignore_body, _ignore_headers, requestUrl) {
 			const verificationID = params.get('verificationID');
