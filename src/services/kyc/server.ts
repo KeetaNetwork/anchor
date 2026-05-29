@@ -9,7 +9,8 @@ import {
 import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
-	KeetaKYCAnchorGetCertificateResponse
+	KeetaKYCAnchorGetCertificateResponse,
+	KeetaKYCAnchorGetVerificationStatusResponse
 } from './common.ts';
 import {
 	assertCreateVerificationRequest,
@@ -18,8 +19,10 @@ import {
 import {
 	verifySignedData
 } from './common.js';
+import type { Account } from '@keetanetwork/keetanet-client/lib/account.js';
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 
 const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
@@ -114,6 +117,14 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		 * verification ID is not found.
 		 */
 		getCertificates: (verificationID: string) => Promise<Extract<KeetaKYCAnchorGetCertificateResponse, { ok: true; }>['results']>;
+
+		/**
+		 * Retrieve the verification status for a verification.
+		 *
+		 * If the verification ID is unknown, the implementation should
+		 * throw a `VerificationNotFound` error.
+		 */
+		getVerificationStatus: (verificationID: string, requester: { account: Account }) => Promise<Pick<Extract<KeetaKYCAnchorGetVerificationStatusResponse, { ok: true; }>, 'status' | 'requiresManualVerification'>>;
 
 		/**
 		 * Country codes that this KYC provider can service (default is all country codes)
@@ -303,6 +314,50 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		};
 
 		/**
+		 * Get the verification status.
+		 */
+		routes['GET /api/getVerificationStatus/:verificationID'] = async function(params, _ignore_body, _ignore_headers, requestUrl) {
+			const verificationID = params.get('verificationID');
+			if (verificationID === undefined) {
+				throw(new KeetaAnchorUserError('No verification ID provided'));
+			}
+
+			const parsed = parseSignatureFromURL(requestUrl);
+			const signedField = parsed.signedField;
+			const account = parsed.account;
+			if (!signedField || !account) {
+				throw(new KeetaAnchorUserError('Missing signature'));
+			}
+
+			let valid: boolean;
+			try {
+				valid = await verifySignedData({
+					account: account.publicKeyString.get(),
+					signed: signedField
+				});
+			} catch {
+				valid = false;
+			}
+
+			if (!valid) {
+				throw(new KeetaAnchorUserError('Invalid signature'));
+			}
+
+			const result = await config.kyc.getVerificationStatus(verificationID, { account });
+			const response: KeetaKYCAnchorGetVerificationStatusResponse = {
+				ok: true,
+				status: result.status
+			};
+			if (result.requiresManualVerification !== undefined) {
+				response.requiresManualVerification = result.requiresManualVerification;
+			}
+
+			return({
+				output: JSON.stringify(response)
+			});
+		};
+
+		/**
 		 * Check if the KYC provider can
 		 * service a more specific locality
 		 * (optional)
@@ -333,18 +388,21 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	}
 
 	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['kyc']>[string]> {
+		const operations: NonNullable<ServiceMetadata['services']['kyc']>[string]['operations'] = {
+			// checkLocality: (new URL('/api/checkLocality', this.url)).toString(),
+			// getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
+			// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
+			createVerification: (new URL('/api/createVerification', this.url)).toString(),
+			getCertificates: (new URL('/api/getCertificates', this.url)).toString() + '/{id}',
+			getVerificationStatus: (new URL('/api/getVerificationStatus', this.url)).toString() + '/{id}'
+		};
+
 		return({
 			ca: this.ca.toPEM(),
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
-			operations: {
-				// checkLocality: (new URL('/api/checkLocality', this.url)).toString(),
-				// getEstimate: (new URL('/api/createEstimate', this.url)).toString(),
-				// notifyPayment: (new URL('/api/notifyPayment/{id}', this.url)).toString(),
-				createVerification: (new URL('/api/createVerification', this.url)).toString(),
-				getCertificates: (new URL('/api/getCertificates', this.url)).toString() + '/{id}'
-			}
+			operations
 		});
 	}
 }

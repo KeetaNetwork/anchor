@@ -12,12 +12,18 @@ import type {
 import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
-	KeetaKYCAnchorGetCertificateResponse
+	KeetaKYCAnchorGetCertificateResponse,
+	KeetaKYCAnchorGetVerificationStatusResponse
 } from './common.ts';
+import type {
+	KYCVerificationStatus
+} from './common.js';
 import {
 	verifySignedData,
 	generateSignedData
 } from './common.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
+import { SignData, type SignableAccount } from '../../lib/utils/signing.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
@@ -70,6 +76,14 @@ type KeetaKYCAnchorClientGetCertificateResponse = ({
 	reason: string;
 });
 
+/**
+ * The response type for {@link KeetaKYCAnchorClient['getVerificationStatus']()}.
+ */
+type KeetaKYCAnchorClientGetVerificationStatusResponse = {
+	status: KYCVerificationStatus;
+	requiresManualVerification?: boolean;
+};
+
 type KeetaKYCAnchorClientCreateVerificationRequest = Omit<KeetaKYCAnchorCreateVerificationRequest, 'signed' | 'account'> & {
 	account: InstanceType<typeof KeetaNetLib.Account>;
 };
@@ -116,8 +130,9 @@ type GetEndpointsResult = {
 
 const isKeetaKYCAnchorCreateVerificationResponse = createIs<KeetaKYCAnchorCreateVerificationResponse>();
 const isKeetaKYCAnchorGetCertificateResponse = createIs<KeetaKYCAnchorGetCertificateResponse>();
+const isKeetaKYCAnchorGetVerificationStatusResponse = createIs<KeetaKYCAnchorGetVerificationStatusResponse>();
 
-async function getEndpoints(resolver: Resolver, request: KeetaKYCAnchorCreateVerificationRequest): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes'>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
 		countryCodes: request.countryCodes
 	});
@@ -190,8 +205,9 @@ type KeetaKYCAnchorCommonConfig = {
 	id: ProviderID;
 	serviceInfo: KeetaKYCVerificationServiceInfo;
 	request: KeetaKYCAnchorCreateVerificationRequest;
+	account: SignableAccount;
 	client: KeetaKYCAnchorClient;
-	operations: NonNullable<Pick<KeetaKYCAnchorOperations, 'createVerification' | 'getCertificates'>>;
+	operations: NonNullable<Pick<KeetaKYCAnchorOperations, 'createVerification' | 'getCertificates' | 'getVerificationStatus'>>;
 	logger?: Logger | undefined;
 };
 
@@ -203,6 +219,7 @@ class KeetaKYCVerification {
 	readonly id: RequestID;
 	private readonly serviceInfo: KeetaKYCAnchorCommonConfig['serviceInfo'];
 	private readonly request: KeetaKYCAnchorCommonConfig['request'];
+	private readonly account: KeetaKYCAnchorCommonConfig['account'];
 	private readonly logger?: KeetaKYCAnchorCommonConfig['logger'] | undefined;
 	private readonly client: KeetaKYCAnchorCommonConfig['client'];
 	private readonly response: Extract<KeetaKYCAnchorCreateVerificationResponse, { ok: true }>;
@@ -213,6 +230,7 @@ class KeetaKYCVerification {
 		this.id = response.id as RequestID;
 		this.serviceInfo = args.serviceInfo;
 		this.request = args.request;
+		this.account = args.account;
 		this.client = args.client;
 		this.logger = args.logger;
 		this.response = response;
@@ -273,6 +291,14 @@ class KeetaKYCVerification {
 			...this.request
 		}));
 	}
+
+	getVerificationStatus(): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
+		return(this.client.getVerificationStatus(this.providerID, {
+			id: this.id,
+			account: this.account,
+			countryCodes: this.request.countryCodes
+		}));
+	}
 }
 
 /**
@@ -282,9 +308,10 @@ class KeetaKYCProvider {
 	readonly id: ProviderID;
 	private readonly serviceInfo: KeetaKYCVerificationServiceInfo;
 	private readonly request: KeetaKYCAnchorCreateVerificationRequest;
+	private readonly account: SignableAccount;
 	private readonly logger?: Logger | undefined;
 	private readonly client: KeetaKYCAnchorClient;
-	private readonly operations: NonNullable<Pick<KeetaKYCAnchorOperations, 'createVerification' | 'getCertificates'>>;
+	private readonly operations: NonNullable<Pick<KeetaKYCAnchorOperations, 'createVerification' | 'getCertificates' | 'getVerificationStatus'>>;
 
 	private cachedCA?: KYCCertificate;
 
@@ -292,6 +319,7 @@ class KeetaKYCProvider {
 		this.id = args.id;
 		this.serviceInfo = args.serviceInfo;
 		this.request = args.request;
+		this.account = args.account;
 		this.client = args.client;
 		this.operations = args.operations;
 		this.logger = args.logger;
@@ -318,6 +346,7 @@ class KeetaKYCProvider {
 			id: this.id,
 			serviceInfo: this.serviceInfo,
 			request: this.request,
+			account: this.account,
 			client: this.client,
 			operations: this.operations,
 			logger: this.logger
@@ -366,8 +395,9 @@ class KeetaKYCAnchorClient {
 			 */
 			const createVerification = await endpoints.createVerification;
 			const getCertificates = await endpoints.getCertificates;
-			if (createVerification === undefined || getCertificates === undefined) {
-				this.logger?.warn(`KYC verification provider ${id} does not support required operations (createVerification, getCertificates)`);
+			const getVerificationStatus = await endpoints.getVerificationStatus;
+			if (createVerification === undefined || getCertificates === undefined || getVerificationStatus === undefined) {
+				this.logger?.warn(`KYC verification provider ${id} does not support required operations (createVerification, getCertificates, getVerificationStatus)`);
 
 				return(null);
 			}
@@ -382,11 +412,13 @@ class KeetaKYCAnchorClient {
 				id: providerID,
 				serviceInfo: serviceInfo,
 				request: signedRequest,
+				account: request.account.assertAccount(),
 				client: this,
 				logger: this.logger,
 				operations: {
 					createVerification,
-					getCertificates
+					getCertificates,
+					getVerificationStatus
 				}
 			}));
 		}));
@@ -488,6 +520,57 @@ class KeetaKYCAnchorClient {
 
 	async getSupportedCountries(): Promise<CurrencyInfo.Country[]> {
 		return(await this.resolver.listSupportedKYCCountries());
+	}
+
+	async getVerificationStatus(providerID: ProviderID, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes'> & { id: RequestID; account: SignableAccount; }): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
+		const endpoints = await getEndpoints(this.resolver, { countryCodes: request.countryCodes });
+		if (endpoints === null) {
+			throw(new Error('No KYC endpoints found for the given criteria'));
+		}
+
+		const providerEndpoints = endpoints[providerID];
+		if (providerEndpoints === undefined) {
+			throw(new Error(`No KYC endpoints found for provider ID: ${providerID}`));
+		}
+
+		const operations = providerEndpoints.operations;
+		const getVerificationStatus = (await operations.getVerificationStatus)?.({ id: request.id });
+		if (getVerificationStatus === undefined) {
+			throw(new Error('internal error: KYC verification service does not support getVerificationStatus operation'));
+		}
+
+		const signed = await SignData(request.account, []);
+		const signedURL = addSignatureToURL(getVerificationStatus, {
+			signedField: signed,
+			account: request.account
+		});
+
+		const response = await fetch(signedURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+		if (!response.ok) {
+			throw(new Error(`Failed to get verification status: ${response.statusText}`));
+		}
+
+		const responseJSON: unknown = await response.json();
+		if (!isKeetaKYCAnchorGetVerificationStatusResponse(responseJSON)) {
+			throw(new Error(`Invalid response from KYC status service: ${JSON.stringify(responseJSON)}`));
+		}
+		if (!responseJSON.ok) {
+			throw(new Error(`KYC status request failed: ${responseJSON.error}`));
+		}
+
+		const result: KeetaKYCAnchorClientGetVerificationStatusResponse = {
+			status: responseJSON.status
+		};
+		if (responseJSON.requiresManualVerification !== undefined) {
+			result.requiresManualVerification = responseJSON.requiresManualVerification;
+		}
+
+		return(result);
 	}
 
 	async getEstimate(..._ignore_args: unknown[]): Promise<never> {

@@ -10,7 +10,7 @@ import {
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
 import type { KeetaKYCAnchorCreateVerificationRequest } from './common.ts';
-import { Errors as KeetaAnchorKYCErrors } from './common.js';
+import { Errors as KeetaAnchorKYCErrors, KYCVerificationStatus } from './common.js';
 import * as util from 'util';
 
 const DEBUG = false;
@@ -124,6 +124,16 @@ test('KYC Anchor Client Test', async function() {
 					certificate: certificate,
 					intermediates: [kycCA.toPEM()]
 				}]);
+			},
+			getVerificationStatus: async function(verificationID, _ignore_requester) {
+				const request = verifications.get(verificationID);
+				if (request === undefined) {
+					throw(new KeetaAnchorKYCErrors.VerificationNotFound(`Verification ID ${verificationID} not found`));
+				}
+
+				return({
+					status: KYCVerificationStatus.PASSED
+				});
 			}
 		},
 		kycProviderURL: function(verificationID: string) {
@@ -231,59 +241,67 @@ test('KYC Anchor Client Test', async function() {
 	expect(checkIssuerCert.subject).toEqual('commonName=Intermediate/KYC CA');
 
 	while (true) {
-		const results = await verification.getCertificates();
-		if (!results.ok) {
-			await KeetaNet.lib.Utils.Helper.asleep(results.retryAfter);
+		const { status } = await verification.getVerificationStatus();
+		if (status === KYCVerificationStatus.PENDING || status === KYCVerificationStatus.INCOMPLETE) {
+			await KeetaNet.lib.Utils.Helper.asleep(500);
 			continue;
 		}
+		if (status !== KYCVerificationStatus.PASSED) {
+			throw(new Error(`KYC verification did not pass: ${status}`));
+		}
 
-		loggerBase?.log('Certificates:');
-		const output = (await Promise.all(results.results.map(async function(certificateGroup) {
-			let intermediates = certificateGroup.intermediates;
-			if (intermediates === undefined) {
-				intermediates = new Set();
-			}
-			const trustedCertificate = new KYCCertificate(certificateGroup.certificate.toPEM(), {
-				store: {
-					root: new Set([rootCAObject]),
-					intermediate: intermediates
-				},
-				/* If you remove this, you will not be able to retrieve the sensitive attributes */
-				subjectKey: account
-			});
-
-			let fullName: string;
-			if ('fullName' in trustedCertificate.attributes) {
-				if (trustedCertificate.attributes['fullName'].sensitive) {
-					try {
-						const result = await trustedCertificate.attributes['fullName'].value.getValue();
-						fullName = 'SENSITIVE: ' + result;
-					} catch {
-						fullName = 'SENSITIVE (unable to retrieve)';
-					}
-				} else {
-					// XXX:TODO Fix depth issue
-					// @ts-ignore
-					fullName = await trustedCertificate.getAttributeValue('fullName');
-				}
-			} else {
-				fullName = 'Not provided';
-			}
-
-			return(util.inspect({
-				certificate: trustedCertificate.toPEM(),
-				certificateValue: trustedCertificate,
-				intermediates: [...certificateGroup.intermediates?.values() ?? []].map(function(intermediate) {
-					return(intermediate.toPEM());
-				}),
-				chain: trustedCertificate.chain,
-				attributes: trustedCertificate.attributes,
-				fullName: fullName,
-				valid: trustedCertificate.checkValid()
-			}, { depth: null, colors: true }));
-		}))).join('\n\n');
-
-		loggerBase?.log(output);
 		break;
 	}
+
+	const certificateResults = await verification.getCertificates();
+	if (!certificateResults.ok) {
+		throw(new Error(`Failed to fetch certificates after passing status: ${certificateResults.reason}`));
+	}
+
+	loggerBase?.log('Certificates:');
+	const output = (await Promise.all(certificateResults.results.map(async function(certificateGroup) {
+		let intermediates = certificateGroup.intermediates;
+		if (intermediates === undefined) {
+			intermediates = new Set();
+		}
+		const trustedCertificate = new KYCCertificate(certificateGroup.certificate.toPEM(), {
+			store: {
+				root: new Set([rootCAObject]),
+				intermediate: intermediates
+			},
+			/* If you remove this, you will not be able to retrieve the sensitive attributes */
+			subjectKey: account
+		});
+
+		let fullName: string;
+		if ('fullName' in trustedCertificate.attributes) {
+			if (trustedCertificate.attributes['fullName'].sensitive) {
+				try {
+					const result = await trustedCertificate.attributes['fullName'].value.getValue();
+					fullName = 'SENSITIVE: ' + result;
+				} catch {
+					fullName = 'SENSITIVE (unable to retrieve)';
+				}
+			} else {
+				// XXX:TODO Fix depth issue
+				// @ts-ignore
+				fullName = await trustedCertificate.getAttributeValue('fullName');
+			}
+		} else {
+			fullName = 'Not provided';
+		}
+
+		return(util.inspect({
+			certificate: trustedCertificate.toPEM(),
+			certificateValue: trustedCertificate,
+			intermediates: [...certificateGroup.intermediates?.values() ?? []].map(function(intermediate) {
+				return(intermediate.toPEM());
+			}),
+			chain: trustedCertificate.chain,
+			attributes: trustedCertificate.attributes,
+			fullName: fullName,
+			valid: trustedCertificate.checkValid()
+		}, { depth: null, colors: true }));
+	}))).join('\n\n');
+	loggerBase?.log(output);
 }, 30000);
