@@ -18,6 +18,20 @@ export type OperationNames = keyof Operations;
 
 export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
 
+/**
+ * Standard set of KYC verification statuses reported by a KYC Anchor.
+ *
+ * Providers report one of these values via the `getStatus` operation
+ * and (where applicable) on certificate issuance flows.
+ */
+export enum KYCVerificationStatus {
+	PASSED = 'pass',
+	FAILED = 'fail',
+	INCOMPLETE = 'incomplete',
+	PENDING = 'pending',
+	ERROR = 'error'
+}
+
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;
 	account: ReturnType<InstanceType<typeof KeetaNet.lib.Account>['publicKeyString']['get']>;
@@ -77,6 +91,22 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 		certificate: string;
 		intermediates?: string[];
 	})[];
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaKYCAnchorGetStatusResponse = ({
+	ok: true;
+	/**
+	 * The verification status reported by the KYC provider.
+	 */
+	status: KYCVerificationStatus;
+	/**
+	 * Whether the verification requires manual review by the
+	 * KYC provider before a final determination can be made.
+	 */
+	requiresManualVerification?: boolean;
 } | {
 	ok: false;
 	error: string;

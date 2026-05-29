@@ -90,6 +90,10 @@ type ServiceMetadata = {
 					 * KYC verification
 					 */
 					getCertificates?: string;
+					/**
+					 * Get the verification status
+					 */
+					getStatus?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
