@@ -883,6 +883,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest = {
 	sourceLocation: AssetLocationLike;
 	asset: AssetOrPair;
 	outgoingRail?: Rail;
+	incomingRail?: Rail;
 } & ({
 	destinationLocation: AssetLocationLike;
 	destinationAddress: AddressResolved;
@@ -896,6 +897,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	sourceLocation: AssetLocationCanonical;
 	asset: AssetOrPairCanonical;
 	outgoingRail?: Rail | undefined;
+	incomingRail?: Rail | undefined;
 } & ({
 	destinationLocation: AssetLocationCanonical;
 	destinationAddress: AddressResolved;
@@ -908,6 +910,7 @@ export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSign
 		sourceLocation: convertAssetLocationInputToCanonical(input.sourceLocation),
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		outgoingRail: input.outgoingRail,
+		incomingRail: input.incomingRail,
 		...('destinationLocation' in input ? {
 			destinationLocation: convertAssetLocationInputToCanonical(input.destinationLocation),
 			destinationAddress: input.destinationAddress
