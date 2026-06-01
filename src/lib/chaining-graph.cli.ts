@@ -2,7 +2,7 @@ import type { Networks } from '@keetanetwork/keetanet-client/config/index.js';
 import type { GenericAccount, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { createAssert } from 'typia';
 import { assertNever } from './utils/never.js';
-import { KeetaNet } from '../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { getDefaultResolverConfig } from '../config.js';
 import { Resolver } from './index.js';
 import type { AnchorChainingAsset, GraphNodeLike } from './chaining.js';

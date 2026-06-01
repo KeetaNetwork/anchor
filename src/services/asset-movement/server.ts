@@ -1,7 +1,7 @@
 import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';

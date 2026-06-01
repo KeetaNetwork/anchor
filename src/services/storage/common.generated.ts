@@ -1,16 +1,10 @@
-import { createIs, createAssert } from 'typia';
+import { createIs } from 'typia';
 import type {
-	KeetaStorageAnchorPutRequest,
 	KeetaStorageAnchorPutResponse,
-	KeetaStorageAnchorGetRequest,
 	KeetaStorageAnchorGetResponse,
-	KeetaStorageAnchorDeleteRequest,
 	KeetaStorageAnchorDeleteResponse,
-	KeetaStorageAnchorSearchRequest,
 	KeetaStorageAnchorSearchResponse,
-	KeetaStorageAnchorQuotaRequest,
-	KeetaStorageAnchorQuotaResponse,
-	KeetaStorageAnchorUpdateMetadataRequest
+	KeetaStorageAnchorQuotaResponse
 } from './common.ts';
 
 export const isKeetaStorageAnchorPutResponse: (input: unknown) => input is KeetaStorageAnchorPutResponse = createIs<KeetaStorageAnchorPutResponse>();
@@ -19,14 +13,19 @@ export const isKeetaStorageAnchorDeleteResponse: (input: unknown) => input is Ke
 export const isKeetaStorageAnchorSearchResponse: (input: unknown) => input is KeetaStorageAnchorSearchResponse = createIs<KeetaStorageAnchorSearchResponse>();
 export const isKeetaStorageAnchorQuotaResponse: (input: unknown) => input is KeetaStorageAnchorQuotaResponse = createIs<KeetaStorageAnchorQuotaResponse>();
 
-export const assertKeetaStorageAnchorPutRequest: (input: unknown) => KeetaStorageAnchorPutRequest = createAssert<KeetaStorageAnchorPutRequest>();
-export const assertKeetaStorageAnchorPutResponse: (input: unknown) => KeetaStorageAnchorPutResponse = createAssert<KeetaStorageAnchorPutResponse>();
-export const assertKeetaStorageAnchorGetRequest: (input: unknown) => KeetaStorageAnchorGetRequest = createAssert<KeetaStorageAnchorGetRequest>();
-export const assertKeetaStorageAnchorGetResponse: (input: unknown) => KeetaStorageAnchorGetResponse = createAssert<KeetaStorageAnchorGetResponse>();
-export const assertKeetaStorageAnchorDeleteRequest: (input: unknown) => KeetaStorageAnchorDeleteRequest = createAssert<KeetaStorageAnchorDeleteRequest>();
-export const assertKeetaStorageAnchorDeleteResponse: (input: unknown) => KeetaStorageAnchorDeleteResponse = createAssert<KeetaStorageAnchorDeleteResponse>();
-export const assertKeetaStorageAnchorSearchRequest: (input: unknown) => KeetaStorageAnchorSearchRequest = createAssert<KeetaStorageAnchorSearchRequest>();
-export const assertKeetaStorageAnchorSearchResponse: (input: unknown) => KeetaStorageAnchorSearchResponse = createAssert<KeetaStorageAnchorSearchResponse>();
-export const assertKeetaStorageAnchorQuotaRequest: (input: unknown) => KeetaStorageAnchorQuotaRequest = createAssert<KeetaStorageAnchorQuotaRequest>();
-export const assertKeetaStorageAnchorQuotaResponse: (input: unknown) => KeetaStorageAnchorQuotaResponse = createAssert<KeetaStorageAnchorQuotaResponse>();
-export const assertKeetaStorageAnchorUpdateMetadataRequest: (input: unknown) => KeetaStorageAnchorUpdateMetadataRequest = createAssert<KeetaStorageAnchorUpdateMetadataRequest>();
+// Back-compat: server-only request/response validators were moved to
+// common.server.generated.ts to keep them out of client bundles. Re-exported here
+// (named, tree-shakeable) so existing './common.generated.js' imports keep resolving.
+export {
+	assertKeetaStorageAnchorPutRequest,
+	assertKeetaStorageAnchorPutResponse,
+	assertKeetaStorageAnchorGetRequest,
+	assertKeetaStorageAnchorGetResponse,
+	assertKeetaStorageAnchorDeleteRequest,
+	assertKeetaStorageAnchorDeleteResponse,
+	assertKeetaStorageAnchorSearchRequest,
+	assertKeetaStorageAnchorSearchResponse,
+	assertKeetaStorageAnchorQuotaRequest,
+	assertKeetaStorageAnchorQuotaResponse,
+	assertKeetaStorageAnchorUpdateMetadataRequest
+} from './common.server.generated.js';

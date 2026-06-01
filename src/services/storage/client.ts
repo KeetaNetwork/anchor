@@ -37,7 +37,7 @@ import {
 	CONTENT_TYPE_OCTET_STREAM,
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { getDefaultResolver } from '../../config.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
 import { createAssertEquals } from 'typia';

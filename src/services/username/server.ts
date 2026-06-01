@@ -1,4 +1,4 @@
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
@@ -16,11 +16,13 @@ import {
 	validateUsernameDefault,
 	Errors,
 	isKeetaNetPublicKeyString,
-	assertKeetaUsernameAnchorClaimRequestJSON,
 	getUsernameTransferSignable,
-	assertKeetaUsernameAnchorReleaseRequestJSON,
 	getUsernameReleaseSignable
 } from './common.js';
+import {
+	assertKeetaUsernameAnchorClaimRequestJSON,
+	assertKeetaUsernameAnchorReleaseRequestJSON
+} from './common.server.generated.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';

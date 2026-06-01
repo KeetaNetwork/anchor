@@ -5,8 +5,26 @@ import type { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/
 import { assertNever } from '../../lib/utils/never.js';
 import { KeetaAnchorCertificateRequiredError, KeetaAnchorUserError } from '../../lib/error.js';
 import { assertNotificationChannelType, assertNotificationSubscriptionType } from './common.generated.js';
-import { KeetaNet } from '../../client/index.js';
-export * from './common.generated.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
+// Explicit named re-exports (instead of `export *`) so bundlers can statically
+// tree-shake unused runtime validators. Client-safe validators are defined here;
+// server-only request validators live in common.server.generated.ts.
+export {
+	isKeetaNotificationAnchorListTargetsResponseJSON,
+	isKeetaNotificationAnchorRegisterTargetResponseJSON,
+	isKeetaNotificationAnchorDeleteTargetResponseJSON,
+	isKeetaNotificationAnchorCreateSubscriptionResponseJSON,
+	isKeetaNotificationAnchorDeleteSubscriptionResponseJSON,
+	isKeetaNotificationAnchorListSubscriptionsResponseJSON,
+	assertNotificationChannelType,
+	assertNotificationSubscriptionType,
+	assertKeetaNotificationAnchorListTargetsRequestJSON,
+	assertKeetaNotificationAnchorRegisterTargetRequestJSON,
+	assertKeetaNotificationAnchorDeleteTargetRequestJSON,
+	assertKeetaNotificationAnchorCreateSubscriptionRequestJSON,
+	assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON,
+	assertKeetaNotificationAnchorListSubscriptionsRequestJSON
+} from './common.generated.js';
 
 interface BaseNotificationChannelArguments<T extends string> {
 	type: T;
