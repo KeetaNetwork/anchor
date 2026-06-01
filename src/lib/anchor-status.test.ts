@@ -8,6 +8,8 @@ import type { KeetaAssetMovementTransaction, TransactionStatus } from '../servic
 import { AnchorTransactionStatus, isCompletedTransferStatus } from './anchor-status.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
 import { AnchorExternalBuilder } from './anchor-external.js';
+import { assertEncodedAnchorExternalEnvelopeV2 } from './anchor-external.generated.js';
+import { canonicalizeJson } from './utils/signing.js';
 
 const completedCases: { status: TransactionStatus; completed: boolean }[] = [
 	{ status: 'COMPLETE', completed: true },
@@ -175,4 +177,22 @@ test('AnchorTransactionStatus forwards the requester account when the provider r
 		kind: 'status',
 		status: { status: 'COMPLETE', transactionId: 'tx-1', transaction: fixture.transaction }
 	});
+});
+
+test('getStatusesFromExternal maps a malformed anchor id to a per-anchor error', async function() {
+	const fixture = await startStatusFixture(false);
+	await using server = fixture.server;
+	void server;
+
+	const valid = await new AnchorExternalBuilder()
+		.addAnchor(fixture.anchorAccount, { transactionId: 'tx-1' })
+		.build();
+
+	const decoded = assertEncodedAnchorExternalEnvelopeV2(JSON.parse(Buffer.from(valid, 'base64').toString('utf-8')));
+	const container = decoded.anchors[fixture.anchorAccount.publicKeyString.get()];
+	const tampered = canonicalizeJson({ version: decoded.version, anchors: { 'not-a-valid-account': container }});
+	const external = Buffer.from(tampered, 'utf-8').toString('base64');
+
+	const statuses = await fixture.anchorStatus.getStatusesFromExternal(external);
+	expect(statuses['not-a-valid-account']?.kind).toBe('error');
 });

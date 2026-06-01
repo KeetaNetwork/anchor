@@ -202,6 +202,12 @@ const misuseCases: MisuseCase[] = [
 		}
 	},
 	{
+		name: 'encryptFor is an empty list',
+		act: function() {
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { encryptFor: [] }));
+		}
+	},
+	{
 		name: 'binding with empty previousBlockHash',
 		act: function() {
 			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1, binding: { previousBlockHash: '', operationIndex: 0 }}));

@@ -420,6 +420,9 @@ export class AnchorExternalBuilder {
 		const binding = options?.binding;
 		const principals = options?.encryptFor;
 
+		if (principals !== undefined && principals.length === 0) {
+			throw(new KeetaAnchorError('addAnchor: encryptFor must contain at least one principal; omit it to keep the slice plaintext'));
+		}
 		if (signer !== undefined && signer.publicKeyString.get() !== anchorId) {
 			throw(new KeetaAnchorError('addAnchor: signer must be the same account the slice is filed under'));
 		}

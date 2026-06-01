@@ -183,10 +183,9 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 			return({ kind: 'unavailable' });
 		}
 
-		const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorId);
-
 		let status: StandardizedTransferStatus<Transaction> | null;
 		try {
+			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorId);
 			status = await this.getStatus(anchor, entry.transactionId, options);
 		} catch (error) {
 			return({ kind: 'error', error: error });
