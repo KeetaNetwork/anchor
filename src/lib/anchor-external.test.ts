@@ -274,7 +274,7 @@ function encodeOuter(outer: object): string {
  * Assemble a canonical outer envelope around prebuilt anchor slices.
  */
 function packOuter(anchors: { [anchorPublicKey: string]: string }): string {
-	const result = encodeOuter({ v: ANCHOR_EXTERNAL_VERSION, a: anchors });
+	const result = encodeOuter({ version: ANCHOR_EXTERNAL_VERSION, anchors: anchors });
 	return(result);
 }
 
@@ -297,18 +297,18 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 	},
 	{
 		name: 'legacy v1 envelope is rejected',
-		makeExternal: async function() { return(encodeOuter({ v: 1, a: {}})); },
+		makeExternal: async function() { return(encodeOuter({ version: 1, anchors: {}})); },
 		expectedCode: 'UNSUPPORTED_VERSION'
 	},
 	{
 		name: 'outer with an extra top-level key',
-		makeExternal: async function() { return(encodeOuter({ v: ANCHOR_EXTERNAL_VERSION, a: {}, extra: 1 })); },
+		makeExternal: async function() { return(encodeOuter({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}, extra: 1 })); },
 		expectedCode: 'NOT_AN_ENVELOPE'
 	},
 	{
 		name: 'non-canonical outer JSON',
 		makeExternal: async function() {
-			const reshaped = canonicalizeJson({ v: ANCHOR_EXTERNAL_VERSION, a: {}}).replace(/,/g, ', ');
+			const reshaped = canonicalizeJson({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}}).replace(/,/g, ', ');
 			return(Buffer.from(reshaped, 'utf-8').toString('base64'));
 		},
 		expectedCode: 'NON_CANONICAL'

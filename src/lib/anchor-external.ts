@@ -174,12 +174,12 @@ export type EncodedAnchorExternalSliceV1 =
 /**
  * Outer anchor-external envelope as it appears inside the encoded blob.
  *
- * `v` = envelope version, `a` = map of anchor id to that anchor's base64
- * {@link EncryptedContainer}.
+ * `version` = envelope version, `anchors` = map of anchor id to that
+ * anchor's base64 {@link EncryptedContainer}.
  */
 export type EncodedAnchorExternalEnvelopeV2 = {
-	v: typeof ANCHOR_EXTERNAL_VERSION;
-	a: { [anchorPublicKey: string]: string };
+	version: typeof ANCHOR_EXTERNAL_VERSION;
+	anchors: { [anchorPublicKey: string]: string };
 };
 
 // #endregion
@@ -332,7 +332,7 @@ function parseEncodedEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV2 {
 		return(assertEncodedAnchorExternalEnvelopeV2(value));
 	} catch (error) {
 		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
-			if (error.path === '$input.v') {
+			if (error.path === '$input.version') {
 				throw(new AnchorExternalError('UNSUPPORTED_VERSION', `Unsupported envelope version at ${error.path}: ${String(error.value)}`));
 			}
 
@@ -497,8 +497,8 @@ export class AnchorExternalBuilder {
 		}
 
 		const encoded: EncodedAnchorExternalEnvelopeV2 = {
-			v: ANCHOR_EXTERNAL_VERSION,
-			a: anchors
+			version: ANCHOR_EXTERNAL_VERSION,
+			anchors: anchors
 		};
 		const canonical = canonicalizeJson(encoded);
 		const external = Buffer.from(canonical, 'utf-8').toString('base64');
@@ -544,7 +544,7 @@ export class AnchorExternal {
 		const decryptionKeys = options?.decryptionKeys ?? [];
 
 		const anchors: { [anchorPublicKey: string]: AnchorExternalSlice } = {};
-		for (const [anchorId, containerB64] of Object.entries(encoded.a)) {
+		for (const [anchorId, containerB64] of Object.entries(encoded.anchors)) {
 			anchors[anchorId] = await AnchorExternal.decodeSlice(anchorId, containerB64, decryptionKeys);
 		}
 
@@ -564,7 +564,7 @@ export class AnchorExternal {
 		const encoded = AnchorExternal.decodeOuter(external);
 		const result: AnchorExternalPeekResult = {
 			version: ANCHOR_EXTERNAL_VERSION,
-			anchorIds: Object.keys(encoded.a)
+			anchorIds: Object.keys(encoded.anchors)
 		};
 		return(result);
 	}
