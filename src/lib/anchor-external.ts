@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
-import { assertEncodedAnchorExternalEnvelopeV1, assertEncodedAnchorExternalEnvelopeV2, assertEncodedAnchorExternalSliceV1 } from './anchor-external.generated.js';
+import { assertEncodedAnchorExternalEnvelopeV1, assertEncodedAnchorExternalEnvelopeV2, assertEncodedAnchorExternalSlice } from './anchor-external.generated.js';
 import { EncryptedContainer, EncryptedContainerError } from './encrypted-container.js';
 import { KeetaAnchorError, KeetaAnchorUserError, KeetaAnchorUserValidationError } from './error.js';
 import { canonicalizeJson } from './utils/signing.js';
@@ -171,7 +171,7 @@ export type AnchorExternalPeekResult = {
  *
  * `p` = previous block hash, `o` = operation index.
  */
-export type EncodedAnchorExternalBindingV1 = {
+export type EncodedAnchorExternalBinding = {
 	p: string;
 	o: number;
 };
@@ -182,10 +182,10 @@ export type EncodedAnchorExternalBindingV1 = {
  *
  * The entry discriminant (`t`/`p`/`d`) is merged with an optional binding.
  */
-export type EncodedAnchorExternalSliceV1 =
-	| { t: string; b?: EncodedAnchorExternalBindingV1; k?: 'provider' }
-	| { p: string; b?: EncodedAnchorExternalBindingV1; k?: 'provider' }
-	| { d: string; b?: EncodedAnchorExternalBindingV1; k?: 'provider' };
+export type EncodedAnchorExternalSlice =
+	| { t: string; b?: EncodedAnchorExternalBinding; k?: 'provider' }
+	| { p: string; b?: EncodedAnchorExternalBinding; k?: 'provider' }
+	| { d: string; b?: EncodedAnchorExternalBinding; k?: 'provider' };
 
 /**
  * Outer anchor-external envelope as it appears inside the encoded blob.
@@ -214,7 +214,7 @@ export type EncodedAnchorExternalEntryV1 =
 export type EncodedAnchorExternalEnvelopeV1 = {
 	v: typeof ANCHOR_EXTERNAL_VERSION_V1;
 	a: { [anchorPublicKey: string]: EncodedAnchorExternalEntryV1 };
-	b?: EncodedAnchorExternalBindingV1;
+	b?: EncodedAnchorExternalBinding;
 };
 
 // #endregion
@@ -317,8 +317,8 @@ export class AnchorExternalError extends KeetaAnchorUserError {
 /**
  * Build the encoded slice plaintext for an entry and optional binding.
  */
-function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBinding | undefined, kind: 'account' | 'provider'): EncodedAnchorExternalSliceV1 {
-	let base: EncodedAnchorExternalSliceV1;
+function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBinding | undefined, kind: 'account' | 'provider'): EncodedAnchorExternalSlice {
+	let base: EncodedAnchorExternalSlice;
 	if ('transactionId' in entry) {
 		base = { t: entry.transactionId };
 	} else if ('persistentForwardingId' in entry) {
@@ -341,7 +341,7 @@ function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBindi
 /**
  * Extract the public entry from an encoded slice.
  */
-function entryFromEncodedSlice(slice: EncodedAnchorExternalSliceV1): AnchorExternalEntry {
+function entryFromEncodedSlice(slice: EncodedAnchorExternalSlice): AnchorExternalEntry {
 	if ('t' in slice) {
 		return({ transactionId: slice.t });
 	}
@@ -355,7 +355,7 @@ function entryFromEncodedSlice(slice: EncodedAnchorExternalSliceV1): AnchorExter
 /**
  * Extract the identity kind from an encoded slice; absent `k` means account.
  */
-function kindFromEncodedSlice(slice: EncodedAnchorExternalSliceV1): 'account' | 'provider' {
+function kindFromEncodedSlice(slice: EncodedAnchorExternalSlice): 'account' | 'provider' {
 	if (slice.k === 'provider') {
 		return('provider');
 	}
@@ -366,7 +366,7 @@ function kindFromEncodedSlice(slice: EncodedAnchorExternalSliceV1): 'account' | 
 /**
  * Extract the public binding from an encoded slice, if any.
  */
-function bindingFromEncodedSlice(slice: EncodedAnchorExternalSliceV1): AnchorExternalBinding | undefined {
+function bindingFromEncodedSlice(slice: EncodedAnchorExternalSlice): AnchorExternalBinding | undefined {
 	if (slice.b === undefined) {
 		return(undefined);
 	}
@@ -414,9 +414,9 @@ function parseEncodedEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV2 {
 /**
  * Parse a per-anchor slice plaintext.
  */
-function parseEncodedSlice(value: unknown): EncodedAnchorExternalSliceV1 {
+function parseEncodedSlice(value: unknown): EncodedAnchorExternalSlice {
 	try {
-		return(assertEncodedAnchorExternalSliceV1(value));
+		return(assertEncodedAnchorExternalSlice(value));
 	} catch (error) {
 		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
 			throw(new AnchorExternalError('INVALID_SLICE', `Slice failed shape check at ${error.path ?? '$input'}: expected ${error.expected}`));
