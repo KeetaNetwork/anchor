@@ -446,7 +446,7 @@ function validateBindingShape(binding: AnchorExternalBinding): string | undefine
  * Reject an explicit but empty `encryptFor`.
  */
 function assertNonEmptyPrincipals(method: string, principals: Account[] | undefined): void {
-	if (principals !== undefined && principals.length === 0) {
+	if (principals?.length === 0) {
 		throw(new KeetaAnchorError(`${method}: encryptFor must contain at least one principal`));
 	}
 }
