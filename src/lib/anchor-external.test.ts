@@ -268,6 +268,51 @@ async function packSlice(encodedSlice: object, signer: Account | undefined, prin
 	return(result);
 }
 
+test('fromExternal decodes a v1 plaintext envelope', async function() {
+	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { p: 'fwd-2' }}}, undefined, null);
+
+	const decoded = await AnchorExternal.fromExternal(external);
+	expect(decoded.envelope.version).toBe(1);
+	expect(decoded.envelope.anchors[anchor1Key]).toEqual({ entry: { transactionId: 'tx-1' }, encrypted: false });
+	expect(decoded.envelope.anchors[anchor2Key]).toEqual({ entry: { persistentForwardingId: 'fwd-2' }, encrypted: false });
+
+	const peeked = await AnchorExternal.peek(external);
+	expect(peeked.version).toBe(1);
+	expect(peeked.anchorIds.sort()).toEqual([ anchor1Key, anchor2Key ].sort());
+});
+
+test('fromExternal decodes a v1 signed envelope onto the signing anchor slice', async function() {
+	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { d: 'evm:0x1' }}, b: TEST_ENCODED_BINDING }, anchor1, null);
+
+	const decoded = await AnchorExternal.fromExternal(external);
+	expect(decoded.envelope.version).toBe(1);
+
+	const slice1 = decoded.envelope.anchors[anchor1Key];
+	expect(slice1?.entry).toEqual({ transactionId: 'tx-1' });
+	expect(slice1?.binding).toEqual(TEST_BINDING);
+	expect(slice1?.signer?.comparePublicKey(anchor1)).toBe(true);
+
+	const slice2 = decoded.envelope.anchors[anchor2Key];
+	expect(slice2?.entry).toEqual({ destination: 'evm:0x1' });
+	expect(slice2?.signer).toBeUndefined();
+	expect(slice2?.binding).toBeUndefined();
+});
+
+test('fromExternal decodes a v1 encrypted envelope only with a matching key', async function() {
+	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }}}, undefined, [ anchor1 ]);
+
+	const opened = await AnchorExternal.fromExternal(external, { decryptionKeys: [ anchor1 ] });
+	expect(opened.envelope.version).toBe(1);
+	expect(opened.envelope.anchors[anchor1Key]).toEqual({ entry: { transactionId: 'tx-1' }, encrypted: true });
+
+	const locked = await AnchorExternal.fromExternal(external);
+	expect(locked.envelope.version).toBe(1);
+	expect(locked.envelope.anchors).toEqual({});
+
+	const peeked = await AnchorExternal.peek(external);
+	expect(peeked).toEqual({ version: 1, anchorIds: [] });
+});
+
 /*
  * Base64-encode a (possibly malformed) outer envelope object.
  */
@@ -302,8 +347,8 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 		expectedCode: 'NOT_AN_ENVELOPE'
 	},
 	{
-		name: 'legacy v1 envelope is rejected',
-		makeExternal: async function() { return(encodeOuter({ version: 1, anchors: {}})); },
+		name: 'v2-shaped envelope with an unsupported version is rejected',
+		makeExternal: async function() { return(encodeOuter({ version: 99, anchors: {}})); },
 		expectedCode: 'UNSUPPORTED_VERSION'
 	},
 	{
