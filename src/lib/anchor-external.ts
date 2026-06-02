@@ -177,10 +177,14 @@ export type EncodedAnchorExternalBinding = {
 };
 
 /**
- * A single per-anchor slice plaintext, carried inside that anchor's
- * {@link EncryptedContainer}.
+ * A single per-anchor slice plaintext, carried inside that anchor's {@link EncryptedContainer}.
+ * Note: intentionally kept small to reduce the size of the encoded envelope.
  *
- * The entry discriminant (`t`/`p`/`d`) is merged with an optional binding.
+ * `t` = transaction id
+ * `p` = persistent forwarding id,
+ * `d` = destination
+ * `b` = replay-protection binding (signed slices only)
+ * `k` = identity kind of the key the slice is filed under
  */
 export type EncodedAnchorExternalSlice =
 	| { t: string; b?: EncodedAnchorExternalBinding; k?: 'provider' }
