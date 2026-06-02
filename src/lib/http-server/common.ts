@@ -2,7 +2,7 @@ import type { Account } from "@keetanetwork/keetanet-client/lib/account.js";
 import type { ResolvedCertificateChainRequirement } from "../utils/certificate-network.js";
 import type { Signable } from "../utils/signing.js";
 import { KeetaAnchorUserError } from "../error.js";
-import { KeetaNet } from "../../client/index.js";
+import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { assertAccountCertificateChain } from "../utils/certificate-network.js";
 import { createAssertEquals } from "typia";
 import { VerifySignedData } from "../utils/signing.js";

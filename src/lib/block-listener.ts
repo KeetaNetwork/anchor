@@ -6,7 +6,7 @@ import type { VoteBlockHash } from "@keetanetwork/keetanet-client/lib/vote.js";
 import { KeetaAnchorQueueRunner } from "./queue/index.js";
 import type { KeetaAnchorQueueEntryExtra, KeetaAnchorQueueRequestID } from "./queue/index.js";
 import type { JSONSerializable } from "./utils/json.js";
-import { KeetaNet } from "../client/index.js";
+import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { ConvertStringToRequestID } from "./queue/internal.js";
 import type { KeetaAnchorQueueRunOptions } from "./queue/common.js";
 

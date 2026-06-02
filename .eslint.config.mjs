@@ -20,5 +20,23 @@ export default [
 			return(line !== null);
 		})
 	},
-	...keetanetworkConfig
+	...keetanetworkConfig,
+	{
+		// Prevent importing `KeetaNet` from the top-level client barrel. That barrel
+		// re-exports every service client + the lib barrel, so pulling KeetaNet from it
+		// creates a back-edge that makes the package non-tree-shakeable for SPA consumers.
+		// Import KeetaNet directly from '@keetanetwork/keetanet-client' instead.
+		// Tests are exempt since they are not shipped.
+		files: ['src/**/*.ts'],
+		ignores: ['**/*.test.ts', '**/test-utils.ts'],
+		rules: {
+			'no-restricted-imports': ['error', {
+				patterns: [{
+					group: ['**/client/index.js', '**/client/index'],
+					importNames: ['KeetaNet'],
+					message: "Import KeetaNet from '@keetanetwork/keetanet-client' directly, not the client/index barrel (it defeats tree-shaking)."
+				}]
+			}]
+		}
+	}
 ];

@@ -1,4 +1,4 @@
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import type {
@@ -20,16 +20,18 @@ import type {
 } from './common.js';
 import {
 	getNotificationRegisterTargetRequestSignable,
-	assertKeetaNotificationAnchorRegisterTargetRequestJSON,
 	getNotificationListTargetsRequestSignable,
-	assertKeetaNotificationAnchorDeleteTargetRequestJSON,
 	getNotificationDeleteTargetRequestSignable,
-	assertKeetaNotificationAnchorCreateSubscriptionRequestJSON,
 	getNotificationCreateSubscriptionRequestSignable,
-	assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON,
 	getNotificationDeleteSubscriptionRequestSignable,
 	getNotificationListSubscriptionsRequestSignable
 } from './common.js';
+import {
+	assertKeetaNotificationAnchorRegisterTargetRequestJSON,
+	assertKeetaNotificationAnchorDeleteTargetRequestJSON,
+	assertKeetaNotificationAnchorCreateSubscriptionRequestJSON,
+	assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON
+} from './common.server.generated.js';
 import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
