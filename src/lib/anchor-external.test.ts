@@ -268,49 +268,87 @@ async function packSlice(encodedSlice: object, signer: Account | undefined, prin
 	return(result);
 }
 
-test('fromExternal decodes a v1 plaintext envelope', async function() {
-	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { p: 'fwd-2' }}}, undefined, null);
+type V1ExpectedSlice = {
+	entry: AnchorExternalEntry;
+	encrypted: boolean;
+	signerKey?: string;
+	binding?: typeof TEST_BINDING;
+};
 
-	const decoded = await AnchorExternal.fromExternal(external);
+type V1DecodeCase = {
+	name: string;
+	encoded: object;
+	signer?: Account;
+	principals: Account[] | null;
+	decryptionKeys: Account[];
+	expected: { [anchorPublicKey: string]: V1ExpectedSlice };
+	peekIds: string[];
+};
+
+const v1DecodeCases: V1DecodeCase[] = [
+	{
+		name: 'plaintext',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { p: 'fwd-2' }}},
+		principals: null,
+		decryptionKeys: [],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: false },
+			[anchor2Key]: { entry: { persistentForwardingId: 'fwd-2' }, encrypted: false }
+		},
+		peekIds: [ anchor1Key, anchor2Key ]
+	},
+	{
+		name: 'signed',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { d: 'evm:0x1' }}, b: TEST_ENCODED_BINDING },
+		signer: anchor1,
+		principals: null,
+		decryptionKeys: [],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: false, signerKey: anchor1Key, binding: TEST_BINDING },
+			[anchor2Key]: { entry: { destination: 'evm:0x1' }, encrypted: false }
+		},
+		peekIds: [ anchor1Key, anchor2Key ]
+	},
+	{
+		name: 'encrypted',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }}},
+		principals: [ anchor1 ],
+		decryptionKeys: [ anchor1 ],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: true }
+		},
+		peekIds: []
+	}
+];
+
+test.each(v1DecodeCases)('fromExternal decodes a v1 $name envelope', async function({ encoded, signer, principals, decryptionKeys, expected, peekIds }) {
+	const external = await packSlice(encoded, signer, principals);
+
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys });
 	expect(decoded.envelope.version).toBe(1);
-	expect(decoded.envelope.anchors[anchor1Key]).toEqual({ entry: { transactionId: 'tx-1' }, encrypted: false });
-	expect(decoded.envelope.anchors[anchor2Key]).toEqual({ entry: { persistentForwardingId: 'fwd-2' }, encrypted: false });
+
+	for (const [ anchorPublicKey, slice ] of Object.entries(expected)) {
+		const decodedSlice = decoded.envelope.anchors[anchorPublicKey];
+		expect(decodedSlice?.entry).toEqual(slice.entry);
+		expect(decodedSlice?.encrypted).toBe(slice.encrypted);
+		expect(decodedSlice?.signer?.publicKeyString.get()).toBe(slice.signerKey);
+		expect(decodedSlice?.binding).toEqual(slice.binding);
+	}
 
 	const peeked = await AnchorExternal.peek(external);
 	expect(peeked.version).toBe(1);
-	expect(peeked.anchorIds.sort()).toEqual([ anchor1Key, anchor2Key ].sort());
+	expect([ ...peeked.anchorIds ].sort()).toEqual([ ...peekIds ].sort());
 });
 
-test('fromExternal decodes a v1 signed envelope onto the signing anchor slice', async function() {
-	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { d: 'evm:0x1' }}, b: TEST_ENCODED_BINDING }, anchor1, null);
-
-	const decoded = await AnchorExternal.fromExternal(external);
-	expect(decoded.envelope.version).toBe(1);
-
-	const slice1 = decoded.envelope.anchors[anchor1Key];
-	expect(slice1?.entry).toEqual({ transactionId: 'tx-1' });
-	expect(slice1?.binding).toEqual(TEST_BINDING);
-	expect(slice1?.signer?.comparePublicKey(anchor1)).toBe(true);
-
-	const slice2 = decoded.envelope.anchors[anchor2Key];
-	expect(slice2?.entry).toEqual({ destination: 'evm:0x1' });
-	expect(slice2?.signer).toBeUndefined();
-	expect(slice2?.binding).toBeUndefined();
-});
-
-test('fromExternal decodes a v1 encrypted envelope only with a matching key', async function() {
+test('a v1 encrypted envelope stays opaque without a matching key', async function() {
 	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }}}, undefined, [ anchor1 ]);
-
-	const opened = await AnchorExternal.fromExternal(external, { decryptionKeys: [ anchor1 ] });
-	expect(opened.envelope.version).toBe(1);
-	expect(opened.envelope.anchors[anchor1Key]).toEqual({ entry: { transactionId: 'tx-1' }, encrypted: true });
 
 	const locked = await AnchorExternal.fromExternal(external);
 	expect(locked.envelope.version).toBe(1);
 	expect(locked.envelope.anchors).toEqual({});
 
-	const peeked = await AnchorExternal.peek(external);
-	expect(peeked).toEqual({ version: 1, anchorIds: [] });
+	const wrongKey = await AnchorExternal.fromExternal(external, { decryptionKeys: [ stranger ] });
+	expect(wrongKey.envelope.anchors).toEqual({});
 });
 
 /*
