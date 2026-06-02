@@ -108,6 +108,7 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 	expect(decoded.envelope.version).toBe(ANCHOR_EXTERNAL_VERSION);
 	expect(slice?.entry).toEqual(entry);
 	expect(slice?.encrypted).toBe(mode.expectedEncrypted);
+	expect(slice?.kind).toBe('account');
 	expect(slice?.signer?.comparePublicKey(anchor1) ?? false).toBe(mode.expectedSigned);
 	expect(slice?.binding !== undefined).toBe(mode.expectedSigned);
 
@@ -177,6 +178,46 @@ test.each(multiPrincipalCases)('a slice encrypted for many opens for listed prin
 	expect(slice?.encrypted).toBe(true);
 });
 
+const PROVIDER_ID = 'fx-provider-1';
+
+type ProviderRoundTripCase = {
+	name: string;
+	options: { encryptFor?: Account[] } | undefined;
+	decryptionKeys: Account[];
+	expectedEncrypted: boolean;
+};
+
+const providerRoundTripCases: ProviderRoundTripCase[] = [
+	{ name: 'plaintext', options: undefined, decryptionKeys: [], expectedEncrypted: false },
+	{ name: 'encrypted', options: { encryptFor: [anchor1] }, decryptionKeys: [anchor1], expectedEncrypted: true }
+];
+
+test.each(providerRoundTripCases)('round-trips a $name provider slice keyed by provider id', async function({ options, decryptionKeys, expectedEncrypted }) {
+	const external = await new AnchorExternalBuilder().addProvider(PROVIDER_ID, { transactionId: 'tx-1' }, options).build();
+
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys });
+	const slice = decoded.envelope.anchors[PROVIDER_ID];
+	expect(slice?.entry).toEqual({ transactionId: 'tx-1' });
+	expect(slice?.encrypted).toBe(expectedEncrypted);
+	expect(slice?.kind).toBe('provider');
+	expect(slice?.signer).toBeUndefined();
+
+	const peeked = await AnchorExternal.peek(external);
+	expect(peeked.anchorIds).toContain(PROVIDER_ID);
+});
+
+test('a provider slice and an account slice coexist in one envelope', async function() {
+	const external = await new AnchorExternalBuilder()
+		.addAnchor(anchor1, { transactionId: 'tx-account' })
+		.addProvider(PROVIDER_ID, { destination: 'evm:0x1' })
+		.build();
+
+	const decoded = await AnchorExternal.fromExternal(external);
+	expect(decoded.envelope.anchors[anchor1Key]?.kind).toBe('account');
+	expect(decoded.envelope.anchors[PROVIDER_ID]?.kind).toBe('provider');
+	expect(decoded.envelope.anchors[PROVIDER_ID]?.entry).toEqual({ destination: 'evm:0x1' });
+});
+
 type MisuseCase = {
 	name: string;
 	act: () => unknown;
@@ -205,6 +246,18 @@ const misuseCases: MisuseCase[] = [
 		name: 'encryptFor is an empty list',
 		act: function() {
 			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { encryptFor: [] }));
+		}
+	},
+	{
+		name: 'addProvider with an empty provider id',
+		act: function() {
+			return(new AnchorExternalBuilder().addProvider('', { transactionId: 'x' }));
+		}
+	},
+	{
+		name: 'addProvider with an empty encryptFor list',
+		act: function() {
+			return(new AnchorExternalBuilder().addProvider(PROVIDER_ID, { transactionId: 'x' }, { encryptFor: [] }));
 		}
 	},
 	{

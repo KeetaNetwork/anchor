@@ -21,6 +21,16 @@ test.each(completedCases)('isCompletedTransferStatus($status) is $completed', fu
 	expect(isCompletedTransferStatus(status)).toBe(completed);
 });
 
+/*
+ * The settled `tx-1` outcome the fixture server always returns.
+ */
+function completeStatusResult(transaction: KeetaAssetMovementTransaction) {
+	return({
+		kind: 'status',
+		status: { status: 'COMPLETE', transactionId: 'tx-1', transaction }
+	});
+}
+
 async function startStatusFixture(authenticationRequired: boolean) {
 	const rootAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -120,18 +130,14 @@ test('AnchorTransactionStatus resolves a provider by account and reads canonical
 	expect(missing).toBeNull();
 
 	const status = await fixture.anchorStatus.getStatus(fixture.anchorAccount.publicKeyString.get(), 'tx-1');
-	expect(status).toEqual({
-		status: 'COMPLETE',
-		transactionId: 'tx-1',
-		transaction: fixture.transaction
-	});
+	expect(status).toEqual(completeStatusResult(fixture.transaction).status);
 	expect(fixture.observed.id).toBe('tx-1');
 	expect(fixture.observed.accountKey).toBeNull();
 
 	const unresolved = await fixture.anchorStatus.getStatus(fixture.strangerAccount.publicKeyString.get(), 'tx-1');
 	expect(unresolved).toBeNull();
 
-	const statusResult = { kind: 'status', status: { status: 'COMPLETE', transactionId: 'tx-1', transaction: fixture.transaction }};
+	const statusResult = completeStatusResult(fixture.transaction);
 
 	const external = await new AnchorExternalBuilder()
 		.addAnchor(fixture.anchorAccount, { transactionId: 'tx-1' })
@@ -173,10 +179,26 @@ test('AnchorTransactionStatus forwards the requester account when the provider r
 	expect(errored[fixture.anchorAccount.publicKeyString.get()]?.kind).toBe('error');
 
 	const authed = await fixture.anchorStatus.getStatusesFromExternal(external, { requesterAccount: fixture.rootAccount });
-	expect(authed[fixture.anchorAccount.publicKeyString.get()]).toEqual({
-		kind: 'status',
-		status: { status: 'COMPLETE', transactionId: 'tx-1', transaction: fixture.transaction }
-	});
+	expect(authed[fixture.anchorAccount.publicKeyString.get()]).toEqual(completeStatusResult(fixture.transaction));
+});
+
+test('AnchorTransactionStatus resolves a keyless anchor by provider id', async function() {
+	const fixture = await startStatusFixture(false);
+	await using server = fixture.server;
+	void server;
+
+	const reader = await fixture.anchorStatus.getReader({ providerId: 'Test' });
+	expect(reader).not.toBeNull();
+
+	const missing = await fixture.anchorStatus.getReader({ providerId: 'does-not-exist' });
+	expect(missing).toBeNull();
+
+	const external = await new AnchorExternalBuilder()
+		.addProvider('Test', { transactionId: 'tx-1' })
+		.build();
+
+	const statuses = await fixture.anchorStatus.getStatusesFromExternal(external);
+	expect(statuses['Test']).toEqual(completeStatusResult(fixture.transaction));
 });
 
 test('getStatusesFromExternal maps a malformed anchor id to a per-anchor error', async function() {
