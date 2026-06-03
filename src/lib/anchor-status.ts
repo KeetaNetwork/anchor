@@ -2,33 +2,14 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { AccountPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
 import { AnchorExternal } from './anchor-external.js';
-import type { AnchorExternalDecodeOptions, AnchorExternalSlice } from './anchor-external.js';
+import type { AnchorExternalDecodeOptions, AnchorExternalEntry } from './anchor-external.js';
 import type { KeetaNetAccount } from './asset.js';
 import type { VerifiableAccount } from './utils/signing.js';
 
 /**
- * Reference to an anchor identified only by a provider id, for anchors with
- * no on-chain account (e.g. FX or bridge providers).
- */
-export type AnchorProviderReference = {
-	providerId: string;
-};
-
-/**
  * An anchor reference accepted when resolving a provider.
  */
-export type AnchorReference = AccountPublicKeyString | VerifiableAccount | AnchorProviderReference;
-
-/**
- * `true` if the reference identifies an anchor by provider id.
- */
-export function isProviderReference(reference: AnchorReference): reference is AnchorProviderReference {
-	if (typeof reference !== 'object') {
-		return(false);
-	}
-
-	return('providerId' in reference);
-}
+export type AnchorReference = AccountPublicKeyString | VerifiableAccount;
 
 /**
  * Provider-independent, standardized view of an anchor transfer's status.
@@ -182,7 +163,7 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 		const entries = Object.entries(decoded.envelope.anchors);
 
 		const settled = await Promise.all(entries.map(async ([anchorId, slice]): Promise<[string, AnchorTransactionStatusResult<Transaction>]> => {
-			const result = await this.#readSliceStatus(anchorId, slice, statusOptions);
+			const result = await this.#readSliceStatus(anchorId, slice.entry, statusOptions);
 			return([anchorId, result]);
 		}));
 
@@ -193,22 +174,15 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	/**
 	 * Resolve a single decoded slice to its per-anchor outcome.
 	 */
-	async #readSliceStatus(anchorId: string, slice: AnchorExternalSlice, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
-		const entry = slice.entry;
+	async #readSliceStatus(anchorId: string, entry: AnchorExternalEntry | undefined, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
 		if (entry === undefined || !('transactionId' in entry)) {
 			return({ kind: 'unavailable' });
 		}
 
 		let status: StandardizedTransferStatus<Transaction> | null;
 		try {
-			let reference: AnchorReference;
-			if (slice.kind === 'provider') {
-				reference = { providerId: anchorId };
-			} else {
-				reference = KeetaNetLib.Account.fromPublicKeyString(anchorId);
-			}
-
-			status = await this.getStatus(reference, entry.transactionId, options);
+			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorId);
+			status = await this.getStatus(anchor, entry.transactionId, options);
 		} catch (error) {
 			return({ kind: 'error', error: error });
 		}

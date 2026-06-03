@@ -100,12 +100,6 @@ export type AnchorExternalSlice = {
 	 * is filed under.
 	 */
 	signer?: Account;
-	/**
-	 * Identity kind of the key the slice is filed under: `account` (an
-	 * account public key) or `provider` (a provider id, for anchors with no
-	 * account).
-	 */
-	kind?: 'account' | 'provider';
 };
 
 /**
@@ -117,7 +111,7 @@ export type AnchorExternalEnvelope = {
 	 */
 	version: AnchorExternalVersion;
 	/**
-	 * Anchor id to slice mapping.
+	 * Per-anchor slices keyed by `Account.publicKeyString.get()`.
 	 */
 	anchors: { [anchorPublicKey: string]: AnchorExternalSlice };
 };
@@ -184,12 +178,11 @@ export type EncodedAnchorExternalBinding = {
  * `p` = persistent forwarding id,
  * `d` = destination
  * `b` = replay-protection binding (signed slices only)
- * `k` = identity kind of the key the slice is filed under
  */
 export type EncodedAnchorExternalSlice =
-	| { t: string; b?: EncodedAnchorExternalBinding; k?: 'provider' }
-	| { p: string; b?: EncodedAnchorExternalBinding; k?: 'provider' }
-	| { d: string; b?: EncodedAnchorExternalBinding; k?: 'provider' };
+	| { t: string; b?: EncodedAnchorExternalBinding }
+	| { p: string; b?: EncodedAnchorExternalBinding }
+	| { d: string; b?: EncodedAnchorExternalBinding };
 
 /**
  * Outer anchor-external envelope as it appears inside the encoded blob.
@@ -321,7 +314,7 @@ export class AnchorExternalError extends KeetaAnchorUserError {
 /**
  * Build the encoded slice plaintext for an entry and optional binding.
  */
-function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBinding | undefined, kind: 'account' | 'provider'): EncodedAnchorExternalSlice {
+function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBinding | undefined): EncodedAnchorExternalSlice {
 	let base: EncodedAnchorExternalSlice;
 	if ('transactionId' in entry) {
 		base = { t: entry.transactionId };
@@ -333,10 +326,6 @@ function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBindi
 
 	if (binding !== undefined) {
 		base.b = { p: binding.previousBlockHash, o: binding.operationIndex };
-	}
-
-	if (kind === 'provider') {
-		base.k = 'provider';
 	}
 
 	return(base);
@@ -354,17 +343,6 @@ function entryFromEncodedSlice(slice: EncodedAnchorExternalSlice): AnchorExterna
 	}
 
 	return({ destination: slice.d });
-}
-
-/**
- * Extract the identity kind from an encoded slice; absent `k` means account.
- */
-function kindFromEncodedSlice(slice: EncodedAnchorExternalSlice): 'account' | 'provider' {
-	if (slice.k === 'provider') {
-		return('provider');
-	}
-
-	return('account');
 }
 
 /**
@@ -473,7 +451,6 @@ function decodeBase64Buffer(value: string, message: string): Buffer {
 
 type PendingSlice = {
 	entry: AnchorExternalEntry;
-	kind: 'account' | 'provider';
 	signer?: Account;
 	principals?: Account[];
 	binding?: AnchorExternalBinding;
@@ -521,7 +498,7 @@ export class AnchorExternalBuilder {
 			}
 		}
 
-		const pending: PendingSlice = { entry, kind: 'account' };
+		const pending: PendingSlice = { entry };
 		if (signer !== undefined) {
 			pending.signer = signer;
 		}
@@ -533,33 +510,6 @@ export class AnchorExternalBuilder {
 		}
 
 		this.#slices.set(anchorId, pending);
-		return(this);
-	}
-
-	/**
-	 * Add (or replace) the slice for an anchor identified only by a provider
-	 * id (e.g. an FX or bridge provider with no on-chain account).
-	 *
-	 * @param providerId Provider id the slice is filed under.
-	 * @param entry      Per-anchor entry payload.
-	 * @param options    Optional encryption recipients.
-	 *
-	 * @throws {@link KeetaAnchorError} on caller misuse.
-	 */
-	addProvider(providerId: string, entry: AnchorExternalEntry, options?: { encryptFor?: Account[] }): this {
-		if (providerId.length === 0) {
-			throw(new KeetaAnchorError('addProvider: providerId must be a non-empty string'));
-		}
-
-		const principals = options?.encryptFor;
-		assertNonEmptyPrincipals('addProvider', principals);
-
-		const pending: PendingSlice = { entry, kind: 'provider' };
-		if (principals !== undefined) {
-			pending.principals = principals;
-		}
-
-		this.#slices.set(providerId, pending);
 		return(this);
 	}
 
@@ -580,7 +530,7 @@ export class AnchorExternalBuilder {
 	 * Build a single anchor's base64 container.
 	 */
 	async #buildSliceContainer(pending: PendingSlice): Promise<string> {
-		const encoded = sliceToEncoded(pending.entry, pending.binding, pending.kind);
+		const encoded = sliceToEncoded(pending.entry, pending.binding);
 		const canonical = canonicalizeJson(encoded);
 		const plaintext = Buffer.from(canonical, 'utf-8');
 
@@ -991,13 +941,11 @@ export class AnchorExternal {
 
 		let entry: AnchorExternalEntry;
 		let binding: AnchorExternalBinding | undefined;
-		let kind: 'account' | 'provider';
 		let signer: Account | undefined;
 		try {
 			const plaintext = await AnchorExternal.readSlicePlaintext(container);
 			entry = plaintext.entry;
 			binding = plaintext.binding;
-			kind = plaintext.kind;
 			signer = await AnchorExternal.verifySliceSignature(container, anchorId, binding);
 		} catch (error) {
 			if (encrypted && EncryptedContainerError.isInstance(error) && isContainerLocked(error)) {
@@ -1007,7 +955,7 @@ export class AnchorExternal {
 			throw(error);
 		}
 
-		const slice: AnchorExternalSlice = { entry, encrypted, kind };
+		const slice: AnchorExternalSlice = { entry, encrypted };
 		if (binding !== undefined) {
 			slice.binding = binding;
 		}
@@ -1021,7 +969,7 @@ export class AnchorExternal {
 	/**
 	 * Read and validate a slice container's plaintext.
 	 */
-	private static async readSlicePlaintext(container: EncryptedContainer): Promise<{ entry: AnchorExternalEntry; binding: AnchorExternalBinding | undefined; kind: 'account' | 'provider' }> {
+	private static async readSlicePlaintext(container: EncryptedContainer): Promise<{ entry: AnchorExternalEntry; binding: AnchorExternalBinding | undefined }> {
 		let plaintextArrayBuffer: ArrayBuffer;
 		try {
 			plaintextArrayBuffer = await container.getPlaintext();
@@ -1064,8 +1012,7 @@ export class AnchorExternal {
 
 		const entry = entryFromEncodedSlice(encoded);
 		const binding = bindingFromEncodedSlice(encoded);
-		const kind = kindFromEncodedSlice(encoded);
-		return({ entry, binding, kind });
+		return({ entry, binding });
 	}
 
 	/**

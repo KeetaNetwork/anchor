@@ -14,7 +14,6 @@ import type {
 	AnchorGetTransactionStatusOptions,
 	StandardizedTransferStatus
 } from '../../lib/anchor-status.js';
-import { isProviderReference } from '../../lib/anchor-status.js';
 import KeetaAssetMovementAnchorClient from './client.js';
 
 /**
@@ -78,13 +77,7 @@ export class KeetaAssetMovementStatusSource implements AnchorStatusSource<KeetaA
 	}
 
 	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<KeetaAssetMovementTransaction> | null> {
-		let provider: KeetaAssetMovementAnchorProvider | null;
-		if (isProviderReference(anchor)) {
-			provider = await this.#client.getProviderByID(anchor.providerId);
-		} else {
-			provider = await this.#client.getProviderByAccount(anchor);
-		}
-
+		const provider = await this.#client.getProviderByAccount(anchor);
 		if (provider === null) {
 			return(null);
 		}

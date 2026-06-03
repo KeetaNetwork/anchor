@@ -4,10 +4,9 @@ import * as URI from './uri.js';
 
 import Resolver from './resolver.js';
 export { AnchorExternal } from './anchor-external.js';
-export { AnchorTransactionStatus, isCompletedTransferStatus, isProviderReference } from './anchor-status.js';
+export { AnchorTransactionStatus, isCompletedTransferStatus } from './anchor-status.js';
 export type {
 	AnchorReference,
-	AnchorProviderReference,
 	AnchorStatusSource,
 	AnchorTransferReader,
 	AnchorGetTransactionStatusOptions,

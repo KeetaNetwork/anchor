@@ -182,25 +182,6 @@ test('AnchorTransactionStatus forwards the requester account when the provider r
 	expect(authed[fixture.anchorAccount.publicKeyString.get()]).toEqual(completeStatusResult(fixture.transaction));
 });
 
-test('AnchorTransactionStatus resolves a keyless anchor by provider id', async function() {
-	const fixture = await startStatusFixture(false);
-	await using server = fixture.server;
-	void server;
-
-	const reader = await fixture.anchorStatus.getReader({ providerId: 'Test' });
-	expect(reader).not.toBeNull();
-
-	const missing = await fixture.anchorStatus.getReader({ providerId: 'does-not-exist' });
-	expect(missing).toBeNull();
-
-	const external = await new AnchorExternalBuilder()
-		.addProvider('Test', { transactionId: 'tx-1' })
-		.build();
-
-	const statuses = await fixture.anchorStatus.getStatusesFromExternal(external);
-	expect(statuses['Test']).toEqual(completeStatusResult(fixture.transaction));
-});
-
 test('getStatusesFromExternal maps a malformed anchor id to a per-anchor error', async function() {
 	const fixture = await startStatusFixture(false);
 	await using server = fixture.server;
