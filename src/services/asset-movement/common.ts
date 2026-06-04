@@ -363,31 +363,59 @@ export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(in
 }
 
 
+type FixedFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'OTHER';
+type VariableFeeLineItemType = 'VALUE_VARIABLE';
+
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
  */
-export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
+export type AssetFeeLineItemType = VariableFeeLineItemType | FixedFeeLineItemType;
 
-/**
- * Breakdown of fees for an asset transfer, including line items and total amounts.
- */
-export type AssetFeeBreakdown = {
-	lineItems: {
-		/**
-		 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
-		 */
-		value: string;
+interface BaseAssetFeeLineItem<Purpose extends AssetFeeLineItemType> {
+	/**
+	 * The purpose of the fee line item. @see AssetFeeLineItemType
+	 */
+	purpose: Purpose;
 
-		/**
-		 * The purpose of the fee line item. @see AssetFeeLineItemType
-		 */
-		purpose: AssetFeeLineItemType;
+	/**
+	 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
+	 */
+	asset?: MovableAssetSearchCanonical;
 
-		/**
-		 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
-		 */
-		asset?: MovableAssetSearchCanonical;
-	}[];
+	/**
+	 * Additional details about this fee line item that (optionally) can be rendered in the client application.
+	 */
+	details?: ClientRenderableContent;
+}
+
+interface FixedFeeLineItem extends BaseAssetFeeLineItem<FixedFeeLineItemType> {
+	/**
+	 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
+	 */
+	value: string;
+}
+
+interface VariableFeeLineItemUnresolved extends BaseAssetFeeLineItem<VariableFeeLineItemType> {
+	/**
+	 * The basis points (bps) for the variable fee, where 1 bps = 0.01%. For example, a value of 25 would represent a 0.25% fee on the transfer value.
+	 */
+	basisPoints: number;
+}
+
+interface VariableFeeLineItemResolved extends BaseAssetFeeLineItem<VariableFeeLineItemType> {
+	basisPoints?: VariableFeeLineItemUnresolved['basisPoints'];
+
+	/**
+	 * The resolved amount of the variable fee line item, as a string in the asset's smallest unit (e.g. cents for USD). This should be provided if the total fee breakdown is being provided before the transfer is executed, and can be used by clients to show an estimated fee amount for variable fees. If not provided, clients can calculate an estimated variable fee amount by applying the basis points to the transfer value.
+	 */
+	value: string;
+}
+
+export type ResolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemResolved;
+export type UnresolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemUnresolved;
+
+interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> {
+	lineItems: LineItemType[];
 	/**
 	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
 	 */
@@ -397,7 +425,19 @@ export type AssetFeeBreakdown = {
 	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
 	 */
 	total: string;
-};
+}
+
+/**
+ * Breakdown of fees for an asset transfer, including line items and total amounts.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface AssetFeeBreakdown extends BaseAssetFeeBreakdown<ResolvedFeeLineItem> {};
+
+/**
+ * Breakdown of fees for an asset transfer with unresolved variable fee line items, where the basis points are provided but the exact fee amount is not yet resolved. This can be used for transfer instructions that are returned before execution, where the variable fee amount cannot be calculated until the transfer value is finalized.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface PersistentAddressAssetFeeBreakdown extends BaseAssetFeeBreakdown<UnresolvedFeeLineItem> {};
 
 /**
  * An instruction on how to complete a transfer, ex: where to send tokens, or where to wire USD.
@@ -876,6 +916,7 @@ export type KeetaPersistentForwardingAddressDetails = {
 	destinationAddress?: AddressResolved | AddressObfuscated;
 	outgoingRail?: Rail;
 	incomingRail?: Rail[];
+	fees?: PersistentAddressAssetFeeBreakdown;
 }
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest = {
