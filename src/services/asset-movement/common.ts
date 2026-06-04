@@ -430,11 +430,13 @@ interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | Unres
 /**
  * Breakdown of fees for an asset transfer, including line items and total amounts.
  */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface AssetFeeBreakdown extends BaseAssetFeeBreakdown<ResolvedFeeLineItem> {};
 
 /**
  * Breakdown of fees for an asset transfer with unresolved variable fee line items, where the basis points are provided but the exact fee amount is not yet resolved. This can be used for transfer instructions that are returned before execution, where the variable fee amount cannot be calculated until the transfer value is finalized.
  */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface PersistentAddressAssetFeeBreakdown extends BaseAssetFeeBreakdown<UnresolvedFeeLineItem> {};
 
 /**
