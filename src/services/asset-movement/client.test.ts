@@ -258,7 +258,9 @@ test('Asset Movement Anchor Client Test', async function() {
 
 				return({
 					address: request.destinationAddress,
-					fees: persistentAddressFeeBreakdown
+					fees: persistentAddressFeeBreakdown,
+					...(request.incomingRail ? { incomingRail: [ request.incomingRail ] } : {}),
+					...(request.outgoingRail ? { outgoingRail: request.outgoingRail } : {})
 				})
 			},
 
@@ -514,6 +516,25 @@ test('Asset Movement Anchor Client Test', async function() {
 				ok: true,
 				address: account.publicKeyString.get(),
 				fees: persistentAddressFeeBreakdown
+			}
+		},
+		{
+			test: async function() {
+				return(await baseTokenProvider.createPersistentForwardingAddress({
+					asset: baseToken,
+					destinationLocation: 'chain:keeta:100',
+					destinationAddress: account.publicKeyString.get(),
+					sourceLocation: 'chain:evm:100',
+					incomingRail: 'EVM_SEND',
+					outgoingRail: 'KEETA_SEND'
+				}))
+			},
+			result: {
+				ok: true,
+				address: account.publicKeyString.get(),
+				fees: persistentAddressFeeBreakdown,
+				incomingRail: ['EVM_SEND'],
+				outgoingRail: 'KEETA_SEND'
 			}
 		},
 		{
