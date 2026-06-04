@@ -871,8 +871,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					sourceLocation: convertAssetLocationToString(body.sourceLocation),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
 					account: body.account?.assertAccount().publicKeyString.get(),
-					...(body.incomingRail ? { incomingRail: body.incomingRail } : {}),					
-					...(body.outgoingRail ? { outgoingRail: body.outgoingRail } : {})					
+					...(body.incomingRail ? { incomingRail: body.incomingRail } : {}),
+					...(body.outgoingRail ? { outgoingRail: body.outgoingRail } : {})
 				} as const;
 
 				if ('persistentAddressTemplateId' in body) {
