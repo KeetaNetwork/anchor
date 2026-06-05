@@ -103,6 +103,21 @@ type ServiceMetadata = {
 				 */
 				countryCodes?: string[];
 				/**
+				 * The entity types which this KYC provider can
+				 * verify. If not specified, the provider is
+				 * assumed to verify `individual` entities only,
+				 * preserving the classic KYC behavior.
+				 *
+				 * - `individual` is the classic KYC redirect flow
+				 *   (the provider returns a `webURL` hosted journey).
+				 * - `business` is a Know Your Business (KYB) flow,
+				 *   performed synchronously from supplied business
+				 *   details with no `webURL`.
+				 *
+				 * A provider that supports both lists both values.
+				 */
+				entityTypes?: ('individual' | 'business')[];
+				/**
 				 * The Certificate Authority (CA) Certificate
 				 * that this KYC provider uses to sign KYC
 				 * certificates.  This is used to identify the
@@ -347,6 +362,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * of the following countries.
 		 */
 		countryCodes: CountrySearchInput[];
+		/**
+		 * Search for a KYC provider which can verify the given entity
+		 * type. If omitted, providers are matched without filtering on
+		 * entity type (a provider with no declared `entityTypes` is
+		 * treated as `individual`-only).
+		 */
+		entityType?: 'individual' | 'business';
 	};
 	'assetMovement': {
 		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
@@ -1717,6 +1739,28 @@ class Resolver {
 					}
 
 					if (!acceptable) {
+						continue;
+					}
+				}
+
+				/*
+				 * Filter by entity type when requested. A service that
+				 * does not declare `entityTypes` is treated as
+				 * `individual`-only, preserving the classic KYC
+				 * behavior for providers predating this field.
+				 */
+				if (criteria.entityType !== undefined) {
+					let entityTypes: (string | undefined)[] = ['individual'];
+					if ('entityTypes' in checkKYCService) {
+						const declared = await checkKYCService.entityTypes?.('array') ?? [];
+						entityTypes = await Promise.all(declared.map(async function(item) {
+							return(await item?.('string'));
+						}));
+					}
+
+					this.#logger?.debug(`Resolver:${this.id}`, 'Checking entity type:', criteria.entityType, 'against', entityTypes, 'for', checkKYCServiceID);
+
+					if (!entityTypes.includes(criteria.entityType)) {
 						continue;
 					}
 				}

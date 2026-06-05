@@ -122,3 +122,132 @@ test('KYC Anchor HTTP Server', async function() {
 	const homeText = await homeResponse.text();
 	expect(homeText).toBe('<html><body>Hello World</body></html>');
 });
+
+test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
+	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { userClient } = await createNodeAndClient(signer);
+
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuer: kycCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const kycCA = await kycCABuilder.build();
+
+	/*
+	 * A provider that supports BOTH individual and business verification.
+	 * Both are redirect flows to a provider-hosted experience; the entity
+	 * type selects which hosted experience the provider presents. The
+	 * provider owns detail collection, so the request carries no
+	 * entity-specific details.
+	 */
+	await using server = new KeetaNetKYCAnchorHTTPServer({
+		signer: signer,
+		ca: kycCA,
+		client: userClient,
+		kycProviderURL: 'https://example.com/journey/{id}',
+		kyc: {
+			countryCodes: ['US'],
+			entityTypes: ['individual', 'business'],
+			verificationStarted: async function(request) {
+				/*
+				 * The request advertises the entity type; the provider
+				 * would present the matching hosted form. Both return a
+				 * webURL (filled in by the server from kycProviderURL).
+				 */
+				expect(request.entityType === undefined || request.entityType === 'individual' || request.entityType === 'business').toBe(true);
+				return({
+					ok: true,
+					expectedCost: {
+						min: '0',
+						max: '0',
+						token: userClient.baseToken.publicKeyString.get()
+					}
+				});
+			},
+			getCertificates: async function(_ignore_verificationID) {
+				return([{ certificate: '' }]);
+			},
+			getVerificationStatus: async function() {
+				return({ status: KYCVerificationStatus.PASSED });
+			}
+		}
+	});
+
+	await server.start();
+	expect(server.url).toBeDefined();
+
+	await userClient.setInfo({
+		name: 'USER',
+		description: 'KYC Anchor Test Root (business)',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: {
+				kyc: {
+					Test: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const resolver = new Resolver({
+		client: userClient,
+		root: userClient.account,
+		trustedCAs: []
+	});
+
+	/*
+	 * The published metadata advertises both entity types.
+	 */
+	const businessMatch = await resolver.lookup('kyc', {
+		countryCodes: ['US'],
+		entityType: 'business'
+	});
+	expect(businessMatch).toBeDefined();
+	if (businessMatch === undefined || !('Test' in businessMatch)) {
+		throw(new Error('internal error: business-capable KYC service not found'));
+	}
+	const declaredEntityTypes = await businessMatch.Test.entityTypes?.('array');
+	expect(declaredEntityTypes).toBeDefined();
+
+	const individualMatch = await resolver.lookup('kyc', {
+		countryCodes: ['US'],
+		entityType: 'individual'
+	});
+	expect(individualMatch).toBeDefined();
+	expect(individualMatch !== undefined && 'Test' in individualMatch).toBe(true);
+
+	/*
+	 * Drive a business createVerification directly against the HTTP route.
+	 * Business is a redirect flow like individual, so the server fills in a
+	 * webURL from kycProviderURL and returns it.
+	 */
+	const requesterAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const signed = await (await import('./common.js')).generateSignedData(requesterAccount);
+	const createURL = new URL('/api/createVerification', server.url);
+	const businessResponse = await fetch(createURL, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				countryCodes: ['US'],
+				account: requesterAccount.publicKeyString.get(),
+				signed: signed,
+				entityType: 'business'
+			}
+		})
+	});
+
+	expect(businessResponse.status).toBe(200);
+	const businessJSON: unknown = await businessResponse.json();
+	if (businessJSON === null || typeof businessJSON !== 'object') {
+		throw(new Error('internal error: business response is not an object'));
+	}
+	expect('ok' in businessJSON && businessJSON.ok === true).toBe(true);
+	expect('webURL' in businessJSON && typeof businessJSON.webURL === 'string').toBe(true);
+});
+

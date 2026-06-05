@@ -130,6 +130,17 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		 * Country codes that this KYC provider can service (default is all country codes)
 		 */
 		countryCodes?: (CurrencyInfo.Country | CurrencyInfo.ISOCountryCode)[];
+
+		/**
+		 * Entity types that this KYC provider can verify.
+		 *
+		 * Defaults to `['individual']` (the classic KYC redirect flow).
+		 * Add `'business'` to advertise Know Your Business (KYB) support,
+		 * which is performed synchronously from the request's business
+		 * details with no hosted journey / webURL. A provider that does
+		 * both lists both: `['individual', 'business']`.
+		 */
+		entityTypes?: ('individual' | 'business')[];
 	}
 
 	/**
@@ -168,6 +179,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
 	readonly routes: NonNullable<KeetaAnchorKYCServerConfig['routes']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
+	readonly #entityTypes: ('individual' | 'business')[];
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
 		super(config);
@@ -179,6 +191,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		this.kyc = config.kyc;
 		this.routes = config.routes ?? {};
 		this.kycProviderURL = config.kycProviderURL ?? kycProviderURLUndefined;
+		this.#entityTypes = config.kyc.entityTypes ?? ['individual'];
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
@@ -402,6 +415,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
+			entityTypes: this.#entityTypes,
 			operations
 		});
 	}
