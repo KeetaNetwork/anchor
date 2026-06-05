@@ -3,7 +3,7 @@ import type { Signable } from '../../lib/utils/signing.js';
 import type { NamespaceValidator } from './lib/validators.js';
 import type { ResolvedCertificateChainRequirement } from '../../lib/utils/certificate-network.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
-import type { KeetaNet } from '../../client/index.js';
+import type * as KeetaNet from '@keetanetwork/keetanet-client';
 import type {
 	KeetaStorageAnchorDeleteResponse,
 	KeetaStorageAnchorPutResponse,
@@ -29,7 +29,7 @@ import {
 	assertKeetaStorageAnchorSearchResponse,
 	assertKeetaStorageAnchorQuotaResponse,
 	assertKeetaStorageAnchorUpdateMetadataRequest
-} from './common.generated.js';
+} from './common.server.generated.js';
 import {
 	getKeetaStorageAnchorDeleteRequestSigningData,
 	getKeetaStorageAnchorPutRequestSigningData,

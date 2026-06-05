@@ -1,5 +1,5 @@
 import type { TokenAddress } from "@keetanetwork/keetanet-client/lib/account.js";
-import { KeetaNet } from "../../client/index.js";
+import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { KeetaAnchorUserError } from "../../lib/error.js";
 import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
 import type { ValidateQuoteArguments } from "./server.js";

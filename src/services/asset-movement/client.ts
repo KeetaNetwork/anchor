@@ -86,7 +86,7 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
 import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
 
@@ -870,7 +870,9 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				const base = {
 					sourceLocation: convertAssetLocationToString(body.sourceLocation),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
+					account: body.account?.assertAccount().publicKeyString.get(),
+					...(body.incomingRail ? { incomingRail: body.incomingRail } : {}),
+					...(body.outgoingRail ? { outgoingRail: body.outgoingRail } : {})
 				} as const;
 
 				if ('persistentAddressTemplateId' in body) {

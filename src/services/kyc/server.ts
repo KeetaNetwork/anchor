@@ -1,4 +1,4 @@
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 
 import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
@@ -15,7 +15,7 @@ import type {
 import {
 	assertCreateVerificationRequest,
 	assertCreateVerificationResponse
-} from './common.generated.js';
+} from './common.server.generated.js';
 import {
 	verifySignedData
 } from './common.js';
