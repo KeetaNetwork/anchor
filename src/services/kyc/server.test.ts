@@ -223,3 +223,101 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
 	expect(individualMatch !== undefined && 'Test' in individualMatch).toBe(true);
 });
 
+/*
+ * Explicit entity-type combination matrix. The existing tests above cover the
+ * implicit case (no entityTypes declared -> individual-only) and a
+ * both-types provider. This covers every explicit declaration against every
+ * requested entity type, so a provider that only advertises one type is not
+ * matched for the other.
+ */
+test('KYC Anchor HTTP Server - entity type combination matrix', async function() {
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuer: kycCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const kycCA = await kycCABuilder.build();
+
+	/*
+	 * Stand up a provider advertising exactly `entityTypes`, publish its
+	 * metadata, and return a resolver that can be queried for a given
+	 * requested entity type. A fresh signer/account per provider keeps the
+	 * published metadata isolated.
+	 */
+	async function lookupWith(entityTypes: ('individual' | 'business')[] | undefined, requested: 'individual' | 'business') {
+		const providerSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const { userClient: providerClient } = await createNodeAndClient(providerSigner);
+
+		await using server = new KeetaNetKYCAnchorHTTPServer({
+			signer: providerSigner,
+			ca: kycCA,
+			client: providerClient,
+			kycProviderURL: 'https://example.com/journey/{id}',
+			kyc: {
+				countryCodes: ['US'],
+				...(entityTypes === undefined ? {} : { entityTypes }),
+				verificationStarted: async function() {
+					return({
+						ok: true,
+						expectedCost: { min: '0', max: '0', token: providerClient.baseToken.publicKeyString.get() }
+					});
+				},
+				getCertificates: async function() {
+					return([{ certificate: '' }]);
+				},
+				getVerificationStatus: async function() {
+					return({ status: KYCVerificationStatus.PASSED });
+				}
+			}
+		});
+
+		await server.start();
+
+		await providerClient.setInfo({
+			name: 'USER',
+			description: 'KYC Anchor Test Root (matrix)',
+			metadata: Resolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: {},
+				services: {
+					kyc: {
+						Test: await server.serviceMetadata()
+					}
+				}
+			})
+		});
+
+		const resolver = new Resolver({
+			client: providerClient,
+			root: providerClient.account,
+			trustedCAs: []
+		});
+
+		const match = await resolver.lookup('kyc', {
+			countryCodes: ['US'],
+			entityType: requested
+		});
+
+		return(match !== undefined && 'Test' in match);
+	}
+
+	/* Individual-only provider: matches individual, rejects business. */
+	expect(await lookupWith(['individual'], 'individual')).toBe(true);
+	expect(await lookupWith(['individual'], 'business')).toBe(false);
+
+	/* Business-only provider: matches business, rejects individual. */
+	expect(await lookupWith(['business'], 'business')).toBe(true);
+	expect(await lookupWith(['business'], 'individual')).toBe(false);
+
+	/* Both-types provider: matches either. */
+	expect(await lookupWith(['individual', 'business'], 'individual')).toBe(true);
+	expect(await lookupWith(['individual', 'business'], 'business')).toBe(true);
+
+	/* No declaration: treated as individual-only (classic behavior). */
+	expect(await lookupWith(undefined, 'individual')).toBe(true);
+	expect(await lookupWith(undefined, 'business')).toBe(false);
+});
+

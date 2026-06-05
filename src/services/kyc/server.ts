@@ -23,6 +23,7 @@ import {
 import type { Account } from '@keetanetwork/keetanet-client/lib/account.js';
 import type * as Signing from '../../lib/utils/signing.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
+import { kycEntityTypes } from '../../lib/resolver.js';
 import { parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 
@@ -135,11 +136,13 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		/**
 		 * Entity types that this KYC provider can verify.
 		 *
-		 * Defaults to `['individual']` (the classic KYC redirect flow).
-		 * Add `'business'` to advertise Know Your Business (KYB) support,
-		 * which is performed synchronously from the request's business
-		 * details with no hosted journey / webURL. A provider that does
-		 * both lists both: `['individual', 'business']`.
+		 * Defaults to `['individual']` (the classic KYC flow).
+		 * Add `'business'` to advertise Know Your Business (KYB)
+		 * support. Both are hosted redirect flows: the provider
+		 * returns a `webURL` to the hosted collection experience it
+		 * owns (individual KYC or KYB), and the client polls for the
+		 * certificate. A provider that does both lists both:
+		 * `['individual', 'business']`.
 		 */
 		entityTypes?: KYCEntityType[];
 	}
@@ -416,8 +419,8 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
-			entityTypes: Object.fromEntries(this.#entityTypes.map(function(entityType) {
-				return([entityType, true]);
+			entityTypes: Object.fromEntries(kycEntityTypes.map((entityType) => {
+				return([entityType, this.#entityTypes.includes(entityType)]);
 			})),
 			operations
 		});
