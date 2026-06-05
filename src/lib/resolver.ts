@@ -7,7 +7,6 @@ import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
-import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
@@ -18,6 +17,7 @@ import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableServiceMetadata } from './anchor-metadata-server.js';
 import { assertHTTPSignedField } from './http-server/common.js';
 import { verifyMetadataSignature } from './anchor-metadata-server.js';
+import { assertServiceMetadata, assertSignableServiceMetadataLegal, assertSignableServiceMetadataOperations, isCurrencySearchCanonical, isCurrencySearchInput, isExternalURL } from './resolver.generated.js';
 
 type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
 
@@ -39,9 +39,6 @@ type CurrencySearchInput = ServiceMetadataCurrencyCodeCanonical | CurrencyInfo.I
 type CurrencySearchCanonical = ServiceMetadataCurrencyCodeCanonical;
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
-
-const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
-const isCurrencySearchInput = createIs<CurrencySearchInput>();
 
 // #region Global Service Metadata
 /**
@@ -723,11 +720,6 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 	return(input.code);
 }
 
-/**
- * Check if a value is an ExternalURL
- */
-const isExternalURL = createIs<ExternalURL>();
-
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
 type ValuizeInput = JSONSerializablePrimitive | ValuizableObject | ValuizableArray;
 type ValuizableArray = (ValuizableMethod | undefined)[];
@@ -885,10 +877,6 @@ type MetadataConfig = {
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
-
-const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
-const assertSignableServiceMetadataOperations = createAssert<SignableServiceMetadata['operations']>();
-const assertSignableServiceMetadataLegal = createAssert<NonNullable<SignableServiceMetadata['legal']>>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -2765,6 +2753,10 @@ export type {
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
 	Services,
-	SharedLookupCriteria
+	SharedLookupCriteria,
+	CurrencySearchCanonical,
+	CurrencySearchInput,
+	ExternalURL,
+	ToJSONValuizable
 };
 export type { ServiceMetadataEndpoint, ServiceMetadataAuthenticationType } from './metadata.types.js';
