@@ -1,4 +1,5 @@
 import type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceSearchCriteria
 } from '../../lib/resolver.ts';
@@ -37,7 +38,7 @@ export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
  * request does not carry the entity-specific details -- only which kind of
  * experience to start.
  */
-export type KYCEntityType = NonNullable<NonNullable<ServiceMetadata['services']['kyc']>[string]['entityTypes']>[number];
+export type { KYCEntityType };
 
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;

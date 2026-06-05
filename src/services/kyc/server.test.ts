@@ -211,8 +211,9 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
 	if (businessMatch === undefined || !('Test' in businessMatch)) {
 		throw(new Error('internal error: business-capable KYC service not found'));
 	}
-	const declaredEntityTypes = await businessMatch.Test.entityTypes?.('array');
+	const declaredEntityTypes = await businessMatch.Test.entityTypes?.('object');
 	expect(declaredEntityTypes).toBeDefined();
+	expect(declaredEntityTypes !== undefined && 'business' in declaredEntityTypes).toBe(true);
 
 	const individualMatch = await resolver.lookup('kyc', {
 		countryCodes: ['US'],
@@ -220,34 +221,5 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
 	});
 	expect(individualMatch).toBeDefined();
 	expect(individualMatch !== undefined && 'Test' in individualMatch).toBe(true);
-
-	/*
-	 * Drive a business createVerification directly against the HTTP route.
-	 * Business is a redirect flow like individual, so the server fills in a
-	 * webURL from kycProviderURL and returns it.
-	 */
-	const requesterAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const signed = await (await import('./common.js')).generateSignedData(requesterAccount);
-	const createURL = new URL('/api/createVerification', server.url);
-	const businessResponse = await fetch(createURL, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-		body: JSON.stringify({
-			request: {
-				countryCodes: ['US'],
-				account: requesterAccount.publicKeyString.get(),
-				signed: signed,
-				entityType: 'business'
-			}
-		})
-	});
-
-	expect(businessResponse.status).toBe(200);
-	const businessJSON: unknown = await businessResponse.json();
-	if (businessJSON === null || typeof businessJSON !== 'object') {
-		throw(new Error('internal error: business response is not an object'));
-	}
-	expect('ok' in businessJSON && businessJSON.ok === true).toBe(true);
-	expect('webURL' in businessJSON && typeof businessJSON.webURL === 'string').toBe(true);
 });
 

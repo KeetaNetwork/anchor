@@ -44,6 +44,17 @@ const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
 // #region Global Service Metadata
 /**
+ * The type of legal entity a KYC provider can verify.
+ *
+ * - `individual` is the classic Know Your Customer (KYC) flow.
+ * - `business` is the Know Your Business (KYB) flow.
+ *
+ * Both are hosted redirect flows: the provider returns a `webURL` to a
+ * hosted experience it owns, and the client polls for the certificate.
+ */
+type KYCEntityType = 'individual' | 'business';
+
+/**
  * Service Metadata General Structure
  */
 type ServiceMetadata = {
@@ -104,19 +115,20 @@ type ServiceMetadata = {
 				countryCodes?: string[];
 				/**
 				 * The entity types which this KYC provider can
-				 * verify. If not specified, the provider is
-				 * assumed to verify `individual` entities only,
-				 * preserving the classic KYC behavior.
+				 * verify, expressed as a presence map so each
+				 * type can be declared at most once. If omitted,
+				 * the provider is assumed to verify `individual`
+				 * entities only, preserving the classic KYC
+				 * behavior.
 				 *
-				 * - `individual` is the classic KYC redirect flow
-				 *   (the provider returns a `webURL` hosted journey).
-				 * - `business` is a Know Your Business (KYB) flow,
-				 *   performed synchronously from supplied business
-				 *   details with no `webURL`.
+				 * - `individual` is the classic KYC redirect flow.
+				 * - `business` is a Know Your Business (KYB) flow.
 				 *
-				 * A provider that supports both lists both values.
+				 * Both are hosted redirect flows where the provider
+				 * returns a `webURL`. A provider that supports both
+				 * sets both keys to `true`.
 				 */
-				entityTypes?: ('individual' | 'business')[];
+				entityTypes?: { [entityType in KYCEntityType]?: true };
 				/**
 				 * The Certificate Authority (CA) Certificate
 				 * that this KYC provider uses to sign KYC
@@ -368,7 +380,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * entity type (a provider with no declared `entityTypes` is
 		 * treated as `individual`-only).
 		 */
-		entityType?: 'individual' | 'business';
+		entityType?: KYCEntityType;
 	};
 	'assetMovement': {
 		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
@@ -1750,12 +1762,12 @@ class Resolver {
 				 * behavior for providers predating this field.
 				 */
 				if (criteria.entityType !== undefined) {
-					let entityTypes: (string | undefined)[] = ['individual'];
+					let entityTypes: string[] = ['individual'];
 					if ('entityTypes' in checkKYCService) {
-						const declared = await checkKYCService.entityTypes?.('array') ?? [];
-						entityTypes = await Promise.all(declared.map(async function(item) {
-							return(await item?.('string'));
-						}));
+						const declared = await checkKYCService.entityTypes?.('object');
+						if (declared !== undefined) {
+							entityTypes = Object.keys(declared);
+						}
 					}
 
 					this.#logger?.debug(`Resolver:${this.id}`, 'Checking entity type:', criteria.entityType, 'against', entityTypes, 'for', checkKYCServiceID);
@@ -2778,6 +2790,7 @@ class Resolver {
 
 export default Resolver;
 export type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,

@@ -10,7 +10,8 @@ import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse,
-	KeetaKYCAnchorGetVerificationStatusResponse
+	KeetaKYCAnchorGetVerificationStatusResponse,
+	KYCEntityType
 } from './common.ts';
 import {
 	assertCreateVerificationRequest,
@@ -140,7 +141,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		 * details with no hosted journey / webURL. A provider that does
 		 * both lists both: `['individual', 'business']`.
 		 */
-		entityTypes?: ('individual' | 'business')[];
+		entityTypes?: KYCEntityType[];
 	}
 
 	/**
@@ -179,7 +180,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
 	readonly routes: NonNullable<KeetaAnchorKYCServerConfig['routes']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
-	readonly #entityTypes: ('individual' | 'business')[];
+	readonly #entityTypes: KYCEntityType[];
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
 		super(config);
@@ -415,7 +416,9 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
-			entityTypes: this.#entityTypes,
+			entityTypes: Object.fromEntries(this.#entityTypes.map(function(entityType) {
+				return([entityType, true]);
+			})),
 			operations
 		});
 	}
