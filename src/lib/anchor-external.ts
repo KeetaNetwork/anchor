@@ -434,6 +434,36 @@ function assertNonEmptyPrincipals(method: string, principals: Account[] | undefi
 }
 
 /**
+ * `true` for the four bytes JSON treats as insignificant whitespace
+ * (space, tab, line feed, carriage return).
+ */
+function isJsonWhitespace(byte: number): boolean {
+	return(byte === 0x20 || byte === 0x09 || byte === 0x0A || byte === 0x0D);
+}
+
+/**
+ * Index of the first byte after an optional UTF-8 BOM and any leading
+ * JSON whitespace.
+ */
+function firstSignificantByteIndex(buffer: Buffer): number {
+	let index = 0;
+	if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+		index = 3;
+	}
+
+	while (index < buffer.length) {
+		const byte = buffer[index];
+		if (byte === undefined || !isJsonWhitespace(byte)) {
+			break;
+		}
+
+		index++;
+	}
+
+	return(index);
+}
+
+/**
  * Decode a base64-encoded string into a buffer.
  */
 function decodeBase64Buffer(value: string, message: string): Buffer {
@@ -874,7 +904,8 @@ export class AnchorExternal {
 	 * {@link EncryptedContainer} (begins with a SEQUENCE tag).
 	 */
 	private static isV2External(buffer: Buffer): boolean {
-		return(buffer[0] === 0x7B);
+		const index = firstSignificantByteIndex(buffer);
+		return(buffer[index] === 0x7B);
 	}
 
 	/**

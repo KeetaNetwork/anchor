@@ -403,6 +403,14 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 		expectedCode: 'NON_CANONICAL'
 	},
 	{
+		name: 'v2 outer JSON with leading whitespace is classified v2, not v1',
+		makeExternal: async function() {
+			const reshaped = ` ${canonicalizeJson({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}})}`;
+			return(Buffer.from(reshaped, 'utf-8').toString('base64'));
+		},
+		expectedCode: 'NON_CANONICAL'
+	},
+	{
 		name: 'slice value is not a container',
 		makeExternal: async function() { return(packOuter({ [anchor1Key]: Buffer.from([ 1, 2, 3, 4 ]).toString('base64') })); },
 		expectedCode: 'INVALID_SLICE'
