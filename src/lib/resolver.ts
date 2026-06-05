@@ -112,6 +112,58 @@ type ServiceMetadata = {
 			};
 		};
 		/**
+		 * Know Your Business (KYB) services
+		 *
+		 * This is used to identify service providers which can verify
+		 * the legal existence and standing of a business entity.
+		 *
+		 * Unlike KYC (which redirects an individual to a hosted journey),
+		 * a KYB verification is performed synchronously from the business
+		 * details supplied in the request.  There is no user-facing web
+		 * URL, so the metadata mirrors the KYC shape minus the redirect.
+		 */
+		kyb?: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
+				operations: {
+					/**
+					 * Check if the KYB provider can
+					 * service a more specific locality
+					 * (optional)
+					 */
+					checkLocality?: string;
+					/**
+					 * Request an estimate for a KYB
+					 * verification (optional)
+					 */
+					getEstimate?: string;
+					/**
+					 * Begin the KYB verification process
+					 * with this KYB provider
+					 */
+					createVerification?: string;
+					/**
+					 * Get the certificate for the
+					 * KYB verification
+					 */
+					getCertificates?: string;
+				};
+				/**
+				 * Country codes which this KYB provider can
+				 * validate businesses in.  If this is not
+				 * specified, then the KYB provider can
+				 * validate businesses in any country.
+				 */
+				countryCodes?: string[];
+				/**
+				 * The Certificate Authority (CA) Certificate
+				 * that this KYB provider uses to sign KYB
+				 * certificates.  This is used to identify the
+				 * KYB provider.
+				 */
+				ca: string;
+			};
+		};
+		/**
 		 * Foreign Exchange (FX) services
 		 *
 		 * This is used to identify service providers which
@@ -348,6 +400,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		 */
 		countryCodes: CountrySearchInput[];
 	};
+	'kyb': {
+		/**
+		 * Search for a KYB provider which can verify businesses in ALL
+		 * of the following countries.
+		 */
+		countryCodes: CountrySearchInput[];
+	};
 	'assetMovement': {
 		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
 		from?: AssetLocationString;
@@ -486,6 +545,11 @@ function assertValidOperationsKYC(input: unknown): asserts input is { operations
 	assertValidOperationsBanking(input);
 }
 
+function assertValidOperationsKYB(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['kyb']>[string]>['operations'] } {
+	/* XXX:TODO: Validate the specific operations */
+	assertValidOperationsBanking(input);
+}
+
 function assertValidOperationsFX(input: unknown): asserts input is { operations: ToValuizableObject<NonNullable<ServiceMetadata['services']['fx']>[string]>['operations'] } {
 	/* XXX:TODO: Validate the specific operations */
 	assertValidOperationsBanking(input);
@@ -563,6 +627,14 @@ const assertResolverLookupBankingResult = function(input: unknown): ResolverLook
 };
 const assertResolverLookupKYCResult = function(input: unknown): ResolverLookupServiceResults<'kyc'>[string] {
 	assertValidOperationsKYC(input);
+	assertValidOptionalCountryCodes(input);
+	assertValidCA(input);
+
+	return(input);
+};
+
+const assertResolverLookupKYBResult = function(input: unknown): ResolverLookupServiceResults<'kyb'>[string] {
+	assertValidOperationsKYB(input);
 	assertValidOptionalCountryCodes(input);
 	assertValidCA(input);
 
@@ -1544,6 +1616,9 @@ class Resolver {
 		'kyc': {
 			search: this.lookupKYCServices.bind(this)
 		},
+		'kyb': {
+			search: this.lookupKYBServices.bind(this)
+		},
 		'fx': {
 			search: this.lookupFXServices.bind(this)
 		},
@@ -1730,6 +1805,68 @@ class Resolver {
 		if (Object.keys(retval).length === 0) {
 			/*
 			 * If we didn't find any banking services, then we return
+			 * undefined to indicate that no services were found.
+			 */
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupKYBServices(kybServices: ValuizableObject | undefined, criteria: ServiceSearchCriteria<'kyb'>) {
+		if (kybServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'kyb'> = {};
+		for (const checkKYBServiceID in kybServices) {
+			try {
+				const checkKYBService = await kybServices[checkKYBServiceID]?.('object');
+				if (checkKYBService === undefined) {
+					continue;
+				}
+
+				if (!('operations' in checkKYBService)) {
+					continue;
+				}
+
+				if (criteria.countryCodes !== undefined) {
+					let acceptable = true;
+					/*
+					 * If the KYB service does not have a countryCodes
+					 * property, then it can validate businesses in any
+					 * country, so we skip this check.
+					 */
+					if ('countryCodes' in checkKYBService) {
+						const countryCodes = await checkKYBService.countryCodes?.('array') ?? [];
+						const checkKYBServiceCountryCodes = await Promise.all(countryCodes.map(async function(item) {
+							return(await item?.('string'));
+						}));
+						this.#logger?.debug(`Resolver:${this.id}`, 'Checking country codes:', criteria.countryCodes, 'against', checkKYBServiceCountryCodes, 'for', checkKYBServiceID);
+
+						for (const checkCountryCode of criteria.countryCodes) {
+							const checkCountryCodeCanonical = convertToCountrySearchCanonical(checkCountryCode);
+							if (!checkKYBServiceCountryCodes.includes(checkCountryCodeCanonical)) {
+								acceptable = false;
+								break;
+							}
+						}
+					}
+
+					if (!acceptable) {
+						continue;
+					}
+				}
+
+				retval[checkKYBServiceID] = assertResolverLookupKYBResult(checkKYBService);
+			} catch (checkKYBServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking KYB service', checkKYBServiceID, ':', checkKYBServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			/*
+			 * If we didn't find any KYB services, then we return
 			 * undefined to indicate that no services were found.
 			 */
 			return(undefined);
@@ -2481,6 +2618,78 @@ class Resolver {
 				}
 			} catch (kycServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error processing KYC service', kycServiceID, ':', kycServiceError, ' -- ignoring');
+			}
+		}
+
+		const retval = Array.from(allCountryCodes).map(function(countryCode) {
+			return(new CurrencyInfo.Country(countryCode));
+		});
+
+		return(retval);
+	}
+
+	async listSupportedKYBCountries(): Promise<CurrencyInfo.Country[]> {
+		const rootMetadata = await this.#getRootMetadata();
+
+		/*
+		 * Get the services object
+		 */
+		const definedServicesProperty = rootMetadata.services;
+		if (definedServicesProperty === undefined) {
+			throw(new Error('Root metadata is missing "services" property'));
+		}
+		const definedServices = await definedServicesProperty('object');
+
+		const kybServicesProperty = definedServices.kyb;
+		if (kybServicesProperty === undefined) {
+			return([]);
+		}
+
+		const kybServices = await kybServicesProperty('object');
+
+		this.#logger?.debug(`Resolver:${this.id}`, 'Listing supported KYB countries from', Object.keys(kybServices));
+
+		const allCountryCodes = new Set<CurrencyInfo.ISOCountryCode>();
+		for (const kybServiceID in kybServices) {
+			try {
+				const kybService = await kybServices[kybServiceID]?.('object');
+				if (kybService === undefined) {
+					continue;
+				}
+
+				/*
+				 * If the KYB service does not have a countryCodes
+				 * property, then it can validate businesses in any
+				 * country, so we add all countries and stop processing
+				 * other services since we already have all possible countries.
+				 */
+				if (!('countryCodes' in kybService)) {
+					for (const countryCode of CurrencyInfo.Country.allCountryCodes) {
+						allCountryCodes.add(countryCode);
+					}
+					break;
+				}
+
+				const countryCodes = await kybService.countryCodes?.('array') ?? [];
+				const countryCodesValues = await Promise.all(countryCodes.map(async function(item) {
+					return(await item?.('string'));
+				}));
+
+				for (const countryCode of countryCodesValues) {
+					if (countryCode === undefined) {
+						continue;
+					}
+
+					try {
+						// Validate that it's a valid country code
+						const validatedCountryCode = CurrencyInfo.Country.assertCountryCode(countryCode);
+						allCountryCodes.add(validatedCountryCode);
+					} catch (validationError) {
+						this.#logger?.debug(`Resolver:${this.id}`, 'Invalid country code', countryCode, 'in service', kybServiceID, ':', validationError);
+					}
+				}
+			} catch (kybServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error processing KYB service', kybServiceID, ':', kybServiceError, ' -- ignoring');
 			}
 		}
 

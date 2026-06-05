@@ -33,6 +33,7 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 	// Dynamically import errors to avoid circular dependencies
 	const importPromises: { Errors: { [key: string]: DeserializableErrorClass }}[] = await Promise.all([
 		import('../services/kyc/common.js'),
+		import('../services/kyb/common.js'),
 		import('../services/fx/common.js'),
 		import('../services/asset-movement/common.js'),
 		import('../services/storage/common.js'),
