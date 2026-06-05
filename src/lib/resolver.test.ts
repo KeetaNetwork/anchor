@@ -18,6 +18,7 @@ async function setupForResolverTests() {
 	const testCurrencyUSD = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyMXN = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const testCurrencyBTC = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const testCurrencyETH = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 
 	const { userClient, fees } = await createNodeAndClient(testAccount);
 
@@ -125,6 +126,17 @@ async function setupForResolverTests() {
 							to: [testCurrencyMXN.publicKeyString.get()],
 							kycProviders: ['']
 						}]
+					},
+					keeta_fx_unmapped: {
+						operations: {
+							getQuote: 'https://fx-unmapped.keeta.com/api/v1/getQuote',
+							createExchange: 'https://fx-unmapped.keeta.com/api/v1/createExchange'
+						},
+						from: [{
+							currencyCodes: [testCurrencyETH.publicKeyString.get()],
+							to: [testCurrencyUSD.publicKeyString.get()],
+							kycProviders: ['']
+						}]
 					}
 				},
 				banking: {
@@ -207,7 +219,8 @@ async function setupForResolverTests() {
 		tokens: {
 			USD: testCurrencyUSD,
 			MXN: testCurrencyMXN,
-			'$BTC': testCurrencyBTC
+			'$BTC': testCurrencyBTC,
+			ETH: testCurrencyETH
 		},
 		/**
 		 * The metadata entries which are expected to be broken and
@@ -291,6 +304,13 @@ test('Basic Tests', async function() {
 				outputCurrencyCode: 'EUR' as const
 			},
 			result: undefined
+		}, {
+			// Test with token public key directly - ETH is NOT in currencyMap
+			input: {
+				inputCurrencyCode: tokens.ETH.publicKeyString.get(),
+				outputCurrencyCode: tokens.USD.publicKeyString.get()
+			},
+			createExchange: ['https://fx-unmapped.keeta.com/api/v1/createExchange']
 		}]
 	} satisfies {
 		[key in keyof NonNullable<ServiceMetadata['services']>]: ({
@@ -617,7 +637,8 @@ test('Basic Tests', async function() {
 	 */
 	const allTokens = await resolver.listTokens();
 	expect(allTokens.length).toBe(3);
-	expect(allTokens.map(t => t.currency).sort()).toEqual(Object.keys(tokens).sort());
+	// ETH is intentionally not in currencyMap to test direct token public key lookup
+	expect(allTokens.map(t => t.currency).sort()).toEqual(Object.keys(tokens).filter(k => k !== 'ETH').sort());
 	for (const { token, currency } of allTokens) {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		expect(token).toBe(tokens[currency as keyof typeof tokens].publicKeyString.get());

@@ -41,6 +41,7 @@ type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryN
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
+const isCurrencySearchInput = createIs<CurrencySearchInput>();
 
 // #region Global Service Metadata
 /**
@@ -1743,20 +1744,46 @@ class Resolver {
 			return(undefined);
 		}
 
-		const isCurrencySearchInput = createIs<CurrencySearchInput>();
-		// if currency code is provided then convert to canonical format otherwise token public key string was provided
-		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
-		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
-		// if search criteria is not provided then set token to undefined
-		const inputToken = canonicalInputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalInputCurrencyCriteria) : undefined;
-		const outputToken = canonicalOutputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalOutputCurrencyCriteria) : undefined;
+		// Helper to resolve token from either currency code or direct token public key
+		const resolveToken = async (currencyOrToken: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString | undefined): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null | undefined> => {
+			if (currencyOrToken === undefined) {
+				return(undefined);
+			}
+
+			// Check if it's a currency code that needs lookup
+			if (isCurrencySearchInput(currencyOrToken)) {
+				const canonicalCurrency = convertToCurrencySearchCanonical(currencyOrToken);
+				return(await this.lookupToken(canonicalCurrency));
+			}
+
+			// It's potentially a direct token public key string
+			// Validate it and use directly without requiring currencyMap entry
+			const tokenAccount = KeetaNetAccount.fromPublicKeyString(currencyOrToken);
+			if (tokenAccount.isToken()) {
+				const tokenPublicKeyString = tokenAccount.publicKeyString.get();
+				// Return the token using its public key string as the currency identifier
+				// This allows FX lookups to work with tokens that aren't in the currencyMap
+				return({
+					token: tokenPublicKeyString,
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					currency: tokenPublicKeyString as CurrencySearchCanonical
+				});
+			}
+
+			return(undefined);
+		};
+
+		// Resolve tokens for input and output
+		const inputToken = await resolveToken(criteria.inputCurrencyCode);
+		const outputToken = await resolveToken(criteria.outputCurrencyCode);
+
 		if (criteria.inputCurrencyCode !== undefined && inputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', canonicalInputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', criteria.inputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
 		if (criteria.outputCurrencyCode !== undefined && outputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', canonicalOutputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', criteria.outputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
