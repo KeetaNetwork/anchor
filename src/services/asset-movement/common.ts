@@ -833,8 +833,8 @@ export type PersistentForwardingTemplateCompletionData = {
 	plaidPublicToken: string;
 	plaidAccountId: string;
 	mask?: string;
-    bankName?: string;
-    accountSubType?: string;
+	bankName?: string;
+	accountSubType?: string;
 } | {
 	type: 'other';
 	[key: string]: JSONSerializable;
