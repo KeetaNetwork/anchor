@@ -667,7 +667,12 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 	return([ 'get-transaction', input.id ]);
 }
 
-type TransactionStatus = string;
+/**
+ * Lifecycle state of an asset-movement transaction.
+ *
+ * XXX:TODO: Add other states as they are defined in the anchors.
+ */
+export type TransactionStatus = 'COMPLETE' | (string & {});
 
 export type TransactionId = {
 	id: string;

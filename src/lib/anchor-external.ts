@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
-import { assertEncodedAnchorExternalEnvelopeV1 } from './anchor-external.generated.js';
+import { assertEncodedAnchorExternalEnvelopeV1, assertEncodedAnchorExternalEnvelopeV2, assertEncodedAnchorExternalSlice } from './anchor-external.generated.js';
 import { EncryptedContainer, EncryptedContainerError } from './encrypted-container.js';
 import { KeetaAnchorError, KeetaAnchorUserError, KeetaAnchorUserValidationError } from './error.js';
 import { canonicalizeJson } from './utils/signing.js';
@@ -9,17 +9,28 @@ import { Buffer, arrayBufferToBuffer, decodeBase64Strict } from './utils/buffer.
 type Account = InstanceType<typeof KeetaNetLib.Account>;
 
 /**
- * Upper bound on inflated container plaintext, before JSON parsing.
- *
- * Prevents an attacker from forcing a large allocation via a
- * high-ratio gzip payload.
+ * Upper bound on a decoded slice's plaintext. Rejects oversized slices
+ * after decompression so downstream JSON parsing stays bounded.
  */
 const MAX_PLAINTEXT_BYTES = 4096;
 
 /**
  * Current envelope format version.
+ *
+ * v2 inverts the v1 layout: the outer envelope is plaintext and maps each
+ * anchor id to its own independently framed {@link EncryptedContainer}.
  */
-export const ANCHOR_EXTERNAL_VERSION = 1;
+export const ANCHOR_EXTERNAL_VERSION = 2;
+
+/**
+ * V1 envelope format version.
+ */
+export const ANCHOR_EXTERNAL_VERSION_V1 = 1;
+
+/**
+ * Envelope format version a decoded {@link AnchorExternalEnvelope} reports.
+ */
+export type AnchorExternalVersion = typeof ANCHOR_EXTERNAL_VERSION_V1 | typeof ANCHOR_EXTERNAL_VERSION;
 
 // #region Public types
 
@@ -67,38 +78,82 @@ export type AnchorExternalBinding = {
 };
 
 /**
+ * A single decoded slice per-anchor as exposed to callers.
+ */
+export type AnchorExternalSlice = {
+	/**
+	 * Decoded entry. `undefined` only when the slice is encrypted and no
+	 * supplied decryption key could open it; the slice is then opaque.
+	 */
+	entry?: AnchorExternalEntry;
+	/**
+	 * Replay-protection binding. Present if the slice is signed.
+	 */
+	binding?: AnchorExternalBinding;
+	/**
+	 * `true` if the slice container was encrypted.
+	 */
+	encrypted: boolean;
+	/**
+	 * Verified signer of the slice. Present if the slice was signed, the
+	 * signature verified, and the signer matched the anchor id the slice
+	 * is filed under.
+	 */
+	signer?: Account;
+};
+
+/**
  * Decoded anchor-external envelope as exposed to callers.
  */
 export type AnchorExternalEnvelope = {
 	/**
-	 * Envelope format version.
+	 * Envelope format version the source blob was decoded from.
 	 */
-	version: typeof ANCHOR_EXTERNAL_VERSION;
+	version: AnchorExternalVersion;
 	/**
-	 * Per-anchor entries keyed by `Account.publicKeyString.get()`.
+	 * Per-anchor slices keyed by `Account.publicKeyString.get()`.
 	 */
-	anchors: { [anchorPublicKey: string]: AnchorExternalEntry };
+	anchors: { [anchorPublicKey: string]: AnchorExternalSlice };
+};
+
+/**
+ * Per-anchor build options for {@link AnchorExternalBuilder.addAnchor}.
+ */
+export type AnchorExternalAddOptions = {
 	/**
-	 * Signature binding. Present if the envelope is signed.
+	 * Account that signs this anchor's slice. MUST be the same account the
+	 * slice is filed under. Requires {@link AnchorExternalAddOptions.binding}.
+	 */
+	signer?: Account;
+	/**
+	 * Principals who can decrypt this anchor's slice. Omit to leave the
+	 * slice as plaintext.
+	 */
+	encryptFor?: Account[];
+	/**
+	 * Replay-protection binding. Required if {@link AnchorExternalAddOptions.signer}
+	 * is set, forbidden otherwise.
 	 */
 	binding?: AnchorExternalBinding;
 };
 
 /**
- * Authenticity record attached to a verified signed envelope. Present only
- * when the signature was verified and the signer appears in
- * {@link AnchorExternalEnvelope.anchors}.
+ * Decode options for {@link AnchorExternal.fromExternal}.
  */
-export type AnchorExternalSigned = {
-	signer: Account;
+export type AnchorExternalDecodeOptions = {
+	/**
+	 * Keys tried against each encrypted slice. A slice that no key can open
+	 * is surfaced as an opaque slice.
+	 */
+	decryptionKeys?: Account[];
 };
 
 /**
  * Shape inspection result from {@link AnchorExternal.peek}.
  */
 export type AnchorExternalPeekResult = {
-	encrypted: boolean;
-	signed: boolean;
+	version: AnchorExternalVersion;
+	anchorIds: string[];
 };
 
 // #endregion
@@ -106,11 +161,43 @@ export type AnchorExternalPeekResult = {
 // #region Encoded form types (module-internal, exported for tests)
 
 /**
- * Per-anchor entry as it appears in the encoded envelope.
+ * Replay-protection binding as it appears in an encoded slice.
  *
- * `t` = transaction id, `p` = persistent forwarding id, `d` = destination.
+ * `p` = previous block hash, `o` = operation index.
+ */
+export type EncodedAnchorExternalBinding = {
+	p: string;
+	o: number;
+};
+
+/**
+ * A single per-anchor slice plaintext, carried inside that anchor's {@link EncryptedContainer}.
+ * Note: intentionally kept small to reduce the size of the encoded envelope.
  *
- * Note: Single-letter keys keep the envelope smaller.
+ * `t` = transaction id
+ * `p` = persistent forwarding id,
+ * `d` = destination
+ * `b` = replay-protection binding (signed slices only)
+ */
+export type EncodedAnchorExternalSlice =
+	| { t: string; b?: EncodedAnchorExternalBinding }
+	| { p: string; b?: EncodedAnchorExternalBinding }
+	| { d: string; b?: EncodedAnchorExternalBinding };
+
+/**
+ * Outer anchor-external envelope as it appears inside the encoded blob.
+ *
+ * `version` = envelope version, `anchors` = map of anchor id to that
+ * anchor's base64 {@link EncryptedContainer}.
+ */
+export type EncodedAnchorExternalEnvelopeV2 = {
+	version: typeof ANCHOR_EXTERNAL_VERSION;
+	anchors: { [anchorPublicKey: string]: string };
+};
+
+/**
+ * V1 per-anchor entry: `t` = transaction id, `p` = persistent forwarding id,
+ * `d` = destination.
  */
 export type EncodedAnchorExternalEntryV1 =
 	| { t: string }
@@ -118,24 +205,13 @@ export type EncodedAnchorExternalEntryV1 =
 	| { d: string };
 
 /**
- * Replay-protection binding as it appears in the encoded envelope.
- *
- * `p` = previous block hash, `o` = operation index.
- */
-export type EncodedAnchorExternalBindingV1 = {
-	p: string;
-	o: number;
-};
-
-/**
- * Anchor-external envelope as it appears inside the encoded blob.
- *
- * `v` = envelope version, `a` = anchors, `b` = binding.
+ * V1 envelope plaintext. `v` = version, `a` = anchor id to entry,
+ * `b` = envelope-level binding (present only when signed).
  */
 export type EncodedAnchorExternalEnvelopeV1 = {
-	v: typeof ANCHOR_EXTERNAL_VERSION;
+	v: typeof ANCHOR_EXTERNAL_VERSION_V1;
 	a: { [anchorPublicKey: string]: EncodedAnchorExternalEntryV1 };
-	b?: EncodedAnchorExternalBindingV1;
+	b?: EncodedAnchorExternalBinding;
 };
 
 // #endregion
@@ -154,20 +230,15 @@ export const AnchorExternalErrorCodes = [
 	'UNSUPPORTED_VERSION',
 	'NON_CANONICAL',
 	'PLAINTEXT_TOO_LARGE',
+	'INVALID_SLICE',
 
 	/*
 	 * Non-repudiation
 	 */
 	'BAD_SIGNATURE',
-	'SIGNER_NOT_LISTED',
+	'SIGNER_NOT_ANCHOR',
 	'MISSING_BINDING',
 	'UNEXPECTED_BINDING',
-
-	/*
-	 * Confidentiality
-	 */
-	'EXPECTED_PLAIN',
-	'EXPECTED_ENCRYPTED',
 
 	/*
 	 * Caller-declared budget
@@ -241,82 +312,77 @@ export class AnchorExternalError extends KeetaAnchorUserError {
 // #region Encoded <-> Public mappers
 
 /**
- * Convert a public entry to an encoded entry.
+ * Build the encoded slice plaintext for an entry and optional binding.
  */
-function entryToEncoded(entry: AnchorExternalEntry): EncodedAnchorExternalEntryV1 {
+function sliceToEncoded(entry: AnchorExternalEntry, binding: AnchorExternalBinding | undefined): EncodedAnchorExternalSlice {
+	let base: EncodedAnchorExternalSlice;
 	if ('transactionId' in entry) {
-		return({ t: entry.transactionId });
-	}
-	if ('persistentForwardingId' in entry) {
-		return({ p: entry.persistentForwardingId });
+		base = { t: entry.transactionId };
+	} else if ('persistentForwardingId' in entry) {
+		base = { p: entry.persistentForwardingId };
+	} else {
+		base = { d: entry.destination };
 	}
 
-	return({ d: entry.destination });
+	if (binding !== undefined) {
+		base.b = { p: binding.previousBlockHash, o: binding.operationIndex };
+	}
+
+	return(base);
 }
 
 /**
- * Convert an encoded entry to a public entry.
+ * Extract the public entry from an encoded slice.
  */
-function entryFromEncoded(entry: EncodedAnchorExternalEntryV1): AnchorExternalEntry {
-	if ('t' in entry) {
-		return({ transactionId: entry.t });
+function entryFromEncodedSlice(slice: EncodedAnchorExternalSlice): AnchorExternalEntry {
+	if ('t' in slice) {
+		return({ transactionId: slice.t });
 	}
-	if ('p' in entry) {
-		return({ persistentForwardingId: entry.p });
+	if ('p' in slice) {
+		return({ persistentForwardingId: slice.p });
 	}
 
-	return({ destination: entry.d });
+	return({ destination: slice.d });
 }
 
 /**
- * Convert a public envelope to an encoded envelope.
+ * Extract the public binding from an encoded slice, if any.
  */
-function envelopeToEncoded(envelope: AnchorExternalEnvelope): EncodedAnchorExternalEnvelopeV1 {
-	const encodedAnchors: { [anchorPublicKey: string]: EncodedAnchorExternalEntryV1 } = {};
-	for (const [pk, entry] of Object.entries(envelope.anchors)) {
-		encodedAnchors[pk] = entryToEncoded(entry);
+function bindingFromEncodedSlice(slice: EncodedAnchorExternalSlice): AnchorExternalBinding | undefined {
+	if (slice.b === undefined) {
+		return(undefined);
 	}
 
-	const result: EncodedAnchorExternalEnvelopeV1 = {
-		v: ANCHOR_EXTERNAL_VERSION,
-		a: encodedAnchors
-	};
-	if (envelope.binding !== undefined) {
-		result.b = { p: envelope.binding.previousBlockHash, o: envelope.binding.operationIndex };
-	}
-
-	return(result);
+	return({ previousBlockHash: slice.b.p, operationIndex: slice.b.o });
 }
 
 /**
- * Convert an encoded envelope to a public envelope.
+ * Short detail string for a container parse failure.
  */
-function envelopeFromEncoded(encoded: EncodedAnchorExternalEnvelopeV1): AnchorExternalEnvelope {
-	const anchors: { [anchorPublicKey: string]: AnchorExternalEntry } = {};
-	for (const [pk, entry] of Object.entries(encoded.a)) {
-		anchors[pk] = entryFromEncoded(entry);
+function containerErrorDetail(error: unknown): string {
+	if (EncryptedContainerError.isInstance(error)) {
+		return(error.code);
 	}
 
-	const result: AnchorExternalEnvelope = {
-		version: ANCHOR_EXTERNAL_VERSION,
-		anchors
-	};
-	if (encoded.b !== undefined) {
-		result.binding = { previousBlockHash: encoded.b.p, operationIndex: encoded.b.o };
-	}
-
-	return(result);
+	return('malformed container');
 }
 
 /**
- * Parse an encoded envelope.
+ * A container error meaning the supplied keys could not open it.
  */
-function parseEncodedEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV1 {
+function isContainerLocked(error: EncryptedContainerError): boolean {
+	return(error.code === 'NO_KEYS_PROVIDED' || error.code === 'NO_MATCHING_KEY');
+}
+
+/**
+ * Parse the outer encoded envelope.
+ */
+function parseEncodedEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV2 {
 	try {
-		return(assertEncodedAnchorExternalEnvelopeV1(value));
+		return(assertEncodedAnchorExternalEnvelopeV2(value));
 	} catch (error) {
 		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
-			if (error.path === '$input.v') {
+			if (error.path === '$input.version') {
 				throw(new AnchorExternalError('UNSUPPORTED_VERSION', `Unsupported envelope version at ${error.path}: ${String(error.value)}`));
 			}
 
@@ -328,11 +394,18 @@ function parseEncodedEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV1 {
 }
 
 /**
- * Check if a signer is listed in the envelope.anchors.
+ * Parse a per-anchor slice plaintext.
  */
-function signerListed(envelope: AnchorExternalEnvelope, signer: Account): boolean {
-	const signerKey = signer.publicKeyString.get();
-	return(signerKey in envelope.anchors);
+function parseEncodedSlice(value: unknown): EncodedAnchorExternalSlice {
+	try {
+		return(assertEncodedAnchorExternalSlice(value));
+	} catch (error) {
+		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
+			throw(new AnchorExternalError('INVALID_SLICE', `Slice failed shape check at ${error.path ?? '$input'}: expected ${error.expected}`));
+		}
+
+		throw(error);
+	}
 }
 
 /**
@@ -352,12 +425,51 @@ function validateBindingShape(binding: AnchorExternalBinding): string | undefine
 }
 
 /**
- * Decode the base64-encoded string.
+ * Reject an explicit but empty `encryptFor`.
  */
-function decodeExternal(external: string): Buffer {
-	const decoded = decodeBase64Strict(external);
+function assertNonEmptyPrincipals(method: string, principals: Account[] | undefined): void {
+	if (principals?.length === 0) {
+		throw(new KeetaAnchorError(`${method}: encryptFor must contain at least one principal`));
+	}
+}
+
+/**
+ * `true` for the four bytes JSON treats as insignificant whitespace
+ * (space, tab, line feed, carriage return).
+ */
+function isJsonWhitespace(byte: number): boolean {
+	return(byte === 0x20 || byte === 0x09 || byte === 0x0A || byte === 0x0D);
+}
+
+/**
+ * Index of the first byte after an optional UTF-8 BOM and any leading
+ * JSON whitespace.
+ */
+function firstSignificantByteIndex(buffer: Buffer): number {
+	let index = 0;
+	if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+		index = 3;
+	}
+
+	while (index < buffer.length) {
+		const byte = buffer[index];
+		if (byte === undefined || !isJsonWhitespace(byte)) {
+			break;
+		}
+
+		index++;
+	}
+
+	return(index);
+}
+
+/**
+ * Decode a base64-encoded string into a buffer.
+ */
+function decodeBase64Buffer(value: string, message: string): Buffer {
+	const decoded = decodeBase64Strict(value);
 	if (decoded === undefined) {
-		throw(new AnchorExternalError('BAD_BASE64', 'External string is not valid base64 or decoded to zero bytes'));
+		throw(new AnchorExternalError('BAD_BASE64', message));
 	}
 
 	return(decoded);
@@ -367,58 +479,67 @@ function decodeExternal(external: string): Buffer {
 
 // #region AnchorExternalBuilder
 
+type PendingSlice = {
+	entry: AnchorExternalEntry;
+	signer?: Account;
+	principals?: Account[];
+	binding?: AnchorExternalBinding;
+};
+
 /**
  * Fluent builder for constructing an anchor-external envelope and producing
  * its encoded SEND.external string.
  */
 export class AnchorExternalBuilder {
-	readonly #anchors: { [anchorPublicKey: string]: AnchorExternalEntry } = {};
-	#signer: Account | undefined;
-	#principals: Account[] | undefined;
+	readonly #slices = new Map<string, PendingSlice>();
 	#maxLength: number | undefined;
-	#binding: AnchorExternalBinding | undefined;
 
 	/**
-	 * Set the entry for a given anchor, replacing any prior entry
-	 * for the same anchor.
-	 */
-	setAnchor(anchor: Account, entry: AnchorExternalEntry): this {
-		this.#anchors[anchor.publicKeyString.get()] = entry;
-		return(this);
-	}
-
-	/**
-	 * Sign the produced envelope with the given account.
-	 */
-	withSigner(signer: Account): this {
-		this.#signer = signer;
-		return(this);
-	}
-
-	/**
-	 * Encrypt the produced envelope so each listed principal can decrypt
-	 * it. Omit to leave the envelope as plaintext.
-	 */
-	withPrincipals(principals: Account[]): this {
-		this.#principals = principals;
-		return(this);
-	}
-
-	/**
-	 * Bind the produced signature to a position on the signer's
-	 * account chain. Required whenever {@link withSigner} is used.
+	 * Add (or replace) the slice for a given anchor.
 	 *
-	 * @param previousBlockHash Block hash of the signer's current head.
-	 * @param operationIndex    Index of the SEND operation within its block.
+	 * @param anchor  Account the slice is filed under.
+	 * @param entry   Per-anchor entry payload.
+	 * @param options Per-anchor signing/encryption options.
+	 *
+	 * @throws {@link KeetaAnchorError} on caller misuse.
 	 */
-	withBinding(previousBlockHash: string, operationIndex: number): this {
-		const candidate: AnchorExternalBinding = { previousBlockHash, operationIndex };
-		const error = validateBindingShape(candidate);
-		if (error !== undefined) {
-			throw(new KeetaAnchorError(`withBinding: ${error}`));
+	addAnchor(anchor: Account, entry: AnchorExternalEntry, options?: AnchorExternalAddOptions): this {
+		const anchorId = anchor.publicKeyString.get();
+		const signer = options?.signer;
+		const binding = options?.binding;
+		const principals = options?.encryptFor;
+
+		assertNonEmptyPrincipals('addAnchor', principals);
+
+		if (signer !== undefined && signer.publicKeyString.get() !== anchorId) {
+			throw(new KeetaAnchorError('addAnchor: signer must be the same account the slice is filed under'));
+		}
+		if (signer !== undefined && binding === undefined) {
+			throw(new KeetaAnchorError('addAnchor: a signed slice requires a binding for replay protection'));
+		}
+		if (signer === undefined && binding !== undefined) {
+			throw(new KeetaAnchorError('addAnchor: binding is only valid for a signed slice'));
 		}
 
-		this.#binding = candidate;
+		if (binding !== undefined) {
+			const error = validateBindingShape(binding);
+			if (error !== undefined) {
+				throw(new KeetaAnchorError(`addAnchor: ${error}`));
+			}
+		}
+
+		const pending: PendingSlice = { entry };
+		if (signer !== undefined) {
+			pending.signer = signer;
+		}
+		if (principals !== undefined) {
+			pending.principals = principals;
+		}
+		if (binding !== undefined) {
+			pending.binding = binding;
+		}
+
+		this.#slices.set(anchorId, pending);
 		return(this);
 	}
 
@@ -436,18 +557,22 @@ export class AnchorExternalBuilder {
 	}
 
 	/**
-	 * Snapshot of the envelope as it would be encoded right now.
+	 * Build a single anchor's base64 container.
 	 */
-	toEnvelope(): AnchorExternalEnvelope {
-		const result: AnchorExternalEnvelope = {
-			version: ANCHOR_EXTERNAL_VERSION,
-			anchors: { ...this.#anchors }
-		};
+	async #buildSliceContainer(pending: PendingSlice): Promise<string> {
+		const encoded = sliceToEncoded(pending.entry, pending.binding);
+		const canonical = canonicalizeJson(encoded);
+		const plaintext = Buffer.from(canonical, 'utf-8');
 
-		if (this.#binding !== undefined) {
-			result.binding = { ...this.#binding };
+		const principals = pending.principals ?? null;
+		let containerOptions: { signer: Account } | undefined;
+		if (pending.signer !== undefined) {
+			containerOptions = { signer: pending.signer };
 		}
 
+		const container = EncryptedContainer.fromPlaintext(plaintext, principals, containerOptions);
+		const containerBuffer = arrayBufferToBuffer(await container.getEncodedBuffer());
+		const result = containerBuffer.toString('base64');
 		return(result);
 	}
 
@@ -457,31 +582,17 @@ export class AnchorExternalBuilder {
 	 * @throws {@link KeetaAnchorError} on caller misuse.
 	 */
 	async build(): Promise<string> {
-		const envelope = this.toEnvelope();
-
-		if (this.#signer !== undefined && !signerListed(envelope, this.#signer)) {
-			throw(new KeetaAnchorError('Signer is not listed in envelope.anchors'));
-		}
-		if (this.#signer !== undefined && this.#binding === undefined) {
-			throw(new KeetaAnchorError('Signed envelopes require withBinding(previousBlockHash, operationIndex) for replay protection'));
-		}
-		if (this.#signer === undefined && this.#binding !== undefined) {
-			throw(new KeetaAnchorError('withBinding is only valid for signed envelopes'));
+		const anchors: { [anchorPublicKey: string]: string } = {};
+		for (const [anchorId, pending] of this.#slices) {
+			anchors[anchorId] = await this.#buildSliceContainer(pending);
 		}
 
-		const encoded = envelopeToEncoded(envelope);
+		const encoded: EncodedAnchorExternalEnvelopeV2 = {
+			version: ANCHOR_EXTERNAL_VERSION,
+			anchors: anchors
+		};
 		const canonical = canonicalizeJson(encoded);
-		const plaintext = Buffer.from(canonical, 'utf-8');
-
-		const principals = this.#principals ?? null;
-		let containerOptions: { signer: Account } | undefined;
-		if (this.#signer !== undefined) {
-			containerOptions = { signer: this.#signer };
-		}
-
-		const container = EncryptedContainer.fromPlaintext(plaintext, principals, containerOptions);
-		const containerBuffer = arrayBufferToBuffer(await container.getEncodedBuffer());
-		const external = containerBuffer.toString('base64');
+		const external = Buffer.from(canonical, 'utf-8').toString('base64');
 
 		if (this.#maxLength !== undefined && external.length > this.#maxLength) {
 			throw(new KeetaAnchorError(`Encoded external length ${external.length} exceeds caller maxLength ${this.#maxLength}`));
@@ -493,202 +604,161 @@ export class AnchorExternalBuilder {
 
 // #endregion
 
-// #region AnchorExternal
+// #region AnchorExternalV1
 
 /**
- * Immutable, verified view of a parsed SEND.external envelope.
+ * Decodes V1 (single-container) external blobs into the current
+ * {@link AnchorExternalEnvelope} shape.
  */
-export class AnchorExternal {
-	static readonly Builder: typeof AnchorExternalBuilder = AnchorExternalBuilder;
-
-	readonly #envelope: AnchorExternalEnvelope;
-	readonly #encrypted: boolean;
-	readonly #signed: AnchorExternalSigned | undefined;
-
-	private constructor(envelope: AnchorExternalEnvelope, encrypted: boolean, signed: AnchorExternalSigned | undefined) {
-		this.#envelope = envelope;
-		this.#encrypted = encrypted;
-		this.#signed = signed;
-	}
-
+class AnchorExternalV1 {
 	/**
-	 * Decoded envelope.
+	 * Decode a V1 blob. An encrypted blob hides its anchor ids in the
+	 * ciphertext, so without a working key it yields no anchors.
 	 */
-	get envelope(): AnchorExternalEnvelope {
-		return(this.#envelope);
-	}
-
-	/**
-	 * `true` if the source blob was encrypted.
-	 */
-	get encrypted(): boolean {
-		return(this.#encrypted);
-	}
-
-	/**
-	 * Authenticity record for a verified signed envelope, or `undefined`
-	 * if the envelope was not signed.
-	 */
-	get signed(): AnchorExternalSigned | undefined {
-		return(this.#signed);
-	}
-
-	/**
-	 * Decode an external string asserted to be plaintext.
-	 *
-	 * @throws {@link AnchorExternalError} `EXPECTED_PLAIN` if the source blob is encrypted.
-	 */
-	static async fromPlainExternal(external: string): Promise<AnchorExternal> {
-		const buffer = decodeExternal(external);
+	static async decode(buffer: Buffer, decryptionKeys: Account[]): Promise<AnchorExternalEnvelope> {
+		const encrypted = AnchorExternalV1.probe(buffer).encrypted;
+		if (encrypted && decryptionKeys.length === 0) {
+			return(AnchorExternalV1.empty());
+		}
 
 		let container: EncryptedContainer;
 		try {
-			container = EncryptedContainer.fromEncodedBuffer(buffer, null);
-		} catch (error) {
-			if (EncryptedContainerError.isInstance(error)) {
-				if (error.code === 'INVALID_PRINCIPALS') {
-					throw(new AnchorExternalError('EXPECTED_PLAIN', 'Blob is encrypted but plaintext was expected'));
-				}
-				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `Container parse failed: ${error.code}`));
+			if (encrypted) {
+				container = EncryptedContainer.fromEncryptedBuffer(buffer, decryptionKeys);
+			} else {
+				container = EncryptedContainer.fromEncodedBuffer(buffer, null);
 			}
-			throw(error);
-		}
-
-		if (container.encrypted) {
-			throw(new AnchorExternalError('EXPECTED_PLAIN', 'Blob is encrypted but plaintext was expected'));
-		}
-
-		const result = await AnchorExternal.fromContainer(container, false);
-		return(result);
-	}
-
-	/**
-	 * Decode an external string asserted to be encrypted under one of the
-	 * supplied principals.
-	 *
-	 * @throws {@link AnchorExternalError} `EXPECTED_ENCRYPTED` if the source blob is plaintext.
-	 * @throws {@link KeetaAnchorError} if `principals` is empty.
-	 */
-	static async fromEncryptedExternal(external: string, principals: Account[]): Promise<AnchorExternal> {
-		if (principals.length === 0) {
-			throw(new KeetaAnchorError('AnchorExternal.fromEncryptedExternal requires at least one principal'));
-		}
-
-		const buffer = decodeExternal(external);
-		let container: EncryptedContainer;
-		try {
-			container = EncryptedContainer.fromEncryptedBuffer(buffer, principals);
 		} catch (error) {
-			if (EncryptedContainerError.isInstance(error)) {
-				if (error.code === 'ENCRYPTION_REQUIRED') {
-					throw(new AnchorExternalError('EXPECTED_ENCRYPTED', 'Blob is plaintext but encrypted was expected'));
-				}
+			if (encrypted) {
+				return(AnchorExternalV1.empty());
+			}
 
-				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `Container parse failed: ${error.code}`));
+			throw(new AnchorExternalError('NOT_AN_ENVELOPE', `V1 container parse failed: ${containerErrorDetail(error)}`));
+		}
+
+		let encoded: EncodedAnchorExternalEnvelopeV1;
+		try {
+			encoded = await AnchorExternalV1.readEnvelope(container);
+		} catch (error) {
+			if (encrypted && EncryptedContainerError.isInstance(error) && isContainerLocked(error)) {
+				return(AnchorExternalV1.empty());
 			}
 
 			throw(error);
 		}
 
-		if (!container.encrypted) {
-			throw(new AnchorExternalError('EXPECTED_ENCRYPTED', 'Blob is plaintext but encrypted was expected'));
-		}
-
-		const result = await AnchorExternal.fromContainer(container, true);
-		return(result);
+		const signer = await AnchorExternalV1.verifySignature(container, encoded);
+		return(AnchorExternalV1.toEnvelope(encoded, encrypted, signer));
 	}
 
 	/**
-	 * Inspect encrypted/signed flags of a candidate external string
-	 * without reading plaintext or requiring a decryption key.
+	 * Read a V1 blob's anchor ids without a decryption key.
 	 */
-	static async peek(external: string): Promise<AnchorExternalPeekResult> {
-		const buffer = decodeExternal(external);
-		let container: EncryptedContainer;
+	static async peek(buffer: Buffer): Promise<AnchorExternalPeekResult> {
+		const probe = AnchorExternalV1.probe(buffer);
+		if (probe.encrypted) {
+			return({ version: ANCHOR_EXTERNAL_VERSION_V1, anchorIds: [] });
+		}
+
+		const container = EncryptedContainer.fromEncodedBuffer(buffer, null);
+		const encoded = await AnchorExternalV1.readEnvelope(container);
+		return({ version: ANCHOR_EXTERNAL_VERSION_V1, anchorIds: Object.keys(encoded.a) });
+	}
+
+	/**
+	 * Frame the blob as a container to inspect its encrypted flag.
+	 */
+	private static probe(buffer: Buffer): EncryptedContainer {
 		try {
-			container = EncryptedContainer.fromEncodedBuffer(buffer, []);
+			return(EncryptedContainer.fromEncodedBuffer(buffer, []));
 		} catch (error) {
-			if (EncryptedContainerError.isInstance(error)) {
-				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `Container parse failed: ${error.code}`));
-			}
-
-			throw(error);
+			throw(new AnchorExternalError('NOT_AN_ENVELOPE', `V1 container parse failed: ${containerErrorDetail(error)}`));
 		}
-
-		return({
-			encrypted: container.encrypted,
-			signed: container.isSigned
-		});
 	}
 
 	/**
-	 * Create an {@link AnchorExternal} from a container.
+	 * The empty envelope yielded when an encrypted V1 blob cannot be opened.
 	 */
-	private static async fromContainer(container: EncryptedContainer, encrypted: boolean): Promise<AnchorExternal> {
-		const envelope = await AnchorExternal.readEnvelope(container);
-		const signed = await AnchorExternal.readSigned(container, envelope);
-		const result = new AnchorExternal(envelope, encrypted, signed);
-		return(result);
+	private static empty(): AnchorExternalEnvelope {
+		return({ version: ANCHOR_EXTERNAL_VERSION_V1, anchors: {}});
 	}
 
 	/**
-	 * Read the envelope from a container.
+	 * Read and validate a V1 container's envelope plaintext.
 	 */
-	private static async readEnvelope(container: EncryptedContainer): Promise<AnchorExternalEnvelope> {
+	private static async readEnvelope(container: EncryptedContainer): Promise<EncodedAnchorExternalEnvelopeV1> {
 		let plaintextArrayBuffer: ArrayBuffer;
 		try {
 			plaintextArrayBuffer = await container.getPlaintext();
 		} catch (error) {
 			if (EncryptedContainerError.isInstance(error)) {
-				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `Container plaintext unavailable: ${error.code}`));
+				if (isContainerLocked(error)) {
+					throw(error);
+				}
+
+				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `V1 plaintext unavailable: ${error.code}`));
 			}
+
 			throw(error);
 		}
 
 		if (plaintextArrayBuffer.byteLength > MAX_PLAINTEXT_BYTES) {
-			throw(new AnchorExternalError('PLAINTEXT_TOO_LARGE', `Container plaintext exceeds ${MAX_PLAINTEXT_BYTES} bytes`));
+			throw(new AnchorExternalError('PLAINTEXT_TOO_LARGE', `V1 plaintext exceeds ${MAX_PLAINTEXT_BYTES} bytes`));
 		}
 
-		const plaintextBuffer = arrayBufferToBuffer(plaintextArrayBuffer);
-		const plaintextString = plaintextBuffer.toString('utf-8');
+		const plaintextString = arrayBufferToBuffer(plaintextArrayBuffer).toString('utf-8');
 
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(plaintextString);
 		} catch {
-			throw(new AnchorExternalError('NOT_AN_ENVELOPE', 'Container plaintext is not valid JSON'));
+			throw(new AnchorExternalError('NOT_AN_ENVELOPE', 'V1 plaintext is not valid JSON'));
 		}
 
-		const encoded = parseEncodedEnvelope(parsed);
+		const encoded = AnchorExternalV1.parseEnvelope(parsed);
 
-		/*
-		 * Reject non-canonical encodings: an attacker could otherwise
-		 * mutate the JSON shape under a still-valid signature on the
-		 * original bytes.
-		 */
 		const reCanonical = canonicalizeJson(encoded);
 		if (reCanonical !== plaintextString) {
-			throw(new AnchorExternalError('NON_CANONICAL', 'Container plaintext is not JCS-canonical'));
+			throw(new AnchorExternalError('NON_CANONICAL', 'V1 plaintext is not JCS-canonical'));
 		}
 
-		const result = envelopeFromEncoded(encoded);
-		return(result);
+		return(encoded);
 	}
 
 	/**
-	 * Read the signed record from a container.
+	 * Parse a V1 envelope plaintext.
 	 */
-	private static async readSigned(container: EncryptedContainer, envelope: AnchorExternalEnvelope): Promise<AnchorExternalSigned | undefined> {
+	private static parseEnvelope(value: unknown): EncodedAnchorExternalEnvelopeV1 {
+		try {
+			return(assertEncodedAnchorExternalEnvelopeV1(value));
+		} catch (error) {
+			if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
+				if (error.path === '$input.v') {
+					throw(new AnchorExternalError('UNSUPPORTED_VERSION', `Unsupported envelope version at ${error.path}: ${String(error.value)}`));
+				}
+
+				throw(new AnchorExternalError('NOT_AN_ENVELOPE', `V1 envelope failed shape check at ${error.path ?? '$input'}: expected ${error.expected}`));
+			}
+
+			throw(error);
+		}
+	}
+
+	/**
+	 * Verify a V1 envelope's single signature and enforce signed-iff-binding.
+	 * The signer MUST be one of the anchors.
+	 */
+	private static async verifySignature(container: EncryptedContainer, encoded: EncodedAnchorExternalEnvelopeV1): Promise<Account | undefined> {
 		if (!container.isSigned) {
-			if (envelope.binding !== undefined) {
-				throw(new AnchorExternalError('UNEXPECTED_BINDING', 'Unsigned envelope carries a binding'));
+			if (encoded.b !== undefined) {
+				throw(new AnchorExternalError('UNEXPECTED_BINDING', 'Unsigned V1 envelope carries a binding'));
 			}
 
 			return(undefined);
 		}
 
-		if (envelope.binding === undefined) {
-			throw(new AnchorExternalError('MISSING_BINDING', 'Signed envelope is missing required binding'));
+		if (encoded.b === undefined) {
+			throw(new AnchorExternalError('MISSING_BINDING', 'Signed V1 envelope is missing required binding'));
 		}
 
 		let valid: boolean;
@@ -708,14 +778,316 @@ export class AnchorExternal {
 
 		const signer = container.getSigningAccount();
 		if (signer === undefined) {
-			throw(new AnchorExternalError('BAD_SIGNATURE', 'Container is signed but the signing account is unavailable'));
+			throw(new AnchorExternalError('BAD_SIGNATURE', 'V1 envelope is signed but the signing account is unavailable'));
 		}
 
-		if (!signerListed(envelope, signer)) {
-			throw(new AnchorExternalError('SIGNER_NOT_LISTED', 'Signing account is not listed in envelope.anchors'));
+		if (!(signer.publicKeyString.get() in encoded.a)) {
+			throw(new AnchorExternalError('SIGNER_NOT_ANCHOR', 'V1 signer is not listed in the envelope anchors'));
 		}
 
-		return({ signer });
+		return(signer);
+	}
+
+	/**
+	 * Map a verified V1 envelope onto the current per-anchor envelope shape.
+	 */
+	private static toEnvelope(encoded: EncodedAnchorExternalEnvelopeV1, encrypted: boolean, signer: Account | undefined): AnchorExternalEnvelope {
+		const signerKey = signer?.publicKeyString.get();
+		const anchors: { [anchorPublicKey: string]: AnchorExternalSlice } = {};
+		for (const [anchorId, entry] of Object.entries(encoded.a)) {
+			const slice: AnchorExternalSlice = { entry: AnchorExternalV1.entryFromEncoded(entry), encrypted };
+
+			if (signer !== undefined && anchorId === signerKey) {
+				slice.signer = signer;
+				if (encoded.b !== undefined) {
+					slice.binding = { previousBlockHash: encoded.b.p, operationIndex: encoded.b.o };
+				}
+			}
+
+			anchors[anchorId] = slice;
+		}
+
+		return({ version: ANCHOR_EXTERNAL_VERSION_V1, anchors });
+	}
+
+	/**
+	 * Public entry from a V1 encoded entry.
+	 */
+	private static entryFromEncoded(entry: EncodedAnchorExternalEntryV1): AnchorExternalEntry {
+		if ('t' in entry) {
+			return({ transactionId: entry.t });
+		}
+		if ('p' in entry) {
+			return({ persistentForwardingId: entry.p });
+		}
+
+		return({ destination: entry.d });
+	}
+}
+
+// #endregion
+
+// #region AnchorExternal
+
+/**
+ * Immutable, verified view of a parsed SEND.external envelope.
+ */
+export class AnchorExternal {
+	static readonly Builder: typeof AnchorExternalBuilder = AnchorExternalBuilder;
+
+	readonly #envelope: AnchorExternalEnvelope;
+
+	private constructor(envelope: AnchorExternalEnvelope) {
+		this.#envelope = envelope;
+	}
+
+	/**
+	 * Decoded envelope.
+	 */
+	get envelope(): AnchorExternalEnvelope {
+		return(this.#envelope);
+	}
+
+	/**
+	 * Decode an external string into its per-anchor slices.
+	 *
+	 * @throws {@link AnchorExternalError} on malformed input or failed verification.
+	 */
+	static async fromExternal(external: string, options?: AnchorExternalDecodeOptions): Promise<AnchorExternal> {
+		const decryptionKeys = options?.decryptionKeys ?? [];
+		const buffer = decodeBase64Buffer(external, 'External string is not valid base64 or decoded to zero bytes');
+
+		if (!AnchorExternal.isV2External(buffer)) {
+			const envelope = await AnchorExternalV1.decode(buffer, decryptionKeys);
+			return(new AnchorExternal(envelope));
+		}
+
+		const encoded = AnchorExternal.decodeOuter(buffer);
+
+		const anchors: { [anchorPublicKey: string]: AnchorExternalSlice } = {};
+		for (const [anchorId, containerB64] of Object.entries(encoded.anchors)) {
+			anchors[anchorId] = await AnchorExternal.decodeSlice(anchorId, containerB64, decryptionKeys);
+		}
+
+		const envelope: AnchorExternalEnvelope = {
+			version: ANCHOR_EXTERNAL_VERSION,
+			anchors
+		};
+
+		const result = new AnchorExternal(envelope);
+		return(result);
+	}
+
+	/**
+	 * Read the anchor ids present in an external string without decoding any
+	 * slice. Encrypted V1 blobs hide their ids in the ciphertext, so
+	 * `anchorIds` is empty until a key is passed to {@link fromExternal}.
+	 */
+	static async peek(external: string): Promise<AnchorExternalPeekResult> {
+		const buffer = decodeBase64Buffer(external, 'External string is not valid base64 or decoded to zero bytes');
+
+		if (!AnchorExternal.isV2External(buffer)) {
+			const result = await AnchorExternalV1.peek(buffer);
+			return(result);
+		}
+
+		const encoded = AnchorExternal.decodeOuter(buffer);
+		const result: AnchorExternalPeekResult = {
+			version: ANCHOR_EXTERNAL_VERSION,
+			anchorIds: Object.keys(encoded.anchors)
+		};
+		return(result);
+	}
+
+	/**
+	 * v2 is plaintext JCS JSON (begins with `{`); V1 is a DER-framed
+	 * {@link EncryptedContainer} (begins with a SEQUENCE tag).
+	 */
+	private static isV2External(buffer: Buffer): boolean {
+		const index = firstSignificantByteIndex(buffer);
+		return(buffer[index] === 0x7B);
+	}
+
+	/**
+	 * Decode and validate the plaintext outer envelope.
+	 */
+	private static decodeOuter(buffer: Buffer): EncodedAnchorExternalEnvelopeV2 {
+		const outerString = buffer.toString('utf-8');
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(outerString);
+		} catch {
+			throw(new AnchorExternalError('NOT_AN_ENVELOPE', 'External is not valid JSON'));
+		}
+
+		const encoded = parseEncodedEnvelope(parsed);
+
+		/*
+		 * Reject non-canonical outer encodings so the anchor id set is
+		 * unambiguous and deterministic.
+		 */
+		const reCanonical = canonicalizeJson(encoded);
+		if (reCanonical !== outerString) {
+			throw(new AnchorExternalError('NON_CANONICAL', 'Outer envelope is not JCS-canonical'));
+		}
+
+		return(encoded);
+	}
+
+	/**
+	 * Decode a single per-anchor slice.
+	 */
+	private static async decodeSlice(anchorId: string, containerB64: string, decryptionKeys: Account[]): Promise<AnchorExternalSlice> {
+		const buffer = decodeBase64Buffer(containerB64, `Slice for ${anchorId} is not valid base64`);
+
+		let probe: EncryptedContainer;
+		try {
+			probe = EncryptedContainer.fromEncodedBuffer(buffer, []);
+		} catch (error) {
+			const detail = containerErrorDetail(error);
+			throw(new AnchorExternalError('INVALID_SLICE', `Slice container parse failed: ${detail}`));
+		}
+
+		const encrypted = probe.encrypted;
+		if (encrypted && decryptionKeys.length === 0) {
+			return({ encrypted: true });
+		}
+
+		let container: EncryptedContainer;
+		try {
+			if (encrypted) {
+				container = EncryptedContainer.fromEncryptedBuffer(buffer, decryptionKeys);
+			} else {
+				container = EncryptedContainer.fromEncodedBuffer(buffer, null);
+			}
+		} catch (error) {
+			if (encrypted) {
+				return({ encrypted: true });
+			}
+
+			const detail = containerErrorDetail(error);
+			throw(new AnchorExternalError('INVALID_SLICE', `Slice container parse failed: ${detail}`));
+		}
+
+		let entry: AnchorExternalEntry;
+		let binding: AnchorExternalBinding | undefined;
+		let signer: Account | undefined;
+		try {
+			const plaintext = await AnchorExternal.readSlicePlaintext(container);
+			entry = plaintext.entry;
+			binding = plaintext.binding;
+			signer = await AnchorExternal.verifySliceSignature(container, anchorId, binding);
+		} catch (error) {
+			if (encrypted && EncryptedContainerError.isInstance(error) && isContainerLocked(error)) {
+				return({ encrypted: true });
+			}
+
+			throw(error);
+		}
+
+		const slice: AnchorExternalSlice = { entry, encrypted };
+		if (binding !== undefined) {
+			slice.binding = binding;
+		}
+		if (signer !== undefined) {
+			slice.signer = signer;
+		}
+
+		return(slice);
+	}
+
+	/**
+	 * Read and validate a slice container's plaintext.
+	 */
+	private static async readSlicePlaintext(container: EncryptedContainer): Promise<{ entry: AnchorExternalEntry; binding: AnchorExternalBinding | undefined }> {
+		let plaintextArrayBuffer: ArrayBuffer;
+		try {
+			plaintextArrayBuffer = await container.getPlaintext();
+		} catch (error) {
+			if (EncryptedContainerError.isInstance(error)) {
+				if (isContainerLocked(error)) {
+					throw(error);
+				}
+
+				throw(new AnchorExternalError('INVALID_SLICE', `Slice plaintext unavailable: ${error.code}`));
+			}
+
+			throw(error);
+		}
+
+		if (plaintextArrayBuffer.byteLength > MAX_PLAINTEXT_BYTES) {
+			throw(new AnchorExternalError('PLAINTEXT_TOO_LARGE', `Slice plaintext exceeds ${MAX_PLAINTEXT_BYTES} bytes`));
+		}
+
+		const plaintextString = arrayBufferToBuffer(plaintextArrayBuffer).toString('utf-8');
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(plaintextString);
+		} catch {
+			throw(new AnchorExternalError('INVALID_SLICE', 'Slice plaintext is not valid JSON'));
+		}
+
+		const encoded = parseEncodedSlice(parsed);
+
+		/*
+		 * Reject non-canonical encodings: an attacker could otherwise
+		 * mutate the JSON shape under a still-valid signature on the
+		 * original bytes.
+		 */
+		const reCanonical = canonicalizeJson(encoded);
+		if (reCanonical !== plaintextString) {
+			throw(new AnchorExternalError('NON_CANONICAL', 'Slice plaintext is not JCS-canonical'));
+		}
+
+		const entry = entryFromEncodedSlice(encoded);
+		const binding = bindingFromEncodedSlice(encoded);
+		return({ entry, binding });
+	}
+
+	/**
+	 * Verify a slice container's signature against the anchor id it is
+	 * filed under and enforce the signed-iff-binding invariant.
+	 */
+	private static async verifySliceSignature(container: EncryptedContainer, anchorId: string, binding: AnchorExternalBinding | undefined): Promise<Account | undefined> {
+		if (!container.isSigned) {
+			if (binding !== undefined) {
+				throw(new AnchorExternalError('UNEXPECTED_BINDING', 'Unsigned slice carries a binding'));
+			}
+
+			return(undefined);
+		}
+
+		if (binding === undefined) {
+			throw(new AnchorExternalError('MISSING_BINDING', 'Signed slice is missing required binding'));
+		}
+
+		let valid: boolean;
+		try {
+			valid = await container.verifySignature();
+		} catch (error) {
+			if (EncryptedContainerError.isInstance(error)) {
+				throw(new AnchorExternalError('BAD_SIGNATURE', `Signature verification failed: ${error.code}`));
+			}
+
+			throw(error);
+		}
+
+		if (!valid) {
+			throw(new AnchorExternalError('BAD_SIGNATURE', 'Signature did not verify against the contained plaintext'));
+		}
+
+		const signer = container.getSigningAccount();
+		if (signer === undefined) {
+			throw(new AnchorExternalError('BAD_SIGNATURE', 'Slice is signed but the signing account is unavailable'));
+		}
+
+		if (signer.publicKeyString.get() !== anchorId) {
+			throw(new AnchorExternalError('SIGNER_NOT_ANCHOR', 'Slice signer does not match the anchor id it is filed under'));
+		}
+
+		return(signer);
 	}
 }
 

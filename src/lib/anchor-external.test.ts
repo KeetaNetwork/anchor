@@ -2,9 +2,9 @@ import { test, expect } from 'vitest';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
 import type {
+	AnchorExternalAddOptions,
 	AnchorExternalEntry,
-	AnchorExternalErrorCode,
-	EncodedAnchorExternalEnvelopeV1
+	AnchorExternalErrorCode
 } from './anchor-external.js';
 import {
 	AnchorExternal,
@@ -28,21 +28,21 @@ const anchor1 = Account.fromSeed('A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1
 const anchor2 = Account.fromSeed('B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2', 0);
 const stranger = Account.fromSeed('C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3', 0);
 
-/*
- * Anchor 1's public key string.
- */
 const anchor1Key = anchor1.publicKeyString.get();
+const anchor2Key = anchor2.publicKeyString.get();
 
 /*
- * Fixed binding values used wherever a test requires a signed envelope.
+ * Fixed binding values used wherever a test requires a signed slice.
  */
 const TEST_BINDING_PREVIOUS_BLOCK_HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const TEST_BINDING_OPERATION_INDEX = 3;
+const TEST_BINDING = { previousBlockHash: TEST_BINDING_PREVIOUS_BLOCK_HASH, operationIndex: TEST_BINDING_OPERATION_INDEX };
+const TEST_ENCODED_BINDING = { p: TEST_BINDING_PREVIOUS_BLOCK_HASH, o: TEST_BINDING_OPERATION_INDEX };
 
 type ModeSpec = {
 	name: string;
-	configure: (builder: AnchorExternalBuilder) => void;
-	decode: (external: string) => Promise<AnchorExternal>;
+	options: AnchorExternalAddOptions | undefined;
+	decryptionKeys: Account[];
 	expectedEncrypted: boolean;
 	expectedSigned: boolean;
 };
@@ -50,33 +50,29 @@ type ModeSpec = {
 const modeSpecs: ModeSpec[] = [
 	{
 		name: 'plain-unsigned',
-		configure: function() {},
-		decode: async function(external) { return(await AnchorExternal.fromPlainExternal(external)); },
+		options: undefined,
+		decryptionKeys: [],
 		expectedEncrypted: false,
 		expectedSigned: false
 	},
 	{
 		name: 'plain-signed',
-		configure: function(builder) {
-			builder.withSigner(anchor1).withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX);
-		},
-		decode: async function(external) { return(await AnchorExternal.fromPlainExternal(external)); },
+		options: { signer: anchor1, binding: TEST_BINDING },
+		decryptionKeys: [],
 		expectedEncrypted: false,
 		expectedSigned: true
 	},
 	{
 		name: 'encrypted-unsigned',
-		configure: function(builder) { builder.withPrincipals([anchor2]); },
-		decode: async function(external) { return(await AnchorExternal.fromEncryptedExternal(external, [anchor2])); },
+		options: { encryptFor: [anchor2] },
+		decryptionKeys: [anchor2],
 		expectedEncrypted: true,
 		expectedSigned: false
 	},
 	{
 		name: 'encrypted-signed',
-		configure: function(builder) {
-			builder.withSigner(anchor1).withPrincipals([anchor1]).withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX);
-		},
-		decode: async function(external) { return(await AnchorExternal.fromEncryptedExternal(external, [anchor1])); },
+		options: { signer: anchor1, encryptFor: [anchor1], binding: TEST_BINDING },
+		decryptionKeys: [anchor1],
 		expectedEncrypted: true,
 		expectedSigned: true
 	}
@@ -105,31 +101,80 @@ const roundTripCases: RoundTripCase[] = entryCases.flatMap(function(entryCase) {
 });
 
 test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
-	const builder = new AnchorExternalBuilder().setAnchor(anchor1, entry);
-	mode.configure(builder);
+	const external = await new AnchorExternalBuilder().addAnchor(anchor1, entry, mode.options).build();
 
-	const external = await builder.build();
-	const decoded = await mode.decode(external);
-	expect(decoded.envelope).toEqual(builder.toEnvelope());
-	expect(decoded.encrypted).toBe(mode.expectedEncrypted);
-	expect(decoded.signed?.signer.comparePublicKey(anchor1) ?? false).toBe(mode.expectedSigned);
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys: mode.decryptionKeys });
+	const slice = decoded.envelope.anchors[anchor1Key];
+	expect(decoded.envelope.version).toBe(ANCHOR_EXTERNAL_VERSION);
+	expect(slice?.entry).toEqual(entry);
+	expect(slice?.encrypted).toBe(mode.expectedEncrypted);
+	expect(slice?.signer?.comparePublicKey(anchor1) ?? false).toBe(mode.expectedSigned);
+	expect(slice?.binding !== undefined).toBe(mode.expectedSigned);
 
 	const peeked = await AnchorExternal.peek(external);
-	expect(peeked).toEqual({ encrypted: mode.expectedEncrypted, signed: mode.expectedSigned });
+	expect(peeked).toEqual({ version: ANCHOR_EXTERNAL_VERSION, anchorIds: [anchor1Key] });
 });
 
-test('round-trip preserves multiple anchors with mixed entry kinds', async function() {
-	const builder = new AnchorExternalBuilder()
-		.setAnchor(anchor1, { transactionId: 'tx-1' })
-		.setAnchor(anchor2, { persistentForwardingId: 'fwd-2' })
-		.withSigner(anchor2)
-		.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX);
+test('round-trip preserves multiple anchors with independent, mixed modes', async function() {
+	const external = await new AnchorExternalBuilder()
+		.addAnchor(anchor1, { transactionId: 'tx-1' })
+		.addAnchor(anchor2, { persistentForwardingId: 'fwd-2' }, { signer: anchor2, encryptFor: [anchor2], binding: TEST_BINDING })
+		.build();
 
-	const external = await builder.build();
-	const decoded = await AnchorExternal.fromPlainExternal(external);
-	expect(decoded.envelope).toEqual(builder.toEnvelope());
-	expect(decoded.envelope.binding).toEqual({ previousBlockHash: TEST_BINDING_PREVIOUS_BLOCK_HASH, operationIndex: TEST_BINDING_OPERATION_INDEX });
-	expect(decoded.signed?.signer.comparePublicKey(anchor2)).toBe(true);
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys: [anchor2] });
+
+	const slice1 = decoded.envelope.anchors[anchor1Key];
+	expect(slice1?.entry).toEqual({ transactionId: 'tx-1' });
+	expect(slice1?.encrypted).toBe(false);
+	expect(slice1?.signer).toBeUndefined();
+
+	const slice2 = decoded.envelope.anchors[anchor2Key];
+	expect(slice2?.entry).toEqual({ persistentForwardingId: 'fwd-2' });
+	expect(slice2?.encrypted).toBe(true);
+	expect(slice2?.binding).toEqual(TEST_BINDING);
+	expect(slice2?.signer?.comparePublicKey(anchor2)).toBe(true);
+});
+
+test('encrypted slices without a matching key surface as opaque', async function() {
+	const external = await new AnchorExternalBuilder()
+		.addAnchor(anchor1, { transactionId: 'tx-1' })
+		.addAnchor(anchor2, { persistentForwardingId: 'fwd-2' }, { encryptFor: [anchor2] })
+		.build();
+
+	const withoutKey = await AnchorExternal.fromExternal(external);
+	expect(withoutKey.envelope.anchors[anchor1Key]?.entry).toEqual({ transactionId: 'tx-1' });
+	expect(withoutKey.envelope.anchors[anchor2Key]).toEqual({ encrypted: true });
+
+	const withKey = await AnchorExternal.fromExternal(external, { decryptionKeys: [anchor2] });
+	expect(withKey.envelope.anchors[anchor2Key]?.entry).toEqual({ persistentForwardingId: 'fwd-2' });
+	expect(withKey.envelope.anchors[anchor2Key]?.encrypted).toBe(true);
+});
+
+test('an encrypted slice stays opaque when only a non-recipient key is supplied', async function() {
+	const external = await new AnchorExternalBuilder()
+		.addAnchor(anchor1, { transactionId: 'tx-1' })
+		.addAnchor(anchor2, { persistentForwardingId: 'fwd-2' }, { encryptFor: [anchor2] })
+		.build();
+
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys: [stranger] });
+	expect(decoded.envelope.anchors[anchor1Key]?.entry).toEqual({ transactionId: 'tx-1' });
+	expect(decoded.envelope.anchors[anchor2Key]).toEqual({ encrypted: true });
+});
+
+const multiPrincipalCases: { name: string; key: Account }[] = [
+	{ name: 'anchor1', key: anchor1 },
+	{ name: 'anchor2', key: anchor2 }
+];
+
+test.each(multiPrincipalCases)('a slice encrypted for many opens for listed principal $name', async function({ key }) {
+	const external = await new AnchorExternalBuilder()
+		.addAnchor(anchor1, { transactionId: 'tx-multi' }, { encryptFor: [anchor1, anchor2] })
+		.build();
+
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys: [key] });
+	const slice = decoded.envelope.anchors[anchor1Key];
+	expect(slice?.entry).toEqual({ transactionId: 'tx-multi' });
+	expect(slice?.encrypted).toBe(true);
 });
 
 type MisuseCase = {
@@ -139,52 +184,52 @@ type MisuseCase = {
 
 const misuseCases: MisuseCase[] = [
 	{
-		name: 'signer not listed in envelope.anchors',
+		name: 'signer is not the anchor the slice is filed under',
 		act: function() {
-			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionId: 'x' })
-				.withSigner(stranger)
-				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
-				.build());
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: stranger, binding: TEST_BINDING }));
 		}
 	},
 	{
 		name: 'signer set without binding',
 		act: function() {
-			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionId: 'x' })
-				.withSigner(anchor1)
-				.build());
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1 }));
 		}
 	},
 	{
 		name: 'binding set without signer',
 		act: function() {
-			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionId: 'x' })
-				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
-				.build());
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { binding: TEST_BINDING }));
 		}
 	},
 	{
-		name: 'withBinding rejects empty previous eagerly',
-		act: function() { return(new AnchorExternalBuilder().withBinding('', 0)); }
+		name: 'encryptFor is an empty list',
+		act: function() {
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { encryptFor: [] }));
+		}
 	},
 	{
-		name: 'withBinding rejects negative operationIndex eagerly',
-		act: function() { return(new AnchorExternalBuilder().withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, -1)); }
+		name: 'binding with empty previousBlockHash',
+		act: function() {
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1, binding: { previousBlockHash: '', operationIndex: 0 }}));
+		}
 	},
 	{
-		name: 'withBinding rejects non-integer operationIndex eagerly',
-		act: function() { return(new AnchorExternalBuilder().withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, 1.5)); }
+		name: 'binding with negative operationIndex',
+		act: function() {
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1, binding: { previousBlockHash: TEST_BINDING_PREVIOUS_BLOCK_HASH, operationIndex: -1 }}));
+		}
+	},
+	{
+		name: 'binding with non-integer operationIndex',
+		act: function() {
+			return(new AnchorExternalBuilder().addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1, binding: { previousBlockHash: TEST_BINDING_PREVIOUS_BLOCK_HASH, operationIndex: 1.5 }}));
+		}
 	},
 	{
 		name: 'maxLength too tight for a signed payload',
 		act: function() {
 			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionId: 'x' })
-				.withSigner(anchor1)
-				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
+				.addAnchor(anchor1, { transactionId: 'x' }, { signer: anchor1, binding: TEST_BINDING })
 				.withMaxLength(64)
 				.build());
 		}
@@ -196,208 +241,237 @@ const misuseCases: MisuseCase[] = [
 	{
 		name: 'withMaxLength rejects non-integer eagerly',
 		act: function() { return(new AnchorExternalBuilder().withMaxLength(1.5)); }
-	},
-	{
-		name: 'fromEncryptedExternal with empty principals list',
-		act: async function() {
-			const external = await new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionId: 'x' })
-				.withPrincipals([anchor1])
-				.build();
-			return(await AnchorExternal.fromEncryptedExternal(external, []));
-		}
 	}
 ];
 
-test.each(misuseCases)('builder/decoder misuse throws KeetaAnchorError: $name', async function({ act }) {
+test.each(misuseCases)('builder misuse throws KeetaAnchorError: $name', async function({ act }) {
 	const result = (async function() { return(await act()); })();
 	const error = await result.catch(function(caught: unknown) { return(caught); });
 	expect(KeetaAnchorError.isInstance(error)).toBe(true);
 	expect(AnchorExternalError.isInstance(error)).toBe(false);
 });
 
-type DecoderKind = 'plain' | 'encrypted-self' | 'encrypted-stranger';
+/*
+ * Build a single per-anchor slice container as base64, bypassing the
+ * builder's invariants so decoder-side enforcement can be exercised.
+ */
+async function packSlice(encodedSlice: object, signer: Account | undefined, principals: Account[] | null): Promise<string> {
+	const plaintext = Buffer.from(canonicalizeJson(encodedSlice), 'utf-8');
+	let options: { signer?: Account } | undefined;
+	if (signer !== undefined) {
+		options = { signer };
+	}
+
+	const container = EncryptedContainer.fromPlaintext(plaintext, principals, options);
+	const encoded = arrayBufferToBuffer(await container.getEncodedBuffer());
+	const result = encoded.toString('base64');
+	return(result);
+}
+
+type V1ExpectedSlice = {
+	entry: AnchorExternalEntry;
+	encrypted: boolean;
+	signerKey?: string;
+	binding?: typeof TEST_BINDING;
+};
+
+type V1DecodeCase = {
+	name: string;
+	encoded: object;
+	signer?: Account;
+	principals: Account[] | null;
+	decryptionKeys: Account[];
+	expected: { [anchorPublicKey: string]: V1ExpectedSlice };
+	peekIds: string[];
+};
+
+const v1DecodeCases: V1DecodeCase[] = [
+	{
+		name: 'plaintext',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { p: 'fwd-2' }}},
+		principals: null,
+		decryptionKeys: [],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: false },
+			[anchor2Key]: { entry: { persistentForwardingId: 'fwd-2' }, encrypted: false }
+		},
+		peekIds: [ anchor1Key, anchor2Key ]
+	},
+	{
+		name: 'signed',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }, [anchor2Key]: { d: 'evm:0x1' }}, b: TEST_ENCODED_BINDING },
+		signer: anchor1,
+		principals: null,
+		decryptionKeys: [],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: false, signerKey: anchor1Key, binding: TEST_BINDING },
+			[anchor2Key]: { entry: { destination: 'evm:0x1' }, encrypted: false }
+		},
+		peekIds: [ anchor1Key, anchor2Key ]
+	},
+	{
+		name: 'encrypted',
+		encoded: { v: 1, a: { [anchor1Key]: { t: 'tx-1' }}},
+		principals: [ anchor1 ],
+		decryptionKeys: [ anchor1 ],
+		expected: {
+			[anchor1Key]: { entry: { transactionId: 'tx-1' }, encrypted: true }
+		},
+		peekIds: []
+	}
+];
+
+test.each(v1DecodeCases)('fromExternal decodes a v1 $name envelope', async function({ encoded, signer, principals, decryptionKeys, expected, peekIds }) {
+	const external = await packSlice(encoded, signer, principals);
+
+	const decoded = await AnchorExternal.fromExternal(external, { decryptionKeys });
+	expect(decoded.envelope.version).toBe(1);
+
+	for (const [ anchorPublicKey, slice ] of Object.entries(expected)) {
+		const decodedSlice = decoded.envelope.anchors[anchorPublicKey];
+		expect(decodedSlice?.entry).toEqual(slice.entry);
+		expect(decodedSlice?.encrypted).toBe(slice.encrypted);
+		expect(decodedSlice?.signer?.publicKeyString.get()).toBe(slice.signerKey);
+		expect(decodedSlice?.binding).toEqual(slice.binding);
+	}
+
+	const peeked = await AnchorExternal.peek(external);
+	expect(peeked.version).toBe(1);
+	expect([ ...peeked.anchorIds ].sort()).toEqual([ ...peekIds ].sort());
+});
+
+test('a v1 encrypted envelope stays opaque without a matching key', async function() {
+	const external = await packSlice({ v: 1, a: { [anchor1Key]: { t: 'tx-1' }}}, undefined, [ anchor1 ]);
+
+	const locked = await AnchorExternal.fromExternal(external);
+	expect(locked.envelope.version).toBe(1);
+	expect(locked.envelope.anchors).toEqual({});
+
+	const wrongKey = await AnchorExternal.fromExternal(external, { decryptionKeys: [ stranger ] });
+	expect(wrongKey.envelope.anchors).toEqual({});
+});
+
+/*
+ * Base64-encode a (possibly malformed) outer envelope object.
+ */
+function encodeOuter(outer: object): string {
+	const result = Buffer.from(canonicalizeJson(outer), 'utf-8').toString('base64');
+	return(result);
+}
+
+/*
+ * Assemble a canonical outer envelope around prebuilt anchor slices.
+ */
+function packOuter(anchors: { [anchorPublicKey: string]: string }): string {
+	const result = encodeOuter({ version: ANCHOR_EXTERNAL_VERSION, anchors: anchors });
+	return(result);
+}
 
 type DecodeRejectionCase = {
 	name: string;
 	makeExternal: () => Promise<string>;
-	decoder: DecoderKind;
 	expectedCode: AnchorExternalErrorCode;
-};
-
-async function repackContainer(plaintext: Buffer, signer: Account | undefined): Promise<string> {
-	const options: { signer?: Account } = {};
-	if (signer !== undefined) {
-		options.signer = signer;
-	}
-
-	const container = EncryptedContainer.fromPlaintext(plaintext, null, options);
-	const encoded = arrayBufferToBuffer(await container.getEncodedBuffer());
-	const external = encoded.toString('base64');
-	return(external);
-}
-
-async function buildPlain(entry: AnchorExternalEntry): Promise<string> {
-	const builder = new AnchorExternalBuilder().setAnchor(anchor1, entry);
-	const external = await builder.build();
-	return(external);
-}
-
-async function buildEncrypted(entry: AnchorExternalEntry, principals: Account[]): Promise<string> {
-	const builder = new AnchorExternalBuilder().setAnchor(anchor1, entry).withPrincipals(principals);
-	const external = await builder.build();
-	return(external);
-}
-
-async function packEncoded(encoded: object, signer: Account | undefined): Promise<string> {
-	const plaintext = Buffer.from(canonicalizeJson(encoded), 'utf-8');
-	const external = await repackContainer(plaintext, signer);
-	return(external);
-}
-
-const decoderImplementations: { [key in DecoderKind]: (external: string) => Promise<AnchorExternal> } = {
-	'plain': async function(external: string) { return(await AnchorExternal.fromPlainExternal(external)); },
-	'encrypted-self': async function(external: string) { return(await AnchorExternal.fromEncryptedExternal(external, [anchor1])); },
-	'encrypted-stranger': async function(external: string) { return(await AnchorExternal.fromEncryptedExternal(external, [stranger])); }
 };
 
 const decodeRejectionCases: DecodeRejectionCase[] = [
 	{
-		name: 'bad base64',
+		name: 'outer is not valid base64',
 		makeExternal: async function() { return('not base64!'); },
-		decoder: 'plain',
 		expectedCode: 'BAD_BASE64'
 	},
 	{
-		name: 'truncated DER',
-		makeExternal: async function() {
-			const valid = await buildPlain({ transactionId: 'x' });
-			const decoded = Buffer.from(valid, 'base64');
-			const truncated = decoded.subarray(0, Math.max(1, decoded.length - 8));
-			return(Buffer.from(truncated).toString('base64'));
-		},
-		decoder: 'plain',
+		name: 'outer is not valid JSON',
+		makeExternal: async function() { return(Buffer.from('not json', 'utf-8').toString('base64')); },
 		expectedCode: 'NOT_AN_ENVELOPE'
 	},
 	{
-		name: 'plaintext blob decoded with the encrypted decoder',
-		makeExternal: async function() {
-			const result = await buildPlain({ transactionId: 'x' });
-			return(result);
-		},
-		decoder: 'encrypted-self',
-		expectedCode: 'EXPECTED_ENCRYPTED'
-	},
-	{
-		name: 'encrypted blob decoded with the plain decoder',
-		makeExternal: async function() {
-			const result = await buildEncrypted({ transactionId: 'x' }, [anchor1]);
-			return(result);
-		},
-		decoder: 'plain',
-		expectedCode: 'EXPECTED_PLAIN'
-	},
-	{
-		name: 'unknown envelope version inside container plaintext',
-		makeExternal: async function() {
-			const result = await packEncoded({ v: 2, a: { [anchor1Key]: { t: 'x' }}}, undefined);
-			return(result);
-		},
-		decoder: 'plain',
+		name: 'v2-shaped envelope with an unsupported version is rejected',
+		makeExternal: async function() { return(encodeOuter({ version: 99, anchors: {}})); },
 		expectedCode: 'UNSUPPORTED_VERSION'
 	},
 	{
-		name: 'envelope with extra top-level key',
-		makeExternal: async function() {
-			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}, extra: 1 }, undefined);
-			return(result);
-		},
-		decoder: 'plain',
+		name: 'outer with an extra top-level key',
+		makeExternal: async function() { return(encodeOuter({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}, extra: 1 })); },
 		expectedCode: 'NOT_AN_ENVELOPE'
 	},
 	{
-		name: 'entry with extra key',
+		name: 'non-canonical outer JSON',
 		makeExternal: async function() {
-			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x', extra: 'y' }}}, undefined);
-			return(result);
+			const reshaped = canonicalizeJson({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}}).replace(/,/g, ', ');
+			return(Buffer.from(reshaped, 'utf-8').toString('base64'));
 		},
-		decoder: 'plain',
-		expectedCode: 'NOT_AN_ENVELOPE'
-	},
-	{
-		name: 'non-canonical JSON inside container plaintext',
-		makeExternal: async function() {
-			const valid: EncodedAnchorExternalEnvelopeV1 = { v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}};
-
-			/*
-			 * Inject a single space after each comma to break canonical
-			 * form without altering structural meaning.
-			 */
-			const reshaped = canonicalizeJson(valid).replace(/,/g, ', ');
-			const result = await repackContainer(Buffer.from(reshaped, 'utf-8'), undefined);
-			return(result);
-		},
-		decoder: 'plain',
 		expectedCode: 'NON_CANONICAL'
 	},
 	{
-		name: 'signed but signer is not listed in envelope.anchors',
+		name: 'v2 outer JSON with leading whitespace is classified v2, not v1',
 		makeExternal: async function() {
-			/*
-			 * Sign with stranger but list only anchor1 in
-			 * envelope.anchors. The builder rejects this combination,
-			 * so we synthesize the encoded plaintext directly.
-			 */
-			const encoded: EncodedAnchorExternalEnvelopeV1 = {
-				v: ANCHOR_EXTERNAL_VERSION,
-				a: { [anchor1Key]: { t: 'x' }},
-				b: { p: TEST_BINDING_PREVIOUS_BLOCK_HASH, o: TEST_BINDING_OPERATION_INDEX }
-			};
-			const result = await packEncoded(encoded, stranger);
-			return(result);
+			const reshaped = ` ${canonicalizeJson({ version: ANCHOR_EXTERNAL_VERSION, anchors: {}})}`;
+			return(Buffer.from(reshaped, 'utf-8').toString('base64'));
 		},
-		decoder: 'plain',
-		expectedCode: 'SIGNER_NOT_LISTED'
+		expectedCode: 'NON_CANONICAL'
 	},
 	{
-		name: 'signed envelope missing binding',
+		name: 'slice value is not a container',
+		makeExternal: async function() { return(packOuter({ [anchor1Key]: Buffer.from([ 1, 2, 3, 4 ]).toString('base64') })); },
+		expectedCode: 'INVALID_SLICE'
+	},
+	{
+		name: 'slice entry has an extra key',
 		makeExternal: async function() {
-			const encoded: EncodedAnchorExternalEnvelopeV1 = { v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}};
-			const result = await packEncoded(encoded, anchor1);
-			return(result);
+			const slice = await packSlice({ t: 'x', extra: 'y' }, undefined, null);
+			return(packOuter({ [anchor1Key]: slice }));
 		},
-		decoder: 'plain',
+		expectedCode: 'INVALID_SLICE'
+	},
+	{
+		name: 'slice plaintext exceeds the size cap',
+		makeExternal: async function() {
+			const slice = await packSlice({ t: 'x'.repeat(5000) }, undefined, null);
+			return(packOuter({ [anchor1Key]: slice }));
+		},
+		expectedCode: 'PLAINTEXT_TOO_LARGE'
+	},
+	{
+		name: 'non-canonical slice plaintext',
+		makeExternal: async function() {
+			const reshaped = canonicalizeJson({ t: 'x', b: TEST_ENCODED_BINDING }).replace(/,/g, ', ');
+			const plaintext = Buffer.from(reshaped, 'utf-8');
+			const container = EncryptedContainer.fromPlaintext(plaintext, null, undefined);
+			const slice = arrayBufferToBuffer(await container.getEncodedBuffer()).toString('base64');
+			return(packOuter({ [anchor1Key]: slice }));
+		},
+		expectedCode: 'NON_CANONICAL'
+	},
+	{
+		name: 'slice signer does not match the anchor id',
+		makeExternal: async function() {
+			const slice = await packSlice({ t: 'x', b: TEST_ENCODED_BINDING }, stranger, null);
+			return(packOuter({ [anchor1Key]: slice }));
+		},
+		expectedCode: 'SIGNER_NOT_ANCHOR'
+	},
+	{
+		name: 'signed slice missing binding',
+		makeExternal: async function() {
+			const slice = await packSlice({ t: 'x' }, anchor1, null);
+			return(packOuter({ [anchor1Key]: slice }));
+		},
 		expectedCode: 'MISSING_BINDING'
 	},
 	{
-		name: 'unsigned envelope carries a binding',
+		name: 'unsigned slice carries a binding',
 		makeExternal: async function() {
-			const encoded: EncodedAnchorExternalEnvelopeV1 = {
-				v: ANCHOR_EXTERNAL_VERSION,
-				a: { [anchor1Key]: { t: 'x' }},
-				b: { p: TEST_BINDING_PREVIOUS_BLOCK_HASH, o: TEST_BINDING_OPERATION_INDEX }
-			};
-			const result = await packEncoded(encoded, undefined);
-			return(result);
+			const slice = await packSlice({ t: 'x', b: TEST_ENCODED_BINDING }, undefined, null);
+			return(packOuter({ [anchor1Key]: slice }));
 		},
-		decoder: 'plain',
 		expectedCode: 'UNEXPECTED_BINDING'
-	},
-	{
-		name: 'encrypted decode with a wrong principal',
-		makeExternal: async function() {
-			const result = await buildEncrypted({ transactionId: 'x' }, [anchor1]);
-			return(result);
-		},
-		decoder: 'encrypted-stranger',
-		expectedCode: 'NOT_AN_ENVELOPE'
 	}
 ];
 
-test.each(decodeRejectionCases)('fromXExternal rejects malformed input with $expectedCode: $name', async function({ makeExternal, decoder, expectedCode }) {
+test.each(decodeRejectionCases)('fromExternal rejects malformed input with $expectedCode: $name', async function({ makeExternal, expectedCode }) {
 	const external = await makeExternal();
 
-	const error = await decoderImplementations[decoder](external).catch(function(caught: unknown) { return(caught); });
+	const error = await AnchorExternal.fromExternal(external).catch(function(caught: unknown) { return(caught); });
 	expect(AnchorExternalError.isInstance(error)).toBe(true);
 
 	if (AnchorExternalError.isInstance(error)) {
