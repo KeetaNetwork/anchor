@@ -228,7 +228,8 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
  * implicit case (no entityTypes declared -> individual-only) and a
  * both-types provider. This covers every explicit declaration against every
  * requested entity type, so a provider that only advertises one type is not
- * matched for the other.
+ * matched for the other, and crosses entity types with country codes so the
+ * two filters are exercised together rather than in isolation.
  */
 test('KYC Anchor HTTP Server - entity type combination matrix', async function() {
 	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -242,22 +243,25 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 	const kycCA = await kycCABuilder.build();
 
 	/*
-	 * Stand up a provider advertising exactly `entityTypes`, publish its
-	 * metadata, and return a resolver that can be queried for a given
-	 * requested entity type. A fresh signer/account per provider keeps the
-	 * published metadata isolated.
+	 * Stand up a provider advertising exactly `entityTypes` over
+	 * `countryCodes`, publish its metadata once, and return a resolver that
+	 * can be queried repeatedly. A fresh signer/account per provider keeps
+	 * the published metadata isolated. Building the provider once and
+	 * reusing its resolver across lookups keeps the table-driven cases below
+	 * cheap: one server/metadata round-trip per distinct provider config
+	 * instead of one per assertion.
 	 */
-	async function lookupWith(entityTypes: ('individual' | 'business')[] | undefined, requested: 'individual' | 'business') {
+	async function buildProvider(entityTypes: ('individual' | 'business')[] | undefined, countryCodes: ('US' | 'CA')[]) {
 		const providerSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: providerClient } = await createNodeAndClient(providerSigner);
 
-		await using server = new KeetaNetKYCAnchorHTTPServer({
+		const server = new KeetaNetKYCAnchorHTTPServer({
 			signer: providerSigner,
 			ca: kycCA,
 			client: providerClient,
 			kycProviderURL: 'https://example.com/journey/{id}',
 			kyc: {
-				countryCodes: ['US'],
+				countryCodes: countryCodes,
 				...(entityTypes === undefined ? {} : { entityTypes }),
 				verificationStarted: async function() {
 					return({
@@ -296,28 +300,74 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 			trustedCAs: []
 		});
 
-		const match = await resolver.lookup('kyc', {
-			countryCodes: ['US'],
-			entityType: requested
-		});
+		async function matches(requested: 'individual' | 'business', requestedCountryCodes: ('US' | 'CA')[]) {
+			const match = await resolver.lookup('kyc', {
+				countryCodes: requestedCountryCodes,
+				entityType: requested
+			});
 
-		return(match !== undefined && 'Test' in match);
+			return(match !== undefined && 'Test' in match);
+		}
+
+		return({ server, matches });
 	}
 
-	/* Individual-only provider: matches individual, rejects business. */
-	expect(await lookupWith(['individual'], 'individual')).toBe(true);
-	expect(await lookupWith(['individual'], 'business')).toBe(false);
+	/*
+	 * One provider per distinct config. Keyed so the table below reads as
+	 * (provider, requested entity type, requested country) -> expected.
+	 */
+	const providers = {
+		individualUS: await buildProvider(['individual'], ['US']),
+		businessUS: await buildProvider(['business'], ['US']),
+		bothUS: await buildProvider(['individual', 'business'], ['US']),
+		undeclaredUS: await buildProvider(undefined, ['US']),
+		bothUSCA: await buildProvider(['individual', 'business'], ['US', 'CA'])
+	};
 
-	/* Business-only provider: matches business, rejects individual. */
-	expect(await lookupWith(['business'], 'business')).toBe(true);
-	expect(await lookupWith(['business'], 'individual')).toBe(false);
+	try {
+		const cases: {
+			name: string;
+			provider: keyof typeof providers;
+			requested: 'individual' | 'business';
+			countryCodes: ('US' | 'CA')[];
+			expected: boolean;
+		}[] = [
+			/* Individual-only provider: matches individual, rejects business. */
+			{ name: 'individual-only matches individual', provider: 'individualUS', requested: 'individual', countryCodes: ['US'], expected: true },
+			{ name: 'individual-only rejects business', provider: 'individualUS', requested: 'business', countryCodes: ['US'], expected: false },
 
-	/* Both-types provider: matches either. */
-	expect(await lookupWith(['individual', 'business'], 'individual')).toBe(true);
-	expect(await lookupWith(['individual', 'business'], 'business')).toBe(true);
+			/* Business-only provider: matches business, rejects individual. */
+			{ name: 'business-only matches business', provider: 'businessUS', requested: 'business', countryCodes: ['US'], expected: true },
+			{ name: 'business-only rejects individual', provider: 'businessUS', requested: 'individual', countryCodes: ['US'], expected: false },
 
-	/* No declaration: treated as individual-only (classic behavior). */
-	expect(await lookupWith(undefined, 'individual')).toBe(true);
-	expect(await lookupWith(undefined, 'business')).toBe(false);
+			/* Both-types provider: matches either. */
+			{ name: 'both matches individual', provider: 'bothUS', requested: 'individual', countryCodes: ['US'], expected: true },
+			{ name: 'both matches business', provider: 'bothUS', requested: 'business', countryCodes: ['US'], expected: true },
+
+			/* No declaration: treated as individual-only (classic behavior). */
+			{ name: 'undeclared matches individual', provider: 'undeclaredUS', requested: 'individual', countryCodes: ['US'], expected: true },
+			{ name: 'undeclared rejects business', provider: 'undeclaredUS', requested: 'business', countryCodes: ['US'], expected: false },
+
+			/*
+			 * Country code crossed with entity type. A supported entity type
+			 * in an unsupported country must still be rejected: the two
+			 * filters are ANDed, not ORed.
+			 */
+			{ name: 'both US-only rejects business in CA', provider: 'bothUS', requested: 'business', countryCodes: ['CA'], expected: false },
+			{ name: 'both US-only rejects individual in CA', provider: 'bothUS', requested: 'individual', countryCodes: ['CA'], expected: false },
+			{ name: 'both US+CA matches business in CA', provider: 'bothUSCA', requested: 'business', countryCodes: ['CA'], expected: true },
+			{ name: 'both US+CA matches individual in CA', provider: 'bothUSCA', requested: 'individual', countryCodes: ['CA'], expected: true },
+			{ name: 'both US+CA matches business in US', provider: 'bothUSCA', requested: 'business', countryCodes: ['US'], expected: true }
+		];
+
+		for (const testCase of cases) {
+			const result = await providers[testCase.provider].matches(testCase.requested, testCase.countryCodes);
+			expect(result, testCase.name).toBe(testCase.expected);
+		}
+	} finally {
+		for (const provider of Object.values(providers)) {
+			await provider.server[Symbol.asyncDispose]();
+		}
+	}
 });
 
