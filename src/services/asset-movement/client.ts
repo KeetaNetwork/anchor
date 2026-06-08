@@ -33,6 +33,10 @@ import type {
 	KeetaPersistentForwardingAddressDetails,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorExecuteTransferClientRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
 	AnchorTokenLocationMetadata,
 	AnchorCustomLocationMetadata,
 	ChainLocationString,
@@ -73,6 +77,10 @@ import {
 	isAnchorTokenLocationMetadata,
 	isKeetaAssetMovementAnchorSimulateTransferResponse,
 	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData,
+	isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData,
+	isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
 	Errors
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
@@ -779,6 +787,56 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		});
 
 		this.logger?.debug(`asset movement request successful, request ID ${request.id}`);
+
+		return(requestInformationJSON);
+	}
+
+	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {
+		this.logger?.debug(`Deactivating persistent forwarding template ${request.id} for provider ID: ${String(this.providerID)}`);
+
+		const { id, account } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+			{ [key: string]: never },
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest
+		>({
+			method: 'POST',
+			endpoint: 'deactivatePersistentForwardingTemplate',
+			params: { id },
+			account,
+			body: {},
+			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData({ id }),
+			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse
+		});
+
+		this.logger?.debug(`deactivate persistent forwarding template successful, template ID ${id}`);
+
+		return(requestInformationJSON);
+	}
+
+	async deactivatePersistentForwardingAddress(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse>> {
+		this.logger?.debug(`Deactivating persistent forwarding address ${request.id} for provider ID: ${String(this.providerID)}`);
+
+		const { id, account } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+			{ [key: string]: never },
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest
+		>({
+			method: 'POST',
+			endpoint: 'deactivatePersistentForwarding',
+			params: { id },
+			account,
+			body: {},
+			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData({ id }),
+			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse
+		});
+
+		this.logger?.debug(`deactivate persistent forwarding address successful, address ID ${id}`);
 
 		return(requestInformationJSON);
 	}

@@ -1095,6 +1095,30 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					],
 					total: '1'
 				})
+			},
+
+			deactivatePersistentForwardingTemplate: async function(id, account) {
+				if (!account) {
+					throw(new Error('Missing account authentication'));
+				}
+
+				if (id === 'does-not-exist') {
+					throw(new Error('Template not found'));
+				}
+
+				return({});
+			},
+
+			deactivatePersistentForwarding: async function(id, account) {
+				if (!account) {
+					throw(new Error('Missing account authentication'));
+				}
+
+				if (id === 'does-not-exist') {
+					throw(new Error('Address not found'));
+				}
+
+				return({});
 			}
 		}
 	});
@@ -1299,6 +1323,28 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			],
 			total: 1
 		});
+	}
+
+	{
+		// Deactivate persistent forwarding template
+		expect(await usdcProvider.deactivatePersistentForwardingTemplate({ id: 'template-id', account })).toEqual({ ok: true });
+
+		// Without an account (and therefore no signature) the request is rejected
+		await expect(usdcProvider.deactivatePersistentForwardingTemplate({ id: 'template-id' })).rejects.toThrow();
+
+		// Server-side error path
+		await expect(usdcProvider.deactivatePersistentForwardingTemplate({ id: 'does-not-exist', account })).rejects.toThrow();
+	}
+
+	{
+		// Deactivate persistent forwarding address
+		expect(await usdcProvider.deactivatePersistentForwardingAddress({ id: 'address-id', account })).toEqual({ ok: true });
+
+		// Without an account (and therefore no signature) the request is rejected
+		await expect(usdcProvider.deactivatePersistentForwardingAddress({ id: 'address-id' })).rejects.toThrow();
+
+		// Server-side error path
+		await expect(usdcProvider.deactivatePersistentForwardingAddress({ id: 'does-not-exist', account })).rejects.toThrow();
 	}
 
 	{
