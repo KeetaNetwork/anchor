@@ -667,6 +667,58 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 	return([ 'get-transaction', input.id ]);
 }
 
+/**
+ * Client-side request to deactivate a persistent forwarding address template.
+ * Only requires the template id (plus an account/signature to authenticate the request).
+ */
+export interface KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateClientRequest {
+	account?: KeetaNetAccount;
+	id: string;
+}
+
+/**
+ * External (wire) request to deactivate a persistent forwarding address template.
+ * The id travels in the URL path, so the body carries only authentication information.
+ */
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateClientRequest, 'id'>, unknown>;
+
+export function getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData(input: { id: string }): Signable {
+	return([ 'deactivate-persistent-forwarding-template', input.id ]);
+}
+
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse = {
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+};
+
+/**
+ * Client-side request to deactivate a persistent forwarding address.
+ * Only requires the address id (plus an account/signature to authenticate the request).
+ */
+export interface KeetaAssetMovementAnchorDeactivatePersistentForwardingClientRequest {
+	account?: KeetaNetAccount;
+	id: string;
+}
+
+/**
+ * External (wire) request to deactivate a persistent forwarding address.
+ * The id travels in the URL path, so the body carries only authentication information.
+ */
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorDeactivatePersistentForwardingClientRequest, 'id'>, unknown>;
+
+export function getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData(input: { id: string }): Signable {
+	return([ 'deactivate-persistent-forwarding-address', input.id ]);
+}
+
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse = {
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+};
+
 type TransactionStatus = string;
 
 export type TransactionId = {

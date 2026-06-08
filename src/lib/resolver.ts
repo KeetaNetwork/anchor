@@ -212,6 +212,8 @@ type ServiceMetadata = {
 						'listPersistentForwardingTemplate' |
 						'createPersistentForwarding' |
 						'listPersistentForwarding' |
+						'deactivatePersistentForwardingTemplate' |
+						'deactivatePersistentForwarding' |
 						'listTransactions' |
 						'shareKYC'
 					)]?: ServiceMetadataEndpoint;

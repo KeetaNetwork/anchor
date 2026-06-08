@@ -26,7 +26,9 @@ import type {
 	KeetaAssetMovementAnchorExecuteTransferRequest,
 	KeetaAssetMovementAnchorExecuteTransferResponse,
 	KeetaAssetMovementAnchorSimulateTransferRequest,
-	KeetaAssetMovementAnchorSimulateTransferResponse
+	KeetaAssetMovementAnchorSimulateTransferResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -62,7 +64,13 @@ import {
 	assertKeetaAssetMovementAnchorExecuteTransferResponse,
 	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
 	assertKeetaAssetMovementAnchorSimulateTransferRequest,
-	assertKeetaAssetMovementAnchorSimulateTransferResponse
+	assertKeetaAssetMovementAnchorSimulateTransferResponse,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -143,6 +151,16 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		 * Method to execute a transfer instruction, used for pull based transactions
 		 */
 		executeTransfer?: (request: KeetaAssetMovementAnchorExecuteTransferRequest & { id: string; }) => Promise<ExtractOk<KeetaAssetMovementAnchorExecuteTransferResponse>>;
+
+		/**
+		 * Method to deactivate a persistent forwarding address template
+		 */
+		deactivatePersistentForwardingTemplate?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>>;
+
+		/**
+		 * Method to deactivate a persistent forwarding address
+		 */
+		deactivatePersistentForwarding?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse>>;
 	}
 };
 
@@ -432,6 +450,54 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		});
 
 		addRoute({
+			method: 'POST',
+			handlerName: 'deactivatePersistentForwardingTemplate',
+			pathName: 'deactivatePersistentForwardingTemplate/:id',
+			assertRequest: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+			assertResponse: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+			getSigningData(_ignore_request, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return(getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData({ id }));
+			},
+			parseRequestToArgs: ({ params, account }) => {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return([ id, account ] as const);
+			}
+		});
+
+		addRoute({
+			method: 'POST',
+			handlerName: 'deactivatePersistentForwarding',
+			pathName: 'deactivatePersistentForwarding/:id',
+			assertRequest: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+			assertResponse: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+			getSigningData(_ignore_request, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return(getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData({ id }));
+			},
+			parseRequestToArgs: ({ params, account }) => {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return([ id, account ] as const);
+			}
+		});
+
+		addRoute({
 			method: 'GET',
 			handlerName: 'getTransferStatus',
 			pathName: 'getTransferStatus/:id',
@@ -543,7 +609,9 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			'listPersistentForwarding',
 			'shareKYC',
 			[ 'getTransferStatus', 'getTransferStatus/{id}' ],
-			[ 'executeTransfer', 'executeTransfer/{id}' ]
+			[ 'executeTransfer', 'executeTransfer/{id}' ],
+			[ 'deactivatePersistentForwardingTemplate', 'deactivatePersistentForwardingTemplate/{id}' ],
+			[ 'deactivatePersistentForwarding', 'deactivatePersistentForwarding/{id}' ]
 		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
 
 		for (const routeInput of routes) {
