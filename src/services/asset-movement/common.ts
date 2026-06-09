@@ -611,7 +611,7 @@ export type AssetTransferInstructions = ({
 	persistentAddressId?: string;
 });
 
-export type SimulatedAssetTransferInstructions = DistributiveOmit<AssetTransferInstructions, 'sendToAddress'>;
+export type SimulatedAssetTransferInstructions = DistributiveOmit<AssetTransferInstructions, 'sendToAddress' | 'account'>;
 
 export type KeetaAssetMovementAnchorSimulateTransferResponse = {
 	ok: true;
