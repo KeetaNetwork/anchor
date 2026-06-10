@@ -88,6 +88,7 @@ import Resolver from "../../lib/resolver.js";
 import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
+import { brandString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
 import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
@@ -430,8 +431,7 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 		}
 
 		return([
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id as unknown as ProviderID,
+			brandString<'AssetMovementProviderID'>(id),
 			resolvedServiceInfo
 		]);
 	});
