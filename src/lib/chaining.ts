@@ -18,7 +18,9 @@ import type { ExternalChainAsset } from './asset.js';
 import { isExternalChainAsset } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
+import type { AnchorExternalInput } from './anchor-external.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
+import { AnchorExternalBuilder } from './anchor-external.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -45,6 +47,7 @@ interface ChainStepResolutionAssetMovement extends ChainStepResolutionBase<'asse
 	usingInstruction: AssetTransferInstructions;
 	sendingTo: SendingToType;
 	transfer: AssetMovementTransfer;
+	provider: AssetMovementProvider;
 };
 
 interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSend'> {
@@ -1734,7 +1737,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							usingInstruction: usingInstruction,
 							transfer: transfer,
 							sendingTo: sendingToType,
-							valueOut: actualValueOut
+							valueOut: actualValueOut,
+							provider
 						})
 					} else if (step.type === 'keetaSend') {
 						if (this.path.length !== 1) {
@@ -1934,7 +1938,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(await promise);
 	}
 
-	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<void> {
+	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<string | undefined> {
 		if (options?.requireSendAuth) {
 			await this.#awaitStepCompletion({
 				type: 'keetaSendAuthRequired',
@@ -1948,7 +1952,40 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 
 		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
-		await this.parent['client'].send(sendToAddress, value, token, external, { account });
+		const published = await this.parent['client'].send(sendToAddress, value, token, external, { account });
+		let publishedBlocks;
+		if ('blocks' in published) {
+			publishedBlocks = published.blocks;
+		} else {
+			publishedBlocks = published.voteStaple.blocks;
+		}
+
+		const sendBlock = publishedBlocks[0];
+		if (sendBlock === undefined) {
+			return(undefined);
+		}
+
+		return(sendBlock.hash.toString());
+	}
+
+	/**
+	 * Construct the unsigned external envelope for a user-funded KEETA_SEND.
+	 */
+	static async #buildKeetaSendExternal(provider: AssetMovementProvider, transactionId: string, inputs: readonly AnchorExternalInput[]): Promise<string | undefined> {
+		const anchorKey = provider.serviceInfo.account;
+		if (anchorKey === undefined) {
+			return(undefined);
+		}
+
+		const anchor = KeetaNet.lib.Account.fromPublicKeyString(anchorKey);
+		const builder = new AnchorExternalBuilder().setAnchor(anchor, { transactionId });
+
+		for (const input of inputs) {
+			builder.addInput(input.blockHash, input.operationIndex);
+		}
+
+		const external = await builder.build();
+		return(external);
 	}
 
 	async #pollTransferStatus(
@@ -2083,6 +2120,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 */
 		let prevWithdrawTx: { location: AssetLocationLike; transaction: { id: string }} | null = null;
 
+		/*
+		 * On-chain operations this execution has published so far. Deferred
+		 * initiations forward these as the external envelope's inputs so the
+		 * anchor's signed envelope references the prior steps' operations.
+		 */
+		const publishedInputs: AnchorExternalInput[] = [];
 		let index = 0;
 		try {
 			for (index = 0; index < this.plan.steps.length; index++) {
@@ -2135,13 +2178,26 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
 				} else if (step.type === 'assetMovement' || step.type === 'keetaSend') {
 					if (step.usingInstruction.type === 'KEETA_SEND') {
-						await this.#authorizedSend(
+						/*
+						 * Prefer the anchor-provided external. When absent,
+						 * construct the unsigned correlation envelope locally,
+						 * referencing the prior steps' on-chain operations.
+						 */
+						let external = step.usingInstruction.external;
+						if (external === undefined && step.type === 'assetMovement') {
+							external = await AnchorChainingPlan.#buildKeetaSendExternal(step.provider, step.transfer.transferId, publishedInputs);
+						}
+
+						const sentBlockHash = await this.#authorizedSend(
 							options,
 							step.usingInstruction.sendToAddress,
 							BigInt(step.usingInstruction.value),
 							KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-							step.usingInstruction.external
+							external
 						);
+						if (sentBlockHash !== undefined) {
+							publishedInputs.push({ blockHash: sentBlockHash, operationIndex: 0 });
+						}
 					} else if (index === 0) {
 						if (step.type !== 'assetMovement') {
 							throw(new Error(`Unexpected asset movement step at index ${index} for user-initiated transfer`));

@@ -176,6 +176,13 @@ interface KeetaAssetMovementServiceInfo extends SharedAnchorMetadataLegalExtensi
 
 	supportedAssets: SupportedAssetsMetadata[];
 	locationMetadata?: AnchorCustomLocationMetadata;
+
+	/**
+	 * Public key string of the account the anchor signed its service entry
+	 * with. Present only for signed entries. This is the key external
+	 * envelopes referencing this anchor are filed under.
+	 */
+	account?: string;
 };
 
 /**
@@ -404,6 +411,11 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			});
 		}
 
+		let anchorAccount: string | undefined;
+		if (serviceInfo.account !== undefined) {
+			anchorAccount = await serviceInfo.account('string');
+		}
+
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
@@ -411,7 +423,8 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger })),
 				operations: operationsFunctions,
 				supportedAssets: supportedAssets,
-				...(locationMetadata ? { locationMetadata } : {})
+				...(locationMetadata ? { locationMetadata } : {}),
+				...(anchorAccount !== undefined ? { account: anchorAccount } : {})
 			}
 		]);
 	});

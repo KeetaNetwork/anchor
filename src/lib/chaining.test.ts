@@ -11,6 +11,7 @@ import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
+import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 
@@ -24,6 +25,52 @@ type RateFn = (request: ConversionInputCanonicalJSON, context: GetConversionRate
 
 const EMPTY_FROM_TRANSACTIONS = { deposit: null, persistentForwarding: null, finalization: null } as const;
 const EMPTY_TO_TRANSACTIONS = { withdraw: null } as const;
+
+/**
+ * `true` when a SEND's external field references the given transfer, either
+ * as the raw transfer id (anchor-provided external) or as an entry in a
+ * decodable plaintext envelope (client-constructed external).
+ */
+async function externalReferencesTransfer(external: unknown, txId: string): Promise<boolean> {
+	if (external === txId) {
+		return(true);
+	}
+	if (typeof external !== 'string' || external === '') {
+		return(false);
+	}
+
+	let decoded;
+	try {
+		decoded = await AnchorExternal.fromPlainExternal(external);
+	} catch {
+		return(false);
+	}
+
+	return(Object.values(decoded.envelope.anchors).some(function(entry) {
+		return('transactionId' in entry && entry.transactionId === txId);
+	}));
+}
+
+/**
+ * Initiate-transfer wrapper simulating an anchor under the construction
+ * model: KEETA_SEND instructions carry no external, so the client must
+ * build the correlation envelope itself.
+ */
+async function stripKeetaSendExternal(request: Parameters<InitiateTransferFn>[0], next: InitiateTransferFn): ReturnType<InitiateTransferFn> {
+	const response = await next(request);
+	return({
+		...response,
+		instructionChoices: response.instructionChoices.map(function(choice) {
+			if (choice.type === 'KEETA_SEND') {
+				const rest = { ...choice };
+				delete rest.external;
+				return(rest);
+			}
+
+			return(choice);
+		})
+	});
+}
 
 /**
  * Build a `KeetaAssetMovementTransaction` record for in-memory test bridges.
@@ -95,7 +142,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 					listenerHandle = blockListener.on('block', {
 						callback: async ({ block }) => {
 							for (const op of block.operations) {
-								if (op.type === KeetaNet.lib.Block.OperationType.SEND && op.external === txId) {
+								if (op.type === KeetaNet.lib.Block.OperationType.SEND && await externalReferencesTransfer(op.external, txId)) {
 									if (op.amount !== value) {
 										throw(new KeetaAnchorUserError(`Invalid transfer amount: expected ${value}, got ${op.amount}`));
 									}
@@ -956,7 +1003,7 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 	])).toEqual(toJSONSerializable(path.path));
 });
 
-async function createChainingTestHarness() {
+async function createChainingTestHarness(options: { includeSwapAnchor?: boolean } = {}) {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -1010,9 +1057,18 @@ async function createChainingTestHarness() {
 		]
 	};
 
+	/*
+	 * Bank entries are signed so providers resolve with a service-entry
+	 * account, which client-side external construction files entries under.
+	 */
+	const bankSignerUS = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const bankSignerEU = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const swapSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
 	const bankServerUS = new TestBankServer({
 		...(DEBUG ? { logger } : {}),
 		client,
+		metadataSigner: bankSignerUS,
 		assetMovement: {
 			legal: {
 				disclaimers: bankProviderDisclaimers['BankUS']
@@ -1030,6 +1086,7 @@ async function createChainingTestHarness() {
 	const bankServerEU = new TestBankServer({
 		...(DEBUG ? { logger } : {}),
 		client,
+		metadataSigner: bankSignerEU,
 		assetMovement: {
 			legal: {
 				disclaimers: bankProviderDisclaimers['BankEU']
@@ -1038,6 +1095,26 @@ async function createChainingTestHarness() {
 				asset: [ tokens.EURC.publicKeyString.get(), 'EUR' ],
 				paths: [{ pair: [
 					{ location: 'bank-account:iban-swift', id: 'EUR', rails: { common: [ 'SEPA_PUSH' ] }},
+					{ location: keetaLocation, id: tokens.EURC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+				] }]
+			}]
+		}
+	});
+
+	/*
+	 * Keeta-to-Keeta token swap anchor (USDC -> EURC). Both rails are
+	 * KEETA_SEND, so chaining it before a bank withdrawal produces two
+	 * user-funded sends in one execution.
+	 */
+	const swapServer = new TestBankServer({
+		...(DEBUG ? { logger } : {}),
+		client,
+		metadataSigner: swapSigner,
+		assetMovement: {
+			supportedAssets: [{
+				asset: [ tokens.USDC.publicKeyString.get(), tokens.EURC.publicKeyString.get() ],
+				paths: [{ pair: [
+					{ location: keetaLocation, id: tokens.USDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
 					{ location: keetaLocation, id: tokens.EURC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 				] }]
 			}]
@@ -1095,12 +1172,25 @@ async function createChainingTestHarness() {
 
 	await bankServerUS.start();
 	await bankServerEU.start();
+	await swapServer.start();
 	await fxServerOne.start();
 	await fxServerTwo.start();
 
 	// Make FX LPs fee-free so they don't need KTA to execute exchanges
 	fees.addFeeFreeAccount(fxLPOne);
 	fees.addFeeFreeAccount(fxLPTwo);
+
+	/*
+	 * The swap anchor is opt-in: its keeta-to-keeta pair adds round-trip
+	 * paths that would change path counts in unrelated tests.
+	 */
+	const assetMovementServices: { [providerID: string]: Awaited<ReturnType<typeof swapServer.serviceMetadata>> } = {
+		[usBankProviderID]: await bankServerUS.serviceMetadata(),
+		[euBankProviderID]: await bankServerEU.serviceMetadata()
+	};
+	if (options.includeSwapAnchor === true) {
+		assetMovementServices['SwapKeeta'] = await swapServer.serviceMetadata();
+	}
 
 	await client.setInfo({
 		description: 'Chaining Test',
@@ -1113,10 +1203,7 @@ async function createChainingTestHarness() {
 					FXOne: await fxServerOne.serviceMetadata(),
 					FXTwo: await fxServerTwo.serviceMetadata()
 				},
-				assetMovement: {
-					[usBankProviderID]: await bankServerUS.serviceMetadata(),
-					[euBankProviderID]: await bankServerEU.serviceMetadata()
-				}
+				assetMovement: assetMovementServices
 			}
 		} satisfies ServiceMetadataExternalizable)
 	});
@@ -1160,6 +1247,10 @@ async function createChainingTestHarness() {
 		keetaLocation,
 		bankServerUS,
 		bankServerEU,
+		swapServer,
+		bankSignerUS,
+		bankSignerEU,
+		swapSigner,
 		fxServerOne,
 		fxServerTwo,
 		anchorChaining,
@@ -1175,6 +1266,7 @@ async function createChainingTestHarness() {
 		[Symbol.asyncDispose]: async function() {
 			await bankServerUS[Symbol.asyncDispose]?.();
 			await bankServerEU[Symbol.asyncDispose]?.();
+			await swapServer[Symbol.asyncDispose]?.();
 			await fxServerOne[Symbol.asyncDispose]?.();
 			await fxServerTwo[Symbol.asyncDispose]?.();
 		}
@@ -1921,6 +2013,133 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		// FX step (index 0) completed; rejection happened at AM step (index 1)
 		expect(failedEvent.index).toBe(1);
 		expect(failedEvent.completedSteps[0]?.type).toBe('fx');
+	});
+
+	test('anchor omitting external: client constructs the unsigned correlation envelope', async function() {
+		await using h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+
+		// Anchor under the construction model: instructions carry no external.
+		h.bankServerEU.wrapInitiateTransfer(stripKeetaSendExternal);
+
+		const path = await h.getPlanVia('FXOne');
+
+		const capturedActions: { sendToAddress: GenericAccount; value: bigint; token: TokenAddress; external?: string }[] = [];
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				capturedActions.push(payload.action);
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		/*
+		 * Completion proves the fixture correlated the SEND by decoding the
+		 * client-built envelope rather than matching a raw transfer id.
+		 */
+		const result = await path.execute({ requireSendAuth: true });
+		expect(result.steps).toHaveLength(2);
+
+		const step1 = result.steps[1];
+		if (step1?.type !== 'assetMovement') {
+			throw(new Error('Expected asset movement step'));
+		}
+
+		const action = capturedActions[0];
+		if (action?.external === undefined) {
+			throw(new Error('Expected client-built external on the send action'));
+		}
+
+		const decoded = await AnchorExternal.fromPlainExternal(action.external);
+		expect(decoded.signed).toBeUndefined();
+		expect(decoded.envelope.inputs).toBeUndefined();
+		expect(decoded.envelope.anchors).toEqual({
+			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferId }
+		});
+	});
+
+	test('chained keeta sends: the second envelope references the first send as an input', async function() {
+		await using h = await createChainingTestHarness({ includeSwapAnchor: true });
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		/*
+		 * The swap anchor settles EURC off-chain in this fixture, so the
+		 * user's EURC for the second hop is pre-funded.
+		 */
+		await h.giveTokens(h.client.account, 1000n, h.tokens.EURC);
+
+		/*
+		 * Both anchors omit external, so the client builds both envelopes.
+		 */
+		h.swapServer.wrapInitiateTransfer(stripKeetaSendExternal);
+		h.bankServerEU.wrapInitiateTransfer(stripKeetaSendExternal);
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		});
+		const path = plans?.find(function(plan) {
+			if (plan.path.length !== 2) {
+				return(false);
+			}
+
+			return(plan.path[0]?.providerID === 'SwapKeeta' && plan.path[1]?.providerID === h.euBankProviderID);
+		});
+		if (!path) {
+			throw(new Error('Expected SwapKeeta -> BankEU path'));
+		}
+
+		const capturedExternals: (string | undefined)[] = [];
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				capturedExternals.push(payload.action.external);
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await path.execute({ requireSendAuth: true });
+		expect(result.steps).toHaveLength(2);
+		expect(capturedExternals).toHaveLength(2);
+
+		const [firstExternal, secondExternal] = capturedExternals;
+		if (firstExternal === undefined || secondExternal === undefined) {
+			throw(new Error('Expected client-built externals on both sends'));
+		}
+
+		// First hop: no prior on-chain operations, so no inputs.
+		const firstDecoded = await AnchorExternal.fromPlainExternal(firstExternal);
+		expect(firstDecoded.envelope.inputs).toBeUndefined();
+		expect(Object.keys(firstDecoded.envelope.anchors)).toEqual([ h.swapSigner.publicKeyString.get() ]);
+
+		// Second hop: filed under BankEU and referencing the first send.
+		const secondDecoded = await AnchorExternal.fromPlainExternal(secondExternal);
+		expect(Object.keys(secondDecoded.envelope.anchors)).toEqual([ h.bankSignerEU.publicKeyString.get() ]);
+		expect(secondDecoded.envelope.inputs).toHaveLength(1);
+
+		const input = secondDecoded.envelope.inputs?.[0];
+		if (input === undefined) {
+			throw(new Error('Expected an input referencing the first send'));
+		}
+
+		expect(input.operationIndex).toBe(0);
+
+		// The referenced block is the first hop's on-chain SEND.
+		const referencedBlock = await h.client.block(input.blockHash);
+		if (referencedBlock === null) {
+			throw(new Error('Referenced input block not found on chain'));
+		}
+
+		const referencedExternals = referencedBlock.operations.flatMap(function(op) {
+			if (op.type === KeetaNet.lib.Block.OperationType.SEND) {
+				return([ op.external ]);
+			}
+
+			return([]);
+		});
+
+		expect(referencedExternals).toEqual([ firstExternal ]);
 	});
 
 	test('direct send: keetaSendAuthRequired fires with correct sendToAddress and value', async function() {

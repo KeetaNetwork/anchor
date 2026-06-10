@@ -67,6 +67,29 @@ export type AnchorExternalBinding = {
 };
 
 /**
+ * Reference to a prior on-chain operation that is relevant to the
+ * transfer this envelope describes.
+ *
+ * Inputs are backward links: an envelope can only reference operations
+ * whose block hashes are already known when the carrying SEND is
+ * constructed.
+ *
+ * When the envelope is signed, inputs are part of the signed plaintext
+ * and the signer cannot later repudiate the claimed relevance.
+ */
+export type AnchorExternalInput = {
+	/**
+	 * Hash of the block carrying the referenced operation.
+	 */
+	blockHash: string;
+	/**
+	 * Index of the referenced operation within its block. Omit to
+	 * reference the block as a whole.
+	 */
+	operationIndex?: number;
+};
+
+/**
  * Decoded anchor-external envelope as exposed to callers.
  */
 export type AnchorExternalEnvelope = {
@@ -82,6 +105,11 @@ export type AnchorExternalEnvelope = {
 	 * Signature binding. Present if the envelope is signed.
 	 */
 	binding?: AnchorExternalBinding;
+	/**
+	 * References to prior on-chain operations relevant to this transfer,
+	 * in the order they were added. Present only when non-empty.
+	 */
+	inputs?: AnchorExternalInput[];
 };
 
 /**
@@ -128,14 +156,25 @@ export type EncodedAnchorExternalBindingV1 = {
 };
 
 /**
+ * Input reference as it appears in the encoded envelope.
+ *
+ * `h` = block hash, `o` = operation index.
+ */
+export type EncodedAnchorExternalInputV1 = {
+	h: string;
+	o?: number;
+};
+
+/**
  * Anchor-external envelope as it appears inside the encoded blob.
  *
- * `v` = envelope version, `a` = anchors, `b` = binding.
+ * `v` = envelope version, `a` = anchors, `b` = binding, `i` = inputs.
  */
 export type EncodedAnchorExternalEnvelopeV1 = {
 	v: typeof ANCHOR_EXTERNAL_VERSION;
 	a: { [anchorPublicKey: string]: EncodedAnchorExternalEntryV1 };
 	b?: EncodedAnchorExternalBindingV1;
+	i?: EncodedAnchorExternalInputV1[];
 };
 
 // #endregion
@@ -269,6 +308,30 @@ function entryFromEncoded(entry: EncodedAnchorExternalEntryV1): AnchorExternalEn
 }
 
 /**
+ * Convert a public input reference to an encoded input reference.
+ */
+function inputToEncoded(input: AnchorExternalInput): EncodedAnchorExternalInputV1 {
+	const result: EncodedAnchorExternalInputV1 = { h: input.blockHash };
+	if (input.operationIndex !== undefined) {
+		result.o = input.operationIndex;
+	}
+
+	return(result);
+}
+
+/**
+ * Convert an encoded input reference to a public input reference.
+ */
+function inputFromEncoded(input: EncodedAnchorExternalInputV1): AnchorExternalInput {
+	const result: AnchorExternalInput = { blockHash: input.h };
+	if (input.o !== undefined) {
+		result.operationIndex = input.o;
+	}
+
+	return(result);
+}
+
+/**
  * Convert a public envelope to an encoded envelope.
  */
 function envelopeToEncoded(envelope: AnchorExternalEnvelope): EncodedAnchorExternalEnvelopeV1 {
@@ -283,6 +346,10 @@ function envelopeToEncoded(envelope: AnchorExternalEnvelope): EncodedAnchorExter
 	};
 	if (envelope.binding !== undefined) {
 		result.b = { p: envelope.binding.previousBlockHash, o: envelope.binding.operationIndex };
+	}
+
+	if (envelope.inputs !== undefined) {
+		result.i = envelope.inputs.map(inputToEncoded);
 	}
 
 	return(result);
@@ -303,6 +370,10 @@ function envelopeFromEncoded(encoded: EncodedAnchorExternalEnvelopeV1): AnchorEx
 	};
 	if (encoded.b !== undefined) {
 		result.binding = { previousBlockHash: encoded.b.p, operationIndex: encoded.b.o };
+	}
+
+	if (encoded.i !== undefined) {
+		result.inputs = encoded.i.map(inputFromEncoded);
 	}
 
 	return(result);
@@ -352,6 +423,22 @@ function validateBindingShape(binding: AnchorExternalBinding): string | undefine
 }
 
 /**
+ * Validate the shape of an {@link AnchorExternalInput}.
+ *
+ * @returns `undefined` if valid, or an error message.
+ */
+function validateInputShape(input: AnchorExternalInput): string | undefined {
+	if (typeof input.blockHash !== 'string' || input.blockHash.length === 0) {
+		return('input.blockHash must be a non-empty string');
+	}
+	if (input.operationIndex !== undefined && (!Number.isInteger(input.operationIndex) || input.operationIndex < 0)) {
+		return(`input.operationIndex must be a non-negative integer, got ${input.operationIndex}`);
+	}
+
+	return(undefined);
+}
+
+/**
  * Decode the base64-encoded string.
  */
 function decodeExternal(external: string): Buffer {
@@ -373,6 +460,7 @@ function decodeExternal(external: string): Buffer {
  */
 export class AnchorExternalBuilder {
 	readonly #anchors: { [anchorPublicKey: string]: AnchorExternalEntry } = {};
+	readonly #inputs: AnchorExternalInput[] = [];
 	#signer: Account | undefined;
 	#principals: Account[] | undefined;
 	#maxLength: number | undefined;
@@ -384,6 +472,29 @@ export class AnchorExternalBuilder {
 	 */
 	setAnchor(anchor: Account, entry: AnchorExternalEntry): this {
 		this.#anchors[anchor.publicKeyString.get()] = entry;
+		return(this);
+	}
+
+	/**
+	 * Append a reference to a prior on-chain operation relevant to this
+	 * transfer. Order of addition is preserved in the envelope.
+	 *
+	 * @param blockHash      Hash of the block carrying the referenced operation.
+	 * @param operationIndex Index of the operation within its block. Omit to
+	 *                       reference the block as a whole.
+	 */
+	addInput(blockHash: string, operationIndex?: number): this {
+		const candidate: AnchorExternalInput = { blockHash };
+		if (operationIndex !== undefined) {
+			candidate.operationIndex = operationIndex;
+		}
+
+		const error = validateInputShape(candidate);
+		if (error !== undefined) {
+			throw(new KeetaAnchorError(`addInput: ${error}`));
+		}
+
+		this.#inputs.push(candidate);
 		return(this);
 	}
 
@@ -446,6 +557,12 @@ export class AnchorExternalBuilder {
 
 		if (this.#binding !== undefined) {
 			result.binding = { ...this.#binding };
+		}
+
+		if (this.#inputs.length > 0) {
+			result.inputs = this.#inputs.map(function(input) {
+				return({ ...input });
+			});
 		}
 
 		return(result);

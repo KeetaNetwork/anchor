@@ -39,6 +39,12 @@ const anchor1Key = anchor1.publicKeyString.get();
 const TEST_BINDING_PREVIOUS_BLOCK_HASH = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const TEST_BINDING_OPERATION_INDEX = 3;
 
+/*
+ * Fixed input references used wherever a test carries inputs.
+ */
+const TEST_INPUT_BLOCK_HASH_1 = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const TEST_INPUT_BLOCK_HASH_2 = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
 type ModeSpec = {
 	name: string;
 	configure: (builder: AnchorExternalBuilder) => void;
@@ -118,6 +124,31 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 	expect(peeked).toEqual({ encrypted: mode.expectedEncrypted, signed: mode.expectedSigned });
 });
 
+test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
+	const builder = new AnchorExternalBuilder()
+		.setAnchor(anchor1, { transactionId: 'tx-1' })
+		.addInput(TEST_INPUT_BLOCK_HASH_1, 0)
+		.addInput(TEST_INPUT_BLOCK_HASH_2);
+	mode.configure(builder);
+
+	const external = await builder.build();
+	const decoded = await mode.decode(external);
+	expect(decoded.envelope).toEqual(builder.toEnvelope());
+	expect(decoded.envelope.inputs).toEqual([
+		{ blockHash: TEST_INPUT_BLOCK_HASH_1, operationIndex: 0 },
+		{ blockHash: TEST_INPUT_BLOCK_HASH_2 }
+	]);
+});
+
+test('an envelope without inputs decodes with the inputs field absent', async function() {
+	const external = await new AnchorExternalBuilder()
+		.setAnchor(anchor1, { transactionId: 'tx-1' })
+		.build();
+
+	const decoded = await AnchorExternal.fromPlainExternal(external);
+	expect(decoded.envelope.inputs).toBeUndefined();
+});
+
 test('round-trip preserves multiple anchors with mixed entry kinds', async function() {
 	const builder = new AnchorExternalBuilder()
 		.setAnchor(anchor1, { transactionId: 'tx-1' })
@@ -169,6 +200,18 @@ const misuseCases: MisuseCase[] = [
 	{
 		name: 'withBinding rejects empty previous eagerly',
 		act: function() { return(new AnchorExternalBuilder().withBinding('', 0)); }
+	},
+	{
+		name: 'addInput rejects empty blockHash eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput('')); }
+	},
+	{
+		name: 'addInput rejects negative operationIndex eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, -1)); }
+	},
+	{
+		name: 'addInput rejects non-integer operationIndex eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, 1.5)); }
 	},
 	{
 		name: 'withBinding rejects negative operationIndex eagerly',
@@ -319,6 +362,33 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 		name: 'entry with extra key',
 		makeExternal: async function() {
 			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x', extra: 'y' }}}, undefined);
+			return(result);
+		},
+		decoder: 'plain',
+		expectedCode: 'NOT_AN_ENVELOPE'
+	},
+	{
+		name: 'input with extra key',
+		makeExternal: async function() {
+			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}, i: [{ h: TEST_INPUT_BLOCK_HASH_1, extra: 'y' }] }, undefined);
+			return(result);
+		},
+		decoder: 'plain',
+		expectedCode: 'NOT_AN_ENVELOPE'
+	},
+	{
+		name: 'inputs as a non-array',
+		makeExternal: async function() {
+			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}, i: { h: TEST_INPUT_BLOCK_HASH_1 }}, undefined);
+			return(result);
+		},
+		decoder: 'plain',
+		expectedCode: 'NOT_AN_ENVELOPE'
+	},
+	{
+		name: 'input missing its block hash',
+		makeExternal: async function() {
+			const result = await packEncoded({ v: ANCHOR_EXTERNAL_VERSION, a: { [anchor1Key]: { t: 'x' }}, i: [{ o: 0 }] }, undefined);
 			return(result);
 		},
 		decoder: 'plain',
