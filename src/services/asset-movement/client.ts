@@ -416,16 +416,23 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			anchorAccount = await serviceInfo.account('string');
 		}
 
+		const legalExtension = await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger });
+		const resolvedServiceInfo: KeetaAssetMovementServiceInfo = {
+			...legalExtension,
+			operations: operationsFunctions,
+			supportedAssets: supportedAssets
+		};
+		if (locationMetadata) {
+			resolvedServiceInfo.locationMetadata = locationMetadata;
+		}
+		if (anchorAccount !== undefined) {
+			resolvedServiceInfo.account = anchorAccount;
+		}
+
 		return([
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
-			{
-				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger })),
-				operations: operationsFunctions,
-				supportedAssets: supportedAssets,
-				...(locationMetadata ? { locationMetadata } : {}),
-				...(anchorAccount !== undefined ? { account: anchorAccount } : {})
-			}
+			resolvedServiceInfo
 		]);
 	});
 

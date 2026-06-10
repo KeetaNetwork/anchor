@@ -10,3 +10,17 @@ export type Brand<T, BrandName extends string> = T & {
  * it, since it is unique and cannot be easily created by accident.
  */
 export type BrandedString<BrandName extends string> = Brand<symbol, BrandName>;
+
+/**
+ * Brand a string value with a named brand.
+ */
+export function brandString<BrandName extends string>(input: string | BrandedString<BrandName>): BrandedString<BrandName>;
+export function brandString<BrandName extends string>(input: string | BrandedString<BrandName> | undefined): BrandedString<BrandName> | undefined;
+export function brandString<BrandName extends string>(input: string | BrandedString<BrandName> | undefined): BrandedString<BrandName> | undefined {
+	if (input === undefined) {
+		return(undefined);
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(input as BrandedString<BrandName>);
+}
