@@ -1732,13 +1732,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({
 							type: 'assetMovement',
-							step,
+							step: step,
 							valueIn: depositValue,
 							usingInstruction: usingInstruction,
 							transfer: transfer,
 							sendingTo: sendingToType,
 							valueOut: actualValueOut,
-							provider
+							provider: provider
 						})
 					} else if (step.type === 'keetaSend') {
 						if (this.path.length !== 1) {

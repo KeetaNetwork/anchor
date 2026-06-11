@@ -4,13 +4,15 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type {
 	AnchorExternalEntry,
 	AnchorExternalErrorCode,
+	AnchorExternalInput,
 	EncodedAnchorExternalEnvelopeV1
 } from './anchor-external.js';
 import {
 	AnchorExternal,
 	AnchorExternalBuilder,
 	AnchorExternalError,
-	ANCHOR_EXTERNAL_VERSION
+	ANCHOR_EXTERNAL_VERSION,
+	buildSignedAnchorExternal
 } from './anchor-external.js';
 import { EncryptedContainer } from './encrypted-container.js';
 import { KeetaAnchorError } from './error.js';
@@ -125,10 +127,11 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 });
 
 test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
-	const builder = new AnchorExternalBuilder()
-		.setAnchor(anchor1, { transactionId: 'tx-1' })
-		.addInput(TEST_INPUT_BLOCK_HASH_1, 0)
-		.addInput(TEST_INPUT_BLOCK_HASH_2);
+	const builder = new AnchorExternalBuilder();
+	builder.setAnchor(anchor1, { transactionId: 'tx-1' });
+	builder.addInput(TEST_INPUT_BLOCK_HASH_1, 0);
+	builder.addInput(TEST_INPUT_BLOCK_HASH_2);
+
 	mode.configure(builder);
 
 	const external = await builder.build();
@@ -212,6 +215,18 @@ const misuseCases: MisuseCase[] = [
 	{
 		name: 'addInput rejects non-integer operationIndex eagerly',
 		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, 1.5)); }
+	},
+	{
+		name: 'addInput rejects NaN operationIndex eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, NaN)); }
+	},
+	{
+		name: 'addInput rejects Infinity operationIndex eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, Infinity)); }
+	},
+	{
+		name: 'addInput rejects operationIndex above 2^32 - 1 eagerly',
+		act: function() { return(new AnchorExternalBuilder().addInput(TEST_INPUT_BLOCK_HASH_1, 2 ** 32 + 1)); }
 	},
 	{
 		name: 'withBinding rejects negative operationIndex eagerly',
@@ -473,6 +488,84 @@ test.each(decodeRejectionCases)('fromXExternal rejects malformed input with $exp
 	if (AnchorExternalError.isInstance(error)) {
 		expect(error.code).toBe(expectedCode);
 	}
+});
+
+/*
+ * Fixed inputs and binding shared by the buildSignedAnchorExternal cases.
+ */
+const SIGNED_HELPER_TRANSACTION_ID = 'tx-payout-1';
+const SIGNED_HELPER_BINDING = { previousBlockHash: TEST_BINDING_PREVIOUS_BLOCK_HASH, operationIndex: TEST_BINDING_OPERATION_INDEX };
+const SIGNED_HELPER_INPUTS: AnchorExternalInput[] = [
+	{ blockHash: TEST_INPUT_BLOCK_HASH_1, operationIndex: 0 },
+	{ blockHash: TEST_INPUT_BLOCK_HASH_2 }
+];
+
+type SignedHelperCase = {
+	name: string;
+	inputs: AnchorExternalInput[] | undefined;
+	encryptTo: Account[] | undefined;
+	decode: (external: string) => Promise<AnchorExternal>;
+	expectedEncrypted: boolean;
+	expectedInputs: AnchorExternalInput[] | undefined;
+};
+
+const signedHelperCases: SignedHelperCase[] = [
+	{
+		name: 'plain, no inputs',
+		inputs: undefined,
+		encryptTo: undefined,
+		decode: async function(external) { return(await AnchorExternal.fromPlainExternal(external)); },
+		expectedEncrypted: false,
+		expectedInputs: undefined
+	},
+	{
+		name: 'plain, with inputs',
+		inputs: SIGNED_HELPER_INPUTS,
+		encryptTo: undefined,
+		decode: async function(external) { return(await AnchorExternal.fromPlainExternal(external)); },
+		expectedEncrypted: false,
+		expectedInputs: SIGNED_HELPER_INPUTS
+	},
+	{
+		name: 'encrypted to the recipient, with inputs',
+		inputs: SIGNED_HELPER_INPUTS,
+		encryptTo: [stranger],
+		decode: async function(external) { return(await AnchorExternal.fromEncryptedExternal(external, [stranger])); },
+		expectedEncrypted: true,
+		expectedInputs: SIGNED_HELPER_INPUTS
+	}
+];
+
+test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified signed envelope: $name', async function({ inputs, encryptTo, decode, expectedEncrypted, expectedInputs }) {
+	const external = await buildSignedAnchorExternal({
+		anchor: anchor1,
+		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		binding: SIGNED_HELPER_BINDING,
+		...(inputs !== undefined && { inputs }),
+		...(encryptTo !== undefined && { encryptTo })
+	});
+
+	const decoded = await decode(external);
+	expect(decoded.encrypted).toBe(expectedEncrypted);
+	expect(decoded.signed?.signer.comparePublicKey(anchor1)).toBe(true);
+	expect(decoded.envelope.anchors).toEqual({ [anchor1Key]: { transactionId: SIGNED_HELPER_TRANSACTION_ID }});
+	expect(decoded.envelope.binding).toEqual(SIGNED_HELPER_BINDING);
+	expect(decoded.envelope.inputs).toEqual(expectedInputs);
+
+	const peeked = await AnchorExternal.peek(external);
+	expect(peeked).toEqual({ encrypted: expectedEncrypted, signed: true });
+});
+
+test('buildSignedAnchorExternal without decryption keys is unreadable by the plain decoder', async function() {
+	const external = await buildSignedAnchorExternal({
+		anchor: anchor1,
+		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		binding: SIGNED_HELPER_BINDING,
+		encryptTo: [stranger]
+	});
+
+	const error = await AnchorExternal.fromPlainExternal(external).catch(function(caught: unknown) { return(caught); });
+	expect(AnchorExternalError.isInstance(error) && error.code).toBe('EXPECTED_PLAIN');
 });
 
 test('AnchorExternalError preserves its code through to/fromJSON', async function() {
