@@ -538,7 +538,7 @@ const signedHelperCases: SignedHelperCase[] = [
 test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified signed envelope: $name', async function({ inputs, encryptTo, decode, expectedEncrypted, expectedInputs }) {
 	const external = await buildSignedAnchorExternal({
 		anchor: anchor1,
-		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		transactionID: SIGNED_HELPER_TRANSACTION_ID,
 		binding: SIGNED_HELPER_BINDING,
 		...(inputs !== undefined && { inputs }),
 		...(encryptTo !== undefined && { encryptTo })
@@ -547,7 +547,7 @@ test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified sign
 	const decoded = await decode(external);
 	expect(decoded.encrypted).toBe(expectedEncrypted);
 	expect(decoded.signed?.signer.comparePublicKey(anchor1)).toBe(true);
-	expect(decoded.envelope.anchors).toEqual({ [anchor1Key]: { transactionId: SIGNED_HELPER_TRANSACTION_ID }});
+	expect(decoded.envelope.anchors).toEqual({ [anchor1Key]: { transactionID: SIGNED_HELPER_TRANSACTION_ID }});
 	expect(decoded.envelope.binding).toEqual(SIGNED_HELPER_BINDING);
 	expect(decoded.envelope.inputs).toEqual(expectedInputs);
 
@@ -558,7 +558,7 @@ test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified sign
 test('buildSignedAnchorExternal without decryption keys is unreadable by the plain decoder', async function() {
 	const external = await buildSignedAnchorExternal({
 		anchor: anchor1,
-		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		transactionID: SIGNED_HELPER_TRANSACTION_ID,
 		binding: SIGNED_HELPER_BINDING,
 		encryptTo: [stranger]
 	});

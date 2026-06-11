@@ -108,11 +108,11 @@ export type LogicalLeg =
 		/**
 		 * Anchor account the transfer was filed under.
 		 */
-		anchorId: string;
+		anchorID: string;
 		/**
 		 * Anchor-scoped transaction id.
 		 */
-		transactionId: string;
+		transactionID: string;
 		/**
 		 * Related chain transaction ids reported by the anchor.
 		 */
@@ -181,7 +181,7 @@ export type LogicalTransaction = {
 		/**
 		 * Anchor-scoped transaction ids contributing to this logical transaction.
 		 */
-		anchorTxIds: string[];
+		anchorTxIDs: string[];
 		/**
 		 * Raw `external` strings observed, when present.
 		 */
@@ -231,7 +231,7 @@ export type EnrichedOperation = {
 	 * Authoritative over operation counterparties: for anchor-issued payout
 	 * blocks the operation counterparty is the user, not the anchor.
 	 */
-	anchorId?: string;
+	anchorID?: string;
 };
 
 /**
@@ -650,8 +650,8 @@ function blockExternals(block: EnrichedBlock): string[] {
 /**
  * Build the refs block for a logical transaction.
  */
-function buildRefs(block: EnrichedBlock, anchorTxIds: string[]): LogicalTransaction['refs'] {
-	const refs: LogicalTransaction['refs'] = { blockHashes: [ block.blockHash ], anchorTxIds };
+function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransaction['refs'] {
+	const refs: LogicalTransaction['refs'] = { blockHashes: [ block.blockHash ], anchorTxIDs };
 	const externals = blockExternals(block);
 	if (externals.length > 0) {
 		refs.external = externals;
@@ -687,15 +687,15 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
 		});
 	}
 
-	const anchorId = enriched.anchorId ?? view?.counterparty ?? transfer.id;
+	const anchorID = enriched.anchorID ?? view?.counterparty ?? transfer.id;
 	legs.push({
 		kind: 'anchor',
-		anchorId,
-		transactionId: transfer.id,
+		anchorID,
+		transactionID: transfer.id,
 		subTransactions: collectAnchorSubTransactions(transfer)
 	});
 
-	const refs: LogicalTransaction['refs'] = { blockHashes: [ block.blockHash ], anchorTxIds: [ transfer.id ] };
+	const refs: LogicalTransaction['refs'] = { blockHashes: [ block.blockHash ], anchorTxIDs: [ transfer.id ] };
 	const externals = blockExternals(block);
 	if (externals.length > 0) {
 		refs.external = externals;
@@ -714,7 +714,7 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
 		refs
 	};
 
-	transaction.counterparty = { kind: 'anchor', id: anchorId };
+	transaction.counterparty = { kind: 'anchor', id: anchorID };
 
 	if (transfer.fee !== null) {
 		transaction.fee = { token: convertAssetSearchInputToCanonical(transfer.fee.asset), amount: toUnits(transfer.fee.value) };
@@ -919,17 +919,17 @@ export function foldHistory(blocks: readonly EnrichedBlock[], classifiers: reado
  * A transfer paired with the anchor account it resolved under.
  */
 type ResolvedTransfer = {
-	anchorId: string;
+	anchorID: string;
 	transfer: KeetaAssetMovementTransaction;
 };
 
 /**
  * The first transfer reported as a status across an external's anchors.
  */
-function firstResolvedTransfer(results: { [anchorId: string]: AnchorTransactionStatusResult<KeetaAssetMovementTransaction> }): ResolvedTransfer | undefined {
-	for (const [ anchorId, result ] of Object.entries(results)) {
+function firstResolvedTransfer(results: { [anchorID: string]: AnchorTransactionStatusResult<KeetaAssetMovementTransaction> }): ResolvedTransfer | undefined {
+	for (const [ anchorID, result ] of Object.entries(results)) {
 		if (result.kind === 'status') {
-			return({ anchorId, transfer: result.status.transaction });
+			return({ anchorID, transfer: result.status.transaction });
 		}
 	}
 
@@ -1128,7 +1128,7 @@ export class UserHistory {
 				const resolved = await this.#resolveTransfer(block, operation, index, perspective, options, externalCache, readerCache);
 				if (resolved !== undefined) {
 					enriched.transfer = resolved.transfer;
-					enriched.anchorId = resolved.anchorId;
+					enriched.anchorID = resolved.anchorID;
 				}
 			}
 
@@ -1202,19 +1202,19 @@ export class UserHistory {
 	 * Reverse-lookup a transfer by on-chain coordinates through the anchor the
 	 * counterparty resolves to.
 	 */
-	async #resolveByOnChain(status: AnchorTransactionStatus<KeetaAssetMovementTransaction>, counterparty: string, networkId: bigint, blockHash: string, operationIndex: number, options: UserHistoryListOptions | undefined, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<ResolvedTransfer | undefined> {
+	async #resolveByOnChain(status: AnchorTransactionStatus<KeetaAssetMovementTransaction>, counterparty: string, networkID: bigint, blockHash: string, operationIndex: number, options: UserHistoryListOptions | undefined, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<ResolvedTransfer | undefined> {
 		const reader = await this.#getReader(status, counterparty, readerCache);
 		if (reader?.findByOnChain === undefined) {
 			return(undefined);
 		}
 
 		try {
-			const result = await reader.findByOnChain({ keetaNetworkId: networkId, blockHash, operationIndex }, buildStatusOptions(options));
+			const result = await reader.findByOnChain({ keetaNetworkID: networkID, blockHash, operationIndex }, buildStatusOptions(options));
 			if (result === null) {
 				return(undefined);
 			}
 
-			return({ anchorId: counterparty, transfer: result.transaction });
+			return({ anchorID: counterparty, transfer: result.transaction });
 		} catch (error) {
 			this.#logger?.debug('UserHistory::resolveByOnChain', `Reverse-lookup at ${counterparty} for ${blockHash}:${operationIndex} failed: ${String(error)}`);
 			return(undefined);

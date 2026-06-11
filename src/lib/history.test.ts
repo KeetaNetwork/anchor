@@ -138,7 +138,7 @@ function makeTransfer(input: {
 /**
  * Account id of an anchor reference, regardless of its form.
  */
-function referenceId(anchor: AnchorReference): string {
+function referenceID(anchor: AnchorReference): string {
 	if (typeof anchor === 'string') {
 		return(anchor);
 	}
@@ -152,16 +152,16 @@ function referenceId(anchor: AnchorReference): string {
  */
 class TestStatusSource implements AnchorStatusSource<KeetaAssetMovementTransaction> {
 	readonly #anchors = new Set<string>();
-	readonly #byTxId = new Map<string, KeetaAssetMovementTransaction>();
+	readonly #byTxID = new Map<string, KeetaAssetMovementTransaction>();
 	readonly #byCoord = new Map<string, KeetaAssetMovementTransaction>();
 
 	registerAnchor(anchor: Account): void {
 		this.#anchors.add(anchor.publicKeyString.get());
 	}
 
-	registerByTxId(anchor: Account, transfer: KeetaAssetMovementTransaction): void {
+	registerByTxID(anchor: Account, transfer: KeetaAssetMovementTransaction): void {
 		this.registerAnchor(anchor);
-		this.#byTxId.set(transfer.id, transfer);
+		this.#byTxID.set(transfer.id, transfer);
 	}
 
 	registerByCoord(anchor: Account, blockHash: string, operationIndex: number, transfer: KeetaAssetMovementTransaction): void {
@@ -170,21 +170,21 @@ class TestStatusSource implements AnchorStatusSource<KeetaAssetMovementTransacti
 	}
 
 	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<KeetaAssetMovementTransaction> | null> {
-		const id = referenceId(anchor);
+		const id = referenceID(anchor);
 		if (!this.#anchors.has(id)) {
 			return(null);
 		}
 
-		const byTxId = this.#byTxId;
+		const byTxID = this.#byTxID;
 		const byCoord = this.#byCoord;
 		const reader: AnchorTransferReader<KeetaAssetMovementTransaction> = {
-			async getTransferStatus(transactionId: string): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction>> {
-				const transfer = byTxId.get(transactionId);
+			async getTransferStatus(transactionID: string): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction>> {
+				const transfer = byTxID.get(transactionID);
 				if (transfer === undefined) {
 					throw(new Error('unknown transaction'));
 				}
 
-				return({ status: transfer.status, transactionId: transfer.id, transaction: transfer });
+				return({ status: transfer.status, transactionID: transfer.id, transaction: transfer });
 			},
 			async findByOnChain(reference: AnchorOnChainReference): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction> | null> {
 				const transfer = byCoord.get(`${reference.blockHash}:${reference.operationIndex}`);
@@ -192,7 +192,7 @@ class TestStatusSource implements AnchorStatusSource<KeetaAssetMovementTransacti
 					return(null);
 				}
 
-				return({ status: transfer.status, transactionId: transfer.id, transaction: transfer });
+				return({ status: transfer.status, transactionID: transfer.id, transaction: transfer });
 			}
 		};
 
@@ -415,9 +415,9 @@ async function buildAnchorScenario(testCase: AnchorCase, user: Account, anchor: 
 	const source = new TestStatusSource();
 
 	if (testCase.correlation === 'external') {
-		const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: testCase.id }).build();
+		const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: testCase.id }).build();
 		const block = await seal(user, [ sendOp(anchor, token, BigInt(testCase.value), external) ]);
-		source.registerByTxId(anchor, transfer);
+		source.registerByTxID(anchor, transfer);
 		return({ block, source });
 	}
 
@@ -437,14 +437,14 @@ test.each(anchorCases)('classifies an anchor $name', async function(testCase) {
 	expect(transaction?.direction).toBe(testCase.direction);
 	expect(transaction?.status).toBe(testCase.status);
 	expect(transaction?.providerStatus).toBe(testCase.providerStatus);
-	expect(transaction?.refs.anchorTxIds).toContain(testCase.id);
+	expect(transaction?.refs.anchorTxIDs).toContain(testCase.id);
 });
 
 test('an anchor withdraw records the fee and an anchor counterparty', async function() {
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
-	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'withdraw-tx' }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: 'withdraw-tx' }).build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
 
 	const transfer = makeTransfer({
@@ -458,7 +458,7 @@ test('an anchor withdraw records the fee and an anchor counterparty', async func
 		fee: { asset: token.publicKeyString.get(), value: '2' }
 	});
 	const source = new TestStatusSource();
-	source.registerByTxId(anchor, transfer);
+	source.registerByTxID(anchor, transfer);
 
 	const [ transaction ] = await runHistory([ block ], source);
 	expect(transaction?.type).toBe('withdraw');
@@ -559,7 +559,7 @@ test('enrichment can be disabled to classify from block shape only', async funct
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
-	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'withdraw-tx' }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: 'withdraw-tx' }).build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
 
 	const transfer = makeTransfer({
@@ -572,7 +572,7 @@ test('enrichment can be disabled to classify from block shape only', async funct
 		toValue: '400'
 	});
 	const source = new TestStatusSource();
-	source.registerByTxId(anchor, transfer);
+	source.registerByTxID(anchor, transfer);
 
 	const [ transaction ] = await runHistory([ block ], source, { enrich: false });
 	expect(transaction?.type).toBe('send');
@@ -698,7 +698,7 @@ async function encryptedWithdrawScenario(): Promise<{ user: Account; block: Bloc
 	const anchor = newAccount();
 	const token = newToken(user, 0);
 	const external = await new AnchorExternal.Builder()
-		.setAnchor(anchor, { transactionId: 'withdraw-tx' })
+		.setAnchor(anchor, { transactionID: 'withdraw-tx' })
 		.withPrincipals([ user ])
 		.build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
@@ -713,7 +713,7 @@ async function encryptedWithdrawScenario(): Promise<{ user: Account; block: Bloc
 		toValue: '400'
 	});
 	const source = new TestStatusSource();
-	source.registerByTxId(anchor, transfer);
+	source.registerByTxID(anchor, transfer);
 
 	return({ user, block, source });
 }
@@ -723,7 +723,7 @@ test('an encrypted external resolves when decryption keys are supplied', async f
 
 	const [ transaction ] = await runHistory([ scenario.block ], scenario.source, { decryptionKeys: [ scenario.user ] });
 	expect(transaction?.type).toBe('withdraw');
-	expect(transaction?.refs.anchorTxIds).toContain('withdraw-tx');
+	expect(transaction?.refs.anchorTxIDs).toContain('withdraw-tx');
 });
 
 test('an encrypted external without decryption keys degrades to a plain send', async function() {
@@ -731,7 +731,7 @@ test('an encrypted external without decryption keys degrades to a plain send', a
 
 	const [ transaction ] = await runHistory([ scenario.block ], scenario.source);
 	expect(transaction?.type).toBe('send');
-	expect(transaction?.refs.anchorTxIds).toEqual([]);
+	expect(transaction?.refs.anchorTxIDs).toEqual([]);
 });
 
 // #endregion Paging and options
@@ -834,7 +834,7 @@ async function startAnchorTransferFixture(input: {
 		usePublishAid: false
 	});
 
-	const external = await new AnchorExternal.Builder().setAnchor(anchorAccount, { transactionId: input.id }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchorAccount, { transactionID: input.id }).build();
 	await senderClient.send(recipientAccount, 5n, baseToken, external);
 
 	const resolver = new Resolver({ root: rootAccount, client: rootClient, trustedCAs: [] });
@@ -861,7 +861,7 @@ test('resolves a real withdraw end-to-end through a live node and anchor server'
 	expect(withdraw?.providerStatus).toBe('COMPLETE');
 	expect(withdraw?.direction).toBe('out');
 	expect(withdraw?.counterparty).toEqual({ kind: 'anchor', id: fixture.anchorAccount.publicKeyString.get() });
-	expect(withdraw?.refs.anchorTxIds).toContain('withdraw-tx');
+	expect(withdraw?.refs.anchorTxIDs).toContain('withdraw-tx');
 });
 
 test('resolves a real deposit payout end-to-end from an anchor-issued send', async function() {
@@ -881,7 +881,7 @@ test('resolves a real deposit payout end-to-end from an anchor-issued send', asy
 	expect(deposit?.providerStatus).toBe('COMPLETE');
 	expect(deposit?.direction).toBe('in');
 	expect(deposit?.counterparty).toEqual({ kind: 'anchor', id: fixture.anchorAccount.publicKeyString.get() });
-	expect(deposit?.refs.anchorTxIds).toContain('deposit-tx');
+	expect(deposit?.refs.anchorTxIDs).toContain('deposit-tx');
 });
 
 // #endregion Integration
