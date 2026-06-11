@@ -361,6 +361,64 @@ describe('Storage Client - Public Objects', function() {
 	});
 });
 
+describe('Storage Client - Get Public Content', function() {
+	test('provider.getPublicContent round-trips a public object', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount, makePath }) {
+			const data = Buffer.from('public bytes');
+			const path = makePath('pub.bin');
+			await provider.put({ path, data, mimeType: 'image/png', visibility: 'public', account, anchorAccount });
+
+			const result = await provider.getPublicContent({ path, account });
+			expect(result).not.toBeNull();
+			expect(result?.mimeType).toBe('image/png');
+			expect(result?.data).toEqual(data);
+		}));
+	});
+
+	test('provider.getPublicContent returns null for a nonexistent object', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
+			const result = await provider.getPublicContent({ path: makePath('missing.bin'), account });
+			expect(result).toBeNull();
+		}));
+	});
+
+	test('provider.getPublicContent throws for a private object (not null)', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath }) {
+			const path = makePath('private.bin');
+			await provider.put({ path, data: Buffer.from('secret'), mimeType: 'image/png', visibility: 'private', account });
+
+			await expect(provider.getPublicContent({ path, account })).rejects.toSatisfy(function(e: unknown) {
+				return(!Errors.DocumentNotFound.isInstance(e));
+			});
+		}));
+	});
+
+	test('session.getPublicContent resolves the working directory', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount }) {
+			const ownerKey = account.publicKeyString.get();
+			const data = Buffer.from('session bytes');
+			await provider.put({
+				path: `/user/${ownerKey}/avatar.png`,
+				data,
+				mimeType: 'image/png',
+				visibility: 'public',
+				account,
+				anchorAccount
+			});
+
+			const session = provider.beginSession({
+				account,
+				workingDirectory: `/user/${ownerKey}/`,
+				defaultVisibility: 'public'
+			});
+			const result = await session.getPublicContent('avatar.png');
+			expect(result).not.toBeNull();
+			expect(result?.mimeType).toBe('image/png');
+			expect(result?.data).toEqual(data);
+		}));
+	});
+});
+
 describe('Storage Client - Update Metadata', function() {
 	test('updateMetadata updates tags and visibility', function() {
 		return(withClient(randomSeed(), async function({ provider, account, makePath, putText }) {
