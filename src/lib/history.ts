@@ -755,7 +755,7 @@ const anchorTransferClassifier: LogicalClassifier = {
 
 /**
  * Classifies an on-chain atomic swap: SEND(s) and RECEIVE(s) against a single
- * counterparty with differing send/receive tokens; an extra SEND is the fee.
+ * counterparty with differing send/receive tokens.
  */
 const atomicSwapClassifier: LogicalClassifier = {
 	classify(block) {
@@ -1007,9 +1007,7 @@ function buildStatusOptions(options?: UserHistoryListOptions): AnchorGetTransact
 
 /**
  * Folds a user's on-chain history and anchor transfer data into a condensed
- * list of {@link LogicalTransaction}. I/O is inverted through the injected
- * {@link HistorySource} and {@link AnchorTransactionStatus}; classification is
- * pure.
+ * list of {@link LogicalTransaction}.
  */
 export class UserHistory {
 	readonly #history: HistorySource;
@@ -1177,8 +1175,6 @@ export class UserHistory {
 
 	/**
 	 * Resolve a transfer from a SEND's `external` envelope, deduped per blob.
-	 * An undecodable envelope resolves to `undefined` and is left to the
-	 * block-only classifiers.
 	 */
 	async #resolveFromExternal(status: AnchorTransactionStatus<KeetaAssetMovementTransaction>, external: string, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>): Promise<ResolvedTransfer | undefined> {
 		const cached = externalCache.get(external);
@@ -1201,8 +1197,7 @@ export class UserHistory {
 
 	/**
 	 * Reverse-lookup a transfer by on-chain coordinates through the anchor the
-	 * counterparty resolves to. Cached per anchor; failures degrade to
-	 * `undefined`.
+	 * counterparty resolves to.
 	 */
 	async #resolveByOnChain(status: AnchorTransactionStatus<KeetaAssetMovementTransaction>, counterparty: string, networkId: bigint, blockHash: string, operationIndex: number, options: UserHistoryListOptions | undefined, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<ResolvedTransfer | undefined> {
 		const reader = await this.#getReader(status, counterparty, readerCache);
