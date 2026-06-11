@@ -44,7 +44,7 @@ export type KeetaAssetMovementStatusSourceConfig = {
 function transferToStandardized(transaction: KeetaAssetMovementTransaction): StandardizedTransferStatus<KeetaAssetMovementTransaction> {
 	const result: StandardizedTransferStatus<KeetaAssetMovementTransaction> = {
 		status: transaction.status,
-		transactionId: transaction.id,
+		transactionID: transaction.id,
 		transaction
 	};
 	return(result);
@@ -61,8 +61,8 @@ class KeetaAssetMovementTransferReader implements AnchorTransferReader<KeetaAsse
 		this.#provider = provider;
 	}
 
-	async getTransferStatus(transactionId: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction>> {
-		const request: KeetaAssetMovementAnchorGetTransferStatusClientRequest = { id: transactionId };
+	async getTransferStatus(transactionID: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction>> {
+		const request: KeetaAssetMovementAnchorGetTransferStatusClientRequest = { id: transactionID };
 		if (options?.requesterAccount !== undefined) {
 			request.account = options.requesterAccount;
 		}
@@ -73,7 +73,7 @@ class KeetaAssetMovementTransferReader implements AnchorTransferReader<KeetaAsse
 	}
 
 	async findByOnChain(reference: AnchorOnChainReference, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction> | null> {
-		const location: AssetLocationString = `chain:keeta:${reference.keetaNetworkId}`;
+		const location: AssetLocationString = `chain:keeta:${reference.keetaNetworkID}`;
 		const request: KeetaAssetMovementAnchorlistTransactionsClientRequest = {
 			transactions: [{
 				location,

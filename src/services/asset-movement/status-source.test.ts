@@ -27,8 +27,8 @@ function newAccount(): Account {
  * `true` when a SEND's external field references the given transfer, either
  * as the raw transfer id or as an entry in a decodable plaintext envelope.
  */
-async function externalReferencesTransfer(external: unknown, txId: string): Promise<boolean> {
-	if (external === txId) {
+async function externalReferencesTransfer(external: unknown, txID: string): Promise<boolean> {
+	if (external === txID) {
 		return(true);
 	}
 	if (typeof external !== 'string' || external === '') {
@@ -43,7 +43,7 @@ async function externalReferencesTransfer(external: unknown, txId: string): Prom
 	}
 
 	return(Object.values(decoded.envelope.anchors).some(function(entry) {
-		return('transactionId' in entry && entry.transactionId === txId);
+		return('transactionID' in entry && entry.transactionID === txID);
 	}));
 }
 
@@ -82,11 +82,11 @@ async function createStatusFixture() {
 				const fee = 1n;
 				const receive = value - fee;
 				transferCounter += 1;
-				const txId = `transfer-${transferCounter}`;
+				const txID = `transfer-${transferCounter}`;
 				const now = new Date().toISOString();
 
-				statusMap.set(txId, {
-					id: txId,
+				statusMap.set(txID, {
+					id: txID,
 					status: 'PENDING',
 					asset: request.asset,
 					from: { location: request.from.location, value: value.toString(), transactions: { deposit: null, persistentForwarding: null, finalization: null }},
@@ -102,11 +102,11 @@ async function createStatusFixture() {
 						const blockHash = block.hash.toString();
 						for (let operationIndex = 0; operationIndex < block.operations.length; operationIndex++) {
 							const operation = block.operations[operationIndex];
-							if (operation?.type === KeetaNet.lib.Block.OperationType.SEND && await externalReferencesTransfer(operation.external, txId)) {
-								const existing = statusMap.get(txId);
+							if (operation?.type === KeetaNet.lib.Block.OperationType.SEND && await externalReferencesTransfer(operation.external, txID)) {
+								const existing = statusMap.get(txID);
 								if (existing && existing.status !== 'COMPLETE') {
-									statusMap.set(txId, { ...existing, status: 'COMPLETE', updatedAt: new Date().toISOString() });
-									completionIndex.set(`${blockHash}#${operationIndex}`, txId);
+									statusMap.set(txID, { ...existing, status: 'COMPLETE', updatedAt: new Date().toISOString() });
+									completionIndex.set(`${blockHash}#${operationIndex}`, txID);
 								}
 								listenerHandle?.remove();
 							}
@@ -116,7 +116,7 @@ async function createStatusFixture() {
 				});
 
 				return({
-					id: txId,
+					id: txID,
 					instructionChoices: [{
 						type: 'KEETA_SEND' as const,
 						location: request.from.location,
@@ -141,12 +141,12 @@ async function createStatusFixture() {
 				await blockListener.scan();
 				const transactions: KeetaAssetMovementTransaction[] = [];
 				for (const probe of request.transactions ?? []) {
-					const txId = completionIndex.get(`${probe.transaction.id}#${probe.transaction.nonce}`);
-					if (txId === undefined) {
+					const txID = completionIndex.get(`${probe.transaction.id}#${probe.transaction.nonce}`);
+					if (txID === undefined) {
 						continue;
 					}
 
-					const transaction = statusMap.get(txId);
+					const transaction = statusMap.get(txID);
 					if (transaction) {
 						transactions.push(transaction);
 					}
@@ -202,9 +202,9 @@ async function createStatusFixture() {
 	 *
 	 * @returns The hash of the published send block.
 	 */
-	async function fundTransfer(transactionId: string, value: bigint): Promise<string> {
+	async function fundTransfer(transactionID: string, value: bigint): Promise<string> {
 		const external = await new AnchorExternal.Builder()
-			.setAnchor(anchorSigner, { transactionId })
+			.setAnchor(anchorSigner, { transactionID })
 			.build();
 
 		const published = await client.send(anchorDepositAccount, value, token, external);
@@ -244,7 +244,7 @@ test('getStatus: live transfer reads PENDING, then COMPLETE once the on-chain se
 
 	const pending = await fixture.status.getStatus(fixture.anchorSigner, transfer.transferId);
 	expect(pending?.status).toBe('PENDING');
-	expect(pending?.transactionId).toBe(transfer.transferId);
+	expect(pending?.transactionID).toBe(transfer.transferId);
 	expect(isCompletedTransferStatus(pending?.status ?? '')).toBe(false);
 
 	await fixture.fundTransfer(transfer.transferId, 5n);
@@ -264,7 +264,7 @@ test.each([
 	const transfer = await fixture.initiateTransfer(5n);
 
 	const builder = new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionId: transfer.transferId });
+		.setAnchor(fixture.anchorSigner, { transactionID: transfer.transferId });
 	if (encrypt) {
 		builder.withPrincipals([ recipient ]);
 	}
@@ -282,7 +282,7 @@ test.each([
 		throw(new Error(`Expected a status result, got ${result?.kind}`));
 	}
 
-	expect(result.status.transactionId).toBe(transfer.transferId);
+	expect(result.status.transactionID).toBe(transfer.transferId);
 	expect(result.status.status).toBe('PENDING');
 });
 
@@ -292,8 +292,8 @@ test('getStatusesFromExternal: entry variants map to unavailable, unresolved, an
 	const opaqueAnchor = newAccount();
 
 	const external = await new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionId: 'no-such-transfer' })
-		.setAnchor(unknownAnchor, { transactionId: 'transfer-at-unknown-anchor' })
+		.setAnchor(fixture.anchorSigner, { transactionID: 'no-such-transfer' })
+		.setAnchor(unknownAnchor, { transactionID: 'transfer-at-unknown-anchor' })
 		.setAnchor(opaqueAnchor, { destination: EVM_RECIPIENT })
 		.build();
 
@@ -314,15 +314,15 @@ test('findByOnChain: resolves the transfer by real on-chain coordinates, null ot
 	}
 
 	const found = await reader.findByOnChain({
-		keetaNetworkId: fixture.client.network,
+		keetaNetworkID: fixture.client.network,
 		blockHash: blockHash,
 		operationIndex: 0
 	});
-	expect(found?.transactionId).toBe(transfer.transferId);
+	expect(found?.transactionID).toBe(transfer.transferId);
 	expect(found?.status).toBe('COMPLETE');
 
 	const missing = await reader.findByOnChain({
-		keetaNetworkId: fixture.client.network,
+		keetaNetworkID: fixture.client.network,
 		blockHash: blockHash,
 		operationIndex: 7
 	});
