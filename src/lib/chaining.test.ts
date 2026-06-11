@@ -2055,7 +2055,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		expect(decoded.signed).toBeUndefined();
 		expect(decoded.envelope.inputs).toBeUndefined();
 		expect(decoded.envelope.anchors).toEqual({
-			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferId }
+			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferID }
 		});
 	});
 

@@ -264,7 +264,7 @@ test.each([
 	const transfer = await fixture.initiateTransfer(5n);
 
 	const builder = new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionId: transfer.transferId });
+		.setAnchor(fixture.anchorSigner, { transactionId: transfer.transferID });
 	if (encrypt) {
 		builder.withPrincipals([ recipient ]);
 	}

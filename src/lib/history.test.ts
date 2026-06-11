@@ -415,7 +415,7 @@ async function buildAnchorScenario(testCase: AnchorCase, user: Account, anchor: 
 	const source = new TestStatusSource();
 
 	if (testCase.correlation === 'external') {
-		const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: testCase.id }).build();
+		const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: testCase.id }).build();
 		const block = await seal(user, [ sendOp(anchor, token, BigInt(testCase.value), external) ]);
 		source.registerByTxID(anchor, transfer);
 		return({ block, source });
@@ -444,7 +444,7 @@ test('an anchor withdraw records the fee and an anchor counterparty', async func
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
-	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: 'withdraw-tx' }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'withdraw-tx' }).build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
 
 	const transfer = makeTransfer({
@@ -559,7 +559,7 @@ test('enrichment can be disabled to classify from block shape only', async funct
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
-	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionID: 'withdraw-tx' }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'withdraw-tx' }).build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
 
 	const transfer = makeTransfer({
@@ -698,7 +698,7 @@ async function encryptedWithdrawScenario(): Promise<{ user: Account; block: Bloc
 	const anchor = newAccount();
 	const token = newToken(user, 0);
 	const external = await new AnchorExternal.Builder()
-		.setAnchor(anchor, { transactionID: 'withdraw-tx' })
+		.setAnchor(anchor, { transactionId: 'withdraw-tx' })
 		.withPrincipals([ user ])
 		.build();
 	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
@@ -834,7 +834,7 @@ async function startAnchorTransferFixture(input: {
 		usePublishAid: false
 	});
 
-	const external = await new AnchorExternal.Builder().setAnchor(anchorAccount, { transactionID: input.id }).build();
+	const external = await new AnchorExternal.Builder().setAnchor(anchorAccount, { transactionId: input.id }).build();
 	await senderClient.send(recipientAccount, 5n, baseToken, external);
 
 	const resolver = new Resolver({ root: rootAccount, client: rootClient, trustedCAs: [] });
