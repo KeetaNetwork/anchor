@@ -21,6 +21,12 @@ const MAX_PLAINTEXT_BYTES = 4096;
  */
 export const ANCHOR_EXTERNAL_VERSION = 1;
 
+/**
+ * Largest valid operation index, matching the 32-bit bound used for
+ * operation indexes elsewhere in the protocol.
+ */
+const MAX_OPERATION_INDEX = 2 ** 32 - 1;
+
 // #region Public types
 
 /**
@@ -62,6 +68,8 @@ export type AnchorExternalBinding = {
 	previousBlockHash: string;
 	/**
 	 * Index of the SEND operation within its block.
+	 *
+	 * Valid range: `0` to `2^32 - 1` inclusive.
 	 */
 	operationIndex: number;
 };
@@ -85,6 +93,8 @@ export type AnchorExternalInput = {
 	/**
 	 * Index of the referenced operation within its block. Omit to
 	 * reference the block as a whole.
+	 *
+	 * Valid range: `0` to `2^32 - 1` inclusive.
 	 */
 	operationIndex?: number;
 };
@@ -407,6 +417,28 @@ function signerListed(envelope: AnchorExternalEnvelope, signer: Account): boolea
 }
 
 /**
+ * Validate an operation index against its valid range of `0` to
+ * `2^32 - 1` inclusive.
+ *
+ * @returns `undefined` if valid, or an error message.
+ */
+function validateOperationIndex(label: string, value: number): string | undefined {
+	if (!Number.isSafeInteger(value)) {
+		return(`${label} must be an integer, got ${value}`);
+	}
+
+	if (value < 0) {
+		return(`${label} must not be negative, got ${value}`);
+	}
+
+	if (value > MAX_OPERATION_INDEX) {
+		return(`${label} must not exceed ${MAX_OPERATION_INDEX}, got ${value}`);
+	}
+
+	return(undefined);
+}
+
+/**
  * Validate the shape of a {@link AnchorExternalBinding}.
  *
  * @returns `undefined` if valid, or an error message.
@@ -415,11 +447,8 @@ function validateBindingShape(binding: AnchorExternalBinding): string | undefine
 	if (typeof binding.previousBlockHash !== 'string' || binding.previousBlockHash.length === 0) {
 		return('binding.previousBlockHash must be a non-empty string');
 	}
-	if (!Number.isInteger(binding.operationIndex) || binding.operationIndex < 0) {
-		return(`binding.operationIndex must be a non-negative integer, got ${binding.operationIndex}`);
-	}
 
-	return(undefined);
+	return(validateOperationIndex('binding.operationIndex', binding.operationIndex));
 }
 
 /**
@@ -431,11 +460,12 @@ function validateInputShape(input: AnchorExternalInput): string | undefined {
 	if (typeof input.blockHash !== 'string' || input.blockHash.length === 0) {
 		return('input.blockHash must be a non-empty string');
 	}
-	if (input.operationIndex !== undefined && (!Number.isInteger(input.operationIndex) || input.operationIndex < 0)) {
-		return(`input.operationIndex must be a non-negative integer, got ${input.operationIndex}`);
+
+	if (input.operationIndex === undefined) {
+		return(undefined);
 	}
 
-	return(undefined);
+	return(validateOperationIndex('input.operationIndex', input.operationIndex));
 }
 
 /**
@@ -606,6 +636,60 @@ export class AnchorExternalBuilder {
 
 		return(external);
 	}
+}
+
+// #endregion
+
+// #region Signed external helper
+
+/**
+ * Inputs to {@link buildSignedAnchorExternal}.
+ */
+export type AnchorPayoutExternalOptions = {
+	/**
+	 * Anchor signing account; also the envelope's anchor entry key.
+	 */
+	anchor: Account;
+	/**
+	 * Service-scoped transfer/transaction id to correlate.
+	 */
+	transactionId: string;
+	/**
+	 * On-chain operations feeding this payout in relevance order.
+	 */
+	inputs?: AnchorExternalInput[];
+	/**
+	 * Binding coordinates of the block about to be published.
+	 */
+	binding: AnchorExternalBinding;
+	/**
+	 * Encrypt the envelope to these recipients.
+	 */
+	encryptTo?: Account[];
+};
+
+/**
+ * Build the signed, encoded SEND.external string an anchor attaches to a
+ * payout (anchor-to-user) SEND.
+ *
+ * @throws {@link KeetaAnchorError} on caller misuse (invalid binding or inputs).
+ */
+export async function buildSignedAnchorExternal(options: AnchorPayoutExternalOptions): Promise<string> {
+	const builder = new AnchorExternalBuilder();
+	builder.setAnchor(options.anchor, { transactionId: options.transactionId });
+	builder.withSigner(options.anchor);
+	builder.withBinding(options.binding.previousBlockHash, options.binding.operationIndex);
+
+	for (const input of options.inputs ?? []) {
+		builder.addInput(input.blockHash, input.operationIndex);
+	}
+
+	if (options.encryptTo !== undefined) {
+		builder.withPrincipals(options.encryptTo);
+	}
+
+	const external = await builder.build();
+	return(external);
 }
 
 // #endregion
