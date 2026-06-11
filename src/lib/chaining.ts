@@ -1978,7 +1978,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 
 		const anchor = KeetaNet.lib.Account.fromPublicKeyString(anchorKey);
-		const builder = new AnchorExternalBuilder().setAnchor(anchor, { transactionID });
+		const builder = new AnchorExternalBuilder().setAnchor(anchor, { transactionId: transactionID });
 
 		for (const input of inputs) {
 			builder.addInput(input.blockHash, input.operationIndex);
