@@ -653,7 +653,7 @@ export type AnchorPayoutExternalOptions = {
 	/**
 	 * Service-scoped transfer/transaction id to correlate.
 	 */
-	transactionId: string;
+	transactionID: string;
 	/**
 	 * On-chain operations feeding this payout in relevance order.
 	 */
@@ -676,7 +676,7 @@ export type AnchorPayoutExternalOptions = {
  */
 export async function buildSignedAnchorExternal(options: AnchorPayoutExternalOptions): Promise<string> {
 	const builder = new AnchorExternalBuilder();
-	builder.setAnchor(options.anchor, { transactionId: options.transactionId });
+	builder.setAnchor(options.anchor, { transactionID: options.transactionID });
 	builder.withSigner(options.anchor);
 	builder.withBinding(options.binding.previousBlockHash, options.binding.operationIndex);
 
