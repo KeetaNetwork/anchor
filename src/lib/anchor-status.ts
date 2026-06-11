@@ -22,7 +22,7 @@ export type StandardizedTransferStatus<Transaction = unknown> = {
 	/**
 	 * Anchor-scoped transaction id the status was read for.
 	 */
-	transactionId: string;
+	transactionID: string;
 	/**
 	 * Full source transaction record backing the status.
 	 */
@@ -91,7 +91,7 @@ export type AnchorOnChainReference = {
 	/**
 	 * Network id of the Keeta chain the operation was observed on.
 	 */
-	keetaNetworkId: bigint;
+	keetaNetworkID: bigint;
 	/**
 	 * Hash of the block carrying the operation.
 	 */
@@ -109,7 +109,7 @@ export interface AnchorTransferReader<Transaction = unknown> {
 	/**
 	 * Read the standardized status of one transaction at this anchor.
 	 */
-	getTransferStatus(transactionId: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<Transaction>>;
+	getTransferStatus(transactionID: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<Transaction>>;
 	/**
 	 * Reverse-lookup the transfer an on-chain operation belongs to, for
 	 * operations that carry no transaction id of their own.
@@ -164,13 +164,13 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	 * @returns The standardized status, or `null` if the anchor's provider
 	 *          could not be resolved.
 	 */
-	async getStatus(anchor: AnchorReference, transactionId: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<Transaction> | null> {
+	async getStatus(anchor: AnchorReference, transactionID: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<Transaction> | null> {
 		const reader = await this.getReader(anchor);
 		if (reader === null) {
 			return(null);
 		}
 
-		const status = await reader.getTransferStatus(transactionId, options);
+		const status = await reader.getTransferStatus(transactionID, options);
 		return(status);
 	}
 
@@ -178,7 +178,7 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	 * Read the standardized status of every anchor referenced by an encoded
 	 * external field.
 	 */
-	async getStatusesFromExternal(external: string, options?: AnchorExternalTransactionStatusOptions): Promise<{ [anchorId: string]: AnchorTransactionStatusResult<Transaction> }> {
+	async getStatusesFromExternal(external: string, options?: AnchorExternalTransactionStatusOptions): Promise<{ [anchorID: string]: AnchorTransactionStatusResult<Transaction> }> {
 		const statusOptions: AnchorGetTransactionStatusOptions = {};
 		if (options?.requesterAccount !== undefined) {
 			statusOptions.requesterAccount = options.requesterAccount;
@@ -195,9 +195,9 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 
 		const entries = Object.entries(decoded.envelope.anchors);
 
-		const settled = await Promise.all(entries.map(async ([anchorId, entry]): Promise<[string, AnchorTransactionStatusResult<Transaction>]> => {
-			const result = await this.#readEntryStatus(anchorId, entry, statusOptions);
-			return([anchorId, result]);
+		const settled = await Promise.all(entries.map(async ([anchorID, entry]): Promise<[string, AnchorTransactionStatusResult<Transaction>]> => {
+			const result = await this.#readEntryStatus(anchorID, entry, statusOptions);
+			return([anchorID, result]);
 		}));
 
 		const results = Object.fromEntries(settled);
@@ -207,15 +207,15 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	/**
 	 * Resolve a single decoded per-anchor entry to its outcome.
 	 */
-	async #readEntryStatus(anchorId: string, entry: AnchorExternalEntry, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
-		if (!('transactionId' in entry)) {
+	async #readEntryStatus(anchorID: string, entry: AnchorExternalEntry, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
+		if (!('transactionID' in entry)) {
 			return({ kind: 'unavailable' });
 		}
 
 		let status: StandardizedTransferStatus<Transaction> | null;
 		try {
-			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorId);
-			status = await this.getStatus(anchor, entry.transactionId, options);
+			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorID);
+			status = await this.getStatus(anchor, entry.transactionID, options);
 		} catch (error) {
 			return({ kind: 'error', error: error });
 		}

@@ -31,13 +31,13 @@ export type AnchorExternalEntry =
 		/**
 		 * Transaction id at the anchor.
 		 */
-		transactionId: string;
+		transactionID: string;
 	}
 	| {
 		/**
 		 * Persistent forwarding id at the anchor.
 		 */
-		persistentForwardingId: string;
+		persistentForwardingID: string;
 	}
 	| {
 		/**
@@ -283,11 +283,11 @@ export class AnchorExternalError extends KeetaAnchorUserError {
  * Convert a public entry to an encoded entry.
  */
 function entryToEncoded(entry: AnchorExternalEntry): EncodedAnchorExternalEntryV1 {
-	if ('transactionId' in entry) {
-		return({ t: entry.transactionId });
+	if ('transactionID' in entry) {
+		return({ t: entry.transactionID });
 	}
-	if ('persistentForwardingId' in entry) {
-		return({ p: entry.persistentForwardingId });
+	if ('persistentForwardingID' in entry) {
+		return({ p: entry.persistentForwardingID });
 	}
 
 	return({ d: entry.destination });
@@ -298,10 +298,10 @@ function entryToEncoded(entry: AnchorExternalEntry): EncodedAnchorExternalEntryV
  */
 function entryFromEncoded(entry: EncodedAnchorExternalEntryV1): AnchorExternalEntry {
 	if ('t' in entry) {
-		return({ transactionId: entry.t });
+		return({ transactionID: entry.t });
 	}
 	if ('p' in entry) {
-		return({ persistentForwardingId: entry.p });
+		return({ persistentForwardingID: entry.p });
 	}
 
 	return({ destination: entry.d });
