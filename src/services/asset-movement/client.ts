@@ -88,6 +88,7 @@ import Resolver from "../../lib/resolver.js";
 import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
+import { brandString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
 import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
@@ -176,6 +177,13 @@ interface KeetaAssetMovementServiceInfo extends SharedAnchorMetadataLegalExtensi
 
 	supportedAssets: SupportedAssetsMetadata[];
 	locationMetadata?: AnchorCustomLocationMetadata;
+
+	/**
+	 * Public key string of the account the anchor signed its service entry
+	 * with. Present only for signed entries. This is the key external
+	 * envelopes referencing this anchor are filed under.
+	 */
+	account?: string;
 };
 
 /**
@@ -404,15 +412,27 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			});
 		}
 
+		let anchorAccount: string | undefined;
+		if (serviceInfo.account !== undefined) {
+			anchorAccount = await serviceInfo.account('string');
+		}
+
+		const legalExtension = await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger });
+		const resolvedServiceInfo: KeetaAssetMovementServiceInfo = {
+			...legalExtension,
+			operations: operationsFunctions,
+			supportedAssets: supportedAssets
+		};
+		if (locationMetadata) {
+			resolvedServiceInfo.locationMetadata = locationMetadata;
+		}
+		if (anchorAccount !== undefined) {
+			resolvedServiceInfo.account = anchorAccount;
+		}
+
 		return([
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id as unknown as ProviderID,
-			{
-				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger })),
-				operations: operationsFunctions,
-				supportedAssets: supportedAssets,
-				...(locationMetadata ? { locationMetadata } : {})
-			}
+			brandString<'AssetMovementProviderID'>(id),
+			resolvedServiceInfo
 		]);
 	});
 
