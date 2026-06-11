@@ -1060,7 +1060,8 @@ export class UserHistory {
 	}
 
 	/**
-	 * Page history until exhausted or the requested limit is reached.
+	 * Fetch a single page of history by default, or page until the
+	 * requested `limit` is reached or history is exhausted.
 	 */
 	async #fetch(account: GenericAccount | string | null, options?: UserHistoryListOptions): Promise<HistoryEntry[]> {
 		const entries: HistoryEntry[] = [];
