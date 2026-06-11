@@ -17,10 +17,6 @@ export type BrandedString<BrandName extends string> = Brand<symbol, BrandName>;
 export function brandString<BrandName extends string>(input: string | BrandedString<BrandName>): BrandedString<BrandName>;
 export function brandString<BrandName extends string>(input: string | BrandedString<BrandName> | undefined): BrandedString<BrandName> | undefined;
 export function brandString<BrandName extends string>(input: string | BrandedString<BrandName> | undefined): BrandedString<BrandName> | undefined {
-	if (input === undefined) {
-		return(undefined);
-	}
-
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	return(input as BrandedString<BrandName>);
+	return(input as BrandedString<BrandName> | undefined);
 }
