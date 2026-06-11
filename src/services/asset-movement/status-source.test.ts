@@ -242,17 +242,17 @@ test('getStatus: live transfer reads PENDING, then COMPLETE once the on-chain se
 	await using fixture = await createStatusFixture();
 	const transfer = await fixture.initiateTransfer(5n);
 
-	const pending = await fixture.status.getStatus(fixture.anchorSigner, transfer.transferId);
+	const pending = await fixture.status.getStatus(fixture.anchorSigner, transfer.transferID);
 	expect(pending?.status).toBe('PENDING');
-	expect(pending?.transactionID).toBe(transfer.transferId);
+	expect(pending?.transactionID).toBe(transfer.transferID);
 	expect(isCompletedTransferStatus(pending?.status ?? '')).toBe(false);
 
-	await fixture.fundTransfer(transfer.transferId, 5n);
+	await fixture.fundTransfer(transfer.transferID, 5n);
 
-	const complete = await fixture.status.getStatus(fixture.anchorSigner, transfer.transferId);
+	const complete = await fixture.status.getStatus(fixture.anchorSigner, transfer.transferID);
 	expect(complete?.status).toBe('COMPLETE');
 	expect(isCompletedTransferStatus(complete?.status ?? '')).toBe(true);
-	expect(complete?.transaction.id).toBe(transfer.transferId);
+	expect(complete?.transaction.id).toBe(transfer.transferID);
 });
 
 test.each([
@@ -264,7 +264,7 @@ test.each([
 	const transfer = await fixture.initiateTransfer(5n);
 
 	const builder = new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionID: transfer.transferId });
+		.setAnchor(fixture.anchorSigner, { transactionID: transfer.transferID });
 	if (encrypt) {
 		builder.withPrincipals([ recipient ]);
 	}
@@ -282,7 +282,7 @@ test.each([
 		throw(new Error(`Expected a status result, got ${result?.kind}`));
 	}
 
-	expect(result.status.transactionID).toBe(transfer.transferId);
+	expect(result.status.transactionID).toBe(transfer.transferID);
 	expect(result.status.status).toBe('PENDING');
 });
 
@@ -306,7 +306,7 @@ test('getStatusesFromExternal: entry variants map to unavailable, unresolved, an
 test('findByOnChain: resolves the transfer by real on-chain coordinates, null otherwise', async function() {
 	await using fixture = await createStatusFixture();
 	const transfer = await fixture.initiateTransfer(5n);
-	const blockHash = await fixture.fundTransfer(transfer.transferId, 5n);
+	const blockHash = await fixture.fundTransfer(transfer.transferID, 5n);
 
 	const reader = await fixture.status.getReader(fixture.anchorSigner);
 	if (reader?.findByOnChain === undefined) {
@@ -318,7 +318,7 @@ test('findByOnChain: resolves the transfer by real on-chain coordinates, null ot
 		blockHash: blockHash,
 		operationIndex: 0
 	});
-	expect(found?.transactionID).toBe(transfer.transferId);
+	expect(found?.transactionID).toBe(transfer.transferID);
 	expect(found?.status).toBe('COMPLETE');
 
 	const missing = await reader.findByOnChain({

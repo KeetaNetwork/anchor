@@ -488,7 +488,7 @@ abstract class BaseKeetaAssetMovementTransfer<Request extends KeetaAssetMovement
 class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorInitiateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
 	readonly isSimulation = false as const;
 
-	get transferId(): string {
+	get transferID(): string {
 		return(this.transfer.id);
 	}
 

@@ -1998,7 +1998,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
-				throw(new Error(`Aborted while waiting for transfer ${transfer.transferId} to complete`));
+				throw(new Error(`Aborted while waiting for transfer ${transfer.transferID} to complete`));
 			}
 
 			const status = await transfer.getTransferStatus();
@@ -2006,7 +2006,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				return(status);
 			}
 			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for transfer ${transfer.transferId} to complete`));
+				throw(new Error(`Timed out waiting for transfer ${transfer.transferID} to complete`));
 			}
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
@@ -2185,7 +2185,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						 */
 						let external = step.usingInstruction.external;
 						if (external === undefined && step.type === 'assetMovement') {
-							external = await AnchorChainingPlan.#buildKeetaSendExternal(step.provider, step.transfer.transferId, publishedInputs);
+							external = await AnchorChainingPlan.#buildKeetaSendExternal(step.provider, step.transfer.transferID, publishedInputs);
 						}
 
 						const sentBlockHash = await this.#authorizedSend(
