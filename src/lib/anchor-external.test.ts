@@ -539,7 +539,7 @@ const signedHelperCases: SignedHelperCase[] = [
 test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified signed envelope: $name', async function({ inputs, encryptTo, decode, expectedEncrypted, expectedInputs }) {
 	const external = await buildSignedAnchorExternal({
 		anchor: anchor1,
-		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		transactionID: SIGNED_HELPER_TRANSACTION_ID,
 		binding: SIGNED_HELPER_BINDING,
 		...(inputs !== undefined && { inputs }),
 		...(encryptTo !== undefined && { encryptTo })
@@ -559,7 +559,7 @@ test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified sign
 test('buildSignedAnchorExternal without decryption keys is unreadable by the plain decoder', async function() {
 	const external = await buildSignedAnchorExternal({
 		anchor: anchor1,
-		transactionId: SIGNED_HELPER_TRANSACTION_ID,
+		transactionID: SIGNED_HELPER_TRANSACTION_ID,
 		binding: SIGNED_HELPER_BINDING,
 		encryptTo: [stranger]
 	});

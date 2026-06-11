@@ -1971,14 +1971,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	/**
 	 * Construct the unsigned external envelope for a user-funded KEETA_SEND.
 	 */
-	static async #buildKeetaSendExternal(provider: AssetMovementProvider, transactionId: string, inputs: readonly AnchorExternalInput[]): Promise<string | undefined> {
+	static async #buildKeetaSendExternal(provider: AssetMovementProvider, transactionID: string, inputs: readonly AnchorExternalInput[]): Promise<string | undefined> {
 		const anchorKey = provider.serviceInfo.account;
 		if (anchorKey === undefined) {
 			return(undefined);
 		}
 
 		const anchor = KeetaNet.lib.Account.fromPublicKeyString(anchorKey);
-		const builder = new AnchorExternalBuilder().setAnchor(anchor, { transactionId });
+		const builder = new AnchorExternalBuilder().setAnchor(anchor, { transactionId: transactionID });
 
 		for (const input of inputs) {
 			builder.addInput(input.blockHash, input.operationIndex);
