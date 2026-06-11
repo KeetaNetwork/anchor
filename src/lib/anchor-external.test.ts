@@ -127,10 +127,11 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 });
 
 test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
-	const builder = new AnchorExternalBuilder()
-		.setAnchor(anchor1, { transactionID: 'tx-1' })
-		.addInput(TEST_INPUT_BLOCK_HASH_1, 0)
-		.addInput(TEST_INPUT_BLOCK_HASH_2);
+	const builder = new AnchorExternalBuilder();
+	builder.setAnchor(anchor1, { transactionID: 'tx-1' });
+	builder.addInput(TEST_INPUT_BLOCK_HASH_1, 0);
+	builder.addInput(TEST_INPUT_BLOCK_HASH_2);
+
 	mode.configure(builder);
 
 	const external = await builder.build();
