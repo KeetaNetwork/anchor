@@ -43,7 +43,7 @@ async function externalReferencesTransfer(external: unknown, txID: string): Prom
 	}
 
 	return(Object.values(decoded.envelope.anchors).some(function(entry) {
-		return('transactionID' in entry && entry.transactionID === txID);
+		return('transactionId' in entry && entry.transactionId === txID);
 	}));
 }
 
@@ -202,9 +202,9 @@ async function createStatusFixture() {
 	 *
 	 * @returns The hash of the published send block.
 	 */
-	async function fundTransfer(transactionID: string, value: bigint): Promise<string> {
+	async function fundTransfer(transactionId: string, value: bigint): Promise<string> {
 		const external = await new AnchorExternal.Builder()
-			.setAnchor(anchorSigner, { transactionID })
+			.setAnchor(anchorSigner, { transactionId })
 			.build();
 
 		const published = await client.send(anchorDepositAccount, value, token, external);
@@ -264,7 +264,7 @@ test.each([
 	const transfer = await fixture.initiateTransfer(5n);
 
 	const builder = new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionID: transfer.transferID });
+		.setAnchor(fixture.anchorSigner, { transactionId: transfer.transferId });
 	if (encrypt) {
 		builder.withPrincipals([ recipient ]);
 	}
@@ -292,8 +292,8 @@ test('getStatusesFromExternal: entry variants map to unavailable, unresolved, an
 	const opaqueAnchor = newAccount();
 
 	const external = await new AnchorExternal.Builder()
-		.setAnchor(fixture.anchorSigner, { transactionID: 'no-such-transfer' })
-		.setAnchor(unknownAnchor, { transactionID: 'transfer-at-unknown-anchor' })
+		.setAnchor(fixture.anchorSigner, { transactionId: 'no-such-transfer' })
+		.setAnchor(unknownAnchor, { transactionId: 'transfer-at-unknown-anchor' })
 		.setAnchor(opaqueAnchor, { destination: EVM_RECIPIENT })
 		.build();
 

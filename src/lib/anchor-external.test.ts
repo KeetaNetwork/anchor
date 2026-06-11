@@ -91,8 +91,8 @@ const modeSpecs: ModeSpec[] = [
 ];
 
 const entryCases: { name: string; entry: AnchorExternalEntry }[] = [
-	{ name: 'transactionID', entry: { transactionID: 'tx-12345' }},
-	{ name: 'persistentForwardingID', entry: { persistentForwardingID: 'fwd-67890' }},
+	{ name: 'transactionId', entry: { transactionId: 'tx-12345' }},
+	{ name: 'persistentForwardingId', entry: { persistentForwardingId: 'fwd-67890' }},
 	{ name: 'destination', entry: { destination: '0x0000000000000000000000000000000000000000' }}
 ];
 
@@ -128,7 +128,7 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 
 test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
 	const builder = new AnchorExternalBuilder();
-	builder.setAnchor(anchor1, { transactionID: 'tx-1' });
+	builder.setAnchor(anchor1, { transactionId: 'tx-1' });
 	builder.addInput(TEST_INPUT_BLOCK_HASH_1, 0);
 	builder.addInput(TEST_INPUT_BLOCK_HASH_2);
 
@@ -145,7 +145,7 @@ test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
 
 test('an envelope without inputs decodes with the inputs field absent', async function() {
 	const external = await new AnchorExternalBuilder()
-		.setAnchor(anchor1, { transactionID: 'tx-1' })
+		.setAnchor(anchor1, { transactionId: 'tx-1' })
 		.build();
 
 	const decoded = await AnchorExternal.fromPlainExternal(external);
@@ -154,8 +154,8 @@ test('an envelope without inputs decodes with the inputs field absent', async fu
 
 test('round-trip preserves multiple anchors with mixed entry kinds', async function() {
 	const builder = new AnchorExternalBuilder()
-		.setAnchor(anchor1, { transactionID: 'tx-1' })
-		.setAnchor(anchor2, { persistentForwardingID: 'fwd-2' })
+		.setAnchor(anchor1, { transactionId: 'tx-1' })
+		.setAnchor(anchor2, { persistentForwardingId: 'fwd-2' })
 		.withSigner(anchor2)
 		.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX);
 
@@ -176,7 +176,7 @@ const misuseCases: MisuseCase[] = [
 		name: 'signer not listed in envelope.anchors',
 		act: function() {
 			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionID: 'x' })
+				.setAnchor(anchor1, { transactionId: 'x' })
 				.withSigner(stranger)
 				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
 				.build());
@@ -186,7 +186,7 @@ const misuseCases: MisuseCase[] = [
 		name: 'signer set without binding',
 		act: function() {
 			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionID: 'x' })
+				.setAnchor(anchor1, { transactionId: 'x' })
 				.withSigner(anchor1)
 				.build());
 		}
@@ -195,7 +195,7 @@ const misuseCases: MisuseCase[] = [
 		name: 'binding set without signer',
 		act: function() {
 			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionID: 'x' })
+				.setAnchor(anchor1, { transactionId: 'x' })
 				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
 				.build());
 		}
@@ -240,7 +240,7 @@ const misuseCases: MisuseCase[] = [
 		name: 'maxLength too tight for a signed payload',
 		act: function() {
 			return(new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionID: 'x' })
+				.setAnchor(anchor1, { transactionId: 'x' })
 				.withSigner(anchor1)
 				.withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX)
 				.withMaxLength(64)
@@ -259,7 +259,7 @@ const misuseCases: MisuseCase[] = [
 		name: 'fromEncryptedExternal with empty principals list',
 		act: async function() {
 			const external = await new AnchorExternalBuilder()
-				.setAnchor(anchor1, { transactionID: 'x' })
+				.setAnchor(anchor1, { transactionId: 'x' })
 				.withPrincipals([anchor1])
 				.build();
 			return(await AnchorExternal.fromEncryptedExternal(external, []));
@@ -329,7 +329,7 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 	{
 		name: 'truncated DER',
 		makeExternal: async function() {
-			const valid = await buildPlain({ transactionID: 'x' });
+			const valid = await buildPlain({ transactionId: 'x' });
 			const decoded = Buffer.from(valid, 'base64');
 			const truncated = decoded.subarray(0, Math.max(1, decoded.length - 8));
 			return(Buffer.from(truncated).toString('base64'));
@@ -340,7 +340,7 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 	{
 		name: 'plaintext blob decoded with the encrypted decoder',
 		makeExternal: async function() {
-			const result = await buildPlain({ transactionID: 'x' });
+			const result = await buildPlain({ transactionId: 'x' });
 			return(result);
 		},
 		decoder: 'encrypted-self',
@@ -349,7 +349,7 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 	{
 		name: 'encrypted blob decoded with the plain decoder',
 		makeExternal: async function() {
-			const result = await buildEncrypted({ transactionID: 'x' }, [anchor1]);
+			const result = await buildEncrypted({ transactionId: 'x' }, [anchor1]);
 			return(result);
 		},
 		decoder: 'plain',
@@ -471,7 +471,7 @@ const decodeRejectionCases: DecodeRejectionCase[] = [
 	{
 		name: 'encrypted decode with a wrong principal',
 		makeExternal: async function() {
-			const result = await buildEncrypted({ transactionID: 'x' }, [anchor1]);
+			const result = await buildEncrypted({ transactionId: 'x' }, [anchor1]);
 			return(result);
 		},
 		decoder: 'encrypted-stranger',
@@ -548,7 +548,7 @@ test.each(signedHelperCases)('buildSignedAnchorExternal produces a verified sign
 	const decoded = await decode(external);
 	expect(decoded.encrypted).toBe(expectedEncrypted);
 	expect(decoded.signed?.signer.comparePublicKey(anchor1)).toBe(true);
-	expect(decoded.envelope.anchors).toEqual({ [anchor1Key]: { transactionID: SIGNED_HELPER_TRANSACTION_ID }});
+	expect(decoded.envelope.anchors).toEqual({ [anchor1Key]: { transactionId: SIGNED_HELPER_TRANSACTION_ID }});
 	expect(decoded.envelope.binding).toEqual(SIGNED_HELPER_BINDING);
 	expect(decoded.envelope.inputs).toEqual(expectedInputs);
 

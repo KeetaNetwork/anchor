@@ -47,7 +47,7 @@ async function externalReferencesTransfer(external: unknown, txId: string): Prom
 	}
 
 	return(Object.values(decoded.envelope.anchors).some(function(entry) {
-		return('transactionID' in entry && entry.transactionID === txId);
+		return('transactionId' in entry && entry.transactionId === txId);
 	}));
 }
 
@@ -2055,7 +2055,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		expect(decoded.signed).toBeUndefined();
 		expect(decoded.envelope.inputs).toBeUndefined();
 		expect(decoded.envelope.anchors).toEqual({
-			[h.bankSignerEU.publicKeyString.get()]: { transactionID: step1.plan.transfer.transferID }
+			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferId }
 		});
 	});
 

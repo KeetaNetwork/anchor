@@ -37,13 +37,13 @@ export type AnchorExternalEntry =
 		/**
 		 * Transaction id at the anchor.
 		 */
-		transactionID: string;
+		transactionId: string;
 	}
 	| {
 		/**
 		 * Persistent forwarding id at the anchor.
 		 */
-		persistentForwardingID: string;
+		persistentForwardingId: string;
 	}
 	| {
 		/**
@@ -293,11 +293,11 @@ export class AnchorExternalError extends KeetaAnchorUserError {
  * Convert a public entry to an encoded entry.
  */
 function entryToEncoded(entry: AnchorExternalEntry): EncodedAnchorExternalEntryV1 {
-	if ('transactionID' in entry) {
-		return({ t: entry.transactionID });
+	if ('transactionId' in entry) {
+		return({ t: entry.transactionId });
 	}
-	if ('persistentForwardingID' in entry) {
-		return({ p: entry.persistentForwardingID });
+	if ('persistentForwardingId' in entry) {
+		return({ p: entry.persistentForwardingId });
 	}
 
 	return({ d: entry.destination });
@@ -308,10 +308,10 @@ function entryToEncoded(entry: AnchorExternalEntry): EncodedAnchorExternalEntryV
  */
 function entryFromEncoded(entry: EncodedAnchorExternalEntryV1): AnchorExternalEntry {
 	if ('t' in entry) {
-		return({ transactionID: entry.t });
+		return({ transactionId: entry.t });
 	}
 	if ('p' in entry) {
-		return({ persistentForwardingID: entry.p });
+		return({ persistentForwardingId: entry.p });
 	}
 
 	return({ destination: entry.d });
@@ -676,7 +676,7 @@ export type AnchorPayoutExternalOptions = {
  */
 export async function buildSignedAnchorExternal(options: AnchorPayoutExternalOptions): Promise<string> {
 	const builder = new AnchorExternalBuilder();
-	builder.setAnchor(options.anchor, { transactionID: options.transactionID });
+	builder.setAnchor(options.anchor, { transactionId: options.transactionID });
 	builder.withSigner(options.anchor);
 	builder.withBinding(options.binding.previousBlockHash, options.binding.operationIndex);
 

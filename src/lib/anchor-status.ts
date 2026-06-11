@@ -208,14 +208,14 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	 * Resolve a single decoded per-anchor entry to its outcome.
 	 */
 	async #readEntryStatus(anchorID: string, entry: AnchorExternalEntry, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
-		if (!('transactionID' in entry)) {
+		if (!('transactionId' in entry)) {
 			return({ kind: 'unavailable' });
 		}
 
 		let status: StandardizedTransferStatus<Transaction> | null;
 		try {
 			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorID);
-			status = await this.getStatus(anchor, entry.transactionID, options);
+			status = await this.getStatus(anchor, entry.transactionId, options);
 		} catch (error) {
 			return({ kind: 'error', error: error });
 		}
