@@ -18,7 +18,6 @@ export type {
 	StandardizedTransferStatus
 } from './anchor-status.js';
 export {
-	ClientHistorySource,
 	UserHistory,
 	defaultClassifiers,
 	foldHistory,
@@ -28,7 +27,6 @@ export {
 export type {
 	EnrichedBlock,
 	EnrichedOperation,
-	HistoryClient,
 	HistoryEntry,
 	HistoryQuery,
 	HistorySource,

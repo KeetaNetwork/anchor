@@ -325,18 +325,12 @@ export interface HistorySource {
 }
 
 /**
- * Structural view of a node client capable of returning history pages.
- */
-export type HistoryClient = {
-	getHistory(account: GenericAccount | string | null, options?: HistoryQuery): Promise<HistoryEntry[]>;
-};
-
-/**
  * Construction inputs for {@link UserHistory}.
  */
 export type UserHistoryConfig = {
 	/**
-	 * Source of on-chain history pages.
+	 * Source of on-chain history pages. Any object exposing
+	 * {@link HistorySource.getHistory} is accepted, including a node client.
 	 */
 	history: HistorySource;
 	/**
@@ -555,7 +549,7 @@ function viewOf(block: EnrichedBlock, operation: BlockOperations): OperationView
 /**
  * The account on the other side of a transfer operation, if any.
  */
-function counterpartyId(operation: BlockOperations): string | undefined {
+function counterpartyID(operation: BlockOperations): string | undefined {
 	if (operation.type === OperationType.SEND) {
 		return(operation.to.publicKeyString.get());
 	}
@@ -1032,78 +1026,86 @@ export class UserHistory {
 	 * Fetch, enrich and fold a user's history into logical transactions.
 	 */
 	async list(account: GenericAccount | string | null, options?: UserHistoryListOptions): Promise<LogicalTransaction[]> {
-		const externalCache = new Map<string, ResolvedTransfer | undefined>();
-		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
-
-		const perspective = perspectiveOf(account);
-		const entries = await this.#fetch(account, options);
-		const blocks: EnrichedBlock[] = [];
-		const sources = new Map<string, LogicalTransactionSource>();
-		for (const entry of entries) {
-			const timestamp = entry.voteStaple.timestamp().toISOString();
-			for (const block of entry.voteStaple.blocks) {
-				const enriched = await this.#enrichBlock(block, timestamp, perspective, options, externalCache, readerCache);
-				blocks.push(enriched);
-				if (options?.includeSource === true) {
-					sources.set(enriched.blockHash, { staple: entry.voteStaple, enriched });
-				}
-			}
+		const transactions: LogicalTransaction[] = [];
+		for await (const transaction of this.iterate(account, options)) {
+			transactions.push(transaction);
 		}
 
-		const logical = foldHistory(blocks, this.#classifiers);
-		attachSources(logical, sources);
-		if (options?.limit !== undefined) {
-			return(logical.slice(0, options.limit));
-		}
-
-		return(logical);
+		return(transactions);
 	}
 
 	/**
-	 * Fetch a single page of history by default, or page until the
-	 * requested `limit` is reached or history is exhausted.
+	 * Stream logical transactions page by page instead of buffering the full
+	 * result set in memory.
 	 */
-	async #fetch(account: GenericAccount | string | null, options?: UserHistoryListOptions): Promise<HistoryEntry[]> {
-		const entries: HistoryEntry[] = [];
+	async *iterate(account: GenericAccount | string | null, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
+		const externalCache = new Map<string, ResolvedTransfer | undefined>();
+		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
+		const perspective = perspectiveOf(account);
+
 		let cursor = options?.cursor;
+		let yielded = 0;
 		while (true) {
-			const query: HistoryQuery = {};
-			if (options?.depth !== undefined) {
-				query.depth = options.depth;
-			}
-
-			if (options?.pageSize !== undefined) {
-				query.pageSize = options.pageSize;
-			}
-
-			if (cursor !== undefined) {
-				query.startBlocksHash = cursor;
-			}
-
-			const page = await this.#history.getHistory(account, query);
+			const page = await this.#fetchPage(account, cursor, options);
 			if (page.length === 0) {
-				break;
+				return;
 			}
 
-			entries.push(...page);
+			for (const entry of page) {
+				const timestamp = entry.voteStaple.timestamp().toISOString();
+				const blocks: EnrichedBlock[] = [];
+				const sources = new Map<string, LogicalTransactionSource>();
+				for (const block of entry.voteStaple.blocks) {
+					const enriched = await this.#enrichBlock(block, timestamp, perspective, options, externalCache, readerCache);
+					blocks.push(enriched);
+
+					if (options?.includeSource === true) {
+						sources.set(enriched.blockHash, { staple: entry.voteStaple, enriched });
+					}
+				}
+
+				const logical = foldHistory(blocks, this.#classifiers);
+				attachSources(logical, sources);
+
+				for (const transaction of logical) {
+					yield transaction;
+					yielded += 1;
+
+					if (options?.limit !== undefined && yielded >= options.limit) {
+						return;
+					}
+				}
+			}
 
 			const last = page[page.length - 1];
 			if (last === undefined) {
-				break;
+				return;
 			}
 
 			cursor = last.voteStaple.blocksHash.toString();
-
 			if (options?.limit === undefined) {
-				break;
-			}
-
-			if (entries.length >= options.limit) {
-				break;
+				return;
 			}
 		}
+	}
 
-		return(entries);
+	/**
+	 * Fetch one page of on-chain history.
+	 */
+	async #fetchPage(account: GenericAccount | string | null, cursor: string | undefined, options?: UserHistoryListOptions): Promise<HistoryEntry[]> {
+		const query: HistoryQuery = {};
+		if (options?.depth !== undefined) {
+			query.depth = options.depth;
+		}
+		if (options?.pageSize !== undefined) {
+			query.pageSize = options.pageSize;
+		}
+		if (cursor !== undefined) {
+			query.startBlocksHash = cursor;
+		}
+
+		const result = await this.#history.getHistory(account, query);
+		return(result);
 	}
 
 	/**
@@ -1163,7 +1165,7 @@ export class UserHistory {
 		if (perspective !== undefined && issuer !== perspective) {
 			candidateAnchor = issuer;
 		} else {
-			candidateAnchor = counterpartyId(operation);
+			candidateAnchor = counterpartyID(operation);
 		}
 
 		if (candidateAnchor === undefined) {
@@ -1239,35 +1241,6 @@ export class UserHistory {
 
 		readerCache.set(counterparty, reader);
 		return(reader);
-	}
-}
-
-/**
- * A {@link HistorySource} backed by a node client's history call.
- */
-export class ClientHistorySource implements HistorySource {
-	readonly #client: HistoryClient;
-
-	constructor(client: HistoryClient) {
-		this.#client = client;
-	}
-
-	async getHistory(account: GenericAccount | string | null, query?: HistoryQuery): Promise<HistoryEntry[]> {
-		const options: HistoryQuery = {};
-		if (query?.depth !== undefined) {
-			options.depth = query.depth;
-		}
-
-		if (query?.pageSize !== undefined) {
-			options.pageSize = query.pageSize;
-		}
-
-		if (query?.startBlocksHash !== undefined) {
-			options.startBlocksHash = query.startBlocksHash;
-		}
-
-		const result = await this.#client.getHistory(account, options);
-		return(result);
 	}
 }
 

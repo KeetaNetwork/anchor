@@ -19,7 +19,6 @@ import type {
 } from '../services/asset-movement/common.js';
 import type {
 	HistoryEntry,
-	HistoryQuery,
 	HistorySource,
 	LogicalDirection,
 	LogicalTransaction,
@@ -33,7 +32,7 @@ import { KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from '../services/asset-movement/server.js';
 import { AnchorExternal } from './anchor-external.js';
 import { AnchorTransactionStatus } from './anchor-status.js';
-import { ClientHistorySource, UserHistory } from './history.js';
+import { UserHistory } from './history.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
 import Resolver from './resolver.js';
@@ -83,38 +82,6 @@ function historyFrom(blocks: Block[]): HistorySource {
 			}]);
 		}
 	});
-}
-
-/**
- * Multi-page history source: one staple per page, paged in order. Records
- * the queries it receives so cursor propagation can be asserted.
- */
-function historyFromPages(pages: Block[][]): { source: HistorySource; queries: HistoryQuery[] } {
-	const queries: HistoryQuery[] = [];
-	let next = 0;
-	const source: HistorySource = {
-		async getHistory(_ignore_account, query): Promise<HistoryEntry[]> {
-			queries.push(query ?? {});
-			const blocks = pages[next];
-			if (blocks === undefined) {
-				return([]);
-			}
-
-			const cursor = `page-${next}`;
-			next += 1;
-			return([{
-				voteStaple: {
-					timestamp() {
-						return(TIMESTAMP);
-					},
-					blocks,
-					blocksHash: cursor
-				}
-			}]);
-		}
-	};
-
-	return({ source, queries });
 }
 
 /**
@@ -669,40 +636,57 @@ test('a foreign payout block reverse-looks-up the transfer at the issuing anchor
 
 // #region Paging and options
 
-test('pages with the previous staple hash until the limit is reached', async function() {
+/**
+ * Spin a live node and publish three real sends from the user, each settling
+ * in its own vote staple, so paging walks multiple staples newest-first.
+ */
+async function startPagingFixture(): Promise<{ history: UserHistory; user: Account }> {
 	const user = newAccount();
 	const recipient = newAccount();
-	const token = newToken(user, 0);
-	const pages: Block[][] = [
-		[ await seal(user, [ sendOp(recipient, token, 1n) ]) ],
-		[ await seal(user, [ sendOp(recipient, token, 2n) ]) ],
-		[ await seal(user, [ sendOp(recipient, token, 3n) ]) ]
-	];
-	const { source, queries } = historyFromPages(pages);
+	const { userClient, fees } = await createNodeAndClient(user);
+	fees.disable();
 
-	const history = new UserHistory({ history: source });
-	const transactions = await history.list(user, { limit: 2 });
+	for (const amount of [ 1n, 2n, 3n ]) {
+		await userClient.send(recipient, amount, userClient.baseToken);
+	}
 
+	const history = new UserHistory({ history: userClient.client });
+	return({ history, user });
+}
+
+test('pages with the previous staple hash until the limit is reached', async function() {
+	const fixture = await startPagingFixture();
+
+	const transactions = await fixture.history.list(fixture.user, { depth: 1, limit: 2 });
 	expect(transactions).toHaveLength(2);
-	expect(transactions.map(transaction => transaction.send?.amount)).toEqual([ 1n, 2n ]);
-	expect(queries).toHaveLength(2);
-	expect(queries[0]?.startBlocksHash).toBeUndefined();
-	expect(queries[1]?.startBlocksHash).toBe('page-0');
+	expect(transactions.map(transaction => transaction.type)).toEqual([ 'send', 'send' ]);
+	expect(transactions.map(transaction => transaction.send?.amount)).toEqual([ 3n, 2n ]);
+});
+
+test('iterate yields logical transactions without buffering the full result', async function() {
+	const fixture = await startPagingFixture();
+
+	const streamed: (bigint | undefined)[] = [];
+	for await (const transaction of fixture.history.iterate(fixture.user, { depth: 1, limit: 2 })) {
+		streamed.push(transaction.send?.amount);
+	}
+
+	expect(streamed).toEqual([ 3n, 2n ]);
 });
 
 test('resumes paging from a caller-supplied cursor', async function() {
-	const user = newAccount();
-	const recipient = newAccount();
-	const token = newToken(user, 0);
-	const pages: Block[][] = [
-		[ await seal(user, [ sendOp(recipient, token, 1n) ]) ]
-	];
-	const { source, queries } = historyFromPages(pages);
+	const fixture = await startPagingFixture();
 
-	const history = new UserHistory({ history: source });
-	await history.list(user, { cursor: 'resume-0' });
+	const [ first ] = await fixture.history.list(fixture.user, { depth: 1, limit: 1, includeSource: true });
+	expect(first?.send?.amount).toBe(3n);
 
-	expect(queries[0]?.startBlocksHash).toBe('resume-0');
+	const cursor = first?.source?.staple.blocksHash.toString();
+	if (cursor === undefined) {
+		throw(new Error('Expected the first page to carry a staple cursor'));
+	}
+
+	const resumed = await fixture.history.list(fixture.user, { depth: 1, limit: 1, cursor });
+	expect(resumed.map(transaction => transaction.send?.amount)).toEqual([ 2n ]);
 });
 
 /**
@@ -855,7 +839,7 @@ async function startAnchorTransferFixture(input: {
 
 	const resolver = new Resolver({ root: rootAccount, client: rootClient, trustedCAs: [] });
 	const status = new AnchorTransactionStatus(new KeetaAssetMovementStatusSource({ client: rootClient, resolver }));
-	const history = new UserHistory({ history: new ClientHistorySource(rootClient.client), status });
+	const history = new UserHistory({ history: rootClient.client, status });
 
 	return({ server, history, userAccount, anchorAccount });
 }
