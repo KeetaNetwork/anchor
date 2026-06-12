@@ -589,3 +589,141 @@ test('maxBodySize: rejects oversized requests', async function() {
 
 	await server.stop();
 }, 30000);
+
+test('KeetaNetCombinedAnchorHTTPServer: combines routes from multiple servers', async function() {
+	const serverA = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /api/server-a': async function() {
+					return({ output: JSON.stringify({ server: 'A' }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0 });
+
+	const serverB = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /api/server-b': async function() {
+					return({ output: JSON.stringify({ server: 'B' }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0 });
+
+	await using combined = new HTTPServer.KeetaNetCombinedAnchorHTTPServer({
+		port: 0,
+		servers: [serverA, serverB]
+	});
+
+	await combined.start();
+
+	/*
+	 * Routes from both child servers should be accessible via the combined server.
+	 */
+	const responseA = await testHTTPRequest(combined.url, '/api/server-a', 'GET');
+	expect(responseA.code).toBe(200);
+	expect(responseA.body).toMatchObject({ server: 'A' });
+
+	const responseB = await testHTTPRequest(combined.url, '/api/server-b', 'GET');
+	expect(responseB.code).toBe(200);
+	expect(responseB.body).toMatchObject({ server: 'B' });
+
+	/*
+	 * A route that doesn't exist on either child should return 404.
+	 */
+	const responseMissing = await testHTTPRequest(combined.url, '/api/missing', 'GET');
+	expect(responseMissing.code).toBe(404);
+
+	/*
+	 * The combined server's URL should be propagated to child instances after start.
+	 */
+	expect(serverA.url).toBe(combined.url);
+	expect(serverB.url).toBe(combined.url);
+}, 30000);
+
+test('KeetaNetCombinedAnchorHTTPServer: later child routes overwrite earlier ones on conflict', async function() {
+	const serverA = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /api/conflict': async function() {
+					return({ output: JSON.stringify({ from: 'A' }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0 });
+
+	const serverB = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /api/conflict': async function() {
+					return({ output: JSON.stringify({ from: 'B' }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0 });
+
+	await using combined = new HTTPServer.KeetaNetCombinedAnchorHTTPServer({
+		port: 0,
+		servers: [serverA, serverB]
+	});
+
+	await combined.start();
+
+	const response = await testHTTPRequest(combined.url, '/api/conflict', 'GET');
+	expect(response.code).toBe(200);
+	expect(response.body).toMatchObject({ from: 'B' });
+}, 30000);
+
+test('KeetaNetCombinedAnchorHTTPServer: url set on combined server propagates to children', async function() {
+	const child = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /health': async function() {
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0 });
+
+	const customURL = 'https://anchor.example.com/';
+
+	await using combined = new HTTPServer.KeetaNetCombinedAnchorHTTPServer({
+		port: 0,
+		url: customURL,
+		servers: [child]
+	});
+
+	await combined.start();
+
+	expect(combined.url).toBe(customURL);
+
+	/*
+	 * The custom URL should also be propagated to the child.
+	 */
+	expect(child.url).toBe(customURL);
+}, 30000);
+
+test('KeetaNetCombinedAnchorHTTPServer: throws when a child has a conflicting URL', async function() {
+	const conflictingURL = 'https://other.example.com/';
+
+	const child = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'GET /health': async function() {
+					return({ output: JSON.stringify({ ok: true }), statusCode: 200 });
+				}
+			});
+		}
+	})({ port: 0, url: conflictingURL });
+
+	const customURL = 'https://anchor.example.com/';
+
+	await using combined = new HTTPServer.KeetaNetCombinedAnchorHTTPServer({
+		port: 0,
+		url: customURL,
+		servers: [child]
+	});
+
+	await expect(combined.start()).rejects.toThrow(`Child server url "${conflictingURL}" does not match combined server url "${customURL}"`);
+}, 30000);
