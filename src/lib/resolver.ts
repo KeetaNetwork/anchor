@@ -42,6 +42,18 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 // #region Global Service Metadata
 /**
+ * The type of legal entity a KYC provider can verify.
+ *
+ * - `individual` is the classic Know Your Customer (KYC) flow.
+ * - `business` is the Know Your Business (KYB) flow.
+ *
+ * Both are hosted redirect flows: the provider returns a `webURL` to a
+ * hosted experience it owns, and the client polls for the certificate.
+ */
+const kycEntityTypes = ['individual', 'business'] as const;
+type KYCEntityType = typeof kycEntityTypes[number];
+
+/**
  * Service Metadata General Structure
  */
 type ServiceMetadata = {
@@ -100,6 +112,23 @@ type ServiceMetadata = {
 				 * validate accounts in any country.
 				 */
 				countryCodes?: string[];
+				/**
+				 * The entity types which this KYC provider can
+				 * verify, expressed as a map of explicit booleans
+				 * (mirroring `supportedOperations` on asset
+				 * movement). If omitted, the provider is assumed to
+				 * verify `individual` entities only, preserving the
+				 * classic KYC behavior.
+				 *
+				 * - `individual` is the classic KYC redirect flow.
+				 * - `business` is a Know Your Business (KYB) flow.
+				 *
+				 * Both are hosted redirect flows where the provider
+				 * returns a `webURL`. A type is supported only when
+				 * its key is explicitly `true`; `false` or a missing
+				 * key both mean unsupported.
+				 */
+				entityTypes?: { [entityType in KYCEntityType]?: boolean };
 				/**
 				 * The Certificate Authority (CA) Certificate
 				 * that this KYC provider uses to sign KYC
@@ -347,6 +376,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * of the following countries.
 		 */
 		countryCodes: CountrySearchInput[];
+		/**
+		 * Search for a KYC provider which can verify the given entity
+		 * type. If omitted, providers are matched without filtering on
+		 * entity type (a provider with no declared `entityTypes` is
+		 * treated as `individual`-only).
+		 */
+		entityType?: KYCEntityType;
 	};
 	'assetMovement': {
 		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
@@ -1712,6 +1748,37 @@ class Resolver {
 					}
 				}
 
+				/*
+				 * Filter by entity type when requested. A service that
+				 * does not declare `entityTypes` is treated as
+				 * `individual`-only, preserving the classic KYC
+				 * behavior for providers predating this field.
+				 */
+				if (criteria.entityType !== undefined) {
+					/*
+					 * A provider that does not declare `entityTypes`
+					 * is treated as `individual`-only. When it does,
+					 * a type is supported only if its key resolves to
+					 * an explicit `true` (mirroring how
+					 * `supportedAffinities` is read on FX) -- a `false`
+					 * or missing key means unsupported.
+					 */
+					let supported: boolean;
+					if ('entityTypes' in checkKYCService) {
+						const declared = await checkKYCService.entityTypes?.('object');
+						const declaredValue = declared?.[criteria.entityType];
+						supported = declaredValue !== undefined ? await declaredValue('boolean') : false;
+					} else {
+						supported = criteria.entityType === 'individual';
+					}
+
+					this.#logger?.debug(`Resolver:${this.id}`, 'Checking entity type:', criteria.entityType, 'supported:', supported, 'for', checkKYCServiceID);
+
+					if (!supported) {
+						continue;
+					}
+				}
+
 				retval[checkKYCServiceID] = assertResolverLookupKYCResult(checkKYCService);
 			} catch (checkKYCServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking KYC service', checkKYCServiceID, ':', checkKYCServiceError, ' -- ignoring');
@@ -2750,7 +2817,9 @@ class Resolver {
 }
 
 export default Resolver;
+export { kycEntityTypes };
 export type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,

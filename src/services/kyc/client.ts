@@ -132,9 +132,10 @@ const isKeetaKYCAnchorCreateVerificationResponse = createIs<KeetaKYCAnchorCreate
 const isKeetaKYCAnchorGetCertificateResponse = createIs<KeetaKYCAnchorGetCertificateResponse>();
 const isKeetaKYCAnchorGetVerificationStatusResponse = createIs<KeetaKYCAnchorGetVerificationStatusResponse>();
 
-async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes'>): Promise<GetEndpointsResult | null> {
+async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
-		countryCodes: request.countryCodes
+		countryCodes: request.countryCodes,
+		...(request.entityType !== undefined ? { entityType: request.entityType } : {})
 	});
 
 	if (response === undefined) {
