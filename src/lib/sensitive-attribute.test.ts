@@ -85,6 +85,23 @@ test('encrypt and decrypt with type preservation', async function() {
 	}
 });
 
+test('dateOfBirth round-trip preserves pre-2000 years', async function() {
+	const dates = [
+		new Date('1905-06-15'),
+		new Date('1950-01-01'),
+		new Date('1955-06-15'),
+		new Date('1969-01-01'),
+		new Date('1990-12-31'),
+		new Date('1999-12-31')
+	];
+	for (const dob of dates) {
+		const encrypted = await SensitiveAttribute.create(accounts.withPrivateKey, 'dateOfBirth', dob);
+		const decrypted = await encrypted.getValue();
+		expect(decrypted).toBeInstanceOf(Date);
+		expect((decrypted).getUTCFullYear(), dob.toISOString()).toBe(dob.getUTCFullYear());
+	}
+});
+
 test('publicKey getter matches encryption key', async function() {
 	const { encrypted } = await buildEncrypted();
 	expect(encrypted.publicKey).toBe(accounts.publicKeyOnly.publicKeyString.get());

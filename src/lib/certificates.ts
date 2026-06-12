@@ -74,12 +74,16 @@ function normalizeDecodedASN1(input: unknown, principals: KeetaNetAccount[]): un
 	// Unwrap ASN.1-like objects from ambiguous schemas (IsAnyString, IsAnyDate, IsBitString)
 	// These are plain objects like { type: 'string', kind: 'utf8', value: 'text' }
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	const obj = input as { type?: string; kind?: string; value?: unknown; unusedBits?: number; contains?: unknown };
+	const obj = input as { type?: string; kind?: string; value?: unknown; date?: unknown; unusedBits?: number; contains?: unknown };
 	if (obj.type === 'string' && 'value' in obj && typeof obj.value === 'string') {
 		return(obj.value);
 	}
 	if (obj.type === 'date' && 'value' in obj && obj.value instanceof Date) {
 		return(obj.value);
+	}
+	// Unwrap ASN1Date objects (uses .date property, not .value)
+	if (obj.type === 'date' && 'date' in obj && obj.date instanceof Date) {
+		return(obj.date);
 	}
 	if (obj.type === 'bitstring' && 'value' in obj && Buffer.isBuffer(obj.value)) {
 		return(obj.value);
@@ -374,7 +378,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		// Try with current schema (includes context tags for structs with optional fields)
 		// @ts-expect-error
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	} catch (firstError) {
+	} catch {
 		// Fallback: try with backwards-compatible schema (context tags stripped)
 		// This supports old certificates encoded before context tags were added
 		try {
@@ -389,8 +393,12 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
 			usedSchema = backwardsCompatSchema;
 		} catch {
-			// If both fail, throw the original error
-			throw(firstError);
+			// If both schema-based attempts fail, fall back to raw decode + normalization.
+			// This handles GeneralizedTime dates that return ASN1Date wrappers
+			// which the IsDate schema rejects.
+			const raw = ASN1.ASN1toJS(value);
+			const candidate = normalizeDecodedASN1(raw, principals);
+			return(asAttributeValue(name, candidate));
 		}
 	}
 
