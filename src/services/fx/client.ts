@@ -29,6 +29,7 @@ import type {
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { AnchorReference } from '../../lib/anchor-status.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -537,6 +538,27 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		return(requestInformationJSON);
 	}
 
+	async getExchangeStatusByBlockhash(blockHash: string): Promise<KeetaFXAnchorExchange> {
+		const serviceURL = await this.#getEndpoint('getExchangeStatusByBlockhash', { hash: blockHash });
+		const requestInformation = await fetch(serviceURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+		if (!requestInformationJSON.ok) {
+			throw(await this.#parseResponseError(requestInformationJSON));
+		}
+
+		this.logger?.debug(`FX exchange status by blockhash request successful, to provider ${serviceURL} for ${blockHash}`);
+		return(requestInformationJSON);
+	}
+
 	/** @internal */
 	_internals(accessToken: symbol) {
 		if (accessToken !== KeetaFXAnchorClientAccessToken) {
@@ -803,6 +825,49 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 
 		return(providers);
+	}
+
+	/**
+	 * Resolve an FX provider by the account that signs its advertised service metadata.
+	 */
+	async getProviderByAccount(anchor: AnchorReference, requiredOperations?: (keyof KeetaFXAnchorOperations)[]): Promise<KeetaFXAnchorProviderBase | null> {
+		const request: Parameters<typeof getEndpoints>[1] = {};
+		if (requiredOperations !== undefined) {
+			request.requiredOperations = requiredOperations;
+		}
+
+		const providerEndpoints = await getEndpoints(this.resolver, request, this.#account, { accounts: [ anchor ] }, { logger: this.logger });
+		if (providerEndpoints === null) {
+			return(null);
+		}
+
+		const [ entry ] = typedFxServiceEntries(providerEndpoints);
+		if (entry === undefined) {
+			return(null);
+		}
+
+		const [ providerID, serviceInfo ] = entry;
+
+		const pair = serviceInfo.from[0];
+		if (pair === undefined) {
+			return(null);
+		}
+
+		const fromCode = pair.currencyCodes[0];
+		const toCode = pair.to[0];
+		if (fromCode === undefined || toCode === undefined) {
+			return(null);
+		}
+
+		const conversion: ConversionInputCanonical = {
+			from: KeetaNetLib.Account.fromPublicKeyString(fromCode),
+			to: KeetaNetLib.Account.fromPublicKeyString(toCode),
+			amount: 0n,
+			affinity: 'from'
+		};
+
+		const provider = new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this);
+		return(provider);
 	}
 
 	async getEstimates(request: ConversionInput, options: Omit<GetProvidersOptions, 'requiredOperations'> = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {

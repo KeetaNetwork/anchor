@@ -816,6 +816,101 @@ test('createExchange handles missing status field', async function() {
 	expect(exchange.exchange.status).toBe('completed');
 }, 30_000);
 
+test('FX Client resolves a settled exchange by block hash through getProviderByAccount', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const quoteSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const liquidityProvider = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	await using nodeAndClient = await createNodeAndClient(account);
+	const client = nodeAndClient.userClient;
+	const baseToken = client.baseToken;
+	const giveTokens = nodeAndClient.give.bind(nodeAndClient);
+
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
+		throw(new Error('Test currencies not tokens'));
+	}
+
+	await client.modTokenSupplyAndBalance(500000n, testCurrencyUSD);
+	await giveTokens(client.account, 50n);
+	await client.modTokenSupplyAndBalance(100000n, testCurrencyEUR, { account: liquidityProvider });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyUSD });
+	await client.send(liquidityProvider, 50n, baseToken);
+
+	await using server = new KeetaNetFXAnchorHTTPServer({
+		logger: logger,
+		account: liquidityProvider,
+		metadataSigner: liquidityProvider,
+		quoteSigner: quoteSigner,
+		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+		storage: {
+			queue: new KeetaAnchorQueueStorageDriverMemory({ id: 'queue' }),
+			autoRun: false
+		},
+		fx: {
+			from: [{
+				currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+				to: [testCurrencyEUR.publicKeyString.get()]
+			}],
+			getConversionRateAndFee: async function(request) {
+				return({
+					account: liquidityProvider,
+					convertedAmount: BigInt(request.amount) * 88n / 100n,
+					cost: { amount: 5n, token: baseToken }
+				});
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		description: 'FX Anchor by-blockhash Test',
+		name: 'TEST',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				fx: { Test: await server.serviceMetadata() }
+			}
+		})
+	});
+
+	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger });
+	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
+	const quote = quotes?.[0];
+	if (quote === undefined) {
+		throw(new Error('Expected a USD to EUR quote'));
+	}
+
+	const exchange = await quote.createExchange();
+	const completed = await waitForExchangeToComplete(server, exchange);
+	expect(completed.status).toBe('completed');
+
+	const provider = await fxClient.getProviderByAccount(liquidityProvider.publicKeyString.get(), [ 'getExchangeStatusByBlockhash' ]);
+	if (provider === null) {
+		throw(new Error('Expected to resolve the FX provider by liquidity provider account'));
+	}
+
+	const byBlockhash = await provider.getExchangeStatusByBlockhash(completed.blockhash);
+	expect(byBlockhash.exchangeID).toBe(exchange.exchange.exchangeID);
+	expect(byBlockhash.status).toBe('completed');
+
+	if (byBlockhash.status !== 'completed' || byBlockhash.conversion === undefined) {
+		throw(new Error('Expected a completed exchange with a conversion summary'));
+	}
+
+	expect(byBlockhash.conversion.from).toEqual({ token: testCurrencyUSD.publicKeyString.get(), amount: '100' });
+	expect(byBlockhash.conversion.to).toEqual({ token: testCurrencyEUR.publicKeyString.get(), amount: '88' });
+	expect(byBlockhash.conversion.cost).toEqual({ token: baseToken.publicKeyString.get(), amount: '5' });
+	expect(byBlockhash.conversion.liquidityProvider).toBe(liquidityProvider.publicKeyString.get());
+}, 30_000);
+
 test('Swap Function Negative Tests', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const account2 = KeetaNet.lib.Account.fromSeed(seed, 1);

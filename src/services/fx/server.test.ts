@@ -262,7 +262,8 @@ test('FX Server Tests', async function() {
 				getEstimate: new URL('/api/getEstimate', url).toString(),
 				getQuote: new URL('/api/getQuote', url).toString(),
 				createExchange: new URL('/api/createExchange', url).toString(),
-				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
+				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}',
+				getExchangeStatusByBlockhash: new URL('/api/getExchangeStatus/byBlockhash', url).toString() + '/{hash}'
 			}
 		});
 
@@ -840,6 +841,100 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	expect(status3).toHaveProperty('status', 'completed');
 	expect(status4).toHaveProperty('status', 'completed');
 }, 60000);
+
+test('FX Server by-blockhash lookup returns the exchange with a conversion summary', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, token1, token2, userClients } = harness;
+	const userClient = userClients[0];
+	if (userClient === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	const quote = await getQuoteFromServer(url, token1String, token2String, '100');
+	if (typeof quote !== 'object' || quote === null || !('account' in quote) || typeof quote.account !== 'string') {
+		throw(new Error('Invalid quote'));
+	}
+
+	const builder = userClient.initBuilder();
+	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1);
+	const computed = await builder.computeBlocks();
+	const block = computed.blocks[0];
+	if (!block) {
+		throw(new Error('No block computed'));
+	}
+	const blockHash = block.hash.toString();
+
+	const createResponse = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				quote: quote,
+				block: Buffer.from(block.toBytes()).toString('base64')
+			}
+		})
+	});
+	expect(createResponse.status).toBe(200);
+
+	const createData: unknown = await createResponse.json();
+	const exchangeID = extractExchangeID(createData);
+
+	await waitForExchangeCompletion(url, exchangeID);
+
+	const byHashResponse = await fetch(`${url}/api/getExchangeStatus/byBlockhash/${blockHash}`, {
+		method: 'GET',
+		headers: { 'Accept': 'application/json' }
+	});
+	expect(byHashResponse.status).toBe(200);
+
+	const byHash: unknown = await byHashResponse.json();
+	expect(byHash).toHaveProperty('ok', true);
+	expect(byHash).toHaveProperty('status', 'completed');
+	expect(byHash).toHaveProperty('exchangeID', exchangeID);
+	expect(byHash).toHaveProperty('conversion');
+
+	if (typeof byHash !== 'object' || byHash === null || !('conversion' in byHash) || typeof byHash.conversion !== 'object' || byHash.conversion === null) {
+		throw(new Error('Expected a conversion summary'));
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const conversion = byHash.conversion as {
+		from: { token: string; amount: string };
+		to: { token: string; amount: string };
+		liquidityProvider: string;
+	};
+	expect(conversion.from).toEqual({ token: token1String, amount: '100' });
+	expect(conversion.to).toEqual({ token: token2String, amount: '500' });
+	expect(conversion.liquidityProvider).toBe(serverAccount.publicKeyString.get());
+
+	const missingResponse = await fetch(`${url}/api/getExchangeStatus/byBlockhash/deadbeef`, {
+		method: 'GET',
+		headers: { 'Accept': 'application/json' }
+	});
+	expect(missingResponse.status).toBe(400);
+}, 30000);
 
 test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function() {
 	await using harness = await createFXTestHarness(1);

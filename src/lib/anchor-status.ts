@@ -129,6 +129,29 @@ export interface AnchorStatusSource<Transaction = unknown> {
 }
 
 /**
+ * An {@link AnchorStatusSource} that resolves a reader from the first of
+ * several backing sources that serves an anchor.
+ */
+export class CompositeAnchorStatusSource<Transaction = unknown> implements AnchorStatusSource<Transaction> {
+	readonly #sources: readonly AnchorStatusSource<Transaction>[];
+
+	constructor(sources: readonly AnchorStatusSource<Transaction>[]) {
+		this.#sources = sources;
+	}
+
+	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<Transaction> | null> {
+		for (const source of this.#sources) {
+			const reader = await source.getReader(anchor);
+			if (reader !== null) {
+				return(reader);
+			}
+		}
+
+		return(null);
+	}
+}
+
+/**
  * Is `true` once a transfer has settled.
  *
  * Other states are provider-specific and cannot be classified here.

@@ -28,13 +28,17 @@ import type {
 	UserHistoryListOptions
 } from './history.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { KeetaNet } from '../client/index.js';
+import { FX, KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from '../services/asset-movement/server.js';
+import { KeetaNetFXAnchorHTTPServer } from '../services/fx/server.js';
 import { AnchorExternal } from './anchor-external.js';
-import { AnchorTransactionStatus } from './anchor-status.js';
+import { AnchorTransactionStatus, CompositeAnchorStatusSource } from './anchor-status.js';
 import { UserHistory } from './history.js';
+import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
+import { asleep } from './utils/asleep.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
+import KeetaFXStatusSource from '../services/fx/status-source.js';
 import Resolver from './resolver.js';
 
 type TransactionStatus = KeetaAssetMovementTransaction['status'];
@@ -264,8 +268,8 @@ const blockShapeCases: BlockShapeCase[] = [
 		legs: 2
 	},
 	{
-		name: 'an atomic swap with a cost send',
-		build: ({ alice, primary, secondary, cost }) => [ sendOp(alice, primary, 1000n), sendOp(alice, cost, 5n), receiveOp(alice, secondary, 990n) ],
+		name: 'an atomic swap with a cost send ordered before the principal',
+		build: ({ alice, primary, secondary, cost }) => [ sendOp(alice, cost, 5n), sendOp(alice, primary, 1000n), receiveOp(alice, secondary, 990n) ],
 		type: 'swap',
 		direction: 'self',
 		legs: 3
@@ -311,15 +315,15 @@ test('a plain send carries its amount and account counterparty', async function(
 	expect(transaction?.refs.blockHashes).toEqual([ block.hash.toString() ]);
 });
 
-test('an atomic swap with a cost send records principal, receive and fee', async function() {
+test('an atomic swap records principal, receive and fee regardless of cost send order', async function() {
 	const user = newAccount();
 	const liquidity = newAccount();
 	const tokenA = newToken(user, 0);
 	const tokenB = newToken(user, 1);
 	const tokenCost = newToken(user, 2);
 	const block = await seal(user, [
-		sendOp(liquidity, tokenA, 1000n),
 		sendOp(liquidity, tokenCost, 5n),
+		sendOp(liquidity, tokenA, 1000n),
 		receiveOp(liquidity, tokenB, 990n)
 	]);
 
@@ -885,3 +889,225 @@ test('resolves a real deposit payout end-to-end from an anchor-issued send', asy
 });
 
 // #endregion Integration
+
+// #region FX
+
+/**
+ * Drive an FX exchange to completion by running the anchor's queue pipeline.
+ */
+async function settleExchange(server: KeetaNetFXAnchorHTTPServer, exchange: { getExchangeStatus: () => Promise<{ status: string } | undefined> }): Promise<void> {
+	const timeout = Date.now() + 20_000;
+	await server.pipeline.run();
+	await server.pipeline.maintain();
+
+	let status = await exchange.getExchangeStatus();
+	while (status?.status !== 'completed') {
+		if (Date.now() > timeout) {
+			throw(new Error(`Timeout waiting for FX exchange to complete, status is ${JSON.stringify(status)}`));
+		}
+
+		await server.pipeline.run();
+		status = await exchange.getExchangeStatus();
+		await asleep(50);
+	}
+}
+
+/**
+ * Options controlling {@link startFXExchangeFixture}.
+ */
+type FXExchangeFixtureOptions = {
+	/**
+	 * When `false`, the FX service publishes unsigned metadata so the status
+	 * source cannot attribute the provider by account, modeling an unreachable
+	 * or pre-extension anchor.
+	 */
+	signMetadata?: boolean;
+};
+
+/**
+ * Perform a USD to EUR exchange driven to completion through a single
+ * liquidity provider, and return the pieces a {@link UserHistory} needs.
+ */
+async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): Promise<{
+	server: KeetaNetFXAnchorHTTPServer;
+	history: UserHistory;
+	userAccount: Account;
+	liquidityProvider: Account;
+	usdToken: string;
+	eurToken: string;
+	costToken: string;
+}> {
+	const signMetadata = options.signMetadata ?? true;
+
+	const userAccount = newAccount();
+	const liquidityProvider = newAccount();
+	const quoteSigner = newAccount();
+
+	const nodeAndClient = await createNodeAndClient(userAccount);
+	const client = nodeAndClient.userClient;
+	const baseToken = client.baseToken;
+
+	const { account: usd } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!usd.isToken()) {
+		throw(new Error('USD identifier is not a token'));
+	}
+
+	await client.modTokenSupplyAndBalance(500000n, usd);
+
+	const { account: eur } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!eur.isToken()) {
+		throw(new Error('EUR identifier is not a token'));
+	}
+
+	await nodeAndClient.give(userAccount, 50n);
+	await client.modTokenSupplyAndBalance(100000n, eur, { account: liquidityProvider });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: eur });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: usd });
+	await client.send(liquidityProvider, 50n, baseToken);
+
+	let metadataSigner: Account | undefined = liquidityProvider;
+	if (!signMetadata) {
+		metadataSigner = undefined;
+	}
+
+	const server = new KeetaNetFXAnchorHTTPServer({
+		account: liquidityProvider,
+		metadataSigner,
+		quoteSigner,
+		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+		storage: {
+			queue: new KeetaAnchorQueueStorageDriverMemory({ id: 'queue' }),
+			autoRun: false
+		},
+		fx: {
+			from: [
+				{
+					currencyCodes: [ usd.publicKeyString.get() ],
+					to: [ eur.publicKeyString.get() ]
+				}
+			],
+			getConversionRateAndFee: async function(request) {
+				return({
+					account: liquidityProvider,
+					convertedAmount: BigInt(request.amount) * 88n / 100n,
+					cost: { amount: 5n, token: baseToken }
+				});
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		description: 'FX Anchor History Test',
+		name: 'TEST',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: usd.publicKeyString.get(),
+				EUR: eur.publicKeyString.get()
+			},
+			services: {
+				fx: { Test: await server.serviceMetadata() }
+			}
+		})
+	});
+
+	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount });
+	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
+	const quote = quotes?.[0];
+	if (quote === undefined) {
+		throw(new Error('Expected a USD to EUR quote from the FX anchor'));
+	}
+
+	const exchange = await quote.createExchange();
+	await settleExchange(server, exchange);
+
+	const resolver = new Resolver({ root: userAccount, client, trustedCAs: [] });
+	const fxStatus = new KeetaFXStatusSource({ client, resolver });
+	const status = new AnchorTransactionStatus(new CompositeAnchorStatusSource([ fxStatus ]));
+	const history = new UserHistory({ history: client.client, status });
+
+	return({
+		server,
+		history,
+		userAccount,
+		liquidityProvider,
+		usdToken: usd.publicKeyString.get(),
+		eurToken: eur.publicKeyString.get(),
+		costToken: baseToken.publicKeyString.get()
+	});
+}
+
+test('folds a real FX exchange into a single swap transaction', async function() {
+	const fixture = await startFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount, { includeSource: true });
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	expect(swaps).toHaveLength(1);
+
+	const swap = swaps[0];
+	const swapStaple = swap?.source?.staple.blocksHash.toString();
+	expect(swapStaple).toBeDefined();
+
+	/* The swap's settling staple bundles the LP payout block; it must fold to
+	 * the single swap transaction, with no phantom receive or other siblings. */
+	const siblings = transactions.filter(transaction => transaction.source?.staple.blocksHash.toString() === swapStaple);
+	expect(siblings).toHaveLength(1);
+	expect(siblings[0]?.type).toBe('swap');
+});
+
+test('attributes FX swap principal, receive and fee correctly', async function() {
+	const fixture = await startFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount);
+	const swap = transactions.find(transaction => transaction.type === 'swap');
+	expect(swap).toBeDefined();
+	expect(swap?.direction).toBe('self');
+	expect(swap?.send).toEqual({ token: fixture.usdToken, amount: 100n });
+	expect(swap?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
+	expect(swap?.fee).toEqual({ token: fixture.costToken, amount: 5n });
+});
+
+test('links a real FX exchange to its anchor provider', async function() {
+	const fixture = await startFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount);
+	const swap = transactions.find(transaction => transaction.type === 'swap');
+	expect(swap?.counterparty?.kind).toBe('anchor');
+	expect(swap?.providerStatus).toBeDefined();
+	expect(swap?.refs.anchorTxIDs.length).toBeGreaterThan(0);
+});
+
+test('degrades to a shape-only swap when the FX provider cannot be resolved', async function() {
+	const fixture = await startFXExchangeFixture({ signMetadata: false });
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount);
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	expect(swaps).toHaveLength(1);
+
+	/*
+	 * Attribution and atomic-staple folding hold without any anchor enrichment.
+	 */
+	const swap = swaps[0];
+	expect(swap?.send).toEqual({ token: fixture.usdToken, amount: 100n });
+	expect(swap?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
+	expect(swap?.fee).toEqual({ token: fixture.costToken, amount: 5n });
+
+	/*
+	 * No reachable FX provider means no anchor linkage.
+	 */
+	expect(swap?.counterparty?.kind).not.toBe('anchor');
+	expect(swap?.providerStatus).toBeUndefined();
+	expect(swap?.refs.anchorTxIDs).toHaveLength(0);
+});
+
+// #endregion FX

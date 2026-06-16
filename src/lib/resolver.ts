@@ -141,6 +141,13 @@ type ServiceMetadata = {
 					 * which was previously created
 					 */
 					getExchangeStatus?: string;
+					/**
+					 * Get the status of an exchange by the
+					 * on-chain block hash of the user's swap
+					 * block, enabling reverse-lookup from chain
+					 * history.
+					 */
+					getExchangeStatusByBlockhash?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -334,7 +341,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		/**
 		 * Search for a provider which supports ALL of the following FX operations
 		 */
-		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus' | 'getExchangeStatusByBlockhash'>[];
 
 		/**
 		 * Search for a provider which supports the specified affinity

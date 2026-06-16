@@ -13,6 +13,7 @@ import {
 } from './common.js';
 import type {
 	ConversionInputCanonicalJSON,
+	KeetaFXAnchorConversionSummary,
 	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
@@ -26,6 +27,7 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
+import { ConvertStringToRequestID } from '../../lib/queue/internal.js';
 import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueRunnerConfigurationObject } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
@@ -357,6 +359,11 @@ type KeetaFXAnchorQueueStage1Response = {
 	 * The hash of one of the blocks submitted
 	 */
 	blockhash: string;
+	/**
+	 * Summary of the settled conversion, recorded when the swap is published so
+	 * the status route can report it without re-reading the chain.
+	 */
+	conversion?: KeetaFXAnchorConversionSummary;
 };
 
 function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
@@ -514,12 +521,18 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			const existingOutput = entry.output;
 			const blocks = existingOutput?.blocks ?? [Buffer.from(block.toBytes()).toString('base64')];
 
+			const completedOutput: KeetaFXAnchorQueueStage1Response = {
+				blockhash: block.hash.toString(),
+				blocks: blocks
+			};
+
+			if (existingOutput?.conversion !== undefined) {
+				completedOutput.conversion = existingOutput.conversion;
+			}
+
 			return({
 				status: 'completed',
-				output: {
-					blockhash: block.hash.toString(),
-					blocks: blocks
-				}
+				output: completedOutput
 			});
 		}
 
@@ -662,6 +675,38 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			throw(error);
 		}
 
+		const conversion: KeetaFXAnchorConversionSummary = {
+			from: {
+				token: expected.receive.token.publicKeyString.get(),
+				amount: expected.receive.amount.toString()
+			},
+			to: {
+				token: expected.send.token.publicKeyString.get(),
+				amount: expected.send.amount.toString()
+			},
+			liquidityProvider: entry.request.account.publicKeyString.get()
+		};
+
+		/*
+		 * The user's block funds the swap with the principal (the `from` token)
+		 * and, when charged, a separate cost send in another token.
+		 */
+		for (const operation of block.operations) {
+			if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+				continue;
+			}
+
+			if (operation.token.comparePublicKey(expected.receive.token)) {
+				continue;
+			}
+
+			conversion.cost = {
+				token: operation.token.publicKeyString.get(),
+				amount: operation.amount.toString()
+			};
+			break;
+		}
+
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
 		return({
 			status: 'pending',
@@ -669,7 +714,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				blockhash: block.hash.toString(),
 				blocks: swapBlocks.map(function(block) {
 					return(Buffer.from(block.toBytes()).toString('base64'));
-				})
+				}),
+				conversion: conversion
 			}
 		});
 	}
@@ -712,6 +758,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	private readonly serverConfig: KeetaAnchorFXServerConfig;
 	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
 	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> } = {};
+	private blockhashIndex: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable> | null = null;
 
 	private extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
 
@@ -840,6 +887,51 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 			this.runners[account.publicKeyAndTypeString] = runner;
 		}
+
+		this.blockhashIndex = await this.createQueue('blockhash-index');
+	}
+
+	/**
+	 * Record a block-hash -> exchange-ID mapping so a settled swap can be
+	 * resolved from its on-chain block hash.
+	 */
+	async registerBlockhash(blockHash: string, exchangeID: KeetaAnchorQueueRequestID): Promise<void> {
+		await super.init();
+
+		if (this.blockhashIndex === null) {
+			throw(new Error('Blockhash index not initialized'));
+		}
+
+		await this.blockhashIndex.add({ exchangeID: String(exchangeID) }, { id: blockHash });
+	}
+
+	/**
+	 * Resolve the exchange ID for an on-chain block hash, or `undefined` when
+	 * no exchange settled that block.
+	 */
+	async lookupBlockhash(blockHash: string): Promise<string | undefined> {
+		await super.init();
+
+		if (this.blockhashIndex === null) {
+			throw(new Error('Blockhash index not initialized'));
+		}
+
+		const entry = await this.blockhashIndex.get(ConvertStringToRequestID(blockHash));
+		if (entry === null) {
+			return(undefined);
+		}
+
+		const request = entry.request;
+		if (typeof request !== 'object' || request === null || !('exchangeID' in request)) {
+			return(undefined);
+		}
+
+		const exchangeID = request.exchangeID;
+		if (typeof exchangeID !== 'string') {
+			return(undefined);
+		}
+
+		return(exchangeID);
 	}
 
 	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaFXAnchorQueuePipelineStage1;
@@ -1447,6 +1539,11 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				expected: expectedConversion
 			});
 
+			/*
+			 * Index the user swap block hash so the exchange is resolvable from chain
+			 */
+			await instance.pipeline.registerBlockhash(block.hash.toString(), exchangeID);
+
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 				ok: true,
 				exchangeID: exchangeID.toString(),
@@ -1497,15 +1594,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 			});
 		}
 
-		routes['GET /api/getExchangeStatus/:id'] = async function(params) {
-			if (params === undefined || params === null) {
-				throw(new KeetaAnchorUserError('Expected params'));
-			}
-			const exchangeID = params.get('id');
-			if (typeof exchangeID !== 'string') {
-				throw(new Error('Missing exchangeID in params'));
-			}
-
+		const buildExchangeStatus = async function(exchangeID: string): Promise<KeetaFXAnchorExchangeResponse> {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const queueEntryInfo = await instance.pipeline.get(exchangeID as unknown as KeetaAnchorQueueRequestID);
 			const exchangeResponse = (function(): KeetaFXAnchorExchangeResponse {
@@ -1532,12 +1621,19 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 								exchangeID: exchangeID
 							});
 						} else {
-							return({
+							const completed: KeetaFXAnchorExchangeResponse = {
 								ok: true,
 								status: 'completed',
 								exchangeID: exchangeID,
 								blockhash: blockhash
-							});
+							};
+
+							const conversion = queueEntryInfo?.output?.conversion;
+							if (conversion !== undefined) {
+								completed.conversion = conversion;
+							}
+
+							return(completed);
 						}
 					}
 					case 'failed_permanently':
@@ -1556,7 +1652,44 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				}
 			})();
 
-			logger.debug('GET /api/getExchangeStatus/:id', 'Exchange Status for ID', exchangeID, 'is', exchangeResponse, 'based on jobInfo', queueEntryInfo);
+			logger.debug('buildExchangeStatus', 'Exchange Status for ID', exchangeID, 'is', exchangeResponse, 'based on jobInfo', queueEntryInfo);
+
+			return(exchangeResponse);
+		}
+
+		routes['GET /api/getExchangeStatus/:id'] = async function(params) {
+			if (params === undefined || params === null) {
+				throw(new KeetaAnchorUserError('Expected params'));
+			}
+
+			const exchangeID = params.get('id');
+			if (typeof exchangeID !== 'string') {
+				throw(new Error('Missing exchangeID in params'));
+			}
+
+			const exchangeResponse = await buildExchangeStatus(exchangeID);
+
+			return({
+				output: JSON.stringify(exchangeResponse)
+			});
+		}
+
+		routes['GET /api/getExchangeStatus/byBlockhash/:hash'] = async function(params) {
+			if (params === undefined || params === null) {
+				throw(new KeetaAnchorUserError('Expected params'));
+			}
+
+			const blockhash = params.get('hash');
+			if (typeof blockhash !== 'string') {
+				throw(new Error('Missing blockhash in params'));
+			}
+
+			const exchangeID = await instance.pipeline.lookupBlockhash(blockhash);
+			if (exchangeID === undefined) {
+				throw(new KeetaAnchorUserError('No exchange found for blockhash'));
+			}
+
+			const exchangeResponse = await buildExchangeStatus(exchangeID);
 
 			return({
 				output: JSON.stringify(exchangeResponse)
@@ -1574,6 +1707,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		baseMetadata.operations.getExchangeStatus = (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}';
+		baseMetadata.operations.getExchangeStatusByBlockhash = (new URL('/api/getExchangeStatus/byBlockhash', this.url)).toString() + '/{hash}';
 		baseMetadata.operations.createExchange = (new URL('/api/createExchange', this.url)).toString();
 
 		return(baseMetadata);

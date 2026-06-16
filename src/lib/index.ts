@@ -6,7 +6,7 @@ import Resolver from './resolver.js';
 
 export type { AnchorPayoutExternalOptions } from './anchor-external.js';
 export { AnchorExternal, buildSignedAnchorExternal } from './anchor-external.js';
-export { AnchorTransactionStatus, isCompletedTransferStatus } from './anchor-status.js';
+export { AnchorTransactionStatus, CompositeAnchorStatusSource, isCompletedTransferStatus } from './anchor-status.js';
 export type {
 	AnchorOnChainReference,
 	AnchorReference,

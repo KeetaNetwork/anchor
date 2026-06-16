@@ -748,6 +748,44 @@ const anchorTransferClassifier: LogicalClassifier = {
 };
 
 /**
+ * Pick the swap principal: the largest send whose token differs from the
+ * received token.
+ */
+function principalSend(sends: readonly IndexedView[], receivedToken: string): IndexedView | undefined {
+	let principal: IndexedView | undefined;
+	for (const send of sends) {
+		if (send.amount.token === receivedToken) {
+			continue;
+		}
+
+		if (principal === undefined || send.amount.amount > principal.amount.amount) {
+			principal = send;
+		}
+	}
+
+	return(principal);
+}
+
+/**
+ * Aggregate the non-principal sends into a single fee amount.
+ */
+function aggregateFee(feeSends: readonly IndexedView[]): LogicalAmount | undefined {
+	const first = feeSends[0];
+	if (first === undefined) {
+		return(undefined);
+	}
+
+	let amount = 0n;
+	for (const send of feeSends) {
+		if (send.amount.token === first.amount.token) {
+			amount += send.amount.amount;
+		}
+	}
+
+	return({ token: first.amount.token, amount });
+}
+
+/**
  * Classifies an on-chain atomic swap: SEND(s) and RECEIVE(s) against a single
  * counterparty with differing send/receive tokens.
  */
@@ -768,12 +806,12 @@ const atomicSwapClassifier: LogicalClassifier = {
 			return(null);
 		}
 
-		const principal = sends.find(send => send.amount.token !== received.amount.token);
+		const principal = principalSend(sends, received.amount.token);
 		if (principal === undefined) {
 			return(null);
 		}
 
-		const fee = sends.find(send => send.index !== principal.index);
+		const fee = aggregateFee(sends.filter(send => send.index !== principal.index));
 
 		const transaction: LogicalTransaction = {
 			id: block.blockHash,
@@ -789,7 +827,7 @@ const atomicSwapClassifier: LogicalClassifier = {
 		};
 
 		if (fee !== undefined) {
-			transaction.fee = fee.amount;
+			transaction.fee = fee;
 		}
 
 		return([ transaction ]);
@@ -897,12 +935,41 @@ export const defaultClassifiers: readonly LogicalClassifier[] = [
 ];
 
 /**
+ * Within a settled staple, drop foreign counterpart blocks whose settlement is
+ * already represented by a perspective-owned block.
+ */
+function suppressCoveredForeignBlocks(blocks: readonly EnrichedBlock[]): readonly EnrichedBlock[] {
+	const perspective = blocks.find(block => block.perspective !== undefined)?.perspective;
+	if (perspective === undefined) {
+		return(blocks);
+	}
+
+	const owned = blocks.filter(block => block.account === perspective);
+	if (owned.length === 0) {
+		return(blocks);
+	}
+
+	const covered = new Set<string>();
+	for (const block of owned) {
+		for (const enriched of block.operations) {
+			const counterparty = counterpartyID(enriched.operation);
+			if (counterparty !== undefined) {
+				covered.add(counterparty);
+			}
+		}
+	}
+
+	const result = blocks.filter(block => block.account === perspective || !covered.has(block.account));
+	return(result);
+}
+
+/**
  * Fold enriched blocks into logical transactions by running the ordered
  * classifiers; the first classifier that applies to a block wins.
  */
 export function foldHistory(blocks: readonly EnrichedBlock[], classifiers: readonly LogicalClassifier[]): LogicalTransaction[] {
 	const results: LogicalTransaction[] = [];
-	for (const block of blocks) {
+	for (const block of suppressCoveredForeignBlocks(blocks)) {
 		for (const classifier of classifiers) {
 			const classified = classifier.classify(block);
 			if (classified !== null) {
@@ -1116,6 +1183,11 @@ export class UserHistory {
 		const account = block.account.publicKeyString.get();
 		const enrichEnabled = options?.enrich !== false && this.#status !== undefined;
 
+		/*
+		 * A single anchor transfer (an FX swap, say) can be settled by several
+		 * operations in one block.
+		 */
+		const attachedTransferIDs = new Set<string>();
 		const operations: EnrichedOperation[] = [];
 		for (let index = 0; index < block.operations.length; index++) {
 			const operation = block.operations[index];
@@ -1126,7 +1198,8 @@ export class UserHistory {
 			const enriched: EnrichedOperation = { operation, index };
 			if (enrichEnabled) {
 				const resolved = await this.#resolveTransfer(block, operation, index, perspective, options, externalCache, readerCache);
-				if (resolved !== undefined) {
+				if (resolved !== undefined && !attachedTransferIDs.has(resolved.transfer.id)) {
+					attachedTransferIDs.add(resolved.transfer.id);
 					enriched.transfer = resolved.transfer;
 					enriched.anchorID = resolved.anchorID;
 				}
