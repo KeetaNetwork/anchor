@@ -26,6 +26,7 @@ import type {
 	KeetaFXAnchorQuote,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
+import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
@@ -459,7 +460,15 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
-			builder.send(liquidityProvider, sendAmount, request.from);
+
+			/*
+			 * Tag the principal send with an anchor external naming the FX
+			 * provider and a client-chosen correlation id.
+			 */
+			const correlationId = crypto.randomUUID();
+			const external = await new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId }).build();
+
+			builder.send(liquidityProvider, sendAmount, request.from, external);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {
@@ -535,27 +544,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		}
 
 		this.logger?.debug(`FX exchange status request successful, to provider ${serviceURL} for ${exchangeID}`);
-		return(requestInformationJSON);
-	}
-
-	async getExchangeByBlockhash(blockHash: string): Promise<KeetaFXAnchorExchange> {
-		const serviceURL = await this.#getEndpoint('getExchangeByBlockhash', { hash: blockHash });
-		const requestInformation = await fetch(serviceURL, {
-			method: 'GET',
-			headers: {
-				'Accept': 'application/json'
-			}
-		});
-
-		const requestInformationJSON: unknown = await requestInformation.json();
-		if (!isKeetaFXAnchorExchangeResponse(requestInformationJSON)) {
-			throw(new Error(`Invalid response from FX exchange status service: ${JSON.stringify(requestInformationJSON)}`));
-		}
-		if (!requestInformationJSON.ok) {
-			throw(await this.#parseResponseError(requestInformationJSON));
-		}
-
-		this.logger?.debug(`FX exchange by blockhash request successful, to provider ${serviceURL} for ${blockHash}`);
 		return(requestInformationJSON);
 	}
 

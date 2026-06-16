@@ -28,6 +28,7 @@ import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { ConvertStringToRequestID } from '../../lib/queue/internal.js';
+import { AnchorExternal } from '../../lib/anchor-external.js';
 import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueRunnerConfigurationObject } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
@@ -470,6 +471,38 @@ function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchor
 	return(conversion);
 }
 
+/**
+ * Extract the client correlation id from a swap block's anchor external for the
+ * given provider account, or `undefined` when the block carries none.
+ */
+async function correlationIdFromBlock(block: KeetaFXAnchorQueueStage1Request['block'], providerAccount: KeetaNetAccount): Promise<string | undefined> {
+	const anchorKey = providerAccount.publicKeyString.get();
+	for (const operation of block.operations) {
+		if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+			continue;
+		}
+
+		if (operation.external === undefined) {
+			continue;
+		}
+
+		let decoded: AnchorExternal;
+		try {
+			decoded = await AnchorExternal.fromPlainExternal(operation.external);
+		} catch (error) {
+			void error;
+			continue;
+		}
+
+		const entry = decoded.envelope.anchors[anchorKey];
+		if (entry !== undefined && 'transactionId' in entry) {
+			return(entry.transactionId);
+		}
+	}
+
+	return(undefined);
+}
+
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
 	protected sequential = true;
@@ -769,7 +802,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	private readonly serverConfig: KeetaAnchorFXServerConfig;
 	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
 	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> } = {};
-	private blockhashIndex: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable> | null = null;
+	private correlationIndex: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable> | null = null;
 
 	private extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
 
@@ -899,35 +932,35 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 			this.runners[account.publicKeyAndTypeString] = runner;
 		}
 
-		this.blockhashIndex = await this.createQueue('blockhash-index');
+		this.correlationIndex = await this.createQueue('correlation-index');
 	}
 
 	/**
-	 * Record a block-hash -> exchange-ID mapping so a settled swap can be
-	 * resolved from its on-chain block hash.
+	 * Record a correlation-id -> exchange-ID mapping so a swap can be resolved
+	 * from the correlation id carried in its on-chain anchor external.
 	 */
-	async registerBlockhash(blockHash: string, exchangeID: KeetaAnchorQueueRequestID): Promise<void> {
+	async registerCorrelation(correlationId: string, exchangeID: KeetaAnchorQueueRequestID): Promise<void> {
 		await super.init();
 
-		if (this.blockhashIndex === null) {
-			throw(new Error('Blockhash index not initialized'));
+		if (this.correlationIndex === null) {
+			throw(new Error('Correlation index not initialized'));
 		}
 
-		await this.blockhashIndex.add({ exchangeID: String(exchangeID) }, { id: blockHash });
+		await this.correlationIndex.add({ exchangeID: String(exchangeID) }, { id: correlationId });
 	}
 
 	/**
-	 * Resolve the exchange ID for an on-chain block hash, or `undefined` when
-	 * no exchange settled that block.
+	 * Resolve the exchange ID for a correlation id, or `undefined` when no
+	 * exchange registered it.
 	 */
-	async lookupBlockhash(blockHash: string): Promise<string | undefined> {
+	async lookupCorrelation(correlationId: string): Promise<string | undefined> {
 		await super.init();
 
-		if (this.blockhashIndex === null) {
-			throw(new Error('Blockhash index not initialized'));
+		if (this.correlationIndex === null) {
+			throw(new Error('Correlation index not initialized'));
 		}
 
-		const entry = await this.blockhashIndex.get(ConvertStringToRequestID(blockHash));
+		const entry = await this.correlationIndex.get(ConvertStringToRequestID(correlationId));
 		if (entry === null) {
 			return(undefined);
 		}
@@ -1551,9 +1584,13 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 			});
 
 			/*
-			 * Index the user swap block hash so the exchange is resolvable from chain
+			 * Index the correlation id carried in the swap block's anchor
+			 * external so the exchange is resolvable from chain history.
 			 */
-			await instance.pipeline.registerBlockhash(block.hash.toString(), exchangeID);
+			const correlationId = await correlationIdFromBlock(block, liquidityAccountInstance);
+			if (correlationId !== undefined) {
+				await instance.pipeline.registerCorrelation(correlationId, exchangeID);
+			}
 
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 				ok: true,
@@ -1673,32 +1710,16 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				throw(new KeetaAnchorUserError('Expected params'));
 			}
 
-			const exchangeID = params.get('id');
-			if (typeof exchangeID !== 'string') {
+			const id = params.get('id');
+			if (typeof id !== 'string') {
 				throw(new Error('Missing exchangeID in params'));
 			}
 
-			const exchangeResponse = await buildExchangeStatus(exchangeID);
-
-			return({
-				output: JSON.stringify(exchangeResponse)
-			});
-		}
-
-		routes['GET /api/getExchange/byBlockhash/:hash'] = async function(params) {
-			if (params === undefined || params === null) {
-				throw(new KeetaAnchorUserError('Expected params'));
-			}
-
-			const blockhash = params.get('hash');
-			if (typeof blockhash !== 'string') {
-				throw(new Error('Missing blockhash in params'));
-			}
-
-			const exchangeID = await instance.pipeline.lookupBlockhash(blockhash);
-			if (exchangeID === undefined) {
-				throw(new KeetaAnchorUserError('No exchange found for blockhash'));
-			}
+			/*
+			 * Accept either an exchange id or a client correlation id.
+			 */
+			const correlated = await instance.pipeline.lookupCorrelation(id);
+			const exchangeID = correlated ?? id;
 
 			const exchangeResponse = await buildExchangeStatus(exchangeID);
 
@@ -1718,7 +1739,6 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		baseMetadata.operations.getExchangeStatus = (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}';
-		baseMetadata.operations.getExchangeByBlockhash = (new URL('/api/getExchange/byBlockhash', this.url)).toString() + '/{hash}';
 		baseMetadata.operations.createExchange = (new URL('/api/createExchange', this.url)).toString();
 
 		return(baseMetadata);

@@ -3,6 +3,8 @@ import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { GetConversionRateAndFeeContext } from './server.js';
 import type { ConversionInputCanonicalJSON, KeetaNetTokenPublicKeyString } from './common.js';
 import { KeetaNet } from '../../client/index.js';
+import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
+import crypto from '../../lib/utils/crypto.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
@@ -262,8 +264,7 @@ test('FX Server Tests', async function() {
 				getEstimate: new URL('/api/getEstimate', url).toString(),
 				getQuote: new URL('/api/getQuote', url).toString(),
 				createExchange: new URL('/api/createExchange', url).toString(),
-				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}',
-				getExchangeByBlockhash: new URL('/api/getExchange/byBlockhash', url).toString() + '/{hash}'
+				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
 			}
 		});
 
@@ -842,7 +843,7 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	expect(status4).toHaveProperty('status', 'completed');
 }, 60000);
 
-test('FX Server by-blockhash lookup returns the exchange with a conversion summary', async function() {
+test('FX Server resolves a completed exchange by the correlation id carried in its block external', async function() {
 	await using harness = await createFXTestHarness(1);
 	const { serverAccount, token1, token2, userClients } = harness;
 	const userClient = userClients[0];
@@ -877,14 +878,18 @@ test('FX Server by-blockhash lookup returns the exchange with a conversion summa
 		throw(new Error('Invalid quote'));
 	}
 
+	/* Tag the swap's principal send with an anchor external carrying a correlation id */
+	const correlationId = crypto.randomUUID();
+	const external = await new AnchorExternalBuilder().setAnchor(serverAccount, { transactionId: correlationId }).build();
+
 	const builder = userClient.initBuilder();
-	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1);
+	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1, external);
+
 	const computed = await builder.computeBlocks();
 	const block = computed.blocks[0];
 	if (!block) {
 		throw(new Error('No block computed'));
 	}
-	const blockHash = block.hash.toString();
 
 	const createResponse = await fetch(`${url}/api/createExchange`, {
 		method: 'POST',
@@ -903,24 +908,27 @@ test('FX Server by-blockhash lookup returns the exchange with a conversion summa
 
 	await waitForExchangeCompletion(url, exchangeID);
 
-	const byHashResponse = await fetch(`${url}/api/getExchange/byBlockhash/${blockHash}`, {
+	/*
+	 * The correlation id resolves to the same exchange through getExchangeStatus
+	 */
+	const byCorrelationResponse = await fetch(`${url}/api/getExchangeStatus/${correlationId}`, {
 		method: 'GET',
 		headers: { 'Accept': 'application/json' }
 	});
-	expect(byHashResponse.status).toBe(200);
+	expect(byCorrelationResponse.status).toBe(200);
 
-	const byHash: unknown = await byHashResponse.json();
-	expect(byHash).toHaveProperty('ok', true);
-	expect(byHash).toHaveProperty('status', 'completed');
-	expect(byHash).toHaveProperty('exchangeID', exchangeID);
-	expect(byHash).toHaveProperty('conversion');
+	const byCorrelation: unknown = await byCorrelationResponse.json();
+	expect(byCorrelation).toHaveProperty('ok', true);
+	expect(byCorrelation).toHaveProperty('status', 'completed');
+	expect(byCorrelation).toHaveProperty('exchangeID', exchangeID);
+	expect(byCorrelation).toHaveProperty('conversion');
 
-	if (typeof byHash !== 'object' || byHash === null || !('conversion' in byHash) || typeof byHash.conversion !== 'object' || byHash.conversion === null) {
+	if (typeof byCorrelation !== 'object' || byCorrelation === null || !('conversion' in byCorrelation) || typeof byCorrelation.conversion !== 'object' || byCorrelation.conversion === null) {
 		throw(new Error('Expected a conversion summary'));
 	}
 
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	const conversion = byHash.conversion as {
+	const conversion = byCorrelation.conversion as {
 		from: { token: string; amount: string };
 		to: { token: string; amount: string };
 		liquidityProvider: string;
@@ -928,12 +936,6 @@ test('FX Server by-blockhash lookup returns the exchange with a conversion summa
 	expect(conversion.from).toEqual({ token: token1String, amount: '100' });
 	expect(conversion.to).toEqual({ token: token2String, amount: '500' });
 	expect(conversion.liquidityProvider).toBe(serverAccount.publicKeyString.get());
-
-	const missingResponse = await fetch(`${url}/api/getExchange/byBlockhash/deadbeef`, {
-		method: 'GET',
-		headers: { 'Accept': 'application/json' }
-	});
-	expect(missingResponse.status).toBe(400);
 }, 30000);
 
 test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function() {

@@ -4,6 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
+import { AnchorExternal } from '../../lib/anchor-external.js';
 import { KeetaNetFXAnchorEstimateHTTPServer, KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { KeetaAnchorFXServerConfig, KeetaFXInternalPriceQuote } from './server.js';
 import type { KeetaAnchorQueueEntry } from '../../lib/queue/index.js';
@@ -816,7 +817,7 @@ test('createExchange handles missing status field', async function() {
 	expect(exchange.exchange.status).toBe('completed');
 }, 30_000);
 
-test('FX Client resolves a settled exchange by block hash through getProviderByAccount', async function() {
+test('FX Client resolves a settled exchange by account and reports its conversion summary', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -867,7 +868,7 @@ test('FX Client resolves a settled exchange by block hash through getProviderByA
 	await server.start();
 
 	await client.setInfo({
-		description: 'FX Anchor by-blockhash Test',
+		description: 'FX Anchor provider-by-account Test',
 		name: 'TEST',
 		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
 			version: 1,
@@ -892,23 +893,23 @@ test('FX Client resolves a settled exchange by block hash through getProviderByA
 	const completed = await waitForExchangeToComplete(server, exchange);
 	expect(completed.status).toBe('completed');
 
-	const provider = await fxClient.getProviderByAccount(liquidityProvider.publicKeyString.get(), [ 'getExchangeByBlockhash' ]);
+	const provider = await fxClient.getProviderByAccount(liquidityProvider.publicKeyString.get(), [ 'getExchangeStatus' ]);
 	if (provider === null) {
 		throw(new Error('Expected to resolve the FX provider by liquidity provider account'));
 	}
 
-	const byBlockhash = await provider.getExchangeByBlockhash(completed.blockhash);
-	expect(byBlockhash.exchangeID).toBe(exchange.exchange.exchangeID);
-	expect(byBlockhash.status).toBe('completed');
+	const status = await provider.getExchangeStatus(exchange.exchange.exchangeID);
+	expect(status.exchangeID).toBe(exchange.exchange.exchangeID);
+	expect(status.status).toBe('completed');
 
-	if (byBlockhash.status !== 'completed' || byBlockhash.conversion === undefined) {
+	if (status.status !== 'completed' || status.conversion === undefined) {
 		throw(new Error('Expected a completed exchange with a conversion summary'));
 	}
 
-	expect(byBlockhash.conversion.from).toEqual({ token: testCurrencyUSD.publicKeyString.get(), amount: '100' });
-	expect(byBlockhash.conversion.to).toEqual({ token: testCurrencyEUR.publicKeyString.get(), amount: '88' });
-	expect(byBlockhash.conversion.cost).toEqual({ token: baseToken.publicKeyString.get(), amount: '5' });
-	expect(byBlockhash.conversion.liquidityProvider).toBe(liquidityProvider.publicKeyString.get());
+	expect(status.conversion.from).toEqual({ token: testCurrencyUSD.publicKeyString.get(), amount: '100' });
+	expect(status.conversion.to).toEqual({ token: testCurrencyEUR.publicKeyString.get(), amount: '88' });
+	expect(status.conversion.cost).toEqual({ token: baseToken.publicKeyString.get(), amount: '5' });
+	expect(status.conversion.liquidityProvider).toBe(liquidityProvider.publicKeyString.get());
 }, 30_000);
 
 test('Swap Function Negative Tests', async function() {
@@ -1269,12 +1270,29 @@ test('FX Server Estimate to Exchange Test', async function() {
 			} else if (i === 1) {
 				expect(block.account.comparePublicKey(userAccount)).toBe(true);
 
+				/*
+				 * The principal send carries an anchor external naming the FX provider with a correlation id
+				 */
+				const principalSend = block.operations.find(function(operation) {
+					return(operation.type === KeetaNet.lib.Block.OperationType.SEND);
+				});
+				if (principalSend === undefined || principalSend.type !== KeetaNet.lib.Block.OperationType.SEND || principalSend.external === undefined) {
+					throw(new Error('Expected the principal send to carry an anchor external'));
+				}
+
+				const decoded = await AnchorExternal.fromPlainExternal(principalSend.external);
+				const anchorEntry = decoded.envelope.anchors[liquidityAccount.publicKeyString.get()];
+				if (anchorEntry === undefined || !('transactionId' in anchorEntry)) {
+					throw(new Error('Expected the external to name the FX provider with a correlation id'));
+				}
+
 				expect(toJSONSerializable(block.operations)).toEqual(toJSONSerializable([
 					{
 						type: KeetaNet.lib.Block.OperationType.SEND,
 						to: liquidityAccount,
 						token: testCurrencyUSD,
-						amount: 1000n
+						amount: 1000n,
+						external: principalSend.external
 					},
 					{
 						type: KeetaNet.lib.Block.OperationType.RECEIVE,

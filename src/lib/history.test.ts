@@ -1073,8 +1073,9 @@ test('folds a real FX exchange into a single swap transaction', async function()
 	const swapStaple = swap?.source?.staple.blocksHash.toString();
 	expect(swapStaple).toBeDefined();
 
-	/* The swap's settling staple bundles the LP payout block; it must fold to
-	 * the single swap transaction, with no phantom receive or other siblings. */
+	/*
+	 * The swap's settling staple bundles the LP payout block
+	 */
 	const siblings = transactions.filter(transaction => transaction.source?.staple.blocksHash.toString() === swapStaple);
 	expect(siblings).toHaveLength(1);
 	expect(siblings[0]?.type).toBe('swap');

@@ -1,7 +1,6 @@
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
 
 import type {
-	AnchorOnChainReference,
 	AnchorReference,
 	AnchorStatusSource,
 	AnchorTransferReader,
@@ -116,12 +115,6 @@ class KeetaFXTransferReader implements AnchorTransferReader<KeetaAssetMovementTr
 
 		return(standardized);
 	}
-
-	async findByOnChain(reference: AnchorOnChainReference): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction> | null> {
-		const exchange = await this.#provider.getExchangeByBlockhash(reference.blockHash);
-		const standardized = exchangeToStandardized(exchange, reference.keetaNetworkID);
-		return(standardized);
-	}
 }
 
 /**
@@ -142,7 +135,7 @@ export class KeetaFXStatusSource implements AnchorStatusSource<KeetaAssetMovemen
 	}
 
 	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<KeetaAssetMovementTransaction> | null> {
-		const provider = await this.#client.getProviderByAccount(anchor, [ 'getExchangeByBlockhash' ]);
+		const provider = await this.#client.getProviderByAccount(anchor, [ 'getExchangeStatus' ]);
 		if (provider === null) {
 			return(null);
 		}
