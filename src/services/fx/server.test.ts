@@ -6,6 +6,7 @@ import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 const DEBUG = false;
 const TestLogger = DEBUG ? console : undefined;

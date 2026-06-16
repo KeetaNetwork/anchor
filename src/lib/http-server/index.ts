@@ -14,6 +14,7 @@ import { Log } from '../log/index.js';
 import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
+import { Buffer } from '../utils/buffer.js';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
