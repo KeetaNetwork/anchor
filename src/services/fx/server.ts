@@ -36,6 +36,7 @@ import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSw
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.

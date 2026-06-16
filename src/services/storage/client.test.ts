@@ -14,6 +14,7 @@ import { testPathPolicy } from './test-utils.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import KeetaStorageAnchorClient from './client.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 // #region Test Harness
 
