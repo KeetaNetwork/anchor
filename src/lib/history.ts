@@ -417,7 +417,7 @@ function locationIsChain(location: string, chainType?: 'keeta'): boolean {
 /**
  * Derive the logical type of an anchor transfer from its endpoints.
  */
-export function logicalTypeFromTransfer(transfer: KeetaAssetMovementTransaction): LogicalTransactionType {
+function logicalTypeFromTransfer(transfer: KeetaAssetMovementTransaction): LogicalTransactionType {
 	const fromKeeta = locationIsChain(transfer.from.location, 'keeta');
 	const toKeeta = locationIsChain(transfer.to.location, 'keeta');
 	if (fromKeeta && toKeeta) {
@@ -445,7 +445,7 @@ export function logicalTypeFromTransfer(transfer: KeetaAssetMovementTransaction)
  * Map an anchor transfer's raw status onto the standardized status, carrying
  * the raw provider string for the wallet to interpret.
  */
-export function statusFromTransfer(transfer: KeetaAssetMovementTransaction): { status: LogicalTransactionStatus; providerStatus: string } {
+function statusFromTransfer(transfer: KeetaAssetMovementTransaction): { status: LogicalTransactionStatus; providerStatus: string } {
 	if (isCompletedTransferStatus(transfer.status)) {
 		return({ status: 'complete', providerStatus: transfer.status });
 	}
@@ -970,7 +970,7 @@ function suppressCoveredForeignBlocks(blocks: readonly EnrichedBlock[]): readonl
  * Fold enriched blocks into logical transactions by running the ordered
  * classifiers; the first classifier that applies to a block wins.
  */
-export function foldHistory(blocks: readonly EnrichedBlock[], classifiers: readonly LogicalClassifier[]): LogicalTransaction[] {
+function foldHistory(blocks: readonly EnrichedBlock[], classifiers: readonly LogicalClassifier[]): LogicalTransaction[] {
 	const results: LogicalTransaction[] = [];
 	for (const block of suppressCoveredForeignBlocks(blocks)) {
 		for (const classifier of classifiers) {

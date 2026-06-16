@@ -19,10 +19,7 @@ export type {
 } from './anchor-status.js';
 export {
 	UserHistory,
-	defaultClassifiers,
-	foldHistory,
-	logicalTypeFromTransfer,
-	statusFromTransfer
+	defaultClassifiers
 } from './history.js';
 export type {
 	EnrichedBlock,
