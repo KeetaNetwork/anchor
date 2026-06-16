@@ -263,7 +263,7 @@ test('FX Server Tests', async function() {
 				getQuote: new URL('/api/getQuote', url).toString(),
 				createExchange: new URL('/api/createExchange', url).toString(),
 				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}',
-				getExchangeStatusByBlockhash: new URL('/api/getExchangeStatus/byBlockhash', url).toString() + '/{hash}'
+				getExchangeByBlockhash: new URL('/api/getExchange/byBlockhash', url).toString() + '/{hash}'
 			}
 		});
 
@@ -903,7 +903,7 @@ test('FX Server by-blockhash lookup returns the exchange with a conversion summa
 
 	await waitForExchangeCompletion(url, exchangeID);
 
-	const byHashResponse = await fetch(`${url}/api/getExchangeStatus/byBlockhash/${blockHash}`, {
+	const byHashResponse = await fetch(`${url}/api/getExchange/byBlockhash/${blockHash}`, {
 		method: 'GET',
 		headers: { 'Accept': 'application/json' }
 	});
@@ -929,7 +929,7 @@ test('FX Server by-blockhash lookup returns the exchange with a conversion summa
 	expect(conversion.to).toEqual({ token: token2String, amount: '500' });
 	expect(conversion.liquidityProvider).toBe(serverAccount.publicKeyString.get());
 
-	const missingResponse = await fetch(`${url}/api/getExchangeStatus/byBlockhash/deadbeef`, {
+	const missingResponse = await fetch(`${url}/api/getExchange/byBlockhash/deadbeef`, {
 		method: 'GET',
 		headers: { 'Accept': 'application/json' }
 	});

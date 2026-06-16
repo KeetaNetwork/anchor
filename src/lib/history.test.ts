@@ -334,6 +334,27 @@ test('an atomic swap records principal, receive and fee regardless of cost send 
 	expect(transaction?.counterparty).toEqual({ kind: 'liquidity', id: liquidity.publicKeyString.get() });
 });
 
+test('an atomic swap omits the fee when the non-principal sends use more than one token', async function() {
+	const user = newAccount();
+	const liquidity = newAccount();
+	const tokenA = newToken(user, 0);
+	const tokenB = newToken(user, 1);
+	const tokenCostA = newToken(user, 2);
+	const tokenCostB = newToken(user, 3);
+	const block = await seal(user, [
+		sendOp(liquidity, tokenA, 1000n),
+		sendOp(liquidity, tokenCostA, 5n),
+		sendOp(liquidity, tokenCostB, 7n),
+		receiveOp(liquidity, tokenB, 990n)
+	]);
+
+	const [ transaction ] = await runHistory([ block ]);
+	expect(transaction?.type).toBe('swap');
+	expect(transaction?.send).toEqual({ token: tokenA.publicKeyString.get(), amount: 1000n });
+	expect(transaction?.receive).toEqual({ token: tokenB.publicKeyString.get(), amount: 990n });
+	expect(transaction?.fee).toBeUndefined();
+});
+
 // #endregion Block-shape classification
 
 // #region Anchor classification

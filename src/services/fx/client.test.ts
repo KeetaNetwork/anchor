@@ -892,12 +892,12 @@ test('FX Client resolves a settled exchange by block hash through getProviderByA
 	const completed = await waitForExchangeToComplete(server, exchange);
 	expect(completed.status).toBe('completed');
 
-	const provider = await fxClient.getProviderByAccount(liquidityProvider.publicKeyString.get(), [ 'getExchangeStatusByBlockhash' ]);
+	const provider = await fxClient.getProviderByAccount(liquidityProvider.publicKeyString.get(), [ 'getExchangeByBlockhash' ]);
 	if (provider === null) {
 		throw(new Error('Expected to resolve the FX provider by liquidity provider account'));
 	}
 
-	const byBlockhash = await provider.getExchangeStatusByBlockhash(completed.blockhash);
+	const byBlockhash = await provider.getExchangeByBlockhash(completed.blockhash);
 	expect(byBlockhash.exchangeID).toBe(exchange.exchange.exchangeID);
 	expect(byBlockhash.status).toBe('completed');
 

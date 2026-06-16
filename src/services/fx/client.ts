@@ -538,8 +538,8 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		return(requestInformationJSON);
 	}
 
-	async getExchangeStatusByBlockhash(blockHash: string): Promise<KeetaFXAnchorExchange> {
-		const serviceURL = await this.#getEndpoint('getExchangeStatusByBlockhash', { hash: blockHash });
+	async getExchangeByBlockhash(blockHash: string): Promise<KeetaFXAnchorExchange> {
+		const serviceURL = await this.#getEndpoint('getExchangeByBlockhash', { hash: blockHash });
 		const requestInformation = await fetch(serviceURL, {
 			method: 'GET',
 			headers: {
@@ -555,7 +555,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
-		this.logger?.debug(`FX exchange status by blockhash request successful, to provider ${serviceURL} for ${blockHash}`);
+		this.logger?.debug(`FX exchange by blockhash request successful, to provider ${serviceURL} for ${blockHash}`);
 		return(requestInformationJSON);
 	}
 

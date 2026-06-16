@@ -767,7 +767,8 @@ function principalSend(sends: readonly IndexedView[], receivedToken: string): In
 }
 
 /**
- * Aggregate the non-principal sends into a single fee amount.
+ * Aggregate the non-principal sends into a single fee amount, or `undefined`
+ * when there are none or they use more than one token.
  */
 function aggregateFee(feeSends: readonly IndexedView[]): LogicalAmount | undefined {
 	const first = feeSends[0];
@@ -777,9 +778,11 @@ function aggregateFee(feeSends: readonly IndexedView[]): LogicalAmount | undefin
 
 	let amount = 0n;
 	for (const send of feeSends) {
-		if (send.amount.token === first.amount.token) {
-			amount += send.amount.amount;
+		if (send.amount.token !== first.amount.token) {
+			return(undefined);
 		}
+
+		amount += send.amount.amount;
 	}
 
 	return({ token: first.amount.token, amount });

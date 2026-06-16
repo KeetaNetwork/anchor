@@ -118,7 +118,7 @@ class KeetaFXTransferReader implements AnchorTransferReader<KeetaAssetMovementTr
 	}
 
 	async findByOnChain(reference: AnchorOnChainReference): Promise<StandardizedTransferStatus<KeetaAssetMovementTransaction> | null> {
-		const exchange = await this.#provider.getExchangeStatusByBlockhash(reference.blockHash);
+		const exchange = await this.#provider.getExchangeByBlockhash(reference.blockHash);
 		const standardized = exchangeToStandardized(exchange, reference.keetaNetworkID);
 		return(standardized);
 	}
@@ -142,7 +142,7 @@ export class KeetaFXStatusSource implements AnchorStatusSource<KeetaAssetMovemen
 	}
 
 	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<KeetaAssetMovementTransaction> | null> {
-		const provider = await this.#client.getProviderByAccount(anchor, [ 'getExchangeStatusByBlockhash' ]);
+		const provider = await this.#client.getProviderByAccount(anchor, [ 'getExchangeByBlockhash' ]);
 		if (provider === null) {
 			return(null);
 		}

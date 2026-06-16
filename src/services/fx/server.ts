@@ -431,6 +431,45 @@ function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): Keeta
 	return(retval);
 }
 
+/**
+ * Build the conversion summary surfaced for FX history correlation.
+ */
+function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchorQueueStage1Request['expected']>, block: KeetaFXAnchorQueueStage1Request['block'], account: KeetaNetAccount): KeetaFXAnchorConversionSummary {
+	const conversion: KeetaFXAnchorConversionSummary = {
+		from: {
+			token: expected.receive.token.publicKeyString.get(),
+			amount: expected.receive.amount.toString()
+		},
+		to: {
+			token: expected.send.token.publicKeyString.get(),
+			amount: expected.send.amount.toString()
+		},
+		liquidityProvider: account.publicKeyString.get()
+	};
+
+	/*
+	 * The user's block funds the swap with the principal (the `from` token)
+	 * and, when charged, a separate cost send in another token.
+	 */
+	for (const operation of block.operations) {
+		if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+			continue;
+		}
+
+		if (operation.token.comparePublicKey(expected.receive.token)) {
+			continue;
+		}
+
+		conversion.cost = {
+			token: operation.token.publicKeyString.get(),
+			amount: operation.amount.toString()
+		};
+		break;
+	}
+
+	return(conversion);
+}
+
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
 	protected readonly serverConfig: KeetaAnchorFXServerConfig;
 	protected sequential = true;
@@ -528,6 +567,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 			if (existingOutput?.conversion !== undefined) {
 				completedOutput.conversion = existingOutput.conversion;
+			} else if (entry.request.expected !== null) {
+				completedOutput.conversion = buildKeetaFXAnchorConversionSummary(entry.request.expected, block, entry.request.account);
 			}
 
 			return({
@@ -675,37 +716,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			throw(error);
 		}
 
-		const conversion: KeetaFXAnchorConversionSummary = {
-			from: {
-				token: expected.receive.token.publicKeyString.get(),
-				amount: expected.receive.amount.toString()
-			},
-			to: {
-				token: expected.send.token.publicKeyString.get(),
-				amount: expected.send.amount.toString()
-			},
-			liquidityProvider: entry.request.account.publicKeyString.get()
-		};
-
-		/*
-		 * The user's block funds the swap with the principal (the `from` token)
-		 * and, when charged, a separate cost send in another token.
-		 */
-		for (const operation of block.operations) {
-			if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
-				continue;
-			}
-
-			if (operation.token.comparePublicKey(expected.receive.token)) {
-				continue;
-			}
-
-			conversion.cost = {
-				token: operation.token.publicKeyString.get(),
-				amount: operation.amount.toString()
-			};
-			break;
-		}
+		const conversion = buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account);
 
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
 		return({
@@ -1674,7 +1685,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 			});
 		}
 
-		routes['GET /api/getExchangeStatus/byBlockhash/:hash'] = async function(params) {
+		routes['GET /api/getExchange/byBlockhash/:hash'] = async function(params) {
 			if (params === undefined || params === null) {
 				throw(new KeetaAnchorUserError('Expected params'));
 			}
@@ -1707,7 +1718,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		baseMetadata.operations.getExchangeStatus = (new URL('/api/getExchangeStatus', this.url)).toString() + '/{id}';
-		baseMetadata.operations.getExchangeStatusByBlockhash = (new URL('/api/getExchangeStatus/byBlockhash', this.url)).toString() + '/{hash}';
+		baseMetadata.operations.getExchangeByBlockhash = (new URL('/api/getExchange/byBlockhash', this.url)).toString() + '/{hash}';
 		baseMetadata.operations.createExchange = (new URL('/api/createExchange', this.url)).toString();
 
 		return(baseMetadata);
