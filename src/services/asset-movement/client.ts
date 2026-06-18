@@ -26,6 +26,9 @@ import type {
 	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
 	PersistentAddressTemplateData,
 	KeetaAssetMovementAnchorGetTransferStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusRequest,
+	KeetaAssetMovementAnchorGetAccountStatusResponse,
 	KeetaAssetMovementAnchorShareKYCClientRequest,
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
@@ -58,6 +61,8 @@ import {
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
+	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+	isKeetaAssetMovementAnchorGetAccountStatusResponse,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
@@ -807,6 +812,38 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		});
 
 		this.logger?.debug(`asset movement request successful, request ID ${request.id}`);
+
+		return(requestInformationJSON);
+	}
+
+	/**
+	 * Check whether the (authenticated) account is ready to use this asset movement provider.
+	 *
+	 * Resolves when the account is in good standing. When an action is required first, this rejects
+	 * with the corresponding typed error (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`,
+	 * `Errors.UserActionNeeded`, `Errors.OperationNotSupported`) — the same errors `initiateTransfer`
+	 * would throw — so the caller can route the user to the correct step. An account is required.
+	 */
+	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>> {
+		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
+
+		const { account } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorGetAccountStatusResponse,
+			{ [key: string]: never },
+			KeetaAssetMovementAnchorGetAccountStatusRequest
+		>({
+			method: 'POST',
+			endpoint: 'getAccountStatus',
+			account,
+			body: {},
+			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
+			isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
+		});
+
+		this.logger?.debug('get account status successful');
 
 		return(requestInformationJSON);
 	}

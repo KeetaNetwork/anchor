@@ -11,6 +11,7 @@ import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
+	KeetaAssetMovementAnchorGetAccountStatusResponse,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -36,6 +37,9 @@ import {
 	assertKeetaAssetMovementAnchorInitiateTransferRequest,
 	assertKeetaAssetMovementAnchorInitiateTransferResponse,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
+	assertKeetaAssetMovementAnchorGetAccountStatusRequest,
+	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
+	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -136,6 +140,16 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		 * Method to get the status of a transfer
 		 */
 		getTransferStatus?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
+
+		/**
+		 * Method to get the authenticated account's readiness/status for asset movement.
+		 *
+		 * Resolve with `{}` (HTTP 200) when the account is ready to proceed. When an action is
+		 * required first, throw one of the shared `Errors` (e.g. `KYCShareNeeded`,
+		 * `AdditionalKYCNeeded`, `UserActionNeeded`), the same errors
+		 * `initiateTransfer` / `createPersistentForwarding` would throw.
+		 */
+		getAccountStatus?: (account: Account.Account) => Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>>;
 
 		/**
 		 * Method to list transactions
@@ -536,6 +550,21 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 		addRoute({
 			method: 'POST',
+			handlerName: 'getAccountStatus',
+			assertRequest: assertKeetaAssetMovementAnchorGetAccountStatusRequest,
+			assertResponse: assertKeetaAssetMovementAnchorGetAccountStatusResponse,
+			getSigningData: getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+			parseRequestToArgs: ({ account }) => {
+				if (!account) {
+					throw(new KeetaAnchorUserError('Authentication required'));
+				}
+
+				return([ account ] as const);
+			}
+		});
+
+		addRoute({
+			method: 'POST',
 			handlerName: 'listTransactions',
 			assertRequest: assertKeetaAssetMovementAnchorlistTransactionsRequest,
 			assertResponse: assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
@@ -636,6 +665,18 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					operations[op] = computedURL;
 				}
 			}
+		}
+
+		/**
+		 * `getAccountStatus` returns the caller's own account status, so it must always be
+		 * authenticated regardless of the global `authenticationRequired` flag. Publish it with
+		 * `authentication: required` unconditionally so the client always signs the request.
+		 */
+		if (this.assetMovement.getAccountStatus !== undefined) {
+			operations['getAccountStatus'] = {
+				url: (new URL('/api/getAccountStatus', this.url)).toString(),
+				options: { authentication: { method: 'keeta-account', type: 'required' }}
+			};
 		}
 
 		if (Object.keys(operations).length === 0) {

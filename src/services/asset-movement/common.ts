@@ -668,6 +668,44 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 }
 
 /**
+ * Client-side request to query the caller's account status for the asset movement service.
+ * The body carries only authentication information; the status returned is for the signing account.
+ */
+export interface KeetaAssetMovementAnchorGetAccountStatusClientRequest {
+	/**
+	 * KeetaNet account used to authenticate the request. Required: this endpoint always
+	 * authenticates the caller, and the status returned is for this account.
+	 */
+	account?: KeetaNetAccount;
+}
+
+/**
+ * External (wire) request to query account status. The body carries only authentication information.
+ */
+export type KeetaAssetMovementAnchorGetAccountStatusRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorGetAccountStatusClientRequest, unknown>;
+
+export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(): Signable {
+	return([ 'get-account-status' ]);
+}
+
+/**
+ * Response for an account status check.
+ *
+ * A successful (HTTP 200) `{ ok: true }` response means the account is ready to use the asset
+ * movement service. When an action is required before the account can proceed, the handler
+ * instead throws one of the shared {@link Errors} (e.g. `KYCShareNeeded`, `AdditionalKYCNeeded`,
+ * `UserActionNeeded`, `OperationNotSupported`) — the same errors `initiateTransfer` /
+ * `createPersistentForwarding` would throw — so callers can route the user to the correct step
+ * proactively instead of attempting an operation and catching its error.
+ */
+export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+};
+
+/**
  * Client-side request to deactivate a persistent forwarding address template.
  * Only requires the template id (plus an account/signature to authenticate the request).
  */

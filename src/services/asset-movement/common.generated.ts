@@ -27,6 +27,7 @@ export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => inp
 export const isKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorListPersistentForwardingResponse = createIs<Common.KeetaAssetMovementAnchorListPersistentForwardingResponse>();
 export const isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse = createIs<Common.KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>();
 export const isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse = createIs<Common.KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse>();
+export const isKeetaAssetMovementAnchorGetAccountStatusResponse: (input: unknown) => input is Common.KeetaAssetMovementAnchorGetAccountStatusResponse = createIs<Common.KeetaAssetMovementAnchorGetAccountStatusResponse>();
 
 export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
 export const assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties>();
@@ -47,6 +48,8 @@ export {
 	assertKeetaAssetMovementAnchorExecuteTransferResponse,
 	assertKeetaAssetMovementAnchorGetTransferStatusRequest,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
+	assertKeetaAssetMovementAnchorGetAccountStatusRequest,
+	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
