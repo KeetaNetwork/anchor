@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { Account, AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -12,14 +12,20 @@ import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWith
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
-import type { VerifiableAccount } from './utils/signing.js';
+import { SignData, type Signable, type VerifiableAccount } from './utils/signing.js';
 import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableServiceMetadata } from './anchor-metadata-server.js';
-import { assertHTTPSignedField } from './http-server/common.js';
+import { addSignatureToURL, assertHTTPSignedField } from './http-server/common.js';
 import { verifyMetadataSignature } from './anchor-metadata-server.js';
 import { assertServiceMetadata, assertSignableServiceMetadataLegal, assertSignableServiceMetadataOperations, isCurrencySearchCanonical, isCurrencySearchInput, isExternalURL } from './resolver.generated.js';
 
-type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
+const ExternalURLKey = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
+type ExternalURLOptions = Pick<NonNullable<Exclude<NonNullable<ServiceMetadataEndpoint>, string>['options']>, 'authentication'>;
+interface ExternalURL {
+	external: typeof ExternalURLKey;
+	url: string;
+	options?: ExternalURLOptions;
+};
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
@@ -855,7 +861,7 @@ type ResolverConfig = {
 	/**
 	 * Additional configuration for reading metadata
 	 */
-	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols'>;
+	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols' | 'signing'>;
 }
 
 
@@ -876,6 +882,23 @@ type MetadataConfig = {
 	 * Defaults to false
 	 */
 	allowInsecureProtocols?: boolean;
+
+	/**
+	 * Optional signing configuration for signing requests to external services.
+	 * If not provided, then requests will not be signed.
+	 */
+	signing?: {
+		/**
+		 * The account to sign requests with.  If not provided, then requests will not be signed.
+		 */
+		account: Account;
+
+		/**
+		 * Flag indicating if requests that do not explicitly deny signing should be signed.
+		 * Defaults to false.
+		 */
+		signAllRequests?: boolean;
+	}
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
@@ -894,6 +917,7 @@ class Metadata implements ValuizableInstance {
 	readonly #resolver: Resolver;
 	readonly #stats: ResolverStats;
 	readonly #allowInsecureProtocols: boolean;
+	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
 
 	private readonly seenURLs: Set<string>;
 
@@ -924,6 +948,17 @@ class Metadata implements ValuizableInstance {
 		const metadataEncoded = Buffer.from(metadataCompressed).toString('base64');
 
 		return(metadataEncoded);
+	}
+
+	static getExternalURLSignable(url: URL): Signable {
+		let formattedURL = new URL(url.toString());
+		formattedURL.search = '';
+
+		return([
+			ExternalURLKey,
+			'sign-external-url',
+			formattedURL.toString().toLowerCase()
+		]);
 	}
 
 	/**
@@ -1065,6 +1100,7 @@ class Metadata implements ValuizableInstance {
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
 		this.#allowInsecureProtocols = config.allowInsecureProtocols ?? false;
+		this.#signing = config.signing ?? null;
 
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
 		if (config.parent !== undefined) {
@@ -1169,7 +1205,42 @@ class Metadata implements ValuizableInstance {
 		return(retval);
 	}
 
-	private async readURL(url: URL) {
+	private async getResolvedExternalURL(input: URL, options?: ExternalURLOptions) {
+		const authenticationOptions: NonNullable<ExternalURLOptions['authentication']> = options?.authentication ?? { type: 'none' };
+
+		let shouldSign;
+		if (authenticationOptions.type === 'none') {
+			shouldSign = false;
+		} else {
+			if (authenticationOptions.method !== 'keeta-account') {
+				throw(new Error(`Unsupported authentication method`));
+			}
+
+			if (authenticationOptions.type === 'optional') {
+				shouldSign = this.#signing?.signAllRequests === true;
+			} else if (authenticationOptions.type === 'required') {
+				shouldSign = true;
+			} else {
+				assertNever(authenticationOptions.type);
+			}
+		}
+
+		if (!shouldSign) {
+			return(input);
+		}
+
+		if (!this.#signing) {
+			throw(new Error('Signing is requested, but no signing configuration is provided'));
+		}
+
+		const signable = Metadata.getExternalURLSignable(input);
+
+		const signed = await SignData(this.#signing.account, signable);
+
+		return(addSignatureToURL(input, { signedField: signed, account: this.#signing.account }));
+	}
+
+	private async readURL(url: URL, options?: ExternalURLOptions) {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
@@ -1213,12 +1284,15 @@ class Metadata implements ValuizableInstance {
 
 			const readPromise = (async (): Promise<URLCacheObjectEntry> => {
 				let retval: JSONSerializable;
+				let usingUrl = url;
+
 				try {
 					const protocol = url.protocol;
 					if (protocol === 'keetanet:') {
 						retval = await this.readKeetaNetURL(url);
 					} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
-						retval = await this.readHTTPSURL(url);
+						usingUrl = await this.getResolvedExternalURL(url, options);
+						retval = await this.readHTTPSURL(usingUrl);
 					} else {
 						this.#stats.unsupported.reads++;
 						throw(new Error(`Unsupported protocol: ${protocol}`));
@@ -1232,7 +1306,7 @@ class Metadata implements ValuizableInstance {
 						expires: new Date(Date.now() + this.#cache.positiveTTL)
 					});
 				} catch (readError) {
-					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', usingUrl.toString(), 'failed:', readError);
 
 					return({
 						pass: false,
@@ -1269,7 +1343,7 @@ class Metadata implements ValuizableInstance {
 		 */
 		if (isExternalURL(value)) {
 			const url = new URL(value.url);
-			const retval = await this.readURL(url);
+			const retval = await this.readURL(url, value.options);
 
 			return(await this.resolveValue(retval));
 		}
@@ -1523,6 +1597,10 @@ class Resolver {
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
+
+	static getExternalURLSignable(url: URL): Signable {
+		return(Metadata.getExternalURLSignable(url));
+	}
 
 	private readonly lookupMap: {
 		[Service in Services]: {

@@ -159,7 +159,7 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 	routes?: KeetaAnchorHTTPServer.Routes;
 };
 
-export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['kyc']>[string], KeetaAnchorKYCServerConfig> implements Required<KeetaAnchorKYCServerConfig> {
+export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['kyc']>[string], KeetaAnchorKYCServerConfig> implements Omit<Required<KeetaAnchorKYCServerConfig>, 'serviceMetadataEndpoint'> {
 	readonly homepage: NonNullable<KeetaAnchorKYCServerConfig['homepage']>;
 	readonly client: KeetaAnchorKYCServerConfig['client'];
 	readonly signer: NonNullable<KeetaAnchorKYCServerConfig['signer']>;
@@ -192,7 +192,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	}
 
 	protected async initRoutes(config: KeetaAnchorKYCServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
 		/**
 		 * If a homepage is provided, setup the route for it

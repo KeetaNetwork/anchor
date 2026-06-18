@@ -992,7 +992,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 }
 
 type SharedHTTPServerConfigType = Pick<KeetaAnchorFXServerConfig, 'fx' | 'homepage' | keyof KeetaAnchorMetadataServerConfig>;
-abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['fx']>[string], ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration' | 'metadataSigner'> {
+abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['fx']>[string], ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration' | 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
 	readonly canPerformExchanges: boolean;
@@ -1056,7 +1056,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	}
 
 	protected async initRoutes(config: ConfigType): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
 		/*
 		 * To use the instance within the route handlers, we need to
@@ -1189,7 +1189,7 @@ export class KeetaNetFXAnchorEstimateHTTPServer extends BaseKeetaNetFXAnchorHTTP
 	}
 }
 
-export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'metadataSigner'> {
+export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly client: KeetaAnchorFXServerConfig['client'];
 	readonly accounts: NonNullable<KeetaAnchorFXServerConfig['accounts']>;
 	readonly account: KeetaAnchorFXServerConfig['account'] = undefined;
