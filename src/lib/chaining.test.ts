@@ -3057,3 +3057,112 @@ describe('Persistent Forwarding chaining', function() {
 		expect(plan.state.status).toEqual('completed');
 	});
 });
+
+describe('AnchorChaining maxStepCount', function() {
+	test('findPaths: maxStepCount smaller than the only route returns no paths', async function() {
+		await using h = await createChainingTestHarness();
+		const input = {
+			source:      { asset: 'USD' as const, location: 'bank-account:us' as const, rail: 'ACH' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+
+		// The only USD@bank-us -> EUR@iban-swift route is 3 hops (BankUS -> FX -> BankEU).
+		const capped = await h.anchorChaining.graph.findPaths({ ...input, maxStepCount: 2 });
+		expect(capped).toHaveLength(0);
+
+		const allowed = await h.anchorChaining.graph.findPaths({ ...input, maxStepCount: 3 });
+		expect(allowed.length).toBeGreaterThan(0);
+		expect(allowed.every(p => p.length === 3)).toBe(true);
+
+		const unbounded = await h.anchorChaining.graph.findPaths(input);
+		expect(unbounded.length).toEqual(allowed.length);
+		expect(unbounded.every(p => p.length === 3)).toBe(true);
+	});
+
+	test('findPaths: maxStepCount=1 returns only direct single-step paths', async function() {
+		await using h = await createChainingTestHarness();
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+		};
+
+		const direct = await h.anchorChaining.graph.findPaths({ ...input, maxStepCount: 1 });
+		expect(direct.length).toBeGreaterThan(0);
+		expect(direct.every(p => p.length === 1)).toBe(true);
+	});
+
+	test('findPaths: maxStepCount < 1 floors to 1 (matches resolveAssets)', async function() {
+		await using h = await createChainingTestHarness();
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+		};
+
+		const atOne  = await h.anchorChaining.graph.findPaths({ ...input, maxStepCount: 1 });
+		const atZero = await h.anchorChaining.graph.findPaths({ ...input, maxStepCount: 0 });
+		expect(atZero.length).toEqual(atOne.length);
+		expect(atZero.every(p => p.length === 1)).toBe(true);
+	});
+
+	test('getPaths: maxStepCount caps path length and excludes longer routes', async function() {
+		await using h = await createChainingTestHarness();
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+
+		// USDC@keeta -> EUR@iban-swift is a 2-hop route (FX then BankEU).
+		const capped = await h.anchorChaining.getPaths({ ...input, maxStepCount: 1 });
+		expect(capped).toBeNull();
+
+		const allowed = await h.anchorChaining.getPaths({ ...input, maxStepCount: 2 });
+		expect(allowed).not.toBeNull();
+		expect(allowed?.every(p => p.path.length <= 2)).toBe(true);
+		expect(allowed?.every(p => p.path.length === 2)).toBe(true);
+	});
+
+	test('getPlans: maxStepCount on the input is forwarded through getPaths', async function() {
+		await using h = await createChainingTestHarness();
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+
+		const none = await h.anchorChaining.getPlans({ ...input, maxStepCount: 1 });
+		expect(none).toBeNull();
+
+		const plans = await h.anchorChaining.getPlans({ ...input, maxStepCount: 2 });
+		expect(plans).not.toBeNull();
+		expect(plans?.length).toEqual(2);
+		expect(plans?.every(p => p.path.length <= 2)).toBe(true);
+	});
+
+	test('direct keetaSend send respects floor-at-1 maxStepCount', async function() {
+		await using h = await createChainingTestHarness();
+		const recipient = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: recipient.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+		};
+
+		const atOne = await h.anchorChaining.getPaths({ ...input, maxStepCount: 1 });
+		expect(atOne?.length).toEqual(1);
+		expect(atOne?.[0]?.path.length).toEqual(1);
+
+		// Floor-at-1: a single-step direct send is returned even at maxStepCount: 0.
+		const atZero = await h.anchorChaining.getPaths({ ...input, maxStepCount: 0 });
+		expect(atZero?.length).toEqual(1);
+		expect(atZero?.[0]?.path.length).toEqual(1);
+	});
+
+	test('omitting maxStepCount is unchanged (regression)', async function() {
+		await using h = await createChainingTestHarness();
+		const paths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		});
+
+		expect(paths).not.toBeNull();
+		expect(paths?.every(p => p.path.length === 2)).toBe(true);
+	});
+});

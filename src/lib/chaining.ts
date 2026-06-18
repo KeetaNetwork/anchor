@@ -169,6 +169,13 @@ interface AnchorChainingDestination extends AnchorChainingAssetAndLocation {
 interface AnchorChainingPathInput {
 	source: AnchorChainingAssetAndLocation;
 	destination: AnchorChainingDestination;
+	/**
+	 * Maximum number of steps (hops) a path may contain. When omitted, no
+	 * limit is applied. Mirrors resolveAssets/listAssets: maxStepCount=1
+	 * returns only direct single-step paths. Values < 1 behave like 1 (a
+	 * direct path is always returned), matching resolveAssets.
+	 */
+	maxStepCount?: number;
 }
 
 export interface AnchorChainingConfig {
@@ -745,6 +752,8 @@ class AnchorGraph {
 	async findPaths(input: AnchorChainingPathInput): Promise<GraphNodeLike[][]> {
 		const graph = await this.computeGraphNodes();
 
+		const maxStepCount = input.maxStepCount;
+
 		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
 			return({ node, next: [] });
 		});
@@ -804,8 +813,15 @@ class AnchorGraph {
 				paths.push(newPath);
 			}
 
-			for (const nextIndex of nodesWithNext[currentIndex]?.next ?? []) {
-				dfs(nextIndex, target, visitedAssets, newPath);
+			/*
+			 * Expansion gate mirrors resolveAssets' `depth < maxStepCount`
+			 * (acceptance above stays unconditional, like resolveAssets' mark),
+			 * so a value < 1 floors to a single-step path.
+			 */
+			if (maxStepCount === undefined || newPath.length < maxStepCount) {
+				for (const nextIndex of nodesWithNext[currentIndex]?.next ?? []) {
+					dfs(nextIndex, target, visitedAssets, newPath);
+				}
 			}
 
 			visitedAssets.delete(assetLocationStr);
