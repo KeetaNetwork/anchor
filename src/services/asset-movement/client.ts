@@ -821,8 +821,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	 *
 	 * Resolves when the account is in good standing. When an action is required first, this rejects
 	 * with the corresponding typed error (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`,
-	 * `Errors.UserActionNeeded`, `Errors.OperationNotSupported`) — the same errors `initiateTransfer`
-	 * would throw — so the caller can route the user to the correct step. An account is required.
+	 * `Errors.UserActionNeeded`, `Errors.OperationNotSupported`), the same errors `initiateTransfer`
+	 * would throw, so the caller can route the user to the correct step. An account is required.
 	 */
 	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>> {
 		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);

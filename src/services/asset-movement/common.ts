@@ -694,9 +694,9 @@ export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData():
  * A successful (HTTP 200) `{ ok: true }` response means the account is ready to use the asset
  * movement service. When an action is required before the account can proceed, the handler
  * instead throws one of the shared {@link Errors} (e.g. `KYCShareNeeded`, `AdditionalKYCNeeded`,
- * `UserActionNeeded`, `OperationNotSupported`) — the same errors `initiateTransfer` /
- * `createPersistentForwarding` would throw — so callers can route the user to the correct step
- * proactively instead of attempting an operation and catching its error.
+ * `UserActionNeeded`), the same errors `initiateTransfer` / `createPersistentForwarding` would
+ * throw, so callers can route the user to the correct step proactively instead of attempting an
+ * operation and catching its error.
  */
 export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
 	ok: true;
