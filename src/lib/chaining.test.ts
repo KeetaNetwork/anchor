@@ -3104,6 +3104,29 @@ describe('AnchorChaining maxStepCount', function() {
 		expect(atZero.every(p => p.length === 1)).toBe(true);
 	});
 
+	test('findPaths: returns paths shortest-first by length', async function() {
+		await using h = await createChainingTestHarness();
+		// USDC@keeta -> EURC@keeta has both 1-hop FX paths and a 3-hop round-trip
+		// (USDC -> EURC -> EUR@iban-swift -> EURC), so the result mixes lengths.
+		const paths = await h.anchorChaining.graph.findPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: h.tokens.EURC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+		});
+
+		const lengths = paths.map(p => p.length);
+		expect(Math.min(...lengths)).toEqual(1);
+		expect(Math.max(...lengths)).toBeGreaterThan(1);
+
+		for (let i = 1; i < paths.length; i++) {
+			const prev = paths[i - 1];
+			const curr = paths[i];
+			if (!prev || !curr) {
+				throw(new Error('Unexpected sparse paths array'));
+			}
+			expect(prev.length <= curr.length).toBe(true);
+		}
+	});
+
 	test('getPaths: maxStepCount caps path length and excludes longer routes', async function() {
 		await using h = await createChainingTestHarness();
 		const input = {

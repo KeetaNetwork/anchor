@@ -758,28 +758,6 @@ class AnchorGraph {
 			return({ node, next: [] });
 		});
 
-		for (const node of nodesWithNext) {
-			for (let secondNodeIdx = 0; secondNodeIdx < nodesWithNext.length; secondNodeIdx++) {
-				const nodeJ = nodesWithNext[secondNodeIdx];
-				if (!nodeJ) {
-					continue;
-				}
-
-				// We can ignore chaining one fx anchor to itself
-				if (node.node.type === 'fx') {
-					if (node.node.type === nodeJ.node.type && node.node.providerID === nodeJ.node.providerID) {
-						continue;
-					}
-				}
-
-				if (nodeSideSupports(node.node.to, nodeJ.node.from)) {
-					node.next.push(secondNodeIdx);
-				}
-			}
-		}
-
-		const paths: GraphNodeLike[][] = [];
-
 		function getAssetLocationString(input: GraphNodeLike['to'], includeRail = false) {
 			let railStr = '';
 			if (includeRail) {
@@ -788,12 +766,57 @@ class AnchorGraph {
 			return(`${convertAssetSearchInputToCanonical(input.asset)}@${convertAssetLocationToString(input.location)}${railStr}`)
 		}
 
-		function dfs(
-			currentIndex: number,
-			target: AnchorChainingAssetAndLocation,
-			visitedAssets = new Set<string>(),
-			path: GraphNodeLike[] = []
-		) {
+		/*
+		 * Build edge adjacency in O(N+E) instead of O(N^2): bucket node indices
+		 * by their FROM state-key, then a node's successors are the bucket for
+		 * its TO state-key. nodeSideSupports() is exactly equality of rail +
+		 * location + canonical asset, which is exactly equality of this
+		 * state-key, so this produces the same adjacency (and same ascending
+		 * successor order) as comparing every pair of nodes.
+		 */
+		const byFrom = new Map<string, number[]>();
+		for (let i = 0; i < nodesWithNext.length; i++) {
+			const entry = nodesWithNext[i];
+			if (!entry) {
+				continue;
+			}
+			const key = getAssetLocationString(entry.node.from, true);
+			const bucket = byFrom.get(key);
+			if (bucket) {
+				bucket.push(i);
+			} else {
+				byFrom.set(key, [ i ]);
+			}
+		}
+
+		for (const entry of nodesWithNext) {
+			const candidates = byFrom.get(getAssetLocationString(entry.node.to, true)) ?? [];
+			for (const secondNodeIdx of candidates) {
+				const nodeJ = nodesWithNext[secondNodeIdx];
+				if (!nodeJ) {
+					continue;
+				}
+
+				// We can ignore chaining one fx anchor to itself
+				if (entry.node.type === 'fx' && nodeJ.node.type === 'fx' && entry.node.providerID === nodeJ.node.providerID) {
+					continue;
+				}
+
+				entry.next.push(secondNodeIdx);
+			}
+		}
+
+		const paths: GraphNodeLike[][] = [];
+
+		/*
+		 * Single shared, backtracked path + visited set: push/pop on enter/exit
+		 * and snapshot only when a path is accepted, rather than copying the
+		 * whole path array at every recursion step.
+		 */
+		const visitedAssets = new Set<string>();
+		const path: GraphNodeLike[] = [];
+
+		function dfs(currentIndex: number, target: AnchorChainingAssetAndLocation) {
 			const cur = nodesWithNext[currentIndex];
 
 			if (!cur) {
@@ -806,11 +829,10 @@ class AnchorGraph {
 			}
 
 			visitedAssets.add(assetLocationStr);
-
-			const newPath = [ ...path, cur.node ];
+			path.push(cur.node);
 
 			if (nodeSideSupports(cur.node.to, target)) {
-				paths.push(newPath);
+				paths.push([ ...path ]);
 			}
 
 			/*
@@ -818,12 +840,13 @@ class AnchorGraph {
 			 * (acceptance above stays unconditional, like resolveAssets' mark),
 			 * so a value < 1 floors to a single-step path.
 			 */
-			if (maxStepCount === undefined || newPath.length < maxStepCount) {
-				for (const nextIndex of nodesWithNext[currentIndex]?.next ?? []) {
-					dfs(nextIndex, target, visitedAssets, newPath);
+			if (maxStepCount === undefined || path.length < maxStepCount) {
+				for (const nextIndex of cur.next) {
+					dfs(nextIndex, target);
 				}
 			}
 
+			path.pop();
 			visitedAssets.delete(assetLocationStr);
 		}
 
@@ -838,6 +861,9 @@ class AnchorGraph {
 				dfs(index, input.destination);
 			}
 		}
+
+		// Return shortest paths first so getPlans can try them without re-sorting.
+		paths.sort((a, b) => a.length - b.length);
 
 		return(paths);
 	}
@@ -2386,7 +2412,10 @@ export class AnchorChaining {
 
 		const limit = options?.limit ?? 3;
 
-		const sortedPaths = paths.sort((a, b) => a.path.length - b.path.length);
+		// getPaths returns shortest-first (findPaths sorts by step count; the
+		// intermediate-location filter and the keetaSend fast-path preserve that),
+		// so no re-sort is needed here.
+		const sortedPaths = paths;
 
 		let successCount = 0;
 		let lowestStepsSuccessCount = Infinity;
