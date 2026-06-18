@@ -1224,6 +1224,10 @@ export interface ComputePlanOptions {
 	limit?: number;
 }
 
+export type AnchorChainingPathValidationResult =
+	| { valid: true }
+	| { valid: false; reason: string };
+
 export class AnchorChainingPath {
 	readonly request: AnchorChainingPathInput;
 	readonly path: AnchorChainingStepLike[];
@@ -1237,6 +1241,25 @@ export class AnchorChainingPath {
 		this.request = input.request;
 		this.path = input.path;
 		this.parent = input.parent;
+	}
+
+	/**
+	 * Synchronously check whether this path is structurally and request valid,
+	 * with no network call. Returns { valid: true } when the request value and
+	 * affinity are well formed and the path step shape is allowed.
+	 *
+	 * This does NOT confirm the path will succeed: real feasibility (provider
+	 * availability, quotes, fees, simulated amounts) is only known when the plan
+	 * is computed via getPlans. Use it as a cheap check in a UI.
+	 */
+	validate(): AnchorChainingPathValidationResult {
+		try {
+			const { affinity } = validateRequest(this.request);
+			validatePathStructure(this.path, this.request, affinity);
+			return({ valid: true });
+		} catch (error) {
+			return({ valid: false, reason: error instanceof Error ? error.message : String(error) });
+		}
 	}
 
 	get logger(): Logger | undefined {

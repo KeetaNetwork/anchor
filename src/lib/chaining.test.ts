@@ -3057,3 +3057,50 @@ describe('Persistent Forwarding chaining', function() {
 		expect(plan.state.status).toEqual('completed');
 	});
 });
+
+describe('AnchorChainingPath validate', function() {
+	test('reports valid for a well formed path and invalid for bad request/structure', async function() {
+		await using h = await createChainingTestHarness();
+
+		// Valid: USDC@keeta -> EUR@iban-swift with affinity 'from'.
+		const validPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		});
+		const validPath = validPaths?.[0];
+		if (!validPath) {
+			throw(new Error('Expected at least one path for the valid case'));
+		}
+		expect(validPath.validate()).toEqual({ valid: true });
+
+		// Invalid request: both source.value and destination.value set.
+		const bothValuesPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
+		});
+		const bothValuesPath = bothValuesPaths?.[0];
+		if (!bothValuesPath) {
+			throw(new Error('Expected at least one path for the both-values case'));
+		}
+		const bothResult = bothValuesPath.validate();
+		expect(bothResult.valid).toBe(false);
+		if (!bothResult.valid) {
+			expect(bothResult.reason).toContain('Must have source.value or destination.value but not both');
+		}
+
+		// Invalid structure: affinity 'to' (destination.value) on an asset-movement path.
+		const affinityToPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
+		});
+		const affinityToPath = affinityToPaths?.[0];
+		if (!affinityToPath) {
+			throw(new Error('Expected at least one path for the affinity-to case'));
+		}
+		const affinityResult = affinityToPath.validate();
+		expect(affinityResult.valid).toBe(false);
+		if (!affinityResult.valid) {
+			expect(affinityResult.reason).toContain('not currently supported for asset movement steps');
+		}
+	});
+});
