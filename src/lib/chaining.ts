@@ -263,6 +263,94 @@ function isFXLikeNode(node: GraphNodeLike): boolean {
 	return(fromStr === toStr && fromStr.startsWith('chain:keeta:'));
 }
 
+/**
+ * Validate request-level invariants (value affinity) before any network call.
+ * Pure: derives the amount/affinity and throws the same messages the inline
+ * affinity block in #computePlan used to throw, so observable behavior is
+ * unchanged.
+ */
+function validateRequest(request: AnchorChainingPathInput): { affinity: 'to' | 'from'; amount: bigint } {
+	if (request.source.value !== undefined && request.destination.value !== undefined) {
+		throw(new Error('Must have source.value or destination.value but not both'));
+	} else if (request.source.value !== undefined) {
+		return({ affinity: 'from', amount: request.source.value });
+	} else if (request.destination.value !== undefined) {
+		return({ affinity: 'to', amount: request.destination.value });
+	} else {
+		throw(new Error('Must have source.value or destination.value'));
+	}
+}
+
+/**
+ * Validate structural invariants of a resolved path before any network call,
+ * so a structurally-invalid plan fails fast instead of after wasted provider
+ * round-trips. Pure: hoists the structural throws that previously lived inline
+ * in #computePlan's PFR scan and resolveStep branches, preserving each message
+ * verbatim.
+ *
+ * Within the loop, asset-movement checks affinity before PFR, and keetaSend
+ * keeps its original sub-order, so the first-thrown error matches the prior
+ * behavior for every single-issue path. (A path that is simultaneously
+ * affinity:'to' and PFR-malformed now surfaces the affinity message first; it
+ * still fails either way and no such path is reachable via getPaths.)
+ */
+function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from'): void {
+	for (let index = 0; index < path.length; index++) {
+		const step = path[index];
+		if (!step) {
+			continue;
+		}
+
+		if (step.type === 'assetMovement') {
+			if (affinity === 'to') {
+				throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+			}
+
+			const priorStep = index > 0 ? path[index - 1] : null;
+			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
+			const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
+			const initiateForbidden = step.from.supportedOperations?.initiateTransfer === false;
+
+			const shouldUsePFR = initiateForbidden || (isAmpToAmpTransition && pfrSupported);
+			if (shouldUsePFR) {
+				if (!pfrSupported) {
+					throw(new Error(`Asset movement provider ${step.providerID} source rail ${step.from.rail} at ${convertAssetLocationToString(step.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
+				}
+				if (index !== path.length - 1) {
+					throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${index} of ${path.length})`));
+				}
+				if (typeof request.destination.recipient !== 'string') {
+					throw(new Error(`Persistent-forwarding step at index ${index} requires the chain's destination recipient to be a resolved address string`));
+				}
+			}
+		} else if (step.type === 'keetaSend') {
+			if (path.length !== 1) {
+				throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
+			}
+			if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
+				throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
+			}
+			if (!step.from.asset.comparePublicKey(step.to.asset)) {
+				throw(new Error(`For KEETA_SEND step, from and to asset must be the same account`));
+			}
+
+			let keetaRecipientDestination = null;
+			if (KeetaNet.lib.Account.isInstance(request.destination.recipient)) {
+				keetaRecipientDestination = request.destination.recipient;
+			} else if (typeof request.destination.recipient === 'string') {
+				try {
+					keetaRecipientDestination = KeetaNet.lib.Account.fromPublicKeyString(request.destination.recipient);
+				} catch {
+					/* ignore errors */
+				}
+			}
+			if (!keetaRecipientDestination) {
+				throw(new Error(`Expected destination recipient to be a public key string for KEETA_SEND step`));
+			}
+		}
+	}
+}
+
 interface AssetMovementResolvedRails {
 	common: RailWithSupportedOperations[];
 	inbound: RailWithSupportedOperations[];
@@ -1262,6 +1350,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			throw(new Error(`Steps have already been computed`));
 		}
 
+		const affinityAndAmount = validateRequest(this.request);
+		const { affinity } = affinityAndAmount;
+		validatePathStructure(this.path, this.request, affinity);
+
 		const sharedClientOptions = {
 			resolver: this.parent['resolver'],
 			...(this.parent['logger'] ? { logger: this.parent['logger'] } : {})
@@ -1270,26 +1362,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const fxClient = new KeetaFXAnchorClient(this.parent['client'], sharedClientOptions);
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
-
-		let affinityAndAmount: { affinity: 'to' | 'from'; amount: bigint } | undefined = undefined;
-
-		if (this.request.source.value !== undefined && this.request.destination.value !== undefined) {
-			throw(new Error('Must have source.value or destination.value but not both'));
-		} else if (this.request.source.value !== undefined) {
-			affinityAndAmount = {
-				affinity: 'from',
-				amount: this.request.source.value
-			}
-		} else if (this.request.destination.value !== undefined) {
-			affinityAndAmount = {
-				affinity: 'to',
-				amount: this.request.destination.value
-			}
-		} else {
-			throw(new Error('Must have source.value or destination.value'));
-		}
-
-		const { affinity } = affinityAndAmount
 
 		const findInstruction = <R extends AssetTransferInstructions['type']>(allInstructions: AssetTransferInstructions[], type: R): Extract<AssetTransferInstructions, { type: R }> => {
 			const found = allInstructions.find((instr): instr is Extract<AssetTransferInstructions, { type: R }> => {
@@ -1330,14 +1402,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!shouldUsePFR) {
 				continue;
 			}
-			if (!pfrSupported) {
-				throw(new Error(`Asset movement provider ${scanStep.providerID} source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
-			}
 
-			if (scanIndex !== this.path.length - 1) {
-				throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${scanIndex} of ${this.path.length})`));
-			}
-
+			/*
+			 * validatePathStructure has already guaranteed (before any network
+			 * call) that this PFR step is supported, is the last step, and has a
+			 * string recipient. The typeof check below is retained only to narrow
+			 * destinationAddress to string for the calls that consume it.
+			 */
 			const destinationAddress = this.request.destination.recipient;
 			if (typeof destinationAddress !== 'string') {
 				throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
@@ -1505,10 +1576,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({ type: 'fx', step, valueIn, valueOut, result });
 					} else if (step.type === 'assetMovement') {
-						if (affinity === 'to') {
-							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
-						}
-
+						// affinity 'to' for asset-movement steps is rejected up-front by validatePathStructure.
 						let depositValue: bigint;
 						if (index === 0) {
 							depositValue = affinityAndAmount.amount;
@@ -1674,6 +1742,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 									}
 
 									if (foundInstruction.type === 'KEETA_SEND') {
+										// Structurally unreachable now that validatePathStructure requires a keetaSend step to be the sole step; kept as a defensive invariant.
 										throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
 									} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
 										if (foundInstruction.depositMessage) {
@@ -1741,10 +1810,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							provider: provider
 						})
 					} else if (step.type === 'keetaSend') {
-						if (this.path.length !== 1) {
-							throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
-						}
-
 						if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
 							throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
 						}
