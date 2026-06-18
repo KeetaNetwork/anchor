@@ -3,10 +3,11 @@ import { expect, test } from 'vitest';
 import type { KeetaAnchorAssetMovementServerConfig } from './server.js';
 import { KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { KeetaNet } from '../../client/index.js';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, KeetaAnchorError } from '../../lib/error.js';
 import { verifyMetadataSignature } from '../../lib/anchor-metadata-server.js';
 import { assertHTTPSignedField } from '../../lib/http-server/common.js';
 import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData } from './common.js';
+import { isKeetaAssetMovementAnchorGetAccountStatusResponse } from './common.generated.js';
 import { SignData } from '../../lib/utils/signing.js';
 
 function makeServerConfig(overrides: Partial<KeetaAnchorAssetMovementServerConfig> = {}): KeetaAnchorAssetMovementServerConfig {
@@ -108,7 +109,7 @@ function makeGetAccountStatusConfig(getAccountStatus: NonNullable<NonNullable<Ke
 test('Asset Movement Server publishes getAccountStatus with required authentication', async function() {
 	/* Note: authenticationRequired is NOT set, yet getAccountStatus must still require auth */
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({});
+		return({ requiredActions: [] });
 	}));
 	await server.start();
 
@@ -124,12 +125,12 @@ test('Asset Movement Server publishes getAccountStatus with required authenticat
 	expect(endpoint.options?.authentication).toEqual({ method: 'keeta-account', type: 'required' });
 });
 
-test('Asset Movement Server getAccountStatus returns ok for a ready account', async function() {
+test('Asset Movement Server getAccountStatus returns an empty requiredActions array for a ready account', async function() {
 	let observedAccount: string | undefined;
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
 		observedAccount = account.publicKeyString.get();
-		return({});
+		return({ requiredActions: [] });
 	}));
 	await server.start();
 
@@ -144,16 +145,18 @@ test('Asset Movement Server getAccountStatus returns ok for a ready account', as
 
 	expect(response.status).toBe(200);
 	const json: unknown = await response.json();
-	expect(json).toMatchObject({ ok: true });
+	expect(json).toMatchObject({ ok: true, requiredActions: [] });
 	expect(observedAccount).toBe(account.publicKeyString.get());
 });
 
-test('Asset Movement Server getAccountStatus surfaces typed errors when an action is needed', async function() {
+test('Asset Movement Server getAccountStatus returns multiple required actions in one ok response', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
-		throw(new Errors.KYCShareNeeded({
-			shareWithPrincipals: [ account ],
-			acceptedIssuers: []
-		}));
+		return({
+			requiredActions: [
+				new Errors.KYCShareNeeded({ shareWithPrincipals: [ account ], acceptedIssuers: [] }),
+				new Errors.OperationNotSupported({})
+			]
+		});
 	}));
 	await server.start();
 
@@ -166,18 +169,33 @@ test('Asset Movement Server getAccountStatus surfaces typed errors when an actio
 		body: JSON.stringify({ account: account.publicKeyString.get(), signed })
 	});
 
-	expect(response.status).toBe(403);
+	expect(response.status).toBe(200);
 	const json: unknown = await response.json();
+
 	expect(json).toMatchObject({
-		ok: false,
-		name: 'KeetaAssetMovementAnchorKYCShareNeededError',
-		code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_SHARE_NEEDED'
+		ok: true,
+		requiredActions: [
+			{ name: 'KeetaAssetMovementAnchorKYCShareNeededError', code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_SHARE_NEEDED' },
+			{ name: 'KeetaAssetMovementAnchorOperationNotSupportedError', code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED' }
+		]
 	});
+
+	/* Each entry rehydrates back into its typed error (the same path the client uses) */
+	if (!isKeetaAssetMovementAnchorGetAccountStatusResponse(json) || !json.ok) {
+		throw(new Error('Expected an ok getAccountStatus response'));
+	}
+
+	const rehydrated = await Promise.all(json.requiredActions.map(function(entry) {
+		return(KeetaAnchorError.fromJSON(entry));
+	}));
+
+	expect(rehydrated[0]).toBeInstanceOf(Errors.KYCShareNeeded);
+	expect(rehydrated[1]).toBeInstanceOf(Errors.OperationNotSupported);
 });
 
 test('Asset Movement Server getAccountStatus rejects unauthenticated requests', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({});
+		return({ requiredActions: [] });
 	}));
 	await server.start();
 

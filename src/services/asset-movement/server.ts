@@ -11,7 +11,8 @@ import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
-	KeetaAssetMovementAnchorGetAccountStatusResponse,
+	KeetaAssetMovementAnchorAccountStatusResult,
+	KeetaAssetMovementAnchorAccountStatusBlocker,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -40,6 +41,7 @@ import {
 	assertKeetaAssetMovementAnchorGetAccountStatusRequest,
 	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
 	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+	encodeAssetMovementAnchorAccountStatusError,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -144,12 +146,14 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		/**
 		 * Method to get the authenticated account's readiness/status for asset movement.
 		 *
-		 * Resolve with `{}` (HTTP 200) when the account is ready to proceed. When an action is
-		 * required first, throw one of the shared `Errors` (e.g. `KYCShareNeeded`,
-		 * `AdditionalKYCNeeded`, `UserActionNeeded`), the same errors
-		 * `initiateTransfer` / `createPersistentForwarding` would throw.
+		 * Resolve with `{ requiredActions: [] }` when the account is ready to proceed, or with one
+		 * entry per outstanding blocker as the matching shared `Errors` instance (e.g.
+		 * `new Errors.KYCShareNeeded(...)`, `new Errors.UserActionNeeded(...)`). The server encodes
+		 * those for the wire automatically, so the client receives them as typed errors. This reports
+		 * every blocker at once instead of throwing the first one. Request-level failures (auth,
+		 * validation) should still throw.
 		 */
-		getAccountStatus?: (account: Account.Account) => Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>>;
+		getAccountStatus?: (account: Account.Account) => Promise<KeetaAssetMovementAnchorAccountStatusResult>;
 
 		/**
 		 * Method to list transactions
@@ -552,7 +556,24 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			method: 'POST',
 			handlerName: 'getAccountStatus',
 			assertRequest: assertKeetaAssetMovementAnchorGetAccountStatusRequest,
-			assertResponse: assertKeetaAssetMovementAnchorGetAccountStatusResponse,
+			/*
+			 * The handler returns error instances; validate the envelope shape here (typia cannot
+			 * validate class instances) and encode them to the wire form in serializeResponse below.
+			 */
+			assertResponse: (data) => {
+				if (typeof data !== 'object' || data === null || !('requiredActions' in data) || !Array.isArray(data.requiredActions)) {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with a requiredActions array'));
+				}
+
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				return(data as { ok: true; requiredActions: KeetaAssetMovementAnchorAccountStatusBlocker[]; });
+			},
+			serializeResponse: (data) => {
+				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
+					ok: true,
+					requiredActions: data.requiredActions.map(encodeAssetMovementAnchorAccountStatusError)
+				}));
+			},
 			getSigningData: getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
 			parseRequestToArgs: ({ account }) => {
 				if (!account) {

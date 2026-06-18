@@ -12,7 +12,7 @@ import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
-import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties } from './common.generated.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
@@ -689,17 +689,26 @@ export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData():
 }
 
 /**
+ * A single account-status blocker, encoded the same way the corresponding error serializes over the
+ * wire (`asErrorResponse`). Keeping the error encoding means the client rehydrates each entry into
+ * its typed {@link Errors} instance via `KeetaAnchorError.fromJSON`, so callers keep `instanceof`
+ * checks. Build these from error instances with {@link encodeAssetMovementAnchorAccountStatusError}.
+ */
+export type KeetaAssetMovementAnchorAccountStatusEntry =
+	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorKYCShareNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_SHARE_NEEDED'; data: KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties; } |
+	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorAdditionalKYCNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_ADDITIONAL_KYC_NEEDED'; data: KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties; } |
+	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorOperationNotSupportedError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED'; data: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties; } |
+	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorUserActionNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_USER_ACTION_NEEDED'; data: KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties; };
+
+/**
  * Response for an account status check.
  *
- * A successful (HTTP 200) `{ ok: true }` response means the account is ready to use the asset
- * movement service. When an action is required before the account can proceed, the handler
- * instead throws one of the shared {@link Errors} (e.g. `KYCShareNeeded`, `AdditionalKYCNeeded`,
- * `UserActionNeeded`), the same errors `initiateTransfer` / `createPersistentForwarding` would
- * throw, so callers can route the user to the correct step proactively instead of attempting an
- * operation and catching its error.
+ * Always `ok: true`; `requiredActions` lists every action the account must complete before it can
+ * use the asset movement service. An empty array means the account is ready.
  */
 export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
 	ok: true;
+	requiredActions: KeetaAssetMovementAnchorAccountStatusEntry[];
 } | {
 	ok: false;
 	error: string;
@@ -1643,3 +1652,32 @@ export const Errors: {
 	 */
 	UserActionNeeded: KeetaAssetMovementAnchorUserActionNeededError
 };
+
+/**
+ * The account-status blockers accepted by {@link encodeAssetMovementAnchorAccountStatusError}. These
+ * are the shared {@link Errors} that `getAccountStatus` reports as data instead of throwing.
+ */
+export type KeetaAssetMovementAnchorAccountStatusBlocker =
+	InstanceType<typeof Errors.KYCShareNeeded> |
+	InstanceType<typeof Errors.AdditionalKYCNeeded> |
+	InstanceType<typeof Errors.OperationNotSupported> |
+	InstanceType<typeof Errors.UserActionNeeded>;
+
+/**
+ * The value an account-status handler resolves with. List every blocker the account must resolve as
+ * the matching {@link Errors} instance (the same error you would otherwise throw); the server encodes
+ * them into the wire response. An empty array means the account is ready.
+ */
+export type KeetaAssetMovementAnchorAccountStatusResult = {
+	requiredActions: KeetaAssetMovementAnchorAccountStatusBlocker[];
+};
+
+/**
+ * Encode an account-status blocker into a {@link KeetaAssetMovementAnchorAccountStatusEntry}. The
+ * server uses this to turn the error instances an account-status handler returns into the wire
+ * response. Reuses the error's own serialization, so an entry is identical to what the error would
+ * produce if thrown and rehydrates client-side via `KeetaAnchorError.fromJSON`.
+ */
+export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAssetMovementAnchorAccountStatusBlocker): KeetaAssetMovementAnchorAccountStatusEntry {
+	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
+}

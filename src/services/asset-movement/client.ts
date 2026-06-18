@@ -819,17 +819,19 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	/**
 	 * Check whether the (authenticated) account is ready to use this asset movement provider.
 	 *
-	 * Resolves when the account is in good standing. When an action is required first, this rejects
-	 * with the corresponding typed error (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`,
+	 * Resolves with the list of actions the account must complete before it can proceed, rehydrated
+	 * into their typed errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`,
 	 * `Errors.UserActionNeeded`, `Errors.OperationNotSupported`), the same errors `initiateTransfer`
-	 * would throw, so the caller can route the user to the correct step. An account is required.
+	 * would throw, so the caller can `instanceof`-check each and route the user accordingly. An empty
+	 * array means the account is ready. An account is required; request-level failures (e.g. an invalid
+	 * signature) still reject.
 	 */
-	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>> {
+	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAnchorError[]> {
 		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
 
 		const { account } = request;
 
-		const requestInformationJSON = await this.#makeRequest<
+		const response = await this.#makeRequest<
 			KeetaAssetMovementAnchorGetAccountStatusResponse,
 			{ [key: string]: never },
 			KeetaAssetMovementAnchorGetAccountStatusRequest
@@ -843,9 +845,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
 		});
 
-		this.logger?.debug('get account status successful');
+		const requiredActions = await Promise.all(response.requiredActions.map(function(entry) {
+			return(KeetaAnchorError.fromJSON(entry));
+		}));
 
-		return(requestInformationJSON);
+		this.logger?.debug(`get account status successful, ${requiredActions.length} required action(s)`);
+
+		return(requiredActions);
 	}
 
 	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {
