@@ -30,7 +30,7 @@ import type {
 	KeetaAssetMovementAnchorSimulateTransferResponse,
 	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
 	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
-	KeetaAssetMovementAnchorGetAccountStatusResponse
+	KeetaAssetMovementAnchorAccountStatus
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -146,7 +146,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		/**
 		 * Method to get the authenticated account's readiness/status for asset movement.
 		 */
-		getAccountStatus?: (account: Account.Account) => Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>>;
+		getAccountStatus?: (account: Account.Account) => Promise<KeetaAssetMovementAnchorAccountStatus>;
 
 		/**
 		 * Method to list transactions
@@ -569,7 +569,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return(data as { ok: true } & ({ actionRequired: false } | { actionRequired: true, errors: KeetaAnchorError[] }));
 			},
 			serializeResponse: (data) => {
-				if (data.actionRequired === false) {
+				if (!data.actionRequired) {
 					return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 						ok: true,
 						actionRequired: false
@@ -579,7 +579,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 					ok: true,
 					actionRequired: true,
-					// @ts-expect-error - ignore TS error because we are asserting the type above
 					errors: data.errors.map(encodeAssetMovementAnchorAccountStatusError)
 				}));
 			},

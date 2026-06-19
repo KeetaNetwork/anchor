@@ -667,21 +667,10 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 	return([ 'get-transaction', input.id ]);
 }
 
-/**
- * Client-side request to query the caller's account status for the asset movement service.
- * The body carries only authentication information; the status returned is for the signing account.
- */
 export interface KeetaAssetMovementAnchorGetAccountStatusClientRequest {
-	/**
-	 * KeetaNet account used to authenticate the request. Required: this endpoint always
-	 * authenticates the caller, and the status returned is for this account.
-	 */
 	account?: KeetaNetAccount;
 }
 
-/**
- * External (wire) request to query account status. The body carries only authentication information.
- */
 export type KeetaAssetMovementAnchorGetAccountStatusRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorGetAccountStatusClientRequest, unknown>;
 
 export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(): Signable {
@@ -703,13 +692,6 @@ export interface KeetaAssetMovementAnchorAccountStatusEntry {
 	[key: string]: unknown;
 }
 
-/**
- * Response for an account status check.
- *
- * On success the response is `ok: true` with an `actionRequired` discriminant: `false` means the
- * account is ready, `true` carries a non-empty `errors` array listing every action the account must
- * complete before it can use the asset movement service.
- */
 export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
 	ok: true;
 	actionRequired: false;
