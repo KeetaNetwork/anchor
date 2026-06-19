@@ -64,6 +64,7 @@ import {
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
 	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
 	isKeetaAssetMovementAnchorGetAccountStatusResponse,
+	isKeetaAssetMovementAnchorError,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
@@ -831,23 +832,32 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 		const { account } = request;
 
-		const response = await this.#makeRequest<
-			KeetaAssetMovementAnchorGetAccountStatusResponse,
-			{ [key: string]: never },
-			KeetaAssetMovementAnchorGetAccountStatusRequest
-		>({
-			method: 'POST',
-			endpoint: 'getAccountStatus',
-			account,
-			body: {},
-			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
-			getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
-			isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
-		});
+		let response;
+		try {
+			response = await this.#makeRequest<
+				KeetaAssetMovementAnchorGetAccountStatusResponse,
+				{ [key: string]: never },
+				KeetaAssetMovementAnchorGetAccountStatusRequest
+			>({
+				method: 'POST',
+				endpoint: 'getAccountStatus',
+				account,
+				body: {},
+				serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+				getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
+				isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
+			});
+		} catch (error: unknown) {
+			if (isKeetaAssetMovementAnchorError(error)) {
+				this.logger?.debug('get account status successful, 1 required action(s) (thrown)');
+				return({ actionRequired: true, errors: [ error ] });
+			}
+
+			throw(error);
+		}
 
 		if (!response.actionRequired) {
 			this.logger?.debug('get account status successful, account ready');
-
 			return({ actionRequired: false });
 		}
 

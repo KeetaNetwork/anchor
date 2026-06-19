@@ -1683,3 +1683,18 @@ export const Errors: {
 export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
 	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
 }
+
+/**
+ * Whether an error is one of the asset movement errors {@link Errors}
+ */
+export function isKeetaAssetMovementAnchorError(error: unknown): error is KeetaAnchorError {
+	const errorKeys = Object.keys(Errors) as (keyof typeof Errors)[];
+	let isKnownBlocker = false;
+	for (const key of errorKeys) {
+		if (Errors[key].isInstance(error)) {
+			isKnownBlocker = true;
+			break;
+		}
+	}
+	return(isKnownBlocker);
+}
