@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer, AnchorChainingPath } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
@@ -1273,6 +1273,15 @@ async function createChainingTestHarness(options: { includeSwapAnchor?: boolean 
 	});
 }
 
+const expectRejectedByPlanCreateAndPathValidate = async (path: AnchorChainingPath, expectedError: string) => {
+	await expect(AnchorChainingPlan.create(path)).rejects.toThrow(expectedError);
+	const validation = path.validate();
+	expect(validation.valid).toBe(false);
+	if (!validation.valid) {
+		expect(validation.reason).toContain(expectedError);
+	}
+};
+
 describe('AnchorChainingPath computeSteps', function() {
 	test.each([
 		{ providerID: 'FXOne' as const, expectedFxOut: 88n, totalOut: 78n },
@@ -1301,7 +1310,7 @@ describe('AnchorChainingPath computeSteps', function() {
 	test('affinity:to is unsupported for paths with AM steps', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await h.getPathVia('FXOne', 'to');
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('not currently supported for asset movement steps');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'not currently supported for asset movement steps');
 	});
 
 	test('BankEU initiateTransfer failure propagates from computeSteps', async function() {
@@ -1500,7 +1509,7 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 		path.request.source.value = 100n;
 		path.request.destination.value = 100n;
 
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value but not both');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'Must have source.value or destination.value but not both');
 	});
 
 	test('providing neither source.value nor destination.value throws', async function() {
@@ -1510,7 +1519,7 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 		delete path.request.source.value;
 		delete path.request.destination.value;
 
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'Must have source.value or destination.value');
 	});
 });
 
@@ -3102,39 +3111,5 @@ describe('AnchorChainingPath validate', function() {
 		if (!affinityResult.valid) {
 			expect(affinityResult.reason).toContain('not currently supported for asset movement steps');
 		}
-	});
-
-	test('validate() verdict agrees with AnchorChainingPlan.create for the same path', async function() {
-		await using h = await createChainingTestHarness();
-
-		// Invalid (structural): affinity 'to' on an asset-movement path. validate()
-		// must reject with the same message AnchorChainingPlan.create rejects with,
-		// so the cheap pre-check and the plan computation cannot drift.
-		const invalidInput = {
-			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
-			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
-		};
-		const invalidPath = (await h.anchorChaining.getPaths(invalidInput))?.[0];
-		if (!invalidPath) {
-			throw(new Error('Expected a path for the invalid case'));
-		}
-		const invalidVerdict = invalidPath.validate();
-		expect(invalidVerdict.valid).toBe(false);
-		if (!invalidVerdict.valid) {
-			await expect(AnchorChainingPlan.create(invalidPath)).rejects.toThrow(invalidVerdict.reason);
-		}
-
-		// Valid: same source/destination with affinity 'from'. validate() reports
-		// valid and the plan computes (no structural rejection).
-		const validInput = {
-			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
-			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
-		};
-		const validPath = (await h.anchorChaining.getPaths(validInput))?.[0];
-		if (!validPath) {
-			throw(new Error('Expected a path for the valid case'));
-		}
-		expect(validPath.validate()).toEqual({ valid: true });
-		await expect(AnchorChainingPlan.create(validPath)).resolves.toBeDefined();
 	});
 });
