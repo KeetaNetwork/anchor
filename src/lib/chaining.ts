@@ -298,7 +298,7 @@ function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorCh
 	for (let index = 0; index < path.length; index++) {
 		const step = path[index];
 		if (!step) {
-			continue;
+			throw(new Error(`Step ${index} is not defined`));
 		}
 
 		if (step.type === 'assetMovement') {
