@@ -824,9 +824,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	 * `{ actionRequired: false }` means the account is ready, while `{ actionRequired: true, errors }`
 	 * lists the actions the account must complete before it can proceed, rehydrated into their typed
 	 * errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`, `Errors.UserActionNeeded`,
-	 * `Errors.OperationNotSupported`), the same errors `initiateTransfer` would throw, so the caller
-	 * can `instanceof`-check each and route the user accordingly. An account is required; request-level
-	 * failures (e.g. an invalid signature) still reject.
+	 * `Errors.OperationNotSupported`). Request-level failures (e.g. an invalid signature) still reject.
 	 */
 	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAssetMovementAnchorAccountStatus> {
 		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
@@ -853,9 +851,6 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			return({ actionRequired: false });
 		}
 
-		// Decode each entry the same way every other error response is parsed: from unknown JSON via
-		// the shared parser, which rehydrates to the typed Errors.* instance (or a generic
-		// KeetaAnchorError when the entry's name is not recognized).
 		const errors = await Promise.all(response.errors.map((entry) => this.#parseResponseError(entry)));
 
 		this.logger?.debug(`get account status successful, ${errors.length} required action(s)`);
