@@ -1670,13 +1670,10 @@ export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAnchorEr
  * Whether an error is one of the asset movement errors {@link Errors}
  */
 export function isKeetaAssetMovementAnchorError(error: unknown): error is KeetaAnchorError {
-	const errorKeys = Object.keys(Errors) as (keyof typeof Errors)[];
-	let isKnownBlocker = false;
-	for (const key of errorKeys) {
-		if (Errors[key].isInstance(error)) {
-			isKnownBlocker = true;
-			break;
+	for (const ErrorClass of Object.values(Errors)) {
+		if (ErrorClass.isInstance(error)) {
+			return(true);
 		}
 	}
-	return(isKnownBlocker);
+	return(false)
 }
