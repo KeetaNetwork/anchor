@@ -76,7 +76,7 @@ import {
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
 	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData,
 	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
-	encodeAssetMovementAnchorAccountStatusError
+	encodeKeetaAssetMovementAnchorAccountStatusError
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -579,7 +579,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 					ok: true,
 					actionRequired: true,
-					errors: data.errors.map(encodeAssetMovementAnchorAccountStatusError)
+					errors: data.errors.map(encodeKeetaAssetMovementAnchorAccountStatusError)
 				}));
 			},
 			getSigningData: getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,

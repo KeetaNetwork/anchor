@@ -683,7 +683,7 @@ export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData():
  * carrying whatever additional fields that error type serializes (e.g. `code` and `data`). The client
  * parses each entry from this JSON the same way it parses any other error response, rehydrating it into
  * its typed {@link Errors} instance, so callers keep `instanceof` checks. Build these from error
- * instances with {@link encodeAssetMovementAnchorAccountStatusError}.
+ * instances with {@link encodeKeetaAssetMovementAnchorAccountStatusError}.
  */
 export interface KeetaAssetMovementAnchorAccountStatusEntry {
 	ok: false;
@@ -705,9 +705,10 @@ export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
 };
 
 /**
- * The account status the client resolves with, mirroring the wire response's `actionRequired`
- * discriminant. `false` means the account is ready; `true` carries the `errors` the account must
- * resolve, rehydrated into their typed {@link Errors} instances (via `KeetaAnchorError.fromJSON`) so
+ * The account status: returned by a `getAccountStatus` handler (server side) and resolved by the
+ * client, mirroring the wire response's `actionRequired` discriminant. `false` means the account is
+ * ready; `true` carries the `errors` the account must resolve as typed {@link Errors} instances (the
+ * server encodes them for the wire; the client rehydrates them via `KeetaAnchorError.fromJSON`) so
  * callers can `instanceof`-check each one.
  */
 export type KeetaAssetMovementAnchorAccountStatus = {
@@ -1298,7 +1299,7 @@ type KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON = ReturnType<KeetaAnch
 class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaAssetMovementAnchorAdditionalKYCNeededError';
 	private readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID!: string;
-	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '3f4d6acd-8915-40de-94fa-4c6c48c01623';
+	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '6b8c684a-4dba-4cb6-9e1c-a1cf5dfcff03';
 
 	readonly toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 
@@ -1662,7 +1663,7 @@ export const Errors: {
  * response. Reuses the error's own `asErrorResponse` serialization (the same one thrown errors use), so
  * an entry is identical to what the error would produce if thrown and is parsed client-side the same way.
  */
-export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
+export function encodeKeetaAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
 	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
 }
 
