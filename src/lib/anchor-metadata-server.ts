@@ -4,7 +4,7 @@ import type { SignableAccount, VerifiableAccount } from './utils/signing.js';
 import type { ServiceMetadataEndpoint, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import { KeetaNetAnchorHTTPServer } from './http-server/index.js';
 import { SignData, VerifySignedData, objectToSignable } from './utils/signing.js';
-import { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserValidationError } from './error.js';
 import Resolver from './resolver.js';
 import { KeetaNet } from '../client/index.js';
@@ -114,7 +114,7 @@ export abstract class KeetaAnchorMetadataServer<
 							if (!signature.account || !signature.signedField) {
 								throw(new KeetaAnchorUserValidationError({ fields: [] }, 'Missing signature fields in request URL'));
 							}
-	
+
 							const signable = Resolver.getExternalURLSignable(url);
 							const verified = await VerifySignedData(signature.account, signable, signature.signedField);
 

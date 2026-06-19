@@ -2,24 +2,19 @@ import { test, expect } from 'vitest';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import Resolver from './resolver.js';
 import { KeetaAnchorMetadataServer } from './anchor-metadata-server.js';
-import type { SignableServiceMetadata } from './anchor-metadata-server.js';
+import type { KeetaAnchorMetadataServerConfig, SignableServiceMetadata } from './anchor-metadata-server.js';
 import { addSignatureToURL } from './http-server/common.js';
 import { SignData } from './utils/signing.js';
 import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
 
 const EXTERNAL_URL_KEY = '2b828e33-2692-46e9-817e-9b93d63f28fd';
 
-/**
- * Metadata published by {@link TestMetadataServer}. It is simultaneously a
- * valid resolver root metadata (it has `version`) and a valid service metadata
- * (it has `operations`), so the resolver can both fetch and fully resolve it.
- * With no `metadataSigner`, `serviceMetadata()` returns this verbatim, so the
- * `/serviceMetadata` response body equals it exactly.
- */
 type PublishedServiceMetadata = SignableServiceMetadata & {
 	version: 1;
-	currencyMap: Record<string, never>;
-	services: Record<string, never>;
+	currencyMap: { [key: string]: never };
+	services: { [key: string]: never };
+	/** Optional nested external URL, used to verify signing passes through every hop. */
+	nested?: unknown;
 };
 
 const SERVICE_METADATA = {
@@ -31,13 +26,26 @@ const SERVICE_METADATA = {
 	}
 } satisfies PublishedServiceMetadata;
 
+interface TestMetadataServerConfig extends KeetaAnchorMetadataServerConfig {
+	metadata: PublishedServiceMetadata;
+}
+
 /**
- * Minimal concrete {@link KeetaAnchorMetadataServer} used to exercise the
- * `GET /serviceMetadata` endpoint and its signature verification.
+ * Minimal concrete {@link KeetaAnchorMetadataServer} that publishes a
+ * configurable metadata document and exercises the `GET /serviceMetadata`
+ * endpoint and its signature verification.
  */
-class TestMetadataServer extends KeetaAnchorMetadataServer<PublishedServiceMetadata> {
+class TestMetadataServer extends KeetaAnchorMetadataServer<PublishedServiceMetadata, TestMetadataServerConfig> {
+	readonly #metadata: PublishedServiceMetadata;
+
+	constructor(config: TestMetadataServerConfig) {
+		super(config);
+
+		this.#metadata = config.metadata;
+	}
+
 	protected async buildServiceMetadata(): Promise<PublishedServiceMetadata> {
-		return(SERVICE_METADATA);
+		return(this.#metadata);
 	}
 }
 
@@ -77,6 +85,7 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 
 	await using server = new TestMetadataServer({
 		port: 0,
+		metadata: SERVICE_METADATA,
 		serviceMetadataEndpoint: {
 			expose: true,
 			authentication: {
@@ -95,7 +104,7 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 	/* 1. Allowed account with a valid signature -> 200 and the published metadata */
 	{
 		verifiedAccount = undefined;
-		const response = await fetch(await signServiceMetadataURL(server.url, allowed), { headers: { 'Accept': 'application/json' } });
+		const response = await fetch(await signServiceMetadataURL(server.url, allowed), { headers: { 'Accept': 'application/json' }});
 
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
@@ -106,7 +115,7 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 	/* 2. Missing signature -> 404 (allowAccount never reached) */
 	{
 		verifiedAccount = undefined;
-		const response = await fetch(new URL('/serviceMetadata', server.url), { headers: { 'Accept': 'application/json' } });
+		const response = await fetch(new URL('/serviceMetadata', server.url), { headers: { 'Accept': 'application/json' }});
 
 		expect(response.status).toBe(404);
 		expect(verifiedAccount).toBeUndefined();
@@ -116,7 +125,7 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 	{
 		const other = makeAccount();
 		verifiedAccount = undefined;
-		const response = await fetch(await signServiceMetadataURL(server.url, other), { headers: { 'Accept': 'application/json' } });
+		const response = await fetch(await signServiceMetadataURL(server.url, other), { headers: { 'Accept': 'application/json' }});
 
 		expect(response.status).toBe(404);
 		expect(verifiedAccount).toBe(other.publicKeyString.get());
@@ -127,9 +136,9 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 		verifiedAccount = undefined;
 		const requestUrl = await signServiceMetadataURL(server.url, allowed);
 		const original = requestUrl.searchParams.get('signed.signature') ?? '';
-		requestUrl.searchParams.set('signed.signature', (original[0] === 'A' ? 'B' : 'A') + original.slice(1));
+		requestUrl.searchParams.set('signed.signature', (original.startsWith('A') ? 'B' : 'A') + original.slice(1));
 
-		const response = await fetch(requestUrl, { headers: { 'Accept': 'application/json' } });
+		const response = await fetch(requestUrl, { headers: { 'Accept': 'application/json' }});
 		expect(response.status).toBe(404);
 		expect(verifiedAccount).toBeUndefined();
 	}
@@ -144,7 +153,7 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 		const requestUrl = await signServiceMetadataURL(server.url, allowed);
 		requestUrl.searchParams.set('account', otherAllowed.publicKeyString.get());
 
-		const response = await fetch(requestUrl, { headers: { 'Accept': 'application/json' } });
+		const response = await fetch(requestUrl, { headers: { 'Accept': 'application/json' }});
 		expect(response.status).toBe(404);
 		expect(verifiedAccount).toBeUndefined();
 
@@ -152,24 +161,71 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 	}
 
 	/*
-	 * 6. Resolver client signs an external-URL reference to this same endpoint.
+	 * 6. Resolver follows a CHAIN of authenticated external URLs.
 	 *
 	 * A live KeetaNet root account's on-chain metadata is a top-level external
-	 * URL (with `authentication.required`) pointing at `/serviceMetadata`. The
-	 * resolver, configured with a signing account, must sign the outgoing
-	 * request so the endpoint accepts it -- and then fully resolve the metadata
-	 * it returns.
+	 * URL pointing at an OUTER endpoint, whose metadata embeds a different
+	 * external URL pointing at an INNER endpoint. Both endpoints require
+	 * authentication, so the resolver must sign every hop -- including the
+	 * nested reference -- for the chain to resolve.
 	 */
 	{
-		verifiedAccount = undefined;
+		let innerVerified: string | undefined;
+		await using innerServer = new TestMetadataServer({
+			port: 0,
+			metadata: SERVICE_METADATA,
+			serviceMetadataEndpoint: {
+				expose: true,
+				authentication: {
+					required: true,
+					allowAccount: async function(account) {
+						innerVerified = account.publicKeyString.get();
+
+						return(account.comparePublicKey(allowed));
+					}
+				}
+			}
+		});
+		await innerServer.start();
+
+		const outerMetadata = {
+			version: 1,
+			currencyMap: {},
+			services: {},
+			operations: { createAccount: 'https://example.com/api/v1/createAccount' },
+			nested: {
+				external: EXTERNAL_URL_KEY,
+				url: new URL('/serviceMetadata', innerServer.url).toString(),
+				options: { authentication: { method: 'keeta-account', type: 'required' }}
+			}
+		} satisfies PublishedServiceMetadata;
+
+		let outerVerified: string | undefined;
+		await using outerServer = new TestMetadataServer({
+			port: 0,
+			metadata: outerMetadata,
+			serviceMetadataEndpoint: {
+				expose: true,
+				authentication: {
+					required: true,
+					allowAccount: async function(account) {
+						outerVerified = account.publicKeyString.get();
+
+						return(account.comparePublicKey(allowed));
+					}
+				}
+			}
+		});
+		await outerServer.start();
+
 		const rootAccount = makeAccount();
 		const { userClient, fees } = await createNodeAndClient(rootAccount);
 		fees.disable();
 
 		await setInfo(rootAccount, userClient, {
 			external: EXTERNAL_URL_KEY,
-			url: new URL('/serviceMetadata', server.url).toString(),
-			options: { authentication: { method: 'keeta-account', type: 'required' } }
+			url: new URL('/serviceMetadata', outerServer.url).toString(),
+			options: { authentication: { method: 'keeta-account', type: 'required' }}
 		});
 
 		const resolver = new Resolver({
@@ -186,9 +242,10 @@ test('signed serviceMetadata endpoint: verification matrix and resolver round tr
 		const rootMetadata = await resolver.getRootMetadata();
 		const resolved = await Resolver.Metadata.fullyResolveValuizable(rootMetadata);
 
-		/* The signed request was verified against the allowed account ... */
-		expect(verifiedAccount).toBe(allowed.publicKeyString.get());
-		/* ... and the resolver returned the metadata the endpoint published */
-		expect(resolved).toEqual(SERVICE_METADATA);
+		/* Every hop -- the outer reference and the nested inner reference -- was signed and verified */
+		expect(outerVerified).toBe(allowed.publicKeyString.get());
+		expect(innerVerified).toBe(allowed.publicKeyString.get());
+		/* The nested external URL resolved to the inner endpoint's published metadata */
+		expect(resolved).toEqual({ ...outerMetadata, nested: SERVICE_METADATA });
 	}
 });

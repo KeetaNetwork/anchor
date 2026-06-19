@@ -19,6 +19,7 @@ import { addSignatureToURL, assertHTTPSignedField } from './http-server/common.j
 import { verifyMetadataSignature } from './anchor-metadata-server.js';
 import { assertServiceMetadata, assertSignableServiceMetadataLegal, assertSignableServiceMetadataOperations, isCurrencySearchCanonical, isCurrencySearchInput, isExternalURL } from './resolver.generated.js';
 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
 const ExternalURLKey = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
 type ExternalURLOptions = Pick<NonNullable<Exclude<NonNullable<ServiceMetadataEndpoint>, string>['options']>, 'authentication'>;
 interface ExternalURL {
@@ -918,6 +919,7 @@ class Metadata implements ValuizableInstance {
 	readonly #stats: ResolverStats;
 	readonly #allowInsecureProtocols: boolean;
 	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
+	readonly #urlOptions: ExternalURLOptions | undefined;
 
 	private readonly seenURLs: Set<string>;
 
@@ -951,7 +953,7 @@ class Metadata implements ValuizableInstance {
 	}
 
 	static getExternalURLSignable(url: URL): Signable {
-		let formattedURL = new URL(url.toString());
+		const formattedURL = new URL(url.toString());
 		formattedURL.search = '';
 
 		return([
@@ -1078,7 +1080,7 @@ class Metadata implements ValuizableInstance {
 		throw(new Error('invalid input'));
 	}
 
-	constructor(url: string | URL, config: MetadataConfig) {
+	constructor(url: string | URL | ExternalURL, config: MetadataConfig) {
 		/*
 		 * Define an "instanceTypeID" as an unenumerable property to
 		 * ensure that we can identify this object as an instance of
@@ -1088,7 +1090,13 @@ class Metadata implements ValuizableInstance {
 			value: Metadata.instanceTypeID,
 			enumerable: false
 		});
-		this.#url = new URL(url);
+		if (isExternalURL(url)) {
+			this.#url = new URL(url.url);
+			this.#urlOptions = url.options;
+		} else {
+			this.#url = new URL(url);
+			this.#urlOptions = undefined;
+		}
 		this.#cache = {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			instance: config.cache?.instance ?? new Map() satisfies URLCacheObject as URLCacheObject,
@@ -1416,13 +1424,14 @@ class Metadata implements ValuizableInstance {
 						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
 					}
 
-					const newMetadataObject = new Metadata(keyValue.url, {
+					const newMetadataObject = new Metadata(keyValue, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
 						logger: this.#logger,
 						resolver: this.#resolver,
 						cache: this.#cache,
 						allowInsecureProtocols: this.#allowInsecureProtocols,
+						...(this.#signing !== null ? { signing: this.#signing } : {}),
 						parent: this
 					});
 
@@ -1476,7 +1485,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
-		const value = await this.readURL(this.#url);
+		const value = await this.readURL(this.#url, this.#urlOptions);
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 
