@@ -109,7 +109,7 @@ function makeGetAccountStatusConfig(getAccountStatus: NonNullable<NonNullable<Ke
 test('Asset Movement Server publishes getAccountStatus with required authentication', async function() {
 	/* Note: authenticationRequired is NOT set, yet getAccountStatus must still require auth */
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({ requiredActions: [] });
+		return({ errors: [] });
 	}));
 	await server.start();
 
@@ -125,12 +125,12 @@ test('Asset Movement Server publishes getAccountStatus with required authenticat
 	expect(endpoint.options?.authentication).toEqual({ method: 'keeta-account', type: 'required' });
 });
 
-test('Asset Movement Server getAccountStatus returns an empty requiredActions array for a ready account', async function() {
+test('Asset Movement Server getAccountStatus returns actionRequired false for a ready account', async function() {
 	let observedAccount: string | undefined;
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
 		observedAccount = account.publicKeyString.get();
-		return({ requiredActions: [] });
+		return({ errors: [] });
 	}));
 	await server.start();
 
@@ -145,14 +145,15 @@ test('Asset Movement Server getAccountStatus returns an empty requiredActions ar
 
 	expect(response.status).toBe(200);
 	const json: unknown = await response.json();
-	expect(json).toMatchObject({ ok: true, requiredActions: [] });
+	/* The ready branch carries no errors array (toEqual, not toMatchObject, verifies the omission) */
+	expect(json).toEqual({ ok: true, actionRequired: false });
 	expect(observedAccount).toBe(account.publicKeyString.get());
 });
 
 test('Asset Movement Server getAccountStatus returns multiple required actions in one ok response', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
 		return({
-			requiredActions: [
+			errors: [
 				new Errors.KYCShareNeeded({ shareWithPrincipals: [ account ], acceptedIssuers: [] }),
 				new Errors.OperationNotSupported({})
 			]
@@ -174,18 +175,19 @@ test('Asset Movement Server getAccountStatus returns multiple required actions i
 
 	expect(json).toMatchObject({
 		ok: true,
-		requiredActions: [
+		actionRequired: true,
+		errors: [
 			{ name: 'KeetaAssetMovementAnchorKYCShareNeededError', code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_SHARE_NEEDED' },
 			{ name: 'KeetaAssetMovementAnchorOperationNotSupportedError', code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED' }
 		]
 	});
 
 	/* Each entry rehydrates back into its typed error (the same path the client uses) */
-	if (!isKeetaAssetMovementAnchorGetAccountStatusResponse(json) || !json.ok) {
-		throw(new Error('Expected an ok getAccountStatus response'));
+	if (!isKeetaAssetMovementAnchorGetAccountStatusResponse(json) || !json.ok || !json.actionRequired) {
+		throw(new Error('Expected an action-required getAccountStatus response'));
 	}
 
-	const rehydrated = await Promise.all(json.requiredActions.map(function(entry) {
+	const rehydrated = await Promise.all(json.errors.map(function(entry) {
 		return(KeetaAnchorError.fromJSON(entry));
 	}));
 
@@ -195,7 +197,7 @@ test('Asset Movement Server getAccountStatus returns multiple required actions i
 
 test('Asset Movement Server getAccountStatus rejects unauthenticated requests', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({ requiredActions: [] });
+		return({ errors: [] });
 	}));
 	await server.start();
 

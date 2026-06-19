@@ -3,7 +3,8 @@ import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import {
-	KeetaAnchorUserError
+	KeetaAnchorUserError,
+	KeetaAnchorError
 } from '../../lib/error.js';
 import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -12,7 +13,6 @@ import type {
 	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
 	KeetaAssetMovementAnchorAccountStatusResult,
-	KeetaAssetMovementAnchorAccountStatusBlocker,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -146,7 +146,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		/**
 		 * Method to get the authenticated account's readiness/status for asset movement.
 		 *
-		 * Resolve with `{ requiredActions: [] }` when the account is ready to proceed, or with one
+		 * Resolve with `{ errors: [] }` when the account is ready to proceed, or with one
 		 * entry per outstanding blocker as the matching shared `Errors` instance (e.g.
 		 * `new Errors.KYCShareNeeded(...)`, `new Errors.UserActionNeeded(...)`). The server encodes
 		 * those for the wire automatically, so the client receives them as typed errors. This reports
@@ -561,17 +561,29 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			 * validate class instances) and encode them to the wire form in serializeResponse below.
 			 */
 			assertResponse: (data) => {
-				if (typeof data !== 'object' || data === null || !('requiredActions' in data) || !Array.isArray(data.requiredActions)) {
-					throw(new KeetaAnchorUserError('getAccountStatus must resolve with a requiredActions array'));
+				if (typeof data !== 'object' || data === null || !('errors' in data) || !Array.isArray(data.errors)) {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an errors array'));
+				}
+
+				if (!data.errors.every((entry: unknown) => KeetaAnchorError.isInstance(entry))) {
+					throw(new KeetaAnchorUserError('getAccountStatus errors must be KeetaAnchorError instances'));
 				}
 
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(data as { ok: true; requiredActions: KeetaAssetMovementAnchorAccountStatusBlocker[]; });
+				return(data as { ok: true; errors: KeetaAnchorError[]; });
 			},
 			serializeResponse: (data) => {
+				if (data.errors.length === 0) {
+					return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
+						ok: true,
+						actionRequired: false
+					}));
+				}
+
 				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 					ok: true,
-					requiredActions: data.requiredActions.map(encodeAssetMovementAnchorAccountStatusError)
+					actionRequired: true,
+					errors: data.errors.map(encodeAssetMovementAnchorAccountStatusError)
 				}));
 			},
 			getSigningData: getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,

@@ -29,6 +29,7 @@ import type {
 	KeetaAssetMovementAnchorGetAccountStatusClientRequest,
 	KeetaAssetMovementAnchorGetAccountStatusRequest,
 	KeetaAssetMovementAnchorGetAccountStatusResponse,
+	KeetaAssetMovementAnchorAccountStatus,
 	KeetaAssetMovementAnchorShareKYCClientRequest,
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
@@ -609,7 +610,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				errorStr = 'Unknown error';
 			}
 
-			return(new Error(`asset movement request failed: ${errorStr}`));
+			return(new KeetaAnchorError(`asset movement request failed: ${errorStr}`));
 		}
 	}
 
@@ -819,14 +820,15 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	/**
 	 * Check whether the (authenticated) account is ready to use this asset movement provider.
 	 *
-	 * Resolves with the list of actions the account must complete before it can proceed, rehydrated
-	 * into their typed errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`,
-	 * `Errors.UserActionNeeded`, `Errors.OperationNotSupported`), the same errors `initiateTransfer`
-	 * would throw, so the caller can `instanceof`-check each and route the user accordingly. An empty
-	 * array means the account is ready. An account is required; request-level failures (e.g. an invalid
-	 * signature) still reject.
+	 * Resolves with the account status, mirroring the wire `actionRequired` discriminant:
+	 * `{ actionRequired: false }` means the account is ready, while `{ actionRequired: true, errors }`
+	 * lists the actions the account must complete before it can proceed, rehydrated into their typed
+	 * errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`, `Errors.UserActionNeeded`,
+	 * `Errors.OperationNotSupported`), the same errors `initiateTransfer` would throw, so the caller
+	 * can `instanceof`-check each and route the user accordingly. An account is required; request-level
+	 * failures (e.g. an invalid signature) still reject.
 	 */
-	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAnchorError[]> {
+	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAssetMovementAnchorAccountStatus> {
 		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
 
 		const { account } = request;
@@ -845,13 +847,20 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
 		});
 
-		const requiredActions = await Promise.all(response.requiredActions.map(function(entry) {
-			return(KeetaAnchorError.fromJSON(entry));
-		}));
+		if (!response.actionRequired) {
+			this.logger?.debug('get account status successful, account ready');
 
-		this.logger?.debug(`get account status successful, ${requiredActions.length} required action(s)`);
+			return({ actionRequired: false });
+		}
 
-		return(requiredActions);
+		// Decode each entry the same way every other error response is parsed: from unknown JSON via
+		// the shared parser, which rehydrates to the typed Errors.* instance (or a generic
+		// KeetaAnchorError when the entry's name is not recognized).
+		const errors = await Promise.all(response.errors.map((entry) => this.#parseResponseError(entry)));
+
+		this.logger?.debug(`get account status successful, ${errors.length} required action(s)`);
+
+		return({ actionRequired: true, errors });
 	}
 
 	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {

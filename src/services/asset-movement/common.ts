@@ -6,7 +6,7 @@ import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, type KeetaAnchorError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
@@ -689,29 +689,50 @@ export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData():
 }
 
 /**
- * A single account-status blocker, encoded the same way the corresponding error serializes over the
- * wire (`asErrorResponse`). Keeping the error encoding means the client rehydrates each entry into
- * its typed {@link Errors} instance via `KeetaAnchorError.fromJSON`, so callers keep `instanceof`
- * checks. Build these from error instances with {@link encodeAssetMovementAnchorAccountStatusError}.
+ * A single account-status blocker, encoded the same way every {@link KeetaAnchorError} serializes
+ * over the wire (`asErrorResponse('application/json')`): a generic error envelope keyed by `name`,
+ * carrying whatever additional fields that error type serializes (e.g. `code` and `data`). The client
+ * parses each entry from this JSON the same way it parses any other error response, rehydrating it into
+ * its typed {@link Errors} instance, so callers keep `instanceof` checks. Build these from error
+ * instances with {@link encodeAssetMovementAnchorAccountStatusError}.
  */
-export type KeetaAssetMovementAnchorAccountStatusEntry =
-	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorKYCShareNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_SHARE_NEEDED'; data: KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties; } |
-	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorAdditionalKYCNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_ADDITIONAL_KYC_NEEDED'; data: KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties; } |
-	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorOperationNotSupportedError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_OPERATION_NOT_SUPPORTED'; data: KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties; } |
-	{ ok: false; error: string; name: 'KeetaAssetMovementAnchorUserActionNeededError'; code: 'KEETA_ANCHOR_ASSET_MOVEMENT_USER_ACTION_NEEDED'; data: KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties; };
+export interface KeetaAssetMovementAnchorAccountStatusEntry {
+	ok: false;
+	name: string;
+	error: string;
+	[key: string]: unknown;
+}
 
 /**
  * Response for an account status check.
  *
- * Always `ok: true`; `requiredActions` lists every action the account must complete before it can
- * use the asset movement service. An empty array means the account is ready.
+ * On success the response is `ok: true` with an `actionRequired` discriminant: `false` means the
+ * account is ready, `true` carries a non-empty `errors` array listing every action the account must
+ * complete before it can use the asset movement service.
  */
 export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
 	ok: true;
-	requiredActions: KeetaAssetMovementAnchorAccountStatusEntry[];
+	actionRequired: false;
+} | {
+	ok: true;
+	actionRequired: true;
+	errors: KeetaAssetMovementAnchorAccountStatusEntry[];
 } | {
 	ok: false;
 	error: string;
+};
+
+/**
+ * The account status the client resolves with, mirroring the wire response's `actionRequired`
+ * discriminant. `false` means the account is ready; `true` carries the `errors` the account must
+ * resolve, rehydrated into their typed {@link Errors} instances (via `KeetaAnchorError.fromJSON`) so
+ * callers can `instanceof`-check each one.
+ */
+export type KeetaAssetMovementAnchorAccountStatus = {
+	actionRequired: false;
+} | {
+	actionRequired: true;
+	errors: KeetaAnchorError[];
 };
 
 /**
@@ -1654,30 +1675,21 @@ export const Errors: {
 };
 
 /**
- * The account-status blockers accepted by {@link encodeAssetMovementAnchorAccountStatusError}. These
- * are the shared {@link Errors} that `getAccountStatus` reports as data instead of throwing.
- */
-export type KeetaAssetMovementAnchorAccountStatusBlocker =
-	InstanceType<typeof Errors.KYCShareNeeded> |
-	InstanceType<typeof Errors.AdditionalKYCNeeded> |
-	InstanceType<typeof Errors.OperationNotSupported> |
-	InstanceType<typeof Errors.UserActionNeeded>;
-
-/**
  * The value an account-status handler resolves with. List every blocker the account must resolve as
- * the matching {@link Errors} instance (the same error you would otherwise throw); the server encodes
- * them into the wire response. An empty array means the account is ready.
+ * the {@link Errors} instance you would otherwise throw (e.g. `new Errors.KYCShareNeeded(...)`); the
+ * server encodes each one into the wire response and sets the `actionRequired` discriminant. An empty
+ * array means the account is ready.
  */
 export type KeetaAssetMovementAnchorAccountStatusResult = {
-	requiredActions: KeetaAssetMovementAnchorAccountStatusBlocker[];
+	errors: KeetaAnchorError[];
 };
 
 /**
- * Encode an account-status blocker into a {@link KeetaAssetMovementAnchorAccountStatusEntry}. The
- * server uses this to turn the error instances an account-status handler returns into the wire
- * response. Reuses the error's own serialization, so an entry is identical to what the error would
- * produce if thrown and rehydrates client-side via `KeetaAnchorError.fromJSON`.
+ * Encode an account-status error instance into a {@link KeetaAssetMovementAnchorAccountStatusEntry}.
+ * The server uses this to turn the error instances an account-status handler returns into the wire
+ * response. Reuses the error's own `asErrorResponse` serialization (the same one thrown errors use), so
+ * an entry is identical to what the error would produce if thrown and is parsed client-side the same way.
  */
-export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAssetMovementAnchorAccountStatusBlocker): KeetaAssetMovementAnchorAccountStatusEntry {
+export function encodeAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
 	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
 }
