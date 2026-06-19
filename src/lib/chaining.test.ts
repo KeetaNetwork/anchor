@@ -3103,4 +3103,38 @@ describe('AnchorChainingPath validate', function() {
 			expect(affinityResult.reason).toContain('not currently supported for asset movement steps');
 		}
 	});
+
+	test('validate() verdict agrees with AnchorChainingPlan.create for the same path', async function() {
+		await using h = await createChainingTestHarness();
+
+		// Invalid (structural): affinity 'to' on an asset-movement path. validate()
+		// must reject with the same message AnchorChainingPlan.create rejects with,
+		// so the cheap pre-check and the plan computation cannot drift.
+		const invalidInput = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
+		};
+		const invalidPath = (await h.anchorChaining.getPaths(invalidInput))?.[0];
+		if (!invalidPath) {
+			throw(new Error('Expected a path for the invalid case'));
+		}
+		const invalidVerdict = invalidPath.validate();
+		expect(invalidVerdict.valid).toBe(false);
+		if (!invalidVerdict.valid) {
+			await expect(AnchorChainingPlan.create(invalidPath)).rejects.toThrow(invalidVerdict.reason);
+		}
+
+		// Valid: same source/destination with affinity 'from'. validate() reports
+		// valid and the plan computes (no structural rejection).
+		const validInput = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+		const validPath = (await h.anchorChaining.getPaths(validInput))?.[0];
+		if (!validPath) {
+			throw(new Error('Expected a path for the valid case'));
+		}
+		expect(validPath.validate()).toEqual({ valid: true });
+		await expect(AnchorChainingPlan.create(validPath)).resolves.toBeDefined();
+	});
 });

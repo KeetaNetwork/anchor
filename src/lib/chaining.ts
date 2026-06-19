@@ -1427,11 +1427,19 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 
 			/*
-			 * validatePathStructure has already guaranteed (before any network
-			 * call) that this PFR step is supported, is the last step, and has a
-			 * string recipient. The typeof check below is retained only to narrow
-			 * destinationAddress to string for the calls that consume it.
+			 * Defense in depth: validatePathStructure enforces these PFR rules
+			 * before any network call. They are kept here next to the operation so
+			 * the guarantee holds even if the early pass is bypassed. The typeof
+			 * check also narrows destinationAddress to string for the callers below.
 			 */
+			if (!pfrSupported) {
+				throw(new Error(`Asset movement provider ${scanStep.providerID} source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
+			}
+
+			if (scanIndex !== this.path.length - 1) {
+				throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${scanIndex} of ${this.path.length})`));
+			}
+
 			const destinationAddress = this.request.destination.recipient;
 			if (typeof destinationAddress !== 'string') {
 				throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
@@ -1599,7 +1607,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({ type: 'fx', step, valueIn, valueOut, result });
 					} else if (step.type === 'assetMovement') {
-						// affinity 'to' for asset-movement steps is rejected up-front by validatePathStructure.
+						/*
+						 * Defense in depth: validatePathStructure rejects affinity 'to' on
+						 * asset-movement steps before any network call. This guard keeps the
+						 * check next to the operation in case the early pass is bypassed.
+						 */
+						if (affinity === 'to') {
+							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+						}
+
 						let depositValue: bigint;
 						if (index === 0) {
 							depositValue = affinityAndAmount.amount;
@@ -1833,6 +1849,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							provider: provider
 						})
 					} else if (step.type === 'keetaSend') {
+						// Defense in depth: validatePathStructure also enforces this early.
+						if (this.path.length !== 1) {
+							throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
+						}
+
 						if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
 							throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
 						}
