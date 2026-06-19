@@ -1675,16 +1675,6 @@ export const Errors: {
 };
 
 /**
- * The value an account-status handler resolves with. List every blocker the account must resolve as
- * the {@link Errors} instance you would otherwise throw (e.g. `new Errors.KYCShareNeeded(...)`); the
- * server encodes each one into the wire response and sets the `actionRequired` discriminant. An empty
- * array means the account is ready.
- */
-export type KeetaAssetMovementAnchorAccountStatusResult = {
-	errors: KeetaAnchorError[];
-};
-
-/**
  * Encode an account-status error instance into a {@link KeetaAssetMovementAnchorAccountStatusEntry}.
  * The server uses this to turn the error instances an account-status handler returns into the wire
  * response. Reuses the error's own `asErrorResponse` serialization (the same one thrown errors use), so

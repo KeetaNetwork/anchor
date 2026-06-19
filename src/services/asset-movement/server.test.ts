@@ -109,7 +109,7 @@ function makeGetAccountStatusConfig(getAccountStatus: NonNullable<NonNullable<Ke
 test('Asset Movement Server publishes getAccountStatus with required authentication', async function() {
 	/* Note: authenticationRequired is NOT set, yet getAccountStatus must still require auth */
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({ errors: [] });
+		return({ actionRequired: false })
 	}));
 	await server.start();
 
@@ -130,7 +130,7 @@ test('Asset Movement Server getAccountStatus returns actionRequired false for a 
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
 		observedAccount = account.publicKeyString.get();
-		return({ errors: [] });
+		return({ actionRequired: false })
 	}));
 	await server.start();
 
@@ -153,6 +153,7 @@ test('Asset Movement Server getAccountStatus returns actionRequired false for a 
 test('Asset Movement Server getAccountStatus returns multiple required actions in one ok response', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function(account) {
 		return({
+			actionRequired: true,
 			errors: [
 				new Errors.KYCShareNeeded({ shareWithPrincipals: [ account ], acceptedIssuers: [] }),
 				new Errors.OperationNotSupported({})
@@ -197,7 +198,7 @@ test('Asset Movement Server getAccountStatus returns multiple required actions i
 
 test('Asset Movement Server getAccountStatus rejects unauthenticated requests', async function() {
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeGetAccountStatusConfig(async function() {
-		return({ errors: [] });
+		return({ actionRequired: false });
 	}));
 	await server.start();
 

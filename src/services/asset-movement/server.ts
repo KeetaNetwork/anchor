@@ -12,7 +12,6 @@ import type {
 	KeetaAssetMovementAnchorInitiateTransferRequest,
 	KeetaAssetMovementAnchorInitiateTransferResponse,
 	KeetaAssetMovementAnchorGetTransferStatusResponse,
-	KeetaAssetMovementAnchorAccountStatusResult,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -30,7 +29,8 @@ import type {
 	KeetaAssetMovementAnchorSimulateTransferRequest,
 	KeetaAssetMovementAnchorSimulateTransferResponse,
 	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
-	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	KeetaAssetMovementAnchorGetAccountStatusResponse
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -39,9 +39,7 @@ import {
 	assertKeetaAssetMovementAnchorInitiateTransferResponse,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
 	assertKeetaAssetMovementAnchorGetAccountStatusRequest,
-	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
 	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
-	encodeAssetMovementAnchorAccountStatusError,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -76,7 +74,9 @@ import {
 	getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData,
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
 	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
-	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData,
+	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
+	encodeAssetMovementAnchorAccountStatusError
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -145,15 +145,8 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 
 		/**
 		 * Method to get the authenticated account's readiness/status for asset movement.
-		 *
-		 * Resolve with `{ errors: [] }` when the account is ready to proceed, or with one
-		 * entry per outstanding blocker as the matching shared `Errors` instance (e.g.
-		 * `new Errors.KYCShareNeeded(...)`, `new Errors.UserActionNeeded(...)`). The server encodes
-		 * those for the wire automatically, so the client receives them as typed errors. This reports
-		 * every blocker at once instead of throwing the first one. Request-level failures (auth,
-		 * validation) should still throw.
 		 */
-		getAccountStatus?: (account: Account.Account) => Promise<KeetaAssetMovementAnchorAccountStatusResult>;
+		getAccountStatus?: (account: Account.Account) => Promise<ExtractOk<KeetaAssetMovementAnchorGetAccountStatusResponse>>;
 
 		/**
 		 * Method to list transactions
@@ -556,24 +549,27 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			method: 'POST',
 			handlerName: 'getAccountStatus',
 			assertRequest: assertKeetaAssetMovementAnchorGetAccountStatusRequest,
-			/*
-			 * The handler returns error instances; validate the envelope shape here (typia cannot
-			 * validate class instances) and encode them to the wire form in serializeResponse below.
-			 */
 			assertResponse: (data) => {
-				if (typeof data !== 'object' || data === null || !('errors' in data) || !Array.isArray(data.errors)) {
-					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an errors array'));
+				if (typeof data !== 'object' || data === null) {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an object'));
 				}
-
-				if (!data.errors.every((entry: unknown) => KeetaAnchorError.isInstance(entry))) {
-					throw(new KeetaAnchorUserError('getAccountStatus errors must be KeetaAnchorError instances'));
+				if (!('actionRequired' in data) || typeof data.actionRequired !== 'boolean') {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an actionRequired boolean'));
+				}
+				if (data.actionRequired) {
+					if (!('errors' in data) || !Array.isArray(data.errors)) {
+						throw(new KeetaAnchorUserError('getAccountStatus must resolve with an errors array when actionRequired is true'));
+					}
+					if (!data.errors.every((entry: unknown) => KeetaAnchorError.isInstance(entry))) {
+						throw(new KeetaAnchorUserError('getAccountStatus errors must be KeetaAnchorError instances'));
+					}
 				}
 
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				return(data as { ok: true; errors: KeetaAnchorError[]; });
+				return(data as { ok: true } & ({ actionRequired: false } | { actionRequired: true, errors: KeetaAnchorError[] }));
 			},
 			serializeResponse: (data) => {
-				if (data.errors.length === 0) {
+				if (data.actionRequired === false) {
 					return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 						ok: true,
 						actionRequired: false
@@ -583,6 +579,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
 					ok: true,
 					actionRequired: true,
+					// @ts-expect-error - ignore TS error because we are asserting the type above
 					errors: data.errors.map(encodeAssetMovementAnchorAccountStatusError)
 				}));
 			},
@@ -591,7 +588,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				if (!account) {
 					throw(new KeetaAnchorUserError('Authentication required'));
 				}
-
 				return([ account ] as const);
 			}
 		});

@@ -1035,6 +1035,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			getAccountStatus: async function(account) {
 				if (userKYCNeeded.comparePublicKey(account)) {
 					return({
+						actionRequired: true,
 						errors: [
 							new Errors.KYCShareNeeded({
 								shareWithPrincipals: [ kycSharePrincipal ],
@@ -1046,7 +1047,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					});
 				}
 
-				return({ errors: [] });
+				return({ actionRequired: false });
 			},
 
 			/**
