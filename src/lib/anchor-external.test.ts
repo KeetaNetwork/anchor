@@ -51,6 +51,7 @@ type ModeSpec = {
 	name: string;
 	configure: (builder: AnchorExternalBuilder) => void;
 	decode: (external: string) => Promise<AnchorExternal>;
+	decryptionKeys?: Account[];
 	expectedEncrypted: boolean;
 	expectedSigned: boolean;
 };
@@ -76,6 +77,7 @@ const modeSpecs: ModeSpec[] = [
 		name: 'encrypted-unsigned',
 		configure: function(builder) { builder.withPrincipals([anchor2]); },
 		decode: async function(external) { return(await AnchorExternal.fromEncryptedExternal(external, [anchor2])); },
+		decryptionKeys: [anchor2],
 		expectedEncrypted: true,
 		expectedSigned: false
 	},
@@ -85,6 +87,7 @@ const modeSpecs: ModeSpec[] = [
 			builder.withSigner(anchor1).withPrincipals([anchor1]).withBinding(TEST_BINDING_PREVIOUS_BLOCK_HASH, TEST_BINDING_OPERATION_INDEX);
 		},
 		decode: async function(external) { return(await AnchorExternal.fromEncryptedExternal(external, [anchor1])); },
+		decryptionKeys: [anchor1],
 		expectedEncrypted: true,
 		expectedSigned: true
 	}
@@ -124,6 +127,33 @@ test.each(roundTripCases)('round-trips $name', async function({ entry, mode }) {
 
 	const peeked = await AnchorExternal.peek(external);
 	expect(peeked).toEqual({ encrypted: mode.expectedEncrypted, signed: mode.expectedSigned });
+});
+
+test.each(modeSpecs)('fromExternal decodes $name without a caller container choice', async function(mode) {
+	const builder = new AnchorExternalBuilder().setAnchor(anchor1, { transactionId: 'tx-1' });
+	mode.configure(builder);
+
+	const external = await builder.build();
+
+	const options: { decryptionKeys?: Account[] } = {};
+	if (mode.decryptionKeys !== undefined) {
+		options.decryptionKeys = mode.decryptionKeys;
+	}
+
+	const decoded = await AnchorExternal.fromExternal(external, options);
+	expect(decoded.envelope).toEqual(builder.toEnvelope());
+	expect(decoded.encrypted).toBe(mode.expectedEncrypted);
+	expect(decoded.signed?.signer.comparePublicKey(anchor1) ?? false).toBe(mode.expectedSigned);
+});
+
+test('fromExternal rejects an encrypted envelope when no decryption keys are supplied', async function() {
+	const external = await new AnchorExternalBuilder()
+		.setAnchor(anchor1, { transactionId: 'tx-1' })
+		.withPrincipals([anchor1])
+		.build();
+
+	const error = await AnchorExternal.fromExternal(external).catch(function(caught: unknown) { return(caught); });
+	expect(KeetaAnchorError.isInstance(error)).toBe(true);
 });
 
 test.each(modeSpecs)('round-trips inputs in $name mode', async function(mode) {
