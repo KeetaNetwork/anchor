@@ -207,19 +207,22 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 			statusOptions.requesterAccount = options.requesterAccount;
 		}
 
-		const peeked = await AnchorExternal.peek(external);
-
-		let decoded: AnchorExternal;
-		if (peeked.encrypted) {
-			decoded = await AnchorExternal.fromEncryptedExternal(external, options?.decryptionKeys ?? []);
-		} else {
-			decoded = await AnchorExternal.fromPlainExternal(external);
+		const decodeOptions: { decryptionKeys?: VerifiableAccount[] } = {};
+		if (options?.decryptionKeys !== undefined) {
+			decodeOptions.decryptionKeys = options.decryptionKeys;
 		}
 
+		const decoded = await AnchorExternal.fromExternal(external, decodeOptions);
 		const entries = Object.entries(decoded.envelope.anchors);
-
 		const settled = await Promise.all(entries.map(async ([anchorID, entry]): Promise<[string, AnchorTransactionStatusResult<Transaction>]> => {
-			const result = await this.#readEntryStatus(anchorID, entry, statusOptions);
+			let anchor: KeetaNetAccount;
+			try {
+				anchor = KeetaNetLib.Account.fromPublicKeyString(anchorID);
+			} catch (error) {
+				return([anchorID, { kind: 'error', error: error }]);
+			}
+
+			const result = await this.#readEntryStatus(anchor, entry, statusOptions);
 			return([anchorID, result]);
 		}));
 
@@ -230,14 +233,13 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	/**
 	 * Resolve a single decoded per-anchor entry to its outcome.
 	 */
-	async #readEntryStatus(anchorID: string, entry: AnchorExternalEntry, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
+	async #readEntryStatus(anchor: KeetaNetAccount, entry: AnchorExternalEntry, options: AnchorGetTransactionStatusOptions): Promise<AnchorTransactionStatusResult<Transaction>> {
 		if (!('transactionId' in entry)) {
 			return({ kind: 'unavailable' });
 		}
 
 		let status: StandardizedTransferStatus<Transaction> | null;
 		try {
-			const anchor = KeetaNetLib.Account.fromPublicKeyString(anchorID);
 			status = await this.getStatus(anchor, entry.transactionId, options);
 		} catch (error) {
 			return({ kind: 'error', error: error });
