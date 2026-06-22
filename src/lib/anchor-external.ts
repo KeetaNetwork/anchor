@@ -800,6 +800,25 @@ export class AnchorExternal {
 	}
 
 	/**
+	 * Decode an external string, dispatching on whether the blob is encrypted.
+	 *
+	 * Encrypted blobs are decrypted with the supplied decryption keys.
+	 * Plaintext blobs ignore them.
+	 *
+	 * @throws {@link AnchorExternalError} on decode failure.
+	 */
+	static async fromExternal(external: string, options?: { decryptionKeys?: Account[] }): Promise<AnchorExternal> {
+		const peeked = await AnchorExternal.peek(external);
+		if (peeked.encrypted) {
+			const encryptedResult = await AnchorExternal.fromEncryptedExternal(external, options?.decryptionKeys ?? []);
+			return(encryptedResult);
+		}
+
+		const plainResult = await AnchorExternal.fromPlainExternal(external);
+		return(plainResult);
+	}
+
+	/**
 	 * Inspect encrypted/signed flags of a candidate external string
 	 * without reading plaintext or requiring a decryption key.
 	 */
