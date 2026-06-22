@@ -36,6 +36,7 @@ import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
 import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import type { RefundValue } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
@@ -435,7 +436,7 @@ function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): Keeta
 /**
  * Build the conversion summary surfaced for FX history correlation.
  */
-function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchorQueueStage1Request['expected']>, block: KeetaFXAnchorQueueStage1Request['block'], account: KeetaNetAccount): KeetaFXAnchorConversionSummary {
+function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchorQueueStage1Request['expected']>, block: KeetaFXAnchorQueueStage1Request['block'], account: KeetaNetAccount, refunds: readonly RefundValue[] = []): KeetaFXAnchorConversionSummary {
 	const conversion: KeetaFXAnchorConversionSummary = {
 		from: {
 			token: expected.receive.token.publicKeyString.get(),
@@ -450,21 +451,33 @@ function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchor
 
 	/*
 	 * The user's block funds the swap with the principal (the `from` token)
-	 * and, when charged, a separate cost send in another token.
+	 * and, when charged, a separate cost send in another token. Under a
+	 * variable rate the user may over-send the cost and the anchor refunds the
+	 * excess, so net the refunds against the gross send to report the cost the
+	 * user actually paid.
 	 */
 	for (const operation of block.operations) {
 		if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
 			continue;
 		}
-
 		if (operation.token.comparePublicKey(expected.receive.token)) {
 			continue;
 		}
 
-		conversion.cost = {
-			token: operation.token.publicKeyString.get(),
-			amount: operation.amount.toString()
-		};
+		let costAmount = operation.amount;
+		for (const refund of refunds) {
+			if (operation.token.comparePublicKey(refund.token)) {
+				costAmount -= refund.amount;
+			}
+		}
+
+		if (costAmount > 0n) {
+			conversion.cost = {
+				token: operation.token.publicKeyString.get(),
+				amount: costAmount.toString()
+			};
+		}
+
 		break;
 	}
 
@@ -661,6 +674,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		const builder = userClient.initBuilder();
 		let expected = entry.request.expected;
+		let refunds: readonly RefundValue[] = [];
 
 		/**
 		 * We only want to refund excess for cost/paying token if it is not a fixed rate
@@ -698,13 +712,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
 
-			const { refunds } = assertExchangeBlockParametersAndComputeRefund({
+			const refundResult = assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: entry.request.account,
 				allowedLiquidityAccounts: null,
 				checks: { quote, request },
 				isQuoteBasedExchange: false
 			});
+			refunds = refundResult.refunds;
 
 			for (const refund of refunds) {
 				builder.send(block.account, refund.amount, refund.token);
@@ -749,7 +764,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			throw(error);
 		}
 
-		const conversion = buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account);
+		const conversion = buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account, refunds);
 
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
 		return({

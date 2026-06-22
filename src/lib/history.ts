@@ -361,7 +361,8 @@ export type UserHistoryListOptions = {
 	 */
 	pageSize?: number;
 	/**
-	 * Maximum number of logical transactions to return.
+	 * Maximum number of logical transactions to return. When unset, every page
+	 * of history is walked until exhausted.
 	 */
 	limit?: number;
 	/**
@@ -1105,8 +1106,10 @@ export class UserHistory {
 	}
 
 	/**
-	 * Stream logical transactions page by page instead of buffering the full
-	 * result set in memory.
+	 * Stream logical transactions newest-first, paging through history one page
+	 * at a time instead of buffering the full result set. Walks every page until
+	 * history is exhausted, or until {@link UserHistoryListOptions.limit} logical
+	 * transactions have been yielded.
 	 */
 	async *iterate(account: GenericAccount | string | null, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
 		const externalCache = new Map<string, ResolvedTransfer | undefined>();
@@ -1153,9 +1156,6 @@ export class UserHistory {
 			}
 
 			cursor = last.voteStaple.blocksHash.toString();
-			if (options?.limit === undefined) {
-				return;
-			}
 		}
 	}
 

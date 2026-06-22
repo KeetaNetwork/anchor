@@ -688,6 +688,21 @@ test('pages with the previous staple hash until the limit is reached', async fun
 	expect(transactions.map(transaction => transaction.send?.amount)).toEqual([ 3n, 2n ]);
 });
 
+test('walks every page when no limit is given', async function() {
+	const fixture = await startPagingFixture();
+
+	const transactions = await fixture.history.list(fixture.user, { depth: 1 });
+
+	/*
+	 * All three sends settle in their own staples; walking past the first page
+	 * also surfaces the initial funding receive, proving paging is not
+	 * truncated to a single page.
+	 */
+	const sends = transactions.filter(transaction => transaction.type === 'send').map(transaction => transaction.send?.amount);
+	expect(sends).toEqual([ 3n, 2n, 1n ]);
+	expect(transactions.length).toBeGreaterThan(sends.length);
+});
+
 test('iterate yields logical transactions without buffering the full result', async function() {
 	const fixture = await startPagingFixture();
 
@@ -933,6 +948,18 @@ async function settleExchange(server: KeetaNetFXAnchorHTTPServer, exchange: { ge
 	}
 }
 
+type FXUserClient = NonNullable<Awaited<ReturnType<typeof createNodeAndClient>>['userClient']>;
+
+/**
+ * Wire a {@link UserHistory} backed by the FX status source for the user.
+ */
+function buildFXHistory(client: FXUserClient, userAccount: Account): UserHistory {
+	const resolver = new Resolver({ root: userAccount, client, trustedCAs: [] });
+	const fxStatus = new KeetaFXStatusSource({ client, resolver });
+	const status = new AnchorTransactionStatus(new CompositeAnchorStatusSource([ fxStatus ]));
+	return(new UserHistory({ history: client.client, status }));
+}
+
 /**
  * Options controlling {@link startFXExchangeFixture}.
  */
@@ -1044,10 +1071,7 @@ async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): P
 	const exchange = await quote.createExchange();
 	await settleExchange(server, exchange);
 
-	const resolver = new Resolver({ root: userAccount, client, trustedCAs: [] });
-	const fxStatus = new KeetaFXStatusSource({ client, resolver });
-	const status = new AnchorTransactionStatus(new CompositeAnchorStatusSource([ fxStatus ]));
-	const history = new UserHistory({ history: client.client, status });
+	const history = buildFXHistory(client, userAccount);
 
 	return({
 		server,
@@ -1057,6 +1081,132 @@ async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): P
 		usdToken: usd.publicKeyString.get(),
 		eurToken: eur.publicKeyString.get(),
 		costToken: baseToken.publicKeyString.get()
+	});
+}
+
+/**
+ * Drive a variable-rate exchange where the user over-sends the principal (a
+ * `to`-affinity swap with slippage headroom) and the anchor refunds the
+ * excess, returning the pieces a {@link UserHistory} needs plus the net and
+ * gross principal amounts.
+ */
+async function startFXSlippageFixture(): Promise<{
+	server: KeetaNetFXAnchorHTTPServer;
+	history: UserHistory;
+	userAccount: Account;
+	usdToken: string;
+	eurToken: string;
+	netPrincipal: bigint;
+	grossPrincipal: bigint;
+	received: bigint;
+}> {
+	const netPrincipal = 100n;
+	const grossPrincipal = 120n;
+	const received = 88n;
+
+	const userAccount = newAccount();
+	const liquidityProvider = newAccount();
+	const quoteSigner = newAccount();
+
+	const nodeAndClient = await createNodeAndClient(userAccount);
+	const client = nodeAndClient.userClient;
+	const baseToken = client.baseToken;
+
+	const { account: usd } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: eur } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!usd.isToken() || !eur.isToken()) {
+		throw(new Error('Test currencies are not tokens'));
+	}
+
+	await client.modTokenSupplyAndBalance(500000n, usd);
+	await nodeAndClient.give(userAccount, 50n);
+	await client.modTokenSupplyAndBalance(100000n, eur, { account: liquidityProvider });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: eur });
+	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: usd });
+	await client.send(liquidityProvider, 50n, baseToken);
+
+	/*
+	 * Seed the LP with principal so the in-staple refund (sent before the
+	 * user's funding block settles) does not dip the LP balance negative.
+	 */
+	await client.send(liquidityProvider, 1000n, usd);
+
+	const server = new KeetaNetFXAnchorHTTPServer({
+		accounts: new KeetaNet.lib.Account.Set([ liquidityProvider ]),
+		signer: liquidityProvider,
+		metadataSigner: liquidityProvider,
+		quoteSigner,
+		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
+		storage: {
+			queue: new KeetaAnchorQueueStorageDriverMemory({ id: 'queue' }),
+			autoRun: false
+		},
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: false
+		},
+		fx: {
+			from: [
+				{
+					currencyCodes: [ usd.publicKeyString.get() ],
+					to: [ eur.publicKeyString.get() ]
+				}
+			],
+			/*
+			 * The principal (USD) the anchor actually needs is `netPrincipal`,
+			 * but the estimate's bound lets the user send up to `grossPrincipal`
+			 * as slippage headroom; the anchor refunds the difference.
+			 */
+			getConversionRateAndFee: async function() {
+				return({
+					account: liquidityProvider,
+					convertedAmount: netPrincipal,
+					convertedAmountBound: grossPrincipal,
+					cost: { amount: 0n, token: baseToken }
+				});
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		description: 'FX Anchor Slippage Test',
+		name: 'TEST',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: usd.publicKeyString.get(),
+				EUR: eur.publicKeyString.get()
+			},
+			services: {
+				fx: { Test: await server.serviceMetadata() }
+			}
+		})
+	});
+
+	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount });
+	const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: received, affinity: 'to' });
+	const estimate = estimates?.[0];
+	if (estimate === undefined) {
+		throw(new Error('Expected a USD to EUR estimate from the FX anchor'));
+	}
+
+	const exchange = await estimate.createExchange();
+	await settleExchange(server, exchange);
+
+	const history = buildFXHistory(client, userAccount);
+
+	return({
+		server,
+		history,
+		userAccount,
+		usdToken: usd.publicKeyString.get(),
+		eurToken: eur.publicKeyString.get(),
+		netPrincipal,
+		grossPrincipal,
+		received
 	});
 }
 
@@ -1130,6 +1280,25 @@ test('degrades to a shape-only swap when the FX provider cannot be resolved', as
 	expect(swap?.counterparty?.kind).not.toBe('anchor');
 	expect(swap?.providerStatus).toBeUndefined();
 	expect(swap?.refs.anchorTxIDs).toHaveLength(0);
+});
+
+test('reports the net principal for a variable-rate swap that refunds slippage', async function() {
+	const fixture = await startFXSlippageFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount);
+	const swap = transactions.find(transaction => transaction.type === 'swap');
+	expect(swap).toBeDefined();
+	expect(swap?.counterparty?.kind).toBe('anchor');
+
+	/*
+	 * The conversion summary reports what the user actually paid (net of the
+	 * refund), not the gross amount the swap block sent.
+	 */
+	expect(swap?.send).toEqual({ token: fixture.usdToken, amount: fixture.netPrincipal });
+	expect(swap?.receive).toEqual({ token: fixture.eurToken, amount: fixture.received });
+	expect(fixture.netPrincipal).toBeLessThan(fixture.grossPrincipal);
 });
 
 // #endregion FX
