@@ -33,6 +33,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer } from '../services/asset-movemen
 import { AnchorExternal } from './anchor-external.js';
 import { AnchorTransactionStatus } from './anchor-status.js';
 import { UserHistory } from './history.js';
+import { Buffer } from './utils/buffer.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
 import Resolver from './resolver.js';
