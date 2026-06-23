@@ -2,6 +2,7 @@ import { test, expect } from 'vitest';
 import { Errors } from './common.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 for (const errorClass of [
 	Errors.VerificationNotFound,

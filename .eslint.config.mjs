@@ -38,5 +38,26 @@ export default [
 				}]
 			}]
 		}
+	},
+	{
+		// Buffer is not available in browser environments. Import it from utils/buffer.js
+		// (the polyfill re-export) instead of using the global or importing from 'buffer'.
+		files: ['src/**/*.ts'],
+		ignores: ['**/*.generated.ts'],
+		rules: {
+			'no-restricted-globals': ['error', {
+				name: 'Buffer',
+				message: "Import Buffer from 'utils/buffer.js' (e.g. './utils/buffer.js' or '../../lib/utils/buffer.js') instead of using the global Buffer."
+			}],
+			'no-restricted-imports': ['error', {
+				paths: [{
+					name: 'buffer',
+					message: "Import Buffer from 'utils/buffer.js' instead of the 'buffer' package."
+				}, {
+					name: 'node:buffer',
+					message: "Import Buffer from 'utils/buffer.js' instead of 'node:buffer'."
+				}]
+			}]
+		}
 	}
 ];
