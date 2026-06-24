@@ -36,6 +36,7 @@ import { AnchorTransactionStatus, CompositeAnchorStatusSource } from './anchor-s
 import { UserHistory } from './history.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
 import { asleep } from './utils/asleep.js';
+import { Buffer } from './utils/buffer.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
 import KeetaFXStatusSource from '../services/fx/status-source.js';

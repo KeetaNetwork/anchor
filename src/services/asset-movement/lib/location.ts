@@ -1,6 +1,7 @@
 import { assertNever } from "../../../lib/utils/never.js";
 import type { BankAccountAddressObfuscated, MobileWalletAddressObfuscated } from "../common.js";
 import { assertBankAccountType, assertMobileWalletAccountType, isTronNetworkAlias } from "./location.generated.js";
+import { Buffer } from '../../../lib/utils/buffer.js';
 
 interface BaseLocation<Type extends 'chain' | 'bank-account' | 'mobile-wallet'> {
 	type: Type;

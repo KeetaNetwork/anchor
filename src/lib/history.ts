@@ -318,10 +318,16 @@ export type HistoryQuery = {
 };
 
 /**
+ * Account a history is read for: an account instance, its public-key
+ * string, or `null` for the network-wide perspective.
+ */
+export type HistoryAccount = GenericAccount | string | null;
+
+/**
  * Inverted source of on-chain history pages, newest-first.
  */
 export interface HistorySource {
-	getHistory(account: GenericAccount | string | null, query?: HistoryQuery): Promise<HistoryEntry[]>;
+	getHistory(account: HistoryAccount, query?: HistoryQuery): Promise<HistoryEntry[]>;
 }
 
 /**
@@ -1046,7 +1052,7 @@ function attachSources(transactions: readonly LogicalTransaction[], sources: Rea
 /**
  * Normalize the queried account to its public key string.
  */
-function perspectiveOf(account: GenericAccount | string | null): string | undefined {
+function perspectiveOf(account: HistoryAccount): string | undefined {
 	if (account === null) {
 		return(undefined);
 	}
@@ -1096,7 +1102,7 @@ export class UserHistory {
 	/**
 	 * Fetch, enrich and fold a user's history into logical transactions.
 	 */
-	async list(account: GenericAccount | string | null, options?: UserHistoryListOptions): Promise<LogicalTransaction[]> {
+	async list(account: HistoryAccount, options?: UserHistoryListOptions): Promise<LogicalTransaction[]> {
 		const transactions: LogicalTransaction[] = [];
 		for await (const transaction of this.iterate(account, options)) {
 			transactions.push(transaction);
@@ -1111,7 +1117,7 @@ export class UserHistory {
 	 * history is exhausted, or until {@link UserHistoryListOptions.limit} logical
 	 * transactions have been yielded.
 	 */
-	async *iterate(account: GenericAccount | string | null, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
+	async *iterate(account: HistoryAccount, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
 		const externalCache = new Map<string, ResolvedTransfer | undefined>();
 		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
 		const perspective = perspectiveOf(account);
@@ -1150,7 +1156,7 @@ export class UserHistory {
 				}
 			}
 
-			const last = page[page.length - 1];
+			const last = page.at(-1);
 			if (last === undefined) {
 				return;
 			}
@@ -1162,7 +1168,7 @@ export class UserHistory {
 	/**
 	 * Fetch one page of on-chain history.
 	 */
-	async #fetchPage(account: GenericAccount | string | null, cursor: string | undefined, options?: UserHistoryListOptions): Promise<HistoryEntry[]> {
+	async #fetchPage(account: HistoryAccount, cursor: string | undefined, options?: UserHistoryListOptions): Promise<HistoryEntry[]> {
 		const query: HistoryQuery = {};
 		if (options?.depth !== undefined) {
 			query.depth = options.depth;

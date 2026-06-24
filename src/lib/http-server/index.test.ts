@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import * as HTTPServer from './index.js';
 import { KeetaAnchorUserError } from '../error.js';
 import crypto from 'crypto';
+import { Buffer } from '../utils/buffer.js';
 
 function hashData(data: Buffer): Buffer {
 	const hash = crypto.createHash('sha256');
