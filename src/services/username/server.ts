@@ -89,7 +89,10 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 	}
 
 	protected async initRoutes(config: KeetaAnchorUsernameServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = { ...this.routes };
+		const routes: KeetaAnchorHTTPServer.Routes = {
+			...(await super.initRoutes(config)),
+			...this.routes
+		};
 
 		if ('homepage' in config) {
 			routes['GET /'] = async function() {

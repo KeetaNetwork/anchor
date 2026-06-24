@@ -18,6 +18,9 @@ export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content:
 export type ServiceMetadataAuthenticationType = {
 	method: 'keeta-account';
 	type: 'required' | 'optional' | 'none';
+} | {
+	method?: never;
+	type: 'none';
 };
 
 /**

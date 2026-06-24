@@ -1,9 +1,13 @@
-import type { KeetaAnchorHTTPServerConfig } from './http-server/index.js';
-import type { HTTPSignedField } from './http-server/common.js';
+import type { KeetaAnchorHTTPServerConfig, Routes } from './http-server/index.js';
+import { parseSignatureFromURL, type HTTPSignedField } from './http-server/common.js';
 import type { SignableAccount, VerifiableAccount } from './utils/signing.js';
 import type { ServiceMetadataEndpoint, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import { KeetaNetAnchorHTTPServer } from './http-server/index.js';
 import { SignData, VerifySignedData, objectToSignable } from './utils/signing.js';
+import type { Account, GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import { KeetaAnchorUserValidationError } from './error.js';
+import Resolver from './resolver.js';
+import { KeetaNet } from '../client/index.js';
 
 /**
  * Namespace tag bound into every service metadata signature.
@@ -32,6 +36,19 @@ export type SignedServiceMetadataFields = {
 export interface KeetaAnchorMetadataServerConfig extends KeetaAnchorHTTPServerConfig {
 	/** Signs the published metadata. Omit for unsigned metadata. */
 	metadataSigner?: SignableAccount | undefined;
+
+	serviceMetadataEndpoint?: {
+		expose: false;
+	} | {
+		expose: true;
+
+		authentication?: {
+			required: false;
+		} | {
+			required: true;
+			allowAccount: InstanceType<typeof Account.Set> | ((account: GenericAccount) => Promise<boolean>);
+		}
+	}
 }
 
 /**
@@ -80,6 +97,65 @@ export abstract class KeetaAnchorMetadataServer<
 
 	get metadataSigner(): SignableAccount | undefined {
 		return(this.#metadataSigner);
+	}
+
+	protected async initRoutes(config: C): Promise<Routes> {
+		const routes: Routes = {};
+
+		if (config.serviceMetadataEndpoint?.expose) {
+			const endpointConfig = config.serviceMetadataEndpoint;
+			routes['GET /serviceMetadata'] = {
+				bodyType: 'none',
+				handler: async (_ignore_params, _ignore_data, _ignore_headers, url: URL) => {
+					if (endpointConfig.authentication?.required) {
+						const signature = parseSignatureFromURL(url);
+
+						try {
+							if (!signature.account || !signature.signedField) {
+								throw(new KeetaAnchorUserValidationError({ fields: [] }, 'Missing signature fields in request URL'));
+							}
+
+							const signable = Resolver.getExternalURLSignable(url);
+							const verified = await VerifySignedData(signature.account, signable, signature.signedField);
+
+							if (!verified) {
+								throw(new KeetaAnchorUserValidationError({ fields: [] }, 'Invalid signature in request URL'));
+							}
+
+							let allowAccount = false;
+							if (typeof endpointConfig.authentication.allowAccount === 'function') {
+								allowAccount = await endpointConfig.authentication.allowAccount(signature.account);
+							} else {
+								allowAccount = endpointConfig.authentication.allowAccount.has(signature.account);
+							}
+
+							if (!allowAccount) {
+								throw(new KeetaAnchorUserValidationError({ fields: [] }, 'Account not allowed to access this endpoint'));
+							}
+						} catch (error) {
+							this.logger?.debug('KeetaAnchorMetadataServer: serviceMetadata endpoint authentication failed:', error);
+
+							return({
+								statusCode: 404,
+								headers: { 'Content-Type': 'text/plain' },
+								output: 'Not Found'
+							});
+						}
+					}
+
+					const serviceMetadata = await this.serviceMetadata();
+					const serializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable(serviceMetadata);
+
+					return({
+						output: JSON.stringify(serializable),
+						headers: { 'Content-Type': 'application/json' },
+						statusCode: 200
+					})
+				}
+			}
+		}
+
+		return(routes);
 	}
 
 	protected abstract buildServiceMetadata(): Promise<Built>;

@@ -185,7 +185,7 @@ function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAss
 	});
 }
 
-export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['assetMovement']>[string], KeetaAnchorAssetMovementServerConfig> implements Omit<Required<KeetaAnchorAssetMovementServerConfig>, 'metadataSigner'> {
+export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['assetMovement']>[string], KeetaAnchorAssetMovementServerConfig> implements Omit<Required<KeetaAnchorAssetMovementServerConfig>, 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
 
@@ -197,7 +197,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 	}
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
 		/**
 		 * If a homepage is provided, setup the route for it
