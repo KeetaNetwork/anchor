@@ -8,7 +8,7 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer, AnchorChainingPathInput, AnchorChainingPath } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
@@ -739,6 +739,321 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		this.addresses = addresses;
 		this.transactionsByAddress = transactionsByAddress;
 		this.transferStatuses = transferStatuses;
+	}
+}
+
+type ChainAnchorConvert = (args: {
+	fromAsset: string;
+	toAsset: string;
+	fromLocation: AssetLocationLike;
+	toLocation: AssetLocationLike;
+	value: bigint;
+}) => bigint;
+
+type TestChainAnchorServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'assetMovement'> & {
+	assetMovement: Omit<
+		KeetaAnchorAssetMovementServerConfig['assetMovement'],
+		'initiateTransfer' | 'simulateTransfer' | 'getTransferStatus' | 'createPersistentForwarding' | 'listPersistentForwarding' | 'listTransactions'
+	>;
+	client: KeetaNet.UserClient;
+	convert: ChainAnchorConvert;
+};
+
+function evmAssetToHex(assetId: string): `0x${string}` {
+	if (!assetId.startsWith('evm:0x')) {
+		throw(new Error(`Expected evm asset id, got ${assetId}`));
+	}
+	/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+	return(assetId.slice('evm:'.length) as `0x${string}`);
+}
+
+function solanaAssetToMint(assetId: string): string {
+	if (!assetId.startsWith('solana:')) {
+		throw(new Error(`Expected solana asset id, got ${assetId}`));
+	}
+	return(assetId.slice('solana:'.length));
+}
+
+/**
+ * Configurable in-memory asset-movement anchor for the generic chaining cases.
+ * Generalizes TestBankServer + TestPersistentForwardingBridgeServer so a single
+ * class can model every provider (AM1/AM2/AM3) under any leg-execution mode:
+ *  - keeta-source legs => user-funded KEETA_SEND, marked COMPLETE on the matching
+ *    on-chain send. When the destination is a non-keeta chain it records a withdraw
+ *    tx so a following persistent-forwarding leg can correlate.
+ *  - non-keeta-source legs (EVM/Solana) => deposit instruction, recorded COMPLETE
+ *    (deposit detection is mocked, matching TestBankServer's non-keeta branch).
+ *  - simulateTransfer / createPersistentForwarding / listPersistentForwarding /
+ *    listTransactions are implemented so any leg can run managed OR persistent-forwarding.
+ *  - `convert` models per-leg rate + fee and drives every totalReceiveAmount.
+ */
+class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
+	readonly anchorAccount: GenericAccount;
+	readonly addresses: Map<string, PersistentForwardingBridgeAddressMeta>;
+
+	constructor(config: TestChainAnchorServerConfig) {
+
+		const { client: userClient, convert, ...serverConfig } = config;
+
+		const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const blockListener = new BlockListener({ client: userClient.client });
+
+		const statusMap = new Map<string, KeetaAssetMovementTransaction>();
+		const addresses = new Map<string, PersistentForwardingBridgeAddressMeta>();
+		const forwardValues = new Map<string, bigint>();
+
+		const assetPairStrings = (asset: KeetaAssetMovementTransaction['asset']): { from: string; to: string } => {
+			const pair = toAssetPair(asset);
+			if (typeof pair.from !== 'string' || typeof pair.to !== 'string') {
+				throw(new Error('TestChainAnchorServer: expected string asset ids'));
+			}
+			return({ from: pair.from, to: pair.to });
+		};
+
+		super({
+			...serverConfig,
+			assetMovement: {
+				...serverConfig.assetMovement,
+				async initiateTransfer(request) {
+					const value = BigInt(request.value);
+					const { from: fromAsset, to: toAsset } = assetPairStrings(request.asset);
+					const receive = convert({ fromAsset, toAsset, fromLocation: request.from.location, toLocation: request.to.location, value });
+					const fee = value - receive;
+					const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+					const parsedFrom = toAssetLocation(request.from.location);
+					const isKeetaSource = parsedFrom.type === 'chain' && parsedFrom.chain.type === 'keeta';
+					const parsedTo = toAssetLocation(request.to.location);
+					const destIsKeeta = parsedTo.type === 'chain' && parsedTo.chain.type === 'keeta';
+					const fromStr = convertAssetLocationToString(request.from.location);
+
+					if (isKeetaSource) {
+						statusMap.set(txId, buildTxRecord({
+							id: txId, status: 'PENDING', asset: request.asset,
+							fromLocation: request.from.location, toLocation: request.to.location,
+							fromValue: value.toString(), toValue: receive.toString()
+						}));
+
+						let handle: { remove: () => void } | null = null;
+						handle = blockListener.on('block', {
+							callback: async ({ block }) => {
+								for (const op of block.operations) {
+									if (op.type === KeetaNet.lib.Block.OperationType.SEND && await externalReferencesTransfer(op.external, txId)) {
+										if (op.amount !== value) {
+											throw(new KeetaAnchorUserError(`Invalid transfer amount: expected ${value}, got ${op.amount}`));
+										}
+										const existing = statusMap.get(txId);
+										if (existing && existing.status !== 'COMPLETE') {
+											const withdraw = destIsKeeta ? null : { id: `withdraw-${txId}`, nonce: '0' };
+											statusMap.set(txId, {
+												...existing,
+												status: 'COMPLETE',
+												updatedAt: new Date().toISOString(),
+												to: { ...existing.to, transactions: { withdraw }}
+											});
+										}
+										handle?.remove();
+										return({ requiresWork: false });
+									}
+								}
+								return({ requiresWork: false });
+							}
+						});
+
+						return({
+							id: txId,
+							instructionChoices: [{
+								type: 'KEETA_SEND' as const,
+								location: request.from.location,
+								sendToAddress: anchorAccount.publicKeyString.get(),
+								external: txId,
+								value: value.toString(),
+								tokenAddress: KeetaNet.lib.Account.fromPublicKeyString(fromAsset)
+									.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+									.publicKeyString.get(),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+
+					// Non-keeta source: record COMPLETE immediately (deposit mocked). When the
+					// destination is another non-keeta chain, record a withdraw so a following
+					// persistent-forwarding leg can correlate to it.
+					const nonKeetaRecord = buildTxRecord({
+						id: txId, status: 'COMPLETE', asset: request.asset,
+						fromLocation: request.from.location, toLocation: request.to.location,
+						fromValue: value.toString(), toValue: receive.toString()
+					});
+					if (!destIsKeeta) {
+						nonKeetaRecord.to = { ...nonKeetaRecord.to, transactions: { withdraw: { id: `withdraw-${txId}`, nonce: '0' }}};
+					}
+					statusMap.set(txId, nonKeetaRecord);
+
+					if (fromStr.startsWith('chain:evm:')) {
+						return({
+							id: txId,
+							instructionChoices: [{
+								type: 'EVM_SEND' as const,
+								location: request.from.location,
+								sendToAddress: '0x1111111111111111111111111111111111111111',
+								value: value.toString(),
+								tokenAddress: evmAssetToHex(fromAsset),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+					if (fromStr.startsWith('chain:solana:')) {
+						return({
+							id: txId,
+							instructionChoices: [{
+								type: 'SOLANA_SEND' as const,
+								location: request.from.location,
+								sendToAddress: 'So11111111111111111111111111111111111111112',
+								value: value.toString(),
+								tokenMintAddress: solanaAssetToMint(fromAsset),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+					throw(new Error(`TestChainAnchorServer: unsupported source location ${fromStr}`));
+				},
+
+				async simulateTransfer(request) {
+					const value = BigInt(request.value);
+					const { from: fromAsset, to: toAsset } = assetPairStrings(request.asset);
+					const receive = convert({ fromAsset, toAsset, fromLocation: request.from.location, toLocation: request.to.location, value });
+					const fee = value - receive;
+					forwardValues.set(convertAssetLocationToString(request.from.location), value);
+
+					const parsedFrom = toAssetLocation(request.from.location);
+					const fromStr = convertAssetLocationToString(request.from.location);
+
+					if (parsedFrom.type === 'chain' && parsedFrom.chain.type === 'keeta') {
+						return({
+							instructionChoices: [{
+								type: 'KEETA_SEND' as const,
+								location: request.from.location,
+								value: value.toString(),
+								tokenAddress: KeetaNet.lib.Account.fromPublicKeyString(fromAsset)
+									.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)
+									.publicKeyString.get(),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+					if (fromStr.startsWith('chain:evm:')) {
+						return({
+							instructionChoices: [{
+								type: 'EVM_SEND' as const,
+								location: request.from.location,
+								value: value.toString(),
+								tokenAddress: evmAssetToHex(fromAsset),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+					if (fromStr.startsWith('chain:solana:')) {
+						return({
+							instructionChoices: [{
+								type: 'SOLANA_SEND' as const,
+								location: request.from.location,
+								value: value.toString(),
+								tokenMintAddress: solanaAssetToMint(fromAsset),
+								assetFee: fee.toString(),
+								totalReceiveAmount: receive.toString()
+							}]
+						});
+					}
+					throw(new Error(`TestChainAnchorServer: unsupported simulate source ${fromStr}`));
+				},
+
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				async getTransferStatus(id: string): Promise<any> {
+					await blockListener.scan();
+					const tx = statusMap.get(id);
+					if (!tx) {
+						throw(new Error(`Unknown transfer ID: ${id}`));
+					}
+					return({ transaction: tx });
+				},
+
+				async createPersistentForwarding(request) {
+					if (!('destinationLocation' in request) || !('destinationAddress' in request)) {
+						throw(new KeetaAnchorUserError('createPersistentForwarding via template is not supported in this test anchor'));
+					}
+					if (typeof request.destinationAddress !== 'string') {
+						throw(new KeetaAnchorUserError('Test anchor only supports string destinationAddress for persistent forwarding'));
+					}
+					const address = `persistentForwarding-${Math.random().toString(36).slice(2)}`;
+					const meta: PersistentForwardingBridgeAddressMeta = {
+						sourceLocation: request.sourceLocation,
+						destinationLocation: request.destinationLocation,
+						destinationAddress: request.destinationAddress,
+						asset: request.asset
+					};
+					addresses.set(address, meta);
+					return({ address, asset: meta.asset, sourceLocation: meta.sourceLocation, destinationLocation: meta.destinationLocation, destinationAddress: meta.destinationAddress });
+				},
+
+				async listPersistentForwarding(request) {
+					const all: KeetaPersistentForwardingAddressDetails[] = [];
+					for (const [address, meta] of addresses) {
+						all.push({ address, asset: meta.asset, sourceLocation: meta.sourceLocation, destinationLocation: meta.destinationLocation, destinationAddress: meta.destinationAddress });
+					}
+					let filtered = all;
+					const searches = request.search;
+					if (searches && searches.length > 0) {
+						filtered = all.filter(addr => searches.some(search => {
+							if (search.destinationAddress !== undefined && addr.destinationAddress !== search.destinationAddress) {
+								return(false);
+							}
+							return(true);
+						}));
+					}
+					return({ addresses: filtered, total: filtered.length.toString() });
+				},
+
+				async listTransactions(request) {
+					const transactions: KeetaAssetMovementTransaction[] = [];
+					const sourceTxIds = (request.transactions ?? [])
+						.map(f => f.transaction.id)
+						.filter((id): id is string => typeof id === 'string');
+
+					for (const pf of (request.persistentAddresses ?? [])) {
+						if (!('persistentAddress' in pf) || !pf.persistentAddress) {
+							continue;
+						}
+						const meta = addresses.get(pf.persistentAddress);
+						if (!meta) {
+							continue;
+						}
+						const { from: fromAsset, to: toAsset } = assetPairStrings(meta.asset);
+						const depositValue = forwardValues.get(convertAssetLocationToString(meta.sourceLocation)) ?? 0n;
+						const receive = convert({ fromAsset, toAsset, fromLocation: meta.sourceLocation, toLocation: meta.destinationLocation, value: depositValue });
+						const correlateId = sourceTxIds[0] ?? `forward-${Math.random().toString(36).slice(2)}`;
+
+						const forwarded = buildTxRecord({
+							id: `persistentForwarding-tx-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+							status: 'COMPLETE', asset: meta.asset,
+							fromLocation: convertAssetLocationToString(meta.sourceLocation),
+							toLocation: convertAssetLocationToString(meta.destinationLocation),
+							fromValue: depositValue.toString(), toValue: receive.toString()
+						});
+						forwarded.from.transactions = { ...forwarded.from.transactions, persistentForwarding: { id: correlateId, nonce: '0' }};
+						transactions.push(forwarded);
+					}
+					return({ transactions, total: transactions.length.toString() });
+				}
+			}
+		});
+
+		this.anchorAccount = anchorAccount;
+		this.addresses = addresses;
 	}
 }
 
@@ -3055,5 +3370,690 @@ describe('Persistent Forwarding chaining', function() {
 		expect(forwardedExecuted.observedTransaction.to.location).toEqual(h.keetaLocation);
 
 		expect(plan.state.status).toEqual('completed');
+	});
+});
+
+describe('Generic Test Cases', function() {
+	/*
+	 * Stable symbolic asset labels. Keeta tokens are minted per-world (random
+	 * keys), so discovered paths are compared by these symbols rather than by
+	 * raw ids, which keeps the expected-path declarations world-independent.
+	 */
+	type Sym =
+		| 'USD' | 'EUR' | 'BRL' | 'CAD' | 'USDC' | 'KTA'
+		| 'USDC_BASE' | 'KTA_BASE' | 'ETH_BASE'
+		| 'USDC_ETH' | 'USDT_ETH' | 'USDC_SOL' | 'USDT_SOL'
+		| 'FIAT_USD' | 'FIAT_EUR' | 'FIAT_BRL' | 'FIAT_CAD';
+
+	// Fixed external-chain asset ids (stable across worlds, unlike keeta tokens).
+	const EXTERNAL_IDS = {
+		USDC_BASE: 'evm:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+		KTA_BASE:  'evm:0x4200000000000000000000000000000000000042',
+		ETH_BASE:  'evm:0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
+		USDC_ETH:  'evm:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+		USDT_ETH:  'evm:0xdAC17F958D2ee523a2206206994597C13D831ec7',
+		USDC_SOL:  'solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+		USDT_SOL:  'solana:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
+	} as const;
+
+	const LOC = {
+		base: 'chain:evm:8453',
+		eth:  'chain:evm:1',
+		sol:  'chain:solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
+		sepa: 'bank-account:iban-swift',
+		wire: 'bank-account:us'
+	} as const satisfies { [key: string]: AssetLocationLike };
+
+	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
+	const PFR_OPS = { initiateTransfer: false, createPersistentForwarding: true } as const;
+
+	type LegMode = 'managed' | 'pfr';
+	type FeeProfile = { name: string; flatFee: bigint; ethRateNum: bigint; ethRateDen: bigint };
+	type WorldConfig = { name: string; legMode: LegMode; fee: FeeProfile };
+
+	const FX_RATE = 0.88;
+
+	/* The single conversion used by BOTH the anchors and the expected-output math. */
+	function convertLeg(from: Sym, to: Sym, value: bigint, fee: FeeProfile): bigint {
+		let out = value;
+		if (from === 'USDC_BASE' && to === 'ETH_BASE') {
+			out = value * fee.ethRateNum / fee.ethRateDen;
+		}
+		out = out - fee.flatFee;
+		if (out < 1n) {
+			out = 1n;
+		}
+		return(out);
+	}
+
+	function fxConvert(value: bigint): bigint {
+		return(BigInt(Math.round(Number(value) * FX_RATE)));
+	}
+
+	type ExpectedLeg = { provider: string; from: Sym; to: Sym };
+
+	function computeExpectedOutput(legs: ExpectedLeg[], input: bigint, fee: FeeProfile): bigint {
+		let value = input;
+		for (const leg of legs) {
+			if (leg.provider === 'FX1') {
+				value = fxConvert(value);
+			} else {
+				value = convertLeg(leg.from, leg.to, value, fee);
+			}
+		}
+		return(value);
+	}
+
+	type AMAssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
+	type AMSide = AMAssetEntry['paths'][number]['pair'][number];
+
+	async function buildWorld(config: WorldConfig) {
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const { userClient: client, fees } = await createNodeAndClient(account);
+
+		const makeToken = async () => {
+			const { account: tokenAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			await client.setInfo(
+				{ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS']) },
+				{ account: tokenAccount }
+			);
+			return(tokenAccount.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN));
+		};
+
+		const giveTokens = async (to: GenericAccount, amount: bigint, token: TokenAddress) => {
+			await client.modTokenSupplyAndBalance(amount, token, { account: to });
+		};
+
+		const keetaLocation = `chain:keeta:${client.network}` satisfies AssetLocationLike;
+
+		const tokens = {
+			USD: await makeToken(),
+			EUR: await makeToken(),
+			BRL: await makeToken(),
+			CAD: await makeToken(),
+			USDC: await makeToken(),
+			KTA: await makeToken()
+		};
+
+		const tokenSymById = new Map<string, Sym>();
+		for (const [ sym, token ] of Object.entries(tokens)) {
+			/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+			tokenSymById.set(token.publicKeyString.get(), sym as Sym);
+		}
+		const externalSymById = new Map<string, Sym>();
+		for (const [ sym, id ] of Object.entries(EXTERNAL_IDS)) {
+			/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+			externalSymById.set(id, sym as Sym);
+		}
+
+		const symbolOf = (id: string): Sym => {
+			const tokenSym = tokenSymById.get(id);
+			if (tokenSym) {
+				return(tokenSym);
+			}
+			const externalSym = externalSymById.get(id);
+			if (externalSym) {
+				return(externalSym);
+			}
+			if (id === 'USD' || id === 'EUR' || id === 'BRL' || id === 'CAD') {
+				/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+				return(`FIAT_${id}` as Sym);
+			}
+			/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
+			return(id as Sym);
+		};
+
+		const convert: ChainAnchorConvert = ({ fromAsset, toAsset, value }) => {
+			return(convertLeg(symbolOf(fromAsset), symbolOf(toAsset), value, config.fee));
+		};
+
+		const baseEvmOps = config.legMode === 'pfr' ? PFR_OPS : MANAGED_OPS;
+
+		const keetaSide = (token: TokenAddress): AMSide => ({
+			location: keetaLocation,
+			id: token.publicKeyString.get(),
+			rails: { common: [{ rail: 'KEETA_SEND', supportedOperations: MANAGED_OPS }] }
+		});
+		const baseSide = (id: AMSide['id']): AMSide => ({
+			location: LOC.base,
+			id,
+			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: baseEvmOps }] }
+		});
+		const ethSide = (id: AMSide['id']): AMSide => ({
+			location: LOC.eth,
+			id,
+			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: MANAGED_OPS }] }
+		});
+		const solSide = (id: AMSide['id']): AMSide => ({
+			location: LOC.sol,
+			id,
+			rails: { common: [{ rail: 'SOLANA_SEND', supportedOperations: MANAGED_OPS }] }
+		});
+		const fiatSide = (iso: AMSide['id'], location: NonNullable<AMSide['location']>, rail: 'WIRE' | 'SEPA_PUSH'): AMSide => ({
+			location,
+			id: iso,
+			rails: { common: [{ rail, supportedOperations: MANAGED_OPS }] }
+		});
+		// One-way destination: outbound-only rail => the graph builds no reverse edge.
+		const ethBaseTerminal = (id: AMSide['id']): AMSide => ({
+			location: LOC.base,
+			id,
+			rails: { outbound: [ 'EVM_SEND' ] }
+		});
+
+		const pairEntry = (a: AMSide, b: AMSide): AMAssetEntry => ({
+			asset: [ a.id, b.id ],
+			paths: [{ pair: [ a, b ] }]
+		});
+
+		const am1Assets: AMAssetEntry[] = [
+			pairEntry(keetaSide(tokens.EUR), keetaSide(tokens.USD)),
+			pairEntry(keetaSide(tokens.BRL), keetaSide(tokens.USD)),
+			pairEntry(keetaSide(tokens.CAD), keetaSide(tokens.USD)),
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), keetaSide(tokens.USD)),
+			pairEntry(keetaSide(tokens.USD), fiatSide('USD', LOC.wire, 'WIRE')),
+			pairEntry(keetaSide(tokens.EUR), fiatSide('EUR', LOC.wire, 'WIRE')),
+			pairEntry(keetaSide(tokens.BRL), fiatSide('BRL', LOC.wire, 'WIRE')),
+			pairEntry(keetaSide(tokens.CAD), fiatSide('CAD', LOC.wire, 'WIRE')),
+			pairEntry(keetaSide(tokens.USD), fiatSide('EUR', LOC.sepa, 'SEPA_PUSH'))
+		];
+		const am2Assets: AMAssetEntry[] = [
+			pairEntry(keetaSide(tokens.USDC), baseSide(EXTERNAL_IDS.USDC_BASE)),
+			pairEntry(keetaSide(tokens.KTA), baseSide(EXTERNAL_IDS.KTA_BASE))
+		];
+		const am3Assets: AMAssetEntry[] = [
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), ethSide(EXTERNAL_IDS.USDC_ETH)),
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), ethSide(EXTERNAL_IDS.USDT_ETH)),
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), solSide(EXTERNAL_IDS.USDC_SOL)),
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), solSide(EXTERNAL_IDS.USDT_SOL)),
+			pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), ethBaseTerminal(EXTERNAL_IDS.ETH_BASE))
+		];
+
+		const am1 = new TestChainAnchorServer({ ...(DEBUG ? { logger } : {}), client, convert, assetMovement: { supportedAssets: am1Assets }});
+		const am2 = new TestChainAnchorServer({ ...(DEBUG ? { logger } : {}), client, convert, assetMovement: { supportedAssets: am2Assets }});
+		const am3 = new TestChainAnchorServer({ ...(DEBUG ? { logger } : {}), client, convert, assetMovement: { supportedAssets: am3Assets }});
+
+		const fxLP = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const fx1 = new TestFXServer({
+			...(DEBUG ? { logger } : {}),
+			quoteSigner: KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0),
+			accounts: new KeetaNet.lib.Account.Set([ fxLP ]),
+			signer: fxLP,
+			client,
+			giveTokens,
+			fx: {
+				from: [{
+					currencyCodes: [ tokens.USDC.publicKeyString.get(), tokens.KTA.publicKeyString.get() ],
+					to: [ tokens.USDC.publicKeyString.get(), tokens.KTA.publicKeyString.get() ]
+				}]
+			}
+		});
+
+		await Promise.all([ am1.start(), am2.start(), am3.start(), fx1.start() ]);
+		fees.addFeeFreeAccount(fxLP);
+		// The user funds many legs across all cases in one world; waive its network
+		// fees so the shared root account's base-token balance can't deplete mid-suite.
+		fees.addFeeFreeAccount(client.account);
+
+		await client.setInfo({
+			description: 'Generic Chaining Test',
+			name: 'TEST',
+			metadata: Resolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: Object.fromEntries(Object.entries(tokens).map(([ sym, token ]) => [ `$${sym}`, token.publicKeyString.get() ])),
+				services: {
+					fx: { FX1: await fx1.serviceMetadata() },
+					assetMovement: {
+						AM1: await am1.serviceMetadata(),
+						AM2: await am2.serviceMetadata(),
+						AM3: await am3.serviceMetadata()
+					}
+				}
+			} satisfies ServiceMetadataExternalizable)
+		});
+
+		const anchorChaining = new AnchorChaining({
+			client,
+			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+		});
+
+		return({
+			client, fees, tokens, keetaLocation, anchorChaining, giveTokens, symbolOf,
+			recipient: client.account.publicKeyString.get(),
+			[Symbol.asyncDispose]: async function() {
+				await am1[Symbol.asyncDispose]?.();
+				await am2[Symbol.asyncDispose]?.();
+				await am3[Symbol.asyncDispose]?.();
+				await fx1[Symbol.asyncDispose]?.();
+			}
+		});
+	}
+
+	type World = Awaited<ReturnType<typeof buildWorld>>;
+
+	type ChainTestCase = {
+		/** Human-readable case name */
+		name: string;
+		/** Source value (affinity 'from') */
+		inputAmount: bigint;
+		/** Build the chaining request from the world's tokens/locations */
+		request: (w: World, input: bigint) => AnchorChainingPathInput;
+		/** Ordered legs the discovered+selected path must match */
+		expectedLegs: ExpectedLeg[];
+		/** True when the final leg flips to a 'forwarded' step under legMode:'pfr' */
+		pfrEligibleFinalLeg?: boolean;
+		/** Restrict to specific leg modes (default: both) */
+		legModes?: LegMode[];
+	};
+
+	const assetIdOf = (asset: AnchorChainingAsset): string => {
+		if (KeetaNet.lib.Account.isInstance(asset)) {
+			return(asset.publicKeyString.get());
+		} else {
+			return(String(asset));
+		}
+	};
+
+	const pathSignature = (path: AnchorChainingPath, w: World): ExpectedLeg[] => {
+		return(path.path.map(function(step) {
+			return({
+				provider: step.type === 'keetaSend' ? 'KEETA' : step.providerID,
+				from: w.symbolOf(assetIdOf(step.from.asset)),
+				to: w.symbolOf(assetIdOf(step.to.asset))
+			})
+		}));
+	}
+
+	const legsEqual = (a: ExpectedLeg[], b: ExpectedLeg[]): boolean => {
+		if (a.length !== b.length) {
+			return(false);
+		}
+
+		for (let i = 0; i < a.length; i++) {
+			const legA = a[i];
+			const legB = b[i];
+
+			if (!legA || !legB) {
+				return(false);
+			}
+
+			if (!legB || legA.provider !== legB.provider || legA.from !== legB.from || legA.to !== legB.to) {
+				return(false);
+			}
+		}
+
+		return(true);
+	}
+		
+
+	const testCases: ChainTestCase[] = [
+		{
+			name: 'EUR keeta -> USD keeta (AM1, single keeta swap)',
+			inputAmount: 1000n,
+			request: (w, input) => ({
+				source: { asset: w.tokens.EUR, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: w.tokens.USD, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [{ provider: 'AM1', from: 'EUR', to: 'USD' }]
+		},
+		{
+			name: 'BRL keeta -> EUR keeta (AM1 BRL->USD, AM1 USD->EUR)',
+			inputAmount: 1000n,
+			request: (w, input) => ({
+				source: { asset: w.tokens.BRL, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: w.tokens.EUR, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM1', from: 'BRL', to: 'USD' },
+				{ provider: 'AM1', from: 'USD', to: 'EUR' }
+			]
+		},
+		{
+			name: 'USDC keeta -> USDC base (AM2, single step)',
+			inputAmount: 1000n,
+			request: (w, input) => ({
+				source: { asset: w.tokens.USDC, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, recipient: w.recipient, rail: 'EVM_SEND' }
+			}),
+			expectedLegs: [{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' }]
+		},
+		{
+			name: 'USDC base -> USDC keeta (AM2, single step)',
+			inputAmount: 1000n,
+			legModes: [ 'managed' ],
+			request: (w, input) => ({
+				source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: input, rail: 'EVM_SEND' },
+				destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [{ provider: 'AM2', from: 'USDC_BASE', to: 'USDC' }]
+		},
+		{
+			name: 'USDC keeta -> USD keeta (AM2 keeta->base, AM1 base->keeta)',
+			inputAmount: 1000n,
+			pfrEligibleFinalLeg: true,
+			request: (w, input) => ({
+				source: { asset: w.tokens.USDC, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: w.tokens.USD, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' },
+				{ provider: 'AM1', from: 'USDC_BASE', to: 'USD' }
+			]
+		},
+		{
+			name: 'EUR keeta -> EUR SEPA (AM1 EUR->USD, AM1 USD->EUR/SEPA)',
+			inputAmount: 1000n,
+			request: (w, input) => ({
+				source: { asset: w.tokens.EUR, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: 'EUR', location: LOC.sepa, recipient: w.recipient, rail: 'SEPA_PUSH' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM1', from: 'EUR', to: 'USD' },
+				{ provider: 'AM1', from: 'USD', to: 'FIAT_EUR' }
+			]
+		},
+		{
+			name: 'KTA keeta -> USDC base (FX1 keeta swap, AM2 keeta->base)',
+			inputAmount: 1000n,
+			request: (w, input) => ({
+				source: { asset: w.tokens.KTA, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, recipient: w.recipient, rail: 'EVM_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'FX1', from: 'KTA', to: 'USDC' },
+				{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' }
+			]
+		},
+		{
+			name: 'USDC keeta -> USDC ethereum (AM2 keeta->base, AM3 base->eth)',
+			inputAmount: 1000n,
+			pfrEligibleFinalLeg: true,
+			request: (w, input) => ({
+				source: { asset: w.tokens.USDC, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' },
+				{ provider: 'AM3', from: 'USDC_BASE', to: 'USDC_ETH' }
+			]
+		},
+		{
+			name: 'USDC ethereum -> USDC keeta (AM3 eth->base, AM2 base->keeta)',
+			inputAmount: 1000n,
+			pfrEligibleFinalLeg: true,
+			request: (w, input) => ({
+				source: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, value: input, rail: 'EVM_SEND' },
+				destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM3', from: 'USDC_ETH', to: 'USDC_BASE' },
+				{ provider: 'AM2', from: 'USDC_BASE', to: 'USDC' }
+			]
+		},
+		{
+			name: 'USDC keeta -> ETH base (AM2 keeta->base, AM3 USDC->ETH base, variable rate)',
+			inputAmount: 1000n,
+			pfrEligibleFinalLeg: true,
+			request: (w, input) => ({
+				source: { asset: w.tokens.USDC, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: EXTERNAL_IDS.ETH_BASE, location: LOC.base, recipient: w.recipient, rail: 'EVM_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' },
+				{ provider: 'AM3', from: 'USDC_BASE', to: 'ETH_BASE' }
+			]
+		},
+		{
+			name: '3-leg: KTA keeta -> USDC ethereum (FX1 swap, AM2 keeta->base, AM3 base->eth)',
+			inputAmount: 1000n,
+			pfrEligibleFinalLeg: true,
+			request: (w, input) => ({
+				source: { asset: w.tokens.KTA, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
+				destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'FX1', from: 'KTA', to: 'USDC' },
+				{ provider: 'AM2', from: 'USDC', to: 'USDC_BASE' },
+				{ provider: 'AM3', from: 'USDC_BASE', to: 'USDC_ETH' }
+			]
+		},
+		{
+			name: '3-leg: USDC ethereum -> KTA keeta (AM3 eth->base, AM2 base->keeta, FX1 swap)',
+			inputAmount: 1000n,
+			legModes: [ 'managed' ], // middle base->keeta leg cannot be persistent-forwarding mid-chain
+			request: (w, input) => ({
+				source: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, value: input, rail: 'EVM_SEND' },
+				destination: { asset: w.tokens.KTA, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM3', from: 'USDC_ETH', to: 'USDC_BASE' },
+				{ provider: 'AM2', from: 'USDC_BASE', to: 'USDC' },
+				{ provider: 'FX1', from: 'USDC', to: 'KTA' }
+			]
+		},
+		{
+			name: '3-leg: USDC ethereum -> EUR SEPA (AM3 eth->base, AM1 base->USD keeta, AM1 USD->EUR/SEPA)',
+			inputAmount: 1000n,
+			legModes: [ 'managed' ], // middle base->keeta leg cannot be persistent-forwarding mid-chain
+			request: (w, input) => ({
+				source: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, value: input, rail: 'EVM_SEND' },
+				destination: { asset: 'EUR', location: LOC.sepa, recipient: w.recipient, rail: 'SEPA_PUSH' }
+			}),
+			expectedLegs: [
+				{ provider: 'AM3', from: 'USDC_ETH', to: 'USDC_BASE' },
+				{ provider: 'AM1', from: 'USDC_BASE', to: 'USD' },
+				{ provider: 'AM1', from: 'USD', to: 'FIAT_EUR' }
+			]
+		}
+	];
+
+	const FEE_PROFILES: FeeProfile[] = [
+		{ name: 'no-fee', flatFee: 0n, ethRateNum: 1n, ethRateDen: 1n },
+		{ name: 'fees',   flatFee: 7n, ethRateNum: 3n, ethRateDen: 2n }
+	];
+
+	const worldConfigs: WorldConfig[] = [];
+	for (const legMode of [ 'managed', 'pfr' ] as const) {
+		for (const fee of FEE_PROFILES) {
+			worldConfigs.push({ name: `${legMode}/${fee.name}`, legMode, fee });
+		}
+	}
+
+	async function runCase(w: World, wc: WorldConfig, tc: ChainTestCase): Promise<void> {
+		const request = tc.request(w, tc.inputAmount);
+
+		// 1. Routing: a path matching the expected legs must exist, and it must
+		//    be the same regardless of fees/leg-mode (expectedLegs is fixed).
+		const paths = await w.anchorChaining.getPaths(request);
+		if (!paths) {
+			throw(new Error(`No paths found`));
+		}
+		const selected = paths.find((p) => legsEqual(pathSignature(p, w), tc.expectedLegs));
+		if (!selected) {
+			throw(new Error(`No path matching expectedLegs. Found: ${JSON.stringify(paths.map((p) => pathSignature(p, w)))}`));
+		}
+
+		// 2. Plan: built over the selected path, with the right step types.
+		const plan = await AnchorChainingPlan.create(selected);
+
+		const planProviders = plan.plan.steps.map((s) => s.type === 'keetaSend' ? 'KEETA' : s.step.providerID);
+		expect(planProviders).toEqual(tc.expectedLegs.map((l) => l.provider));
+
+		const forwardedCount = plan.plan.steps.filter((s) => s.type === 'forwarded').length;
+		const expectedForwarded = (tc.pfrEligibleFinalLeg && wc.legMode === 'pfr') ? 1 : 0;
+		expect(forwardedCount).toEqual(expectedForwarded);
+
+		for (const token of Object.values(w.tokens)) {
+			await w.giveTokens(w.client.account, 1_000_000n, token);
+		}
+
+		plan.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await plan.execute({ requireSendAuth: true });
+
+		// 4. Both legs executed and value threaded correctly (fees applied).
+		expect(plan.state.status).toEqual('completed');
+		expect(result.steps.length).toEqual(tc.expectedLegs.length);
+		expect(plan.plan.totalValueOut).toEqual(computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee));
+		expect(plan.plan.totalValueOut > 0n).toBe(true);
+	}
+
+	/*
+	 * One test per world config. A fresh world is built inside each test because
+	 * the shared test-node harness tears down nodes after every test; every
+	 * applicable case then runs against that world via the identical runner above.
+	 */
+	for (const wc of worldConfigs) {
+		test(`chaining flows [${wc.name}]`, async function() {
+			await using w = await buildWorld(wc);
+			for (const tc of testCases) {
+				if (tc.legModes && !tc.legModes.includes(wc.legMode)) {
+					continue;
+				}
+				try {
+					await runCase(w, wc, tc);
+				} catch (err) {
+					throw(new Error(`Case "${tc.name}" [${wc.name}] failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err }));
+				}
+			}
+		}, 300_000);
+	}
+});
+
+describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', function() {
+	type AssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
+
+	async function createKeetaSwapHarness() {
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const { userClient: client, fees } = await createNodeAndClient(account);
+		fees.addFeeFreeAccount(client.account);
+
+		const makeToken = async () => {
+			const { account: tokenAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			await client.setInfo(
+				{ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS']) },
+				{ account: tokenAccount }
+			);
+			return(tokenAccount.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN));
+		};
+		const giveTokens = async (to: GenericAccount, amount: bigint, token: TokenAddress) => {
+			await client.modTokenSupplyAndBalance(amount, token, { account: to });
+		};
+
+		const keetaLocation = `chain:keeta:${client.network}` satisfies AssetLocationLike;
+		const tokens = { USD: await makeToken(), EUR: await makeToken(), CAD: await makeToken() };
+
+		const convert: ChainAnchorConvert = ({ value }) => {
+			const out = value - 10n;
+			return(out < 1n ? 1n : out);
+		};
+
+		const swapEntry = (a: TokenAddress, b: TokenAddress): AssetEntry => ({
+			asset: [ a.publicKeyString.get(), b.publicKeyString.get() ],
+			paths: [{ pair: [
+				{ location: keetaLocation, id: a.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }},
+				{ location: keetaLocation, id: b.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+			] }]
+		});
+
+		const hub = new TestChainAnchorServer({
+			...(DEBUG ? { logger } : {}),
+			client,
+			convert,
+			assetMovement: {
+				supportedAssets: [
+					swapEntry(tokens.USD, tokens.EUR),
+					swapEntry(tokens.USD, tokens.CAD)
+				]
+			}
+		});
+		await hub.start();
+
+		await client.setInfo({
+			description: 'Keeta Swap Hub',
+			name: 'TEST',
+			metadata: Resolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: {
+					'$USD': tokens.USD.publicKeyString.get(),
+					'$EUR': tokens.EUR.publicKeyString.get(),
+					'$CAD': tokens.CAD.publicKeyString.get()
+				},
+				services: { assetMovement: { Hub: await hub.serviceMetadata() }}
+			} satisfies ServiceMetadataExternalizable)
+		});
+
+		const anchorChaining = new AnchorChaining({
+			client,
+			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+		});
+
+		const getEurToCadPath = async () => {
+			const paths = await anchorChaining.getPaths({
+				source: { asset: tokens.EUR, location: keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+				destination: { asset: tokens.CAD, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+			});
+			const path = paths?.find(p => p.path.length === 2);
+			if (!path) {
+				throw(new Error(`Expected a 2-leg EUR -> USD -> CAD path, got ${JSON.stringify(paths?.map(p => p.path.length))}`));
+			}
+			return(path);
+		};
+
+		return({
+			client, tokens, keetaLocation, anchorChaining, giveTokens, getEurToCadPath,
+			[Symbol.asyncDispose]: async function() {
+				await hub[Symbol.asyncDispose]?.();
+			}
+		});
+	}
+
+	test('plans EUR -> USD -> CAD as two managed sends, not a forwarded step', async function() {
+		await using h = await createKeetaSwapHarness();
+
+		const path = await h.getEurToCadPath();
+
+		const secondLeg = path.path[1];
+		if (!secondLeg || secondLeg.type !== 'assetMovement') {
+			throw(new Error(`Expected the second path leg to be an asset-movement node`));
+		}
+		expect(secondLeg.from.supportedOperations?.createPersistentForwarding).toBe(true);
+
+		const plan = await AnchorChainingPlan.create(path);
+
+		expect(plan.plan.steps.map(s => s.type)).toEqual([ 'assetMovement', 'assetMovement' ]);
+	});
+
+	test('executes EUR -> USD -> CAD with two user sends (the second send is not skipped)', async function() {
+		await using h = await createKeetaSwapHarness();
+		await h.giveTokens(h.client.account, 1_000_000n, h.tokens.EUR);
+		await h.giveTokens(h.client.account, 1_000_000n, h.tokens.USD);
+
+		const plan = await AnchorChainingPlan.create(await h.getEurToCadPath());
+
+		const sends: { token: string; value: bigint }[] = [];
+		plan.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'keetaSendAuthRequired') {
+				sends.push({ token: payload.action.token.publicKeyString.get(), value: payload.action.value });
+				payload.markCompleted({ sent: true });
+			} else {
+				payload.markCompleted();
+			}
+		});
+
+		const result = await plan.execute({ requireSendAuth: true });
+
+		expect(plan.state.status).toEqual('completed');
+		expect(result.steps.map(s => s.type)).toEqual([ 'assetMovement', 'assetMovement' ]);
+
+		expect(sends).toHaveLength(2);
+		expect(sends[0]?.token).toEqual(h.tokens.EUR.publicKeyString.get());
+		expect(sends[1]?.token).toEqual(h.tokens.USD.publicKeyString.get());
 	});
 });

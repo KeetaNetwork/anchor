@@ -166,7 +166,7 @@ interface AnchorChainingDestination extends AnchorChainingAssetAndLocation {
 	recipient: RecipientResolved;
 }
 
-interface AnchorChainingPathInput {
+export interface AnchorChainingPathInput {
 	source: AnchorChainingAssetAndLocation;
 	destination: AnchorChainingDestination;
 }
@@ -1320,13 +1320,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			 *   (a) the source rail explicitly cannot accept a managed transfer.
 			 *   (b) the prior step is also an asset-movement step (AMP -> AMP
 			 *       transition) and the source rail supports PFR.
+			 *
+			 * Persistent forwarding only applies to non-Keeta (external chain)
+			 * source rails: the model is that the prior step deposits into a chain
+			 * address the bridge observes and auto-forwards. A Keeta-source leg
+			 * (KEETA_SEND) is always a user-initiated send -- the prior step routes
+			 * its output back to the user, who then sends again -- so it is never
+			 * PFR, even when the provider advertises createPersistentForwarding at
+			 * the provider level (which its bare KEETA_SEND rails would otherwise
+			 * inherit). Treating an on-Keeta swap as PFR skips the required second
+			 * send.
 			 */
 			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
 			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
 			const initiateForbidden = scanStep.from.supportedOperations?.initiateTransfer === false;
+			const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
-			const shouldUsePFR = initiateForbidden || (isAmpToAmpTransition && pfrSupported);
+			const shouldUsePFR = !sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported));
 			if (!shouldUsePFR) {
 				continue;
 			}
@@ -1680,7 +1691,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 											throw(new Error(`Deposit message outbound is not currently supported for chaining`));
 										}
 										resolvedRecipient = foundInstruction.account;
-									} else if (foundInstruction.type === 'EVM_SEND') {
+									} else if (foundInstruction.type === 'EVM_SEND' || foundInstruction.type === 'SOLANA_SEND') {
 										resolvedRecipient = foundInstruction.sendToAddress;
 									} else {
 										throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
