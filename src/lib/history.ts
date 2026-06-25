@@ -1422,15 +1422,23 @@ export class UserHistory {
 	}
 
 	/**
-	 * Fetch, enrich and fold a user's history into logical transactions.
+	 * Fetch, enrich and fold a user's history into logical transactions,
+	 * grouping linked multi-hop chains into single conversions.
 	 */
 	async list(account: HistoryAccount, options?: UserHistoryListOptions): Promise<LogicalTransaction[]> {
+		const { limit, ...collectOptions } = options ?? {};
+
 		const transactions: LogicalTransaction[] = [];
-		for await (const transaction of this.iterate(account, options)) {
+		for await (const transaction of this.iterate(account, collectOptions)) {
 			transactions.push(transaction);
 		}
 
-		return(transactions);
+		const folded = foldChains(transactions);
+		if (limit !== undefined) {
+			return(folded.slice(0, limit));
+		}
+
+		return(folded);
 	}
 
 	/**
