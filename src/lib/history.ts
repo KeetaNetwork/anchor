@@ -13,7 +13,10 @@ import type {
 	AnchorTransactionStatusResult,
 	AnchorTransferReader
 } from './anchor-status.js';
+import type { AnchorExternalInput } from './anchor-external.js';
+import type { VerifiableAccount } from './utils/signing.js';
 import { isCompletedTransferStatus } from './anchor-status.js';
+import { AnchorExternal } from './anchor-external.js';
 import { convertAssetSearchInputToCanonical, isChainLocation, toAssetLocationFromString, toAssetPair } from '../services/asset-movement/common.js';
 
 type Account = InstanceType<typeof KeetaNetLib.Account>;
@@ -186,6 +189,11 @@ export type LogicalTransaction = {
 		 * Raw `external` strings observed, when present.
 		 */
 		external?: string[];
+		/**
+		 * On-chain operations this transaction declared as its inputs, decoded
+		 * from the `external` envelope.
+		 */
+		inputs?: AnchorExternalInput[];
 	};
 	/**
 	 * Raw source the transaction was folded from. Present only when
@@ -261,6 +269,12 @@ export type EnrichedBlock = {
 	 * The block's enriched operations.
 	 */
 	operations: EnrichedOperation[];
+	/**
+	 * On-chain inputs decoded from the block's SEND `external` envelopes, in
+	 * the order observed. Captured locally during enrichment, independent of
+	 * anchor status resolution. Present only when non-empty.
+	 */
+	inputs?: AnchorExternalInput[];
 };
 
 /**
@@ -655,6 +669,35 @@ function blockExternals(block: EnrichedBlock): string[] {
 }
 
 /**
+ * Decode the on-chain `inputs` declared by a block's SEND `external` envelopes.
+ */
+async function decodeExternalInputs(externals: readonly string[], decryptionKeys: VerifiableAccount[] | undefined): Promise<AnchorExternalInput[]> {
+	const inputs: AnchorExternalInput[] = [];
+	for (const external of externals) {
+		let decoded: AnchorExternal;
+		try {
+			const decodeOptions: { decryptionKeys?: VerifiableAccount[] } = {};
+			if (decryptionKeys !== undefined) {
+				decodeOptions.decryptionKeys = decryptionKeys;
+			}
+
+			decoded = await AnchorExternal.fromExternal(external, decodeOptions);
+		} catch {
+			continue;
+		}
+
+		const envelopeInputs = decoded.envelope.inputs;
+		if (envelopeInputs !== undefined) {
+			for (const inputReference of envelopeInputs) {
+				inputs.push(inputReference);
+			}
+		}
+	}
+
+	return(inputs);
+}
+
+/**
  * Build the refs block for a logical transaction.
  */
 function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransaction['refs'] {
@@ -662,6 +705,10 @@ function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransact
 	const externals = blockExternals(block);
 	if (externals.length > 0) {
 		refs.external = externals;
+	}
+
+	if (block.inputs !== undefined && block.inputs.length > 0) {
+		refs.inputs = block.inputs;
 	}
 
 	return(refs);
@@ -702,12 +749,7 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
 		subTransactions: collectAnchorSubTransactions(transfer)
 	});
 
-	const refs: LogicalTransaction['refs'] = { blockHashes: [ block.blockHash ], anchorTxIDs: [ transfer.id ] };
-	const externals = blockExternals(block);
-	if (externals.length > 0) {
-		refs.external = externals;
-	}
-
+	const refs = buildRefs(block, [ transfer.id ]);
 	const transaction: LogicalTransaction = {
 		id: `${block.blockHash}:${enriched.index}`,
 		type,
@@ -993,6 +1035,286 @@ function foldHistory(blocks: readonly EnrichedBlock[], classifiers: readonly Log
 }
 
 /**
+ * Append `value` to `target` only when it is not already present.
+ */
+function pushUnique<T>(target: T[], value: T): void {
+	if (!target.includes(value)) {
+		target.push(value);
+	}
+}
+
+/**
+ * Whether `transaction` declares an on-chain input that points at one of the
+ * blocks contributing to `candidate`.
+ */
+function inputsReference(transaction: LogicalTransaction, candidate: LogicalTransaction): boolean {
+	const inputs = transaction.refs.inputs;
+	if (inputs === undefined) {
+		return(false);
+	}
+
+	const blockHashes = new Set(candidate.refs.blockHashes);
+	for (const input of inputs) {
+		if (blockHashes.has(input.blockHash)) {
+			return(true);
+		}
+	}
+
+	return(false);
+}
+
+/**
+ * Sum the hops' fees when they all share one token.
+ */
+function combineFees(fees: readonly LogicalAmount[]): LogicalAmount | undefined {
+	const first = fees.at(0);
+	if (first === undefined) {
+		return(undefined);
+	}
+
+	let total = 0n;
+	for (const fee of fees) {
+		if (fee.token !== first.token) {
+			return(undefined);
+		}
+
+		total += fee.amount;
+	}
+
+	return({ token: first.token, amount: total });
+}
+
+/**
+ * The counterparty shared by every hop, or `undefined` when the hops disagree.
+ */
+function sharedCounterparty(hops: readonly LogicalTransaction[]): LogicalCounterparty | undefined {
+	let shared: LogicalCounterparty | undefined;
+	for (const hop of hops) {
+		if (hop.counterparty === undefined) {
+			return(undefined);
+		}
+
+		if (shared === undefined) {
+			shared = hop.counterparty;
+			continue;
+		}
+
+		if (shared.kind !== hop.counterparty.kind || shared.id !== hop.counterparty.id) {
+			return(undefined);
+		}
+	}
+
+	return(shared);
+}
+
+/**
+ * Reduce a linked chain of swap hops (head -> ... -> tail) into one logical
+ * conversion: the head's send into the tail's receive, with intermediate
+ * hops' legs suppressed and every hop's `refs` merged for drill-down.
+ */
+function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): LogicalTransaction {
+	const blockHashes: string[] = [];
+	const anchorTxIDs: string[] = [];
+	const externals: string[] = [];
+	const inputs: AnchorExternalInput[] = [];
+	const fees: LogicalAmount[] = [];
+	let earliest = head.timestamp;
+	let anyPending = false;
+	let anyFailed = false;
+
+	for (const hop of hops) {
+		for (const blockHash of hop.refs.blockHashes) {
+			pushUnique(blockHashes, blockHash);
+		}
+
+		for (const anchorTxID of hop.refs.anchorTxIDs) {
+			pushUnique(anchorTxIDs, anchorTxID);
+		}
+
+		if (hop.refs.external !== undefined) {
+			for (const external of hop.refs.external) {
+				pushUnique(externals, external);
+			}
+		}
+
+		if (hop.refs.inputs !== undefined) {
+			for (const input of hop.refs.inputs) {
+				inputs.push(input);
+			}
+		}
+
+		if (hop.fee !== undefined) {
+			fees.push(hop.fee);
+		}
+		if (hop.status === 'pending') {
+			anyPending = true;
+		}
+		if (hop.status === 'failed') {
+			anyFailed = true;
+		}
+		if (Date.parse(hop.timestamp) < Date.parse(earliest)) {
+			earliest = hop.timestamp;
+		}
+	}
+
+	const legs: LogicalLeg[] = [];
+	for (const leg of head.legs) {
+		legs.push(leg);
+	}
+
+	if (tail.id !== head.id) {
+		for (const leg of tail.legs) {
+			legs.push(leg);
+		}
+	}
+
+	let status: LogicalTransactionStatus = 'complete';
+	if (anyPending) {
+		status = 'pending';
+	}
+	if (anyFailed) {
+		status = 'failed';
+	}
+
+	const refs: LogicalTransaction['refs'] = { blockHashes, anchorTxIDs };
+	if (externals.length > 0) {
+		refs.external = externals;
+	}
+
+	if (inputs.length > 0) {
+		refs.inputs = inputs;
+	}
+
+	const merged: LogicalTransaction = {
+		id: head.id,
+		type: 'swap',
+		status,
+		direction: 'self',
+		timestamp: earliest,
+		legs,
+		refs
+	};
+
+	if (head.send !== undefined) {
+		merged.send = head.send;
+	}
+
+	if (tail.receive !== undefined) {
+		merged.receive = tail.receive;
+	}
+
+	const fee = combineFees(fees);
+	if (fee !== undefined) {
+		merged.fee = fee;
+	}
+
+	const counterparty = sharedCounterparty(hops);
+	if (counterparty !== undefined) {
+		merged.counterparty = counterparty;
+	}
+
+	return(merged);
+}
+
+/**
+ * An ordered chain of two or more linked swap hops.
+ */
+type SwapChain = {
+	id: string;
+	head: LogicalTransaction;
+	tail: LogicalTransaction;
+	hops: LogicalTransaction[];
+};
+
+/**
+ * Group swap transactions into the chains they form through their
+ * `refs.inputs` <-> `refs.blockHashes` links. Only chains of two or more hops
+ * are returned, keyed by every member's id.
+ */
+function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<string, SwapChain> {
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+
+	const successorOf = new Map<string, LogicalTransaction>();
+	const predecessorOf = new Map<string, LogicalTransaction>();
+	for (const swap of swaps) {
+		for (const other of swaps) {
+			if (other.id === swap.id) {
+				continue;
+			}
+
+			if (successorOf.has(swap.id)) {
+				continue;
+			}
+
+			if (inputsReference(other, swap)) {
+				successorOf.set(swap.id, other);
+				predecessorOf.set(other.id, swap);
+			}
+		}
+	}
+
+	const chainByMemberId = new Map<string, SwapChain>();
+	for (const swap of swaps) {
+		if (predecessorOf.has(swap.id)) {
+			continue;
+		}
+
+		const hops: LogicalTransaction[] = [ swap ];
+		const visited = new Set<string>([ swap.id ]);
+		let current = swap;
+		while (true) {
+			const next = successorOf.get(current.id);
+			if (next === undefined || visited.has(next.id)) {
+				break;
+			}
+
+			hops.push(next);
+			visited.add(next.id);
+			current = next;
+		}
+
+		if (hops.length < 2) {
+			continue;
+		}
+
+		const chain: SwapChain = { id: swap.id, head: swap, tail: current, hops };
+		for (const hop of hops) {
+			chainByMemberId.set(hop.id, chain);
+		}
+	}
+
+	return(chainByMemberId);
+}
+
+/**
+ * Fold chained swaps into single conversions for display.
+ */
+export function foldChains(transactions: readonly LogicalTransaction[]): LogicalTransaction[] {
+	const chainByMemberId = buildSwapChains(transactions);
+	if (chainByMemberId.size === 0) {
+		return([ ...transactions ]);
+	}
+
+	const emittedChains = new Set<string>();
+	const result: LogicalTransaction[] = [];
+	for (const transaction of transactions) {
+		const chain = chainByMemberId.get(transaction.id);
+		if (chain === undefined) {
+			result.push(transaction);
+			continue;
+		}
+		if (emittedChains.has(chain.id)) {
+			continue;
+		}
+
+		emittedChains.add(chain.id);
+		result.push(mergeChainHops(chain.head, chain.tail, chain.hops));
+	}
+
+	return(result);
+}
+
+/**
  * A transfer paired with the anchor account it resolved under.
  */
 type ResolvedTransfer = {
@@ -1220,6 +1542,11 @@ export class UserHistory {
 		const result: EnrichedBlock = { blockHash, account, timestamp, operations };
 		if (perspective !== undefined) {
 			result.perspective = perspective;
+		}
+
+		const inputs = await decodeExternalInputs(blockExternals(result), options?.decryptionKeys);
+		if (inputs.length > 0) {
+			result.inputs = inputs;
 		}
 
 		return(result);

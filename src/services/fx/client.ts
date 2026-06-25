@@ -27,6 +27,7 @@ import type {
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
+import type { AnchorExternalInput } from '../../lib/anchor-external.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
@@ -401,7 +402,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 	}
 
-	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
+	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchange> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
 			/* Liquidity Provider that will complete the swap */
@@ -466,8 +467,12 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			 * provider and a client-chosen correlation id.
 			 */
 			const correlationId = crypto.randomUUID();
-			const external = await new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId }).build();
+			const externalBuilder = new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId });
+			for (const inputReference of options?.inputs ?? []) {
+				externalBuilder.addInput(inputReference.blockHash, inputReference.operationIndex);
+			}
 
+			const external = await externalBuilder.build();
 			builder.send(liquidityProvider, sendAmount, request.from, external);
 
 			const blocks = await builder.computeBlocks();
@@ -583,7 +588,7 @@ interface CanCreateExchange {
 
 	get request(): ConversionInputCanonical;
 
-	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider>;
+	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider>;
 }
 
 class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
@@ -600,8 +605,8 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 		return(this.quote.request);
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		const exchange = await this.provider.createExchange({ quote: this.quote }, block);
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange({ quote: this.quote }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 
@@ -635,8 +640,8 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block);
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 

@@ -2051,9 +2051,23 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 			throw(new Error('Expected client-built external on the send action'));
 		}
 
+		/*
+		 * The prior FX hop forwards its settled swap block, so the client-built
+		 * envelope references it as an on-chain input.
+		 */
+		const step0 = result.steps[0];
+		if (step0?.type !== 'fx') {
+			throw(new Error('Expected fx step'));
+		}
+
+		const fxStatus = await step0.exchange.getExchangeStatus();
+		if (fxStatus?.status !== 'completed') {
+			throw(new Error('Expected fx exchange to complete'));
+		}
+
 		const decoded = await AnchorExternal.fromPlainExternal(action.external);
 		expect(decoded.signed).toBeUndefined();
-		expect(decoded.envelope.inputs).toBeUndefined();
+		expect(decoded.envelope.inputs).toEqual([ { blockHash: fxStatus.blockhash } ]);
 		expect(decoded.envelope.anchors).toEqual({
 			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferID }
 		});

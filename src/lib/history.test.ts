@@ -33,7 +33,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer } from '../services/asset-movemen
 import { KeetaNetFXAnchorHTTPServer } from '../services/fx/server.js';
 import { AnchorExternal } from './anchor-external.js';
 import { AnchorTransactionStatus, CompositeAnchorStatusSource } from './anchor-status.js';
-import { UserHistory } from './history.js';
+import { UserHistory, foldChains } from './history.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
 import { asleep } from './utils/asleep.js';
 import { Buffer } from './utils/buffer.js';
@@ -974,19 +974,13 @@ type FXExchangeFixtureOptions = {
 };
 
 /**
- * Perform a USD to EUR exchange driven to completion through a single
- * liquidity provider, and return the pieces a {@link UserHistory} needs.
+ * Stand up a USD to EUR FX anchor and the user client that trades against
+ * it, without performing any exchange. Shared by the single-exchange and
+ * chained-exchange fixtures.
  */
-async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): Promise<{
-	server: KeetaNetFXAnchorHTTPServer;
-	history: UserHistory;
-	userAccount: Account;
-	liquidityProvider: Account;
-	usdToken: string;
-	eurToken: string;
-	costToken: string;
-}> {
+async function setupFXAnchor(options: FXExchangeFixtureOptions & { giveBase?: bigint } = {}) {
 	const signMetadata = options.signMetadata ?? true;
+	const giveBase = options.giveBase ?? 50n;
 
 	const userAccount = newAccount();
 	const liquidityProvider = newAccount();
@@ -1008,7 +1002,7 @@ async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): P
 		throw(new Error('EUR identifier is not a token'));
 	}
 
-	await nodeAndClient.give(userAccount, 50n);
+	await nodeAndClient.give(userAccount, giveBase);
 	await client.modTokenSupplyAndBalance(100000n, eur, { account: liquidityProvider });
 	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: eur });
 	await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions([ 'ACCESS' ]), undefined, undefined, { account: usd });
@@ -1063,25 +1057,94 @@ async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): P
 	});
 
 	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount });
+
+	return({ server, client, fxClient, userAccount, liquidityProvider, usd, eur, baseToken });
+}
+
+/**
+ * Request the lone USD to EUR quote the anchor offers for a 100-unit swap.
+ */
+async function requestUSDtoEURQuote(fxClient: InstanceType<typeof FX.Client>) {
 	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' });
 	const quote = quotes?.[0];
 	if (quote === undefined) {
 		throw(new Error('Expected a USD to EUR quote from the FX anchor'));
 	}
 
-	const exchange = await quote.createExchange();
-	await settleExchange(server, exchange);
+	return(quote);
+}
 
-	const history = buildFXHistory(client, userAccount);
+/**
+ * Perform a USD to EUR exchange driven to completion through a single
+ * liquidity provider, and return the pieces a {@link UserHistory} needs.
+ */
+async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): Promise<{
+	server: KeetaNetFXAnchorHTTPServer;
+	history: UserHistory;
+	userAccount: Account;
+	liquidityProvider: Account;
+	usdToken: string;
+	eurToken: string;
+	costToken: string;
+}> {
+	const setup = await setupFXAnchor(options);
+
+	const quote = await requestUSDtoEURQuote(setup.fxClient);
+	const exchange = await quote.createExchange();
+	await settleExchange(setup.server, exchange);
+
+	const history = buildFXHistory(setup.client, setup.userAccount);
 
 	return({
-		server,
+		server: setup.server,
 		history,
-		userAccount,
-		liquidityProvider,
-		usdToken: usd.publicKeyString.get(),
-		eurToken: eur.publicKeyString.get(),
-		costToken: baseToken.publicKeyString.get()
+		userAccount: setup.userAccount,
+		liquidityProvider: setup.liquidityProvider,
+		usdToken: setup.usd.publicKeyString.get(),
+		eurToken: setup.eur.publicKeyString.get(),
+		costToken: setup.baseToken.publicKeyString.get()
+	});
+}
+
+/**
+ * Perform two USD to EUR exchanges where the second declares the first
+ * exchange's settled swap block as an on-chain input, mirroring what the
+ * chaining plan emits for a multi-hop conversion.
+ */
+async function startChainedFXExchangeFixture(): Promise<{
+	server: KeetaNetFXAnchorHTTPServer;
+	history: UserHistory;
+	userAccount: Account;
+	usdToken: string;
+	eurToken: string;
+	firstBlockHash: string;
+}> {
+	const setup = await setupFXAnchor({ giveBase: 100n });
+
+	const firstQuote = await requestUSDtoEURQuote(setup.fxClient);
+	const firstExchange = await firstQuote.createExchange();
+	await settleExchange(setup.server, firstExchange);
+
+	const firstStatus = await firstExchange.getExchangeStatus();
+	if (firstStatus?.status !== 'completed') {
+		throw(new Error('Expected the first FX exchange to complete'));
+	}
+
+	const firstBlockHash = firstStatus.blockhash;
+
+	const secondQuote = await requestUSDtoEURQuote(setup.fxClient);
+	const secondExchange = await secondQuote.createExchange(undefined, { inputs: [ { blockHash: firstBlockHash } ] });
+	await settleExchange(setup.server, secondExchange);
+
+	const history = buildFXHistory(setup.client, setup.userAccount);
+
+	return({
+		server: setup.server,
+		history,
+		userAccount: setup.userAccount,
+		usdToken: setup.usd.publicKeyString.get(),
+		eurToken: setup.eur.publicKeyString.get(),
+		firstBlockHash
 	});
 }
 
@@ -1302,4 +1365,158 @@ test('reports the net principal for a variable-rate swap that refunds slippage',
 	expect(fixture.netPrincipal).toBeLessThan(fixture.grossPrincipal);
 });
 
+test('surfaces the on-chain input a later FX swap declares and folds the chain into one conversion', async function() {
+	const fixture = await startChainedFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount);
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	expect(swaps).toHaveLength(2);
+
+	/*
+	 * The producer wrote the first hop's settled block into the second hop's
+	 * external; enrichment surfaces it, and it matches the first hop's block
+	 * reference -- the contract the chaining plan and foldChains rely on.
+	 */
+	const linked = swaps.find(transaction => transaction.refs.inputs?.some(input => input.blockHash === fixture.firstBlockHash));
+	expect(linked).toBeDefined();
+	expect(swaps.some(transaction => transaction.refs.blockHashes.includes(fixture.firstBlockHash))).toBe(true);
+
+	const folded = foldChains(transactions);
+	const foldedSwaps = folded.filter(transaction => transaction.type === 'swap');
+	expect(foldedSwaps).toHaveLength(1);
+	expect(foldedSwaps[0]?.send).toEqual({ token: fixture.usdToken, amount: 100n });
+	expect(foldedSwaps[0]?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
+});
+
 // #endregion FX
+
+// #region foldChains
+
+/**
+ * Spec for a synthetic swap {@link LogicalTransaction} used by the foldChains
+ * unit tests.
+ */
+type SwapSpec = {
+	id: string;
+	blockHash: string;
+	send: { token: string; amount: bigint };
+	receive: { token: string; amount: bigint };
+	inputBlockHashes?: string[];
+	timestamp?: string;
+	status?: LogicalTransactionStatus;
+	fee?: { token: string; amount: bigint };
+};
+
+/**
+ * Build a swap {@link LogicalTransaction} from a {@link SwapSpec}.
+ */
+function makeSwap(spec: SwapSpec): LogicalTransaction {
+	const refs: LogicalTransaction['refs'] = { blockHashes: [ spec.blockHash ], anchorTxIDs: [] };
+	if (spec.inputBlockHashes !== undefined) {
+		refs.inputs = spec.inputBlockHashes.map(function(blockHash) {
+			return({ blockHash });
+		});
+	}
+
+	const transaction: LogicalTransaction = {
+		id: spec.id,
+		type: 'swap',
+		status: spec.status ?? 'complete',
+		direction: 'self',
+		timestamp: spec.timestamp ?? '2026-01-01T00:00:00.000Z',
+		send: spec.send,
+		receive: spec.receive,
+		legs: [],
+		refs
+	};
+
+	if (spec.fee !== undefined) {
+		transaction.fee = spec.fee;
+	}
+
+	return(transaction);
+}
+
+test('foldChains merges a two-hop linked chain into one conversion', function() {
+	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenB', amount: 497n }, timestamp: '2026-01-01T00:00:00.000Z' });
+	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 497n }, receive: { token: 'tokenC', amount: 1481n }, inputBlockHashes: [ 'b1' ], timestamp: '2026-01-01T00:05:00.000Z' });
+
+	const folded = foldChains([ hop2, hop1 ]);
+	expect(folded).toHaveLength(1);
+
+	const merged = folded[0];
+	expect(merged?.type).toBe('swap');
+	expect(merged?.send).toEqual({ token: 'tokenA', amount: 1000n });
+	expect(merged?.receive).toEqual({ token: 'tokenC', amount: 1481n });
+	expect(merged?.refs.blockHashes).toEqual(expect.arrayContaining([ 'b1', 'b2' ]));
+	expect(merged?.timestamp).toBe('2026-01-01T00:00:00.000Z');
+});
+
+test('foldChains merges a three-hop chain transitively', function() {
+	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 100n }, receive: { token: 'tokenB', amount: 90n }});
+	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 90n }, receive: { token: 'tokenC', amount: 80n }, inputBlockHashes: [ 'b1' ] });
+	const hop3 = makeSwap({ id: 'b3:0', blockHash: 'b3', send: { token: 'tokenC', amount: 80n }, receive: { token: 'tokenD', amount: 70n }, inputBlockHashes: [ 'b2' ] });
+
+	const folded = foldChains([ hop3, hop2, hop1 ]);
+	expect(folded).toHaveLength(1);
+	expect(folded[0]?.send).toEqual({ token: 'tokenA', amount: 100n });
+	expect(folded[0]?.receive).toEqual({ token: 'tokenD', amount: 70n });
+});
+
+test('foldChains merges a five-hop chain regardless of input order', function() {
+	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenB', amount: 900n }, fee: { token: 'feeToken', amount: 1n }, timestamp: '2026-01-01T00:00:00.000Z' });
+	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 900n }, receive: { token: 'tokenC', amount: 800n }, inputBlockHashes: [ 'b1' ], fee: { token: 'feeToken', amount: 2n }, timestamp: '2026-01-01T00:05:00.000Z' });
+	const hop3 = makeSwap({ id: 'b3:0', blockHash: 'b3', send: { token: 'tokenC', amount: 800n }, receive: { token: 'tokenD', amount: 700n }, inputBlockHashes: [ 'b2' ], fee: { token: 'feeToken', amount: 3n }, timestamp: '2026-01-01T00:10:00.000Z' });
+	const hop4 = makeSwap({ id: 'b4:0', blockHash: 'b4', send: { token: 'tokenD', amount: 700n }, receive: { token: 'tokenE', amount: 600n }, inputBlockHashes: [ 'b3' ], fee: { token: 'feeToken', amount: 4n }, timestamp: '2026-01-01T00:15:00.000Z' });
+	const hop5 = makeSwap({ id: 'b5:0', blockHash: 'b5', send: { token: 'tokenE', amount: 600n }, receive: { token: 'tokenF', amount: 500n }, inputBlockHashes: [ 'b4' ], fee: { token: 'feeToken', amount: 5n }, timestamp: '2026-01-01T00:20:00.000Z' });
+
+	const folded = foldChains([ hop3, hop5, hop1, hop4, hop2 ]);
+	expect(folded).toHaveLength(1);
+
+	const merged = folded[0];
+	expect(merged?.send).toEqual({ token: 'tokenA', amount: 1000n });
+	expect(merged?.receive).toEqual({ token: 'tokenF', amount: 500n });
+	expect(merged?.refs.blockHashes).toEqual(expect.arrayContaining([ 'b1', 'b2', 'b3', 'b4', 'b5' ]));
+	expect(merged?.fee).toEqual({ token: 'feeToken', amount: 15n });
+	expect(merged?.timestamp).toBe('2026-01-01T00:00:00.000Z');
+});
+
+test('foldChains leaves unlinked swaps separate', function() {
+	const first = makeSwap({ id: 'a:0', blockHash: 'a', send: { token: 'tokenX', amount: 1n }, receive: { token: 'tokenY', amount: 1n }});
+	const second = makeSwap({ id: 'b:0', blockHash: 'b', send: { token: 'tokenY', amount: 1n }, receive: { token: 'tokenZ', amount: 1n }});
+
+	const folded = foldChains([ first, second ]);
+	expect(folded).toHaveLength(2);
+});
+
+test('foldChains is a no-op without inputs and passes non-swaps through', function() {
+	const swap = makeSwap({ id: 's:0', blockHash: 's', send: { token: 'tokenX', amount: 1n }, receive: { token: 'tokenY', amount: 1n }});
+	const send: LogicalTransaction = { id: 'p:0', type: 'send', status: 'complete', direction: 'out', timestamp: '2026-01-01T00:00:00.000Z', legs: [], refs: { blockHashes: [ 'p' ], anchorTxIDs: [] }};
+	const dangling = makeSwap({ id: 'd:0', blockHash: 'd', send: { token: 'tokenX', amount: 1n }, receive: { token: 'tokenY', amount: 1n }, inputBlockHashes: [ 'absent' ] });
+
+	const input = [ swap, send, dangling ];
+	const folded = foldChains(input);
+	expect(folded).toEqual(input);
+});
+
+test('foldChains reports pending when any hop is pending and sums same-token fees', function() {
+	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 100n }, receive: { token: 'tokenB', amount: 90n }, fee: { token: 'feeToken', amount: 2n }, status: 'complete' });
+	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 90n }, receive: { token: 'tokenC', amount: 80n }, inputBlockHashes: [ 'b1' ], fee: { token: 'feeToken', amount: 3n }, status: 'pending' });
+
+	const folded = foldChains([ hop2, hop1 ]);
+	expect(folded).toHaveLength(1);
+	expect(folded[0]?.status).toBe('pending');
+	expect(folded[0]?.fee).toEqual({ token: 'feeToken', amount: 5n });
+});
+
+test('foldChains drops the headline fee when hops pay fees in different tokens', function() {
+	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 100n }, receive: { token: 'tokenB', amount: 90n }, fee: { token: 'feeTokenOne', amount: 2n }});
+	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 90n }, receive: { token: 'tokenC', amount: 80n }, inputBlockHashes: [ 'b1' ], fee: { token: 'feeTokenTwo', amount: 3n }});
+
+	const folded = foldChains([ hop2, hop1 ]);
+	expect(folded[0]?.fee).toBeUndefined();
+});
+
+// #endregion foldChains
