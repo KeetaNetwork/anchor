@@ -19,7 +19,9 @@ import type {
 } from '../services/asset-movement/common.js';
 import type {
 	HistoryEntry,
+	HistoryQuery,
 	HistorySource,
+	HistoryStaple,
 	LogicalCounterparty,
 	LogicalDirection,
 	LogicalTransaction,
@@ -1527,6 +1529,102 @@ test('foldChains leaves a lone bridge untouched', function() {
 
 	const folded = foldChains([ bridge ]);
 	expect(folded).toEqual([ bridge ]);
+});
+
+/**
+ * Wrap each block in its own single-block staple, served newest-first one page
+ * at a time and resolvable by block hash. Drives the fold-capable
+ * {@link UserHistory.iterate} cross-staple folding the live keeta client uses.
+ */
+function pagedFoldCapableSource(blocksNewestFirst: Block[]): HistorySource {
+	const staples = blocksNewestFirst.map(function(block, index): HistoryStaple {
+		return({ timestamp() { return(TIMESTAMP); }, blocks: [ block ], blocksHash: `staple-${index}` });
+	});
+
+	const byHash = new Map<string, HistoryStaple>();
+	for (const staple of staples) {
+		for (const block of staple.blocks) {
+			byHash.set(block.hash.toString(), staple);
+		}
+	}
+
+	return({
+		async getHistory(_account, query?: HistoryQuery): Promise<HistoryEntry[]> {
+			const cursor = query?.startBlocksHash;
+			const previous = cursor === undefined ? -1 : staples.findIndex(staple => staple.blocksHash.toString() === cursor);
+			const nextStaple = staples[previous + 1];
+			if (nextStaple === undefined) {
+				return([]);
+			}
+
+			return([{ voteStaple: nextStaple }]);
+		},
+		async getVoteStaple(blockHash: string): Promise<HistoryStaple | null> {
+			return(byHash.get(blockHash) ?? null);
+		}
+	});
+}
+
+test('iterate suppresses a swap delivery that funds a chained bridge, leaving one conversion', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const source0 = newToken(user, 0);
+	const mid = newToken(user, 1);
+
+	const swap = makeTransfer({
+		id: 'transfer-1',
+		status: 'COMPLETE',
+		asset: { from: source0.publicKeyString.get(), to: mid.publicKeyString.get() },
+		fromLocation: KEETA_LOCATION,
+		toLocation: KEETA_LOCATION,
+		fromValue: '1000',
+		toValue: '999'
+	});
+	const bridge = makeTransfer({
+		id: 'transfer-3',
+		status: 'COMPLETE',
+		asset: { from: mid.publicKeyString.get(), to: 'evm:0xc063' },
+		fromLocation: KEETA_LOCATION,
+		toLocation: EVM_LOCATION,
+		fromValue: '999',
+		toValue: '998'
+	});
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, swap);
+	status.registerByTxID(anchor, bridge);
+
+	/*
+	 * The pay-in (user -> anchor) and the anchor's delivery of the mid token
+	 * both settle the swap; the bridge re-sends that mid token and links back
+	 * to the pay-in.
+	 */
+	const payInExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
+	const payIn = await seal(user, [ sendOp(anchor, source0, 1000n, payInExternal) ]);
+
+	const deliveryExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
+	const delivery = await seal(anchor, [ sendOp(user, mid, 999n, deliveryExternal) ]);
+
+	const bridgeExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-3' }).addInput(payIn.hash.toString(), 0).build();
+	const bridgeSend = await seal(user, [ sendOp(anchor, mid, 999n, bridgeExternal) ]);
+
+	const history = new UserHistory({
+		history: pagedFoldCapableSource([ bridgeSend, delivery, payIn ]),
+		status: new AnchorTransactionStatus(status)
+	});
+
+	/*
+	 * The swap (pay-in) folds into the bridge as one outbound conversion; the
+	 * anchor's intermediate mid-token delivery is dropped as the other leg.
+	 */
+	const transactions = await history.list(user);
+	expect(transactions).toHaveLength(1);
+
+	const conversion = transactions[0];
+	expect(conversion?.type).toBe('bridge');
+	expect(conversion?.direction).toBe('out');
+	expect(conversion?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
+	expect(conversion?.receive?.amount).toBe(998n);
+	expect(conversion?.refs.anchorTxIDs).toEqual(expect.arrayContaining([ 'transfer-1', 'transfer-3' ]));
 });
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {

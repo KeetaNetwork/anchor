@@ -1330,6 +1330,48 @@ export function foldChains(transactions: readonly LogicalTransaction[]): Logical
 }
 
 /**
+ * Whether every anchor transfer a logical transaction settles has already been
+ * emitted, marking it a duplicate settlement leg.
+ */
+function isSettledDuplicate(transaction: LogicalTransaction, emitted: ReadonlySet<string>): boolean {
+	const ids = transaction.refs.anchorTxIDs;
+	if (ids.length === 0) {
+		return(false);
+	}
+
+	return(ids.every(id => emitted.has(id)));
+}
+
+/**
+ * Record the anchor transfers a logical transaction settles.
+ */
+function markEmittedTransfers(transaction: LogicalTransaction, emitted: Set<string>): void {
+	for (const id of transaction.refs.anchorTxIDs) {
+		emitted.add(id);
+	}
+}
+
+/**
+ * Drop logical transactions whose every settled transfer was already emitted by
+ * an earlier (newest-first) entry, collapsing a transfer's multiple on-chain
+ * legs into the single conversion that represents it.
+ */
+function suppressSettledDuplicates(transactions: readonly LogicalTransaction[]): LogicalTransaction[] {
+	const emitted = new Set<string>();
+	const result: LogicalTransaction[] = [];
+	for (const transaction of transactions) {
+		if (isSettledDuplicate(transaction, emitted)) {
+			continue;
+		}
+
+		markEmittedTransfers(transaction, emitted);
+		result.push(transaction);
+	}
+
+	return(result);
+}
+
+/**
  * A transfer paired with the anchor account it resolved under.
  */
 type ResolvedTransfer = {
@@ -1465,7 +1507,7 @@ export class UserHistory {
 			transactions.push(transaction);
 		}
 
-		const folded = foldChains(transactions);
+		const folded = suppressSettledDuplicates(foldChains(transactions));
 		if (limit !== undefined) {
 			return(folded.slice(0, limit));
 		}
@@ -1480,6 +1522,7 @@ export class UserHistory {
 	 * transactions have been yielded.
 	 */
 	async *iterate(account: HistoryAccount, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
+		const resolved = this.#withDefaultDecryptionKeys(account, options);
 		const externalCache = new Map<string, ResolvedTransfer | undefined>();
 		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
 		const perspective = perspectiveOf(account);
@@ -1492,16 +1535,24 @@ export class UserHistory {
 		const foldCapable = typeof this.#history.getVoteStaple === 'function';
 		const consumed = new Set<string>();
 
-		let cursor = options?.cursor;
+		/*
+		 * Anchor transfer ids already emitted. A transfer with several on-chain
+		 * legs (a swap's pay-in and the anchor's delivery, say) surfaces newest
+		 * first as the folded conversion; the older legs that settle the same
+		 * transfer are then dropped as duplicates of what was already shown.
+		 */
+		const emittedTransfers = new Set<string>();
+
+		let cursor = resolved?.cursor;
 		let yielded = 0;
 		while (true) {
-			const page = await this.#fetchPage(account, cursor, options);
+			const page = await this.#fetchPage(account, cursor, resolved);
 			if (page.length === 0) {
 				return;
 			}
 
 			for (const entry of page) {
-				const logical = await this.#foldStaple(entry.voteStaple, perspective, options, externalCache, readerCache);
+				const logical = await this.#foldStaple(entry.voteStaple, perspective, resolved, externalCache, readerCache);
 				const emitted = foldCapable ? foldChains(logical) : logical;
 				for (const transaction of emitted) {
 					if (consumed.has(transaction.id)) {
@@ -1510,13 +1561,19 @@ export class UserHistory {
 
 					let out = transaction;
 					if (foldCapable) {
-						out = await this.#foldForward(transaction, consumed, perspective, options, externalCache, readerCache);
+						out = await this.#foldForward(transaction, consumed, perspective, resolved, externalCache, readerCache);
 					}
+
+					if (isSettledDuplicate(out, emittedTransfers)) {
+						continue;
+					}
+
+					markEmittedTransfers(out, emittedTransfers);
 
 					yield out;
 					yielded += 1;
 
-					if (options?.limit !== undefined && yielded >= options.limit) {
+					if (resolved?.limit !== undefined && yielded >= resolved.limit) {
 						return;
 					}
 				}
@@ -1529,6 +1586,20 @@ export class UserHistory {
 
 			cursor = last.voteStaple.blocksHash.toString();
 		}
+	}
+
+	/**
+	 * Default {@link UserHistoryListOptions.decryptionKeys} to the queried
+	 * account, the recipient of any anchor-delivered slice and so the natural
+	 * key for the externals encrypted to it. An explicit `decryptionKeys` (or a
+	 * string/null perspective that cannot decrypt) is left untouched.
+	 */
+	#withDefaultDecryptionKeys(account: HistoryAccount, options?: UserHistoryListOptions): UserHistoryListOptions | undefined {
+		if (options?.decryptionKeys !== undefined || account === null || typeof account === 'string') {
+			return(options);
+		}
+
+		return({ ...options, decryptionKeys: [ account ] });
 	}
 
 	/**
