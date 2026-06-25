@@ -77,6 +77,7 @@ test('KYC Anchor Client Test', async function() {
 		client: client,
 		kyc: {
 			countryCodes: ['US'],
+			entityTypes: ['individual', 'business'],
 			verificationStarted: async function(request) {
 				const id = crypto.randomUUID();
 				verifications.set(id, request);
@@ -224,6 +225,26 @@ test('KYC Anchor Client Test', async function() {
 	const providerCountryCodes = await provider.countryCodes();
 	expect(providerCountryCodes).toBeDefined();
 	expect(providerCountryCodes?.[0]?.code).toBe('US');
+
+	/*
+	 * Drive a business (KYB) createVerification through the client. The
+	 * provider advertises both entity types, so requesting `business`
+	 * resolves a provider and starts a redirect flow with a webURL, just
+	 * like individual. The provider hosts the business-details form, so the
+	 * request carries no entity-specific details.
+	 */
+	const businessProviders = await kycClient.createVerification({
+		countryCodes: ['US'],
+		account: account,
+		entityType: 'business'
+	});
+	expect(businessProviders.length).toBeGreaterThan(0);
+	const businessProvider = businessProviders[0];
+	if (businessProvider === undefined) {
+		throw(new Error('internal error: no business provider available'));
+	}
+	const businessVerification = await businessProvider.startVerification();
+	expect(businessVerification.webURL).toBeDefined();
 
 	const verification = await provider.startVerification();
 	loggerBase?.log('Request ID:', verification.id, 'on provider', verification.providerID);
