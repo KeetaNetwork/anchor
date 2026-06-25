@@ -1,4 +1,5 @@
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
+import { randomUUID } from 'node:crypto';
 
 import type { KeetaAnchorAssetMovementServerConfig } from '../../services/asset-movement/server.js';
 import type { AnchorTokenLocationMetadata, AssetLocationLike, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails } from '../../services/asset-movement/common.js';
@@ -175,7 +176,7 @@ export function buildTxRecord(args: {
 
 export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	private readonly _initiateRef: { fn: InitiateTransferFn };
-	#defaultInitiateRef: { fn: InitiateTransferFn; };
+	readonly #defaultInitiateRef: { fn: InitiateTransferFn; };
 	private readonly _statusMap: Map<string, KeetaAssetMovementTransaction>;
 	private readonly _getStatusRef: { interceptor: (() => void) | null };
 
@@ -196,7 +197,7 @@ export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				const value = BigInt(request.value);
 				const fee = 10n;
 				const receive = value - fee;
-				const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+				const txId = `tx-${randomUUID()}`;
 
 				const parsedFrom = toAssetLocation(request.from.location);
 				if (parsedFrom.type === 'chain' && parsedFrom.chain.type === 'keeta') {
@@ -234,7 +235,7 @@ export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 
 					const tokenAddress = assetPair.from;
 					if (typeof tokenAddress !== 'string') {
-						throw(new Error('invalid keeta send asset'));
+						throw(new TypeError('invalid keeta send asset'));
 					}
 
 					return({
@@ -316,9 +317,7 @@ export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	}
 
 	setInitiateTransfer(fn: InitiateTransferFn | null): this {
-		if (!fn) {
-			fn = this.#defaultInitiateRef.fn;
-		}
+		fn ??= this.#defaultInitiateRef.fn;
 
 		this._initiateRef.fn = fn;
 
@@ -337,7 +336,7 @@ export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		return(this.setInitiateTransfer(async (request) => {
 			const value = BigInt(request.value);
 			const receive = value - fee;
-			const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+			const txId = `tx-${randomUUID()}`;
 			this._statusMap.set(txId, buildTxRecord({
 				id: txId,
 				status: 'COMPLETE',
@@ -349,13 +348,13 @@ export class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 			}));
 
 			if (typeof request.to.recipient !== 'string') {
-				throw(new Error('invalid keeta send recipient'));
+				throw(new TypeError('invalid keeta send recipient'));
 			}
 
 			const assetPair = toAssetPair(request.asset);
 			const tokenAddress = assetPair.from;
 			if (typeof tokenAddress !== 'string') {
-				throw(new Error('invalid keeta send asset'));
+				throw(new TypeError('invalid keeta send asset'));
 			}
 
 			return({
@@ -566,7 +565,7 @@ export class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementA
 					}
 
 					const value = BigInt(request.value);
-					const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+					const txId = `tx-${randomUUID()}`;
 					const recipientAddress = typeof request.to.recipient === 'string' ? request.to.recipient : '';
 
 					transferStatuses.set(txId, buildTxRecord({
@@ -611,7 +610,7 @@ export class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementA
 									if (meta) {
 										const list = transactionsByAddress.get(recipientAddress) ?? [];
 										const forwarded = buildTxRecord({
-											id: `persistentForwarding-tx-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+											id: `persistentForwarding-tx-${randomUUID()}`,
 											status: 'COMPLETE',
 											asset: meta.asset,
 											fromLocation: convertAssetLocationToString(meta.sourceLocation),
@@ -637,7 +636,7 @@ export class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementA
 
 					const tokenAddress = toAssetPair(request.asset).from;
 					if (typeof tokenAddress !== 'string') {
-						throw(new Error('invalid keeta send asset'));
+						throw(new TypeError('invalid keeta send asset'));
 					}
 
 					return({
@@ -672,7 +671,7 @@ export class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementA
 					const value = BigInt(request.value);
 					const tokenAddress = toAssetPair(request.asset).from;
 					if (typeof tokenAddress !== 'string') {
-						throw(new Error('invalid asset for simulate'));
+						throw(new TypeError('invalid asset for simulate'));
 					}
 
 					const parsedFrom = toAssetLocation(request.from.location);
@@ -721,7 +720,7 @@ export class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementA
 						throw(new KeetaAnchorUserError('Test bridge only supports string destinationAddress for persistent forwarding'));
 					}
 
-					const address = `persistentForwarding-${Math.random().toString(36).slice(2)}`;
+					const address = `persistentForwarding-${randomUUID()}`;
 					const meta: PersistentForwardingBridgeAddressMeta = {
 						sourceLocation: request.sourceLocation,
 						destinationLocation: request.destinationLocation,

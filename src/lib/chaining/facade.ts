@@ -131,8 +131,20 @@ export class AnchorChaining implements ChainingHost {
 		}
 
 		const limit = options?.limit ?? DEFAULT_PLAN_LIMIT;
-		const sortedPaths = paths.sort((a, b) => a.path.length - b.path.length);
+		const sortedPaths = [...paths];
+		sortedPaths.sort((a, b) => a.path.length - b.path.length);
 
+		const allOutput = await this.#collectPlanAttempts(sortedPaths, limit, options);
+		return(this.#materializePlans(allOutput, sortedPaths, options));
+	}
+
+	/**
+	 * Attempt plan computation over the shortest paths first, in batches, until
+	 * `limit` plans succeed, no shorter path remains worth trying, or the
+	 * attempt-loop guard trips. Returns every settled outcome attempted, in
+	 * attempt order, for the caller to materialize.
+	 */
+	async #collectPlanAttempts(sortedPaths: AnchorChainingPath[], limit: number, options?: ComputePlanOptions & { includeAllOutput?: boolean }): Promise<PromiseSettledResult<AnchorChainingPlan>[]> {
 		const allOutput: PromiseSettledResult<AnchorChainingPlan>[] = [];
 		let successCount = 0;
 		let lowestStepsSuccessCount = Infinity;
@@ -150,24 +162,42 @@ export class AnchorChaining implements ChainingHost {
 			const currentTry = await Promise.allSettled(pathsToTry.map(path => AnchorChainingPlan.create(path, options)));
 			allOutput.push(...currentTry);
 
-			for (let i = 0; i < currentTry.length; i++) {
-				const result = currentTry[i];
-				const path = pathsToTry[i];
-				if (!result || !path) {
-					continue;
-				}
-
-				if (result.status === 'fulfilled') {
-					successCount++;
-					if (path.path.length < lowestStepsSuccessCount) {
-						lowestStepsSuccessCount = path.path.length;
-					}
-				}
-			}
-
+			const tally = this.#tallyBatchSuccesses(currentTry, pathsToTry);
+			successCount += tally.successCount;
+			lowestStepsSuccessCount = Math.min(lowestStepsSuccessCount, tally.minSuccessSteps);
 			lastAttemptedPathIdx += pathsToTry.length;
 		}
 
+		return(allOutput);
+	}
+
+	/**
+	 * Count the fulfilled plans in one attempt batch and the fewest steps among
+	 * them, so the attempt loop can stop once longer paths cannot improve.
+	 */
+	#tallyBatchSuccesses(results: PromiseSettledResult<AnchorChainingPlan>[], paths: AnchorChainingPath[]): { successCount: number; minSuccessSteps: number } {
+		let successCount = 0;
+		let minSuccessSteps = Infinity;
+		for (let i = 0; i < results.length; i++) {
+			const result = results[i];
+			const path = paths[i];
+			if (!result || !path || result.status !== 'fulfilled') {
+				continue;
+			}
+
+			successCount++;
+			minSuccessSteps = Math.min(minSuccessSteps, path.path.length);
+		}
+
+		return({ successCount, minSuccessSteps });
+	}
+
+	/**
+	 * Pair each settled attempt with its path. With `includeAllOutput`, both
+	 * failures and successes are returned; otherwise failures are logged and
+	 * dropped and only the computed plans are returned.
+	 */
+	#materializePlans(allOutput: PromiseSettledResult<AnchorChainingPlan>[], sortedPaths: AnchorChainingPath[], options?: ComputePlanOptions & { includeAllOutput?: boolean }): (AnchorChainingPlan | AnchorChainingFullPlanResult)[] {
 		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
 		for (let i = 0; i < allOutput.length; i++) {
 			const path = sortedPaths[i];
@@ -177,11 +207,7 @@ export class AnchorChaining implements ChainingHost {
 			}
 
 			if (options?.includeAllOutput) {
-				if (plan.status === 'rejected') {
-					ret.push({ success: false, error: plan.reason, path });
-				} else {
-					ret.push({ success: true, plan: plan.value, path });
-				}
+				ret.push(plan.status === 'rejected' ? { success: false, error: plan.reason, path } : { success: true, plan: plan.value, path });
 			} else if (plan.status === 'rejected') {
 				this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
 			} else {

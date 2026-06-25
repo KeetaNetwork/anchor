@@ -1,4 +1,3 @@
-import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type * as KeetaNet from '@keetanetwork/keetanet-client';
 
 import type { Resolver } from '../../index.js';
@@ -64,8 +63,8 @@ export async function resolveAccountLike(
 	client: KeetaNet.UserClient,
 	action: GetAccountForActionPayload,
 	override?: AnchorChainingAccountOverrides['account']
-): Promise<InstanceType<typeof KeetaNetLib.Account>> {
-	let found: InstanceType<typeof KeetaNetLib.Account> | undefined = undefined;
+): Promise<InstanceType<typeof KeetaNet.lib.Account>> {
+	let found: InstanceType<typeof KeetaNet.lib.Account> | undefined = undefined;
 
 	if (client.account.isAccount()) {
 		found = client.account;
@@ -95,7 +94,7 @@ export async function resolveAccountsForAction(
 	client: KeetaNet.UserClient,
 	action: GetAccountForActionPayload,
 	overrides?: AnchorChainingAccountOverrides
-): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; signer: InstanceType<typeof KeetaNetLib.Account> }> {
+): Promise<{ account: InstanceType<typeof KeetaNet.lib.Account>; signer: InstanceType<typeof KeetaNet.lib.Account> }> {
 	const [signer, account] = await Promise.all([
 		resolveAccountLike(client, action, overrides?.signer),
 		resolveAccountLike(client, action, overrides?.account)
@@ -113,7 +112,7 @@ export function classifyForwardedSteps(path: AnchorChainingStepLike[]): Set<numb
 	const forwarded = new Set<number>();
 	for (let index = 0; index < path.length; index++) {
 		const step = path[index];
-		if (!step || step.type !== 'assetMovement') {
+		if (step?.type !== 'assetMovement') {
 			continue;
 		}
 

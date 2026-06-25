@@ -1,12 +1,11 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import type { AnchorTokenLocationMetadata, AssetLocationLike, PickChainLocation, Rail, RecipientResolved } from '../../services/asset-movement/common.js';
+import type { AnchorTokenLocationMetadata, AssetLocationLike, KeetaAssetMovementTransaction, PickChainLocation, Rail, RecipientResolved } from '../../services/asset-movement/common.js';
 import { convertAssetLocationToString } from '../../services/asset-movement/common.js';
 import type { Resolver } from '../index.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
 import type { Account, GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
-import type { KeetaAssetMovementTransaction } from '../../services/asset-movement/common.js';
 import type KeetaFXAnchorClient from '../../services/fx/client.js';
 import type KeetaAssetMovementAnchorClient from '../../services/asset-movement/client.js';
 import type { ExternalChainAsset } from '../asset.js';

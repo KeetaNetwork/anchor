@@ -17,7 +17,7 @@ import type { FiatPushRails, KeetaPersistentForwardingAddressDetails, SimulatedA
 import type { Logger } from '../log/index.js';
 import type { AnchorChainingStore, ChainingStepRecord, ExecutionState } from './store.js';
 import type { StepContext } from './steps/context.js';
-import type { ResolvedRecipient, StepRunInput, WithdrawRef } from './steps/run.js';
+import type { PollSettings, ResolvedRecipient, StepRunInput, WithdrawRef } from './steps/run.js';
 import { AnchorChainingError } from './errors.js';
 import { convertAssetLocationToString } from '../../services/asset-movement/common.js';
 import { isFiatRail } from '../../services/asset-movement/common.generated.js';
@@ -179,7 +179,7 @@ export class AnchorChainingExecution {
 					sendToAddress: KeetaNet.lib.Account.toAccount(args.to),
 					value: args.value,
 					token: KeetaNet.lib.Account.toAccount(args.token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
-					...(args.external !== undefined ? { external: args.external } : {})
+					...(args.external === undefined ? {} : { external: args.external })
 				}
 			});
 		}
@@ -207,7 +207,7 @@ export class AnchorChainingExecution {
 		}
 
 		const step = this.#ctx.path[index];
-		if (!step || step.type !== 'assetMovement') {
+		if (step?.type !== 'assetMovement') {
 			throw(new AnchorChainingError('INVALID_PATH', `Step ${index} is not an asset-movement step`));
 		}
 
@@ -260,15 +260,13 @@ export class AnchorChainingExecution {
 			}
 		}
 
-		if (!persistentAddress) {
-			persistentAddress = await provider.createPersistentForwardingAddress({
-				account: signer,
-				sourceLocation: step.from.location,
-				destinationLocation: step.to.location,
-				destinationAddress,
-				asset: assetPair
-			});
-		}
+		persistentAddress ??= await provider.createPersistentForwardingAddress({
+			account: signer,
+			sourceLocation: step.from.location,
+			destinationLocation: step.to.location,
+			destinationAddress,
+			asset: assetPair
+		});
 
 		if (typeof persistentAddress.address !== 'string') {
 			throw(new AnchorChainingError('INVALID_STATE', `Persistent forwarding address for step ${index} is not a resolved string`));
@@ -284,7 +282,7 @@ export class AnchorChainingExecution {
 	 */
 	async #resolveRecipient(index: number, actualInput: bigint): Promise<ResolvedRecipient> {
 		const step = this.#ctx.path[index];
-		if (!step || step.type !== 'assetMovement') {
+		if (step?.type !== 'assetMovement') {
 			throw(new AnchorChainingError('INVALID_PATH', `Step ${index} is not an asset-movement step`));
 		}
 
@@ -442,15 +440,37 @@ export class AnchorChainingExecution {
 	}
 
 	/**
+	 * Derive the settlement-poll cadence and deadline for a run.
+	 */
+	#buildPoll(options: AnchorChainingPathExecuteOptions): PollSettings {
+		return({
+			intervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+			timeoutMs: options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
+			...(options.abortSignal ? { abortSignal: options.abortSignal } : {})
+		});
+	}
+
+	/**
+	 * Recover an already-settled leg on resume, yielding its actual output and
+	 * the withdraw it produced so the loop can drive the next leg forward
+	 * without re-performing irreversible work. Returns `null` when the leg has
+	 * not settled and must be executed.
+	 */
+	#resumeSettledStep(record: ChainingStepRecord): { output: bigint; prevWithdrawTx: WithdrawRef | null } | null {
+		if (record.status !== 'settled' || record.actualOutput === undefined) {
+			return(null);
+		}
+
+		const prevWithdrawTx = record.withdraw ? { location: record.withdraw.location, transaction: { id: record.withdraw.id }} : null;
+		return({ output: BigInt(record.actualOutput), prevWithdrawTx });
+	}
+
+	/**
 	 * The shared actual-driven loop used by both {@link execute} and
 	 * {@link resume}.
 	 */
 	async #drive(state: ExecutionState, options: AnchorChainingPathExecuteOptions): Promise<AnchorChainingPathExecuteResult> {
-		const poll = {
-			intervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
-			timeoutMs: options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
-			...(options.abortSignal ? { abortSignal: options.abortSignal } : {})
-		};
+		const poll = this.#buildPoll(options);
 
 		const executedSteps: ExecutedStep[] = [];
 		this.#setState({ status: 'executing', completedSteps: [], currentStepIndex: state.currentStepIndex });
@@ -476,10 +496,11 @@ export class AnchorChainingExecution {
 					throw(new AnchorChainingError('STEP_NOT_DEFINED', `Step record ${index} is not defined`));
 				}
 
-				if (record.status === 'settled' && record.actualOutput !== undefined) {
-					actualInput = BigInt(record.actualOutput);
-					lastActualOutput = actualInput;
-					prevWithdrawTx = record.withdraw ? { location: record.withdraw.location, transaction: { id: record.withdraw.id }} : null;
+				const resumed = this.#resumeSettledStep(record);
+				if (resumed) {
+					actualInput = resumed.output;
+					lastActualOutput = resumed.output;
+					prevWithdrawTx = resumed.prevWithdrawTx;
 					continue;
 				}
 

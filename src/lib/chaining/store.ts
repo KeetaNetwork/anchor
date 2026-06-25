@@ -141,8 +141,7 @@ export interface AnchorChainingStore {
  * serializable contract callers rely on for durability.
  */
 function cloneState(state: ExecutionState): ExecutionState {
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	return(JSON.parse(JSON.stringify(state)) as ExecutionState);
+	return(structuredClone(state));
 }
 
 /**

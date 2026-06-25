@@ -71,7 +71,7 @@ export class AnchorGraph {
 		});
 	}
 
-	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
+	readonly #assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
 		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
 
@@ -98,9 +98,7 @@ export class AnchorGraph {
 					continue;
 				}
 
-				if (!retval) {
-					retval = {};
-				}
+				retval ??= {};
 
 				if (!retval[node.providerID]) {
 					const provider = await this.getAssetMovementProviderById(node.providerID);
@@ -228,7 +226,7 @@ export class AnchorGraph {
 			const railResolved = await assetInput('string');
 
 			if (!isRail(railResolved)) {
-				throw(new Error(`Invalid rail format: ${railResolved}`));
+				throw(new Error(`Invalid rail format: ${JSON.stringify(railResolved)}`));
 			}
 
 			return({ rail: railResolved });
@@ -672,7 +670,7 @@ export class AnchorGraph {
 						asset: side.asset,
 						location: side.location,
 						rails: { inbound: [], outbound: [] },
-						distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
+						distance: distanceValue === undefined ? null : { pathLength: distanceValue }
 					};
 
 					resultMap.set(key, resultObj);

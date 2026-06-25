@@ -16,12 +16,13 @@ import type {
 	PreviewStep,
 	ProviderDisclaimers
 } from './types.js';
-import { AnchorChainingError } from './errors.js';
+import type { StepExecutor } from './steps/executor.js';
 import type { StepContext } from './steps/context.js';
+import type { AnchorChainingStore } from './store.js';
+import { AnchorChainingError } from './errors.js';
 import { classifyForwardedSteps } from './steps/context.js';
 import { createStepExecutor } from './steps/executor.js';
 import { AnchorChainingExecution } from './execution.js';
-import type { AnchorChainingStore } from './store.js';
 import { AnchorChainingStoreMemory } from './store.js';
 
 /**
@@ -136,7 +137,7 @@ export class AnchorChainingPath {
 			}
 
 			const key = `${step.type}:${step.providerID}`;
-			if (legalDisclaimerPromises.find(entry => entry.key === key)) {
+			if (legalDisclaimerPromises.some(entry => entry.key === key)) {
 				continue;
 			}
 
@@ -249,6 +250,32 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(await this.#getExecution().resume(correlationID, options));
 	}
 
+	/**
+	 * Resolve every leg's side-effect-free estimate, threading the known value
+	 * along the path. Affinity `from` drives input forward (leg 0 to last);
+	 * affinity `to` drives output backward (last to leg 0), each feeding the
+	 * next leg's known side.
+	 */
+	async #resolvePreviewSteps(executors: StepExecutor[], ctx: StepContext): Promise<Map<number, PreviewStep>> {
+		const resolved = new Map<number, PreviewStep>();
+		const forward = ctx.affinity === 'from';
+		const indices = executors.map((_, offset) => forward ? offset : executors.length - 1 - offset);
+
+		let known: PreviewKnownValue = { side: forward ? 'in' : 'out', value: ctx.affinityAmount };
+		for (const index of indices) {
+			const executor = executors[index];
+			if (!executor) {
+				throw(new AnchorChainingError('STEP_NOT_DEFINED', `Step ${index} is not defined`));
+			}
+
+			const step = await executor.preview(known);
+			resolved.set(index, step);
+			known = forward ? { side: 'in', value: step.estimatedValueOut } : { side: 'out', value: step.estimatedValueIn };
+		}
+
+		return(resolved);
+	}
+
 	async #computePreview(): Promise<AnchorChainingPreview> {
 		const ctx = this.buildContext(this.#options);
 
@@ -257,33 +284,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 
 		const executors = this.path.map((_, index) => createStepExecutor(ctx, index));
-		const resolved = new Map<number, PreviewStep>();
-
-		if (ctx.affinity === 'from') {
-			let known: PreviewKnownValue = { side: 'in', value: ctx.affinityAmount };
-			for (let index = 0; index < executors.length; index++) {
-				const executor = executors[index];
-				if (!executor) {
-					throw(new AnchorChainingError('STEP_NOT_DEFINED', `Step ${index} is not defined`));
-				}
-
-				const step = await executor.preview(known);
-				resolved.set(index, step);
-				known = { side: 'in', value: step.estimatedValueOut };
-			}
-		} else {
-			let known: PreviewKnownValue = { side: 'out', value: ctx.affinityAmount };
-			for (let index = executors.length - 1; index >= 0; index--) {
-				const executor = executors[index];
-				if (!executor) {
-					throw(new AnchorChainingError('STEP_NOT_DEFINED', `Step ${index} is not defined`));
-				}
-
-				const step = await executor.preview(known);
-				resolved.set(index, step);
-				known = { side: 'out', value: step.estimatedValueIn };
-			}
-		}
+		const resolved = await this.#resolvePreviewSteps(executors, ctx);
 
 		const previewSteps: PreviewStep[] = [];
 		for (let index = 0; index < executors.length; index++) {
@@ -295,7 +296,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 
 		const firstStep = previewSteps[0];
-		const lastStep = previewSteps[previewSteps.length - 1];
+		const lastStep = previewSteps.at(-1);
 		if (!firstStep || !lastStep) {
 			throw(new AnchorChainingError('INVALID_PATH', `Preview produced no steps`));
 		}

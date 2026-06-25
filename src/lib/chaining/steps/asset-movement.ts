@@ -186,9 +186,7 @@ export class AssetMovementStep {
 			let sentBlockHash = input.record.sendBlockHash;
 			if (sentBlockHash === undefined) {
 				let external = usingInstruction.external;
-				if (external === undefined) {
-					external = await buildKeetaSendExternal(provider, transfer.transferID, input.publishedInputs);
-				}
+				external ??= await buildKeetaSendExternal(provider, transfer.transferID, input.publishedInputs);
 
 				sentBlockHash = await input.authorizedSend({
 					to: usingInstruction.sendToAddress,
