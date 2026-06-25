@@ -1555,13 +1555,14 @@ export class UserHistory {
 	}
 
 	/**
-	 * Fold a swap that declares on-chain inputs into the full conversion it
-	 * caps, resolving every linked predecessor by hash and marking each hop
-	 * `consumed` so it is skipped when it later pages in. Returns the input
-	 * transaction unchanged when it is not the tail of a linked chain.
+	 * Fold a swap or bridge that declares on-chain inputs into the full
+	 * conversion it caps, resolving every linked predecessor swap by hash and
+	 * marking each hop `consumed` so it is skipped when it later pages in.
+	 * Returns the input transaction unchanged when it is not the tail of a
+	 * linked chain.
 	 */
 	async #foldForward(transaction: LogicalTransaction, consumed: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction> {
-		if (transaction.type !== 'swap' || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
+		if ((transaction.type !== 'swap' && transaction.type !== 'bridge') || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
 			return(transaction);
 		}
 
