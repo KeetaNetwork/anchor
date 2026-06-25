@@ -542,7 +542,7 @@ test('Asset Movement Anchor Client Test', async function() {
 				const transfer = await baseTokenProvider.initiateTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() }, value: '100' });
 				const transferStatus = await transfer.getTransferStatus();
 				return({
-					id: transfer.transferId,
+					id: transfer.transferID,
 					instructions: transfer.instructions,
 					status: transferStatus
 				})
@@ -1173,7 +1173,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		value: '100'
 	};
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
-	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
+	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferID).toEqual('123');
 
 
 	const invalidNameCert = await makeCertificate('Invalid Name');

@@ -1553,7 +1553,7 @@ describe('AnchorChainingPath execute', function() {
 		// 88 EURC from FX - 10 fee = 78 EUR output
 		expect(step1?.type).toEqual('assetMovement');
 		if (step1?.type === 'assetMovement') {
-			expect(step1.plan.transfer.transferId).toBeTruthy();
+			expect(step1.plan.transfer.transferID).toBeTruthy();
 			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
 			const transferStatus = await step1.plan.transfer.getTransferStatus();
 			expect(transferStatus.transaction.status).toEqual('COMPLETE');
@@ -1642,7 +1642,7 @@ describe('AnchorChainingPath execute', function() {
 
 		expect(step1?.type).toEqual('assetMovement');
 		if (step1?.type === 'assetMovement') {
-			expect(step1.plan.transfer.transferId).toBeTruthy();
+			expect(step1.plan.transfer.transferID).toBeTruthy();
 			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
 			const transferStatus = await step1.plan.transfer.getTransferStatus();
 			expect(transferStatus.transaction.status).toEqual('COMPLETE');
@@ -2055,7 +2055,7 @@ describe('AnchorChainingPath keetaSendAuthRequired', function() {
 		expect(decoded.signed).toBeUndefined();
 		expect(decoded.envelope.inputs).toBeUndefined();
 		expect(decoded.envelope.anchors).toEqual({
-			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferId }
+			[h.bankSignerEU.publicKeyString.get()]: { transactionId: step1.plan.transfer.transferID }
 		});
 	});
 
