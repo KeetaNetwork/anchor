@@ -20,6 +20,7 @@ import type {
 import type {
 	HistoryEntry,
 	HistorySource,
+	LogicalCounterparty,
 	LogicalDirection,
 	LogicalTransaction,
 	LogicalTransactionStatus,
@@ -1387,6 +1388,29 @@ test('surfaces the on-chain input a later FX swap declares and folds the chain i
 	expect(refolded).toHaveLength(1);
 });
 
+test('iterate folds a linked FX chain incrementally, matching list', async function() {
+	const fixture = await startChainedFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const streamed: LogicalTransaction[] = [];
+	for await (const transaction of fixture.history.iterate(fixture.userAccount)) {
+		streamed.push(transaction);
+	}
+
+	/*
+	 * The stream itself now yields the folded conversion (not the two raw
+	 * hops), so iterate() and list() agree.
+	 */
+	const swaps = streamed.filter(transaction => transaction.type === 'swap');
+	expect(swaps).toHaveLength(1);
+
+	const swap = swaps[0];
+	expect(swap?.refs.blockHashes.includes(fixture.firstBlockHash)).toBe(true);
+	expect(swap?.send).toEqual({ token: fixture.usdToken, amount: 100n });
+	expect(swap?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
+});
+
 // #endregion FX
 
 // #region foldChains
@@ -1435,6 +1459,75 @@ function makeSwap(spec: SwapSpec): LogicalTransaction {
 
 	return(transaction);
 }
+
+/**
+ * Spec for a synthetic bridge {@link LogicalTransaction} used to exercise the
+ * swap-funds-a-bridge fold.
+ */
+type BridgeSpec = {
+	id: string;
+	blockHash: string;
+	send: { token: string; amount: bigint };
+	receive: { token: string; amount: bigint };
+	inputBlockHashes?: string[];
+	counterparty?: LogicalCounterparty;
+	timestamp?: string;
+	status?: LogicalTransactionStatus;
+};
+
+/**
+ * Build an outbound bridge {@link LogicalTransaction} from a {@link BridgeSpec}.
+ */
+function makeBridge(spec: BridgeSpec): LogicalTransaction {
+	const refs: LogicalTransaction['refs'] = { blockHashes: [ spec.blockHash ], anchorTxIDs: [] };
+	if (spec.inputBlockHashes !== undefined) {
+		refs.inputs = spec.inputBlockHashes.map(function(blockHash) {
+			return({ blockHash });
+		});
+	}
+
+	const transaction: LogicalTransaction = {
+		id: spec.id,
+		type: 'bridge',
+		status: spec.status ?? 'complete',
+		direction: 'out',
+		timestamp: spec.timestamp ?? '2026-01-01T00:00:00.000Z',
+		send: spec.send,
+		receive: spec.receive,
+		legs: [],
+		refs
+	};
+
+	if (spec.counterparty !== undefined) {
+		transaction.counterparty = spec.counterparty;
+	}
+
+	return(transaction);
+}
+
+test('foldChains folds a swap funding a bridge into one outbound bridge', function() {
+	const swap = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenN', amount: 500n }, timestamp: '2026-01-01T00:00:00.000Z' });
+	const bridge = makeBridge({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenN', amount: 500n }, receive: { token: 'evm:0xabc', amount: 499n }, inputBlockHashes: [ 'b1' ], counterparty: { kind: 'anchor', id: 'anchorBridge' }, timestamp: '2026-01-01T00:05:00.000Z' });
+
+	const folded = foldChains([ bridge, swap ]);
+	expect(folded).toHaveLength(1);
+
+	const merged = folded[0];
+	expect(merged?.type).toBe('bridge');
+	expect(merged?.direction).toBe('out');
+	expect(merged?.send).toEqual({ token: 'tokenA', amount: 1000n });
+	expect(merged?.receive).toEqual({ token: 'evm:0xabc', amount: 499n });
+	expect(merged?.counterparty).toEqual({ kind: 'anchor', id: 'anchorBridge' });
+	expect(merged?.refs.blockHashes).toEqual(expect.arrayContaining([ 'b1', 'b2' ]));
+	expect(merged?.timestamp).toBe('2026-01-01T00:00:00.000Z');
+});
+
+test('foldChains leaves a lone bridge untouched', function() {
+	const bridge = makeBridge({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenN', amount: 500n }, receive: { token: 'evm:0xabc', amount: 499n }, counterparty: { kind: 'anchor', id: 'anchorBridge' }});
+
+	const folded = foldChains([ bridge ]);
+	expect(folded).toEqual([ bridge ]);
+});
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {
 	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenB', amount: 497n }, timestamp: '2026-01-01T00:00:00.000Z' });

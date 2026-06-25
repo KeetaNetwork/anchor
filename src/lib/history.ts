@@ -342,6 +342,13 @@ export type HistoryAccount = GenericAccount | string | null;
  */
 export interface HistorySource {
 	getHistory(account: HistoryAccount, query?: HistoryQuery): Promise<HistoryEntry[]>;
+	/**
+	 * Fetch the vote staple settling `blockHash`, or `null`/`undefined` when it
+	 * cannot be resolved. Optional: when present, {@link UserHistory.iterate}
+	 * folds linked multi-hop swap chains incrementally (resolving each
+	 * referenced predecessor by hash) instead of buffering the whole account.
+	 */
+	getVoteStaple?(blockHash: string): Promise<HistoryStaple | null | undefined>;
 }
 
 /**
@@ -1187,9 +1194,9 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 
 	const merged: LogicalTransaction = {
 		id: head.id,
-		type: 'swap',
+		type: tail.type,
 		status,
-		direction: 'self',
+		direction: tail.direction,
 		timestamp: earliest,
 		legs,
 		refs
@@ -1208,7 +1215,11 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 		merged.fee = fee;
 	}
 
-	const counterparty = sharedCounterparty(hops);
+	/*
+	 * An all-swap chain reports its shared anchor; a chain that ends in a
+	 * bridge takes the bridge's counterparty, since the swap hops only fund it.
+	 */
+	const counterparty = tail.type === 'swap' ? sharedCounterparty(hops) : tail.counterparty;
 	if (counterparty !== undefined) {
 		merged.counterparty = counterparty;
 	}
@@ -1230,14 +1241,18 @@ type SwapChain = {
  * Group swap transactions into the chains they form through their
  * `refs.inputs` <-> `refs.blockHashes` links. Only chains of two or more hops
  * are returned, keyed by every member's id.
+ *
+ * Heads and intermediate hops are always swaps; the tail may also be a bridge,
+ * which is how a swap that funds an outbound bridge folds into one conversion.
  */
 function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<string, SwapChain> {
 	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge');
 
 	const successorOf = new Map<string, LogicalTransaction>();
 	const predecessorOf = new Map<string, LogicalTransaction>();
 	for (const swap of swaps) {
-		for (const other of swaps) {
+		for (const other of successors) {
 			if (other.id === swap.id) {
 				continue;
 			}
@@ -1426,9 +1441,26 @@ export class UserHistory {
 	 * grouping linked multi-hop chains into single conversions.
 	 */
 	async list(account: HistoryAccount, options?: UserHistoryListOptions): Promise<LogicalTransaction[]> {
-		const { limit, ...collectOptions } = options ?? {};
-
 		const transactions: LogicalTransaction[] = [];
+
+		/*
+		 * When the source can resolve staples by block hash, iterate() already
+		 * folds linked chains incrementally and honors `limit` by short-circuit,
+		 * so a bounded `limit` no longer walks the whole account.
+		 */
+		if (typeof this.#history.getVoteStaple === 'function') {
+			for await (const transaction of this.iterate(account, options)) {
+				transactions.push(transaction);
+			}
+
+			return(transactions);
+		}
+
+		/*
+		 * Fallback for sources without by-hash resolution: drain fully and fold
+		 * across the whole set so cross-page chains still group.
+		 */
+		const { limit, ...collectOptions } = options ?? {};
 		for await (const transaction of this.iterate(account, collectOptions)) {
 			transactions.push(transaction);
 		}
@@ -1452,6 +1484,14 @@ export class UserHistory {
 		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
 		const perspective = perspectiveOf(account);
 
+		/*
+		 * Fold-capable sources resolve each linked predecessor by block hash, so
+		 * a chain whose tail is seen first (newest-first paging) is folded on the
+		 * spot and its older hops are skipped when they later page in.
+		 */
+		const foldCapable = typeof this.#history.getVoteStaple === 'function';
+		const consumed = new Set<string>();
+
 		let cursor = options?.cursor;
 		let yielded = 0;
 		while (true) {
@@ -1461,23 +1501,19 @@ export class UserHistory {
 			}
 
 			for (const entry of page) {
-				const timestamp = entry.voteStaple.timestamp().toISOString();
-				const blocks: EnrichedBlock[] = [];
-				const sources = new Map<string, LogicalTransactionSource>();
-				for (const block of entry.voteStaple.blocks) {
-					const enriched = await this.#enrichBlock(block, timestamp, perspective, options, externalCache, readerCache);
-					blocks.push(enriched);
-
-					if (options?.includeSource === true) {
-						sources.set(enriched.blockHash, { staple: entry.voteStaple, enriched });
+				const logical = await this.#foldStaple(entry.voteStaple, perspective, options, externalCache, readerCache);
+				const emitted = foldCapable ? foldChains(logical) : logical;
+				for (const transaction of emitted) {
+					if (consumed.has(transaction.id)) {
+						continue;
 					}
-				}
 
-				const logical = foldHistory(blocks, this.#classifiers);
-				attachSources(logical, sources);
+					let out = transaction;
+					if (foldCapable) {
+						out = await this.#foldForward(transaction, consumed, perspective, options, externalCache, readerCache);
+					}
 
-				for (const transaction of logical) {
-					yield transaction;
+					yield out;
 					yielded += 1;
 
 					if (options?.limit !== undefined && yielded >= options.limit) {
@@ -1493,6 +1529,123 @@ export class UserHistory {
 
 			cursor = last.voteStaple.blocksHash.toString();
 		}
+	}
+
+	/**
+	 * Enrich and classify a single vote staple's blocks into logical
+	 * transactions, attaching raw sources when requested. Shared by the paging
+	 * loop and the by-hash predecessor resolution used to fold chains.
+	 */
+	async #foldStaple(staple: HistoryStaple, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction[]> {
+		const timestamp = staple.timestamp().toISOString();
+		const blocks: EnrichedBlock[] = [];
+		const sources = new Map<string, LogicalTransactionSource>();
+		for (const block of staple.blocks) {
+			const enriched = await this.#enrichBlock(block, timestamp, perspective, options, externalCache, readerCache);
+			blocks.push(enriched);
+
+			if (options?.includeSource === true) {
+				sources.set(enriched.blockHash, { staple, enriched });
+			}
+		}
+
+		const logical = foldHistory(blocks, this.#classifiers);
+		attachSources(logical, sources);
+		return(logical);
+	}
+
+	/**
+	 * Fold a swap that declares on-chain inputs into the full conversion it
+	 * caps, resolving every linked predecessor by hash and marking each hop
+	 * `consumed` so it is skipped when it later pages in. Returns the input
+	 * transaction unchanged when it is not the tail of a linked chain.
+	 */
+	async #foldForward(transaction: LogicalTransaction, consumed: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction> {
+		if (transaction.type !== 'swap' || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
+			return(transaction);
+		}
+
+		const hops = await this.#resolveSwapChainBackward(transaction, perspective, options, externalCache, readerCache);
+		const head = hops.at(0);
+		const tail = hops.at(-1);
+		if (hops.length < 2 || head === undefined || tail === undefined) {
+			return(transaction);
+		}
+
+		for (const hop of hops) {
+			consumed.add(hop.id);
+		}
+
+		const merged = mergeChainHops(head, tail, hops);
+		if (options?.includeSource === true && transaction.source !== undefined) {
+			merged.source = transaction.source;
+		}
+
+		return(merged);
+	}
+
+	/**
+	 * Walk a swap chain backward from its tail, following each hop's on-chain
+	 * input to the predecessor swap it references, until the head (a swap with
+	 * no resolvable input) is reached. Returns the hops oldest-first.
+	 */
+	async #resolveSwapChainBackward(tail: LogicalTransaction, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction[]> {
+		const hops: LogicalTransaction[] = [ tail ];
+		const seenIds = new Set<string>([ tail.id ]);
+		const triedHashes = new Set<string>();
+		let current = tail;
+		while (true) {
+			const predecessor = await this.#walkToPredecessor(current, triedHashes, seenIds, perspective, options, externalCache, readerCache);
+			if (predecessor === undefined) {
+				break;
+			}
+
+			hops.unshift(predecessor);
+			seenIds.add(predecessor.id);
+			current = predecessor;
+		}
+
+		return(hops);
+	}
+
+	/**
+	 * Resolve the first not-yet-tried input of `current` to the predecessor
+	 * swap it references, or `undefined` when none resolve to a new swap.
+	 */
+	async #walkToPredecessor(current: LogicalTransaction, triedHashes: Set<string>, seenIds: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction | undefined> {
+		for (const input of current.refs.inputs ?? []) {
+			if (triedHashes.has(input.blockHash)) {
+				continue;
+			}
+
+			triedHashes.add(input.blockHash);
+
+			const predecessor = await this.#resolvePredecessorSwap(input.blockHash, perspective, options, externalCache, readerCache);
+			if (predecessor !== undefined && !seenIds.has(predecessor.id)) {
+				return(predecessor);
+			}
+		}
+
+		return(undefined);
+	}
+
+	/**
+	 * Fetch the staple settling `blockHash` and return the swap logical
+	 * transaction it contributes to, or `undefined` when it cannot be resolved.
+	 */
+	async #resolvePredecessorSwap(blockHash: string, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction | undefined> {
+		const source = this.#history;
+		if (typeof source.getVoteStaple !== 'function') {
+			return(undefined);
+		}
+
+		const staple = await source.getVoteStaple(blockHash);
+		if (staple === null || staple === undefined) {
+			return(undefined);
+		}
+
+		const logical = foldChains(await this.#foldStaple(staple, perspective, options, externalCache, readerCache));
+		return(logical.find(transaction => transaction.type === 'swap' && transaction.refs.blockHashes.includes(blockHash)));
 	}
 
 	/**
