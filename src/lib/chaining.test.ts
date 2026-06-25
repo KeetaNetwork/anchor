@@ -3684,7 +3684,6 @@ describe('Generic Test Cases', function() {
 
 		return(true);
 	}
-		
 
 	const testCases: ChainTestCase[] = [
 		{
