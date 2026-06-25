@@ -182,7 +182,7 @@ export default {
 			]
 		},
 		{
-			filename: [ 'src/lib/chaining-graph.cli.ts' ],
+			filename: [ 'src/lib/chaining/graph.cli.ts' ],
 			words: [
 				'rankdir', 'fontname', 'darkorange', 'steelblue'
 			]

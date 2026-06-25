@@ -43,6 +43,26 @@ export type {
 	UserHistoryListOptions
 } from './history.js';
 export {
+	AnchorChaining,
+	AnchorChainingPath,
+	AnchorChainingPlan,
+	AnchorGraph,
+	AnchorChainingError,
+	AnchorChainingStoreMemory
+} from './chaining/index.js';
+export type {
+	AnchorChainingConfig,
+	AnchorChainingPathInput,
+	AnchorChainingPathExecuteOptions,
+	AnchorChainingPathExecuteResult,
+	AnchorChainingPathState,
+	AnchorChainingFullPlanResult,
+	AnchorChainingStore,
+	AnchorChainingErrorCode,
+	ComputePlanOptions,
+	ExecutionState
+} from './chaining/index.js';
+export {
 	Certificates,
 	EncryptedContainer,
 	Resolver,

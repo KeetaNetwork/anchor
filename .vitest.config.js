@@ -20,7 +20,12 @@ export default defineConfig({
 				 * Exclude test files from coverage since they are not
 				 * part of the source code
 				 */
-				'src/**/*.test.ts'
+				'src/**/*.test.ts',
+				/*
+				 * Exclude shared test fixtures (servers, harnesses, helpers);
+				 * they are test infrastructure, not production source.
+				 */
+				'src/**/fixtures.ts'
 			],
 			enabled: true
 		}
