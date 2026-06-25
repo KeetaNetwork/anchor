@@ -1372,22 +1372,19 @@ test('surfaces the on-chain input a later FX swap declares and folds the chain i
 
 	const transactions = await fixture.history.list(fixture.userAccount);
 	const swaps = transactions.filter(transaction => transaction.type === 'swap');
-	expect(swaps).toHaveLength(2);
+	expect(swaps).toHaveLength(1);
+
+	const swap = swaps[0];
+	expect(swap?.refs.inputs?.some(input => input.blockHash === fixture.firstBlockHash)).toBe(true);
+	expect(swap?.refs.blockHashes.includes(fixture.firstBlockHash)).toBe(true);
+	expect(swap?.send).toEqual({ token: fixture.usdToken, amount: 100n });
+	expect(swap?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
 
 	/*
-	 * The producer wrote the first hop's settled block into the second hop's
-	 * external; enrichment surfaces it, and it matches the first hop's block
-	 * reference -- the contract the chaining plan and foldChains rely on.
+	 * Re-folding an already-folded result is a no-op.
 	 */
-	const linked = swaps.find(transaction => transaction.refs.inputs?.some(input => input.blockHash === fixture.firstBlockHash));
-	expect(linked).toBeDefined();
-	expect(swaps.some(transaction => transaction.refs.blockHashes.includes(fixture.firstBlockHash))).toBe(true);
-
-	const folded = foldChains(transactions);
-	const foldedSwaps = folded.filter(transaction => transaction.type === 'swap');
-	expect(foldedSwaps).toHaveLength(1);
-	expect(foldedSwaps[0]?.send).toEqual({ token: fixture.usdToken, amount: 100n });
-	expect(foldedSwaps[0]?.receive).toEqual({ token: fixture.eurToken, amount: 88n });
+	const refolded = foldChains(transactions).filter(transaction => transaction.type === 'swap');
+	expect(refolded).toHaveLength(1);
 });
 
 // #endregion FX
