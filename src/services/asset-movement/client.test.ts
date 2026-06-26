@@ -842,6 +842,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userActionNeededAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userGetAccountStatusError = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	const promisePolling: { [key: string]: number } = {};
 
@@ -1026,6 +1027,36 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 				return({
 					transaction: testTransaction
 				})
+			},
+
+			/**
+			 * Method to get the authenticated account's readiness/status. Returns the outstanding
+			 * blockers as Errors instances; an empty array means the account is ready.
+			 */
+			getAccountStatus: async function(account) {
+				if (userGetAccountStatusError.comparePublicKey(account)) {
+					throw(new Errors.KYCShareNeeded({
+						shareWithPrincipals: [ kycSharePrincipal ],
+						neededAttributes: [ 'firstName' ],
+						acceptedIssuers: [ [ { name: 'iss', value: 'testSubjectDN' } ] ]
+					}));
+				}
+
+				if (userKYCNeeded.comparePublicKey(account)) {
+					return({
+						actionRequired: true,
+						errors: [
+							new Errors.KYCShareNeeded({
+								shareWithPrincipals: [ kycSharePrincipal ],
+								neededAttributes: [ 'firstName' ],
+								acceptedIssuers: [ [ { name: 'iss', value: 'testSubjectDN' } ] ]
+							}),
+							new Errors.UserActionNeeded({ actionsNeeded: [] })
+						]
+					});
+				}
+
+				return({ actionRequired: false });
 			},
 
 			/**
@@ -1345,6 +1376,52 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 		// Server-side error path
 		await expect(usdcProvider.deactivatePersistentForwardingAddress({ id: 'does-not-exist', account })).rejects.toThrow();
+	}
+
+	{
+		// getAccountStatus surfaces the actionRequired discriminant to the client
+
+		// A ready account resolves with actionRequired: false (no errors carried)
+		const readyStatus = await usdcProvider.getAccountStatus({ account });
+		expect(readyStatus.actionRequired).toBe(false);
+
+		// An account with outstanding actions resolves with actionRequired: true and the typed errors
+		const blockedStatus = await usdcProvider.getAccountStatus({ account: userKYCNeeded });
+		if (!blockedStatus.actionRequired) {
+			throw(new Error('Expected actionRequired status for an account with outstanding actions'));
+		}
+
+		expect(blockedStatus.errors.length).toBe(2);
+
+		// Verify the error DATA (not just the type) survives the generic wire round-trip
+		const kycError = blockedStatus.errors[0];
+		if (!(kycError instanceof Errors.KYCShareNeeded)) {
+			throw(new Error('Expected the first blocker to rehydrate as KYCShareNeeded'));
+		}
+		expect(kycError.neededAttributes).toEqual([ 'firstName' ]);
+		expect(kycError.acceptedIssuers).toEqual([ [ { name: 'iss', value: 'testSubjectDN' } ] ]);
+		expect(kycError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toBe(true);
+
+		expect(blockedStatus.errors[1]).toBeInstanceOf(Errors.UserActionNeeded);
+
+		// Without an account (and therefore no signature) the request is rejected
+		await expect(usdcProvider.getAccountStatus({})).rejects.toThrow();
+
+		// A handler that THROWS a blocker (rather than returning it) is folded into actionRequired: the
+		// client resolves with the thrown error in the errors array, rehydrated with its data intact.
+		// (A genuine request failure, e.g. the unauthenticated case above, still rejects.)
+		const thrownBlockerStatus = await usdcProvider.getAccountStatus({ account: userGetAccountStatusError });
+		if (!thrownBlockerStatus.actionRequired) {
+			throw(new Error('Expected a thrown blocker to surface as actionRequired'));
+		}
+
+		expect(thrownBlockerStatus.errors.length).toBe(1);
+		const thrownKycError = thrownBlockerStatus.errors[0];
+		if (!(thrownKycError instanceof Errors.KYCShareNeeded)) {
+			throw(new Error('Expected the thrown blocker to rehydrate as KYCShareNeeded'));
+		}
+		expect(thrownKycError.neededAttributes).toEqual([ 'firstName' ]);
+		expect(thrownKycError.shareWithPrincipals[0]?.comparePublicKey(kycSharePrincipal)).toBe(true);
 	}
 
 	{

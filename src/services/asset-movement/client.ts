@@ -26,6 +26,10 @@ import type {
 	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
 	PersistentAddressTemplateData,
 	KeetaAssetMovementAnchorGetTransferStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusRequest,
+	KeetaAssetMovementAnchorGetAccountStatusResponse,
+	KeetaAssetMovementAnchorAccountStatus,
 	KeetaAssetMovementAnchorShareKYCClientRequest,
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
@@ -58,6 +62,9 @@ import {
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
+	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+	isKeetaAssetMovementAnchorGetAccountStatusResponse,
+	isKeetaAssetMovementAnchorError,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
@@ -604,7 +611,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				errorStr = 'Unknown error';
 			}
 
-			return(new Error(`asset movement request failed: ${errorStr}`));
+			return(new KeetaAnchorError(`asset movement request failed: ${errorStr}`));
 		}
 	}
 
@@ -809,6 +816,56 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		this.logger?.debug(`asset movement request successful, request ID ${request.id}`);
 
 		return(requestInformationJSON);
+	}
+
+	/**
+	 * Check whether the (authenticated) account is ready to use this asset movement provider.
+	 *
+	 * Resolves with the account status, mirroring the wire `actionRequired` discriminant:
+	 * `{ actionRequired: false }` means the account is ready, while `{ actionRequired: true, errors }`
+	 * lists the actions the account must complete before it can proceed, rehydrated into their typed
+	 * errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`, `Errors.UserActionNeeded`,
+	 * `Errors.OperationNotSupported`). Request-level failures (e.g. an invalid signature) still reject.
+	 */
+	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAssetMovementAnchorAccountStatus> {
+		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
+
+		const { account } = request;
+
+		let response;
+		try {
+			response = await this.#makeRequest<
+				KeetaAssetMovementAnchorGetAccountStatusResponse,
+				{ [key: string]: never },
+				KeetaAssetMovementAnchorGetAccountStatusRequest
+			>({
+				method: 'POST',
+				endpoint: 'getAccountStatus',
+				account,
+				body: {},
+				serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+				getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
+				isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
+			});
+		} catch (error: unknown) {
+			if (isKeetaAssetMovementAnchorError(error)) {
+				this.logger?.debug('get account status successful, 1 required action(s) (thrown)');
+				return({ actionRequired: true, errors: [ error ] });
+			}
+
+			throw(error);
+		}
+
+		if (!response.actionRequired) {
+			this.logger?.debug('get account status successful, account ready');
+			return({ actionRequired: false });
+		}
+
+		const errors = await Promise.all(response.errors.map((entry) => this.#parseResponseError(entry)));
+
+		this.logger?.debug(`get account status successful, ${errors.length} required action(s)`);
+
+		return({ actionRequired: true, errors });
 	}
 
 	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {

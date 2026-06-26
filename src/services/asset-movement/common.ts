@@ -6,13 +6,13 @@ import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, type KeetaAnchorError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
-import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties } from './common.generated.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
@@ -668,6 +668,57 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 	return([ 'get-transaction', input.id ]);
 }
 
+export interface KeetaAssetMovementAnchorGetAccountStatusClientRequest {
+	account?: KeetaNetAccount;
+}
+
+export type KeetaAssetMovementAnchorGetAccountStatusRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorGetAccountStatusClientRequest, unknown>;
+
+export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(): Signable {
+	return([ 'get-account-status' ]);
+}
+
+/**
+ * A single account-status blocker, encoded the same way every {@link KeetaAnchorError} serializes
+ * over the wire (`asErrorResponse('application/json')`): a generic error envelope keyed by `name`,
+ * carrying whatever additional fields that error type serializes (e.g. `code` and `data`). The client
+ * parses each entry from this JSON the same way it parses any other error response, rehydrating it into
+ * its typed {@link Errors} instance, so callers keep `instanceof` checks. Build these from error
+ * instances with {@link encodeKeetaAssetMovementAnchorAccountStatusError}.
+ */
+export interface KeetaAssetMovementAnchorAccountStatusEntry {
+	ok: false;
+	name: string;
+	error: string;
+	[key: string]: unknown;
+}
+
+export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
+	ok: true;
+	actionRequired: false;
+} | {
+	ok: true;
+	actionRequired: true;
+	errors: KeetaAssetMovementAnchorAccountStatusEntry[];
+} | {
+	ok: false;
+	error: string;
+};
+
+/**
+ * The account status: returned by a `getAccountStatus` handler (server side) and resolved by the
+ * client, mirroring the wire response's `actionRequired` discriminant. `false` means the account is
+ * ready; `true` carries the `errors` the account must resolve as typed {@link Errors} instances (the
+ * server encodes them for the wire; the client rehydrates them via `KeetaAnchorError.fromJSON`) so
+ * callers can `instanceof`-check each one.
+ */
+export type KeetaAssetMovementAnchorAccountStatus = {
+	actionRequired: false;
+} | {
+	actionRequired: true;
+	errors: KeetaAnchorError[];
+};
+
 /**
  * Client-side request to deactivate a persistent forwarding address template.
  * Only requires the template id (plus an account/signature to authenticate the request).
@@ -1249,7 +1300,7 @@ type KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON = ReturnType<KeetaAnch
 class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaAssetMovementAnchorAdditionalKYCNeededError';
 	private readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID!: string;
-	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '3f4d6acd-8915-40de-94fa-4c6c48c01623';
+	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '6b8c684a-4dba-4cb6-9e1c-a1cf5dfcff03';
 
 	readonly toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 
@@ -1625,3 +1676,25 @@ export const Errors: {
 	 */
 	UserActionNeeded: KeetaAssetMovementAnchorUserActionNeededError
 };
+
+/**
+ * Encode an account-status error instance into a {@link KeetaAssetMovementAnchorAccountStatusEntry}.
+ * The server uses this to turn the error instances an account-status handler returns into the wire
+ * response. Reuses the error's own `asErrorResponse` serialization (the same one thrown errors use), so
+ * an entry is identical to what the error would produce if thrown and is parsed client-side the same way.
+ */
+export function encodeKeetaAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
+	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
+}
+
+/**
+ * Whether an error is one of the asset movement errors {@link Errors}
+ */
+export function isKeetaAssetMovementAnchorError(error: unknown): error is KeetaAnchorError {
+	for (const ErrorClass of Object.values(Errors)) {
+		if (ErrorClass.isInstance(error)) {
+			return(true);
+		}
+	}
+	return(false)
+}

@@ -214,6 +214,7 @@ type ServiceMetadata = {
 						'simulateTransfer' |
 						'executeTransfer' |
 						'getTransferStatus' |
+						'getAccountStatus' |
 						'initiatePersistentForwardingTemplate' |
 						'createPersistentForwardingTemplate' |
 						'listPersistentForwardingTemplate' |
