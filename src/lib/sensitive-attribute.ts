@@ -181,12 +181,6 @@ function normalizeDecodedValue(input: unknown): unknown {
 			return(input.value);
 		}
 	}
-	// Unwrap ASN1Date objects (uses .date property, not .value)
-	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-	const asn1Date = input as { type?: string; date?: unknown };
-	if (asn1Date.type === 'date' && asn1Date.date instanceof Date) {
-		return(asn1Date.date);
-	}
 
 	// Recursively normalize object properties
 	const result: { [key: string]: unknown } = {};
