@@ -20,6 +20,7 @@ import type { ACLPermissionRequirement } from '@keetanetwork/keetanet-client/lib
 import type { Certificate } from '@keetanetwork/keetanet-client/lib/utils/certificate.js';
 import type { UserClientBuilder } from '@keetanetwork/keetanet-client/client/builder.js';
 import { objectToSignable } from '../../lib/utils/signing.js';
+import { assertNever } from '../../lib/utils/never.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -1412,6 +1413,9 @@ export type KeetaAssetMovementAnchorUserAction = ({
 } | {
 	type: 'grant-permission';
 	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
+} | {
+	type: 'provider-kyc-flow';
+	flow: KeetaAssetMovementAnchorKYCExternalURLFlow;
 }) & {
 	details?: ClientRenderableContent;
 }
@@ -1482,9 +1486,17 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
 					}
 				});
+			} else if (action.type === 'provider-kyc-flow') {
+				return({
+					...shared,
+					type: action.type,
+					flow: action.flow
+				});
 			} else {
-				throw(new Error('Unsupported action type'));
+				assertNever(action);
 			}
+
+			throw(new Error('Unsupported action type'));
 		}));
 	}
 
@@ -1556,9 +1568,17 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
 						}
 					});
+				} else if (action.type === 'provider-kyc-flow') {
+					return({
+						...shared,
+						type: action.type,
+						flow: action.flow
+					});
 				} else {
-					throw(new Error('Unsupported action type'));
+					assertNever(action);
 				}
+
+				throw(new Error('Unsupported action type'));
 			})
 		});
 	}

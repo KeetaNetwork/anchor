@@ -1381,6 +1381,14 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			},
 			{
 				actions: []
+			},
+			{
+				actions: [
+					{
+						type: 'provider-kyc-flow',
+						flow: { type: 'url-flow', url: 'https://example.com/external-flow' }
+					}
+				]
 			}
 		];
 
