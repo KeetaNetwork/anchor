@@ -1486,7 +1486,7 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
 					}
 				});
-			} else if (action.type === 'external-provider-flow') {
+			} else if (action.type === 'provider-kyc-flow') {
 				return({
 					...shared,
 					type: action.type,
