@@ -1568,9 +1568,17 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
 						}
 					});
+				} else if (action.type === 'provider-kyc-flow') {
+					return({
+						...shared,
+						type: action.type,
+						flow: action.flow
+					});
 				} else {
-					throw(new Error('Unsupported action type'));
+					assertNever(action);
 				}
+
+				throw(new Error('Unsupported action type'));
 			})
 		});
 	}
