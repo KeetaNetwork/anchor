@@ -258,13 +258,7 @@ function decodeForSensitive(
 ): unknown {
 	const buffer = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
 	const schema: unknown = CertificateAttributeSchema[name];
-
-	let plainObject: unknown;
-	try {
-		plainObject = decodeWithSchema(buffer, schema);
-	} catch {
-		plainObject = ASN1.ASN1toJS(buffer);
-	}
+	const plainObject = decodeWithSchema(buffer, schema);
 
 	return(normalizeDecodedValue(plainObject));
 }
