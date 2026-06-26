@@ -181,7 +181,6 @@ function normalizeDecodedValue(input: unknown): unknown {
 			return(input.value);
 		}
 	}
-
 	// Recursively normalize object properties
 	const result: { [key: string]: unknown } = {};
 	for (const [key, value] of Object.entries(input)) {
@@ -253,7 +252,6 @@ function decodeForSensitive(
 	const buffer = Buffer.isBuffer(data) ? bufferToArrayBuffer(data) : data;
 	const schema: unknown = CertificateAttributeSchema[name];
 	const plainObject = decodeWithSchema(buffer, schema);
-
 	return(normalizeDecodedValue(plainObject));
 }
 
