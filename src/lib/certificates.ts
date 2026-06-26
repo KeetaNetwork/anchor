@@ -378,7 +378,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		// Try with current schema (includes context tags for structs with optional fields)
 		// @ts-expect-error
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
-	} catch (firstError) {
+	} catch {
 		// Fallback: try with backwards-compatible schema (context tags stripped)
 		// This supports old certificates encoded before context tags were added
 		try {
@@ -393,8 +393,11 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
 			usedSchema = backwardsCompatSchema;
 		} catch {
-			// If both fail, throw the original error
-			throw(firstError);
+			// If both schema-based attempts fail, fall back to raw decode + normalization.
+			// Handles GeneralizedTime dates that return ASN1Date wrappers, which the IsDate schema rejects.
+			const raw = ASN1.ASN1toJS(value);
+			const candidate = normalizeDecodedASN1(raw, principals);
+			return(asAttributeValue(name, candidate));
 		}
 	}
 
