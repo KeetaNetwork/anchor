@@ -248,49 +248,6 @@ function setGCMAuthTag(decipher: ReturnType<typeof crypto.createDecipheriv>, tag
 /* eslint-enable @typescript-eslint/consistent-type-assertions */
 
 /**
- * Correct dates decoded from UTCTime BER data when the native ASN.1
- * binding applies the wrong two-digit year pivot (>= 50 -> 2000+year
- * instead of the correct 1900+year per RFC 5280).
- *
- * Reads the leading BER tag byte to determine if the buffer is a
- * standalone UTCTime (tag 0x17). If so, extracts the two-digit year
- * from the content bytes and rebuilds the Date with the correct
- * century.
- */
-function correctUTCTimeDate(buffer: ArrayBuffer, decoded: unknown): unknown {
-	if (!(decoded instanceof Date)) {
-		return(decoded);
-	}
-
-	const bytes = new Uint8Array(buffer);
-	const tag = bytes[0];
-	const yearHighByte = bytes[2];
-	const yearLowByte = bytes[3];
-	if (tag !== 0x17 || yearHighByte === undefined || yearLowByte === undefined) {
-		return(decoded);
-	}
-
-	const yearHigh = yearHighByte - 0x30;
-	const yearLow = yearLowByte - 0x30;
-	const twoDigitYear = yearHigh * 10 + yearLow;
-
-	let correctYear: number;
-	if (twoDigitYear >= 50) {
-		correctYear = 1900 + twoDigitYear;
-	} else {
-		correctYear = 2000 + twoDigitYear;
-	}
-
-	if (decoded.getUTCFullYear() !== correctYear) {
-		const corrected = new Date(decoded.getTime());
-		corrected.setUTCFullYear(correctYear);
-		return(corrected);
-	}
-
-	return(decoded);
-}
-
-/**
  * Decode a value from its ASN.1 representation back to the original type
  *
  * @internal
@@ -309,8 +266,7 @@ function decodeForSensitive(
 		plainObject = ASN1.ASN1toJS(buffer);
 	}
 
-	const normalized = normalizeDecodedValue(plainObject);
-	return(correctUTCTimeDate(buffer, normalized));
+	return(normalizeDecodedValue(plainObject));
 }
 
 export type SensitiveAttributeJSON = {
