@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { Account, AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -7,13 +7,26 @@ import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
-import { createIs, createAssert } from 'typia';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
-import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput } from '../services/asset-movement/common.js';
+import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
+import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
+import { SignData, type Signable, type VerifiableAccount } from './utils/signing.js';
+import type { HTTPSignedField } from './http-server/common.js';
+import type { SignableServiceMetadata } from './anchor-metadata-server.js';
+import { addSignatureToURL, assertHTTPSignedField } from './http-server/common.js';
+import { verifyMetadataSignature } from './anchor-metadata-server.js';
+import { assertServiceMetadata, assertSignableServiceMetadataLegal, assertSignableServiceMetadataOperations, isCurrencySearchCanonical, isCurrencySearchInput, isExternalURL } from './resolver.generated.js';
 
-type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+const ExternalURLKey = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
+type ExternalURLOptions = Pick<NonNullable<Exclude<NonNullable<ServiceMetadataEndpoint>, string>['options']>, 'authentication'>;
+interface ExternalURL {
+	external: typeof ExternalURLKey;
+	url: string;
+	options?: ExternalURLOptions;
+};
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
@@ -34,13 +47,6 @@ type CurrencySearchCanonical = ServiceMetadataCurrencyCodeCanonical;
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
-const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
-
-type ServiceMetadataAuthenticationType = {
-	method: 'keeta-account';
-	type: 'required' | 'optional' | 'none';
-};
-type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }}
 // #region Global Service Metadata
 /**
  * Service Metadata General Structure
@@ -56,7 +62,7 @@ type ServiceMetadata = {
 	};
 	services: {
 		banking?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					createAccount?: string;
 				};
@@ -66,7 +72,7 @@ type ServiceMetadata = {
 			};
 		};
 		kyc?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Check if the KYC provider can
@@ -89,6 +95,10 @@ type ServiceMetadata = {
 					 * KYC verification
 					 */
 					getCertificates?: string;
+					/**
+					 * Get the verification status
+					 */
+					getVerificationStatus?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
@@ -116,7 +126,7 @@ type ServiceMetadata = {
 			/**
 			 * Provider ID which identifies the FX provider
 			 */
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					/**
 					 * Get an estimate for a currency
@@ -181,7 +191,7 @@ type ServiceMetadata = {
 			}
 		};
 		username?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					resolve: ServiceMetadataEndpoint;
 					claim?: ServiceMetadataEndpoint;
@@ -197,19 +207,28 @@ type ServiceMetadata = {
 			}
 		};
 		assetMovement?: {
-			[id: string]: {
+			[id: string]: SharedAnchorMetadataLegalExtension & SharedAnchorMetadataSignedExtension & {
 				operations: {
-					initiateTransfer?: ServiceMetadataEndpoint;
-					getTransferStatus?: ServiceMetadataEndpoint;
-					createPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					listPersistentForwardingTemplate?: ServiceMetadataEndpoint;
-					createPersistentForwarding?: ServiceMetadataEndpoint;
-					listPersistentForwarding?: ServiceMetadataEndpoint;
-					listTransactions?: ServiceMetadataEndpoint;
-					shareKYC?: ServiceMetadataEndpoint;
+					[Operation in (
+						'initiateTransfer' |
+						'simulateTransfer' |
+						'executeTransfer' |
+						'getTransferStatus' |
+						'initiatePersistentForwardingTemplate' |
+						'createPersistentForwardingTemplate' |
+						'listPersistentForwardingTemplate' |
+						'createPersistentForwarding' |
+						'listPersistentForwarding' |
+						'deactivatePersistentForwardingTemplate' |
+						'deactivatePersistentForwarding' |
+						'listTransactions' |
+						'shareKYC'
+					)]?: ServiceMetadataEndpoint;
 				};
 
 				supportedAssets: SupportedAssetsMetadata[];
+
+				locationMetadata?: AnchorCustomLocationMetadata | undefined;
 			}
 		};
 		cards?: {
@@ -219,12 +238,13 @@ type ServiceMetadata = {
 			};
 		};
 		storage?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				operations: {
 					put?: ServiceMetadataEndpoint;
 					get?: ServiceMetadataEndpoint;
 					delete?: ServiceMetadataEndpoint;
 					metadata?: ServiceMetadataEndpoint;
+					updateMetadata?: ServiceMetadataEndpoint;
 					search?: ServiceMetadataEndpoint;
 					public?: ServiceMetadataEndpoint;
 					quota?: ServiceMetadataEndpoint;
@@ -254,7 +274,7 @@ type ServiceMetadata = {
 			};
 		};
 		notification?: {
-			[id: string]: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				supportedChannels?: Partial<SupportedChannelConfigurationMetadata>;
 				supportedSubscriptions?: NotificationSubscriptionType[];
 
@@ -709,11 +729,6 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 	return(input.code);
 }
 
-/**
- * Check if a value is an ExternalURL
- */
-const isExternalURL = createIs<ExternalURL>();
-
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
 type ValuizeInput = JSONSerializablePrimitive | ValuizableObject | ValuizableArray;
 type ValuizableArray = (ValuizableMethod | undefined)[];
@@ -738,8 +753,8 @@ interface ValuizableMethod extends ValuizableMethodBase, ToValuizableExpectPrimi
 	(expect: 'boolean'): Promise<boolean>;
 };
 
-interface ToValuizableExpectString extends ValuizableMethodBase, ToValuizableExpectPrimitive<string> {
-	(expect: 'string'): Promise<string>;
+interface ToValuizableExpectString<T extends string> extends ValuizableMethodBase, ToValuizableExpectPrimitive<T> {
+	(expect: 'string'): Promise<T>;
 };
 
 interface ToValuizableExpectNumber extends ValuizableMethodBase, ToValuizableExpectPrimitive<number> {
@@ -759,8 +774,8 @@ interface ToValuizableExpectArray<T extends unknown[]> extends ValuizableMethodB
 }
 
 /* eslint-disable @stylistic/indent */
-type ToValuizable<T> =
-	T extends string ? ToValuizableExpectString :
+export type ToValuizable<T> =
+	T extends string ? ToValuizableExpectString<T> :
 	T extends number ? ToValuizableExpectNumber :
 	T extends boolean ? ToValuizableExpectBoolean :
 	T extends JSONSerializablePrimitive ? ToValuizableExpectPrimitive<T> :
@@ -792,10 +807,7 @@ type ValuizeResolvable = JSONSerializablePrimitive | ValuizableObject | Valuizab
  */
 const statsAccessToken = Symbol('statsAccessToken');
 
-/**
- * A cache object
- */
-type URLCacheObject = Map<string, {
+type URLCacheObjectEntry = {
 	pass: true;
 	value: JSONSerializable;
 	expires: Date;
@@ -803,7 +815,12 @@ type URLCacheObject = Map<string, {
 	pass: false;
 	error: unknown;
 	expires: Date;
-}>;
+};
+
+/**
+ * A cache object
+ */
+type URLCacheObject = Map<string, Promise<URLCacheObjectEntry>>;
 
 
 type ResolverConfig = {
@@ -841,6 +858,11 @@ type ResolverConfig = {
 	 * Caching Parameters
 	 */
 	cache?: Omit<NonNullable<MetadataConfig['cache']>, 'instance'>;
+
+	/**
+	 * Additional configuration for reading metadata
+	 */
+	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols' | 'signing'>;
 }
 
 
@@ -855,11 +877,32 @@ type MetadataConfig = {
 		negativeTTL?: number;
 	};
 	parent?: Metadata;
+
+	/**
+	 * Flag indicating if the resolver should read from insecure protocols (ex: http)
+	 * Defaults to false
+	 */
+	allowInsecureProtocols?: boolean;
+
+	/**
+	 * Optional signing configuration for signing requests to external services.
+	 * If not provided, then requests will not be signed.
+	 */
+	signing?: {
+		/**
+		 * The account to sign requests with.  If not provided, then requests will not be signed.
+		 */
+		account: Account;
+
+		/**
+		 * Flag indicating if requests that do not explicitly deny signing should be signed.
+		 * Defaults to false.
+		 */
+		signAllRequests?: boolean;
+	}
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
-
-const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -874,6 +917,10 @@ class Metadata implements ValuizableInstance {
 	readonly #url: URL;
 	readonly #resolver: Resolver;
 	readonly #stats: ResolverStats;
+	readonly #allowInsecureProtocols: boolean;
+	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
+	readonly #urlOptions: ExternalURLOptions | undefined;
+
 	private readonly seenURLs: Set<string>;
 
 	private static readonly instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
@@ -903,6 +950,17 @@ class Metadata implements ValuizableInstance {
 		const metadataEncoded = Buffer.from(metadataCompressed).toString('base64');
 
 		return(metadataEncoded);
+	}
+
+	static getExternalURLSignable(url: URL): Signable {
+		const formattedURL = new URL(url.toString());
+		formattedURL.search = '';
+
+		return([
+			ExternalURLKey,
+			'sign-external-url',
+			formattedURL.toString().toLowerCase()
+		]);
 	}
 
 	/**
@@ -1022,7 +1080,7 @@ class Metadata implements ValuizableInstance {
 		throw(new Error('invalid input'));
 	}
 
-	constructor(url: string | URL, config: MetadataConfig) {
+	constructor(url: string | URL | ExternalURL, config: MetadataConfig) {
 		/*
 		 * Define an "instanceTypeID" as an unenumerable property to
 		 * ensure that we can identify this object as an instance of
@@ -1032,7 +1090,13 @@ class Metadata implements ValuizableInstance {
 			value: Metadata.instanceTypeID,
 			enumerable: false
 		});
-		this.#url = new URL(url);
+		if (isExternalURL(url)) {
+			this.#url = new URL(url.url);
+			this.#urlOptions = url.options;
+		} else {
+			this.#url = new URL(url);
+			this.#urlOptions = undefined;
+		}
 		this.#cache = {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			instance: config.cache?.instance ?? new Map() satisfies URLCacheObject as URLCacheObject,
@@ -1043,6 +1107,9 @@ class Metadata implements ValuizableInstance {
 		this.#client = config.client;
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
+		this.#allowInsecureProtocols = config.allowInsecureProtocols ?? false;
+		this.#signing = config.signing ?? null;
+
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
 		if (config.parent !== undefined) {
 			this.seenURLs = config.parent.seenURLs;
@@ -1146,7 +1213,42 @@ class Metadata implements ValuizableInstance {
 		return(retval);
 	}
 
-	private async readURL(url: URL) {
+	private async getResolvedExternalURL(input: URL, options?: ExternalURLOptions) {
+		const authenticationOptions: NonNullable<ExternalURLOptions['authentication']> = options?.authentication ?? { type: 'none' };
+
+		let shouldSign;
+		if (authenticationOptions.type === 'none') {
+			shouldSign = false;
+		} else {
+			if (authenticationOptions.method !== 'keeta-account') {
+				throw(new Error(`Unsupported authentication method`));
+			}
+
+			if (authenticationOptions.type === 'optional') {
+				shouldSign = this.#signing?.signAllRequests === true;
+			} else if (authenticationOptions.type === 'required') {
+				shouldSign = true;
+			} else {
+				assertNever(authenticationOptions.type);
+			}
+		}
+
+		if (!shouldSign) {
+			return(input);
+		}
+
+		if (!this.#signing) {
+			throw(new Error('Signing is requested, but no signing configuration is provided'));
+		}
+
+		const signable = Metadata.getExternalURLSignable(input);
+
+		const signed = await SignData(this.#signing.account, signable);
+
+		return(addSignatureToURL(input, { signedField: signed, account: this.#signing.account }));
+	}
+
+	private async readURL(url: URL, options?: ExternalURLOptions) {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
@@ -1154,68 +1256,86 @@ class Metadata implements ValuizableInstance {
 		 * To ensure any circular references are handled correctly, we
 		 * keep track of a chain of accessed URLs.  If we see the same
 		 * URL twice, then we have a circular reference.
+		 *
+		 * The URL is removed from the set in the `finally` below once
+		 * this resolution returns, so the set tracks only the active
+		 * recursion chain rather than the lifetime history.
 		 */
 		if (this.seenURLs.has(cacheKey)) {
 			return(null);
 		}
 		this.seenURLs.add(cacheKey);
 
-		/*
-		 * Verify that the cache entry is still valid.  If it is not,
-		 * then remove it from the cache.
-		 */
-		let cacheVal = this.#cache.instance.get(cacheKey);
-
-		if (this.#cache.instance.has(cacheKey) && cacheVal !== undefined) {
-			if (cacheVal.expires < new Date()) {
-				this.#cache.instance.delete(cacheKey);
-				cacheVal = undefined;
-			}
-		}
-
-		if (cacheVal !== undefined) {
-			this.#stats.cache.hit++;
-
-			if (cacheVal.pass) {
-				return(cacheVal.value);
-			} else {
-				throw(cacheVal.error);
-			}
-		}
-
-		this.#stats.cache.miss++;
-
-		let retval: JSONSerializable;
 		try {
-			const protocol = url.protocol;
-			if (protocol === 'keetanet:') {
-				retval = await this.readKeetaNetURL(url);
-			} else if (protocol === 'https:') {
-				retval = await this.readHTTPSURL(url);
-			} else {
-				this.#stats.unsupported.reads++;
-				throw(new Error(`Unsupported protocol: ${protocol}`));
+			/*
+			 * Verify that the cache entry is still valid.  If it is not,
+			 * then remove it from the cache.
+			 */
+			const cacheValue = this.#cache.instance.get(cacheKey);
+			if (cacheValue) {
+				const resolvedCacheValue = await cacheValue;
+
+				if (resolvedCacheValue.expires < new Date()) {
+					this.#cache.instance.delete(cacheKey);
+				} else {
+					this.#stats.cache.hit++;
+
+					if (resolvedCacheValue.pass) {
+						return(resolvedCacheValue.value);
+					} else {
+						throw(resolvedCacheValue.error);
+					}
+				}
 			}
-		} catch (readError) {
-			this.#cache.instance.set(cacheKey, {
-				pass: false,
-				error: readError,
-				expires: new Date(Date.now() + this.#cache.negativeTTL)
-			});
 
-			this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
-			throw(readError);
+			this.#stats.cache.miss++;
+
+			const readPromise = (async (): Promise<URLCacheObjectEntry> => {
+				let retval: JSONSerializable;
+				let usingUrl = url;
+
+				try {
+					const protocol = url.protocol;
+					if (protocol === 'keetanet:') {
+						retval = await this.readKeetaNetURL(url);
+					} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
+						usingUrl = await this.getResolvedExternalURL(url, options);
+						retval = await this.readHTTPSURL(usingUrl);
+					} else {
+						this.#stats.unsupported.reads++;
+						throw(new Error(`Unsupported protocol: ${protocol}`));
+					}
+
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
+
+					return({
+						pass: true,
+						value: retval,
+						expires: new Date(Date.now() + this.#cache.positiveTTL)
+					});
+				} catch (readError) {
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', usingUrl.toString(), 'failed:', readError);
+
+					return({
+						pass: false,
+						error: readError,
+						expires: new Date(Date.now() + this.#cache.negativeTTL)
+					});
+				}
+			})();
+
+			this.#cache.instance.set(cacheKey, readPromise);
+
+			const resolvedValue = await readPromise;
+
+			if (resolvedValue.pass) {
+				return(resolvedValue.value);
+			} else {
+				throw(resolvedValue.error);
+			}
+		} finally {
+			this.seenURLs.delete(cacheKey);
 		}
-
-		this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), ':', retval);
-
-		this.#cache.instance.set(cacheKey, {
-			pass: true,
-			value: retval,
-			expires: new Date(Date.now() + this.#cache.positiveTTL)
-		});
-
-		return(retval);
 	}
 
 	private async resolveValue<T extends ExternalURL | undefined>(value: T): Promise<JSONSerializable>;
@@ -1231,7 +1351,7 @@ class Metadata implements ValuizableInstance {
 		 */
 		if (isExternalURL(value)) {
 			const url = new URL(value.url);
-			const retval = await this.readURL(url);
+			const retval = await this.readURL(url, value.options);
 
 			return(await this.resolveValue(retval));
 		}
@@ -1304,12 +1424,14 @@ class Metadata implements ValuizableInstance {
 						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
 					}
 
-					const newMetadataObject = new Metadata(keyValue.url, {
+					const newMetadataObject = new Metadata(keyValue, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
 						logger: this.#logger,
 						resolver: this.#resolver,
 						cache: this.#cache,
+						allowInsecureProtocols: this.#allowInsecureProtocols,
+						...(this.#signing !== null ? { signing: this.#signing } : {}),
 						parent: this
 					});
 
@@ -1363,7 +1485,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
-		const value = await this.readURL(this.#url);
+		const value = await this.readURL(this.#url, this.#urlOptions);
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 
@@ -1388,7 +1510,89 @@ type ResolverStats = {
 	}
 };
 
-type SharedLookupCriteria = { providerIDs?: string[]; };
+type SharedLookupCriteria = {
+	providerIDs?: string[];
+	/**
+	 * Restrict to entries signed by one of the listed accounts. Each entry
+	 * may be a {@link KeetaNetGenericAccount} or its public-key string
+	 * form. Entries without a matching `account` are filtered out
+	 * (including unsigned entries).
+	 */
+	accounts?: (AccountPublicKeyString | VerifiableAccount)[];
+};
+
+/**
+ * Verify the optional metadata signature on a service entry.
+ *
+ * @returns boolean:
+ * - `true` when the entry has neither `account` nor `signed`.
+ * - `false` when one is present without the other or when verification fails.
+ */
+async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Logger): Promise<boolean> {
+	const accountValuizable = entry['account'];
+	const signedValuizable = entry['signed'];
+
+	if (accountValuizable === undefined && signedValuizable === undefined) {
+		return(true);
+	}
+	if (accountValuizable === undefined || signedValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: one of `account`/`signed` present without the other');
+		return(false);
+	}
+
+	const accountString = await accountValuizable('string');
+	let account: VerifiableAccount;
+	try {
+		account = KeetaNetClient.lib.Account.fromPublicKeyString(accountString);
+	} catch (parseError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: invalid account public key', accountString, parseError);
+		return(false);
+	}
+
+	const signedRaw = await Metadata.fullyResolveValuizable(signedValuizable);
+	let signed: HTTPSignedField;
+	try {
+		signed = assertHTTPSignedField(signedRaw);
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `signed` field for account', accountString, assertError);
+		return(false);
+	}
+
+	const operationsValuizable = entry['operations'];
+	if (operationsValuizable === undefined) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: missing `operations` for signed account', accountString);
+		return(false);
+	}
+
+	let operations: SignableServiceMetadata['operations'];
+	try {
+		operations = assertSignableServiceMetadataOperations(await Metadata.fullyResolveValuizable(operationsValuizable));
+	} catch (assertError) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `operations` for account', accountString, assertError);
+		return(false);
+	}
+
+	const metadata: SignableServiceMetadata = { operations };
+	const legalValuizable = entry['legal'];
+	if (legalValuizable !== undefined) {
+		const legalRaw = await Metadata.fullyResolveValuizable(legalValuizable);
+		if (legalRaw !== null) {
+			try {
+				metadata.legal = assertSignableServiceMetadataLegal(legalRaw);
+			} catch (assertError) {
+				logger?.warn('verifyServiceEntrySignature', 'rejecting entry: malformed `legal` for account', accountString, assertError);
+				return(false);
+			}
+		}
+	}
+
+	const valid = await verifyMetadataSignature(account, metadata, signed);
+	if (!valid) {
+		logger?.warn('verifyServiceEntrySignature', 'rejecting entry: signature does not verify for account', accountString);
+	}
+
+	return(valid);
+}
 
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
@@ -1397,10 +1601,15 @@ class Resolver {
 	readonly #logger: Logger | undefined;
 	readonly #stats: ResolverStats;
 	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
+	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
+
+	static getExternalURLSignable(url: URL): Signable {
+		return(Metadata.getExternalURLSignable(url));
+	}
 
 	private readonly lookupMap: {
 		[Service in Services]: {
@@ -1445,6 +1654,7 @@ class Resolver {
 			...config.cache,
 			instance: new Map()
 		};
+		this.#metadataConfig = config.metadataConfig;
 
 		this.id = config.id ?? crypto.randomUUID();
 
@@ -1611,20 +1821,46 @@ class Resolver {
 			return(undefined);
 		}
 
-		const isCurrencySearchInput = createIs<CurrencySearchInput>();
-		// if currency code is provided then convert to canonical format otherwise token public key string was provided
-		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
-		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
-		// if search criteria is not provided then set token to undefined
-		const inputToken = canonicalInputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalInputCurrencyCriteria) : undefined;
-		const outputToken = canonicalOutputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalOutputCurrencyCriteria) : undefined;
+		// Helper to resolve token from either currency code or direct token public key
+		const resolveToken = async (currencyOrToken: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString | undefined): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null | undefined> => {
+			if (currencyOrToken === undefined) {
+				return(undefined);
+			}
+
+			// Check if it's a currency code that needs lookup
+			if (isCurrencySearchInput(currencyOrToken)) {
+				const canonicalCurrency = convertToCurrencySearchCanonical(currencyOrToken);
+				return(await this.lookupToken(canonicalCurrency));
+			}
+
+			// It's potentially a direct token public key string
+			// Validate it and use directly without requiring currencyMap entry
+			const tokenAccount = KeetaNetAccount.fromPublicKeyString(currencyOrToken);
+			if (tokenAccount.isToken()) {
+				const tokenPublicKeyString = tokenAccount.publicKeyString.get();
+				// Return the token using its public key string as the currency identifier
+				// This allows FX lookups to work with tokens that aren't in the currencyMap
+				return({
+					token: tokenPublicKeyString,
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					currency: tokenPublicKeyString as CurrencySearchCanonical
+				});
+			}
+
+			return(undefined);
+		};
+
+		// Resolve tokens for input and output
+		const inputToken = await resolveToken(criteria.inputCurrencyCode);
+		const outputToken = await resolveToken(criteria.outputCurrencyCode);
+
 		if (criteria.inputCurrencyCode !== undefined && inputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', canonicalInputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', criteria.inputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
 		if (criteria.outputCurrencyCode !== undefined && outputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', canonicalOutputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', criteria.outputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
@@ -1759,7 +1995,6 @@ class Resolver {
 
 					let matchFound = false;
 
-
 					for (const channel of criteria.supportedChannels) {
 						const criteriaChannelValue = await serviceArray[channel]?.('any');
 						if (criteriaChannelValue === undefined) {
@@ -1801,121 +2036,104 @@ class Resolver {
 			let matchFound = false;
 
 			for (const path of supportedAsset.paths) {
-				const pairSorted: typeof path.pair = [ ...path.pair ];
-
-				if (fromCanonical) {
-					if (pairSorted[0]?.location !== fromCanonical) {
-						pairSorted.reverse();
+				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+					if (fromCanonical && fromCanonical !== fromAsset.location) {
+						continue;
 					}
-				} else if (toCanonical) {
-					if (pairSorted[1]?.location !== toCanonical) {
-						pairSorted.reverse();
+
+					if (toCanonical && toCanonical !== toAsset.location) {
+						continue;
 					}
-				}
 
-				if (fromCanonical && pairSorted[0].location !== fromCanonical) {
-					continue;
-				}
-
-				if (toCanonical && pairSorted[1].location !== toCanonical) {
-					continue;
-				}
-
-				if (assetCanonical) {
-					if (typeof assetCanonical === 'string') {
-						if (!([ pairSorted[0].id, pairSorted[1].id ].includes(assetCanonical))) {
+					if (assetCanonical) {
+						if (typeof assetCanonical === 'string') {
+							if (!([ fromAsset.id, toAsset.id ].includes(assetCanonical))) {
+								continue;
+							}
+						} else if (fromAsset.id !== assetCanonical.from || toAsset.id !== assetCanonical.to) {
 							continue;
 						}
-					} else {
-						if (fromCanonical || toCanonical) {
-							if (pairSorted[0].id !== assetCanonical.from || pairSorted[1].id !== assetCanonical.to) {
-								continue;
-							}
-						} else {
-							const eitherId = new Set([ pairSorted[0].id, pairSorted[1].id ]);
-							if (!(eitherId.has(assetCanonical.from)) || !(eitherId.has(assetCanonical.to))) {
-								continue;
-							}
-						}
-					}
-				}
-
-				const [ from, to ] = pairSorted;
-
-				const supportedRails = {
-					inbound: [ ...(from.rails.inbound ?? []), ...(from.rails.common ?? []) ],
-					outbound: [ ...(to.rails.outbound ?? []), ...(to.rails.common ?? []) ]
-				}
-
-				if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
-					continue;
-				}
-
-				const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
-					for (const checkRail of searchIn) {
-						if (typeof checkRail === 'string') {
-							if (checkRail === searchFor) {
-								return(true);
-							}
-						} else {
-							if (checkRail.rail === searchFor) {
-								return(true);
-							}
-						}
 					}
 
-					return(false);
-				}
+					const supportedRails = {
+						inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
+						outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
+					}
 
-				if (criteria.rail !== undefined) {
-					let railMatchFound = false;
-					for (const direction of ['inbound', 'outbound'] as const) {
-						let searchFor;
-						let searchIn;
-						let eitherDirectionSharedSearch;
+					if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
+						continue;
+					}
 
-						if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
-							searchFor = criteria.rail[direction];
-							searchIn = supportedRails[direction];
-							eitherDirectionSharedSearch = false;
-						} else {
-							searchFor = criteria.rail;
-							searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
-							eitherDirectionSharedSearch = true;
-						}
-
-
-						if (searchFor !== undefined) {
-							if (typeof searchFor === 'string') {
-								railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+					const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+						for (const checkRail of searchIn) {
+							if (typeof checkRail === 'string') {
+								if (checkRail === searchFor) {
+									return(true);
+								}
 							} else {
-								for (const checkRail of searchFor) {
-									railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
-
-									if (railMatchFound) {
-										break;
-									}
+								if (checkRail.rail === searchFor) {
+									return(true);
 								}
 							}
 						}
 
-						// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
-						if (eitherDirectionSharedSearch) {
-							break;
+						return(false);
+					}
+
+					if (criteria.rail !== undefined) {
+						let railMatchFound = false;
+						for (const direction of ['inbound', 'outbound'] as const) {
+							let searchFor;
+							let searchIn;
+							let eitherDirectionSharedSearch;
+
+							if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+								searchFor = criteria.rail[direction];
+								searchIn = supportedRails[direction];
+								eitherDirectionSharedSearch = false;
+							} else {
+								searchFor = criteria.rail;
+								searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+								eitherDirectionSharedSearch = true;
+							}
+
+
+							if (searchFor !== undefined) {
+								if (typeof searchFor === 'string') {
+									railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+								} else {
+									for (const checkRail of searchFor) {
+										railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+										if (railMatchFound) {
+											break;
+										}
+									}
+								}
+							}
+
+							// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+							if (eitherDirectionSharedSearch) {
+								break;
+							}
+
+							if (railMatchFound) {
+								break;
+							}
 						}
 
-						if (railMatchFound) {
-							break;
+						if (!railMatchFound) {
+							continue;
 						}
 					}
 
-					if (!railMatchFound) {
-						continue;
-					}
+					matchFound = true;
+					break;
 				}
 
-				matchFound = true;
-				break;
+				if (matchFound) {
+					break;
+				}
 			}
 
 			if (matchFound) {
@@ -2024,6 +2242,7 @@ class Resolver {
 		for (const root of this.#roots) {
 			const rootURL = new URL(`keetanet://${root.publicKeyString.get()}/metadata`);
 			const metadata = new Metadata(rootURL, {
+				...this.#metadataConfig,
 				trustedCAs: this.#trustedCAs,
 				client: this.#client,
 				logger: this.#logger,
@@ -2467,6 +2686,104 @@ class Resolver {
 		});
 	}
 
+	/**
+	 * Resolve a service entry to its object form. Returns `undefined` and
+	 * logs at debug if resolution fails. `context` describes the caller
+	 * for the log message.
+	 */
+	async #resolveServiceEntry(id: string, entry: ValuizableMethod, context: string): Promise<ValuizableObject | undefined> {
+		try {
+			return(await entry('object'));
+		} catch (resolveError) {
+			this.#logger?.debug(`Resolver:${this.id}`, 'Could not pre-resolve service entry', id, context, resolveError);
+			return(undefined);
+		}
+	}
+
+	/**
+	 * Keep only service entries whose `account` is in `accounts`. Entries
+	 * without `account`, with an unresolvable `account`, or that fail to
+	 * resolve are dropped.
+	 */
+	async #filterByAccounts(servicesByID: ValuizableObject, accounts: (AccountPublicKeyString | VerifiableAccount)[]): Promise<ValuizableObject> {
+		const allowedKeys = new Set<string>();
+		for (const allowed of accounts) {
+			allowedKeys.add(KeetaNetClient.lib.Account.toPublicKeyString(allowed));
+		}
+
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for account filter:');
+			if (resolved === undefined) {
+				continue;
+			}
+
+			const accountValuizable = resolved['account'];
+			if (accountValuizable === undefined) {
+				continue;
+			}
+
+			let entryAccountKey: string;
+			try {
+				const entryAccountString = await accountValuizable('string');
+				entryAccountKey = KeetaNetClient.lib.Account.toPublicKeyString(entryAccountString);
+			} catch (resolveError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Could not resolve `account` for service entry', id, ':', resolveError);
+				continue;
+			}
+
+			if (!allowedKeys.has(entryAccountKey)) {
+				continue;
+			}
+
+			retval[id] = entry;
+		}
+
+		return(retval);
+	}
+
+	/**
+	 * Drop service entries whose signature does not verify. Entries without
+	 * `account` pass through. Entries that fail to resolve pass through so
+	 * downstream asserters surface the resolution error to the caller.
+	 */
+	async #filterSignedServiceEntries(servicesByID: ValuizableObject | undefined): Promise<ValuizableObject | undefined> {
+		if (servicesByID === undefined) {
+			return(undefined);
+		}
+
+		const retval: ValuizableObject = {};
+		for (const [ id, entry ] of Object.entries(servicesByID)) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const resolved = await this.#resolveServiceEntry(id, entry, 'for signature verification:');
+			if (resolved === undefined) {
+				retval[id] = entry;
+				continue;
+			}
+
+			try {
+				const valid = await verifyServiceEntrySignature(resolved, this.#logger);
+				if (!valid) {
+					continue;
+				}
+			} catch (verifyError) {
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error verifying signature for service entry', id, ':', verifyError, '-- dropping');
+				continue;
+			}
+
+			retval[id] = entry;
+		}
+
+		return(retval);
+	}
+
 	async lookup<T extends keyof ServicesMetadataLookupMap>(service: T, criteria: ServicesMetadataLookupMap[T]['criteria'], sharedCriteria?: SharedLookupCriteria): Promise<ServicesMetadataLookupMap[T]['results'] | undefined> {
 		const rootMetadata = await this.#getRootMetadata();
 
@@ -2496,6 +2813,12 @@ class Resolver {
 			filteredDefinedServicesObject = definedServicesObject;
 		}
 
+		if (sharedCriteria?.accounts !== undefined && filteredDefinedServicesObject !== undefined) {
+			filteredDefinedServicesObject = await this.#filterByAccounts(filteredDefinedServicesObject, sharedCriteria.accounts);
+		}
+
+		filteredDefinedServicesObject = await this.#filterSignedServiceEntries(filteredDefinedServicesObject);
+
 		const serviceLookup = this.lookupMap[service].search;
 
 		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-explicit-any
@@ -2518,8 +2841,11 @@ export type {
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
-	ServiceMetadataEndpoint,
-	ServiceMetadataAuthenticationType,
 	Services,
-	SharedLookupCriteria
+	SharedLookupCriteria,
+	CurrencySearchCanonical,
+	CurrencySearchInput,
+	ExternalURL,
+	ToJSONValuizable
 };
+export type { ServiceMetadataEndpoint, ServiceMetadataAuthenticationType } from './metadata.types.js';

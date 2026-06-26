@@ -2,8 +2,20 @@ import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { ToJSONSerializable } from '../../lib/utils/json.ts';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
-export * from './common.generated.js';
+import { KeetaAnchorCertificateRequiredError, KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
+// Explicit named re-exports (instead of `export *`) so bundlers can statically
+// tree-shake unused runtime validators. Client-safe validators are defined in
+// common.generated.ts; server-only request validators live in common.server.generated.ts
+// and are re-exported transitively through common.generated.ts for back-compat.
+export {
+	isKeetaUsernameAnchorResolveResponseJSON,
+	isKeetaUsernameAnchorClaimResponseJSON,
+	isKeetaUsernameAnchorReleaseResponseJSON,
+	isKeetaUsernameAnchorSearchResponseJSON,
+	isKeetaNetPublicKeyString,
+	assertKeetaUsernameAnchorClaimRequestJSON,
+	assertKeetaUsernameAnchorReleaseRequestJSON
+} from './common.generated.js';
 
 export const USERNAME_DELIMITER = '$';
 export const USERNAME_MIN_LENGTH = 1;
@@ -384,7 +396,9 @@ class KeetaUsernameAnchorUserNotFoundError extends KeetaAnchorUserError implemen
 export const Errors: {
 	UsernameAlreadyTaken: typeof KeetaUsernameAnchorUsernameAlreadyTakenError;
 	UserNotFound: typeof KeetaUsernameAnchorUserNotFoundError;
+	CertificateRequired: typeof KeetaAnchorCertificateRequiredError;
 } = {
 	UsernameAlreadyTaken: KeetaUsernameAnchorUsernameAlreadyTakenError,
-	UserNotFound: KeetaUsernameAnchorUserNotFoundError
+	UserNotFound: KeetaUsernameAnchorUserNotFoundError,
+	CertificateRequired: KeetaAnchorCertificateRequiredError
 };

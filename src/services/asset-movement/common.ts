@@ -1,22 +1,31 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type * as CurrencyInfo from '@keetanetwork/currency-info';
-import type { AccountKeyAlgorithm, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
-import { createAssert, createAssertEquals, createIs } from 'typia';
-import type { ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { AccountKeyAlgorithm, GenericAccount, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { JSONSerializable, ToJSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaAnchorUserError } from '../../lib/error.js';
-import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical } from './lib/location.js';
+import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
-import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved, MonthYearDateInput, PhysicalAddress } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical } from '../../lib/asset.js';
+import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties } from './common.generated.js';
+import type { ClientRenderableContent } from '../../lib/metadata.types.js';
+import type { TokenMetadata } from '../../lib/token-metadata.js';
+import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
+import type { ACLPermissionRequirement } from '@keetanetwork/keetanet-client/lib/ledger/types.js';
+import type { Certificate } from '@keetanetwork/keetanet-client/lib/utils/certificate.js';
+import type { UserClientBuilder } from '@keetanetwork/keetanet-client/client/builder.js';
+import { objectToSignable } from '../../lib/utils/signing.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
 export * from './lib/location.js';
+
+export * from './common.generated.js';
 
 export type {
 	HexString,
@@ -45,7 +54,8 @@ export {
 	toSolanaAsset,
 	parseSolanaAsset,
 	isSolanaAsset,
-	convertAssetSearchInputToCanonical
+	convertAssetSearchInputToCanonical,
+	isExternalChainAsset
 } from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
@@ -75,13 +85,15 @@ export type ProviderSearchInput = {
 export interface Asset {
 	location?: AssetLocationString;
 	/**
-	 * Keeta token public key string, evm contract address, or a currency code
+	 * Keeta token public key string, external chain asset, ticker, or a currency code
 	 */
-	id: string;
+	id: AssetMetadataTargetValue;
 }
 
-type FiatRails = 'ACH' | 'ACH_DEBIT' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET';
-type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
+export type FiatPullRails = 'ACH_DEBIT' | 'CARD_PULL';
+export type FiatPushRails = 'ACH' | 'WIRE' | 'PIX_PUSH' | 'SPEI_PUSH' | 'WIRE_INTL_PUSH' | 'SEPA_PUSH' | 'MOBILE_WALLET' | 'INTERAC_PUSH' | 'FPS_PUSH' | 'CARD_PUSH' | 'HK_FPS_PUSH' | 'BCR_PAY_PUSH' | 'DUIT_NOW_PUSH' | 'PAY_NOW_PUSH' | 'UPI_PUSH' | 'CA_PUSH' | 'AE_PUSH' | 'RTP_PUSH' | 'AR_PUSH' | 'AU_PUSH' | 'GG_PUSH' | 'BD_PUSH' | 'BJ_PUSH' | 'BF_PUSH' | 'CL_PUSH' | 'CN_PUSH' | 'CO_PUSH' | 'CK_PUSH' | 'CR_PUSH' | 'CZ_PUSH' | 'DK_PUSH' | 'EG_PUSH' | 'SV_PUSH' | 'FO_PUSH' | 'GM_PUSH' | 'GH_PUSH' | 'GI_PUSH' | 'GL_PUSH' | 'GT_PUSH' | 'GN_PUSH' | 'ID_PUSH' | 'IM_PUSH' | 'IL_PUSH' | 'CI_PUSH' | 'JM_PUSH' | 'JP_PUSH' | 'JE_PUSH' | 'JO_PUSH' | 'KE_PUSH' | 'KI_PUSH' | 'MA_PUSH' | 'NP_PUSH' | 'NZ_PUSH' | 'NG_PUSH' | 'PK_PUSH' | 'PE_PUSH' | 'PH_PUSH' | 'SN_PUSH' | 'ZA_PUSH' | 'KR_PUSH' | 'LK_PUSH' | 'TZ_PUSH' | 'TH_PUSH' | 'TG_PUSH' | 'TN_PUSH' | 'TR_PUSH' | 'TV_PUSH' | 'UG_PUSH' | 'VN_PUSH' | 'ZM_PUSH';
+export type FiatRails = FiatPullRails | FiatPushRails;
+export type CryptoRails =  'KEETA_SEND' | 'EVM_SEND' | 'EVM_CALL' | 'SOLANA_SEND' | 'BITCOIN_SEND' | 'TRON_SEND';
 export type Rail = FiatRails | CryptoRails;
 
 // Rails can be inbound, outbound or common (inbound and outbound)
@@ -115,18 +127,29 @@ export interface AssetPath {
 	kycProviders?: string[];
 };
 
-export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}`;
+export interface AnchorTokenLocationMetadata extends TokenMetadata {
+	displayName?: string;
+	ticker?: `$${string}`;
+}
+
+export type PerChainLocationMetadata<Chain extends ExternalChainLocationType = ExternalChainLocationType> = {
+	assets?: {
+		[AssetId in ExternalChainAsset<Chain>]?: AnchorTokenLocationMetadata | undefined;
+	}
+};
+
+type ExtractLocationTypeFromString<I extends ChainLocationString> = I extends ChainLocationString<infer R extends ExternalChainLocationType> ? R : never;
+
+export type AnchorCustomLocationMetadata = {
+	[Location in ChainLocationString<ExternalChainLocationType>]?: PerChainLocationMetadata<ExtractLocationTypeFromString<Location>> | undefined;
+};
+
+export type AssetMetadataTargetValue = TokenPublicKeyString | CurrencySearchCanonical | `$${string}` | ExternalChainAsset;
 export interface SupportedAssetsMetadata {
 	asset: AssetMetadataTargetValue | [ AssetMetadataTargetValue, AssetMetadataTargetValue ];
 	paths: AssetPath[];
 }
 
-/**
- * This is the type of content that can be rendered directly in a client application.
- *
- * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
- */
-export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
 
 export interface RailWithExtendedDetails {
 	rail: Rail;
@@ -204,69 +227,6 @@ export function commonJSONStringify(input: unknown): string {
 	}));
 }
 
-type SignableObjectInput =
-	// PhysicalAddress/MonthYearDateInput/RecipientResolved should not be needed here, but due to a TypeScript issue we need to reference it directly because it cannot satisfy the index signature otherwise.
-	PhysicalAddress | MonthYearDateInput | RecipientResolved |
-	{ [key: string | number | symbol]: SignableObjectInput } |
-	SignableObjectInput[] |
-	Signable[number] |
-	undefined |
-	null |
-	boolean;
-
-/**
- * The maximum queue length for the commonToSignable function to prevent DoS attacks
- */
-const TO_SIGNABLE_MAX_QUEUE_LENGTH = 250;
-
-function commonToSignable(item: SignableObjectInput): Signable {
-	const queue: [ string, SignableObjectInput ][] = [[ '', item ]];
-	const result: [ string, Signable[number] ][] = [];
-
-	while (queue.length > 0) {
-		const next = queue.shift();
-
-		if (!next) {
-			continue;
-		}
-
-		const [ prefix, current ] = next;
-		if (current === null || current === undefined) {
-			continue;
-		}
-
-		if (typeof current === 'boolean') {
-			result.push([ prefix, current ? 1 : 0 ]);
-		} else if (Array.isArray(current)) {
-			for (let i = 0; i < current.length; i++) {
-				queue.push([ `${prefix}[${i}]`, current[i] ]);
-			}
-		} else if (typeof current === 'object') {
-			for (const [ key, value ] of Object.entries(current)) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				queue.push([ prefix ? `${prefix}.${key}` : key, value as SignableObjectInput ]);
-			}
-		} else {
-			result.push([ prefix, current ]);
-		}
-
-		if (queue.length > TO_SIGNABLE_MAX_QUEUE_LENGTH) {
-			throw(new KeetaAnchorUserError('Too much data to sign in commonToSignable'));
-		}
-	}
-
-	result.sort((a, b) => {
-		return(a[0].localeCompare(b[0], 'en-US', {
-			usage: 'sort',
-			numeric: true,
-			sensitivity: 'case',
-			ignorePunctuation: false
-		}));
-	});
-
-	return(result.map(item => item[1]));
-}
-
 export type AssetPair<From extends MovableAsset = MovableAsset, To extends MovableAsset = MovableAsset> = { from: From; to: To; };
 export type AssetOrPair = MovableAsset | AssetPair;
 
@@ -304,12 +264,19 @@ export function convertAssetOrPairSearchInputToCanonical(input: AssetOrPair): As
 export type Operations = NonNullable<ServiceMetadata['services']['assetMovement']>[string]['operations'];
 export type OperationNames = keyof Operations;
 
-export type RecipientResolved = AddressResolved | { type: 'persistent-address'; persistentAddressId: string; };
+export type PersistentAddressReference = { type: 'persistent-address'; persistentAddressId: string; };
+export type PersistentAddressTemplateReference = { type: 'persistent-address-template'; persistentAddressTemplateId: string; };
+export type PersistentAddressOrTemplateReference = PersistentAddressReference | PersistentAddressTemplateReference;
+export type RecipientResolved = AddressResolved | PersistentAddressOrTemplateReference;
 
+/**
+ * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
+ */
+type AddressDepositMessage = string;
 
 type ConvertToExternalRequest<
 	Internal extends object,
-	Overrides extends object,
+	Overrides,
 	Signed = { signed?: HTTPSignedField | undefined }
 > =
 	ToJSONSerializable<Omit<Internal, keyof Overrides>> &
@@ -319,7 +286,7 @@ type ConvertToExternalRequest<
 /**
  * The client-side request type for initiating an asset transfer via the Keeta Asset Movement Anchor service
  */
-export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
+export interface KeetaAssetMovementAnchorInitiateTransferClientRequest {
 	/**
 	 * Optional KeetaNet account to use for signing the request
 	 */
@@ -333,12 +300,23 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	/**
 	 * The source location for the asset transfer
 	 */
-	from: { location: AssetLocationLike; };
+	from: {
+		location: AssetLocationLike;
+
+		/**
+		 * If sending from a persistent address (ex ACH pull), this would be the account the user wants to debit from
+		 */
+		source?: PersistentAddressOrTemplateReference;
+	};
 
 	/**
 	 * The destination location and recipient for the asset transfer
 	 */
-	to: { location: AssetLocationLike; recipient: RecipientResolved; };
+	to: {
+		location: AssetLocationLike;
+		recipient: RecipientResolved;
+		depositMessage?: AddressDepositMessage;
+	};
 
 	/**
 	 * The amount of the asset to transfer, as a string in the asset's smallest unit (e.g. cents for USD).
@@ -351,49 +329,93 @@ export type KeetaAssetMovementAnchorInitiateTransferClientRequest = {
 	allowedRails?: Rail[];
 }
 
+// Takes in object (T), mark certain keys (K) as optional, and keep the rest required
+type PartialKeys<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>> & Partial<Pick<T, K>>;
+
+export interface KeetaAssetMovementAnchorSimulateTransferClientRequest extends Omit<KeetaAssetMovementAnchorInitiateTransferClientRequest, 'to'> {
+	to: PartialKeys<KeetaAssetMovementAnchorInitiateTransferClientRequest['to'], 'recipient'>;
+}
+
 /**
  * The serialized HTTP Body for the {@link KeetaAssetMovementAnchorInitiateTransferClientRequest} request
  */
 export type KeetaAssetMovementAnchorInitiateTransferRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiateTransferClientRequest, {
 	asset: AssetOrPairCanonical;
-	from: { location: AssetLocationCanonical; };
-	to: { location: AssetLocationCanonical; recipient: RecipientResolved; };
+	from: { location: AssetLocationCanonical; source?: PersistentAddressOrTemplateReference; };
+	to: { location: AssetLocationCanonical; recipient: RecipientResolved; depositMessage?: AddressDepositMessage; };
 }>;
 
-export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest): Signable {
-	return(commonToSignable({
+export type KeetaAssetMovementAnchorSimulateTransferRequest = Omit<KeetaAssetMovementAnchorInitiateTransferRequest, 'to'> & {
+	to: PartialKeys<KeetaAssetMovementAnchorInitiateTransferRequest['to'], 'recipient'>;
+};
+
+export function getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input: KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest): Signable {
+	return(objectToSignable({
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		from: { location: convertAssetLocationInputToCanonical(input.from.location) },
-		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient },
+		to: { location: convertAssetLocationInputToCanonical(input.to.location), recipient: input.to.recipient, depositMessage: input.to.depositMessage },
 		value: String(input.value)
 	}));
 }
 
+export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(input: KeetaAssetMovementAnchorSimulateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferRequest): Signable {
+	return(getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(input));
+}
+
+
+type FixedFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'OTHER';
+type VariableFeeLineItemType = 'VALUE_VARIABLE';
+
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
  */
-export type AssetFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'VALUE_VARIABLE' | 'OTHER';
+export type AssetFeeLineItemType = VariableFeeLineItemType | FixedFeeLineItemType;
 
-/**
- * Breakdown of fees for an asset transfer, including line items and total amounts.
- */
-export type AssetFeeBreakdown = {
-	lineItems: {
-		/**
-		 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
-		 */
-		value: string;
+interface BaseAssetFeeLineItem<Purpose extends AssetFeeLineItemType> {
+	/**
+	 * The purpose of the fee line item. @see AssetFeeLineItemType
+	 */
+	purpose: Purpose;
 
-		/**
-		 * The purpose of the fee line item. @see AssetFeeLineItemType
-		 */
-		purpose: AssetFeeLineItemType;
+	/**
+	 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
+	 */
+	asset?: MovableAssetSearchCanonical;
 
-		/**
-		 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
-		 */
-		asset?: MovableAssetSearchCanonical;
-	}[];
+	/**
+	 * Additional details about this fee line item that (optionally) can be rendered in the client application.
+	 */
+	details?: ClientRenderableContent;
+}
+
+interface FixedFeeLineItem extends BaseAssetFeeLineItem<FixedFeeLineItemType> {
+	/**
+	 * The amount of the fee line item, as a string in the asset's smallest unit (e.g. cents for USD).
+	 */
+	value: string;
+}
+
+interface VariableFeeLineItemUnresolved extends BaseAssetFeeLineItem<VariableFeeLineItemType> {
+	/**
+	 * The basis points (bps) for the variable fee, where 1 bps = 0.01%. For example, a value of 25 would represent a 0.25% fee on the transfer value.
+	 */
+	basisPoints: number;
+}
+
+interface VariableFeeLineItemResolved extends BaseAssetFeeLineItem<VariableFeeLineItemType> {
+	basisPoints?: VariableFeeLineItemUnresolved['basisPoints'];
+
+	/**
+	 * The resolved amount of the variable fee line item, as a string in the asset's smallest unit (e.g. cents for USD). This should be provided if the total fee breakdown is being provided before the transfer is executed, and can be used by clients to show an estimated fee amount for variable fees. If not provided, clients can calculate an estimated variable fee amount by applying the basis points to the transfer value.
+	 */
+	value: string;
+}
+
+export type ResolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemResolved;
+export type UnresolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemUnresolved;
+
+interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> {
+	lineItems: LineItemType[];
 	/**
 	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
 	 */
@@ -403,7 +425,19 @@ export type AssetFeeBreakdown = {
 	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
 	 */
 	total: string;
-};
+}
+
+/**
+ * Breakdown of fees for an asset transfer, including line items and total amounts.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface AssetFeeBreakdown extends BaseAssetFeeBreakdown<ResolvedFeeLineItem> {};
+
+/**
+ * Breakdown of fees for an asset transfer with unresolved variable fee line items, where the basis points are provided but the exact fee amount is not yet resolved. This can be used for transfer instructions that are returned before execution, where the variable fee amount cannot be calculated until the transfer value is finalized.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface PersistentAddressAssetFeeBreakdown extends BaseAssetFeeBreakdown<UnresolvedFeeLineItem> {};
 
 /**
  * An instruction on how to complete a transfer, ex: where to send tokens, or where to wire USD.
@@ -417,9 +451,9 @@ export type AssetTransferInstructions = ({
 	location: AssetLocationLike;
 
 	/**
-	 * The keeta public key address to send to
+	 * The keeta wallet address to send to
 	 */
-	sendToAddress: string;
+	sendToAddress: ReturnType<GenericAccount['publicKeyString']['get']>;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit.
@@ -429,10 +463,10 @@ export type AssetTransferInstructions = ({
 	/**
 	 * The token address to send.
 	 */
-	tokenAddress: string;
+	tokenAddress: TokenPublicKeyString;
 
 	/**
-	 * If provided, the value to put in the external keeta transfer.
+	 * If provided, the value to put in the external field of the send operation.
 	 */
 	external?: string;
 } | {
@@ -482,22 +516,31 @@ export type AssetTransferInstructions = ({
 	 */
 	contractMethodArgs: string[];
 } | {
-	type: FiatRails;
+	type: FiatPushRails;
 
 	/**
 	 * The resolved bank account address details to send funds to
 	 */
 	account: BankAccountAddressResolved;
 
-	/**
-	 * Optional deposit message to include with the transfer, ex: for wire this is a reference note.
-	 */
-	depositMessage?: string;
+	depositMessage?: AddressDepositMessage;
 
 	/**
 	 * Amount to send, as a string in the asset's smallest unit (e.g. cents for USD).
 	 */
 	value: string;
+} |
+/**
+ * Instructions when pulling funds from a persistent address.
+ * If the user wants to execute this instruction, they will need to call the executeInstruction endpoint with the transfer id
+ */
+{
+	type: FiatPullRails;
+
+	/**
+	 * The previously created persistent address template or persistent address to pull funds from
+	 */
+	pullFrom: PersistentAddressOrTemplateReference;
 } | {
 	type: 'TRON_SEND';
 	location: AssetLocationLike;
@@ -568,14 +611,48 @@ export type AssetTransferInstructions = ({
 	persistentAddressId?: string;
 });
 
-export type KeetaAssetMovementAnchorInitiateTransferResponse = ({
+export type SimulatedAssetTransferInstructions = DistributiveOmit<AssetTransferInstructions, 'sendToAddress' | 'account'>;
+
+export type KeetaAssetMovementAnchorSimulateTransferResponse = {
+	ok: true;
+	instructionChoices: SimulatedAssetTransferInstructions[];
+} | {
+	ok: false;
+	error: string;
+}
+
+export type KeetaAssetMovementAnchorInitiateTransferResponse = {
 	ok: true;
 	id: string;
 	instructionChoices: AssetTransferInstructions[];
-}) | ({
+} | ({
 	ok: false;
 	error: string;
 })
+
+export interface KeetaAssetMovementAnchorExecuteTransferClientRequest {
+	account?: KeetaNetAccount;
+	/**
+	 * The ID of the transfer to execute the instruction for, which was returned in the initiate transfer response
+	 */
+	id: string;
+
+	/**
+	 * The instruction to execute
+	 */
+	instruction: Pick<Extract<AssetTransferInstructions, { type: FiatPullRails; }>, 'pullFrom' | 'type'>;
+}
+
+export type KeetaAssetMovementAnchorExecuteTransferRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>, unknown>;
+
+export function getKeetaAssetMovementAnchorExecuteTransferRequestSigningData(input: (KeetaAssetMovementAnchorExecuteTransferRequest | KeetaAssetMovementAnchorExecuteTransferClientRequest) & { id: string; }): Signable {
+	return(objectToSignable({
+		id: input.id,
+		instruction: input.instruction
+	}));
+}
+
+export type KeetaAssetMovementAnchorExecuteTransferResponse = KeetaAssetMovementAnchorGetTransferStatusResponse;
 
 export interface KeetaAssetMovementAnchorGetTransferStatusClientRequest {
 	account?: KeetaNetAccount;
@@ -590,6 +667,58 @@ export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(i
 	return([ 'get-transaction', input.id ]);
 }
 
+/**
+ * Client-side request to deactivate a persistent forwarding address template.
+ * Only requires the template id (plus an account/signature to authenticate the request).
+ */
+export interface KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateClientRequest {
+	account?: KeetaNetAccount;
+	id: string;
+}
+
+/**
+ * External (wire) request to deactivate a persistent forwarding address template.
+ * The id travels in the URL path, so the body carries only authentication information.
+ */
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateClientRequest, 'id'>, unknown>;
+
+export function getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData(input: { id: string }): Signable {
+	return([ 'deactivate-persistent-forwarding-template', input.id ]);
+}
+
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse = {
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+};
+
+/**
+ * Client-side request to deactivate a persistent forwarding address.
+ * Only requires the address id (plus an account/signature to authenticate the request).
+ */
+export interface KeetaAssetMovementAnchorDeactivatePersistentForwardingClientRequest {
+	account?: KeetaNetAccount;
+	id: string;
+}
+
+/**
+ * External (wire) request to deactivate a persistent forwarding address.
+ * The id travels in the URL path, so the body carries only authentication information.
+ */
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest = ConvertToExternalRequest<Omit<KeetaAssetMovementAnchorDeactivatePersistentForwardingClientRequest, 'id'>, unknown>;
+
+export function getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData(input: { id: string }): Signable {
+	return([ 'deactivate-persistent-forwarding-address', input.id ]);
+}
+
+export type KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse = {
+	ok: true;
+} | {
+	ok: false;
+	error: string;
+};
+
 type TransactionStatus = string;
 
 export type TransactionId = {
@@ -600,6 +729,8 @@ export type TransactionId = {
 type TransactionIds<T extends string> = {
 	[type in T]: TransactionId | null;
 };
+
+export type TransactionSourceObfuscated = AddressObfuscated | PersistentAddressOrTemplateReference;
 
 /**
  * Representation of an asset movement transaction in the Asset Movement Anchor's system.
@@ -640,6 +771,11 @@ export type KeetaAssetMovementTransaction = {
 		 * A list of transaction IDs related to the source chain.
 		 */
 		transactions: TransactionIds<'persistentForwarding' | 'deposit' | 'finalization'>;
+
+		/**
+		 * A reference to the sender of the transaction, this can be a reference to a persistent address, or general recipient information
+		 */
+		source?: TransactionSourceObfuscated;
 	};
 
 	/**
@@ -707,23 +843,83 @@ export type PersistentAddressTemplateData = {
 	address: AddressObfuscated;
 }
 
+export type KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest = {
+	account?: KeetaNetAccount;
+	asset: MovableAsset;
+	location: AssetLocationLike;
+}
+
+export type KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest, {
+	asset: AssetOrPairCanonical;
+	location: AssetLocationCanonical;
+}>;
+
+export function getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest): Signable {
+	const pair = toAssetPair(input.asset);
+	return(objectToSignable({
+		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
+		location: convertAssetLocationInputToCanonical(input.location)
+	}));
+}
+
+export type PersistentForwardingTemplateSessionData = {
+	type: 'plaid';
+	plaidLinkToken: string;
+} | {
+	type: 'other';
+	[key: string]: JSONSerializable;
+};
+
+export type KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse = ({
+	ok: true;
+	id: string;
+	expiresAt: string;
+	data: PersistentForwardingTemplateSessionData;
+} | {
+	ok: false;
+	error: string;
+});
+
+export type PersistentForwardingTemplateCompletionData = {
+	type: 'plaid';
+	plaidPublicToken: string;
+	plaidAccountId: string;
+	mask?: string;
+	bankName?: string;
+	accountSubType?: string;
+} | {
+	type: 'other';
+	[key: string]: JSONSerializable;
+};
+
 export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest = {
 	account?: KeetaNetAccount;
 	asset: MovableAsset;
 	location: AssetLocationLike;
 	address: AddressResolved;
+} | {
+	account?: KeetaNetAccount;
+	id?: string;
+	data: PersistentForwardingTemplateCompletionData;
 }
 
-
-export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest, {
-	asset: AssetOrPairCanonical;
-	location: AssetLocationCanonical;
-	address: AddressResolved;
-}>;
+export type KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest =
+	ConvertToExternalRequest<{ account?: KeetaNetAccount; asset: MovableAsset; location: AssetLocationLike; address: AddressResolved; }, {
+		asset: AssetOrPairCanonical;
+		location: AssetLocationCanonical;
+		address: AddressResolved;
+	}> |
+	ConvertToExternalRequest<{ account?: KeetaNetAccount; id?: string; data: PersistentForwardingTemplateCompletionData; }, unknown>;
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest): Signable {
+	if ('data' in input) {
+		return(objectToSignable({
+			id: input.id,
+			data: input.data
+		}));
+	}
 	const pair = toAssetPair(input.asset);
-	return(commonToSignable({
+	return(objectToSignable({
 		asset: { from: convertAssetSearchInputToCanonical(pair.from), to: convertAssetSearchInputToCanonical(pair.to) },
 		location: convertAssetLocationInputToCanonical(input.location),
 		address: input.address
@@ -768,12 +964,14 @@ export type KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = (({
 export type KeetaPersistentForwardingAddressDetails = {
 	id?: string;
 	address: AddressObfuscated | AddressResolved;
+	depositMessage?: AddressDepositMessage;
 	asset?: AssetOrPair;
 	sourceLocation?: AssetLocationLike;
 	destinationLocation?: AssetLocationLike;
 	destinationAddress?: AddressResolved | AddressObfuscated;
 	outgoingRail?: Rail;
 	incomingRail?: Rail[];
+	fees?: PersistentAddressAssetFeeBreakdown;
 }
 
 export type KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest = {
@@ -781,6 +979,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest = {
 	sourceLocation: AssetLocationLike;
 	asset: AssetOrPair;
 	outgoingRail?: Rail;
+	incomingRail?: Rail;
 } & ({
 	destinationLocation: AssetLocationLike;
 	destinationAddress: AddressResolved;
@@ -794,6 +993,7 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 	sourceLocation: AssetLocationCanonical;
 	asset: AssetOrPairCanonical;
 	outgoingRail?: Rail | undefined;
+	incomingRail?: Rail | undefined;
 } & ({
 	destinationLocation: AssetLocationCanonical;
 	destinationAddress: AddressResolved;
@@ -802,10 +1002,11 @@ export type KeetaAssetMovementAnchorCreatePersistentForwardingRequest = {
 });
 
 export function getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData(input: KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest | KeetaAssetMovementAnchorCreatePersistentForwardingRequest): Signable {
-	return(commonToSignable({
+	return(objectToSignable({
 		sourceLocation: convertAssetLocationInputToCanonical(input.sourceLocation),
 		asset: convertAssetOrPairSearchInputToCanonical(input.asset),
 		outgoingRail: input.outgoingRail,
+		incomingRail: input.incomingRail,
 		...('destinationLocation' in input ? {
 			destinationLocation: convertAssetLocationInputToCanonical(input.destinationLocation),
 			destinationAddress: input.destinationAddress
@@ -926,38 +1127,6 @@ export type KeetaAssetMovementAnchorShareKYCResponse = (({
 	error: string;
 });
 
-export const assertKeetaSupportedAssetsMetadata: (input: unknown) => SupportedAssetsMetadata[] = createAssert<SupportedAssetsMetadata[]>();
-export const assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingRequest = createAssert<KeetaAssetMovementAnchorCreatePersistentForwardingRequest>();
-export const assertKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createAssertEquals<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
-export const assertKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => KeetaAssetMovementAnchorInitiateTransferRequest = createAssert<KeetaAssetMovementAnchorInitiateTransferRequest>();
-export const assertKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => KeetaAssetMovementAnchorInitiateTransferResponse = createAssertEquals<KeetaAssetMovementAnchorInitiateTransferResponse>();
-export const assertKeetaAssetMovementAnchorGetTransferStatusRequest: (input: unknown) => KeetaAssetMovementAnchorGetTransferStatusRequest = createAssert<KeetaAssetMovementAnchorGetTransferStatusRequest>();
-export const assertKeetaAssetMovementAnchorGetTransferStatusResponse: (input: unknown) => KeetaAssetMovementAnchorGetTransferStatusResponse = createAssertEquals<KeetaAssetMovementAnchorGetTransferStatusResponse>();
-export const assertKeetaAssetMovementAnchorlistTransactionsRequest: (input: unknown) => KeetaAssetMovementAnchorlistTransactionsRequest = createAssert<KeetaAssetMovementAnchorlistTransactionsRequest>();
-export const assertKeetaAssetMovementAnchorListPersistentForwardingRequest: (input: unknown) => KeetaAssetMovementAnchorListPersistentForwardingRequest = createAssert<KeetaAssetMovementAnchorListPersistentForwardingRequest>();
-export const assertKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => KeetaAssetMovementAnchorListPersistentForwardingResponse = createAssertEquals<KeetaAssetMovementAnchorListPersistentForwardingResponse>();
-export const assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createAssertEquals<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
-export const assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest = createAssert<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest>();
-export const assertKeetaAssetMovementAnchorListForwardingAddressTemplateRequest: (input: unknown) => KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = createAssert<KeetaAssetMovementAnchorListForwardingAddressTemplateRequest>();
-export const assertKeetaAssetMovementAnchorListForwardingAddressTemplateResponse: (input: unknown) => KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = createAssertEquals<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>();
-export const assertKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse: (input: unknown) => KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = createAssertEquals<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>();
-export const assertBankAccountAddressObfuscated: (input: unknown) => BankAccountAddressObfuscated = createAssert<BankAccountAddressObfuscated>();
-export const assertBankAccountAddressResolved: (input: unknown) => BankAccountAddressResolved = createAssert<BankAccountAddressResolved>();
-export const assertKeetaAssetMovementAnchorShareKYCRequest: (input: unknown) => KeetaAssetMovementAnchorShareKYCRequest = createAssert<KeetaAssetMovementAnchorShareKYCRequest>();
-export const assertKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => KeetaAssetMovementAnchorShareKYCResponse = createAssertEquals<KeetaAssetMovementAnchorShareKYCResponse>();
-
-export const isKeetaAssetMovementAnchorInitiateTransferRequest: (input: unknown) => input is KeetaAssetMovementAnchorInitiateTransferRequest = createIs<KeetaAssetMovementAnchorInitiateTransferRequest>();
-export const isKeetaAssetMovementAnchorGetTransferStatusRequest: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusRequest = createIs<KeetaAssetMovementAnchorGetTransferStatusRequest>();
-export const isKeetaAssetMovementAnchorListForwardingAddressTemplateRequest: (input: unknown) => input is KeetaAssetMovementAnchorListForwardingAddressTemplateRequest = createIs<KeetaAssetMovementAnchorListForwardingAddressTemplateRequest>();
-export const isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse: (input: unknown) => input is KeetaAssetMovementAnchorListForwardingAddressTemplateResponse = createIs<KeetaAssetMovementAnchorListForwardingAddressTemplateResponse>();
-export const isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse: (input: unknown) => input is KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse>();
-export const isKeetaAssetMovementAnchorCreatePersistentForwardingResponse: (input: unknown) => input is KeetaAssetMovementAnchorCreatePersistentForwardingResponse = createIs<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>();
-export const isKeetaAssetMovementAnchorInitiateTransferResponse: (input: unknown) => input is KeetaAssetMovementAnchorInitiateTransferResponse = createIs<KeetaAssetMovementAnchorInitiateTransferResponse>();
-export const isKeetaAssetMovementAnchorGetExchangeStatusResponse: (input: unknown) => input is KeetaAssetMovementAnchorGetTransferStatusResponse = createIs<KeetaAssetMovementAnchorGetTransferStatusResponse>();
-export const isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse: (input: unknown) => input is KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse = createIs<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>();
-export const isKeetaAssetMovementAnchorShareKYCResponse: (input: unknown) => input is KeetaAssetMovementAnchorShareKYCResponse = createIs<KeetaAssetMovementAnchorShareKYCResponse>();
-export const isKeetaAssetMovementAnchorListPersistentForwardingResponse: (input: unknown) => input is KeetaAssetMovementAnchorListPersistentForwardingResponse = createIs<KeetaAssetMovementAnchorListPersistentForwardingResponse>();
-
 type Account = InstanceType<typeof KeetaNet.lib.Account<Exclude<AccountKeyAlgorithm, IdentifierKeyAlgorithm>>>;
 
 type KeetaAssetMovementAnchorKYCExternalURLFlow = {
@@ -972,7 +1141,6 @@ export interface KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties {
 	acceptedIssuers: { name: string; value: string; }[][];
 }
 
-export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
 
 type KeetaAssetMovementAnchorKYCShareNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties;
 
@@ -1074,7 +1242,6 @@ export interface KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties 
 	toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 }
 
-export const assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties>();
 
 type KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties;
 
@@ -1157,7 +1324,6 @@ export interface KeetaAssetMovementAnchorOperationNotSupportedErrorJSONPropertie
 	forRail?: Rail | undefined;
 }
 
-export const assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties: (input: unknown) => KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties = createAssertEquals<KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties>();
 
 type KeetaAssetMovementAnchorOperationNotSupportedErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties;
 
@@ -1237,10 +1403,187 @@ class KeetaAssetMovementAnchorOperationNotSupportedError extends KeetaAnchorUser
 	}
 }
 
+export type KeetaAssetMovementAnchorUserAction = ({
+	type: 'add-certificate';
+
+	account?: GenericAccount;
+	certificate: Certificate;
+	intermediates?: Certificate[];
+} | {
+	type: 'grant-permission';
+	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
+}) & {
+	details?: ClientRenderableContent;
+}
+
+export type KeetaAssetMovementAnchorUserActionJSON =
+	ToJSONSerializable<Exclude<KeetaAssetMovementAnchorUserAction, { type: 'add-certificate'; }> |
+	(Omit<Extract<KeetaAssetMovementAnchorUserAction, { type: 'add-certificate'; }>, 'certificate' | 'intermediates'> & {
+		certificate: string;
+		intermediates?: string[];
+	})>;
+
+export interface KeetaAssetMovementAnchorUserActionNeededErrorProperties {
+	actionsNeeded: KeetaAssetMovementAnchorUserAction[];
+}
+
+export interface KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties extends Omit<KeetaAssetMovementAnchorUserActionNeededErrorProperties, 'actionsNeeded'> {
+	actionsNeeded: KeetaAssetMovementAnchorUserActionJSON[];
+}
+
+
+type KeetaAssetMovementAnchorUserActionNeededErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties;
+
+class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError implements KeetaAssetMovementAnchorUserActionNeededErrorProperties {
+	static override readonly name: string = 'KeetaAssetMovementAnchorUserActionNeededError';
+	private readonly KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID = 'f2160fd8-a1d3-4a6d-ae22-da0dd642c44e';
+
+	readonly actionsNeeded: KeetaAssetMovementAnchorUserAction[];
+
+	constructor(args: KeetaAssetMovementAnchorUserActionNeededErrorProperties, message?: string) {
+		super(message ?? `Actions are needed to perform operation`);
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorUserActionNeededError.KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.actionsNeeded = args.actionsNeeded;
+	}
+
+	static #parseJSONActions(actions: KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties['actionsNeeded']): KeetaAssetMovementAnchorUserActionNeededErrorProperties['actionsNeeded'] {
+		return(actions.map(function(action): KeetaAssetMovementAnchorUserAction {
+			const shared = {
+				...(action.details ? { details: action.details } : {})
+			} as const;
+
+			if (action.type === 'add-certificate') {
+				return({
+					...shared,
+					type: action.type,
+					...(action.account ? { account: KeetaNet.lib.Account.fromPublicKeyString(action.account).assertAccount() } : {}),
+					certificate: new KeetaNet.lib.Utils.Certificate.Certificate(action.certificate),
+					...(action.intermediates ? {
+						intermediates: action.intermediates.map(function(cert) {
+							return(new KeetaNet.lib.Utils.Certificate.Certificate(cert));
+						})
+					} : {})
+				});
+			} else if (action.type === 'grant-permission') {
+				return({
+					...shared,
+					type: action.type,
+					permissionToGrant: {
+						principal: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.principal),
+						...(action.permissionToGrant.entity ? { entity: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.entity) } : {}),
+						...(action.permissionToGrant.target ? { target: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.target) } : {}),
+						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
+					}
+				});
+			} else {
+				throw(new Error('Unsupported action type'));
+			}
+		}));
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorUserActionNeededError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID', KeetaAssetMovementAnchorUserActionNeededError.KeetaAssetMovementAnchorUserActionNeededErrorObjectTypeID));
+	}
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { actionsNeeded } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_USER_ACTION_NEEDED',
+				data: { actionsNeeded },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	static addOperationsToBuilder(actions: KeetaAssetMovementAnchorUserAction[], builder: UserClientBuilder): void {
+		for (const action of actions) {
+			if (action.type === 'add-certificate') {
+				let intermediates;
+				if (action.intermediates) {
+					intermediates = new KeetaNet.lib.Utils.Certificate.CertificateBundle(action.intermediates);
+				}
+				builder.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, action.certificate, intermediates, action.account ? { account: action.account } : undefined);
+			} else if (action.type === 'grant-permission') {
+				builder.updatePermissions(action.permissionToGrant.principal, action.permissionToGrant.permissions, action.permissionToGrant.target, KeetaNet.lib.Block.AdjustMethod.ADD, action.permissionToGrant.entity ? { account: action.permissionToGrant.entity } : {})
+			}
+		}
+	}
+
+	toJSON(): KeetaAssetMovementAnchorUserActionNeededErrorJSON {
+		return({
+			...super.toJSON(),
+			actionsNeeded: this.actionsNeeded.map(function(action): KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties['actionsNeeded'][number] {
+				const shared = {
+					...(action.details ? { details: action.details } : {})
+				} as const;
+
+				if (action.type === 'add-certificate') {
+					return({
+						...shared,
+						type: action.type,
+						...(action.account ? { account: action.account.publicKeyString.get() } : {}),
+						certificate: action.certificate.toPEM(),
+						...(action.intermediates ? { intermediates: action.intermediates.map(function(cert) {
+							return(cert.toPEM());
+						}) } : {})
+					});
+				} else if (action.type === 'grant-permission') {
+					return({
+						...shared,
+						type: action.type,
+						permissionToGrant: {
+							principal: action.permissionToGrant.principal.publicKeyString.get(),
+							...(action.permissionToGrant.entity ? { entity: action.permissionToGrant.entity.publicKeyString.get() } : {}),
+							...(action.permissionToGrant.target ? { target: action.permissionToGrant.target.publicKeyString.get() } : {}),
+							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
+						}
+					});
+				} else {
+					throw(new Error('Unsupported action type'));
+				}
+			})
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorUserActionNeededError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorUserActionNeededError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties(other.data);
+
+		const error = new this({ actionsNeeded: this.#parseJSONActions(parsed.actionsNeeded) }, message);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
 	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
 	OperationNotSupported: typeof KeetaAssetMovementAnchorOperationNotSupportedError;
+	UserActionNeeded: typeof KeetaAssetMovementAnchorUserActionNeededError;
 } = {
 	/**
 	 * The user is required to share KYC details
@@ -1255,5 +1598,10 @@ export const Errors: {
 	/**
 	 * The requested operation is not supported
 	 */
-	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError
+	OperationNotSupported: KeetaAssetMovementAnchorOperationNotSupportedError,
+
+	/**
+	 * An action is required by the user to complete the requested operation
+	 */
+	UserActionNeeded: KeetaAssetMovementAnchorUserActionNeededError
 };

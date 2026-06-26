@@ -8,6 +8,7 @@ import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type { KYCVerificationStatus } from './status.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -77,6 +78,22 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 		certificate: string;
 		intermediates?: string[];
 	})[];
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaKYCAnchorGetVerificationStatusResponse = ({
+	ok: true;
+	/**
+	 * The verification status reported by the KYC provider.
+	 */
+	status: KYCVerificationStatus;
+	/**
+	 * Whether the verification requires manual review by the
+	 * KYC provider before a final determination can be made.
+	 */
+	requiresManualVerification?: boolean;
 } | {
 	ok: false;
 	error: string;

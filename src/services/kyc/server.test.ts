@@ -1,5 +1,7 @@
 import { test, expect } from 'vitest';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
+import { Errors } from './common.js';
+import { KYCVerificationStatus } from './status.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import Resolver from '../../lib/resolver.js';
@@ -20,6 +22,9 @@ test('KYC Anchor HTTP Server', async function() {
 		validTo: new Date(Date.now() + 120_000)
 	});
 	const kycCA = await kycCABuilder.build();
+
+	const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), KeetaNet.lib.Account.AccountKeyAlgorithm.ECDSA_SECP256K1).assertAccount();
+	const knownVerificationID = 'verification-id-known';
 
 	/*
 	 * Start the Testing KYC Anchor HTTP Server
@@ -45,6 +50,19 @@ test('KYC Anchor HTTP Server', async function() {
 				return([{
 					certificate: ''
 				}]);
+			},
+			getVerificationStatus: async function(verificationID, requester) {
+				if (verificationID !== knownVerificationID) {
+					throw(new Errors.VerificationNotFound());
+				}
+				if (requester.account.publicKeyString.get() !== ownerAccount.publicKeyString.get()) {
+					throw(new Errors.VerificationNotFound());
+				}
+
+				return({
+					status: KYCVerificationStatus.PASSED,
+					requiresManualVerification: true
+				});
 			}
 		}
 	});

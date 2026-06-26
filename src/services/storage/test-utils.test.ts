@@ -1,5 +1,7 @@
 import { expect, test, describe } from 'vitest';
-import { MemoryStorageBackend, testPathPolicy, testMetadata } from './test-utils.js';
+
+import type { PathPolicyContext } from './common.js';
+import { MemoryStorageBackend, testPathPolicy, testMetadata, testObjectMetadata } from './test-utils.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 import { Errors } from './common.js';
 import { KeetaNet } from '../../client/index.js';
@@ -431,8 +433,8 @@ describe('TestPathPolicy path traversal', function() {
 	});
 });
 
-describe('TestPathPolicy validateMetadata', function() {
-	const { owner } = createTestAccount();
+describe('TestPathPolicy validateContext', function() {
+	const { account, owner } = createTestAccount();
 	const cases: [string, 'public' | 'private', boolean, string][] = [
 		['documents/file.txt', 'private', true, 'non-public path with private'],
 		['documents/file.txt', 'public', true, 'non-public path with public'],
@@ -445,8 +447,17 @@ describe('TestPathPolicy validateMetadata', function() {
 	test.each(cases)('%s visibility=%s valid=%s (%s)', function(relativePath, visibility, valid) {
 		const path = testPathPolicy.makePath(owner, relativePath);
 		const parsed = testPathPolicy.validate(path);
+		const metadata = testMetadata(owner, { visibility });
+		const current = testObjectMetadata(path, owner);
+		const context: PathPolicyContext = {
+			operation: 'updateMetadata',
+			account,
+			metadata,
+			current
+		};
+
 		const validate = function() {
-			testPathPolicy.validateMetadata(parsed, testMetadata(owner, { visibility }));
+			testPathPolicy.validateContext(parsed, context);
 		};
 
 		if (valid) {

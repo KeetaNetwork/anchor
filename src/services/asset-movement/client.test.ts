@@ -6,10 +6,12 @@ import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData } from './common.js';
+import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse, KeetaAssetMovementAnchorUserAction, PersistentAddressAssetFeeBreakdown } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { ExtractOk } from '../../lib/http-server/common.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -20,6 +22,7 @@ const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
 test('Asset Movement Anchor Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -37,7 +40,7 @@ test('Asset Movement Anchor Client Test', async function() {
 	const initialAccountBalanceUSDC = await client.balance(testCurrencyUSDC);
 	expect(initialAccountBalanceUSDC).toEqual(initialAccountUSDCBalance);
 
-	const testTransaction: KeetaAssetMovementTransaction = {
+	let testTransaction: KeetaAssetMovementTransaction = {
 		id: '123',
 		status: 'COMPLETED',
 		asset: baseToken.publicKeyString.get(),
@@ -94,9 +97,106 @@ test('Asset Movement Anchor Client Test', async function() {
 		return(true);
 	}
 
+	const testLegalField: SharedAnchorMetadataLegalExtension['legal'] = {
+		disclaimers: [
+			{ purpose: 'general', content: { type: 'markdown', content: 'Test Disclaimer' }}
+		]
+	};
+
+	const validLocationMetadata = {
+		'chain:evm:1': {
+			assets: {
+				'evm:0x5': {
+					decimalPlaces: 20,
+					displayName: 'Cool Token',
+					ticker: '$COOL',
+					logoURI: 'https://example.com/logo.png'
+				}
+			}
+		},
+		'chain:solana:ffffffffffffffffffffffffffffffffffffffffffff': {
+			assets: {
+				'solana:So11111111111111111111111111111111111111112': {
+					decimalPlaces: 9
+				}
+			}
+		}
+	} satisfies AnchorCustomLocationMetadata;
+
+	async function serverInitiateSimulateTransferHandler(simulate: false, request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
+	async function serverInitiateSimulateTransferHandler(simulate: true, request: KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
+	async function serverInitiateSimulateTransferHandler(simulate: boolean, request: KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse> | ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
+		if (request.from.location === 'bank-account:us') {
+			if (!request.from.source || typeof request.from.source !== 'object' || !('type' in request.from.source)) {
+				throw(new Error('request.from.source is not a persistent address template object'));
+			}
+
+			if (request.from.source.type !== 'persistent-address' && request.from.source.type !== 'persistent-address-template') {
+				throw(new Error('Recipient is not a persistent address'));
+			}
+
+			return({
+				...(simulate ? {} : { id: '123' }),
+				instructionChoices: [{
+					type: 'ACH_DEBIT',
+					pullFrom: request.from.source,
+					assetFee: '0'
+				}]
+			})
+		}
+
+		if (typeof request.to.recipient !== 'string') {
+			throw(new Error('Recipient is not a string'));
+		}
+
+		if (shouldOperationFailExtendedKeetaSend(request.asset)) {
+			throw(new Errors.OperationNotSupported({
+				forAsset: 'USD',
+				forRail: extendedKeetaSendDetails.rail
+			}));
+		}
+
+		return({
+			...(simulate ? {} : { id: '123' }),
+			instructionChoices: [{
+				type: 'KEETA_SEND',
+				location: request.from.location,
+
+				...(simulate ? {} : { sendToAddress: sendToAddress.publicKeyString.get() }),
+				value: request.value.toString(),
+				tokenAddress: baseToken.publicKeyString.get(),
+
+				external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
+				assetFee: '10'
+			}]
+		})
+	}
+
+	const persistentAddressFeeBreakdown: PersistentAddressAssetFeeBreakdown = {
+		lineItems: [
+			{
+				purpose: 'VALUE_VARIABLE',
+				basisPoints: 50,
+				details: { type: 'markdown', content: 'Variable fee of 50 basis points' }
+			}
+		],
+		total: '10'
+	}
+
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
 		assetMovement: {
+			legal: testLegalField,
+			locationMetadata: {
+				...validLocationMetadata,
+				'chain:evm:1': {
+					...validLocationMetadata['chain:evm:1'],
+					// @ts-expect-error
+					'solana:test': { decimalPlaces: 20 }
+				},
+				'chain:solana:two': {}
+			},
+
 			/**
 			 * Supported assets and their configurations
 			 */
@@ -107,7 +207,7 @@ test('Asset Movement Anchor Client Test', async function() {
 						{
 							pair: [
 								{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ { rail: 'KEETA_SEND' } ] }},
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }}
 							]
 						}
 					]
@@ -117,7 +217,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					paths: [
 						{
 							pair: [
-								{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
+								{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ] }},
 								{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
@@ -132,7 +232,7 @@ test('Asset Movement Anchor Client Test', async function() {
 								{
 									location: 'chain:keeta:123',
 									id: testCurrencyUSDC.publicKeyString.get(),
-									rails: { inbound: [ extendedKeetaSendDetails ] }
+									rails: { inbound: [ extendedKeetaSendDetails, 'ACH_DEBIT' ] }
 								}
 							]
 						}
@@ -157,39 +257,35 @@ test('Asset Movement Anchor Client Test', async function() {
 				}
 
 				return({
-					address: request.destinationAddress
+					address: request.destinationAddress,
+					fees: persistentAddressFeeBreakdown,
+					...(request.incomingRail ? { incomingRail: [ request.incomingRail ] } : {}),
+					...(request.outgoingRail ? { outgoingRail: request.outgoingRail } : {})
 				})
+			},
+
+			executeTransfer: async (request) => {
+				if (!request.account) {
+					throw(new KeetaAnchorUserValidationError({ fields: [] }));
+				}
+
+				return({
+					transaction: {
+						...testTransaction,
+						status: 'EXECUTED'
+					}
+				})
+			},
+
+			simulateTransfer: async (request: KeetaAssetMovementAnchorSimulateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> => {
+				return(await serverInitiateSimulateTransferHandler(true, request));
 			},
 
 			/**
 			 * Method to initiate a transfer
 			 */
-			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiateTransferResponse, { ok: true }>, 'ok'>> {
-				if (typeof request.to.recipient !== 'string') {
-					throw(new Error('Recipient is not a string'));
-				}
-
-				if (shouldOperationFailExtendedKeetaSend(request.asset)) {
-					throw(new Errors.OperationNotSupported({
-						forAsset: 'USD',
-						forRail: extendedKeetaSendDetails.rail
-					}));
-				}
-
-				return({
-					id: '123',
-					instructionChoices: [{
-						type: 'KEETA_SEND',
-						location: request.from.location,
-
-						sendToAddress: request.to.recipient,
-						value: request.value.toString(),
-						tokenAddress: baseToken.publicKeyString.get(),
-
-						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
-						assetFee: '10'
-					}]
-				})
+			initiateTransfer: async function(request: KeetaAssetMovementAnchorInitiateTransferRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
+				return(await serverInitiateSimulateTransferHandler(false, request));
 			},
 
 			/**
@@ -209,6 +305,21 @@ test('Asset Movement Anchor Client Test', async function() {
 					transactions: [testTransaction],
 					total: '1'
 				})
+			},
+
+			/**
+			 * Method to initiate a persistent forwarding address template session
+			 */
+			initiatePersistentForwardingTemplate: async function(_ignored_request): Promise<Omit<Extract<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, { ok: true }>, 'ok'>> {
+				const sessionData: PersistentForwardingTemplateSessionData = {
+					type: 'plaid',
+					plaidLinkToken: 'link-sandbox-test-token'
+				};
+				return({
+					id: 'test-session-id',
+					expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+					data: sessionData
+				});
 			}
 		}
 	});
@@ -241,7 +352,7 @@ test('Asset Movement Anchor Client Test', async function() {
 									{
 									// @ts-expect-error
 										pair: [
-											{ location: 'chain:keeta:123', id: account.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
+											{ location: 'chain:keeta:123', id: baseToken.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
 								]
@@ -271,7 +382,7 @@ test('Asset Movement Anchor Client Test', async function() {
 								paths: [
 									{
 										pair: [
-											{ location: 'chain:evm:100', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
+											{ location: 'chain:evm:100', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { common: [ 'EVM_SEND' ], inbound: [ 'EVM_CALL' ] }},
 											{ location: 'chain:keeta:123', id: testCurrencyUSDC.publicKeyString.get(), rails: { common: [ 'KEETA_SEND' ] }}
 										]
 									}
@@ -342,6 +453,32 @@ test('Asset Movement Anchor Client Test', async function() {
 		expect(providerIDs.sort()).toEqual(expectedProviderIDs.sort());
 	}
 
+	{
+		/* Metadata checks */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		/* Expect legal field to be parsed properly on the client side */
+		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+		expect(testProvider.getLegalDisclaimers()).toEqual(testLegalField.disclaimers);
+
+		/* Expect custom token metadata to be resolved correctly */
+		expect(testProvider.serviceInfo.locationMetadata).toEqual(validLocationMetadata);
+
+		const evm0x5Metadata = validLocationMetadata['chain:evm:1']['assets']['evm:0x5'];
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'evm', chainId: 1n }}, 'evm:0x5')).toEqual(evm0x5Metadata);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x0')).toEqual(null);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'solana:test')).toEqual(null);
+		const solanaGenesis = 'ffffffffffffffffffffffffffffffffffffffffffff';
+		const testSolanaAssetID: SolanaAsset = 'solana:So11111111111111111111111111111111111111112';
+		const testSolanaAssetMetadata = validLocationMetadata[`chain:solana:${solanaGenesis}`]['assets']['solana:So11111111111111111111111111111111111111112'];
+		expect(testProvider.getAssetMetadataForLocation(`chain:solana:${solanaGenesis}`, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
+		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'solana', genesisHash: solanaGenesis }}, testSolanaAssetID)).toEqual(testSolanaAssetMetadata);
+	}
 
 	const baseTokenProviderList = await assetTransferClient.getProvidersForTransfer({ asset: baseToken });
 	const baseTokenProvider = baseTokenProviderList?.[0];
@@ -377,7 +514,27 @@ test('Asset Movement Anchor Client Test', async function() {
 			test: async function() { return(await baseTokenProvider.createPersistentForwardingAddress({ asset: baseToken, destinationLocation: 'chain:keeta:100', destinationAddress: account.publicKeyString.get(), sourceLocation: 'chain:evm:100' })) },
 			result: {
 				ok: true,
-				address: account.publicKeyString.get()
+				address: account.publicKeyString.get(),
+				fees: persistentAddressFeeBreakdown
+			}
+		},
+		{
+			test: async function() {
+				return(await baseTokenProvider.createPersistentForwardingAddress({
+					asset: baseToken,
+					destinationLocation: 'chain:keeta:100',
+					destinationAddress: account.publicKeyString.get(),
+					sourceLocation: 'chain:evm:100',
+					incomingRail: 'EVM_SEND',
+					outgoingRail: 'KEETA_SEND'
+				}))
+			},
+			result: {
+				ok: true,
+				address: account.publicKeyString.get(),
+				fees: persistentAddressFeeBreakdown,
+				incomingRail: ['EVM_SEND'],
+				outgoingRail: 'KEETA_SEND'
 			}
 		},
 		{
@@ -385,7 +542,7 @@ test('Asset Movement Anchor Client Test', async function() {
 				const transfer = await baseTokenProvider.initiateTransfer({ asset: baseToken, from: { location: 'chain:keeta:100' }, to: { location: 'chain:evm:100', recipient: account.publicKeyString.get() }, value: '100' });
 				const transferStatus = await transfer.getTransferStatus();
 				return({
-					id: transfer.transferId,
+					id: transfer.transferID,
 					instructions: transfer.instructions,
 					status: transferStatus
 				})
@@ -396,7 +553,7 @@ test('Asset Movement Anchor Client Test', async function() {
 					type: 'KEETA_SEND',
 					location: 'chain:keeta:100',
 
-					sendToAddress: account.publicKeyString.get(),
+					sendToAddress: sendToAddress.publicKeyString.get(),
 					value: '100',
 					tokenAddress: baseToken.publicKeyString.get(),
 
@@ -472,8 +629,8 @@ test('Asset Movement Anchor Client Test', async function() {
 			[
 				() => testProvider?.initiateTransfer({
 					asset: { from: testCurrencyUSDC, to: 'USD' },
-					from: { location: 'bank-account:us' },
-					to: { location: 'chain:keeta:123', recipient: 'test-recipient' },
+					from: { location: 'chain:keeta:123' },
+					to: { location: 'bank-account:us', recipient: 'test-recipient' },
 					value: '1000'
 				}),
 				{
@@ -522,10 +679,118 @@ test('Asset Movement Anchor Client Test', async function() {
 		const transferStatus = await initiatedTransfer.getTransferStatus();
 		expect(transferStatus.transaction.additionalTransferDetails).toEqual({ type: 'markdown', content: 'Custom Transaction Details' });
 	}
+
+	{
+		/**
+		 * Test execute transfer
+		 */
+
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const persistentAddressId = 'TEST_PERSISTENT_ADDRESS_ID'
+
+		const persistentAddress = { type: 'persistent-address', persistentAddressId: persistentAddressId } satisfies PersistentAddressOrTemplateReference;
+
+		const persistentAddressTemplateTransfer = await testProvider.initiateTransfer({
+			from: { location: 'bank-account:us', source: persistentAddress },
+			asset: { to: 'USD', from: testCurrencyUSDC.publicKeyString.get() },
+			to: { location: 'chain:keeta:100', recipient: account.publicKeyString.get()  },
+			value: '100'
+		});
+
+		if (persistentAddressTemplateTransfer.instructions[0]?.type !== 'ACH_DEBIT') {
+			throw(new Error('Expected ACH_DEBIT instruction'));
+		}
+
+		expect(persistentAddressTemplateTransfer.instructions[0].pullFrom).toEqual(persistentAddress);
+
+		await expect(persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0] })).rejects.toThrow(KeetaAnchorUserValidationError);
+
+		const executed = await persistentAddressTemplateTransfer.executeTransfer({ instruction: persistentAddressTemplateTransfer.instructions[0], account });
+		expect(executed.transaction.status).toEqual('EXECUTED');
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const prevTestTransaction = JSON.parse(JSON.stringify(testTransaction)) as typeof testTransaction;
+
+		testTransaction = {
+			...testTransaction,
+			from: {
+				...testTransaction.from,
+				source: persistentAddress
+			}
+		}
+
+		const readStatus = await testProvider.getTransferStatus({ id: 'test' });
+		expect(readStatus.transaction.from.source).toEqual(persistentAddress);
+
+		testTransaction = prevTestTransaction;
+	}
+
+	{
+		/**
+		 * Test initiatePersistentForwardingTemplate
+		 */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const result = await testProvider.initiatePersistentForwardingTemplate({
+			asset: testCurrencyUSDC,
+			location: 'bank-account:us',
+			account
+		});
+
+		expect(result.id).toBe('test-session-id');
+		expect(result.data).toEqual({
+			type: 'plaid',
+			plaidLinkToken: 'link-sandbox-test-token'
+		});
+		expect(typeof result.expiresAt).toBe('string');
+	}
+
+	{
+		/**
+		 * Test initiatePersistentForwardingTemplate
+		 */
+		const testProvider = await assetTransferClient.getProviderByID('Test');
+
+		if (!testProvider) {
+			throw(new Error('Test provider not found'));
+		}
+
+		const simulated = await testProvider.simulateTransfer({
+			asset: testCurrencyUSDC,
+			from: { location: 'chain:keeta:123' },
+			to: { location: 'bank-account:us', recipient: 'test-recipient' },
+			value: '1000'
+		});
+
+		expect('id' in simulated).toEqual(false);
+
+		const createdTransfer = await simulated.createTransfer();
+
+		if (!createdTransfer.instructions[0] || createdTransfer.instructions[0].type !== 'KEETA_SEND') {
+			throw(new Error('expected keeta send as first instruction'))
+		}
+
+		expect(createdTransfer.instructions[0]).toEqual({
+			...simulated.instructions[0],
+			sendToAddress: createdTransfer.instructions[0].sendToAddress
+		})
+	}
 });
+
+type ResolvedOrCallback<T> = T | (() => Promise<T>);
 
 test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(seed, 100);
 	const { userClient: client } = await createNodeAndClient(account);
 
 	const currentDateString = (new Date()).toISOString();
@@ -576,8 +841,32 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 	const userKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userActionNeededAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	const promisePolling: { [key: string]: number } = {};
+
+	async function makeCertificate(name: string) {
+		const certificateBuilder = new CertificateBuilder({
+			subject: account,
+			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
+			issuer: kycCertificateIssuer,
+			serial: 3,
+			validFrom: new Date(Date.now() - 30_000),
+			validTo: new Date(Date.now() + 120_000)
+		});
+		const firstName = await SensitiveAttribute.create(account, 'firstName', name);
+
+		certificateBuilder.setSensitiveAttribute('firstName', firstName);
+
+		const certificate = await certificateBuilder.build();
+		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
+		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
+		await sharable.grantAccess(kycSharePrincipal);
+
+		return({ name: name, sharable, certificate });
+	}
+
+	let userActionNeededValue: KeetaAssetMovementAnchorUserAction[] = [];
 
 	await using server = new (class extends KeetaNetAssetMovementAnchorHTTPServer {
 		protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<Routes> {
@@ -635,7 +924,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						{
 							pair: [
 								{ location: `chain:keeta:${client.network}`, id: testCurrencyUSDC.publicKeyString.get(), rails: { inbound: [ 'ACH' ] }},
-								{ location: 'bank-account:us', id: '0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
+								{ location: 'bank-account:us', id: 'evm:0xc0634090F2Fe6c6d75e61Be2b949464aBB498973', rails: { inbound: [ 'KEETA_SEND' ] }}
 							]
 						}
 					]
@@ -655,6 +944,26 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 				})
 			},
 
+			simulateTransfer: async function(request) {
+				if (typeof request.to.recipient !== 'string') {
+					throw(new Error('Recipient is not a string'));
+				}
+
+				return({
+					instructionChoices: [{
+						type: 'KEETA_SEND',
+						location: request.from.location,
+
+						sendToAddress: undefined,
+						value: request.value.toString(),
+						tokenAddress: baseToken.publicKeyString.get(),
+
+						external: `123:${request.to.recipient}`,  // encodeAssetMovementForward
+						assetFee: '10'
+					}]
+				})
+			},
+
 			/**
 			 * Method to initiate a transfer
 			 */
@@ -669,7 +978,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 						type: 'KEETA_SEND',
 						location: request.from.location,
 
-						sendToAddress: request.to.recipient,
+						sendToAddress: sendToAddress.publicKeyString.get(),
 						value: request.value.toString(),
 						tokenAddress: baseToken.publicKeyString.get(),
 
@@ -706,6 +1015,12 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 							url: 'https://example.com/tos'
 						}
 					}, 'User requires additional KYC to proceed with asset movement'));
+				}
+
+				if (userActionNeededAccount.comparePublicKey(account)) {
+					throw(new Errors.UserActionNeeded({
+						actionsNeeded: userActionNeededValue
+					}));
 				}
 
 				return({
@@ -780,6 +1095,30 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					],
 					total: '1'
 				})
+			},
+
+			deactivatePersistentForwardingTemplate: async function(id, account) {
+				if (!account) {
+					throw(new Error('Missing account authentication'));
+				}
+
+				if (id === 'does-not-exist') {
+					throw(new Error('Template not found'));
+				}
+
+				return({});
+			},
+
+			deactivatePersistentForwarding: async function(id, account) {
+				if (!account) {
+					throw(new Error('Missing account authentication'));
+				}
+
+				if (id === 'does-not-exist') {
+					throw(new Error('Address not found'));
+				}
+
+				return({});
 			}
 		}
 	});
@@ -834,28 +1173,8 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		value: '100'
 	};
 	await expect(usdcProvider.initiateTransfer(initiateTransferRequest)).rejects.toThrow(); // Invalid ID format
-	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferId).toEqual('123');
+	expect((await usdcProvider.initiateTransfer({ ...initiateTransferRequest, account })).transferID).toEqual('123');
 
-	async function makeCertificate(name: string) {
-		const certificateBuilder = new CertificateBuilder({
-			subject: account,
-			subjectDN: [{ name: 'commonName', value: 'KYC Verified User' }],
-			issuer: kycCertificateIssuer,
-			serial: 3,
-			validFrom: new Date(Date.now() - 30_000),
-			validTo: new Date(Date.now() + 120_000)
-		});
-		const firstName = await SensitiveAttribute.create(account, 'firstName', name);
-
-		certificateBuilder.setSensitiveAttribute('firstName', firstName);
-
-		const certificate = await certificateBuilder.build();
-		const certificateWithPrivate = new Certificate(certificate.toDER(), { subjectKey: account });
-		const sharable = await SharableCertificateAttributes.fromCertificate(certificateWithPrivate);
-		await sharable.grantAccess(kycSharePrincipal);
-
-		return({ name: name, sharable, certificate });
-	}
 
 	const invalidNameCert = await makeCertificate('Invalid Name');
 
@@ -1004,5 +1323,90 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			],
 			total: 1
 		});
+	}
+
+	{
+		// Deactivate persistent forwarding template
+		expect(await usdcProvider.deactivatePersistentForwardingTemplate({ id: 'template-id', account })).toEqual({ ok: true });
+
+		// Without an account (and therefore no signature) the request is rejected
+		await expect(usdcProvider.deactivatePersistentForwardingTemplate({ id: 'template-id' })).rejects.toThrow();
+
+		// Server-side error path
+		await expect(usdcProvider.deactivatePersistentForwardingTemplate({ id: 'does-not-exist', account })).rejects.toThrow();
+	}
+
+	{
+		// Deactivate persistent forwarding address
+		expect(await usdcProvider.deactivatePersistentForwardingAddress({ id: 'address-id', account })).toEqual({ ok: true });
+
+		// Without an account (and therefore no signature) the request is rejected
+		await expect(usdcProvider.deactivatePersistentForwardingAddress({ id: 'address-id' })).rejects.toThrow();
+
+		// Server-side error path
+		await expect(usdcProvider.deactivatePersistentForwardingAddress({ id: 'does-not-exist', account })).rejects.toThrow();
+	}
+
+	{
+		// Test user actions
+
+
+		const userActionTestCases: ResolvedOrCallback<{
+			actions: KeetaAssetMovementAnchorUserAction[]
+		}>[] = [
+			async () => {
+				const certificate = await makeCertificate('User Action Needed');
+				const intermediates = [ (await makeCertificate('intermediate1')).certificate, (await makeCertificate('intermediate2')).certificate ];
+
+				return({
+					actions: [
+						{
+							type: 'grant-permission',
+							details: { type: 'plaintext', content: 'User needs to grant permission to access their account' },
+							permissionToGrant: {
+								target: account,
+								entity: account,
+								principal: account,
+								permissions: new KeetaNet.lib.Permissions([ 'SEND_ON_BEHALF' ])
+							}
+						},
+						{
+							type: 'add-certificate',
+							details: { type: 'plaintext', content: 'User needs to add a certificate to their account' },
+							certificate: certificate.certificate,
+							intermediates: intermediates
+						}
+					]
+				})
+			},
+			{
+				actions: []
+			}
+		];
+
+		for (const input of userActionTestCases) {
+			let testCase;
+			if (typeof input === 'function') {
+				testCase = await input();
+			} else {
+				testCase = input;
+			}
+
+
+			userActionNeededValue = testCase.actions;
+
+			let userActionNeededError;
+			try {
+				await usdcProvider.getTransferStatus({ id: '555', account: userActionNeededAccount });
+			} catch (error) {
+				userActionNeededError = error;
+			}
+
+			if (!(userActionNeededError instanceof Errors.UserActionNeeded)) {
+				throw(new Error('Expected UserActionNeeded error'));
+			}
+
+			expect(toJSONSerializable(userActionNeededError.actionsNeeded)).toEqual(toJSONSerializable(testCase.actions));
+		}
 	}
 });

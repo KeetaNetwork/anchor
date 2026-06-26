@@ -1,6 +1,7 @@
 import type { IValidation, TypeGuardError } from 'typia';
 import { createAssertEquals, createIs } from 'typia';
 import type { LogLevel } from './log/index.ts';
+import { assertKeetaAnchorCertificateRequiredErrorJSONProperties } from './error.generated.js';
 /**
  * Type for error classes that can be deserialized
  */
@@ -26,7 +27,7 @@ async function getErrorClassMapping(): Promise<{ [key: string]: (input: unknown)
 		 * is the base error class and could cause circular resolution
 		 */
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
-		KeetaAnchorUserError, KeetaAnchorUserValidationError
+		KeetaAnchorUserError, KeetaAnchorUserValidationError, KeetaAnchorCertificateRequiredError
 	];
 
 	// Dynamically import errors to avoid circular dependencies
@@ -399,5 +400,101 @@ export class KeetaAnchorUserValidationError extends KeetaAnchorUserError impleme
 				});
 			})
 		}, message))
+	}
+}
+
+/**
+ * Failure mode for the certificate-chain gate.
+ */
+export type KeetaAnchorCertificateRequiredKind = 'missing' | 'untrusted';
+
+export interface KeetaAnchorCertificateRequiredErrorJSONProperties {
+	/**
+	 * Outer array: any-of (OR). Inner array: all-of (AND).
+	 */
+	acceptedIssuers: { name: string; value: string; }[][];
+	kind: KeetaAnchorCertificateRequiredKind;
+}
+
+type KeetaAnchorCertificateRequiredErrorJSON =
+	ReturnType<KeetaAnchorUserError['toJSON']>
+	& KeetaAnchorCertificateRequiredErrorJSONProperties;
+
+export class KeetaAnchorCertificateRequiredError extends KeetaAnchorUserError implements KeetaAnchorCertificateRequiredErrorJSONProperties {
+	static override readonly name: string = 'KeetaAnchorCertificateRequiredError';
+	private readonly KeetaAnchorCertificateRequiredErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorCertificateRequiredErrorObjectTypeID = 'b8c5b6df-2f4d-4f60-9d6c-2f4d8a6b1f01';
+
+	readonly acceptedIssuers: { name: string; value: string; }[][];
+	readonly kind: KeetaAnchorCertificateRequiredKind;
+
+	constructor(args: KeetaAnchorCertificateRequiredErrorJSONProperties, message?: string) {
+		super(message ?? KeetaAnchorCertificateRequiredError.defaultMessage(args.kind));
+		if (args.kind === 'missing') {
+			this.statusCode = 401;
+		} else {
+			this.statusCode = 403;
+		}
+
+		Object.defineProperty(this, 'KeetaAnchorCertificateRequiredErrorObjectTypeID', {
+			value: KeetaAnchorCertificateRequiredError.KeetaAnchorCertificateRequiredErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.acceptedIssuers = args.acceptedIssuers;
+		this.kind = args.kind;
+	}
+
+	private static defaultMessage(kind: KeetaAnchorCertificateRequiredKind): string {
+		if (kind === 'missing') {
+			return('No certificate has been published for the signing account');
+		}
+
+		return('Published certificates do not chain to an accepted issuer');
+	}
+
+	static override isInstance(input: unknown): input is KeetaAnchorCertificateRequiredError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorCertificateRequiredErrorObjectTypeID', KeetaAnchorCertificateRequiredError.KeetaAnchorCertificateRequiredErrorObjectTypeID));
+	}
+
+	override asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				data: { acceptedIssuers: this.acceptedIssuers, kind: this.kind },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	override toJSON(): KeetaAnchorCertificateRequiredErrorJSON {
+		return({
+			...super.toJSON(),
+			acceptedIssuers: this.acceptedIssuers,
+			kind: this.kind
+		});
+	}
+
+	static override async fromJSON(input: unknown): Promise<KeetaAnchorCertificateRequiredError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAnchorCertificateRequiredError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAnchorCertificateRequiredErrorJSONProperties(other.data);
+		const error = new this({ acceptedIssuers: parsed.acceptedIssuers, kind: parsed.kind }, message);
+
+		error.restoreFromJSON(other);
+
+		return(error);
 	}
 }

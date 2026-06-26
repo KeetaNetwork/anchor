@@ -1,0 +1,129 @@
+import { assertClientRenderableContentType } from "./metadata.types.generated.js";
+import type { HTTPSignedField } from "./http-server/common.js";
+import type { Logger } from "./log/index.js";
+import type { ToValuizable } from "./resolver.js";
+
+
+/**
+ * This is the type of content that can be rendered directly in a client application.
+ *
+ * There is no guarantee on if/how this content will be displayed, so it should not be used for critical information, rather as a way to provide the user additional context about a transfer.
+ */
+export type ClientRenderableContent = { type: 'markdown' | 'plaintext'; content: string; };
+
+
+/**
+ * Authentication requirement attached to a service operation endpoint.
+ */
+export type ServiceMetadataAuthenticationType = {
+	method: 'keeta-account';
+	type: 'required' | 'optional' | 'none';
+} | {
+	method?: never;
+	type: 'none';
+};
+
+/**
+ * Operation endpoint exposed by a service.
+ */
+export type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }};
+
+export interface AnchorMetadataLegalField {
+	disclaimers?: {
+		purpose: 'general';
+		content: ClientRenderableContent;
+	}[] | undefined;
+}
+
+export interface SharedAnchorMetadataLegalExtension {
+	/**
+	 * Legal details that the anchor wants to share with the user.
+	 * This can include things like disclaimers, terms of service, etc.
+	 */
+	legal?: AnchorMetadataLegalField;
+}
+
+/**
+ * Signature over `{ operations, legal }` for a service entry. `account` and
+ * `signed` are coupled at runtime: either both are absent (unsigned entry)
+ * or both are present (signed entry that MUST verify). The coupling cannot
+ * be expressed at the type level without breaking `JSONSerializable`
+ * compatibility, so consumers MUST treat one-sided forms as malformed.
+ */
+export type SharedAnchorMetadataSignedExtension = {
+	account?: string;
+	signed?: HTTPSignedField;
+};
+
+export type SharedAnchorCallerCertificateRequirementMetadata = {
+	/**
+	 * Issuer DNs this anchor accepts for caller authentication. Outer array
+	 * is any-of (OR), inner array is all-of (AND) within a single DN.
+	 * When present, callers MUST present an on-chain certificate that chains
+	 * to an issuer whose subject DN matches one of these.
+	 */
+	acceptedIssuerDNs?: { name: string; value: string }[][];
+};
+
+async function resolveClientRenderableContent(content: ToValuizable<ClientRenderableContent>): Promise<ClientRenderableContent> {
+	const resolved = await content('object');
+
+	return({
+		type: assertClientRenderableContentType(await resolved.type('string')),
+		content: await resolved.content('string')
+	})
+}
+
+export async function resolveSharedAnchorMetadataLegalExtension(metadata: ToValuizable<AnchorMetadataLegalField> | undefined, options: {
+	logger?: Logger | undefined;
+}): Promise<SharedAnchorMetadataLegalExtension> {
+	if (!metadata) {
+		return({});
+	}
+
+	const resolvedField = await metadata('object');
+
+	if (!resolvedField) {
+		return({});
+	}
+
+	const disclaimers = await (async (): Promise<AnchorMetadataLegalField['disclaimers']> => {
+		const resolvedDisclaimers = await resolvedField.disclaimers?.('array');
+		if (!resolvedDisclaimers) {
+			return(undefined);
+		}
+
+		const parsedDisclaimers = await Promise.allSettled(resolvedDisclaimers.map(async function(disclaimer): Promise<NonNullable<AnchorMetadataLegalField['disclaimers']>[number]> {
+			const resolvedDisclaimer = await disclaimer('object');
+
+			const purpose = await resolvedDisclaimer.purpose('string');
+
+			if (purpose !== 'general') {
+				throw(new Error(`Unsupported disclaimer purpose: ${purpose}`));
+			}
+
+			return({
+				purpose: purpose,
+				content: await resolveClientRenderableContent(resolvedDisclaimer.content)
+			});
+		}));
+
+		const filtered = [];
+
+		for (const result of parsedDisclaimers) {
+			if (result.status === 'fulfilled') {
+				filtered.push(result.value);
+			} else {
+				options.logger?.warn('resolveSharedAnchorMetadataLegalExtension', 'Failed to resolve disclaimer content', result.reason);
+			}
+		}
+
+		return(filtered);
+	})();
+
+	return({
+		legal: {
+			disclaimers
+		}
+	});
+}

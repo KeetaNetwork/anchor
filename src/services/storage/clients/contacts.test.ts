@@ -1,16 +1,20 @@
 import { test, expect, describe } from 'vitest';
 
-import type { Contact, ContactAddress } from './contacts.js';
+import type { Contact, ContactAddress, ContactWithMetadata } from './contacts.js';
+import type { Rail } from '../../asset-movement/common.js';
 import type { Account } from '../test-utils.js';
 import type KeetaStorageAnchorClient from '../client.js';
+import type { KeetaStorageAnchorProvider } from '../client.js';
 import { StorageContactsClient } from './contacts.js';
 import { Errors } from '../common.js';
+import { Buffer } from '../../../lib/utils/buffer.js';
 import { randomSeed, withStorageProvider } from '../test-utils.js';
 
 // #region Test Harness
 
 interface ContactsTestContext {
 	contactsClient: StorageContactsClient;
+	provider: KeetaStorageAnchorProvider;
 	account: Account;
 	storageClient: KeetaStorageAnchorClient;
 }
@@ -22,7 +26,7 @@ async function withContacts(
 	await withStorageProvider(seed, async function({ provider, account, storageClient }) {
 		const pubkey = account.publicKeyString.get();
 		const contactsClient = provider.getContactsClient({ account, basePath: `/user/${pubkey}/contacts/` });
-		await testFunction({ contactsClient, account, storageClient });
+		await testFunction({ contactsClient, provider, account, storageClient });
 	});
 }
 
@@ -92,9 +96,9 @@ const persistentAddress: ContactAddress = {
 	location: 'chain:evm:1'
 };
 
-const sampleAddresses: { name: string; address: ContactAddress }[] = [
-	{ name: 'keeta crypto', address: keetaAddress },
-	{ name: 'evm crypto', address: evmAddress },
+const sampleAddresses: { name: string; address: ContactAddress; rail?: Rail }[] = [
+	{ name: 'keeta crypto', address: keetaAddress, rail: 'KEETA_SEND' },
+	{ name: 'evm crypto', address: evmAddress, rail: 'EVM_SEND' },
 	{ name: 'wire bank', address: wireAddress },
 	{ name: 'bitcoin crypto', address: bitcoinAddress },
 	{ name: 'solana crypto', address: solanaAddress },
@@ -134,20 +138,42 @@ const updateCases: {
 	}
 ];
 
+const invalidCreateInputs: { name: string; label: unknown; address: unknown }[] = [
+	{ name: 'non-string recipient', label: 'Bad', address: { recipient: 12345 }},
+	{ name: 'missing recipient', label: 'Bad', address: {}},
+	{ name: 'non-string label', label: 99, address: keetaAddress }
+];
+
+const corruptPayloads: { name: string; data: string }[] = [
+	{ name: 'invalid JSON', data: 'not valid json {{{' },
+	{ name: 'wrong schema', data: JSON.stringify({ wrong: 'shape' }) },
+	{ name: 'empty object', data: JSON.stringify({}) }
+];
+
 // #endregion
 
 // #region Tests
 
 describe('Contacts Client - CRUD per address type', function() {
-	test.each(sampleAddresses)('create and get contact: $name', function({ address }) {
+	test.each(sampleAddresses)('create and get contact: $name', function({ address, rail }) {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
-			const created = await contactsClient.create({ label: 'Test Contact', address });
+			const created = await contactsClient.create({ label: 'Test Contact', address, rail });
 			expect(created.id).toBe(contactsClient.deriveId(address));
 			expect(created.label).toBe('Test Contact');
 			expect(created.address).toEqual(address);
+			expect(created.rail).toBe(rail);
 
 			const retrieved = await contactsClient.get(created.id);
 			expect(retrieved).toEqual(created);
+		}));
+	});
+
+	test.each(invalidCreateInputs)('create rejects invalid input: $name', function({ label, address }) {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			await expect(contactsClient.create({
+				label: label as string, // eslint-disable-line @typescript-eslint/consistent-type-assertions
+				address: address as ContactAddress // eslint-disable-line @typescript-eslint/consistent-type-assertions
+			})).rejects.toThrow();
 		}));
 	});
 });
@@ -169,6 +195,17 @@ describe('Contacts Client - Update', function() {
 				const oldRetrieved = await contactsClient.get(created.id);
 				expect(oldRetrieved).toBeNull();
 			}
+		}));
+	});
+
+	test('update preserves rail from original contact', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Has Rail', address: keetaAddress, rail: 'KEETA_SEND' });
+			const updated = await contactsClient.update(created.id, { label: 'Renamed' });
+			expect(updated.rail).toBe('KEETA_SEND');
+
+			const retrieved = await contactsClient.get(updated.id);
+			expect(retrieved?.rail).toBe('KEETA_SEND');
 		}));
 	});
 
@@ -206,7 +243,7 @@ describe('Contacts Client - Delete', function() {
 
 describe('Contacts Client - List', function() {
 	test('list returns all created contacts', function() {
-		const sortById = function(a: Contact, b: Contact) { return(a.id.localeCompare(b.id)); };
+		const sortById = function(a: ContactWithMetadata, b: ContactWithMetadata) { return(a.id.localeCompare(b.id)); };
 
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const created: Contact[] = [];
@@ -216,7 +253,64 @@ describe('Contacts Client - List', function() {
 
 			const listed = await contactsClient.list();
 			expect(listed).toHaveLength(sampleAddresses.length);
-			expect(listed.sort(sortById)).toEqual(created.sort(sortById));
+			expect(listed.sort(sortById)).toMatchObject(created.sort(function(a, b) { return(a.id.localeCompare(b.id)); }));
+			for (const contact of listed) {
+				expect(contact.createdAt).toBeTypeOf('string');
+			}
+		}));
+	});
+
+	test.each(corruptPayloads)('list skips corrupt entry: $name', function({ data }) {
+		return(withContacts(randomSeed(), async function({ contactsClient, provider, account }) {
+			const created = await contactsClient.create({ label: 'Valid', address: keetaAddress });
+			const pubkey = account.publicKeyString.get();
+			const rawSession = provider.beginSession({ account, workingDirectory: `/user/${pubkey}/contacts/` });
+			await rawSession.put('corrupt-entry', Buffer.from(data), { mimeType: 'application/json' });
+
+			const listed = await contactsClient.list();
+			expect(listed).toHaveLength(1);
+			expect(listed[0]?.id).toBe(created.id);
+		}));
+	});
+
+	test('list with metadataOnly returns metadata entries without resolving contacts', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created: Contact[] = [];
+			for (const { name, address } of sampleAddresses) {
+				created.push(await contactsClient.create({ label: `Contact ${name}`, address }));
+			}
+
+			const entries = await contactsClient.list({ metadataOnly: true });
+			expect(entries).toHaveLength(sampleAddresses.length);
+
+			const createdIds = created.map(function(contact) { return(contact.id); }).sort();
+			const entryIds = entries.map(function(entry) { return(entry.path.split('/').pop()); }).sort();
+			expect(entryIds).toEqual(createdIds);
+
+			for (const entry of entries) {
+				expect(entry.path).toBeTypeOf('string');
+				expect(entry.createdAt).toBeTypeOf('string');
+				// Metadata only: the contact body (label/address) is not resolved.
+				expect(entry).not.toHaveProperty('label');
+				expect(entry).not.toHaveProperty('address');
+			}
+		}));
+	});
+
+	test('list with metadataOnly respects the location filter', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const evm = await contactsClient.create({ label: 'EVM', address: evmAddress });
+			await contactsClient.create({ label: 'Bitcoin', address: bitcoinAddress });
+
+			const location = evmAddress.location;
+			expect(location).toBeDefined();
+			if (!location) {
+				return;
+			}
+
+			const entries = await contactsClient.list({ metadataOnly: true, location });
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.path.split('/').pop()).toBe(evm.id);
 		}));
 	});
 
@@ -251,6 +345,28 @@ describe('Contacts Client - Edge Cases', function() {
 		return(withContacts(randomSeed(), async function({ contactsClient }) {
 			const result = await contactsClient.get('does-not-exist');
 			expect(result).toBeNull();
+		}));
+	});
+
+	test('get with includeMetadata returns ContactWithMetadata with createdAt', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Metadata Test', address: keetaAddress });
+			const withMetadata = await contactsClient.get(created.id, true);
+			expect(withMetadata).not.toBeNull();
+			expect(withMetadata?.id).toBe(created.id);
+			expect(withMetadata?.label).toBe(created.label);
+			expect(withMetadata?.address).toEqual(created.address);
+			expect(withMetadata?.createdAt).toBeTypeOf('string');
+			expect(withMetadata?.updatedAt).toBeUndefined();
+		}));
+	});
+
+	test('get with includeMetadata returns updatedAt after update', function() {
+		return(withContacts(randomSeed(), async function({ contactsClient }) {
+			const created = await contactsClient.create({ label: 'Before', address: keetaAddress });
+			const updated = await contactsClient.update(created.id, { label: 'After' });
+			const withMetadata = await contactsClient.get(updated.id, true);
+			expect(withMetadata?.updatedAt).toBeTypeOf('string');
 		}));
 	});
 

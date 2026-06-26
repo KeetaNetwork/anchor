@@ -1,11 +1,14 @@
-import type { AccountAddressSchema } from "../../types.js";
+import type { Schema } from "../../json-schema.js";
+import { sharedSchemaReferences, type AccountAddressSchema } from "../../types.js";
+
+const pixKeyType = { type: "string", enum: [ 'random', 'email', 'phone' ] } satisfies Schema;
 
 const pixSchema: AccountAddressSchema = {
 	type: 'bank-account',
 
 	includeFields: {
 		accountOwner: true,
-		bankName: true,
+		bankName: false,
 		accountNumberEnding: true
 	},
 
@@ -14,7 +17,9 @@ const pixSchema: AccountAddressSchema = {
 			type: "object",
 			properties: {
 				brCode: { type: "string" },
+				pixKeyType: pixKeyType,
 				pixKey: { type: "string" },
+				accountAddress: sharedSchemaReferences.PhysicalAddress,
 				document: {
 					type: 'object',
 					properties: {
@@ -27,7 +32,15 @@ const pixSchema: AccountAddressSchema = {
 			required: []
 		},
 		obfuscated: {
-			type: "object"
+			type: "object",
+			properties: {
+				accountAddress: {
+					oneOf: [
+						{ type: 'string' },
+						sharedSchemaReferences.PhysicalAddress
+					]
+				}
+			}
 		}
 	}
 }

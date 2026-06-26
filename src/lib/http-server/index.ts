@@ -1,13 +1,20 @@
 import * as http from 'http';
+
 import {
 	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../error.js';
 import type { JSONSerializable } from '../utils/json.js';
 import type { Logger, LogLevel } from '../log/index.js';
+import type {
+	CertificateChainConfig,
+	ResolvedCertificateChainRequirement
+} from '../utils/certificate-network.js';
 import { Log } from '../log/index.js';
 import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
+import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
+import { Buffer } from '../utils/buffer.js';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -60,12 +67,23 @@ export interface KeetaAnchorHTTPServerConfig {
 		port?: number;
 		protocol?: string;
 	};
+
+	/**
+	 * Optional on-chain cert-chain gate. When set, authenticated callers
+	 * MUST have a published cert chaining to one of `trustedIssuers`.
+	 */
+	requireCertificateChain?: CertificateChainConfig | undefined;
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
 	readonly port: NonNullable<KeetaAnchorHTTPServerConfig['port']>;
 	readonly logger: NonNullable<KeetaAnchorHTTPServerConfig['logger']>;
 	readonly id: NonNullable<KeetaAnchorHTTPServerConfig['id']>;
+	/**
+	 * Resolved cert-chain requirement, or `undefined` when disabled.
+	 * @see {@link requireCertificateChain}.
+	 */
+	protected readonly resolvedCertificateChainRequirement: ResolvedCertificateChainRequirement | undefined;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
@@ -77,6 +95,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.port = config.port ?? 0;
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
+		this.resolvedCertificateChainRequirement = resolveCertificateChainConfig(config.requireCertificateChain);
 
 		if (config.url !== undefined) {
 			if (config.url instanceof URL || typeof config.url === 'string') {
@@ -105,6 +124,25 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	}
 
 	protected abstract initRoutes(config: ConfigType): Promise<Routes>;
+
+	/**
+	 * Public view of the cert-chain config, or `undefined` when disabled.
+	 */
+	get requireCertificateChain(): CertificateChainConfig | undefined {
+		return(this.resolvedCertificateChainRequirement);
+	}
+
+	/**
+	 * Trusted-issuer DNs metadata. Is `undefined` when the gate is not configured.
+	 */
+	protected acceptedIssuerDNs(): { name: string; value: string }[][] | undefined {
+		const requirement = this.resolvedCertificateChainRequirement;
+		if (requirement === undefined) {
+			return(undefined);
+		}
+
+		return(requirement.acceptedIssuerDNs);
+	}
 
 	private static routeMatch(requestURL: URL, routeURL: URL): ({ match: true; params: Map<string, string>; wildcard?: { prefixLength: number }} | { match: false }) {
 		const requestURLPaths = requestURL.pathname.split('/');

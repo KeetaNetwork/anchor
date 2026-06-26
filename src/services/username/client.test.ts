@@ -6,8 +6,10 @@ import { KeetaNetUsernameAnchorHTTPServer } from './server.js';
 import type { KeetaUsernameAnchorUsernameWithAccount, KeetaUsernameAnchorSearchRequestParameters } from './common.js';
 import { formatGloballyIdentifiableUsername, Errors, USERNAME_MAX_LENGTH } from './common.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
-import Resolver from '../../lib/resolver.js';
+import { buildCert, buildChain } from '../../lib/utils/tests/certificates.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
+import { KeetaAnchorCertificateRequiredError } from '../../lib/error.js';
+import Resolver from '../../lib/resolver.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -403,4 +405,158 @@ test('username client resolves accounts through resolver', async () => {
 			}
 		}
 	}
+}, 20_000);
+
+interface GatedUsernameFixture extends AsyncDisposable {
+	client: InstanceType<typeof KeetaNet.UserClient>;
+	providerID: string;
+	reserved: { username: string; account: AccountInstance };
+	makeProvider: (account: AccountInstance) => Promise<NonNullable<Awaited<ReturnType<KeetaUsernameAnchorClient['getProvider']>>>>;
+}
+
+/**
+ * Stand up a username anchor server gated by a single-root cert chain.
+ */
+async function setupGatedUsernameServer(seed: string | ArrayBuffer): Promise<GatedUsernameFixture> {
+	const providerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const nodeAndClient = await createNodeAndClient(providerAccount);
+
+	nodeAndClient.fees.disable();
+
+	const client = nodeAndClient.userClient;
+
+	const rootIssuer = KeetaNet.lib.Account.fromSeed(seed, 200);
+	const rootCA = await buildCert({
+		issuer: rootIssuer, subject: rootIssuer, serial: 1, validForMs: 1000 * 60 * 60 * 24 * 365
+	});
+
+	const assignedAccounts = new Map<string, AccountInstance>();
+	const reservedUsername = 'reserved';
+	const reservedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	assignedAccounts.set(reservedUsername, reservedAccount);
+
+	const server = new KeetaNetUsernameAnchorHTTPServer({
+		logger,
+		usernamePattern: '^[a-z]+$',
+		usernames: {
+			async resolveUsername({ username }) {
+				const account = assignedAccounts.get(username);
+				if (account) {
+					return({ account });
+				}
+
+				return(null);
+			},
+			async resolveAccount({ account }) {
+				for (const [u, a] of assignedAccounts.entries()) {
+					if (a.comparePublicKey(account)) {
+						return({ username: u });
+					}
+				}
+
+				return(null);
+			},
+			async claim({ username, account }) {
+				assignedAccounts.set(username, account);
+				return({ ok: true });
+			},
+			async releaseUsername({ account }) {
+				for (const [u, a] of assignedAccounts.entries()) {
+					if (a.comparePublicKey(account)) {
+						assignedAccounts.delete(u);
+						return({ ok: true });
+					}
+				}
+				return({ ok: false });
+			},
+			async search({ search }) {
+				const results: KeetaUsernameAnchorUsernameWithAccount[] = [];
+				for (const [u, a] of assignedAccounts.entries()) {
+					if (u.includes(search)) { results.push({ username: u, account: a }); }
+				}
+
+				return({ results });
+			}
+		},
+		requireCertificateChain: { trustedIssuers: [rootCA], client: client.client }
+	});
+	await server.start();
+
+	const providerID = 'cert-gated-username';
+	await client.setInfo({
+		description: '', name: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: { username: { [providerID]: await server.serviceMetadata() }}
+		})
+	});
+
+	async function makeProvider(account: AccountInstance) {
+		const callerClient = new KeetaUsernameAnchorClient(client, {
+			root: providerAccount, signer: account, account, logger
+		});
+		return(asNonNull(await callerClient.getProvider(providerID)));
+	}
+
+	return({
+		client,
+		providerID,
+		reserved: { username: reservedUsername, account: reservedAccount },
+		makeProvider,
+		async [Symbol.asyncDispose]() {
+			await server[Symbol.asyncDispose]();
+			await nodeAndClient[Symbol.asyncDispose]();
+		}
+	});
+}
+
+test('username cert-gate: resolve/search remain open under gate', async () => {
+	await using gate = await setupGatedUsernameServer(KeetaNet.lib.Account.generateRandomSeed());
+
+	const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const provider = await gate.makeProvider(noCertAccount);
+
+	const resolved = asNonNull(await provider.resolve(gate.reserved.username));
+	expect(compareResolveResult(resolved, gate.reserved)).toBe(true);
+
+	const searchResult = asNonNull(await provider.search({ search: gate.reserved.username }));
+	expect(searchResult.results.length).toBe(1);
+}, 20_000);
+
+test('username cert-gate: claim without published cert is rejected (401 missing)', async () => {
+	await using gate = await setupGatedUsernameServer(KeetaNet.lib.Account.generateRandomSeed());
+
+	const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const provider = await gate.makeProvider(noCertAccount);
+	await expect(provider.claimUsername(formatGloballyIdentifiableUsername('alice', gate.providerID)))
+		.rejects.toSatisfy(function(error: unknown) {
+			return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'missing' && error.statusCode === 401);
+		});
+}, 20_000);
+
+test('username cert-gate: claim with cert outside trust set is rejected (403 untrusted)', async () => {
+	await using gate = await setupGatedUsernameServer(KeetaNet.lib.Account.generateRandomSeed());
+
+	const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { leaf: untrustedLeaf } = await buildChain({
+		rootIssuer: otherAccount,
+		leafSubject: otherAccount
+	});
+
+	const otherUserClient = new KeetaNet.UserClient({
+		client: gate.client.client,
+		signer: otherAccount,
+		usePublishAid: false,
+		network: gate.client.network,
+		networkAlias: 'test'
+	});
+	await otherUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, untrustedLeaf, null);
+
+	const provider = await gate.makeProvider(otherAccount);
+	await expect(provider.claimUsername(formatGloballyIdentifiableUsername('bob', gate.providerID)))
+		.rejects.toSatisfy(function(error: unknown) {
+			return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
+		});
 }, 20_000);

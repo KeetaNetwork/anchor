@@ -27,6 +27,8 @@ import type {
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
+import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -92,7 +94,7 @@ type KeetaFXAnchorOperations = {
 	[operation in keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations']]: (params?: { [key: string]: string; }) => URL;
 };
 
-type KeetaFXServiceInfo = {
+interface KeetaFXServiceInfo extends SharedAnchorMetadataLegalExtension {
 	operations: {
 		[operation in keyof KeetaFXAnchorOperations]: Promise<KeetaFXAnchorOperations[operation]>;
 	},
@@ -105,7 +107,13 @@ type GetEndpointsResult = {
 
 const KeetaFXAnchorClientAccessToken = Symbol('KeetaFXAnchorClientAccessToken');
 
-async function getEndpoints(resolver: Resolver, request: Partial<Pick<ConversionInputCanonical, 'from' | 'to' | 'affinity'>> & Pick<GetProvidersOptions, 'requiredOperations'>, _ignored_account: InstanceType<typeof KeetaNetLib.Account>, sharedCriteria?: SharedLookupCriteria): Promise<GetEndpointsResult | null> {
+async function getEndpoints(
+	resolver: Resolver,
+	request: Partial<Pick<ConversionInputCanonical, 'from' | 'to' | 'affinity'>> & Pick<GetProvidersOptions, 'requiredOperations'>,
+	_ignored_account: InstanceType<typeof KeetaNetLib.Account>,
+	sharedCriteria?: SharedLookupCriteria,
+	options?: { logger?: Logger | undefined; }
+): Promise<GetEndpointsResult | null> {
 	const criteria: ServiceSearchCriteria<'fx'> = {};
 	if (request.from !== undefined) {
 		criteria.inputCurrencyCode = request.from.publicKeyString.get();
@@ -186,6 +194,7 @@ async function getEndpoints(resolver: Resolver, request: Partial<Pick<Conversion
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			id as unknown as ProviderID,
 			{
+				...(await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger: options?.logger })),
 				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 				operations: operationsFunctions as KeetaFXServiceInfo['operations'],
 				from: allFrom
@@ -218,13 +227,14 @@ class KeetaFXAnchorBase {
 	}
 }
 
-class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
+export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly serviceInfo: KeetaFXServiceInfo;
 	readonly providerID: ProviderID;
 	readonly conversion: ConversionInputCanonical;
+	readonly options: Pick<AccountOptions, 'account'> | undefined;
 	private readonly parent: KeetaFXAnchorClient;
 
-	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient) {
+	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient, options?: Pick<AccountOptions, 'account'>) {
 		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
 		super(parentPrivate);
 
@@ -232,6 +242,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.providerID = providerID;
 		this.conversion = conversion;
 		this.parent = parent;
+		this.options = options;
 	}
 
 	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {
@@ -433,7 +444,7 @@ class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			/* Construct the required operations for the swap request */
-			const builder = this.client.initBuilder();
+			const builder = this.client.initBuilder(this.options);
 
 			if ('quote' in input) {
 				/* If cost is required then send the required amount as well */
@@ -747,7 +758,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 		const conversion = await this.canonicalizeConversionTokens(input);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria, { logger: this.logger });
 		if (providerEndpoints === null) {
 			return(null);
 		}
@@ -782,13 +793,13 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	async getBaseProvidersForConversion(request: ConversionInput, options: GetProvidersOptions = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorProviderBase[] | null> {
 		const conversion = await this.canonicalizeConversionInput(request);
 		const account = options.account ?? this.#account;
-		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria);
+		const providerEndpoints = await getEndpoints(this.resolver, conversion, account, sharedCriteria, { logger: this.logger });
 		if (providerEndpoints === null) {
 			return(null);
 		}
 
 		const providers = typedFxServiceEntries(providerEndpoints).map(([providerID, serviceInfo]) => {
-			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this));
+			return(new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this, options));
 		});
 
 		return(providers);
@@ -892,6 +903,10 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 		for (const quoteOrEstimate of quotesAndEstimates) {
 			if (!quoteOrEstimate.quote) {
+				if (quoteOrEstimate.error && !FXErrors.QuoteIssuanceDisabled.isInstance(quoteOrEstimate.error)) {
+					this.logger?.debug(`Failed to get quote from provider ${String(quoteOrEstimate.provider.providerID)}:`, quoteOrEstimate.error);
+				}
+
 				continue;
 			}
 
@@ -959,6 +974,25 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}));
 
 		return(retval);
+	}
+
+	async getLegalDisclaimersById(providerID: string): Promise<NonNullable<AnchorMetadataLegalField['disclaimers']> | null>{
+		const endpoints = await getEndpoints(this.resolver, {}, this.#account, { providerIDs: [providerID] }, { logger: this.logger });
+		if (endpoints === null) {
+			return(null);
+		}
+
+		const serviceEntry = typedFxServiceEntries(endpoints)[0];
+		if (!serviceEntry) {
+			return(null);
+		}
+
+		const disclaimers = serviceEntry[1].legal?.disclaimers;
+		if (!disclaimers || disclaimers.length === 0) {
+			return(null)
+		}
+
+		return(disclaimers);
 	}
 
 	/** @internal */

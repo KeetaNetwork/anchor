@@ -1,6 +1,98 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import * as Certificates from '../../certificates.js';
 
+type CertBuilderParams = NonNullable<ConstructorParameters<typeof Certificates.Certificate.Builder>[0]>;
+type CertBuilderRequired = Required<CertBuilderParams>;
+
+/**
+ * Build a single certificate.
+ */
+export async function buildCert(opts: {
+	issuer: CertBuilderRequired['issuer'];
+	subject: CertBuilderRequired['subject'];
+	issuerDN?: CertBuilderRequired['issuerDN'];
+	serial: CertBuilderRequired['serial'];
+	validForMs: number;
+	isCA?: CertBuilderRequired['isCA'];
+}): Promise<Certificates.Certificate> {
+	const now = Date.now();
+	const params: CertBuilderParams = {
+		issuer: opts.issuer,
+		subject: opts.subject,
+		serial: opts.serial,
+		validFrom: new Date(now - 60_000),
+		validTo: new Date(now + opts.validForMs)
+	};
+	if (opts.issuerDN !== undefined) {
+		params.issuerDN = opts.issuerDN;
+	}
+	if (opts.isCA !== undefined) {
+		params.isCA = opts.isCA;
+	}
+
+	return(await new Certificates.Certificate.Builder(params).build());
+}
+
+interface BuildChainBaseOpts {
+	rootIssuer: CertBuilderRequired['issuer'];
+	leafSubject: CertBuilderRequired['subject'];
+}
+interface BuildChainWithIntermediateOpts extends BuildChainBaseOpts {
+	intermediateIssuer: CertBuilderRequired['issuer'];
+}
+interface BuildChainResult {
+	root: Certificates.Certificate;
+	leaf: Certificates.Certificate;
+}
+interface BuildChainWithIntermediateResult extends BuildChainResult {
+	intermediate: Certificates.Certificate;
+}
+
+/**
+ * Mint a self-signed root, an optional intermediate CA, and a leaf in one
+ * shot. Serials are 1/2/3 and validities are 365d/180d/1d respectively.
+ */
+export async function buildChain(opts: BuildChainBaseOpts): Promise<BuildChainResult>;
+export async function buildChain(opts: BuildChainWithIntermediateOpts): Promise<BuildChainWithIntermediateResult>;
+export async function buildChain(opts: BuildChainBaseOpts | BuildChainWithIntermediateOpts): Promise<BuildChainResult | BuildChainWithIntermediateResult> {
+	const oneDayMs = 1000 * 60 * 60 * 24;
+
+	const root = await buildCert({
+		issuer: opts.rootIssuer,
+		subject: opts.rootIssuer,
+		serial: 1,
+		validForMs: oneDayMs * 365
+	});
+
+	if ('intermediateIssuer' in opts) {
+		const intermediate = await buildCert({
+			issuer: opts.rootIssuer,
+			subject: opts.intermediateIssuer,
+			issuerDN: root.subjectDN,
+			serial: 2,
+			validForMs: oneDayMs * 180,
+			isCA: true
+		});
+		const leaf = await buildCert({
+			issuer: opts.intermediateIssuer,
+			subject: opts.leafSubject,
+			issuerDN: intermediate.subjectDN,
+			serial: 3,
+			validForMs: oneDayMs
+		});
+		return({ root, intermediate, leaf });
+	}
+
+	const leaf = await buildCert({
+		issuer: opts.rootIssuer,
+		subject: opts.leafSubject,
+		issuerDN: root.subjectDN,
+		serial: 2,
+		validForMs: oneDayMs
+	});
+	return({ root, leaf });
+}
+
 type AccountKeyAlgorithm = InstanceType<typeof KeetaNetClient.lib.Account>['keyType'];
 type KeetaNetAccount = ReturnType<typeof KeetaNetClient.lib.Account.fromSeed<AccountKeyAlgorithm>>;
 
@@ -112,7 +204,7 @@ export async function createTestCertificate(options: CreateTestCertificateOption
 				const sensitiveAttribute = await Certificates.SensitiveAttribute.create(subjectAccountNoPrivate, name, value);
 				builder.setSensitiveAttribute(name, sensitiveAttribute);
 			} else {
-				builder.setAttribute(name, value);
+				builder.setAttribute(name, false, value);
 			}
 		}
 	}

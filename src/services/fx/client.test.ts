@@ -16,6 +16,7 @@ import type { Routes } from '../../lib/http-server/index.js';
 import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
 import type { GetPricesArgs } from './client.js';
+import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -47,6 +48,15 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 	}
 	return(exchangeStatus);
 }
+
+const testingLegalField: SharedAnchorMetadataLegalExtension = {
+	legal: {
+		disclaimers: [
+			{ purpose: 'general', content: { type: 'plaintext', content: 'Test disclaimer' }},
+			{ purpose: 'general', content: { type: 'markdown', content: 'Test disclaimer' }}
+		]
+	}
+};
 
 for (const useDeprecated of [false, true]) {
 	let addName = '';
@@ -105,6 +115,8 @@ for (const useDeprecated of [false, true]) {
 			await client.modTokenSupplyAndBalance(initialLiquidityProviderEURBalancePerLiquidityProvider, testCurrencyEUR, { account: liquidityProvider });
 			const permissionsPublish = await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyEUR });
 			expect(permissionsPublish.publish).toBe(true);
+			const permissionsPublishUSD = await client.updatePermissions(liquidityProvider, new KeetaNet.lib.Permissions(['ACCESS']), undefined, undefined, { account: testCurrencyUSD });
+			expect(permissionsPublishUSD.publish).toBe(true);
 
 			const initialLiquidityProviderBalances = await client.allBalances({ account: liquidityProvider });
 			expect(toJSONSerializable(initialLiquidityProviderBalances)).toEqual(toJSONSerializable([{ token: testCurrencyEUR, balance: initialLiquidityProviderEURBalancePerLiquidityProvider }]));
@@ -161,6 +173,21 @@ for (const useDeprecated of [false, true]) {
 				autoRun: false
 			},
 			fx: {
+				...testingLegalField,
+				from: [
+					{
+						currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+						to: [testCurrencyEUR.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()]
+					},
+					{
+						currencyCodes: [testCurrencyEUR.publicKeyString.get()],
+						to: [testCurrencyUSD.publicKeyString.get()]
+					},
+					{
+						currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+						to: [testCurrencyBTC.publicKeyString.get()]
+					}
+				],
 				getConversionRateAndFee: async function(request) {
 					let rate = 0.88;
 					if (request.affinity === 'to') {
@@ -214,28 +241,9 @@ for (const useDeprecated of [false, true]) {
 								getExchangeStatus: 'https://example.com/createVerification.json'
 							}
 						},
-						Test: {
-							from: [
-								{
-									currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-									to: [testCurrencyEUR.publicKeyString.get(), testCurrencyUSD.publicKeyString.get()]
-								},
-								{
-									currencyCodes: [testCurrencyEUR.publicKeyString.get()],
-									to: [testCurrencyUSD.publicKeyString.get()]
-								},
-								{
-									currencyCodes: [testCurrencyUSD.publicKeyString.get()],
-									to: [testCurrencyBTC.publicKeyString.get()]
-								}
-							],
-							operations: {
-								getEstimate: `${serverURL}/api/getEstimate`,
-								getQuote: `${serverURL}/api/getQuote`,
-								createExchange: `${serverURL}/api/createExchange`,
-								getExchangeStatus: `${serverURL}/api/getExchangeStatus/{id}`
-							}
-						},
+						// XXX:TODO Figure out why this type is not assignable to ServiceMetadataExternalizable
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions
+						Test: await server.serviceMetadata() as any,
 						Test2: {
 							from: [
 								{
@@ -407,6 +415,26 @@ for (const useDeprecated of [false, true]) {
 			root: account,
 			logger: logger
 		});
+
+		{
+			// Ensure legal field is properly exposed on client metadata
+			const providers = await fxClient.getBaseProvidersForConversion({
+				from: 'USD',
+				to: 'EUR',
+				amount: 100n,
+				affinity: 'from'
+			}, undefined, { providerIDs: [ 'Test' ] });
+
+			expect(providers?.length).toEqual(1);
+			expect(providers?.[0]?.serviceInfo.legal).toEqual(testingLegalField.legal);
+
+			const disclaimersFromClient = await fxClient.getLegalDisclaimersById('Test');
+			expect(disclaimersFromClient).toEqual(testingLegalField.legal?.disclaimers)
+			expect(disclaimersFromClient).toEqual(providers?.[0]?.serviceInfo.legal?.disclaimers)
+
+			const disclaimersFromClientFromTest2 = await fxClient.getLegalDisclaimersById('Test2');
+			expect(disclaimersFromClientFromTest2).toEqual(null)
+		}
 
 		/* Get Estimate from Currency Codes */
 		const requestCurrencyCodes: ConversionInput = { from: 'USD', to: 'EUR', amount: 100n, affinity: 'from' };
@@ -670,6 +698,7 @@ for (const useDeprecated of [false, true]) {
 		}
 	}, 30_000);
 }
+
 
 test('createExchange handles missing status field', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
@@ -1383,8 +1412,66 @@ test('FX Server Estimate to Exchange Test', async function() {
 				expect(sendTokenBalancePre - sendTokenBalancePost).toBe(testCase.expectedChange.sendToken);
 			}
 		}
+
+		{
+			/** Exchanges can be completed using funds from storage accounts */
+			const { account: storageAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+
+			await client.setInfo({
+				name: '',
+				description: 'Storage account with permissions from user account',
+				metadata: '',
+				defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT'])
+			}, { account: storageAccount });
+
+			const request = { from: testCurrencyUSD, to: testCurrencyEUR, amount: 1000n, affinity: 'from' } as const;
+			const quote = { cost: { token: testCurrencyUSD, amount: 0n }, convertedAmount: 1001n }
+
+			serverDoesNotRequireQuoteReturnValue.convertedAmount = quote.convertedAmount;
+			serverDoesNotRequireQuoteReturnValue.convertedAmountBound = quote.convertedAmount;
+			serverDoesNotRequireQuoteReturnValue.cost = quote.cost;
+
+			await client.send(storageAccount, 1000n, testCurrencyUSD);
+			await client.send(storageAccount, 10n, client.baseToken);
+
+			const estimates = await fxClient.getEstimates(
+				request,
+				{ account: storageAccount },
+				{ providerIDs: ['TestDoesNotRequireDoesNotIssueQuote'] }
+			);
+
+			const singleEstimate = estimates?.[0];
+			if (singleEstimate === undefined) {
+				throw(new Error('Could not get estimate from TestDoesNotRequireDoesNotIssueQuote'));
+			}
+			if (singleEstimate.estimate.canPerformExchange === false || singleEstimate.estimate.requiresQuote !== false) {
+				throw(new Error('Estimate should not require quote and should be able to perform exchange'));
+			}
+
+			await client.send(singleEstimate.estimate.account, 10000n, testCurrencyEUR);
+
+			const userFromTokenBalancePre = await client.balance(request.from);
+			const userToTokenBalancePre = await client.balance(request.to);
+			const storageFromTokenBalancePre = await client.balance(request.from, { account: storageAccount });
+			const storageToTokenBalancePre = await client.balance(request.to, { account: storageAccount });
+
+			const exchange = await singleEstimate.createExchange();
+			const completedStatus = await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
+			expect(completedStatus.status).toBe('completed');
+
+			const userFromTokenBalancePost = await client.balance(request.from);
+			const userToTokenBalancePost = await client.balance(request.to);
+			const storageFromTokenBalancePost = await client.balance(request.from, { account: storageAccount });
+			const storageToTokenBalancePost = await client.balance(request.to, { account: storageAccount });
+
+			expect(storageFromTokenBalancePre - storageFromTokenBalancePost).toBe(request.amount);
+			expect(storageToTokenBalancePost - storageToTokenBalancePre).toBe(quote.convertedAmount);
+
+			expect(userFromTokenBalancePre).toBe(userFromTokenBalancePost);
+			expect(userToTokenBalancePre).toBe(userToTokenBalancePost);
+		}
 	}
-});
+}, 10_000);
 
 test('FX Server Pricing test', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);

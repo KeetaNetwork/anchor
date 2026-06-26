@@ -2,11 +2,11 @@ import type { Client } from "@keetanetwork/keetanet-client";
 import type { Logger } from "./log/index.js";
 import type { Block, BlockHash } from "@keetanetwork/keetanet-client/lib/block/index.js";
 import type { BlockOperations } from "@keetanetwork/keetanet-client/lib/block/operations.js";
-import type { VoteBlockHash } from "@keetanetwork/keetanet-client/lib/vote.js";
+import type { VoteBlockHash, VoteStaple } from "@keetanetwork/keetanet-client/lib/vote.js";
 import { KeetaAnchorQueueRunner } from "./queue/index.js";
 import type { KeetaAnchorQueueEntryExtra, KeetaAnchorQueueRequestID } from "./queue/index.js";
 import type { JSONSerializable } from "./utils/json.js";
-import { KeetaNet } from "../client/index.js";
+import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { ConvertStringToRequestID } from "./queue/internal.js";
 import type { KeetaAnchorQueueRunOptions } from "./queue/common.js";
 
@@ -18,6 +18,7 @@ interface BlockListenerConfig {
 
 interface BlockListenerContext {
 	block: Block;
+	voteStaple: VoteStaple;
 }
 
 interface NetworkListenerArguments {
@@ -55,13 +56,13 @@ export class BlockListener {
 		}
 	}
 
-	async #processBlockListeners(block: Block) {
+	async #processBlockListeners(block: Block, voteStaple: VoteStaple) {
 		let listenersHaveWork = false;
 
 		const promises = [];
 		for (const listener of this.#blockListeners) {
 			promises.push(this.#runWithLog('block callback', async function() {
-				const response = await listener.callback({ block });
+				const response = await listener.callback({ block, voteStaple });
 				if (response.requiresWork) {
 					listenersHaveWork = true;
 				}
@@ -128,7 +129,7 @@ export class BlockListener {
 					}
 
 					for (const block of voteStaple.blocks) {
-						processBlocksPromises.push(this.#processBlockListeners(block));
+						processBlocksPromises.push(this.#processBlockListeners(block, voteStaple));
 					}
 				}
 
@@ -215,8 +216,8 @@ abstract class BaseBlockOperationQueueRunner<
 		}
 
 		const addedListener = this.#listener.on('block', {
-			callback: async ({ block }) => {
-				return({ requiresWork: await this.onBlockSeen(block) });
+			callback: async ({ block, voteStaple }) => {
+				return({ requiresWork: await this.onBlockSeen(block, voteStaple) });
 			}
 		});
 
@@ -235,7 +236,7 @@ abstract class BaseBlockOperationQueueRunner<
 
 	}
 
-	protected abstract onBlockSeen(block: Block): Promise<boolean>;
+	protected abstract onBlockSeen(block: Block, voteStaple: VoteStaple): Promise<boolean>;
 
 	protected decodeResponse(response: ResultSerialized): Result | null {
 		if (response === null) {
@@ -300,7 +301,7 @@ abstract class BaseBlockOperationQueueRunner<
 }
 
 export abstract class BlockQueueRunner<UserResult = null, QueueResult extends JSONSerializable = null> extends BaseBlockOperationQueueRunner<BlockQueueRunnerRequest, UserResult, BlockQueueRunnerRequestSerialized, QueueResult> {
-	protected abstract filterBlock(block: Block): (boolean | Promise<boolean>);
+	protected abstract filterBlock(block: Block, context: { voteStaple: VoteStaple; }): (boolean | Promise<boolean>);
 
 	protected decodeRequest(request: BlockQueueRunnerRequestSerialized): BlockQueueRunnerRequest {
 		return({ blockHash: new KeetaNet.lib.Block.Hash(request.blockHash) });
@@ -310,8 +311,8 @@ export abstract class BlockQueueRunner<UserResult = null, QueueResult extends JS
 		return({ blockHash: request.blockHash.toString() });
 	}
 
-	protected async onBlockSeen(block: Block): Promise<boolean> {
-		const shouldInclude = await this.filterBlock(block);
+	protected async onBlockSeen(block: Block, voteStaple: VoteStaple): Promise<boolean> {
+		const shouldInclude = await this.filterBlock(block, { voteStaple });
 		if (shouldInclude) {
 			await this.add({ blockHash: block.hash });
 		}
@@ -333,7 +334,7 @@ type OperationQueueRunnerRequest = { blockHash: BlockHash; operationIndex: numbe
 type OperationQueueRunnerRequestSerialized = { blockHash: string; operationIndex: number; };
 
 export abstract class OperationQueueRunner<UserResult = null, QueueResult extends JSONSerializable = null> extends BaseBlockOperationQueueRunner<OperationQueueRunnerRequest, UserResult, OperationQueueRunnerRequestSerialized, QueueResult> {
-	protected abstract filterOperation(operation: BlockOperations, context: { block: Block; operationIndex: number; }): (boolean | Promise<boolean>);
+	protected abstract filterOperation(operation: BlockOperations, context: { voteStaple: VoteStaple;  block: Block; operationIndex: number; }): (boolean | Promise<boolean>);
 
 	protected decodeRequest(request: OperationQueueRunnerRequestSerialized): OperationQueueRunnerRequest {
 		return({ blockHash: new KeetaNet.lib.Block.Hash(request.blockHash), operationIndex: request.operationIndex });
@@ -343,7 +344,7 @@ export abstract class OperationQueueRunner<UserResult = null, QueueResult extend
 		return({ blockHash: request.blockHash.toString(), operationIndex: Number(request.operationIndex) });
 	}
 
-	protected async onBlockSeen(block: Block): Promise<boolean> {
+	protected async onBlockSeen(block: Block, voteStaple: VoteStaple): Promise<boolean> {
 		const addPromises = [];
 
 		let anyShouldInclude = false;
@@ -355,7 +356,7 @@ export abstract class OperationQueueRunner<UserResult = null, QueueResult extend
 			}
 
 			addPromises.push((async () => {
-				const shouldInclude = await this.filterOperation(operation, { block, operationIndex });
+				const shouldInclude = await this.filterOperation(operation, { voteStaple, block, operationIndex });
 				if (shouldInclude) {
 					anyShouldInclude = true;
 					await this.add({ blockHash: block.hash, operationIndex });

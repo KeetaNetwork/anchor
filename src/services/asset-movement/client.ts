@@ -13,10 +13,12 @@ import type {
 	ProviderSearchInput,
 	KeetaAssetMovementAnchorlistTransactionsRequest,
 	KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
-	AssetTransferInstructions,
 	KeetaAssetMovementAnchorCreatePersistentForwardingClientRequest,
 	KeetaAssetMovementAnchorInitiateTransferClientRequest,
 	KeetaNetAccount,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest,
+	KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequest,
 	KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
@@ -29,15 +31,32 @@ import type {
 	KeetaAssetMovementAnchorShareKYCResponse,
 	KeetaAssetMovementAnchorListPersistentForwardingClientRequest,
 	KeetaPersistentForwardingAddressDetails,
-	KeetaAssetMovementAnchorInitiateTransferResponse
+	KeetaAssetMovementAnchorInitiateTransferResponse,
+	KeetaAssetMovementAnchorExecuteTransferClientRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	AnchorTokenLocationMetadata,
+	AnchorCustomLocationMetadata,
+	ChainLocationString,
+	AssetLocationLike,
+	PerChainLocationMetadata,
+	KeetaAssetMovementAnchorSimulateTransferResponse,
+	KeetaAssetMovementAnchorSimulateTransferClientRequest,
+	KeetaAssetMovementAnchorInitiateTransferRequest,
+	KeetaAssetMovementAnchorSimulateTransferRequest
 } from './common.js';
 import {
-	assertKeetaSupportedAssetsMetadata,
+	assertKeetaSupportedAssetsMetadataItem,
 	convertAssetLocationToString,
 	convertAssetOrPairSearchInputToCanonical,
 	convertAssetSearchInputToCanonical,
+	getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
+	isKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
+	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
@@ -46,25 +65,39 @@ import {
 	getKeetaAssetMovementAnchorShareKYCRequestSigningData,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorCreatePersistentForwardingResponse,
+	isKeetaAssetMovementAnchorExecuteTransferResponse,
 	isKeetaAssetMovementAnchorGetExchangeStatusResponse,
 	isKeetaAssetMovementAnchorInitiateTransferResponse,
 	isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse,
 	isKeetaAssetMovementAnchorListPersistentForwardingResponse,
 	isKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
-	isKeetaAssetMovementAnchorShareKYCResponse
+	isKeetaAssetMovementAnchorShareKYCResponse,
+	toAssetLocationFromString,
+	isExternalChainAsset,
+	isAnchorTokenLocationMetadata,
+	isKeetaAssetMovementAnchorSimulateTransferResponse,
+	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData,
+	isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData,
+	isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	Errors
 } from './common.js';
 import type { Logger } from '../../lib/log/index.ts';
 import Resolver from "../../lib/resolver.js";
 import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadataEndpoint, SharedLookupCriteria } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import type { BrandedString } from '../../lib/utils/brand.js';
+import { brandString } from '../../lib/utils/brand.js';
 import { createAssertEquals } from 'typia';
 import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
-import { KeetaNet } from '../../client/index.js';
+import * as KeetaNet from '@keetanetwork/keetanet-client';
+import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
+import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
 
 // const PARANOID = true;
 
@@ -137,12 +170,20 @@ type KeetaAssetMovementAnchorOperations = {
 /**
  * The service information for a KYC Anchor service.
  */
-type KeetaAssetMovementServiceInfo = {
+interface KeetaAssetMovementServiceInfo extends SharedAnchorMetadataLegalExtension {
 	operations: {
 		[operation in keyof KeetaAssetMovementAnchorOperations]: Promise<KeetaAssetMovementAnchorOperations[operation]>;
 	};
 
 	supportedAssets: SupportedAssetsMetadata[];
+	locationMetadata?: AnchorCustomLocationMetadata;
+
+	/**
+	 * Public key string of the account the anchor signed its service entry
+	 * with. Present only for signed entries. This is the key external
+	 * envelopes referencing this anchor are filed under.
+	 */
+	account?: string;
 };
 
 /**
@@ -181,7 +222,143 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 
 	const serviceInfoPromises = Object.entries(response).map(async function([id, serviceInfo]): Promise<[ProviderID, KeetaAssetMovementServiceInfo]> {
 		const supportedAssetsMetadata = await Resolver.Metadata.fullyResolveValuizable(serviceInfo.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssetsMetadata(supportedAssetsMetadata);
+
+		if (!Array.isArray(supportedAssetsMetadata)) {
+			throw(new Error('Invalid supportedAssets metadata: expected an array'));
+		}
+
+		const supportedAssets = [];
+		for (const item of supportedAssetsMetadata) {
+			try {
+				supportedAssets.push(assertKeetaSupportedAssetsMetadataItem(item));
+			} catch (error) {
+				logger?.debug('getEndpoints', `Failed to resolve supportedAssets metadata item for provider ${id}`, error, item);
+			}
+		}
+
+		const locationMetadata = await (async () => {
+			let locationMetadataVal;
+			if (serviceInfo.locationMetadata) {
+				locationMetadataVal = await serviceInfo.locationMetadata('object');
+			}
+
+			if (!locationMetadataVal) {
+				return(undefined);
+			}
+
+			const chainsResult = await Promise.allSettled(Object.entries(locationMetadataVal).map(async ([ location, assetsValue ]) => {
+				const parsedLocation = toAssetLocationFromString(location);
+
+				if (parsedLocation.type !== 'chain') {
+					throw(new Error(`Invalid location type in AssetLocation string: ${parsedLocation.type}`));
+				}
+
+				if (parsedLocation.chain.type === 'keeta') {
+					throw(new Error('Keeta chain type is not supported in AssetLocation metadata')) ;
+				}
+
+				const chainType = parsedLocation.chain.type;
+
+				// We can assert here as we have validated the chain type in the parsing function
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				const locationString = convertAssetLocationToString(parsedLocation) as ChainLocationString<ExternalChainLocationType>;
+
+				let resolvedAssetsObject = undefined;
+				if (assetsValue) {
+					resolvedAssetsObject = await assetsValue('object');
+				}
+
+				if (!resolvedAssetsObject) {
+					return(null);
+				}
+
+				let assets: {
+					[AssetId in ExternalChainAsset<typeof chainType>]?: AnchorTokenLocationMetadata | undefined;
+				} | undefined;
+
+				if (resolvedAssetsObject.assets) {
+					const assetsValue = await resolvedAssetsObject.assets('object');
+					const resolvedAssets = await Promise.allSettled(Object.entries(assetsValue).map(async ([ assetId, assetMetadata ]) => {
+						if (!isExternalChainAsset(assetId, chainType)) {
+							throw(new Error(`Invalid asset ID for chain type ${chainType}: ${assetId}`));
+						}
+
+						let assetMetadataVal;
+						if (assetMetadata) {
+							assetMetadataVal = await assetMetadata('object');
+						}
+
+						if (!assetMetadataVal) {
+							return(null);
+						}
+
+						const anchorTokenLocationMetadata = {
+							displayName: await assetMetadataVal.displayName?.('string'),
+							ticker: await assetMetadataVal.ticker?.('string'),
+							logoURI: await assetMetadataVal.logoURI?.('string'),
+							decimalPlaces: await assetMetadataVal.decimalPlaces?.('primitive')
+						};
+
+						if (!isAnchorTokenLocationMetadata(anchorTokenLocationMetadata)) {
+							throw(new Error(`Invalid asset metadata for asset ID ${assetId} in chain type ${chainType}`));
+						}
+
+						return([ assetId, anchorTokenLocationMetadata ] as const);
+					}));
+
+					for (const result of resolvedAssets) {
+						if (result.status === 'rejected') {
+							logger?.debug('Failed to resolve asset metadata', result.reason);
+							continue;
+						}
+
+						if (!result.value) {
+							continue;
+						}
+
+						if (!assets) {
+							assets = {};
+						}
+
+
+						assets[result.value[0]] = result.value[1];
+					}
+				}
+
+				return([
+					locationString,
+					{
+						...(assets ? { assets } : {})
+					}
+				] as const)
+			}));
+
+			let chains: AnchorCustomLocationMetadata | undefined;
+			for (const result of chainsResult) {
+				if (result.status === 'rejected') {
+					logger?.debug('Failed to resolve location metadata', result.reason);
+					continue;
+				}
+
+				if (!result.value) {
+					continue;
+				}
+
+				if (!chains) {
+					chains = {};
+				}
+
+				// XXX:TODO Add comment
+				// @ts-ignore
+				chains[result.value[0]] = result.value[1];
+			}
+
+			if (!chains) {
+				return(undefined);
+			}
+
+			return(chains);
+		})();
 
 		const operations = await serviceInfo.operations('object');
 		const operationsFunctions: KeetaAssetMovementServiceInfo['operations'] = {};
@@ -235,13 +412,27 @@ async function getEndpoints(resolver: Resolver, request: ProviderSearchInput, sh
 			});
 		}
 
+		let anchorAccount: string | undefined;
+		if (serviceInfo.account !== undefined) {
+			anchorAccount = await serviceInfo.account('string');
+		}
+
+		const legalExtension = await resolveSharedAnchorMetadataLegalExtension(serviceInfo.legal, { logger });
+		const resolvedServiceInfo: KeetaAssetMovementServiceInfo = {
+			...legalExtension,
+			operations: operationsFunctions,
+			supportedAssets: supportedAssets
+		};
+		if (locationMetadata) {
+			resolvedServiceInfo.locationMetadata = locationMetadata;
+		}
+		if (anchorAccount !== undefined) {
+			resolvedServiceInfo.account = anchorAccount;
+		}
+
 		return([
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			id as unknown as ProviderID,
-			{
-				operations: operationsFunctions,
-				supportedAssets: supportedAssets
-			}
+			brandString<'AssetMovementProviderID'>(id),
+			resolvedServiceInfo
 		]);
 	});
 
@@ -265,18 +456,40 @@ class KeetaAssetMovementAnchorBase {
 	}
 }
 
-/**
- * Represents an in-progress Asset Movement request.
- */
-class KeetaAssetMovementTransfer {
-	private readonly provider: KeetaAssetMovementAnchorProvider;
-	private request: KeetaAssetMovementAnchorInitiateTransferClientRequest;
-	private transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>;
+type SimulationOrTransferResponse = ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse> | ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>;
 
-	constructor(provider: KeetaAssetMovementAnchorProvider, request: KeetaAssetMovementAnchorInitiateTransferClientRequest, transfer: ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>) {
+interface BaseKeetaAssetMovementTransferConstructorArguments<Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest, Transfer extends SimulationOrTransferResponse> {
+	provider: KeetaAssetMovementAnchorProvider;
+	request: Request;
+	transfer: Transfer;
+}
+
+abstract class BaseKeetaAssetMovementTransfer<Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest | KeetaAssetMovementAnchorSimulateTransferClientRequest, Transfer extends SimulationOrTransferResponse> {
+	readonly provider: KeetaAssetMovementAnchorProvider;
+	readonly request: Request;
+	readonly transfer: Transfer;
+
+	readonly abstract isSimulation: Request extends KeetaAssetMovementAnchorInitiateTransferClientRequest ? false : true;
+
+	constructor({ request, transfer, provider }: BaseKeetaAssetMovementTransferConstructorArguments<Request, Transfer>) {
 		this.provider = provider;
 		this.request = request;
 		this.transfer = transfer;
+	}
+
+	get instructions(): Transfer['instructionChoices'] {
+		return(this.transfer.instructionChoices);
+	}
+}
+
+/**
+ * Represents an in-progress Asset Movement request.
+ */
+class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorInitiateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
+	readonly isSimulation = false as const;
+
+	get transferID(): string {
+		return(this.transfer.id);
 	}
 
 	async getTransferStatus(): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
@@ -284,15 +497,36 @@ class KeetaAssetMovementTransfer {
 		return(await this.provider.getTransferStatus({ id: this.transfer.id, ...account }));
 	}
 
-	get transferId(): string {
-		return(this.transfer.id);
-	}
-
-	get instructions(): AssetTransferInstructions[] {
-		return(this.transfer.instructionChoices);
+	async executeTransfer(input: Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		const account = this.request.account ? { account: this.request.account } : undefined;
+		return(await this.provider.executeTransfer({ id: this.transfer.id, ...input, ...account }));
 	}
 }
 
+class KeetaAssetMovementSimulatedTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorSimulateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>> {
+	readonly isSimulation = true as const;
+
+	async createTransfer(overrides?: {
+		to: Partial<Pick<KeetaAssetMovementAnchorInitiateTransferClientRequest['to'], 'depositMessage' | 'recipient'>>;
+	}): Promise<KeetaAssetMovementTransfer> {
+		const to = {
+			...this.request.to,
+			...overrides?.to
+		};
+
+		if (!to.recipient) {
+			throw(new Error('Recipient is required to create a transfer from a simulation'));
+		}
+
+		return(await this.provider.initiateTransfer({
+			...this.request,
+			to: {
+				...to,
+				recipient: to.recipient
+			}
+		}));
+	}
+}
 
 interface AwaitPromiseURLOptions {
 	defaultPollIntervalMs?: number;
@@ -300,7 +534,7 @@ interface AwaitPromiseURLOptions {
 	abortSignal?: AbortSignal;
 }
 
-class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
+export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	private readonly parent: KeetaAssetMovementAnchorClient;
@@ -317,7 +551,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	async #getOperationData(operationName: keyof KeetaAssetMovementAnchorOperations, params?: { [key: string]: string; }) {
 		const endpoint = await this.serviceInfo.operations[operationName];
 		if (endpoint === undefined) {
-			throw(new Error(`Asset Movement service does not support ${operationName} operation`));
+			throw(new Errors.OperationNotSupported({}, `Asset Movement service does not support ${operationName} operation`));
 		}
 
 		if (endpoint.options.authentication.method !== 'keeta-account') {
@@ -328,6 +562,19 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			url: endpoint.url(params),
 			auth: endpoint.options.authentication
 		})
+	}
+
+	async isOperationSupported(operationName: keyof KeetaAssetMovementAnchorOperations): Promise<boolean> {
+		try {
+			await this.#getOperationData(operationName);
+			return(true);
+		} catch (error) {
+			if (error instanceof Errors.OperationNotSupported) {
+				return(false);
+			}
+
+			throw(error);
+		}
 	}
 
 	async #parseResponseError(data: unknown) {
@@ -444,36 +691,109 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON as Extract<Response, { ok: true }>);
 	}
 
-	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
+	async #initiateOrSimulateTransfer(simulate: true, request: KeetaAssetMovementAnchorSimulateTransferClientRequest): Promise<KeetaAssetMovementSimulatedTransfer>;
+	async #initiateOrSimulateTransfer(simulate: false, request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer>;
+	async #initiateOrSimulateTransfer(simulate: boolean, request: KeetaAssetMovementAnchorSimulateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer | KeetaAssetMovementSimulatedTransfer> {
 		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
 
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
-			endpoint: 'initiateTransfer',
+			endpoint: simulate ? 'simulateTransfer' : 'initiateTransfer',
 			account: request.account,
-			serializeRequest(body) {
+			serializeRequest(body): KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest {
+				const { account, ...rest } = body;
 				return({
-					...body,
+					...rest,
 					value: String(body.value),
 					from: {
-						location: convertAssetLocationToString(body.from.location)
+						location: convertAssetLocationToString(body.from.location),
+						...(request.from.source ? { source: request.from.source } : {})
 					},
 					to: {
 						location: convertAssetLocationToString(body.to.location),
-						recipient: body.to.recipient
+						...(body.to.recipient ? { recipient: body.to.recipient } : {}),
+						...(body.to.depositMessage ? { depositMessage: body.to.depositMessage } : {})
 					},
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
 				})
 			},
 			body: request,
-			getSignedData: getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
-			isResponse: isKeetaAssetMovementAnchorInitiateTransferResponse
+			getSignedData: simulate ? getKeetaAssetMovementAnchorSimulateTransferRequestSigningData : getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+			isResponse(data): data is KeetaAssetMovementAnchorSimulateTransferResponse | KeetaAssetMovementAnchorInitiateTransferResponse {
+				if (simulate) {
+					return(isKeetaAssetMovementAnchorSimulateTransferResponse(data));
+				} else {
+					return(isKeetaAssetMovementAnchorInitiateTransferResponse(data));
+				}
+			}
 		});
 
-		this.logger?.debug(`asset movement request successful, request ID ${requestInformationJSON.id}`);
 
-		return(new KeetaAssetMovementTransfer(this, request, requestInformationJSON));
+		if (simulate) {
+			this.logger?.debug(`asset movement simulation request successful`);
+
+			return(new KeetaAssetMovementSimulatedTransfer({
+				provider: this,
+				request,
+				transfer: requestInformationJSON
+			}));
+		} else {
+			if (!('id' in requestInformationJSON)) {
+				throw(new Error('expected provider to return id but did not'));
+			}
+
+			this.logger?.debug(`asset movement transfer request successful, request ID ${requestInformationJSON.id}`);
+
+			if (!('recipient' in request.to)) {
+				throw(new Error('Recipient information is required in the request to create a transfer'));
+			}
+
+			return(new KeetaAssetMovementTransfer({
+				provider: this,
+				request: {
+					...request,
+					to: {
+						...request.to,
+						recipient: request.to.recipient
+					}
+				},
+				transfer: requestInformationJSON
+			}));
+		}
+	}
+
+	async initiateTransfer(request: KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer> {
+		return(await this.#initiateOrSimulateTransfer(false, request));
+	}
+
+	async simulateTransfer(request: KeetaAssetMovementAnchorSimulateTransferClientRequest): Promise<KeetaAssetMovementSimulatedTransfer> {
+		return(await this.#initiateOrSimulateTransfer(true, request));
+	}
+
+	async executeTransfer(request: KeetaAssetMovementAnchorExecuteTransferClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
+		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
+
+		const { id, ...rest } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorGetTransferStatusResponse,
+			Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>
+		>({
+			method: 'POST',
+			endpoint: 'executeTransfer',
+			params: { id: request.id },
+			account: request.account,
+			body: rest,
+			getSignedData: (body: Omit<KeetaAssetMovementAnchorExecuteTransferClientRequest, 'id'>) => {
+				return(getKeetaAssetMovementAnchorExecuteTransferRequestSigningData({ id, ...body }));
+			},
+			isResponse: isKeetaAssetMovementAnchorExecuteTransferResponse
+		});
+
+		this.logger?.debug(`asset movement execute transfer successful, transaction ID ${requestInformationJSON.transaction.id}`);
+
+		return(requestInformationJSON);
 	}
 
 	async getTransferStatus(request: KeetaAssetMovementAnchorGetTransferStatusClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>> {
@@ -491,6 +811,86 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		return(requestInformationJSON);
 	}
 
+	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {
+		this.logger?.debug(`Deactivating persistent forwarding template ${request.id} for provider ID: ${String(this.providerID)}`);
+
+		const { id, account } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+			{ [key: string]: never },
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest
+		>({
+			method: 'POST',
+			endpoint: 'deactivatePersistentForwardingTemplate',
+			params: { id },
+			account,
+			body: {},
+			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData({ id }),
+			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse
+		});
+
+		this.logger?.debug(`deactivate persistent forwarding template successful, template ID ${id}`);
+
+		return(requestInformationJSON);
+	}
+
+	async deactivatePersistentForwardingAddress(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse>> {
+		this.logger?.debug(`Deactivating persistent forwarding address ${request.id} for provider ID: ${String(this.providerID)}`);
+
+		const { id, account } = request;
+
+		const requestInformationJSON = await this.#makeRequest<
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+			{ [key: string]: never },
+			KeetaAssetMovementAnchorDeactivatePersistentForwardingRequest
+		>({
+			method: 'POST',
+			endpoint: 'deactivatePersistentForwarding',
+			params: { id },
+			account,
+			body: {},
+			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData({ id }),
+			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse
+		});
+
+		this.logger?.debug(`deactivate persistent forwarding address successful, address ID ${id}`);
+
+		return(requestInformationJSON);
+	}
+
+	async initiatePersistentForwardingTemplate(request: KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse>> {
+		this.logger?.debug(`Initiating persistent forwarding template for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
+
+		const result = await this.#makeRequest<
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse,
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateClientRequest,
+			KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequest
+		>({
+			method: 'POST',
+			endpoint: 'initiatePersistentForwardingTemplate',
+			account: request.account,
+			serializeRequest(body) {
+				const { account, ...rest } = body;
+				return({
+					...rest,
+					location: convertAssetLocationToString(body.location),
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+				});
+			},
+			body: request,
+			getSignedData: getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
+			isResponse: isKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse
+		});
+
+		this.logger?.debug(`initiate persistent forwarding template successful, session ID: ${result.id}`);
+
+		return(result);
+	}
+
 	async createPersistentForwardingTemplate(request: KeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateClientRequest): Promise<ExtractOk<KeetaAssetMovementAnchorCreatePersistentForwardingResponse>> {
 		this.logger?.debug(`Creating persistent forwarding for provider ID: ${String(this.providerID)}, request: ${JSON.stringify(request)}`);
 
@@ -503,12 +903,25 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			endpoint: 'createPersistentForwardingTemplate',
 			account: request.account,
 			serializeRequest(body) {
-				return({
-					...body,
-					location: convertAssetLocationToString(body.location),
-					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
-				})
+				const { account, ...rest }	= body;
+
+				const sharedFields = {
+					...rest,
+					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
+				}
+
+				if ('data' in body) {
+					return({
+						...sharedFields,
+						data: body.data
+					});
+				} else {
+					return({
+						...sharedFields,
+						location: convertAssetLocationToString(body.location),
+						asset: convertAssetOrPairSearchInputToCanonical(body.asset)
+					});
+				}
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
@@ -535,7 +948,9 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				const base = {
 					sourceLocation: convertAssetLocationToString(body.sourceLocation),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get()
+					account: body.account?.assertAccount().publicKeyString.get(),
+					...(body.incomingRail ? { incomingRail: body.incomingRail } : {}),
+					...(body.outgoingRail ? { outgoingRail: body.outgoingRail } : {})
 				} as const;
 
 				if ('persistentAddressTemplateId' in body) {
@@ -571,7 +986,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 			body: request,
 			serializeRequest(body) {
 				return({
-					account: body.account?.assertAccount().publicKeyString.get(),
+					...(body.account ? { account: body.account.assertAccount().publicKeyString.get() } : {}),
 					asset: body.asset?.map(a => convertAssetSearchInputToCanonical(a)),
 					location: body.location?.map(l => convertAssetLocationToString(l))
 				});
@@ -653,7 +1068,11 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 						location: convertAssetLocationToString(body.to.location),
 						userAddress: body.to.userAddress,
 						asset: body.to.asset ? convertAssetSearchInputToCanonical(body.to.asset) : undefined
-					} : undefined
+					} : undefined,
+					transactions: body.transactions?.map(tx => ({
+						location: convertAssetLocationToString(tx.location),
+						transaction: tx.transaction
+					}))
 				});
 			},
 			body: request,
@@ -747,7 +1166,7 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 				return({
 					account: body.account.assertAccount().publicKeyString.get(),
 					attributes: attributes,
-					tosAgreement: body.tosAgreement
+					...(body.tosAgreement ? { tosAgreement: body.tosAgreement } : {})
 				});
 			},
 			body: request,
@@ -771,6 +1190,44 @@ class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 		}
 
 		this.logger?.debug(`done sharing KYC attributes`);
+	}
+
+	getAssetMetadataForLocation(location: AssetLocationLike, asset: ExternalChainAsset): AnchorTokenLocationMetadata | null {
+		const locationMetadata = this.serviceInfo.locationMetadata;
+		if (!locationMetadata) {
+			return(null);
+		}
+
+		const locationString = convertAssetLocationToString(location);
+
+		if (!(locationString in locationMetadata)) {
+			return(null);
+		}
+
+		// We can assert here as we have validated the key is included above
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const locationSpecificMetadata = (locationMetadata as { [key: string]: PerChainLocationMetadata })[locationString];
+
+		if (!locationSpecificMetadata?.assets || !(asset in locationSpecificMetadata.assets)) {
+			return(null);
+		}
+
+		const assetMetadata = locationSpecificMetadata.assets[asset];
+
+		if (!assetMetadata) {
+			return(null);
+		}
+
+		return(assetMetadata);
+	}
+
+	getLegalDisclaimers(): NonNullable<AnchorMetadataLegalField['disclaimers']> | null {
+		const disclaimers = this.serviceInfo.legal?.disclaimers;
+		if (!disclaimers) {
+			return(null);
+		}
+
+		return(disclaimers);
 	}
 }
 
@@ -819,12 +1276,31 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		return(providers);
 	}
 
-	async getProvidersForTransfer(request: ProviderSearchInput): Promise<KeetaAssetMovementAnchorProvider[] | null> {
-		return(await this.#lookup(request));
+	async getProvidersForTransfer(request: ProviderSearchInput, shared?: SharedLookupCriteria): Promise<KeetaAssetMovementAnchorProvider[] | null> {
+		return(await this.#lookup(request, shared));
 	}
 
 	async getProviderByID(providerID: string): Promise<KeetaAssetMovementAnchorProvider | null> {
 		const providers = await this.#lookup({}, { providerIDs: [providerID] });
+		return(providers?.[0] ?? null);
+	}
+
+	async getProviderLegalDisclaimersByID(providerID: string): Promise<Exclude<AnchorMetadataLegalField['disclaimers'], undefined> | null> {
+		const provider = await this.getProviderByID(providerID);
+		if (!provider) {
+			return(null);
+		}
+
+		const disclaimers = provider.serviceInfo.legal?.disclaimers;
+		if (!disclaimers) {
+			return(null);
+		}
+
+		return(disclaimers);
+	}
+
+	async getProviderByAccount(account: NonNullable<SharedLookupCriteria['accounts']>[number]): Promise<KeetaAssetMovementAnchorProvider | null> {
+		const providers = await this.#lookup({}, { accounts: [account] });
 		return(providers?.[0] ?? null);
 	}
 

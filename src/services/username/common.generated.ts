@@ -1,16 +1,12 @@
-import { createAssertEquals, createIs } from 'typia';
+import { createIs } from 'typia';
 import type {
-	KeetaUsernameAnchorClaimRequestJSON,
 	KeetaUsernameAnchorClaimResponseJSON,
-	KeetaUsernameAnchorReleaseRequestJSON,
 	KeetaUsernameAnchorReleaseResponseJSON,
 	KeetaUsernameAnchorSearchResponseJSON,
 	KeetaUsernameAnchorResolveResponseJSON
 } from './common.ts';
 import type { AccountPublicKeyString, IdentifierPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 
-export const assertKeetaUsernameAnchorClaimRequestJSON: ReturnType<typeof createAssertEquals<KeetaUsernameAnchorClaimRequestJSON>> = createAssertEquals<KeetaUsernameAnchorClaimRequestJSON>();
-export const assertKeetaUsernameAnchorReleaseRequestJSON: ReturnType<typeof createAssertEquals<KeetaUsernameAnchorReleaseRequestJSON>> = createAssertEquals<KeetaUsernameAnchorReleaseRequestJSON>();
 export const isKeetaUsernameAnchorResolveResponseJSON: (input: unknown) => input is KeetaUsernameAnchorResolveResponseJSON = createIs<KeetaUsernameAnchorResolveResponseJSON>();
 export const isKeetaUsernameAnchorClaimResponseJSON: (input: unknown) => input is KeetaUsernameAnchorClaimResponseJSON = createIs<KeetaUsernameAnchorClaimResponseJSON>();
 export const isKeetaUsernameAnchorReleaseResponseJSON: (input: unknown) => input is KeetaUsernameAnchorReleaseResponseJSON = createIs<KeetaUsernameAnchorReleaseResponseJSON>();
@@ -18,3 +14,11 @@ export const isKeetaUsernameAnchorSearchResponseJSON: (input: unknown) => input 
 
 type PublicKeyString = IdentifierPublicKeyString | AccountPublicKeyString;
 export const isKeetaNetPublicKeyString: (input: unknown) => input is PublicKeyString = createIs<PublicKeyString>();
+
+// Back-compat: server-only request validators were moved to common.server.generated.ts
+// to keep them out of client bundles. Re-exported here (named, tree-shakeable) so
+// existing './common.generated.js' imports keep resolving.
+export {
+	assertKeetaUsernameAnchorClaimRequestJSON,
+	assertKeetaUsernameAnchorReleaseRequestJSON
+} from './common.server.generated.js';

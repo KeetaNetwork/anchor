@@ -162,7 +162,7 @@ export default {
 			]
 		},
 		{
-			filename: 'src/services/asset-movement/lib/data/**/*.ts',
+			filename: [ 'src/services/asset-movement/lib/data/**/*.ts', 'src/services/asset-movement/common.ts' ],
 			words: [
 				'interac',
 				'airtel',
@@ -171,7 +171,20 @@ export default {
 				'nagad',
 				'naya',
 				'sada',
-				'venmo'
+				'venmo',
+				'duit',
+				'Burkina',
+				'Faso',
+				'Rica',
+				'STANBIC',
+				'ZANACO',
+				'nric'
+			]
+		},
+		{
+			filename: [ 'src/lib/chaining-graph.cli.ts' ],
+			words: [
+				'rankdir', 'fontname', 'darkorange', 'steelblue'
 			]
 		},
 	],
