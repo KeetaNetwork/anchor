@@ -1495,6 +1495,8 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 			} else {
 				assertNever(action);
 			}
+
+			throw(new Error('Unsupported action type'));
 		}));
 	}
 
