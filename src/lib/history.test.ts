@@ -1601,7 +1601,11 @@ test('iterate suppresses a swap delivery that funds a chained bridge, leaving on
 	const payInExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
 	const payIn = await seal(user, [ sendOp(anchor, source0, 1000n, payInExternal) ]);
 
-	const deliveryExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
+	const deliveryExternal = await new AnchorExternal.Builder()
+		.setAnchor(anchor, { transactionId: 'transfer-1' })
+		.withSigner(anchor)
+		.withBinding(KeetaNet.lib.Block.NO_PREVIOUS, 0)
+		.build();
 	const delivery = await seal(anchor, [ sendOp(user, mid, 999n, deliveryExternal) ]);
 
 	const bridgeExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-3' }).addInput(payIn.hash.toString(), 0).build();
