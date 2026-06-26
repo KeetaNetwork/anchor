@@ -1631,6 +1631,60 @@ test('iterate suppresses a swap delivery that funds a chained bridge, leaving on
 	expect(conversion?.refs.anchorTxIDs).toEqual(expect.arrayContaining([ 'transfer-1', 'transfer-3' ]));
 });
 
+test('iterate absorbs an unresolved delivery leg linked to the funding block', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const source0 = newToken(user, 0);
+	const mid = newToken(user, 1);
+
+	const swap = makeTransfer({
+		id: 'transfer-1',
+		status: 'COMPLETE',
+		asset: { from: source0.publicKeyString.get(), to: mid.publicKeyString.get() },
+		fromLocation: KEETA_LOCATION,
+		toLocation: KEETA_LOCATION,
+		fromValue: '1000',
+		toValue: '999'
+	});
+	const bridge = makeTransfer({
+		id: 'transfer-3',
+		status: 'COMPLETE',
+		asset: { from: mid.publicKeyString.get(), to: 'evm:0xc063' },
+		fromLocation: KEETA_LOCATION,
+		toLocation: EVM_LOCATION,
+		fromValue: '999',
+		toValue: '998'
+	});
+
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, swap);
+	status.registerByTxID(anchor, bridge);
+
+	const payInExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
+	const payIn = await seal(user, [ sendOp(anchor, source0, 1000n, payInExternal) ]);
+
+	const deliveryExternal = await new AnchorExternal.Builder()
+		.setAnchor(anchor, { transactionId: 'unresolved-delivery' })
+		.withSigner(anchor)
+		.withBinding(KeetaNet.lib.Block.NO_PREVIOUS, 0)
+		.addInput(payIn.hash.toString(), 0)
+		.build();
+
+	const delivery = await seal(anchor, [ sendOp(user, mid, 999n, deliveryExternal) ]);
+	const bridgeExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-3' }).addInput(payIn.hash.toString(), 0).build();
+	const bridgeSend = await seal(user, [ sendOp(anchor, mid, 999n, bridgeExternal) ]);
+
+	const history = new UserHistory({
+		history: pagedFoldCapableSource([ bridgeSend, delivery, payIn ]),
+		status: new AnchorTransactionStatus(status)
+	});
+
+	const transactions = await history.list(user);
+	expect(transactions).toHaveLength(1);
+	expect(transactions[0]?.type).toBe('bridge');
+	expect(transactions.some(transaction => transaction.refs.blockHashes.includes(delivery.hash.toString()))).toBe(false);
+});
+
 test('foldChains merges a two-hop linked chain into one conversion', function() {
 	const hop1 = makeSwap({ id: 'b1:0', blockHash: 'b1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenB', amount: 497n }, timestamp: '2026-01-01T00:00:00.000Z' });
 	const hop2 = makeSwap({ id: 'b2:0', blockHash: 'b2', send: { token: 'tokenB', amount: 497n }, receive: { token: 'tokenC', amount: 1481n }, inputBlockHashes: [ 'b1' ], timestamp: '2026-01-01T00:05:00.000Z' });

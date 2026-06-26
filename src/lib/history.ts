@@ -1352,19 +1352,48 @@ function markEmittedTransfers(transaction: LogicalTransaction, emitted: Set<stri
 }
 
 /**
+ * Whether a transaction is a settlement leg already accounted for by an
+ * earlier (newest-first) conversion.
+ */
+function isSettledLeg(transaction: LogicalTransaction, emittedBlocks: ReadonlySet<string>): boolean {
+	if (transaction.type !== 'receive') {
+		return(false);
+	}
+
+	const inputs = transaction.refs.inputs;
+	if (inputs === undefined || inputs.length === 0) {
+		return(false);
+	}
+
+	return(inputs.every(input => emittedBlocks.has(input.blockHash)));
+}
+
+/**
+ * Record the on-chain blocks a logical transaction (or folded conversion)
+ * already accounts for.
+ */
+function markEmittedBlocks(transaction: LogicalTransaction, emitted: Set<string>): void {
+	for (const blockHash of transaction.refs.blockHashes) {
+		emitted.add(blockHash);
+	}
+}
+
+/**
  * Drop logical transactions whose every settled transfer was already emitted by
  * an earlier (newest-first) entry, collapsing a transfer's multiple on-chain
  * legs into the single conversion that represents it.
  */
 function suppressSettledDuplicates(transactions: readonly LogicalTransaction[]): LogicalTransaction[] {
 	const emitted = new Set<string>();
+	const emittedBlocks = new Set<string>();
 	const result: LogicalTransaction[] = [];
 	for (const transaction of transactions) {
-		if (isSettledDuplicate(transaction, emitted)) {
+		if (isSettledDuplicate(transaction, emitted) || isSettledLeg(transaction, emittedBlocks)) {
 			continue;
 		}
 
 		markEmittedTransfers(transaction, emitted);
+		markEmittedBlocks(transaction, emittedBlocks);
 		result.push(transaction);
 	}
 
@@ -1536,13 +1565,13 @@ export class UserHistory {
 		const consumed = new Set<string>();
 
 		/*
-		 * Anchor transfer ids already emitted. A transfer with several on-chain
-		 * legs (a swap's pay-in and the anchor's delivery, say) surfaces newest
-		 * first as the folded conversion; the older legs that settle the same
-		 * transfer are then dropped as duplicates of what was already shown.
+		 * Anchor transfer ids already emitted.
 		 */
 		const emittedTransfers = new Set<string>();
-
+		/*
+		 * On-chain blocks already represented by an emitted conversion.
+		 */
+		const emittedBlocks = new Set<string>();
 		let cursor = resolved?.cursor;
 		let yielded = 0;
 		while (true) {
@@ -1564,11 +1593,12 @@ export class UserHistory {
 						out = await this.#foldForward(transaction, consumed, perspective, resolved, externalCache, readerCache);
 					}
 
-					if (isSettledDuplicate(out, emittedTransfers)) {
+					if (isSettledDuplicate(out, emittedTransfers) || isSettledLeg(out, emittedBlocks)) {
 						continue;
 					}
 
 					markEmittedTransfers(out, emittedTransfers);
+					markEmittedBlocks(out, emittedBlocks);
 
 					yield out;
 					yielded += 1;
