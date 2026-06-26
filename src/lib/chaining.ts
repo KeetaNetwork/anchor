@@ -363,20 +363,8 @@ class AnchorGraph {
 		});
 	}
 
-	// Cache canonical keys by side-object identity. Graph nodes are memoized
-	// (computeGraphNodes hands back the same objects), so repeat resolveAssets /
-	// listAssets calls on a graph reuse these instead of re-running the costly
-	// convertAssetSearchInputToCanonical (assertKeyType + publicKeyString.get())
-	// for token assets. Ad-hoc filter sides simply miss the cache harmlessly.
-	readonly #assetLocationKeyCache = new WeakMap<object, string>();
 	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-		const cached = this.#assetLocationKeyCache.get(side);
-		if (cached !== undefined) {
-			return(cached);
-		}
-		const key = `${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`;
-		this.#assetLocationKeyCache.set(side, key);
-		return(key);
+		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
 	};
 
 	async getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
