@@ -363,8 +363,20 @@ class AnchorGraph {
 		});
 	}
 
+	// Cache canonical keys by side-object identity. Graph nodes are memoized
+	// (computeGraphNodes hands back the same objects), so repeat resolveAssets /
+	// listAssets calls on a graph reuse these instead of re-running the costly
+	// convertAssetSearchInputToCanonical (assertKeyType + publicKeyString.get())
+	// for token assets. Ad-hoc filter sides simply miss the cache harmlessly.
+	readonly #assetLocationKeyCache = new WeakMap<object, string>();
 	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+		const cached = this.#assetLocationKeyCache.get(side);
+		if (cached !== undefined) {
+			return(cached);
+		}
+		const key = `${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`;
+		this.#assetLocationKeyCache.set(side, key);
+		return(key);
 	};
 
 	async getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
@@ -841,22 +853,47 @@ class AnchorGraph {
 
 		const nodes = await this.computeGraphNodes();
 
-		// Build forward (next) and backward (prev) adjacency in a single pass.
+		const fromAssetKeys = nodes.map(node => this.#assetLocationKey(node.from));
+		const toAssetKeys = nodes.map(node => this.#assetLocationKey(node.to));
 		const nodesWithAdj: { node: GraphNodeLike; next: number[]; prev: number[] }[] = nodes.map(node => ({ node, next: [], prev: [] }));
+
+		const fromKeys = nodes.map((node, i) => `${node.from.rail}:${fromAssetKeys[i]}`);
+		const toKeys = nodes.map((node, i) => `${node.to.rail}:${toAssetKeys[i]}`);
+
+		const nodesByFromKey = new Map<string, number[]>();
+		for (let j = 0; j < nodes.length; j++) {
+			const key = fromKeys[j];
+			if (key === undefined) {
+				throw(new Error(`Invalid node index during adjacency construction: ${j}`));
+			}
+			let bucket = nodesByFromKey.get(key);
+			if (!bucket) {
+				bucket = [];
+				nodesByFromKey.set(key, bucket);
+			}
+			bucket.push(j);
+		}
+
 		for (let i = 0; i < nodesWithAdj.length; i++) {
-			for (let j = 0; j < nodesWithAdj.length; j++) {
-				const ni = nodesWithAdj[i];
+			const ni = nodesWithAdj[i];
+			const toKey = toKeys[i];
+			if (!ni || toKey === undefined) {
+				throw(new Error(`Invalid node index during adjacency construction: ${i}`));
+			}
+			const successors = nodesByFromKey.get(toKey);
+			if (!successors) {
+				continue;
+			}
+			for (const j of successors) {
 				const nj = nodesWithAdj[j];
-				if (!ni || !nj) {
-					throw(new Error(`Invalid node index during adjacency construction: ${i} or ${j}`));
+				if (!nj) {
+					throw(new Error(`Invalid node index during adjacency construction: ${j}`));
 				}
 				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
 					continue;
 				}
-				if (nodeSideSupports(ni.node.to, nj.node.from)) {
-					ni.next.push(j);
-					nj.prev.push(i);
-				}
+				ni.next.push(j);
+				nj.prev.push(i);
 			}
 		}
 
@@ -883,8 +920,7 @@ class AnchorGraph {
 		const toDistances = new Map<string, number>();
 
 		const makeMarkFn = (reachable: Set<string>, distances: Map<string, number>) =>
-			(side: GraphNodeLike['from' | 'to'], depth?: number) => {
-				const key = this.#assetLocationKey(side);
+			(key: string, depth?: number) => {
 				reachable.add(key);
 				if (depth !== undefined) {
 					const existing = distances.get(key);
@@ -897,12 +933,15 @@ class AnchorGraph {
 		const markFromReachable = makeMarkFn(fromReachable, fromDistances);
 		const markToReachable = makeMarkFn(toReachable, toDistances);
 
+		const assetKeysForSide = { from: fromAssetKeys, to: toAssetKeys } as const;
+
 		const bfs = (
 			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
 			adjacency: 'next' | 'prev',
 			markSide: 'from' | 'to',
-			markFn: (side: GraphNodeLike['from' | 'to'], depth: number) => void
+			markFn: (key: string, depth: number) => void
 		) => {
+			const markKeys = assetKeysForSide[markSide];
 			const nodeVisited = new Set<number>();
 			const queue: { nodeIdx: number; depth: number }[] = [];
 			for (let i = 0; i < nodesWithAdj.length; i++) {
@@ -922,13 +961,14 @@ class AnchorGraph {
 				}
 				const { nodeIdx, depth } = queueItem;
 				const item = nodesWithAdj[nodeIdx];
-				if (!item) {
+				const markKey = markKeys[nodeIdx];
+				if (!item || markKey === undefined) {
 					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
 				}
 				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
 					continue;
 				}
-				markFn(item.node[markSide], depth);
+				markFn(markKey, depth);
 				if (maxStepCount === undefined || depth < maxStepCount) {
 					for (const neighborIdx of item[adjacency]) {
 						if (!nodeVisited.has(neighborIdx)) {
@@ -947,12 +987,18 @@ class AnchorGraph {
 			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from', markFromReachable);
 		}
 		if (!fromFilter && !toFilter) {
-			for (const { node } of nodesWithAdj) {
-				if (!onlyAllowFXLike || isFXLikeNode(node)) {
-					markFromReachable(node.from);
-					markFromReachable(node.to);
-					markToReachable(node.from);
-					markToReachable(node.to);
+			for (let i = 0; i < nodesWithAdj.length; i++) {
+				const item = nodesWithAdj[i];
+				const fromKey = fromAssetKeys[i];
+				const toKey = toAssetKeys[i];
+				if (!item || fromKey === undefined || toKey === undefined) {
+					throw(new Error(`Invalid node index during reachability marking: ${i}`));
+				}
+				if (!onlyAllowFXLike || isFXLikeNode(item.node)) {
+					markFromReachable(fromKey);
+					markFromReachable(toKey);
+					markToReachable(fromKey);
+					markToReachable(toKey);
 				}
 			}
 		}
@@ -964,8 +1010,7 @@ class AnchorGraph {
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
 			const resultMap = new Map<string, AnchorChainingAssetInfo>();
-			const getOrCreate = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
-				const key = this.#assetLocationKey(side);
+			const getOrCreate = (key: string, side: { asset: AnchorChainingAsset; location: AssetLocationLike }): AnchorChainingAssetInfo => {
 				let resultObj = resultMap.get(key);
 				if (!resultObj) {
 					const distanceValue = distances.get(key);
@@ -981,18 +1026,25 @@ class AnchorGraph {
 				}
 				return(resultObj);
 			};
-			for (const { node } of nodesWithAdj) {
+			for (let i = 0; i < nodesWithAdj.length; i++) {
+				const item = nodesWithAdj[i];
+				const toKey = toAssetKeys[i];
+				const fromKey = fromAssetKeys[i];
+				if (!item || toKey === undefined || fromKey === undefined) {
+					throw(new Error(`Invalid node index during result-map construction: ${i}`));
+				}
+				const node = item.node;
 				if (onlyAllowFXLike && !isFXLikeNode(node)) {
 					continue;
 				}
-				if (reachable.has(this.#assetLocationKey(node.to))) {
-					const entry = getOrCreate(node.to);
+				if (reachable.has(toKey)) {
+					const entry = getOrCreate(toKey, node.to);
 					if (!entry.rails.inbound.includes(node.to.rail)) {
 						entry.rails.inbound.push(node.to.rail);
 					}
 				}
-				if (reachable.has(this.#assetLocationKey(node.from))) {
-					const entry = getOrCreate(node.from);
+				if (reachable.has(fromKey)) {
+					const entry = getOrCreate(fromKey, node.from);
 					if (!entry.rails.outbound.includes(node.from.rail)) {
 						entry.rails.outbound.push(node.from.rail);
 					}
