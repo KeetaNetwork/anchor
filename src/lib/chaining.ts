@@ -292,37 +292,16 @@ export type AnchorChainingResolveAssetsFilter = {
 	onlyAllowFXLike?: boolean;
 };
 
-/**
- * The maximum number of legs (graph nodes) a discovered path may contain.
- *
- * findPaths enumerates every simple path from source to destination. In a
- * densely connected graph (many tokens across many chains linked by
- * bidirectional bridges) the number of such paths grows exponentially with
- * length, which can hang or crash the caller. Real payment routes are short,
- * and getPlans prefers the shortest paths regardless, so we bound the search
- * depth by default.
- */
 export const DEFAULT_MAX_PATH_LENGTH = 5;
-
-/**
- * How many paths findPaths collects before it stops searching. Because the
- * search is shortest-first (iterative deepening), these are always the N
- * shortest paths, so the cap can be small: getPlans only ever consumes the
- * shortest handful, and stopping early is what keeps a densely connected graph
- * from blowing up.
- */
 export const DEFAULT_MAX_PATHS = 50;
 
 export type AnchorChainingFindPathsOptions = {
 	/**
-	 * Maximum number of legs a path may contain. Defaults to
-	 * DEFAULT_MAX_PATH_LENGTH. Longer candidate paths are pruned during the
-	 * search rather than enumerated.
+	 * Maximum number of legs a path may contain. Defaults to DEFAULT_MAX_PATH_LENGTH.
 	 */
 	maxPathLength?: number;
 	/**
-	 * Maximum number of paths to collect before halting the search. Defaults to
-	 * DEFAULT_MAX_PATHS.
+	 * Maximum number of paths to collect before halting the search. Defaults to DEFAULT_MAX_PATHS.
 	 */
 	maxPaths?: number;
 };
