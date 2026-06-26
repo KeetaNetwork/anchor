@@ -292,6 +292,41 @@ export type AnchorChainingResolveAssetsFilter = {
 	onlyAllowFXLike?: boolean;
 };
 
+/**
+ * The maximum number of legs (graph nodes) a discovered path may contain.
+ *
+ * findPaths enumerates every simple path from source to destination. In a
+ * densely connected graph (many tokens across many chains linked by
+ * bidirectional bridges) the number of such paths grows exponentially with
+ * length, which can hang or crash the caller. Real payment routes are short,
+ * and getPlans prefers the shortest paths regardless, so we bound the search
+ * depth by default.
+ */
+export const DEFAULT_MAX_PATH_LENGTH = 5;
+
+/**
+ * How many paths findPaths collects before it stops searching. Because the
+ * search is shortest-first (iterative deepening), these are always the N
+ * shortest paths, so the cap can be small: getPlans only ever consumes the
+ * shortest handful, and stopping early is what keeps a densely connected graph
+ * from blowing up.
+ */
+export const DEFAULT_MAX_PATHS = 50;
+
+export type AnchorChainingFindPathsOptions = {
+	/**
+	 * Maximum number of legs a path may contain. Defaults to
+	 * DEFAULT_MAX_PATH_LENGTH. Longer candidate paths are pruned during the
+	 * search rather than enumerated.
+	 */
+	maxPathLength?: number;
+	/**
+	 * Maximum number of paths to collect before halting the search. Defaults to
+	 * DEFAULT_MAX_PATHS.
+	 */
+	maxPaths?: number;
+};
+
 export interface AnchorChainingResolveAssetsResult {
 	from: AnchorChainingAssetInfo[];
 	to: AnchorChainingAssetInfo[];
@@ -742,7 +777,16 @@ class AnchorGraph {
 		return(await this.#graphNodePromise);
 	}
 
-	async findPaths(input: AnchorChainingPathInput): Promise<GraphNodeLike[][]> {
+	async findPaths(input: AnchorChainingPathInput, options?: AnchorChainingFindPathsOptions): Promise<GraphNodeLike[][]> {
+		const maxPathLength = options?.maxPathLength ?? DEFAULT_MAX_PATH_LENGTH;
+		if (maxPathLength < 1) {
+			throw(new Error(`maxPathLength must be at least 1, got ${maxPathLength}`));
+		}
+		const maxPaths = options?.maxPaths ?? DEFAULT_MAX_PATHS;
+		if (maxPaths < 1) {
+			throw(new Error(`maxPaths must be at least 1, got ${maxPaths}`));
+		}
+
 		const graph = await this.computeGraphNodes();
 
 		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
@@ -779,12 +823,35 @@ class AnchorGraph {
 			return(`${convertAssetSearchInputToCanonical(input.asset)}@${convertAssetLocationToString(input.location)}${railStr}`)
 		}
 
-		function dfs(
+		// Node indices whose `from` side matches the requested source -- the
+		// possible starting legs.
+		const sourceIndices: number[] = [];
+		for (let index = 0; index < nodesWithNext.length; index++) {
+			const node = nodesWithNext[index];
+			if (!node) {
+				continue;
+			}
+			if (nodeSideSupports(node.node.from, input.source)) {
+				sourceIndices.push(index);
+			}
+		}
+
+		let truncated = false;
+
+		// Depth-limited DFS that records a path only when its length equals the
+		// current depthLimit, so each distinct path is collected exactly once as
+		// we deepen.
+		const dfs = (
 			currentIndex: number,
-			target: AnchorChainingAssetAndLocation,
-			visitedAssets = new Set<string>(),
-			path: GraphNodeLike[] = []
-		) {
+			depthLimit: number,
+			visitedAssets: Set<string>,
+			path: GraphNodeLike[]
+		): void => {
+			if (paths.length >= maxPaths) {
+				truncated = true;
+				return;
+			}
+
 			const cur = nodesWithNext[currentIndex];
 
 			if (!cur) {
@@ -800,27 +867,33 @@ class AnchorGraph {
 
 			const newPath = [ ...path, cur.node ];
 
-			if (nodeSideSupports(cur.node.to, target)) {
+			if (newPath.length === depthLimit && nodeSideSupports(cur.node.to, input.destination)) {
 				paths.push(newPath);
 			}
 
-			for (const nextIndex of nodesWithNext[currentIndex]?.next ?? []) {
-				dfs(nextIndex, target, visitedAssets, newPath);
+			if (newPath.length < depthLimit) {
+				for (const nextIndex of cur.next) {
+					dfs(nextIndex, depthLimit, visitedAssets, newPath);
+					if (paths.length >= maxPaths) {
+						break;
+					}
+				}
 			}
 
 			visitedAssets.delete(assetLocationStr);
+		};
+
+		for (let depthLimit = 1; depthLimit <= maxPathLength && paths.length < maxPaths; depthLimit++) {
+			for (const index of sourceIndices) {
+				dfs(index, depthLimit, new Set<string>(), []);
+				if (paths.length >= maxPaths) {
+					break;
+				}
+			}
 		}
 
-		for (let index = 0; index < nodesWithNext.length; index++) {
-			const node = nodesWithNext[index];
-
-			if (!node) {
-				continue;
-			}
-
-			if (nodeSideSupports(node.node.from, input.source)) {
-				dfs(index, input.destination);
-			}
+		if (truncated) {
+			this.logger?.debug('AnchorGraph::findPaths', `Path search hit the maxPaths cap of ${maxPaths}; returning the ${maxPaths} shortest paths (up to maxPathLength ${maxPathLength}).`);
 		}
 
 		return(paths);
