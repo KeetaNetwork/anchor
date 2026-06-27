@@ -848,6 +848,7 @@ async function parseASN1Decrypt(inputInfo: ReturnType<typeof parseASN1Bare>, key
 	return({
 		version: inputInfo.version,
 		plaintext: plaintext,
+		compressed: containedCompressed,
 		...cipherInfo
 	});
 
@@ -1145,6 +1146,27 @@ export class EncryptedContainer {
 	}
 
 	/**
+	 * Return the compressed bytes exactly as they are stored in the encoded
+	 * container (decrypted where applicable, but before inflation).
+	 */
+	async #computeSignedCompressed(): Promise<Buffer> {
+		const info = this.#computeAndSetKeyInfo(this.encrypted);
+
+		let principals = this._internalState.principals;
+		if (info.isEncrypted) {
+			if (principals === null) {
+				throw(new EncryptedContainerError('INVALID_PRINCIPALS', 'May not decrypt data with a null set of principals'));
+			}
+		} else {
+			principals = [];
+		}
+
+		const wrapper = await parseASN1Decrypt(info, principals);
+		const compressed = Buffer.from(wrapper.compressed);
+		return(compressed);
+	}
+
+	/**
 	 * Compute the encoded version of the plaintext data
 	 */
 	async #computePlaintextEncoded() {
@@ -1415,14 +1437,8 @@ export class EncryptedContainer {
 			));
 		}
 
-		// We need the plaintext to verify the signature
-		const plaintext = await this.#computePlaintext();
-		if (!plaintext) {
-			throw(new EncryptedContainerError('NO_PLAINTEXT_AVAILABLE', 'Unable to compute plaintext for signature verification'));
-		}
-
-		// Recompute the digest of the compressed plaintext
-		const compressedPlaintext = Buffer.from(await zlibDeflateAsync(bufferToArrayBuffer(plaintext)));
+		// Digest the exact compressed bytes that were signed.
+		const compressedPlaintext = await this.#computeSignedCompressed();
 		const digestHash = crypto.createHash('sha3-256');
 		digestHash.update(compressedPlaintext);
 		const digest = digestHash.digest();
