@@ -1151,7 +1151,6 @@ export class EncryptedContainer {
 	 */
 	async #computeSignedCompressed(): Promise<Buffer> {
 		const info = this.#computeAndSetKeyInfo(this.encrypted);
-
 		let principals = this._internalState.principals;
 		if (info.isEncrypted) {
 			if (principals === null) {
