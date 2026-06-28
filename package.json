@@ -46,6 +46,7 @@
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.2.5",
 		"@keetanetwork/keetanet-client": "0.18.2",
+		"@noble/hashes": "1.5.0",
 		"typia": "9.5.0"
 	},
 	"engines": {

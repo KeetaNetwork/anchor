@@ -1,6 +1,8 @@
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import type { ChainLocationType } from '../services/asset-movement/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
@@ -64,6 +66,60 @@ export function parseEVMAsset(input: EVMAsset): HexString {
 
 export function isEVMAsset(input: unknown): input is EVMAsset {
 	return(typeof input === 'string' && input.startsWith('evm:0x'));
+}
+
+/**
+ * Compute the EIP-55 mixed-case checksum form of a hex EVM address.
+ *
+ * EVM addresses are case-insensitive on-chain; the mixed-case form is an
+ * error-detecting checksum derived from the keccak-256 hash of the lowercase
+ * address. We use this single representation as the canonical form so the same
+ * token reported by different providers (in different casings) compares equal.
+ */
+export function eip55ChecksumHexAddress(input: HexString): HexString {
+	const lower = input.slice(2).toLowerCase();
+	const hashHex = bytesToHex(keccak_256(utf8ToBytes(lower)));
+
+	let result = '0x';
+	for (let i = 0; i < lower.length; i++) {
+		const char = lower[i] ?? '';
+		const hashNibble = parseInt(hashHex[i] ?? '0', 16);
+		result += hashNibble >= 8 ? char.toUpperCase() : char;
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(result as HexString);
+}
+
+/**
+ * Return the EIP-55 checksummed form of an EVM asset string (`evm:0x...`).
+ */
+export function checksumEVMAsset(input: EVMAsset): EVMAsset {
+	return(toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input))));
+}
+
+/**
+ * True if an EVM asset string is already in correct EIP-55 checksum casing.
+ */
+export function isEVMAssetChecksummed(input: EVMAsset): boolean {
+	return(checksumEVMAsset(input) === input);
+}
+
+/**
+ * Normalize a chain-asset string to its canonical casing so the same on-chain
+ * asset reported by different providers compares equal.
+ *
+ * EVM addresses are normalized to their EIP-55 checksummed form. Solana, Tron,
+ * and Bitcoin addresses are base58/base58check encoded and ARE case-sensitive,
+ * so they are left untouched.
+ */
+export function normalizeChainAssetCasing<T extends string>(input: T): T {
+	if (isEVMAsset(input)) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(checksumEVMAsset(input) as T);
+	}
+
+	return(input);
 }
 
 export function toTronAsset(input: string): TronAsset {
@@ -143,7 +199,7 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 		return(input.code);
 	} else {
 		if (typeof input === 'string') {
-			return(input);
+			return(normalizeChainAssetCasing(input));
 		}
 
 		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);

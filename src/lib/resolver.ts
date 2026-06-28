@@ -10,6 +10,7 @@ import crypto from './utils/crypto.js';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
+import { checksumEVMAsset, isEVMAsset } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import { SignData, type Signable, type VerifiableAccount } from './utils/signing.js';
@@ -1604,6 +1605,9 @@ class Resolver {
 	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
 	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
+	/** EVM asset ids already warned about, to avoid repeating the info log. */
+	readonly #warnedNonChecksummedAssets = new Set<string>();
+
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
@@ -2024,6 +2028,31 @@ class Resolver {
 		return(retval);
 	}
 
+	/**
+	 * Normalize an EVM asset id read from provider metadata to its EIP-55
+	 * checksummed form. EVM addresses are case-insensitive on-chain, but the
+	 * asset-movement graph and provider lookups key on the asset string, so a
+	 * provider that publishes a non-checksummed address would fail to line up
+	 * with providers that publish the checksummed form (e.g. a USDC bridge leg
+	 * not connecting to a USDC swap leg). We canonicalize to the checksummed
+	 * casing and emit an info log -- once per distinct value -- when a provider's
+	 * metadata had to be corrected. Non-EVM asset ids are case-sensitive and are
+	 * returned unchanged.
+	 */
+	#canonicalizeMetadataAssetId(id: string): string {
+		if (!isEVMAsset(id)) {
+			return(id);
+		}
+
+		const checksummed = checksumEVMAsset(id);
+		if (checksummed !== id && !this.#warnedNonChecksummedAssets.has(id)) {
+			this.#warnedNonChecksummedAssets.add(id);
+			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-checksummed casing; normalized to EIP-55 checksummed form "${checksummed}"`);
+		}
+
+		return(checksummed);
+	}
+
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
@@ -2038,6 +2067,13 @@ class Resolver {
 
 			for (const path of supportedAsset.paths) {
 				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+					// Canonicalize EVM asset ids up front (warning on any non-checksummed
+					// provider metadata) so this runs whenever metadata is parsed --
+					// including the unfiltered graph-build lookup -- not only when an
+					// asset filter is supplied.
+					const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
+					const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
+
 					if (fromCanonical && fromCanonical !== fromAsset.location) {
 						continue;
 					}
@@ -2048,10 +2084,10 @@ class Resolver {
 
 					if (assetCanonical) {
 						if (typeof assetCanonical === 'string') {
-							if (!([ fromAsset.id, toAsset.id ].includes(assetCanonical))) {
+							if (!([ fromId, toId ].includes(assetCanonical))) {
 								continue;
 							}
-						} else if (fromAsset.id !== assetCanonical.from || toAsset.id !== assetCanonical.to) {
+						} else if (fromId !== assetCanonical.from || toId !== assetCanonical.to) {
 							continue;
 						}
 					}
