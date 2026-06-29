@@ -129,6 +129,29 @@ export interface AnchorStatusSource<Transaction = unknown> {
 }
 
 /**
+ * An {@link AnchorStatusSource} that resolves a reader from the first of
+ * several backing sources that serves an anchor.
+ */
+export class CompositeAnchorStatusSource<Transaction = unknown> implements AnchorStatusSource<Transaction> {
+	readonly #sources: readonly AnchorStatusSource<Transaction>[];
+
+	constructor(sources: readonly AnchorStatusSource<Transaction>[]) {
+		this.#sources = sources;
+	}
+
+	async getReader(anchor: AnchorReference): Promise<AnchorTransferReader<Transaction> | null> {
+		for (const source of this.#sources) {
+			const reader = await source.getReader(anchor);
+			if (reader !== null) {
+				return(reader);
+			}
+		}
+
+		return(null);
+	}
+}
+
+/**
  * Is `true` once a transfer has settled.
  *
  * Other states are provider-specific and cannot be classified here.
@@ -138,14 +161,64 @@ export function isCompletedTransferStatus(status: string): boolean {
 }
 
 /**
+ * A cache for settled (terminal) anchor transfer statuses.
+ */
+export interface AnchorStatusCache<Transaction = unknown> {
+	/**
+	 * Read a cached status, or `undefined` when none is stored for the key.
+	 */
+	get(key: string): Promise<StandardizedTransferStatus<Transaction> | undefined>;
+	/**
+	 * Store a settled status under the key.
+	 */
+	set(key: string, status: StandardizedTransferStatus<Transaction>): Promise<void>;
+}
+
+/**
+ * Process-lifetime, in-memory {@link AnchorStatusCache}. The default when a
+ * consumer enables caching without supplying its own backing store.
+ */
+export class AnchorStatusCacheMemory<Transaction = unknown> implements AnchorStatusCache<Transaction> {
+	readonly #entries = new Map<string, StandardizedTransferStatus<Transaction>>();
+
+	get(key: string): Promise<StandardizedTransferStatus<Transaction> | undefined> {
+		return(Promise.resolve(this.#entries.get(key)));
+	}
+
+	set(key: string, status: StandardizedTransferStatus<Transaction>): Promise<void> {
+		this.#entries.set(key, status);
+		return(Promise.resolve());
+	}
+}
+
+/**
+ * Derive a stable cache key for an anchor transaction, collapsing the
+ * {@link AnchorReference} union to its public key string.
+ */
+function anchorCacheKey(anchor: AnchorReference, transactionID: string): string {
+	let anchorKey: string;
+	if (KeetaNetLib.Account.isInstance(anchor)) {
+		anchorKey = anchor.publicKeyString.get();
+	} else {
+		anchorKey = anchor;
+	}
+
+	return(`${anchorKey}:${transactionID}`);
+}
+
+/**
  * Reads anchor transfer status through a single, provider-independent
  * surface backed by an injected {@link AnchorStatusSource}.
  */
 export class AnchorTransactionStatus<Transaction = unknown> {
 	readonly #source: AnchorStatusSource<Transaction>;
+	readonly #cache?: AnchorStatusCache<Transaction>;
 
-	constructor(source: AnchorStatusSource<Transaction>) {
+	constructor(source: AnchorStatusSource<Transaction>, cache?: AnchorStatusCache<Transaction>) {
 		this.#source = source;
+		if (cache !== undefined) {
+			this.#cache = cache;
+		}
 	}
 
 	/**
@@ -165,12 +238,24 @@ export class AnchorTransactionStatus<Transaction = unknown> {
 	 *          could not be resolved.
 	 */
 	async getStatus(anchor: AnchorReference, transactionID: string, options?: AnchorGetTransactionStatusOptions): Promise<StandardizedTransferStatus<Transaction> | null> {
+		const cacheKey = anchorCacheKey(anchor, transactionID);
+		if (this.#cache !== undefined) {
+			const cached = await this.#cache.get(cacheKey);
+			if (cached !== undefined) {
+				return(cached);
+			}
+		}
+
 		const reader = await this.getReader(anchor);
 		if (reader === null) {
 			return(null);
 		}
 
 		const status = await reader.getTransferStatus(transactionID, options);
+		if (this.#cache !== undefined && isCompletedTransferStatus(status.status)) {
+			await this.#cache.set(cacheKey, status);
+		}
+
 		return(status);
 	}
 

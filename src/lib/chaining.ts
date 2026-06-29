@@ -2177,7 +2177,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	async #pollExchangeStatus(
 		exchange: FXExchange,
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
-	): Promise<Awaited<ReturnType<FXExchange['getExchangeStatus']>>> {
+	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
@@ -2263,8 +2263,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				if (step.type === 'fx') {
-					const exchange = await step.result.createExchange();
-					await this.#pollExchangeStatus(exchange);
+					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
+					const exchangeStatus = await this.#pollExchangeStatus(exchange);
+
+					publishedInputs.push({ blockHash: exchangeStatus.blockhash });
+
 					prevActualValueOut = step.valueOut;
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'fx', plan: step, exchange });

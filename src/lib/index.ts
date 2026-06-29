@@ -6,10 +6,11 @@ import Resolver from './resolver.js';
 
 export type { AnchorPayoutExternalOptions } from './anchor-external.js';
 export { AnchorExternal, buildSignedAnchorExternal } from './anchor-external.js';
-export { AnchorTransactionStatus, isCompletedTransferStatus } from './anchor-status.js';
+export { AnchorTransactionStatus, AnchorStatusCacheMemory, CompositeAnchorStatusSource, isCompletedTransferStatus } from './anchor-status.js';
 export type {
 	AnchorOnChainReference,
 	AnchorReference,
+	AnchorStatusCache,
 	AnchorStatusSource,
 	AnchorTransferReader,
 	AnchorGetTransactionStatusOptions,
@@ -20,9 +21,7 @@ export type {
 export {
 	UserHistory,
 	defaultClassifiers,
-	foldHistory,
-	logicalTypeFromTransfer,
-	statusFromTransfer
+	foldChains
 } from './history.js';
 export type {
 	EnrichedBlock,

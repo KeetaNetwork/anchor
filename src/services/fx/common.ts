@@ -191,6 +191,38 @@ export type KeetaFXAnchorQuoteResponse = ({
 	error: string;
 });
 
+/**
+ * Transport summary of a completed exchange's conversion, sufficient to
+ * reconstruct the swap without re-reading the on-chain blocks.
+ */
+export type KeetaFXAnchorConversionSummary = {
+	/**
+	 * Token and amount the user sent (the principal being converted from).
+	 */
+	from: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+	/**
+	 * Token and amount the user received (the converted-to currency).
+	 */
+	to: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+	/**
+	 * Liquidity provider account that settled the exchange.
+	 */
+	liquidityProvider: string;
+	/**
+	 * Fee charged for the exchange, when the server computed it.
+	 */
+	cost?: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+};
+
 export type KeetaFXAnchorExchange = {
 	/**
 	 * ID used to identify the conversion request
@@ -214,6 +246,10 @@ export type KeetaFXAnchorExchange = {
 	 * that initial block.
 	 */
 	blockhash: string;
+	/**
+	 * Summary of the conversion that settled, when the server recorded it.
+	 */
+	conversion?: KeetaFXAnchorConversionSummary;
 });
 
 export type KeetaFXAnchorExchangeResponse = (KeetaFXAnchorExchange & {

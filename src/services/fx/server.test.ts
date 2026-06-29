@@ -3,6 +3,8 @@ import { KeetaNetFXAnchorHTTPServer } from './server.js';
 import type { GetConversionRateAndFeeContext } from './server.js';
 import type { ConversionInputCanonicalJSON, KeetaNetTokenPublicKeyString } from './common.js';
 import { KeetaNet } from '../../client/index.js';
+import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
+import crypto from '../../lib/utils/crypto.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
@@ -841,6 +843,101 @@ test('FX Server autoRun Multiple Servers Same Queue Tests', async function() {
 	expect(status3).toHaveProperty('status', 'completed');
 	expect(status4).toHaveProperty('status', 'completed');
 }, 60000);
+
+test('FX Server resolves a completed exchange by the correlation id carried in its block external', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, token1, token2, userClients } = harness;
+	const userClient = userClients[0];
+	if (userClient === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	const quote = await getQuoteFromServer(url, token1String, token2String, '100');
+	if (typeof quote !== 'object' || quote === null || !('account' in quote) || typeof quote.account !== 'string') {
+		throw(new Error('Invalid quote'));
+	}
+
+	/* Tag the swap's principal send with an anchor external carrying a correlation id */
+	const correlationId = crypto.randomUUID();
+	const external = await new AnchorExternalBuilder().setAnchor(serverAccount, { transactionId: correlationId }).build();
+
+	const builder = userClient.initBuilder();
+	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1, external);
+
+	const computed = await builder.computeBlocks();
+	const block = computed.blocks[0];
+	if (!block) {
+		throw(new Error('No block computed'));
+	}
+
+	const createResponse = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				quote: quote,
+				block: Buffer.from(block.toBytes()).toString('base64')
+			}
+		})
+	});
+	expect(createResponse.status).toBe(200);
+
+	const createData: unknown = await createResponse.json();
+	const exchangeID = extractExchangeID(createData);
+
+	await waitForExchangeCompletion(url, exchangeID);
+
+	/*
+	 * The correlation id resolves to the same exchange through getExchangeStatus
+	 */
+	const byCorrelationResponse = await fetch(`${url}/api/getExchangeStatus/${correlationId}`, {
+		method: 'GET',
+		headers: { 'Accept': 'application/json' }
+	});
+	expect(byCorrelationResponse.status).toBe(200);
+
+	const byCorrelation: unknown = await byCorrelationResponse.json();
+	expect(byCorrelation).toHaveProperty('ok', true);
+	expect(byCorrelation).toHaveProperty('status', 'completed');
+	expect(byCorrelation).toHaveProperty('exchangeID', exchangeID);
+	expect(byCorrelation).toHaveProperty('conversion');
+
+	if (typeof byCorrelation !== 'object' || byCorrelation === null || !('conversion' in byCorrelation) || typeof byCorrelation.conversion !== 'object' || byCorrelation.conversion === null) {
+		throw(new Error('Expected a conversion summary'));
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const conversion = byCorrelation.conversion as {
+		from: { token: string; amount: string };
+		to: { token: string; amount: string };
+		liquidityProvider: string;
+	};
+	expect(conversion.from).toEqual({ token: token1String, amount: '100' });
+	expect(conversion.to).toEqual({ token: token2String, amount: '500' });
+	expect(conversion.liquidityProvider).toBe(serverAccount.publicKeyString.get());
+}, 30000);
 
 test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function() {
 	await using harness = await createFXTestHarness(1);
