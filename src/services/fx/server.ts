@@ -503,8 +503,7 @@ async function correlationIdFromBlock(block: KeetaFXAnchorQueueStage1Request['bl
 		let decoded: AnchorExternal;
 		try {
 			decoded = await AnchorExternal.fromPlainExternal(operation.external);
-		} catch (error) {
-			void error;
+		} catch {
 			continue;
 		}
 

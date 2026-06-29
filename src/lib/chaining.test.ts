@@ -976,9 +976,9 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 		throw(new Error(`No paths found`));
 	}
 
-	expect(paths.length).toEqual(1);
+	expect(paths).toHaveLength(1);
 
-	expect(path.path.length).toEqual(3);
+	expect(path.path).toHaveLength(3);
 
 	const BANK_ANCHOR_SUPPORTED_OPS = { createPersistentForwarding: true, initiateTransfer: true } as const;
 	expect(toJSONSerializable([
@@ -1281,7 +1281,7 @@ describe('AnchorChainingPath computeSteps', function() {
 		await using h = await createChainingTestHarness();
 		const path = await h.getPlanVia(providerID);
 
-		expect(path.plan.steps.length).toEqual(2);
+		expect(path.plan.steps).toHaveLength(2);
 		expect(path.plan.totalValueIn).toEqual(100n);
 		expect(path.plan.totalValueOut).toEqual(totalOut);
 
@@ -1326,7 +1326,7 @@ describe('AnchorChainingPath computeSteps for fx with "to" affinity', function()
 
 		const result = plan.plan
 
-		expect(result.steps.length).toEqual(1);
+		expect(result.steps).toHaveLength(1);
 		expect(result.totalValueOut).toEqual(100n);
 		expect(result.totalValueIn).toEqual(114n);
 	});
@@ -1392,7 +1392,7 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 
 		const result = await path.execute();
 
-		expect(result.steps.length).toEqual(1);
+		expect(result.steps).toHaveLength(1);
 		expect(result.steps[0]?.type).toEqual('fx');
 		if (result.steps[0]?.type === 'fx') {
 			const exchangeStatus = await result.steps[0].exchange.getExchangeStatus();
@@ -1431,11 +1431,11 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 
 		const result = await path.execute();
 
-		expect(result.steps.length).toEqual(1);
+		expect(result.steps).toHaveLength(1);
 		expect(path.state.status).toEqual('completed');
 		expect(stateHistory[0]).toEqual('executing');
 		expect(stateHistory[stateHistory.length - 1]).toEqual('completed');
-		expect(emittedSteps.length).toEqual(1);
+		expect(emittedSteps).toHaveLength(1);
 		expect(emittedSteps[0]?.step).toBe(result.steps[0]);
 		expect(completedResult).toBe(result);
 	});
@@ -1467,13 +1467,13 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 		expect(plan.state.status).toEqual('failed');
 		if (plan.state.status === 'failed') {
 			expect(plan.state.failedAtStepIndex).toEqual(0);
-			expect(plan.state.completedSteps.length).toEqual(0);
+			expect(plan.state.completedSteps).toHaveLength(0);
 		}
 		expect(failedEvents).toHaveLength(1);
 		const failedEvent = failedEvents[0];
 		if (!failedEvent) { throw(new Error('Expected failed event')); }
 		expect(failedEvent.index).toEqual(0);
-		expect(failedEvent.completedSteps.length).toEqual(0);
+		expect(failedEvent.completedSteps).toHaveLength(0);
 	});
 
 	test('FX-only path: re-executing after completion throws', async function() {
@@ -1539,7 +1539,7 @@ describe('AnchorChainingPath execute', function() {
 		const result = await path.execute();
 
 		// Step structure and server-side verification
-		expect(result.steps.length).toEqual(2);
+		expect(result.steps).toHaveLength(2);
 		const [step0, step1] = result.steps;
 		expect(step0?.type).toEqual('fx');
 		if (step0?.type === 'fx') {
@@ -1569,7 +1569,7 @@ describe('AnchorChainingPath execute', function() {
 		}
 
 		// stepExecuted fired once per step, each with the correct step reference
-		expect(emittedSteps.length).toEqual(result.steps.length);
+		expect(emittedSteps).toHaveLength(result.steps.length);
 		emittedSteps.forEach(({ step, index }) => expect(step).toBe(result.steps[index]));
 
 		// completed event carries the result object
@@ -1628,7 +1628,7 @@ describe('AnchorChainingPath execute', function() {
 		const result = await path.execute();
 
 		// Step structure and server-side verification
-		expect(result.steps.length).toEqual(2);
+		expect(result.steps).toHaveLength(2);
 		const [step0, step1] = result.steps;
 		expect(step0?.type).toEqual('fx');
 		if (step0?.type === 'fx') {
@@ -1665,7 +1665,7 @@ describe('AnchorChainingPath execute', function() {
 		expect(userReceiveTokenBalancePre).toEqual(userReceiveTokenBalancePost);
 
 		// stepExecuted fired once per step, each with the correct step reference
-		expect(emittedSteps.length).toEqual(result.steps.length);
+		expect(emittedSteps).toHaveLength(result.steps.length);
 		emittedSteps.forEach(({ step, index }) => expect(step).toBe(result.steps[index]));
 
 		// completed event carries the result object
@@ -1694,13 +1694,13 @@ describe('AnchorChainingPath execute', function() {
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(0);
-			expect(path.state.completedSteps.length).toEqual(0);
+			expect(path.state.completedSteps).toHaveLength(0);
 		}
 		expect(failedEvents).toHaveLength(1);
 		const failedEvent = failedEvents[0];
 		if (!failedEvent) {throw(new Error('Expected failed event'));}
 		expect(failedEvent.index).toEqual(0);
-		expect(failedEvent.completedSteps.length).toEqual(0);
+		expect(failedEvent.completedSteps).toHaveLength(0);
 
 		// Re-executing a failed path throws
 		await expect(path.execute()).rejects.toThrow('Cannot execute');
@@ -1726,18 +1726,18 @@ describe('AnchorChainingPath execute', function() {
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);
-			expect(path.state.completedSteps.length).toEqual(1);
+			expect(path.state.completedSteps).toHaveLength(1);
 			expect(path.state.completedSteps[0]?.type).toEqual('fx');
 		}
 		// stepExecuted fired for FX step only
-		expect(emittedSteps.length).toEqual(1);
+		expect(emittedSteps).toHaveLength(1);
 		expect(emittedSteps[0]?.type).toEqual('fx');
 		// failed event carries the same completed steps
 		expect(failedEvents).toHaveLength(1);
 		const failedEvent = failedEvents[0];
 		if (!failedEvent) {throw(new Error('Expected failed event'));}
 		expect(failedEvent.index).toEqual(1);
-		expect(failedEvent.completedSteps.length).toEqual(1);
+		expect(failedEvent.completedSteps).toHaveLength(1);
 		expect(failedEvent.completedSteps[0]?.type).toEqual('fx');
 	});
 
@@ -1827,18 +1827,18 @@ describe('AnchorChainingPath direct send', function() {
 		if (!paths?.[0]) {
 			throw(new Error('Expected to find a path'));
 		}
-		expect(paths.length).toEqual(1);
+		expect(paths).toHaveLength(1);
 		const path = paths[0];
 
-		expect(path.path.length).toEqual(1);
+		expect(path.path).toHaveLength(1);
 
-		expect(path.plan.steps.length).toEqual(1);
+		expect(path.plan.steps).toHaveLength(1);
 		expect(path.plan.totalValueIn).toEqual(200n);
 		expect(path.plan.totalValueOut).toEqual(200n);
 
 		expect(path.state.status).toEqual('idle');
 		const result = await path.execute();
-		expect(result.steps.length).toEqual(1);
+		expect(result.steps).toHaveLength(1);
 		expect(path.state.status).toEqual('completed');
 
 		const balance = await h.client.client.getBalance(recipient, h.tokens.USDC);
@@ -1882,7 +1882,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		});
 		const result = await path.execute();
 
-		expect(result.steps.length).toEqual(1);
+		expect(result.steps).toHaveLength(1);
 		expect(result.steps[0]?.type).toEqual('assetMovement');
 		if (result.steps[0]?.type === 'assetMovement') {
 			// value = 100 - 10 fee = 90
@@ -1915,13 +1915,13 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(0);
-			expect(path.state.completedSteps.length).toEqual(0);
+			expect(path.state.completedSteps).toHaveLength(0);
 		}
 		expect(failedEvents).toHaveLength(1);
 		const failedEvent = failedEvents[0];
 		if (!failedEvent) {throw(new Error('Expected failed event'));}
 		expect(failedEvent.index).toEqual(0);
-		expect(failedEvent.completedSteps.length).toEqual(0);
+		expect(failedEvent.completedSteps).toHaveLength(0);
 	});
 });
 
@@ -2797,7 +2797,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 			})
 
 			const disclaimers = await euBankPath.getProviderLegalDisclaimers();
-			expect(disclaimers?.length).toEqual(euBankPath.path.length);
+			expect(disclaimers).toHaveLength(euBankPath.path.length);
 			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 
@@ -2825,7 +2825,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 			})
 
 			const disclaimers = await usBankPath.getProviderLegalDisclaimers();
-			expect(disclaimers?.length).toEqual(usBankPath.path.length);
+			expect(disclaimers).toHaveLength(usBankPath.path.length);
 			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 
@@ -2852,7 +2852,7 @@ describe('AnchorChainingPlan disclaimers', function() {
 				})
 			})
 			const disclaimers = await networkPath.getProviderLegalDisclaimers();
-			expect(disclaimers?.length).toEqual(expectedProviderDisclaimers.length);
+			expect(disclaimers).toHaveLength(expectedProviderDisclaimers.length);
 			expect(disclaimers).toEqual(expectedProviderDisclaimers);
 		}
 	});

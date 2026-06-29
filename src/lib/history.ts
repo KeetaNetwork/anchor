@@ -1119,69 +1119,99 @@ function sharedCounterparty(hops: readonly LogicalTransaction[]): LogicalCounter
  * conversion: the head's send into the tail's receive, with intermediate
  * hops' legs suppressed and every hop's `refs` merged for drill-down.
  */
-function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): LogicalTransaction {
-	const blockHashes: string[] = [];
-	const anchorTxIDs: string[] = [];
-	const externals: string[] = [];
-	const inputs: AnchorExternalInput[] = [];
-	const fees: LogicalAmount[] = [];
-	let earliest = head.timestamp;
-	let anyPending = false;
-	let anyFailed = false;
+type MergedHopRefs = {
+	blockHashes: string[];
+	anchorTxIDs: string[];
+	externals: string[];
+	inputs: AnchorExternalInput[];
+};
 
+/**
+ * Merge every hop's `refs`, de-duplicating block hashes, anchor transfer ids
+ * and externals while preserving the ordered on-chain inputs.
+ */
+function accumulateHopRefs(hops: readonly LogicalTransaction[]): MergedHopRefs {
+	const merged: MergedHopRefs = { blockHashes: [], anchorTxIDs: [], externals: [], inputs: [] };
 	for (const hop of hops) {
 		for (const blockHash of hop.refs.blockHashes) {
-			pushUnique(blockHashes, blockHash);
+			pushUnique(merged.blockHashes, blockHash);
 		}
-
 		for (const anchorTxID of hop.refs.anchorTxIDs) {
-			pushUnique(anchorTxIDs, anchorTxID);
+			pushUnique(merged.anchorTxIDs, anchorTxID);
 		}
+		for (const external of hop.refs.external ?? []) {
+			pushUnique(merged.externals, external);
+		}
+		for (const input of hop.refs.inputs ?? []) {
+			merged.inputs.push(input);
+		}
+	}
 
-		if (hop.refs.external !== undefined) {
-			for (const external of hop.refs.external) {
-				pushUnique(externals, external);
-			}
-		}
+	return(merged);
+}
 
-		if (hop.refs.inputs !== undefined) {
-			for (const input of hop.refs.inputs) {
-				inputs.push(input);
-			}
-		}
-
-		if (hop.fee !== undefined) {
-			fees.push(hop.fee);
-		}
-		if (hop.status === 'pending') {
-			anyPending = true;
-		}
+/**
+ * Combine hop statuses with failed taking precedence over pending over
+ * complete.
+ */
+function aggregateHopStatus(hops: readonly LogicalTransaction[]): LogicalTransactionStatus {
+	let pending = false;
+	for (const hop of hops) {
 		if (hop.status === 'failed') {
-			anyFailed = true;
+			return('failed');
 		}
+
+		if (hop.status === 'pending') {
+			pending = true;
+		}
+	}
+
+	return(pending ? 'pending' : 'complete');
+}
+
+/**
+ * The earliest timestamp across the hops, never later than `fallback`.
+ */
+function earliestHopTimestamp(hops: readonly LogicalTransaction[], fallback: string): string {
+	let earliest = fallback;
+	for (const hop of hops) {
 		if (Date.parse(hop.timestamp) < Date.parse(earliest)) {
 			earliest = hop.timestamp;
 		}
 	}
 
-	const legs: LogicalLeg[] = [];
-	for (const leg of head.legs) {
-		legs.push(leg);
-	}
+	return(earliest);
+}
 
-	if (tail.id !== head.id) {
-		for (const leg of tail.legs) {
-			legs.push(leg);
+/**
+ * The fees declared by the hops, in chain order.
+ */
+function collectHopFees(hops: readonly LogicalTransaction[]): LogicalAmount[] {
+	const fees: LogicalAmount[] = [];
+	for (const hop of hops) {
+		if (hop.fee !== undefined) {
+			fees.push(hop.fee);
 		}
 	}
 
-	let status: LogicalTransactionStatus = 'complete';
-	if (anyPending) {
-		status = 'pending';
+	return(fees);
+}
+
+/**
+ * The head's legs followed by the tail's, suppressing intermediate hops and
+ * avoiding a duplicate when head and tail are the same transaction.
+ */
+function mergeHopLegs(head: LogicalTransaction, tail: LogicalTransaction): LogicalLeg[] {
+	const legs: LogicalLeg[] = [ ...head.legs ];
+	if (tail.id !== head.id) {
+		legs.push(...tail.legs);
 	}
-	if (anyFailed) {
-		status = 'failed';
-	}
+
+	return(legs);
+}
+
+function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): LogicalTransaction {
+	const { blockHashes, anchorTxIDs, externals, inputs } = accumulateHopRefs(hops);
 
 	const refs: LogicalTransaction['refs'] = { blockHashes, anchorTxIDs };
 	if (externals.length > 0) {
@@ -1195,10 +1225,10 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 	const merged: LogicalTransaction = {
 		id: head.id,
 		type: tail.type,
-		status,
+		status: aggregateHopStatus(hops),
 		direction: tail.direction,
-		timestamp: earliest,
-		legs,
+		timestamp: earliestHopTimestamp(hops, head.timestamp),
+		legs: mergeHopLegs(head, tail),
 		refs
 	};
 
@@ -1210,7 +1240,7 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 		merged.receive = tail.receive;
 	}
 
-	const fee = combineFees(fees);
+	const fee = combineFees(collectHopFees(hops));
 	if (fee !== undefined) {
 		merged.fee = fee;
 	}
@@ -1245,19 +1275,22 @@ type SwapChain = {
  * Heads and intermediate hops are always swaps; the tail may also be a bridge,
  * which is how a swap that funds an outbound bridge folds into one conversion.
  */
-function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<string, SwapChain> {
-	const swaps = transactions.filter(transaction => transaction.type === 'swap');
-	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge');
+/**
+ * The forward/backward links between swaps and the swap or bridge each one
+ * funds, established through their `refs.inputs` <-> `refs.blockHashes` edges.
+ * Each swap keeps at most one successor (its first match).
+ */
+type SwapLinks = {
+	successorOf: Map<string, LogicalTransaction>;
+	predecessorOf: Map<string, LogicalTransaction>;
+};
 
+function linkSwapSuccessors(swaps: readonly LogicalTransaction[], successors: readonly LogicalTransaction[]): SwapLinks {
 	const successorOf = new Map<string, LogicalTransaction>();
 	const predecessorOf = new Map<string, LogicalTransaction>();
 	for (const swap of swaps) {
 		for (const other of successors) {
-			if (other.id === swap.id) {
-				continue;
-			}
-
-			if (successorOf.has(swap.id)) {
+			if (other.id === swap.id || successorOf.has(swap.id)) {
 				continue;
 			}
 
@@ -1268,31 +1301,49 @@ function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<strin
 		}
 	}
 
+	return({ successorOf, predecessorOf });
+}
+
+/**
+ * Walk the successor links from `head` to its tail, returning the hops in
+ * order and stopping on a cycle.
+ */
+function walkChainFrom(head: LogicalTransaction, successorOf: ReadonlyMap<string, LogicalTransaction>): LogicalTransaction[] {
+	const hops: LogicalTransaction[] = [ head ];
+	const visited = new Set<string>([ head.id ]);
+	let current = head;
+	while (true) {
+		const next = successorOf.get(current.id);
+		if (next === undefined || visited.has(next.id)) {
+			break;
+		}
+
+		hops.push(next);
+		visited.add(next.id);
+		current = next;
+	}
+
+	return(hops);
+}
+
+function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<string, SwapChain> {
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge');
+	const { successorOf, predecessorOf } = linkSwapSuccessors(swaps, successors);
+
 	const chainByMemberId = new Map<string, SwapChain>();
 	for (const swap of swaps) {
 		if (predecessorOf.has(swap.id)) {
 			continue;
 		}
 
-		const hops: LogicalTransaction[] = [ swap ];
-		const visited = new Set<string>([ swap.id ]);
-		let current = swap;
-		while (true) {
-			const next = successorOf.get(current.id);
-			if (next === undefined || visited.has(next.id)) {
-				break;
-			}
-
-			hops.push(next);
-			visited.add(next.id);
-			current = next;
-		}
-
-		if (hops.length < 2) {
+		const hops = walkChainFrom(swap, successorOf);
+		const tail = hops.at(-1);
+		if (hops.length < 2 || tail === undefined) {
 			continue;
 		}
 
-		const chain: SwapChain = { id: swap.id, head: swap, tail: current, hops };
+		const chain: SwapChain = { id: swap.id, head: swap, tail, hops };
 		for (const hop of hops) {
 			chainByMemberId.set(hop.id, chain);
 		}
@@ -1406,6 +1457,36 @@ function suppressSettledDuplicates(transactions: readonly LogicalTransaction[]):
 type ResolvedTransfer = {
 	anchorID: string;
 	transfer: KeetaAssetMovementTransaction;
+};
+
+/**
+ * The per-stream state threaded through {@link UserHistory.iterate}: the
+ * resolved query, whether the source can fold chains, and the dedupe sets and
+ * caches shared across pages.
+ */
+type IterationContext = {
+	perspective: string | undefined;
+	options: UserHistoryListOptions | undefined;
+	/**
+	 * Fold-capable sources resolve each linked predecessor by block hash, so a
+	 * chain whose tail is seen first (newest-first paging) is folded on the
+	 * spot and its older hops are skipped when they later page in.
+	 */
+	foldCapable: boolean;
+	/**
+	 * Hop ids already folded into an emitted conversion.
+	 */
+	consumed: Set<string>;
+	/**
+	 * Anchor transfer ids already emitted.
+	 */
+	emittedTransfers: Set<string>;
+	/**
+	 * On-chain blocks already represented by an emitted conversion.
+	 */
+	emittedBlocks: Set<string>;
+	externalCache: Map<string, ResolvedTransfer | undefined>;
+	readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>;
 };
 
 /**
@@ -1552,26 +1633,17 @@ export class UserHistory {
 	 */
 	async *iterate(account: HistoryAccount, options?: UserHistoryListOptions): AsyncGenerator<LogicalTransaction> {
 		const resolved = this.#withDefaultDecryptionKeys(account, options);
-		const externalCache = new Map<string, ResolvedTransfer | undefined>();
-		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
-		const perspective = perspectiveOf(account);
+		const context: IterationContext = {
+			perspective: perspectiveOf(account),
+			options: resolved,
+			foldCapable: typeof this.#history.getVoteStaple === 'function',
+			consumed: new Set<string>(),
+			emittedTransfers: new Set<string>(),
+			emittedBlocks: new Set<string>(),
+			externalCache: new Map<string, ResolvedTransfer | undefined>(),
+			readerCache: new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>()
+		};
 
-		/*
-		 * Fold-capable sources resolve each linked predecessor by block hash, so
-		 * a chain whose tail is seen first (newest-first paging) is folded on the
-		 * spot and its older hops are skipped when they later page in.
-		 */
-		const foldCapable = typeof this.#history.getVoteStaple === 'function';
-		const consumed = new Set<string>();
-
-		/*
-		 * Anchor transfer ids already emitted.
-		 */
-		const emittedTransfers = new Set<string>();
-		/*
-		 * On-chain blocks already represented by an emitted conversion.
-		 */
-		const emittedBlocks = new Set<string>();
 		let cursor = resolved?.cursor;
 		let yielded = 0;
 		while (true) {
@@ -1581,24 +1653,11 @@ export class UserHistory {
 			}
 
 			for (const entry of page) {
-				const logical = await this.#foldStaple(entry.voteStaple, perspective, resolved, externalCache, readerCache);
-				const emitted = foldCapable ? foldChains(logical) : logical;
-				for (const transaction of emitted) {
-					if (consumed.has(transaction.id)) {
+				for (const transaction of await this.#stapleEmissions(entry.voteStaple, context)) {
+					const out = await this.#nextEmission(transaction, context);
+					if (out === undefined) {
 						continue;
 					}
-
-					let out = transaction;
-					if (foldCapable) {
-						out = await this.#foldForward(transaction, consumed, perspective, resolved, externalCache, readerCache);
-					}
-
-					if (isSettledDuplicate(out, emittedTransfers) || isSettledLeg(out, emittedBlocks)) {
-						continue;
-					}
-
-					markEmittedTransfers(out, emittedTransfers);
-					markEmittedBlocks(out, emittedBlocks);
 
 					yield out;
 					yielded += 1;
@@ -1616,6 +1675,39 @@ export class UserHistory {
 
 			cursor = last.voteStaple.blocksHash.toString();
 		}
+	}
+
+	/**
+	 * Classify a staple into the logical transactions to consider, folding
+	 * chains up front when the source supports it.
+	 */
+	async #stapleEmissions(staple: HistoryStaple, context: IterationContext): Promise<LogicalTransaction[]> {
+		const logical = await this.#foldStaple(staple, context.perspective, context.options, context.externalCache, context.readerCache);
+		return(context.foldCapable ? foldChains(logical) : logical);
+	}
+
+	/**
+	 * Resolve a candidate to the transaction that should be emitted, or
+	 * `undefined` when it is an already-consumed hop or a duplicate settlement
+	 * leg. Folds the candidate forward and records what it settles.
+	 */
+	async #nextEmission(transaction: LogicalTransaction, context: IterationContext): Promise<LogicalTransaction | undefined> {
+		if (context.consumed.has(transaction.id)) {
+			return(undefined);
+		}
+
+		let out = transaction;
+		if (context.foldCapable) {
+			out = await this.#foldForward(transaction, context.consumed, context.perspective, context.options, context.externalCache, context.readerCache);
+		}
+
+		if (isSettledDuplicate(out, context.emittedTransfers) || isSettledLeg(out, context.emittedBlocks)) {
+			return(undefined);
+		}
+
+		markEmittedTransfers(out, context.emittedTransfers);
+		markEmittedBlocks(out, context.emittedBlocks);
+		return(out);
 	}
 
 	/**
