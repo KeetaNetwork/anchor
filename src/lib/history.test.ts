@@ -105,10 +105,6 @@ async function runHistory(blocks: Block[], source?: AnchorStatusSource<KeetaAsse
 	const history = new UserHistory(config);
 	const account = queriedAccount ?? blocks[0]?.account ?? null;
 
-	/*
-	 * Listing is lean by default now; these classification/enrichment cases
-	 * opt in unless a case explicitly overrides `enrich`.
-	 */
 	const transactions = await history.list(account, { enrich: true, ...options });
 	return(transactions);
 }
@@ -1452,30 +1448,26 @@ test('a folded multi-hop atomic FX chain retains anchor enrichment', async funct
 	expect(swap?.refs.anchorTxIDs.length).toBeGreaterThan(0);
 });
 
-test('lists leanly by default, then enriches a single transaction on demand', async function() {
+test('lists with no enrichment by default, then enriches a single transaction on demand', async function() {
 	const fixture = await startFXExchangeFixture();
 	await using server = fixture.server;
 	void server;
 
-	/*
-	 * The default list is lean: the swap classifies by on-chain shape with no
-	 * anchor attribution, sparing the per-operation anchor HTTP calls.
-	 */
-	const lean = await fixture.history.list(fixture.userAccount);
-	const leanSwap = lean.find(transaction => transaction.type === 'swap');
-	if (leanSwap === undefined) {
-		throw(new Error('Expected a shape-classified swap in the lean list'));
+	const simple = await fixture.history.list(fixture.userAccount);
+	const simpleSwap = simple.find(transaction => transaction.type === 'swap');
+	if (simpleSwap === undefined) {
+		throw(new Error('Expected a shape-classified swap in the simple list'));
 	}
 
-	expect(leanSwap.counterparty?.kind).not.toBe('anchor');
-	expect(leanSwap.providerStatus).toBeUndefined();
-	expect(leanSwap.refs.anchorTxIDs).toHaveLength(0);
+	expect(simpleSwap.counterparty?.kind).not.toBe('anchor');
+	expect(simpleSwap.providerStatus).toBeUndefined();
+	expect(simpleSwap.refs.anchorTxIDs).toHaveLength(0);
 
 	/*
 	 * Enriching just that transaction resolves its anchor attribution, the way
 	 * a detail view would.
 	 */
-	const enriched = await fixture.history.enrichTransaction(leanSwap, fixture.userAccount);
+	const enriched = await fixture.history.enrichTransaction(simpleSwap, fixture.userAccount);
 	expect(enriched.type).toBe('swap');
 	expect(enriched.counterparty?.kind).toBe('anchor');
 	expect(enriched.providerStatus).toBeDefined();
@@ -1493,8 +1485,7 @@ test('iterate folds a linked FX chain incrementally, matching list', async funct
 	}
 
 	/*
-	 * The stream itself now yields the folded conversion (not the two raw
-	 * hops), so iterate() and list() agree.
+	 * The stream itself now yields the folded conversion.
 	 */
 	const swaps = streamed.filter(transaction => transaction.type === 'swap');
 	expect(swaps).toHaveLength(1);
@@ -1819,18 +1810,13 @@ test('folds a non-atomic anchor conversion from on-chain inputs alone, without e
 	expect(enriched[0]?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
 	expect(enriched[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
 
-	/*
-	 * Lean (default, no anchor calls): the delivery's external inputs still link
-	 * it to the pay-in, so the conversion must fold into one swap from on-chain
-	 * shape alone - just without the anchor attribution enrichment adds.
-	 */
-	const lean = await history.list(user);
-	expect(lean).toHaveLength(1);
-	expect(lean[0]?.type).toBe('swap');
-	expect(lean[0]?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
-	expect(lean[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
-	expect(lean[0]?.refs.blockHashes).toEqual(expect.arrayContaining([ payIn.hash.toString(), delivery.hash.toString() ]));
-	expect(lean[0]?.refs.anchorTxIDs).toHaveLength(0);
+	const simple = await history.list(user);
+	expect(simple).toHaveLength(1);
+	expect(simple[0]?.type).toBe('swap');
+	expect(simple[0]?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
+	expect(simple[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
+	expect(simple[0]?.refs.blockHashes).toEqual(expect.arrayContaining([ payIn.hash.toString(), delivery.hash.toString() ]));
+	expect(simple[0]?.refs.anchorTxIDs).toHaveLength(0);
 });
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {
