@@ -104,7 +104,8 @@ async function runHistory(blocks: Block[], source?: AnchorStatusSource<KeetaAsse
 
 	const history = new UserHistory(config);
 	const account = queriedAccount ?? blocks[0]?.account ?? null;
-	const transactions = await history.list(account, options);
+
+	const transactions = await history.list(account, { enrich: true, ...options });
 	return(transactions);
 }
 
@@ -357,6 +358,48 @@ test('an atomic swap omits the fee when the non-principal sends use more than on
 	expect(transaction?.send).toEqual({ token: tokenA.publicKeyString.get(), amount: 1000n });
 	expect(transaction?.receive).toEqual({ token: tokenB.publicKeyString.get(), amount: 990n });
 	expect(transaction?.fee).toBeUndefined();
+});
+
+test('folds an accepted swap into one swap from the acceptor perspective', async function() {
+	const creator = newAccount();
+	const acceptor = newAccount();
+	const tokenA = newToken(creator, 0);
+	const tokenB = newToken(creator, 1);
+
+	/*
+	 * Web-wallet P2P accept: the creator's pre-signed SEND+RECEIVE(exact)
+	 * block and the acceptor's SEND-only block publish in one staple. The
+	 * acceptor's receive of tokenA lives in the creator's block.
+	 */
+	const creatorBlock = await seal(creator, [ sendOp(acceptor, tokenA, 1000n), receiveOp(acceptor, tokenB, 990n) ]);
+	const acceptorBlock = await seal(acceptor, [ sendOp(creator, tokenB, 990n) ]);
+
+	const [ transaction, ...rest ] = await runHistory([ acceptorBlock, creatorBlock ], undefined, undefined, acceptor);
+	expect(rest).toHaveLength(0);
+	expect(transaction?.type).toBe('swap');
+	expect(transaction?.direction).toBe('self');
+	expect(transaction?.send).toEqual({ token: tokenB.publicKeyString.get(), amount: 990n });
+	expect(transaction?.receive).toEqual({ token: tokenA.publicKeyString.get(), amount: 1000n });
+	expect(transaction?.counterparty).toEqual({ kind: 'account', id: creator.publicKeyString.get() });
+	expect(transaction?.legs).toHaveLength(2);
+});
+
+test('leaves a send-only block unfolded when the counterparty does not exactly consume it', async function() {
+	const me = newAccount();
+	const other = newAccount();
+	const tokenX = newToken(me, 0);
+	const tokenY = newToken(me, 1);
+
+	/*
+	 * The counterparty sends tokenY back but only partially receives tokenX,
+	 * so the receive does not exactly consume the send: this is not a swap.
+	 */
+	const myBlock = await seal(me, [ sendOp(other, tokenX, 500n) ]);
+	const otherBlock = await seal(other, [ receiveOp(me, tokenX, 400n), sendOp(me, tokenY, 300n) ]);
+
+	const transactions = await runHistory([ myBlock, otherBlock ], undefined, undefined, me);
+	expect(transactions.some(transaction => transaction.type === 'swap')).toBe(false);
+	expect(transactions.some(transaction => transaction.type === 'send' && transaction.send?.token === tokenX.publicKeyString.get())).toBe(true);
 });
 
 // #endregion Block-shape classification
@@ -898,7 +941,7 @@ test('resolves a real withdraw end-to-end through a live node and anchor server'
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const withdraw = transactions.find(transaction => transaction.type === 'withdraw');
 	expect(withdraw).toBeDefined();
 	expect(withdraw?.status).toBe('complete');
@@ -918,7 +961,7 @@ test('resolves a real deposit payout end-to-end from an anchor-issued send', asy
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const deposit = transactions.find(transaction => transaction.type === 'deposit');
 	expect(deposit).toBeDefined();
 	expect(deposit?.status).toBe('complete');
@@ -1282,7 +1325,7 @@ test('folds a real FX exchange into a single swap transaction', async function()
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount, { includeSource: true });
+	const transactions = await fixture.history.list(fixture.userAccount, { includeSource: true, enrich: true });
 	const swaps = transactions.filter(transaction => transaction.type === 'swap');
 	expect(swaps).toHaveLength(1);
 
@@ -1303,7 +1346,7 @@ test('attributes FX swap principal, receive and fee correctly', async function()
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const swap = transactions.find(transaction => transaction.type === 'swap');
 	expect(swap).toBeDefined();
 	expect(swap?.direction).toBe('self');
@@ -1317,7 +1360,7 @@ test('links a real FX exchange to its anchor provider', async function() {
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const swap = transactions.find(transaction => transaction.type === 'swap');
 	expect(swap?.counterparty?.kind).toBe('anchor');
 	expect(swap?.providerStatus).toBeDefined();
@@ -1329,7 +1372,7 @@ test('degrades to a shape-only swap when the FX provider cannot be resolved', as
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const swaps = transactions.filter(transaction => transaction.type === 'swap');
 	expect(swaps).toHaveLength(1);
 
@@ -1354,7 +1397,7 @@ test('reports the net principal for a variable-rate swap that refunds slippage',
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const swap = transactions.find(transaction => transaction.type === 'swap');
 	expect(swap).toBeDefined();
 	expect(swap?.counterparty?.kind).toBe('anchor');
@@ -1373,7 +1416,7 @@ test('surfaces the on-chain input a later FX swap declares and folds the chain i
 	await using server = fixture.server;
 	void server;
 
-	const transactions = await fixture.history.list(fixture.userAccount);
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
 	const swaps = transactions.filter(transaction => transaction.type === 'swap');
 	expect(swaps).toHaveLength(1);
 
@@ -1390,6 +1433,47 @@ test('surfaces the on-chain input a later FX swap declares and folds the chain i
 	expect(refolded).toHaveLength(1);
 });
 
+test('a folded multi-hop atomic FX chain retains anchor enrichment', async function() {
+	const fixture = await startChainedFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const transactions = await fixture.history.list(fixture.userAccount, { enrich: true });
+	const swaps = transactions.filter(transaction => transaction.type === 'swap');
+	expect(swaps).toHaveLength(1);
+
+	const swap = swaps[0];
+	expect(swap?.counterparty?.kind).toBe('anchor');
+	expect(swap?.providerStatus).toBeDefined();
+	expect(swap?.refs.anchorTxIDs.length).toBeGreaterThan(0);
+});
+
+test('lists with no enrichment by default, then enriches a single transaction on demand', async function() {
+	const fixture = await startFXExchangeFixture();
+	await using server = fixture.server;
+	void server;
+
+	const simple = await fixture.history.list(fixture.userAccount);
+	const simpleSwap = simple.find(transaction => transaction.type === 'swap');
+	if (simpleSwap === undefined) {
+		throw(new Error('Expected a shape-classified swap in the simple list'));
+	}
+
+	expect(simpleSwap.counterparty?.kind).not.toBe('anchor');
+	expect(simpleSwap.providerStatus).toBeUndefined();
+	expect(simpleSwap.refs.anchorTxIDs).toHaveLength(0);
+
+	/*
+	 * Enriching just that transaction resolves its anchor attribution, the way
+	 * a detail view would.
+	 */
+	const enriched = await fixture.history.enrichTransaction(simpleSwap, fixture.userAccount);
+	expect(enriched.type).toBe('swap');
+	expect(enriched.counterparty?.kind).toBe('anchor');
+	expect(enriched.providerStatus).toBeDefined();
+	expect(enriched.refs.anchorTxIDs.length).toBeGreaterThan(0);
+});
+
 test('iterate folds a linked FX chain incrementally, matching list', async function() {
 	const fixture = await startChainedFXExchangeFixture();
 	await using server = fixture.server;
@@ -1401,8 +1485,7 @@ test('iterate folds a linked FX chain incrementally, matching list', async funct
 	}
 
 	/*
-	 * The stream itself now yields the folded conversion (not the two raw
-	 * hops), so iterate() and list() agree.
+	 * The stream itself now yields the folded conversion.
 	 */
 	const swaps = streamed.filter(transaction => transaction.type === 'swap');
 	expect(swaps).toHaveLength(1);
@@ -1620,7 +1703,7 @@ test('iterate suppresses a swap delivery that funds a chained bridge, leaving on
 	 * The swap (pay-in) folds into the bridge as one outbound conversion; the
 	 * anchor's intermediate mid-token delivery is dropped as the other leg.
 	 */
-	const transactions = await history.list(user);
+	const transactions = await history.list(user, { enrich: true });
 	expect(transactions).toHaveLength(1);
 
 	const conversion = transactions[0];
@@ -1679,10 +1762,61 @@ test('iterate absorbs an unresolved delivery leg linked to the funding block', a
 		status: new AnchorTransactionStatus(status)
 	});
 
-	const transactions = await history.list(user);
+	const transactions = await history.list(user, { enrich: true });
 	expect(transactions).toHaveLength(1);
 	expect(transactions[0]?.type).toBe('bridge');
 	expect(transactions.some(transaction => transaction.refs.blockHashes.includes(delivery.hash.toString()))).toBe(false);
+});
+
+test('folds a non-atomic anchor conversion from on-chain inputs alone, without enrichment', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const source0 = newToken(user, 0);
+	const mid = newToken(user, 1);
+
+	const swap = makeTransfer({
+		id: 'transfer-1',
+		status: 'COMPLETE',
+		asset: { from: source0.publicKeyString.get(), to: mid.publicKeyString.get() },
+		fromLocation: KEETA_LOCATION,
+		toLocation: KEETA_LOCATION,
+		fromValue: '1000',
+		toValue: '999'
+	});
+
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, swap);
+
+	const payInExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-1' }).build();
+	const payIn = await seal(user, [ sendOp(anchor, source0, 1000n, payInExternal) ]);
+
+	const deliveryExternal = await new AnchorExternal.Builder()
+		.setAnchor(anchor, { transactionId: 'transfer-1' })
+		.withSigner(anchor)
+		.withBinding(KeetaNet.lib.Block.NO_PREVIOUS, 0)
+		.addInput(payIn.hash.toString(), 0)
+		.build();
+	const delivery = await seal(anchor, [ sendOp(user, mid, 999n, deliveryExternal) ]);
+
+	const history = new UserHistory({
+		history: pagedFoldCapableSource([ delivery, payIn ]),
+		status: new AnchorTransactionStatus(status)
+	});
+
+	/* Enriched: the anchor transfer ties both legs into one Converted swap. */
+	const enriched = await history.list(user, { enrich: true });
+	expect(enriched).toHaveLength(1);
+	expect(enriched[0]?.type).toBe('swap');
+	expect(enriched[0]?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
+	expect(enriched[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
+
+	const simple = await history.list(user);
+	expect(simple).toHaveLength(1);
+	expect(simple[0]?.type).toBe('swap');
+	expect(simple[0]?.send).toEqual({ token: source0.publicKeyString.get(), amount: 1000n });
+	expect(simple[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
+	expect(simple[0]?.refs.blockHashes).toEqual(expect.arrayContaining([ payIn.hash.toString(), delivery.hash.toString() ]));
+	expect(simple[0]?.refs.anchorTxIDs).toHaveLength(0);
 });
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {
@@ -1763,6 +1897,28 @@ test('foldChains drops the headline fee when hops pay fees in different tokens',
 
 	const folded = foldChains([ hop2, hop1 ]);
 	expect(folded[0]?.fee).toBeUndefined();
+});
+
+test('foldChains folds a pay-in send capped by its delivery receive into one swap', function() {
+	const payIn: LogicalTransaction = { id: 'p1:0', type: 'send', status: 'complete', direction: 'out', timestamp: '2026-01-01T00:00:00.000Z', send: { token: 'tokenA', amount: 1000n }, counterparty: { kind: 'account', id: 'anchorX' }, legs: [], refs: { blockHashes: [ 'p1' ], anchorTxIDs: [] }};
+	const delivery: LogicalTransaction = { id: 'd1:0', type: 'receive', status: 'complete', direction: 'in', timestamp: '2026-01-01T00:05:00.000Z', receive: { token: 'tokenB', amount: 999n }, counterparty: { kind: 'account', id: 'anchorX' }, legs: [], refs: { blockHashes: [ 'd1' ], anchorTxIDs: [], inputs: [ { blockHash: 'p1' } ] }};
+
+	const folded = foldChains([ delivery, payIn ]);
+	expect(folded).toHaveLength(1);
+	expect(folded[0]?.type).toBe('swap');
+	expect(folded[0]?.direction).toBe('self');
+	expect(folded[0]?.send).toEqual({ token: 'tokenA', amount: 1000n });
+	expect(folded[0]?.receive).toEqual({ token: 'tokenB', amount: 999n });
+	expect(folded[0]?.refs.blockHashes).toEqual(expect.arrayContaining([ 'p1', 'd1' ]));
+});
+
+test('foldChains leaves a receive linked to a non-send predecessor unfolded', function() {
+	const swap = makeSwap({ id: 's1:0', blockHash: 's1', send: { token: 'tokenA', amount: 1000n }, receive: { token: 'tokenB', amount: 999n }});
+	const deliveryLeg: LogicalTransaction = { id: 'r1:0', type: 'receive', status: 'complete', direction: 'in', timestamp: '2026-01-01T00:05:00.000Z', receive: { token: 'tokenB', amount: 999n }, legs: [], refs: { blockHashes: [ 'r1' ], anchorTxIDs: [], inputs: [ { blockHash: 's1' } ] }};
+
+	const folded = foldChains([ deliveryLeg, swap ]);
+	expect(folded).toHaveLength(2);
+	expect(folded.map(transaction => transaction.type).sort()).toEqual([ 'receive', 'swap' ]);
 });
 
 // #endregion foldChains
