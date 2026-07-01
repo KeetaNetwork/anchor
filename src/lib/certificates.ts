@@ -438,20 +438,9 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		// @ts-expect-error
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
 	} catch (firstError) {
-		// Special handling for entityType: positional raw walk for pre-wrapper certificates
-		if (name === 'entityType') {
-			try {
-				const candidate = decodeEntityTypeFallback(value, principals);
-				return(asAttributeValue(name, candidate));
-			} catch {
-				throw(firstError);
-			}
-		}
-
 		/*
-		 * Fall back to historical wire formats, most-recent first:
-		 *   1. CHOICE fields encoded bare, before the positional wrapper was added
-		 *   2. All context tags stripped, before any positional wrappers existed
+		 * Certificates signed before CHOICE fields gained their positional wrapper
+		 * encode those fields bare; retry with the pre-wrapper schema
 		 */
 		try {
 			const legacyChoiceSchema = toLegacyChoiceSchema(schema);
@@ -459,13 +448,25 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 			decodedASN1 = new ASN1.BufferStorageASN1(value, legacyChoiceSchema).getASN1();
 			usedSchema = legacyChoiceSchema;
 		} catch {
+			/*
+			 * Fallback: try with backwards-compatible schema (context tags stripped)
+			 * This supports old certificates encoded before context tags were added
+			 */
 			try {
+				/*
+				 * Special handling for entityType
+				 */
+				if (name === 'entityType') {
+					const candidate = decodeEntityTypeFallback(value, principals);
+					return(asAttributeValue(name, candidate));
+				}
+
 				const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
 				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 				decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
 				usedSchema = backwardsCompatSchema;
 			} catch {
-				// If every format fails, throw the original error
+				// If both fail, throw the original error
 				throw(firstError);
 			}
 		}
