@@ -627,7 +627,7 @@ test('an undecodable external degrades to a plain send and keeps the raw string'
 	expect(transaction?.refs.external).toEqual([ external ]);
 });
 
-test('enrichment can be disabled to classify from block shape only', async function() {
+test('enrichment can be disabled; a declared-anchor send is a provisional withdraw', async function() {
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
@@ -646,8 +646,17 @@ test('enrichment can be disabled to classify from block shape only', async funct
 	const source = new TestStatusSource();
 	source.registerByTxID(anchor, transfer);
 
+	/*
+	 * The block is owned by the perspective and declares an anchor transfer id
+	 * locally, so with enrichment off it is a provisional withdraw attributed to
+	 * the anchor. The authoritative bridge/withdraw split arrives on enrichment.
+	 */
 	const [ transaction ] = await runHistory([ block ], source, { enrich: false });
-	expect(transaction?.type).toBe('send');
+	expect(transaction?.type).toBe('withdraw');
+	expect(transaction?.provisional).toBe(true);
+	expect(transaction?.counterparty).toEqual({ kind: 'anchor', id: anchor.publicKeyString.get() });
+	expect(transaction?.refs.declaredAnchorTxIDs).toEqual([ 'withdraw-tx' ]);
+	expect(transaction?.refs.anchorTxIDs).toEqual([]);
 	expect(transaction?.refs.external).toEqual([ external ]);
 });
 
@@ -1817,6 +1826,199 @@ test('folds a non-atomic anchor conversion from on-chain inputs alone, without e
 	expect(simple[0]?.receive).toEqual({ token: mid.publicKeyString.get(), amount: 999n });
 	expect(simple[0]?.refs.blockHashes).toEqual(expect.arrayContaining([ payIn.hash.toString(), delivery.hash.toString() ]));
 	expect(simple[0]?.refs.anchorTxIDs).toHaveLength(0);
+	/* A folded on-chain swap is authoritative, not provisional, but now names the anchor locally. */
+	expect(simple[0]?.provisional).toBeUndefined();
+	expect(simple[0]?.counterparty).toEqual({ kind: 'anchor', id: anchor.publicKeyString.get() });
+});
+
+test('groups two legs of one anchor transfer by their declared id, without enrichment', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const token = newToken(user, 0);
+
+	/*
+	 * transfer-7 is settled by two owned pay-in sends with NO on-chain input
+	 * edge between them; only the shared declared id ties them together.
+	 */
+	const externalA = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const legA = await seal(user, [ sendOp(anchor, token, 50n, externalA) ]);
+	const externalB = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const legB = await seal(user, [ sendOp(anchor, token, 50n, externalB) ]);
+
+	const listed = new UserHistory({ history: pagedFoldCapableSource([ legB, legA ]) });
+	const rows = await listed.list(user);
+	expect(rows).toHaveLength(1);
+	expect(rows[0]?.type).toBe('withdraw');
+	expect(rows[0]?.provisional).toBe(true);
+	expect(rows[0]?.counterparty).toEqual({ kind: 'anchor', id: anchor.publicKeyString.get() });
+	expect(rows[0]?.refs.declaredAnchorTxIDs).toEqual([ 'transfer-7' ]);
+	expect(rows[0]?.refs.anchorTxIDs).toHaveLength(0);
+	/* Drop-not-merge: the surviving row keeps a single leg's block hash. */
+	expect(rows[0]?.refs.blockHashes).toHaveLength(1);
+
+	/* The streaming path collapses the same legs the same way. */
+	const streamed: LogicalTransaction[] = [];
+	for await (const row of listed.iterate(user)) {
+		streamed.push(row);
+	}
+	expect(streamed).toHaveLength(1);
+	expect(streamed[0]?.type).toBe('withdraw');
+});
+
+test('enrichTransaction on a deduped provisional row matches a full enrich', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const token = newToken(user, 0);
+
+	const transfer = makeTransfer({
+		id: 'transfer-7',
+		status: 'COMPLETE',
+		asset: token.publicKeyString.get(),
+		fromLocation: KEETA_LOCATION,
+		toLocation: MOBILE_LOCATION,
+		fromValue: '100',
+		toValue: '100',
+		fee: { asset: token.publicKeyString.get(), value: '1' }
+	});
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, transfer);
+
+	const externalA = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const legA = await seal(user, [ sendOp(anchor, token, 50n, externalA) ]);
+	const externalB = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const legB = await seal(user, [ sendOp(anchor, token, 50n, externalB) ]);
+
+	const history = new UserHistory({ history: pagedFoldCapableSource([ legB, legA ]), status: new AnchorTransactionStatus(status) });
+
+	const [ provisional ] = await history.list(user);
+	if (provisional === undefined) {
+		throw(new Error('expected a provisional row'));
+	}
+
+	expect(provisional.provisional).toBe(true);
+	expect(provisional.refs.blockHashes).toHaveLength(1);
+
+	const enrichedOnDemand = await history.enrichTransaction(provisional, user);
+	const [ enrichedList ] = await history.list(user, { enrich: true });
+
+	expect(enrichedOnDemand.provisional).toBeUndefined();
+	expect(enrichedOnDemand.type).toBe(enrichedList?.type);
+	expect(enrichedOnDemand.direction).toBe(enrichedList?.direction);
+	expect(enrichedOnDemand.status).toBe(enrichedList?.status);
+	expect(enrichedOnDemand.send).toEqual(enrichedList?.send);
+	expect(enrichedOnDemand.receive).toEqual(enrichedList?.receive);
+	expect(enrichedOnDemand.fee).toEqual(enrichedList?.fee);
+	expect(enrichedOnDemand.counterparty).toEqual(enrichedList?.counterparty);
+});
+
+test('an unsigned foreign declaration is not trusted for grouping or attribution', async function() {
+	const user = newAccount();
+	const other = newAccount();
+	const anchor = newAccount();
+	const token = newToken(other, 0);
+
+	/*
+	 * A foreign block (issued by `other`, not the perspective) declares an
+	 * unsigned anchor id. The perspective must not trust it: no grouping, no
+	 * anchor attribution, no provisional relabel.
+	 */
+	const foreignExternal = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const foreign = await seal(other, [ sendOp(user, token, 30n, foreignExternal) ]);
+
+	const [ row ] = await runHistory([ foreign ], undefined, { enrich: false }, user);
+	expect(row?.type).toBe('receive');
+	expect(row?.provisional).toBeUndefined();
+	expect(row?.counterparty).toEqual({ kind: 'account', id: other.publicKeyString.get() });
+	expect(row?.refs.declaredAnchorTxIDs).toBeUndefined();
+});
+
+test('groups a multi-hop declared-anchor conversion into one row, without enrichment', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const liquidity = newAccount();
+	const tokenP = newToken(user, 0);
+	const tokenM = newToken(user, 1);
+	const tokenFinal = newToken(user, 2);
+
+	/*
+	 * Mirrors a real two-hop anchor swap: transfer-7 (P -> M) settled by a user
+	 * pay-in and a signed anchor delivery, feeding transfer-9 (M -> final) whose
+	 * pay-in declares the transfer-7 pay-in as its on-chain input. All three
+	 * blocks are one user-facing conversion; the enriched list already folds
+	 * them into one row and the unenriched list must match that grouping.
+	 */
+	const transfer7 = makeTransfer({
+		id: 'transfer-7',
+		status: 'COMPLETE',
+		asset: { from: tokenP.publicKeyString.get(), to: tokenM.publicKeyString.get() },
+		fromLocation: KEETA_LOCATION,
+		toLocation: KEETA_LOCATION,
+		fromValue: '1000',
+		toValue: '999'
+	});
+	const transfer9 = makeTransfer({
+		id: 'transfer-9',
+		status: 'COMPLETE',
+		asset: { from: tokenM.publicKeyString.get(), to: tokenFinal.publicKeyString.get() },
+		fromLocation: KEETA_LOCATION,
+		toLocation: KEETA_LOCATION,
+		fromValue: '999',
+		toValue: '990'
+	});
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, transfer7);
+	status.registerByTxID(anchor, transfer9);
+
+	const payIn7External = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-7' }).build();
+	const payIn7 = await seal(user, [ sendOp(liquidity, tokenP, 1000n, payIn7External) ]);
+
+	const delivery7External = await new AnchorExternal.Builder()
+		.setAnchor(anchor, { transactionId: 'transfer-7' })
+		.withSigner(anchor)
+		.withBinding(KeetaNet.lib.Block.NO_PREVIOUS, 0)
+		.build();
+	const delivery7 = await seal(anchor, [ sendOp(user, tokenM, 999n, delivery7External) ]);
+
+	const payIn9External = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'transfer-9' }).addInput(payIn7.hash.toString(), 0).build();
+	const payIn9 = await seal(user, [ sendOp(liquidity, tokenM, 999n, payIn9External) ]);
+
+	const history = new UserHistory({
+		history: pagedFoldCapableSource([ payIn9, delivery7, payIn7 ]),
+		status: new AnchorTransactionStatus(status)
+	});
+
+	/* Unenriched: the two pay-ins chain by their input edge, the delivery is absorbed. */
+	const simple = await history.list(user);
+	expect(simple).toHaveLength(1);
+	const conversion = simple[0];
+	expect(conversion?.type).toBe('withdraw');
+	expect(conversion?.provisional).toBe(true);
+	expect(conversion?.counterparty).toEqual({ kind: 'anchor', id: anchor.publicKeyString.get() });
+	expect(conversion?.refs.blockHashes).toEqual(expect.arrayContaining([ payIn7.hash.toString(), payIn9.hash.toString() ]));
+	expect(conversion?.refs.declaredAnchorTxIDs).toEqual(expect.arrayContaining([ 'transfer-7', 'transfer-9' ]));
+	expect(conversion?.refs.anchorTxIDs).toHaveLength(0);
+	expect(conversion?.refs.blockHashes).not.toContain(delivery7.hash.toString());
+
+	/* Enriched folds the same three blocks into one row too. */
+	const enriched = await history.list(user, { enrich: true });
+	expect(enriched).toHaveLength(1);
+	expect(enriched[0]?.type).toBe('swap');
+	expect(enriched[0]?.provisional).toBeUndefined();
+
+	/*
+	 * Enriching the grouped row on demand must keep the source (and its
+	 * perspective) a detail view needs; a folded conversion is built fresh and
+	 * would otherwise carry no source.
+	 */
+	const [ withSource ] = await history.list(user, { includeSource: true });
+	if (withSource === undefined) {
+		throw(new Error('expected a grouped row'));
+	}
+
+	const enrichedRow = await history.enrichTransaction(withSource, user, { includeSource: true });
+	expect(enrichedRow.type).toBe('swap');
+	expect(enrichedRow.source).toBeDefined();
+	expect(enrichedRow.source?.enriched.perspective).toBe(user.publicKeyString.get());
 });
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {

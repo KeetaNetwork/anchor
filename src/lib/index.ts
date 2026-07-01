@@ -24,6 +24,7 @@ export {
 	foldChains
 } from './history.js';
 export type {
+	DeclaredAnchorRef,
 	EnrichedBlock,
 	EnrichedOperation,
 	HistoryEntry,
