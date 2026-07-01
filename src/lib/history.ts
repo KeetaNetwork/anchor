@@ -146,6 +146,12 @@ export type LogicalTransaction = {
 	 */
 	providerStatus?: string;
 	/**
+	 * Set when `type` and `counterparty` were inferred locally from the block's
+	 * anchor `external` without enrichment, so the wallet can render a tentative
+	 * label and enrich on demand. Cleared once the transfer resolves.
+	 */
+	provisional?: boolean;
+	/**
 	 * Flow of value relative to the queried account.
 	 */
 	direction: LogicalDirection;
@@ -194,6 +200,12 @@ export type LogicalTransaction = {
 		 * from the `external` envelope.
 		 */
 		inputs?: AnchorExternalInput[];
+		/**
+		 * Anchor transfer ids declared locally by the block's SEND `external`
+		 * envelopes, available without enrichment. Superseded by `anchorTxIDs`
+		 * once the transfer is resolved.
+		 */
+		declaredAnchorTxIDs?: string[];
 	};
 	/**
 	 * Raw source the transaction was folded from. Present only when
@@ -275,6 +287,33 @@ export type EnrichedBlock = {
 	 * anchor status resolution. Present only when non-empty.
 	 */
 	inputs?: AnchorExternalInput[];
+	/**
+	 * Anchor transfer references decoded locally from the block's SEND
+	 * `external` envelopes and trusted (block-owned by the perspective or
+	 * anchor-signed). Present only when non-empty.
+	 */
+	declaredAnchors?: DeclaredAnchorRef[];
+};
+
+/**
+ * An anchor transfer reference decoded locally from a block's SEND `external`
+ * envelope. `signed` is true when the envelope was signed by `anchorID`, which
+ * makes the reference trustworthy even for a block the perspective does not own.
+ */
+export type DeclaredAnchorRef = {
+	/**
+	 * Anchor public key string the entry is filed under.
+	 */
+	anchorID: string;
+	/**
+	 * Anchor-scoped transaction id declared for this transfer. Matches the
+	 * resolved transfer's id later carried in `refs.anchorTxIDs`.
+	 */
+	transactionID: string;
+	/**
+	 * Whether the declaring `external` was signed by `anchorID`.
+	 */
+	signed: boolean;
 };
 
 /**
@@ -677,10 +716,13 @@ function blockExternals(block: EnrichedBlock): string[] {
 }
 
 /**
- * Decode the on-chain `inputs` declared by a block's SEND `external` envelopes.
+ * Decode a block's SEND `external` envelopes into the on-chain `inputs` they
+ * declare and the anchor transfers they name. Both are captured locally,
+ * independent of anchor status resolution; undecodable envelopes are skipped.
  */
-async function decodeExternalInputs(externals: readonly string[], decryptionKeys: VerifiableAccount[] | undefined): Promise<AnchorExternalInput[]> {
+async function decodeExternalEnvelopes(externals: readonly string[], decryptionKeys: VerifiableAccount[] | undefined): Promise<{ inputs: AnchorExternalInput[]; declaredAnchors: DeclaredAnchorRef[] }> {
 	const inputs: AnchorExternalInput[] = [];
+	const declaredAnchors: DeclaredAnchorRef[] = [];
 	for (const external of externals) {
 		let decoded: AnchorExternal;
 		try {
@@ -700,9 +742,52 @@ async function decodeExternalInputs(externals: readonly string[], decryptionKeys
 				inputs.push(inputReference);
 			}
 		}
+
+		const signerID = decoded.signed?.signer.publicKeyString.get();
+		for (const [ anchorID, entry ] of Object.entries(decoded.envelope.anchors)) {
+			if (!('transactionId' in entry)) {
+				continue;
+			}
+
+			declaredAnchors.push({ anchorID, transactionID: entry.transactionId, signed: signerID === anchorID });
+		}
 	}
 
-	return(inputs);
+	return({ inputs, declaredAnchors });
+}
+
+/**
+ * The single anchor a block's trusted declarations name, or `undefined` when
+ * there are none or they disagree.
+ */
+function declaredAnchorID(block: EnrichedBlock): string | undefined {
+	const refs = block.declaredAnchors ?? [];
+	const first = refs[0];
+	if (first === undefined) {
+		return(undefined);
+	}
+
+	for (const ref of refs) {
+		if (ref.anchorID !== first.anchorID) {
+			return(undefined);
+		}
+	}
+
+	return(first.anchorID);
+}
+
+/**
+ * The distinct anchor transfer ids a block declares locally, in order.
+ */
+function declaredAnchorTxIDsOf(block: EnrichedBlock): string[] {
+	const ids: string[] = [];
+	for (const ref of block.declaredAnchors ?? []) {
+		if (!ids.includes(ref.transactionID)) {
+			ids.push(ref.transactionID);
+		}
+	}
+
+	return(ids);
 }
 
 /**
@@ -717,6 +802,11 @@ function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransact
 
 	if (block.inputs !== undefined && block.inputs.length > 0) {
 		refs.inputs = block.inputs;
+	}
+
+	const declaredAnchorTxIDs = declaredAnchorTxIDsOf(block);
+	if (declaredAnchorTxIDs.length > 0) {
+		refs.declaredAnchorTxIDs = declaredAnchorTxIDs;
 	}
 
 	return(refs);
@@ -954,9 +1044,14 @@ const sendClassifier: LogicalClassifier = {
 			refs: buildRefs(block, [])
 		};
 
-		const counterparty = uniformCounterparty(sends);
-		if (counterparty !== undefined) {
-			transaction.counterparty = { kind: 'account', id: counterparty };
+		const anchorID = declaredAnchorID(block);
+		if (anchorID !== undefined) {
+			transaction.counterparty = { kind: 'anchor', id: anchorID };
+		} else {
+			const counterparty = uniformCounterparty(sends);
+			if (counterparty !== undefined) {
+				transaction.counterparty = { kind: 'account', id: counterparty };
+			}
 		}
 
 		return([ transaction ]);
@@ -989,9 +1084,14 @@ const receiveClassifier: LogicalClassifier = {
 			refs: buildRefs(block, [])
 		};
 
-		const counterparty = uniformCounterparty(receives);
-		if (counterparty !== undefined) {
-			transaction.counterparty = { kind: 'account', id: counterparty };
+		const anchorID = declaredAnchorID(block);
+		if (anchorID !== undefined) {
+			transaction.counterparty = { kind: 'anchor', id: anchorID };
+		} else {
+			const counterparty = uniformCounterparty(receives);
+			if (counterparty !== undefined) {
+				transaction.counterparty = { kind: 'account', id: counterparty };
+			}
 		}
 
 		return([ transaction ]);
@@ -1224,6 +1324,7 @@ type MergedHopRefs = {
 	anchorTxIDs: string[];
 	externals: string[];
 	inputs: AnchorExternalInput[];
+	declaredAnchorTxIDs: string[];
 };
 
 /**
@@ -1231,7 +1332,7 @@ type MergedHopRefs = {
  * and externals while preserving the ordered on-chain inputs.
  */
 function accumulateHopRefs(hops: readonly LogicalTransaction[]): MergedHopRefs {
-	const merged: MergedHopRefs = { blockHashes: [], anchorTxIDs: [], externals: [], inputs: [] };
+	const merged: MergedHopRefs = { blockHashes: [], anchorTxIDs: [], externals: [], inputs: [], declaredAnchorTxIDs: [] };
 	for (const hop of hops) {
 		for (const blockHash of hop.refs.blockHashes) {
 			pushUnique(merged.blockHashes, blockHash);
@@ -1244,6 +1345,9 @@ function accumulateHopRefs(hops: readonly LogicalTransaction[]): MergedHopRefs {
 		}
 		for (const input of hop.refs.inputs ?? []) {
 			merged.inputs.push(input);
+		}
+		for (const declaredAnchorTxID of hop.refs.declaredAnchorTxIDs ?? []) {
+			pushUnique(merged.declaredAnchorTxIDs, declaredAnchorTxID);
 		}
 	}
 
@@ -1338,7 +1442,7 @@ function conversionShape(head: LogicalTransaction, tail: LogicalTransaction, hop
 }
 
 function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): LogicalTransaction {
-	const { blockHashes, anchorTxIDs, externals, inputs } = accumulateHopRefs(hops);
+	const { blockHashes, anchorTxIDs, externals, inputs, declaredAnchorTxIDs } = accumulateHopRefs(hops);
 
 	const refs: LogicalTransaction['refs'] = { blockHashes, anchorTxIDs };
 	if (externals.length > 0) {
@@ -1347,6 +1451,10 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 
 	if (inputs.length > 0) {
 		refs.inputs = inputs;
+	}
+
+	if (declaredAnchorTxIDs.length > 0) {
+		refs.declaredAnchorTxIDs = declaredAnchorTxIDs;
 	}
 
 	const shape = conversionShape(head, tail, hops);
@@ -1396,6 +1504,19 @@ type FoldChain = {
 };
 
 /**
+ * An unenriched leg attributed to an anchor purely from its locally decoded
+ * `external` (a declared transfer id, no authoritative `anchorTxIDs` yet, and
+ * an anchor counterparty). These are the hops of an anchor conversion before
+ * enrichment resolves their true swap/bridge types, so they chain along their
+ * `inputs` edges the way resolved swaps do.
+ */
+function isLocalAnchorHop(transaction: LogicalTransaction): boolean {
+	return(transaction.refs.anchorTxIDs.length === 0
+		&& (transaction.refs.declaredAnchorTxIDs?.length ?? 0) > 0
+		&& transaction.counterparty?.kind === 'anchor');
+}
+
+/**
  * Whether `head` may fold into `successor` along their
  * `refs.inputs` <-> `refs.blockHashes` link: swaps chain into further swaps or
  * a capping bridge, and a pay-in `send` caps into its delivery `receive`. The
@@ -1403,6 +1524,16 @@ type FoldChain = {
  * {@link foldChains} pass and the incremental by-hash resolution.
  */
 function canLink(head: LogicalTransaction, successor: LogicalTransaction): boolean {
+	/*
+	 * Unenriched anchor hops chain to one another along their inputs edges the
+	 * way resolved swaps do, so a multi-hop anchor conversion folds into one row
+	 * without enrichment. The inputs edge itself is always separately required
+	 * by the caller.
+	 */
+	if (isLocalAnchorHop(head) && isLocalAnchorHop(successor)) {
+		return(true);
+	}
+
 	if (head.type === 'swap') {
 		return(successor.type === 'swap' || successor.type === 'bridge');
 	}
@@ -1466,8 +1597,8 @@ function walkChainFrom(head: LogicalTransaction, successorOf: ReadonlyMap<string
 }
 
 function buildChains(transactions: readonly LogicalTransaction[]): Map<string, FoldChain> {
-	const heads = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'send');
-	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive');
+	const heads = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'send' || isLocalAnchorHop(transaction));
+	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive' || isLocalAnchorHop(transaction));
 	const { successorOf, predecessorOf } = linkChainSuccessors(heads, successors);
 
 	const chainByMemberId = new Map<string, FoldChain>();
@@ -1522,11 +1653,27 @@ export function foldChains(transactions: readonly LogicalTransaction[]): Logical
 }
 
 /**
+ * The anchor transfer ids a transaction settles: the authoritative
+ * `anchorTxIDs` once enriched, otherwise the ids declared locally by the
+ * block's `external` so an unenriched list de-duplicates a transfer's several
+ * legs the same way. The empty-`anchorTxIDs` gate keeps enriched suppression
+ * identical to before.
+ */
+function settlementIDs(transaction: LogicalTransaction): readonly string[] {
+	const refs = transaction.refs;
+	if (refs.anchorTxIDs.length > 0) {
+		return(refs.anchorTxIDs);
+	}
+
+	return(refs.declaredAnchorTxIDs ?? []);
+}
+
+/**
  * Whether every anchor transfer a logical transaction settles has already been
  * emitted, marking it a duplicate settlement leg.
  */
 function isSettledDuplicate(transaction: LogicalTransaction, emitted: ReadonlySet<string>): boolean {
-	const ids = transaction.refs.anchorTxIDs;
+	const ids = settlementIDs(transaction);
 	if (ids.length === 0) {
 		return(false);
 	}
@@ -1538,7 +1685,7 @@ function isSettledDuplicate(transaction: LogicalTransaction, emitted: ReadonlySe
  * Record the anchor transfers a logical transaction settles.
  */
 function markEmittedTransfers(transaction: LogicalTransaction, emitted: Set<string>): void {
-	for (const id of transaction.refs.anchorTxIDs) {
+	for (const id of settlementIDs(transaction)) {
 		emitted.add(id);
 	}
 }
@@ -1590,6 +1737,49 @@ function suppressSettledDuplicates(transactions: readonly LogicalTransaction[]):
 	}
 
 	return(result);
+}
+
+/**
+ * Relabel a lone unenriched anchor leg to its provisional withdraw/deposit
+ * shape for display. A no-op once enriched (the row then carries authoritative
+ * `anchorTxIDs`), for folded swaps, and for rows with no trusted anchor
+ * declaration. Must run AFTER settlement suppression, since it rewrites `type`
+ * and would otherwise defeat the `type === 'receive'` gate in `isSettledLeg`.
+ */
+function normalizeProvisional(transaction: LogicalTransaction): LogicalTransaction {
+	const refs = transaction.refs;
+	if (refs.anchorTxIDs.length > 0) {
+		return(transaction);
+	}
+
+	if (refs.declaredAnchorTxIDs === undefined || refs.declaredAnchorTxIDs.length === 0) {
+		return(transaction);
+	}
+
+	if (transaction.counterparty?.kind !== 'anchor') {
+		return(transaction);
+	}
+
+	if (transaction.type !== 'send' && transaction.type !== 'receive') {
+		return(transaction);
+	}
+
+	return({ ...transaction, type: transaction.type === 'send' ? 'withdraw' : 'deposit', provisional: true });
+}
+
+/**
+ * Re-attach a caller's `source` to a conversion that lost it. A folded
+ * multi-hop conversion is built fresh by {@link mergeChainHops} and carries no
+ * `source`, so an `includeSource` enrichment would otherwise drop the
+ * perspective a detail view needs. Mirrors how {@link UserHistory.iterate}
+ * carries source into a folded conversion in its `#foldForward` pass.
+ */
+function attachConversionSource(transaction: LogicalTransaction, source: LogicalTransactionSource | undefined, includeSource: boolean): LogicalTransaction {
+	if (!includeSource || transaction.source !== undefined || source === undefined) {
+		return(transaction);
+	}
+
+	return({ ...transaction, source });
 }
 
 /**
@@ -1758,7 +1948,7 @@ export class UserHistory {
 			transactions.push(transaction);
 		}
 
-		const folded = suppressSettledDuplicates(foldChains(transactions));
+		const folded = suppressSettledDuplicates(foldChains(transactions)).map(normalizeProvisional);
 		if (limit !== undefined) {
 			return(folded.slice(0, limit));
 		}
@@ -1801,18 +1991,20 @@ export class UserHistory {
 
 		const blockHashes = new Set(transaction.refs.blockHashes);
 		const folded = foldChains(logical);
+		const includeSource = resolved?.includeSource === true;
+
 		const matchByID = folded.find(function(candidate) {
 			return(candidate.id === transaction.id);
 		});
 		if (matchByID !== undefined) {
-			return(matchByID);
+			return(attachConversionSource(normalizeProvisional(matchByID), transaction.source, includeSource));
 		}
 
 		const matchByBlock = folded.find(function(candidate) {
 			return(candidate.refs.blockHashes.some(hash => blockHashes.has(hash)));
 		});
 
-		return(matchByBlock ?? transaction);
+		return(attachConversionSource(normalizeProvisional(matchByBlock ?? transaction), transaction.source, includeSource));
 	}
 
 	/**
@@ -1897,7 +2089,7 @@ export class UserHistory {
 
 		markEmittedTransfers(out, context.emittedTransfers);
 		markEmittedBlocks(out, context.emittedBlocks);
-		return(out);
+		return(context.foldCapable ? normalizeProvisional(out) : out);
 	}
 
 	/**
@@ -1943,7 +2135,7 @@ export class UserHistory {
 	 * `consumed` so it is skipped when it later pages in.
 	 */
 	async #foldForward(transaction: LogicalTransaction, consumed: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction> {
-		const foldable = transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive';
+		const foldable = transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive' || isLocalAnchorHop(transaction);
 		if (!foldable || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
 			return(transaction);
 		}
@@ -2089,9 +2281,21 @@ export class UserHistory {
 			result.perspective = perspective;
 		}
 
-		const inputs = await decodeExternalInputs(blockExternals(result), options?.decryptionKeys);
-		if (inputs.length > 0) {
-			result.inputs = inputs;
+		const decoded = await decodeExternalEnvelopes(blockExternals(result), options?.decryptionKeys);
+		if (decoded.inputs.length > 0) {
+			result.inputs = decoded.inputs;
+		}
+
+		/*
+		 * Only trust a declared anchor reference when the block is issued by the
+		 * perspective (its own history) or the entry was signed by the anchor.
+		 * An unsigned foreign block could otherwise assert a transfer id it does
+		 * not own and corrupt grouping.
+		 */
+		const owned = perspective !== undefined && account === perspective;
+		const trustedAnchors = decoded.declaredAnchors.filter(ref => owned || ref.signed);
+		if (trustedAnchors.length > 0) {
+			result.declaredAnchors = trustedAnchors;
 		}
 
 		return(result);
