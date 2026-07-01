@@ -1330,8 +1330,6 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Get a profile client bound to the given account.
-	 * The session default visibility stays 'private'; the public projection is
-	 * written by passing `visibility: 'public'` explicitly per object.
 	 */
 	getProfileClient(config: ProfileClientConfig): StorageProfileClient {
 		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
