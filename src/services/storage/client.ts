@@ -8,6 +8,7 @@ import type {
 	KeetaNetAccount,
 	ContactsClientConfig,
 	IconsClientConfig,
+	ProfileClientConfig,
 	StorageObjectMetadata,
 	SearchCriteria,
 	SearchPagination,
@@ -47,6 +48,7 @@ import { KeetaAnchorError } from '../../lib/error.js';
 import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { StorageContactsClient } from './clients/contacts.js';
 import { StorageIconsClient } from './clients/icon.js';
+import { StorageProfileClient } from './clients/profile.js';
 import Resolver from '../../lib/resolver.js';
 import crypto from '../../lib/utils/crypto.js';
 
@@ -1325,6 +1327,14 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		});
 		return(new StorageIconsClient({ session, logger: this.logger }));
 	}
+
+	/**
+	 * Get a profile client bound to the given account.
+	 */
+	getProfileClient(config: ProfileClientConfig): StorageProfileClient {
+		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
+		return(new StorageProfileClient({ session, logger: this.logger }));
+	}
 }
 
 class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
@@ -1416,6 +1426,14 @@ class KeetaStorageAnchorClient extends KeetaStorageAnchorBase {
 	 */
 	async getIconsClient(config: IconsClientConfig): Promise<StorageIconsClient | null> {
 		return(await this.#withProvider(function(provider) { return(provider.getIconsClient(config)); }));
+	}
+
+	/**
+	 * Get a profile client bound to the given account.
+	 * Resolves the first available provider and constructs a StorageProfileClient.
+	 */
+	async getProfileClient(config: ProfileClientConfig): Promise<StorageProfileClient | null> {
+		return(await this.#withProvider(function(provider) { return(provider.getProfileClient(config)); }));
 	}
 
 	/** @internal */
