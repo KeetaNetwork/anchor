@@ -3,7 +3,7 @@ import type { Logger } from '../../../lib/log/index.js';
 import type * as CurrencyInfo from '@keetanetwork/currency-info';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
-import { assertProfile, assertPublicProfile } from './profile.generated.js';
+import { assertProfile, assertPublicProfile, assertPrivateProfile } from './profile.generated.js';
 
 // #region Types
 
@@ -17,22 +17,39 @@ interface BaseProfile<Type extends string> {
 }
 
 /**
- * A profile for an individual account.
- * `firstName` and `lastName` are private; `displayName` and `accountType` are public.
+ * The private fields of an individual account, stored on their own in the private object.
  */
-export interface PersonalProfile extends BaseProfile<'personal'> {
+export interface PersonalPrivateProfile {
 	firstName: string;
 	lastName: string;
 }
 
 /**
- * A profile for a business account.
- * `companyName` and `country` are private; `displayName` and `accountType` are public.
+ * The private fields of a business account, stored on their own in the private object.
  */
-export interface BusinessProfile extends BaseProfile<'business'> {
+export interface BusinessPrivateProfile {
 	companyName: string;
 	country: CurrencyInfo.ISOCountryCode;
 }
+
+/**
+ * The private fields of a profile, stored on their own in the private object.
+ * A non-discriminated union, but its members have disjoint required keys, so typia
+ * validates it structurally.
+ */
+export type PrivateProfile = PersonalPrivateProfile | BusinessPrivateProfile;
+
+/**
+ * A profile for an individual account.
+ * `firstName` and `lastName` are private; `displayName` and `accountType` are public.
+ */
+export type PersonalProfile = BaseProfile<'personal'> & PersonalPrivateProfile;
+
+/**
+ * A profile for a business account.
+ * `companyName` and `country` are private; `displayName` and `accountType` are public.
+ */
+export type BusinessProfile = BaseProfile<'business'> & BusinessPrivateProfile;
 
 /**
  * A full account profile, discriminated on `accountType`.
@@ -99,7 +116,7 @@ export class StorageProfileClient implements ProfileClient {
 		this.#logger = config.logger;
 	}
 
-	#serialize(value: Profile | PublicProfile): Buffer {
+	#serialize(value: PrivateProfile | PublicProfile): Buffer {
 		return(Buffer.from(JSON.stringify(value)));
 	}
 
@@ -110,14 +127,26 @@ export class StorageProfileClient implements ProfileClient {
 		});
 	}
 
+	#toPrivate(profile: Profile): PrivateProfile {
+		if (profile.accountType === 'personal') {
+			return({
+				firstName: profile.firstName,
+				lastName: profile.lastName
+			});
+		}
+
+		return({
+			companyName: profile.companyName,
+			country: profile.country
+		});
+	}
+
 	async set(profile: Profile): Promise<void> {
 		this.#logger?.debug('StorageProfileClient::set', `Setting ${profile.accountType} profile`);
 
 		const validated = assertProfile(profile);
 
-		// Write the private (full) object first so a failed public write never
-		// leaves a public projection without the owner's data. Not transactional.
-		await this.#session.put(PROFILE_PRIVATE_FILENAME, this.#serialize(validated), {
+		await this.#session.put(PROFILE_PRIVATE_FILENAME, this.#serialize(this.#toPrivate(validated)), {
 			mimeType: MIME_TYPE,
 			visibility: 'private'
 		});
@@ -133,14 +162,22 @@ export class StorageProfileClient implements ProfileClient {
 	async get(): Promise<Profile | null> {
 		this.#logger?.debug('StorageProfileClient::get', 'Getting profile');
 
-		const result = await this.#session.get(PROFILE_PRIVATE_FILENAME);
-		if (!result) {
+		const [ privateResult, publicResult ] = await Promise.all([
+			this.#session.get(PROFILE_PRIVATE_FILENAME),
+			this.#session.get(PROFILE_PUBLIC_FILENAME)
+		]);
+
+		if (!privateResult || !publicResult) {
 			this.#logger?.debug('StorageProfileClient::get', 'Profile not found');
 			return(null);
 		}
 
+		const publicProfile = assertPublicProfile(JSON.parse(publicResult.data.toString()));
+		const privateProfile = assertPrivateProfile(JSON.parse(privateResult.data.toString()));
+
 		this.#logger?.debug('StorageProfileClient::get', 'Profile retrieved');
-		return(assertProfile(JSON.parse(result.data.toString())));
+
+		return(assertProfile({ ...publicProfile, ...privateProfile }));
 	}
 
 	async getPublic(): Promise<PublicProfile | null> {

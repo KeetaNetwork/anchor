@@ -59,6 +59,11 @@ const invalidProfiles: { name: string; profile: unknown }[] = [
 	{ name: 'personal missing lastName', profile: { accountType: 'personal', displayName: 'Alice', firstName: 'Alice' }}
 ];
 
+const privateFieldCases: { name: string; profile: Profile; expected: { [key: string]: unknown }}[] = [
+	{ name: 'personal', profile: personalProfile, expected: { firstName: 'Alice', lastName: 'Smith' }},
+	{ name: 'business', profile: businessProfile, expected: { companyName: 'Acme Corporation Ltd', country: 'US' }}
+];
+
 // #endregion
 
 describe('Storage Profile Client', function() {
@@ -98,7 +103,7 @@ describe('Storage Profile Client', function() {
 		}));
 	});
 
-	test('stores the full profile privately and the projection publicly', function() {
+	test('stores private and public objects', function() {
 		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
 			await profileClient.set(personalProfile);
 
@@ -153,6 +158,31 @@ describe('Storage Profile Client', function() {
 	test('delete returns false when no profile exists', function() {
 		return(withProfile(randomSeed(), async function({ profileClient }) {
 			expect(await profileClient.delete()).toBe(false);
+		}));
+	});
+
+	test.each(privateFieldCases)('the private object stores only the private fields ($name)', function({ profile, expected }) {
+		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
+			await profileClient.set(profile);
+
+			const raw = await provider.get({ path: privatePath(account), account });
+			if (!raw) {
+				throw(new Error('private object not found'));
+			}
+
+			expect(JSON.parse(raw.data.toString())).toEqual(expected);
+		}));
+	});
+
+	test('get returns null when either object is missing', function() {
+		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
+			await profileClient.set(personalProfile);
+			await provider.delete({ path: publicPath(account), account });
+			expect(await profileClient.get()).toBeNull();
+
+			await profileClient.set(personalProfile);
+			await provider.delete({ path: privatePath(account), account });
+			expect(await profileClient.get()).toBeNull();
 		}));
 	});
 
