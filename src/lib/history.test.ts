@@ -557,7 +557,8 @@ test('an anchor deposit ids the operation and links its sub-transactions', async
 	source.registerByCoord(anchor, block.hash.toString(), 0, transfer);
 
 	const [ transaction ] = await runHistory([ block ], source);
-	expect(transaction?.id).toBe(`${block.hash.toString()}:0`);
+	// A block settling a single transfer keeps the bare block hash as its id.
+	expect(transaction?.id).toBe(block.hash.toString());
 
 	const anchorLeg = transaction?.legs.find(leg => leg.kind === 'anchor');
 	if (anchorLeg?.kind !== 'anchor') {
@@ -583,23 +584,24 @@ test('includeSource resolves a suffixed transaction id to its source block', asy
 	const user = newAccount();
 	const anchor = newAccount();
 	const token = newToken(user, 0);
-	const block = await seal(user, [ receiveOp(anchor, token, 750n) ]);
+	const other = newToken(user, 1);
+	// Two operations settling two different transfers force suffixed ids.
+	const block = await seal(user, [ receiveOp(anchor, token, 750n), receiveOp(anchor, other, 500n) ]);
 
-	const transfer = makeTransfer({
-		id: 'deposit-tx',
-		status: 'PENDING',
-		asset: token.publicKeyString.get(),
-		fromLocation: MOBILE_LOCATION,
-		toLocation: KEETA_LOCATION,
-		fromValue: '750',
-		toValue: '750'
-	});
 	const source = new TestStatusSource();
-	source.registerByCoord(anchor, block.hash.toString(), 0, transfer);
+	source.registerByCoord(anchor, block.hash.toString(), 0, makeTransfer({
+		id: 'deposit-0', status: 'PENDING', asset: token.publicKeyString.get(), fromLocation: MOBILE_LOCATION, toLocation: KEETA_LOCATION, fromValue: '750', toValue: '750'
+	}));
+	source.registerByCoord(anchor, block.hash.toString(), 1, makeTransfer({
+		id: 'deposit-1', status: 'PENDING', asset: other.publicKeyString.get(), fromLocation: MOBILE_LOCATION, toLocation: KEETA_LOCATION, fromValue: '500', toValue: '500'
+	}));
 
-	const [ transaction ] = await runHistory([ block ], source, { includeSource: true });
-	expect(transaction?.id).toBe(`${block.hash.toString()}:0`);
-	expect(transaction?.source?.enriched.blockHash).toBe(block.hash.toString());
+	const transactions = await runHistory([ block ], source, { includeSource: true });
+	expect(transactions).toHaveLength(2);
+	expect(transactions.map(transaction => transaction.id).sort()).toEqual([ `${block.hash.toString()}:0`, `${block.hash.toString()}:1` ]);
+	for (const transaction of transactions) {
+		expect(transaction.source?.enriched.blockHash).toBe(block.hash.toString());
+	}
 });
 
 test('source is absent unless includeSource is requested', async function() {
@@ -2004,6 +2006,7 @@ test('groups a multi-hop declared-anchor conversion into one row, without enrich
 	expect(enriched).toHaveLength(1);
 	expect(enriched[0]?.type).toBe('swap');
 	expect(enriched[0]?.provisional).toBeUndefined();
+	expect(enriched[0]?.id).toBe(conversion?.id);
 
 	/*
 	 * Enriching the grouped row on demand must keep the source (and its
@@ -2017,8 +2020,48 @@ test('groups a multi-hop declared-anchor conversion into one row, without enrich
 
 	const enrichedRow = await history.enrichTransaction(withSource, user, { includeSource: true });
 	expect(enrichedRow.type).toBe('swap');
+	expect(enrichedRow.id).toBe(withSource.id);
 	expect(enrichedRow.source).toBeDefined();
 	expect(enrichedRow.source?.enriched.perspective).toBe(user.publicKeyString.get());
+});
+
+test('a single-transfer anchor row keeps a stable id across enrichment', async function() {
+	const user = newAccount();
+	const anchor = newAccount();
+	const token = newToken(user, 0);
+	const external = await new AnchorExternal.Builder().setAnchor(anchor, { transactionId: 'withdraw-tx' }).build();
+	const block = await seal(user, [ sendOp(anchor, token, 400n, external) ]);
+
+	const transfer = makeTransfer({
+		id: 'withdraw-tx',
+		status: 'COMPLETE',
+		asset: token.publicKeyString.get(),
+		fromLocation: KEETA_LOCATION,
+		toLocation: MOBILE_LOCATION,
+		fromValue: '400',
+		toValue: '400'
+	});
+	const status = new TestStatusSource();
+	status.registerByTxID(anchor, transfer);
+	const history = new UserHistory({ history: pagedFoldCapableSource([ block ]), status: new AnchorTransactionStatus(status) });
+
+	/* The same single-transfer block keeps the bare block hash in both modes. */
+	const [ provisional ] = await history.list(user, { includeSource: true });
+	const [ enriched ] = await history.list(user, { enrich: true, includeSource: true });
+	if (provisional === undefined || enriched === undefined) {
+		throw(new Error('expected a row'));
+	}
+
+	expect(provisional.type).toBe('withdraw');
+	expect(provisional.id).toBe(block.hash.toString());
+	expect(enriched.type).toBe('withdraw');
+	expect(enriched.id).toBe(block.hash.toString());
+
+	/* Enriching the provisional row on demand keeps its id. */
+	const onDemand = await history.enrichTransaction(provisional, user, { includeSource: true });
+	expect(onDemand.id).toBe(provisional.id);
+	expect(onDemand.type).toBe('withdraw');
+	expect(onDemand.refs.anchorTxIDs).toContain('withdraw-tx');
 });
 
 test('foldChains merges a two-hop linked chain into one conversion', function() {

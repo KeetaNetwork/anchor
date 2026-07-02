@@ -819,7 +819,7 @@ function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransact
 /**
  * Build the logical transaction backing one enriched anchor operation.
  */
-function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperation, transfer: KeetaAssetMovementTransaction): LogicalTransaction {
+function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperation, transfer: KeetaAssetMovementTransaction, indexed: boolean): LogicalTransaction {
 	const type = logicalTypeFromTransfer(transfer);
 	const fromKeeta = locationIsChain(transfer.from.location, 'keeta');
 	const direction = directionFromTransfer(type, fromKeeta);
@@ -849,7 +849,7 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
 
 	const refs = buildRefs(block, [ transfer.id ]);
 	const transaction: LogicalTransaction = {
-		id: `${block.blockHash}:${enriched.index}`,
+		id: indexed ? `${block.blockHash}:${enriched.index}` : block.blockHash,
 		type,
 		status: settled.status,
 		providerStatus: settled.providerStatus,
@@ -876,21 +876,25 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
  */
 const anchorTransferClassifier: LogicalClassifier = {
 	classify(block) {
-		const transactions: LogicalTransaction[] = [];
+		const resolved: { enriched: EnrichedOperation; transfer: KeetaAssetMovementTransaction }[] = [];
 		for (const enriched of block.operations) {
 			const transfer = enriched.transfer;
-			if (transfer === undefined) {
-				continue;
+			if (transfer !== undefined) {
+				resolved.push({ enriched, transfer });
 			}
-
-			transactions.push(buildAnchorTransaction(block, enriched, transfer));
 		}
 
-		if (transactions.length === 0) {
+		if (resolved.length === 0) {
 			return(null);
 		}
 
-		return(transactions);
+		/*
+		 * Suffix the id with the operation index only when the block settles more
+		 * than one transfer; a single-transfer block keeps the bare block hash so
+		 * its id matches the shape-classified (unenriched) row for the same block.
+		 */
+		const indexed = resolved.length > 1;
+		return(resolved.map(entry => buildAnchorTransaction(block, entry.enriched, entry.transfer, indexed)));
 	}
 };
 
