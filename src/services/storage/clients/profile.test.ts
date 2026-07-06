@@ -176,6 +176,32 @@ describe('Storage Profile Client', function() {
 		}));
 	});
 
+	test.each([ 'private', 'public' ])('delete rethrows the original error after both deletes settle (%s fails)', async function(failing) {
+		const calls: string[] = [];
+		const failure = new Error('delete failed');
+		let otherSettled = false;
+
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		const stubSession = {
+			delete: async function(relativePath: string): Promise<boolean> {
+				calls.push(relativePath);
+				if (relativePath === failing) {
+					throw(failure);
+				}
+
+				await new Promise(function(resolve) { setTimeout(resolve, 10); });
+				otherSettled = true;
+				return(true);
+			}
+		} as unknown as KeetaStorageAnchorSession;
+
+		const profileClient = new StorageProfileClient({ session: stubSession });
+
+		await expect(profileClient.delete()).rejects.toBe(failure);
+		expect(calls.sort()).toEqual([ 'private', 'public' ]);
+		expect(otherSettled).toBe(true);
+	});
+
 	test.each(privateFieldCases)('the private object stores only the private fields ($name)', function({ profile, expected }) {
 		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
 			await profileClient.set(profile);
