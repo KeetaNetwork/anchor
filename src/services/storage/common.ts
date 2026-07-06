@@ -284,9 +284,11 @@ export type ProfileClientConfig = {
 	 */
 	account: KeetaNetAccount;
 	/**
-	 * The base path for the profile client (e.g., `/user/<pubkey>/profile/`).
+	 * The base path for the profile client.
+	 * Defaults to `/user/<pubkey>/profile/` derived from the account.
+	 * Provide it only to store the profile in a non-standard location.
 	 */
-	basePath: string;
+	basePath?: string | undefined;
 };
 
 /**

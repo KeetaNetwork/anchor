@@ -65,10 +65,7 @@ export type AccountType = Profile['accountType'];
  * The public projection of a profile, stored separately so it can be served
  * to other accounts without exposing the private fields.
  */
-export interface PublicProfile {
-	accountType: AccountType;
-	displayName: string;
-}
+export type PublicProfile = BaseProfile<AccountType>;
 
 // #endregion
 
@@ -202,12 +199,28 @@ export class StorageProfileClient implements ProfileClient {
 	async delete(): Promise<boolean> {
 		this.#logger?.debug('StorageProfileClient::delete', 'Deleting profile');
 
-		const [ privateDeleted, publicDeleted ] = await Promise.all([
+		const [ privateResult, publicResult ] = await Promise.allSettled([
 			this.#session.delete(PROFILE_PRIVATE_FILENAME),
 			this.#session.delete(PROFILE_PUBLIC_FILENAME)
 		]);
 
-		const deleted = privateDeleted || publicDeleted;
+		if (privateResult.status === 'rejected') {
+			this.#logger?.warn('StorageProfileClient::delete', 'Failed to delete private profile object', privateResult.reason);
+		}
+
+		if (publicResult.status === 'rejected') {
+			this.#logger?.warn('StorageProfileClient::delete', 'Failed to delete public profile object', publicResult.reason);
+		}
+
+		if (privateResult.status === 'rejected') {
+			throw(privateResult.reason);
+		}
+
+		if (publicResult.status === 'rejected') {
+			throw(publicResult.reason);
+		}
+
+		const deleted = privateResult.value || publicResult.value;
 		this.#logger?.debug('StorageProfileClient::delete', `Profile delete: ${deleted ? 'removed' : 'not found'}`);
 		return(deleted);
 	}

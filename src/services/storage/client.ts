@@ -1330,9 +1330,11 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 	/**
 	 * Get a profile client bound to the given account.
+	 * The base path defaults to `/user/<pubkey>/profile/` unless overridden in the config.
 	 */
 	getProfileClient(config: ProfileClientConfig): StorageProfileClient {
-		const session = this.beginSession({ account: config.account, workingDirectory: config.basePath });
+		const basePath = config.basePath ?? `/user/${config.account.publicKeyString.get()}/profile/`;
+		const session = this.beginSession({ account: config.account, workingDirectory: basePath });
 		return(new StorageProfileClient({ session, logger: this.logger }));
 	}
 }

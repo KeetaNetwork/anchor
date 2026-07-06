@@ -2,8 +2,8 @@ import { test, expect, describe } from 'vitest';
 
 import type { Profile } from './profile.js';
 import type { Account } from '../test-utils.js';
-import type { KeetaStorageAnchorProvider } from '../client.js';
-import type { StorageProfileClient } from './profile.js';
+import type { KeetaStorageAnchorProvider, KeetaStorageAnchorSession } from '../client.js';
+import { StorageProfileClient } from './profile.js';
 import { randomSeed, withStorageProvider } from '../test-utils.js';
 
 // #region Test Harness
@@ -19,8 +19,7 @@ async function withProfile(
 	testFunction: (ctx: ProfileTestContext) => Promise<void>
 ): Promise<void> {
 	await withStorageProvider(seed, async function({ provider, account }) {
-		const pubkey = account.publicKeyString.get();
-		const profileClient = provider.getProfileClient({ account, basePath: `/user/${pubkey}/profile/` });
+		const profileClient = provider.getProfileClient({ account });
 		await testFunction({ profileClient, provider, account });
 	});
 }
@@ -142,6 +141,22 @@ describe('Storage Profile Client', function() {
 
 			expect(await profileClient.get()).toEqual(businessProfile);
 			expect(await profileClient.getPublic()).toEqual({ accountType: 'business', displayName: 'Acme Corp' });
+		}));
+	});
+
+	test('basePath override stores the profile under the custom path', function() {
+		return(withStorageProvider(randomSeed(), async function({ provider, account }) {
+			const pubkey = account.publicKeyString.get();
+			const profileClient = provider.getProfileClient({ account, basePath: `/user/${pubkey}/custom-profile/` });
+
+			await profileClient.set(personalProfile);
+			expect(await profileClient.get()).toEqual(personalProfile);
+
+			const customMeta = await provider.getMetadata({ path: `/user/${pubkey}/custom-profile/private`, account });
+			expect(customMeta?.visibility).toBe('private');
+
+			const defaultMeta = await provider.getMetadata({ path: privatePath(account), account });
+			expect(defaultMeta).toBeNull();
 		}));
 	});
 
