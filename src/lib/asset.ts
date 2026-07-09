@@ -93,13 +93,13 @@ export function checksumEVMAsset(input: EVMAsset, cache?: EVMChecksumCache): EVM
 		}
 	}
 
-	const checksummed = toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input)));
+	const formatted = toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input)));
 
 	if (cache) {
-		cache.set(input, checksummed);
+		cache.set(input, formatted);
 	}
 
-	return(checksummed);
+	return(formatted);
 }
 
 export function normalizeChainAssetCasing<T extends string>(input: T, cache?: EVMChecksumCache): T {
