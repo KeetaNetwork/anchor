@@ -545,6 +545,49 @@ test('Wildcard specificity: most specific route wins regardless of definition or
 	await server.stop();
 }, 30000);
 
+test('Request protocol: honors X-Forwarded-Proto, defaults to http', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /protocol'] = async function(_params, _body, _headers, requestUrl) {
+				return({
+					output: JSON.stringify({ protocol: requestUrl.protocol }),
+					statusCode: 200
+				});
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const cases = [
+		{ header: 'https', expected: 'https:' },
+		{ header: 'http', expected: 'http:' },
+		{ header: 'https, http', expected: 'https:' },
+		{ header: undefined, expected: 'http:' }
+	];
+
+	for (const testCase of cases) {
+		const headers: Record<string, string> = { 'Accept': 'application/json' };
+		if (testCase.header !== undefined) {
+			headers['X-Forwarded-Proto'] = testCase.header;
+		}
+
+		const response = await fetch(new URL('/protocol', server.url), {
+			method: 'GET',
+			headers: headers
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ protocol: testCase.expected });
+	}
+
+	await server.stop();
+}, 30000);
+
 test('maxBodySize: rejects oversized requests', async function() {
 	const MAX_BODY = 64;
 	let handlerCalled = false;
