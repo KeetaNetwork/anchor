@@ -119,7 +119,8 @@ export default {
 		'wrongpath',
 		'refetched',
 		'pipeable',
-		'renderable'
+		'renderable',
+		'keccak'
 	],
 	flagWords: [
 		'recieve'
