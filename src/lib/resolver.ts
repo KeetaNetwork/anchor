@@ -9,7 +9,7 @@ import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
-import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
+import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString, EVMChecksumCache } from './asset.js';
 import { checksumEVMAsset, isEVMAsset } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
@@ -1607,6 +1607,7 @@ class Resolver {
 
 	/** EVM asset ids already warned about, to avoid repeating the info log. */
 	readonly #warnedNonCanonicalizedAssets = new Set<string>();
+	readonly #evmChecksumCache: EVMChecksumCache = new Map();
 
 	readonly id: string;
 
@@ -2033,7 +2034,7 @@ class Resolver {
 			return(id);
 		}
 
-		const canonicalized = checksumEVMAsset(id);
+		const canonicalized = checksumEVMAsset(id, this.#evmChecksumCache);
 		if (canonicalized !== id && !this.#warnedNonCanonicalizedAssets.has(id)) {
 			this.#warnedNonCanonicalizedAssets.add(id);
 			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-canonicalized casing; normalized to EIP-55 canonicalized form "${canonicalized}"`);

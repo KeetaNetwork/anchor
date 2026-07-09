@@ -12,9 +12,8 @@ import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
-import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
-import type { ExternalChainAsset } from './asset.js';
+import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
 import { isExternalChainAsset, normalizeChainAssetCasing } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
@@ -346,9 +345,11 @@ class AnchorGraph {
 
 	readonly assetMovementClient: KeetaAssetMovementAnchorClient;
 	readonly fxClient: KeetaFXAnchorClient;
-	readonly #assetMovementProviderCache = new Map<string, AssetMovementProvider | null>();
+	readonly #assetMovementProviderCache = new Map<string, Promise<AssetMovementProvider | null>>();
 	readonly #assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
+	readonly #evmChecksumCache: EVMChecksumCache = new Map();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
+	#assetMovementProviderIdsByAssetLocation: Promise<Map<string, Set<string>>> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
@@ -364,48 +365,79 @@ class AnchorGraph {
 		});
 	}
 
+	readonly #assetLocationKeyCache = new WeakMap<object, string>();
 	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
-		return(`${convertAssetSearchInputToCanonical(side.asset)}@${convertAssetLocationToString(side.location)}`);
+		const cached = this.#assetLocationKeyCache.get(side);
+		if (cached !== undefined) {
+			return(cached);
+		}
+		const key = `${convertAssetSearchInputToCanonical(side.asset, this.#evmChecksumCache)}@${convertAssetLocationToString(side.location)}`;
+		this.#assetLocationKeyCache.set(side, key);
+		return(key);
 	};
 
-	async getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
-		let provider: KeetaAssetMovementAnchorProvider | undefined | null = this.#assetMovementProviderCache.get(providerID);
-		if (provider === undefined) {
-			provider = await this.assetMovementClient.getProviderByID(providerID);
+	getAssetMovementProviderById(providerID: string): Promise<AssetMovementProvider | null> {
+		let providerPromise = this.#assetMovementProviderCache.get(providerID);
+		if (providerPromise === undefined) {
+			providerPromise = this.assetMovementClient.getProviderByID(providerID).catch((error: unknown) => {
+				// Don't cache failures -- evict so a later call can retry.
+				this.#assetMovementProviderCache.delete(providerID);
+				throw(error);
+			});
+			this.#assetMovementProviderCache.set(providerID, providerPromise);
 		}
 
-		this.#assetMovementProviderCache.set(providerID, provider);
+		return(providerPromise);
+	}
 
-		return(provider);
+	async #getAssetMovementProviderIdsByAssetLocation(): Promise<Map<string, Set<string>>> {
+		if (this.#assetMovementProviderIdsByAssetLocation === null) {
+			this.#assetMovementProviderIdsByAssetLocation = (async () => {
+				const map = new Map<string, Set<string>>();
+				for (const node of await this.computeGraphNodes()) {
+					if (node.type !== 'assetMovement') {
+						continue;
+					}
+					for (const side of [ node.from, node.to ] as const) {
+						const key = this.#assetLocationKey(side);
+						let providerIDs = map.get(key);
+						if (!providerIDs) {
+							providerIDs = new Set<string>();
+							map.set(key, providerIDs);
+						}
+						providerIDs.add(node.providerID);
+					}
+				}
+				return(map);
+			})();
+		}
+
+		return(await this.#assetMovementProviderIdsByAssetLocation);
 	}
 
 	async getAssetMovementProvidersForAsset(asset: AnchorChainingAsset, location: AssetLocationLike): Promise<null | { [providerID: string]: { provider: AssetMovementProvider; }}> {
+		const providerIDs = (await this.#getAssetMovementProviderIdsByAssetLocation()).get(this.#assetLocationKey({ asset, location }));
+		if (!providerIDs || providerIDs.size === 0) {
+			return(null);
+		}
+
 		let retval: null | { [providerID: string]: { provider: AssetMovementProvider; }} = null;
 
-		for (const node of await this.computeGraphNodes()) {
-			if (node.type !== 'assetMovement') {
+		const resolved = await Promise.all([ ...providerIDs ].map(async (providerID) => {
+			const provider = await this.getAssetMovementProviderById(providerID);
+			return({ providerID, provider });
+		}));
+
+		for (const { providerID, provider } of resolved) {
+			if (!provider) {
+				this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${providerID}, although provider was previously known to exist in the graph nodes`);
 				continue;
 			}
 
-			for (const side of [ node.from, node.to ] as const) {
-				if (!isAnchorChainingAssetEqual(side.asset, asset) || convertAssetLocationToString(side.location) !== convertAssetLocationToString(location)) {
-					continue;
-				}
-
-				if (!retval) {
-					retval = {};
-				}
-
-				if (!retval[node.providerID]) {
-					const provider = await this.getAssetMovementProviderById(node.providerID);
-					if (!provider) {
-						this.logger?.debug('AnchorGraph::getAssetMovementProvidersForAsset', `No provider found for providerID ${node.providerID}, although provider was previously known to exist in the graph nodes`);
-						continue;
-					}
-
-					retval[node.providerID] = { provider };
-				}
+			if (!retval) {
+				retval = {};
 			}
+			retval[providerID] = { provider };
 		}
 
 		return(retval);
@@ -896,47 +928,28 @@ class AnchorGraph {
 
 		const fromAssetKeys = nodes.map(node => this.#assetLocationKey(node.from));
 		const toAssetKeys = nodes.map(node => this.#assetLocationKey(node.to));
-		const nodesWithAdj: { node: GraphNodeLike; next: number[]; prev: number[] }[] = nodes.map(node => ({ node, next: [], prev: [] }));
 
-		const fromKeys = nodes.map((node, i) => `${node.from.rail}:${fromAssetKeys[i]}`);
-		const toKeys = nodes.map((node, i) => `${node.to.rail}:${toAssetKeys[i]}`);
+		let fromKeys: string[] | undefined;
+		let toKeys: string[] | undefined;
+		let nodesByFromKey: Map<string, number[]> | undefined;
+		let nodesByToKey: Map<string, number[]> | undefined;
 
-		const nodesByFromKey = new Map<string, number[]>();
-		for (let j = 0; j < nodes.length; j++) {
-			const key = fromKeys[j];
-			if (key === undefined) {
-				throw(new Error(`Invalid node index during adjacency construction: ${j}`));
-			}
-			let bucket = nodesByFromKey.get(key);
-			if (!bucket) {
-				bucket = [];
-				nodesByFromKey.set(key, bucket);
-			}
-			bucket.push(j);
-		}
-
-		for (let i = 0; i < nodesWithAdj.length; i++) {
-			const ni = nodesWithAdj[i];
-			const toKey = toKeys[i];
-			if (!ni || toKey === undefined) {
-				throw(new Error(`Invalid node index during adjacency construction: ${i}`));
-			}
-			const successors = nodesByFromKey.get(toKey);
-			if (!successors) {
-				continue;
-			}
-			for (const j of successors) {
-				const nj = nodesWithAdj[j];
-				if (!nj) {
-					throw(new Error(`Invalid node index during adjacency construction: ${j}`));
+		const buildBuckets = (keys: string[]): Map<string, number[]> => {
+			const map = new Map<string, number[]>();
+			for (let j = 0; j < keys.length; j++) {
+				const key = keys[j];
+				if (key === undefined) {
+					throw(new Error(`Invalid node index during bucket construction: ${j}`));
 				}
-				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
-					continue;
+				let bucket = map.get(key);
+				if (!bucket) {
+					bucket = [];
+					map.set(key, bucket);
 				}
-				ni.next.push(j);
-				nj.prev.push(i);
+				bucket.push(j);
 			}
-		}
+			return(map);
+		};
 
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
@@ -974,68 +987,96 @@ class AnchorGraph {
 		const markFromReachable = makeMarkFn(fromReachable, fromDistances);
 		const markToReachable = makeMarkFn(toReachable, toDistances);
 
-		const assetKeysForSide = { from: fromAssetKeys, to: toAssetKeys } as const;
-
 		const bfs = (
-			startCondition: (item: (typeof nodesWithAdj)[number]) => boolean,
-			adjacency: 'next' | 'prev',
-			markSide: 'from' | 'to',
+			startCondition: (node: GraphNodeLike) => boolean,
+			direction: 'forward' | 'backward',
 			markFn: (key: string, depth: number) => void
 		) => {
-			const markKeys = assetKeysForSide[markSide];
+			const markKeys = direction === 'forward' ? toAssetKeys : fromAssetKeys;
+			const stepKeys = direction === 'forward' ? toKeys : fromKeys;
+			const neighborBuckets = direction === 'forward' ? nodesByFromKey : nodesByToKey;
+			if (!stepKeys || !neighborBuckets) {
+				throw(new Error(`BFS buckets not initialized for direction ${direction}`));
+			}
+
 			const nodeVisited = new Set<number>();
 			const queue: { nodeIdx: number; depth: number }[] = [];
-			for (let i = 0; i < nodesWithAdj.length; i++) {
-				const item = nodesWithAdj[i];
-				if (!item) {
+			for (let i = 0; i < nodes.length; i++) {
+				const node = nodes[i];
+				if (!node) {
 					throw(new Error(`Invalid node index during BFS initialization: ${i}`));
 				}
-				if (startCondition(item) && !nodeVisited.has(i)) {
+				if (startCondition(node) && !nodeVisited.has(i)) {
 					nodeVisited.add(i);
 					queue.push({ nodeIdx: i, depth: 1 });
 				}
 			}
-			while (queue.length > 0) {
-				const queueItem = queue.shift();
+
+			let head = 0;
+			while (head < queue.length) {
+				const queueItem = queue[head];
+				head++;
 				if (!queueItem) {
 					throw(new Error(`Unexpected empty queue during BFS processing`));
 				}
 				const { nodeIdx, depth } = queueItem;
-				const item = nodesWithAdj[nodeIdx];
+				const node = nodes[nodeIdx];
 				const markKey = markKeys[nodeIdx];
-				if (!item || markKey === undefined) {
+				const stepKey = stepKeys[nodeIdx];
+				if (!node || markKey === undefined || stepKey === undefined) {
 					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
 				}
-				if (onlyAllowFXLike && !isFXLikeNode(item.node)) {
+				if (onlyAllowFXLike && !isFXLikeNode(node)) {
 					continue;
 				}
 				markFn(markKey, depth);
-				if (maxStepCount === undefined || depth < maxStepCount) {
-					for (const neighborIdx of item[adjacency]) {
-						if (!nodeVisited.has(neighborIdx)) {
-							nodeVisited.add(neighborIdx);
-							queue.push({ nodeIdx: neighborIdx, depth: depth + 1 });
-						}
+				if (maxStepCount !== undefined && depth >= maxStepCount) {
+					continue;
+				}
+				const neighbors = neighborBuckets.get(stepKey);
+				if (!neighbors) {
+					continue;
+				}
+				for (const neighborIdx of neighbors) {
+					if (nodeVisited.has(neighborIdx)) {
+						continue;
 					}
+					const neighbor = nodes[neighborIdx];
+					if (!neighbor) {
+						throw(new Error(`Invalid node index during BFS processing: ${neighborIdx}`));
+					}
+					if (node.type === 'fx' && neighbor.type === 'fx' && node.providerID === neighbor.providerID) {
+						continue;
+					}
+					nodeVisited.add(neighborIdx);
+					queue.push({ nodeIdx: neighborIdx, depth: depth + 1 });
 				}
 			}
 		};
 
-		if (fromFilter) {
-			bfs(item => sideMatchesFilter(item.node.from, fromFilter), 'next', 'to', markToReachable);
-		}
-		if (toFilter) {
-			bfs(item => sideMatchesFilter(item.node.to, toFilter), 'prev', 'from', markFromReachable);
+		if (fromFilter || toFilter) {
+			const railFromKeys = nodes.map((node, i) => `${node.from.rail}:${fromAssetKeys[i]}`);
+			const railToKeys = nodes.map((node, i) => `${node.to.rail}:${toAssetKeys[i]}`);
+			fromKeys = railFromKeys;
+			toKeys = railToKeys;
+			if (fromFilter) {
+				nodesByFromKey = buildBuckets(railFromKeys);
+				bfs(node => sideMatchesFilter(node.from, fromFilter), 'forward', markToReachable);
+			}
+			if (toFilter) {
+				nodesByToKey = buildBuckets(railToKeys);
+				bfs(node => sideMatchesFilter(node.to, toFilter), 'backward', markFromReachable);
+			}
 		}
 		if (!fromFilter && !toFilter) {
-			for (let i = 0; i < nodesWithAdj.length; i++) {
-				const item = nodesWithAdj[i];
+			for (let i = 0; i < nodes.length; i++) {
+				const node = nodes[i];
 				const fromKey = fromAssetKeys[i];
 				const toKey = toAssetKeys[i];
-				if (!item || fromKey === undefined || toKey === undefined) {
+				if (!node || fromKey === undefined || toKey === undefined) {
 					throw(new Error(`Invalid node index during reachability marking: ${i}`));
 				}
-				if (!onlyAllowFXLike || isFXLikeNode(item.node)) {
+				if (!onlyAllowFXLike || isFXLikeNode(node)) {
 					markFromReachable(fromKey);
 					markFromReachable(toKey);
 					markToReachable(fromKey);
@@ -1067,14 +1108,13 @@ class AnchorGraph {
 				}
 				return(resultObj);
 			};
-			for (let i = 0; i < nodesWithAdj.length; i++) {
-				const item = nodesWithAdj[i];
+			for (let i = 0; i < nodes.length; i++) {
+				const node = nodes[i];
 				const toKey = toAssetKeys[i];
 				const fromKey = fromAssetKeys[i];
-				if (!item || toKey === undefined || fromKey === undefined) {
+				if (!node || toKey === undefined || fromKey === undefined) {
 					throw(new Error(`Invalid node index during result-map construction: ${i}`));
 				}
-				const node = item.node;
 				if (onlyAllowFXLike && !isFXLikeNode(node)) {
 					continue;
 				}
