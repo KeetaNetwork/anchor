@@ -1606,7 +1606,7 @@ class Resolver {
 	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
 	/** EVM asset ids already warned about, to avoid repeating the info log. */
-	readonly #warnedNonChecksummedAssets = new Set<string>();
+	readonly #warnedNonCanonicalizedAssets = new Set<string>();
 
 	readonly id: string;
 
@@ -2028,29 +2028,18 @@ class Resolver {
 		return(retval);
 	}
 
-	/**
-	 * Normalize an EVM asset id read from provider metadata to its EIP-55
-	 * checksummed form. EVM addresses are case-insensitive on-chain, but the
-	 * asset-movement graph and provider lookups key on the asset string, so a
-	 * provider that publishes a non-checksummed address would fail to line up
-	 * with providers that publish the checksummed form (e.g. a USDC bridge leg
-	 * not connecting to a USDC swap leg). We canonicalize to the checksummed
-	 * casing and emit an info log -- once per distinct value -- when a provider's
-	 * metadata had to be corrected. Non-EVM asset ids are case-sensitive and are
-	 * returned unchanged.
-	 */
 	#canonicalizeMetadataAssetId(id: string): string {
 		if (!isEVMAsset(id)) {
 			return(id);
 		}
 
-		const checksummed = checksumEVMAsset(id);
-		if (checksummed !== id && !this.#warnedNonChecksummedAssets.has(id)) {
-			this.#warnedNonChecksummedAssets.add(id);
-			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-checksummed casing; normalized to EIP-55 checksummed form "${checksummed}"`);
+		const canonicalized = checksumEVMAsset(id);
+		if (canonicalized !== id && !this.#warnedNonCanonicalizedAssets.has(id)) {
+			this.#warnedNonCanonicalizedAssets.add(id);
+			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-canonicalized casing; normalized to EIP-55 canonicalized form "${canonicalized}"`);
 		}
 
-		return(checksummed);
+		return(canonicalized);
 	}
 
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
@@ -2067,10 +2056,6 @@ class Resolver {
 
 			for (const path of supportedAsset.paths) {
 				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
-					// Canonicalize EVM asset ids up front (warning on any non-checksummed
-					// provider metadata) so this runs whenever metadata is parsed --
-					// including the unfiltered graph-build lookup -- not only when an
-					// asset filter is supplied.
 					const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
 					const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
 

@@ -91,9 +91,6 @@ export function eip55ChecksumHexAddress(input: HexString): HexString {
 	return(result as HexString);
 }
 
-/**
- * Return the EIP-55 checksummed form of an EVM asset string (`evm:0x...`).
- */
 export function checksumEVMAsset(input: EVMAsset): EVMAsset {
 	return(toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input))));
 }
@@ -105,14 +102,6 @@ export function isEVMAssetChecksummed(input: EVMAsset): boolean {
 	return(checksumEVMAsset(input) === input);
 }
 
-/**
- * Normalize a chain-asset string to its canonical casing so the same on-chain
- * asset reported by different providers compares equal.
- *
- * EVM addresses are normalized to their EIP-55 checksummed form. Solana, Tron,
- * and Bitcoin addresses are base58/base58check encoded and ARE case-sensitive,
- * so they are left untouched.
- */
 export function normalizeChainAssetCasing<T extends string>(input: T): T {
 	if (isEVMAsset(input)) {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
