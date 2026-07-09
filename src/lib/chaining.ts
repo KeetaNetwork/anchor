@@ -15,7 +15,7 @@ import KeetaFXAnchorClient from '../services/fx/client.js';
 import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset } from './asset.js';
-import { isExternalChainAsset } from './asset.js';
+import { isExternalChainAsset, normalizeChainAssetCasing } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
 import type { AnchorExternalInput } from './anchor-external.js';
@@ -224,7 +224,10 @@ function areBothTokenAndEqual(a: string | TokenAddress, b: string | TokenAddress
 }
 
 function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAsset): boolean {
-	if (typeof a === 'string' && typeof b === 'string' && a === b) {
+	// Compare string assets (currency codes, external-chain assets) with EVM
+	// casing normalized, so the same token reported by two providers in
+	// different EIP-55 casings is treated as equal.
+	if (typeof a === 'string' && typeof b === 'string' && normalizeChainAssetCasing(a) === normalizeChainAssetCasing(b)) {
 		return(true);
 	} else if (areBothTokenAndEqual(a, b)) {
 		return(true);

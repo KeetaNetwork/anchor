@@ -10,6 +10,7 @@ import crypto from './utils/crypto.js';
 import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
+import { checksumEVMAsset, isEVMAsset } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
 import { SignData, type Signable, type VerifiableAccount } from './utils/signing.js';
@@ -1604,6 +1605,9 @@ class Resolver {
 	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
 	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
+	/** EVM asset ids already warned about, to avoid repeating the info log. */
+	readonly #warnedNonCanonicalizedAssets = new Set<string>();
+
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
@@ -2024,6 +2028,20 @@ class Resolver {
 		return(retval);
 	}
 
+	#canonicalizeMetadataAssetId(id: string): string {
+		if (!isEVMAsset(id)) {
+			return(id);
+		}
+
+		const canonicalized = checksumEVMAsset(id);
+		if (canonicalized !== id && !this.#warnedNonCanonicalizedAssets.has(id)) {
+			this.#warnedNonCanonicalizedAssets.add(id);
+			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-canonicalized casing; normalized to EIP-55 canonicalized form "${canonicalized}"`);
+		}
+
+		return(canonicalized);
+	}
+
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
@@ -2038,6 +2056,9 @@ class Resolver {
 
 			for (const path of supportedAsset.paths) {
 				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+					const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
+					const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
+
 					if (fromCanonical && fromCanonical !== fromAsset.location) {
 						continue;
 					}
@@ -2048,10 +2069,10 @@ class Resolver {
 
 					if (assetCanonical) {
 						if (typeof assetCanonical === 'string') {
-							if (!([ fromAsset.id, toAsset.id ].includes(assetCanonical))) {
+							if (!([ fromId, toId ].includes(assetCanonical))) {
 								continue;
 							}
-						} else if (fromAsset.id !== assetCanonical.from || toAsset.id !== assetCanonical.to) {
+						} else if (fromId !== assetCanonical.from || toId !== assetCanonical.to) {
 							continue;
 						}
 					}
