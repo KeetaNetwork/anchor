@@ -13,8 +13,7 @@ import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/a
 import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
-import type { ExternalChainAsset } from './asset.js';
-import type { EVMChecksumCache } from './asset.js';
+import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
 import { isExternalChainAsset, normalizeChainAssetCasing } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
