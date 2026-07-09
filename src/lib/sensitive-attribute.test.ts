@@ -1,9 +1,9 @@
 import { test, expect } from 'vitest';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { SensitiveAttribute } from './sensitive-attribute.js';
+import { SensitiveAttribute, encodeAttribute, decodeForSensitive } from './sensitive-attribute.js';
 import type { CertificateAttributeNames } from './sensitive-attribute.js';
 import type { CertificateAttributeValue } from '../services/kyc/iso20022.generated.js';
-import { arrayBufferToBuffer, bufferToArrayBuffer } from './utils/buffer.js';
+import { arrayBufferToBuffer, bufferToArrayBuffer, Buffer } from './utils/buffer.js';
 import { testAccounts } from './utils/tests/certificates.js';
 
 // ============================================================================
@@ -104,6 +104,42 @@ test('dateOfBirth round-trip preserves dates', async function() {
 		expect(decrypted).toBeInstanceOf(Date);
 		expect(decrypted.toISOString()).toBe(dob.toISOString());
 	}
+});
+
+test('nested structured dates encode as GeneralizedTime, not UTCTime', function() {
+	const dob = new Date('1990-01-01T00:00:00.000Z');
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const encoded = arrayBufferToBuffer(encodeAttribute('documentPassport', { documentNumber: 'P1', dob } as never));
+
+	const generalizedTime = Buffer.concat([Buffer.from([0x18, 0x0f]), Buffer.from('19900101000000Z', 'ascii')]);
+	const utcTime = Buffer.concat([Buffer.from([0x17, 0x0d]), Buffer.from('900101000000Z', 'ascii')]);
+	expect(encoded.includes(generalizedTime), 'pre-2050 nested date must encode as GeneralizedTime').toBe(true);
+	expect(encoded.includes(utcTime), 'pre-2050 nested date must not fall back to UTCTime').toBe(false);
+});
+
+test('legacy UTCTime nested date still decodes (backwards compat, as-is)', function() {
+	// A legacy documentPassport DER whose [7] dob was encoded as UTCTime (tag 0x17),
+	// the pre-GeneralizedTime on-chain form: [0] documentNumber "P1", [7] dob 1990-01-01.
+	const legacy = Buffer.from('3017a0040c025031a70f170d3930303130313030303030305a', 'hex');
+	const utcTime = Buffer.concat([Buffer.from([0x17, 0x0d]), Buffer.from('900101000000Z', 'ascii')]);
+	expect(legacy.includes(utcTime), 'fixture must be UTCTime-encoded').toBe(true);
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const decoded = decodeForSensitive('documentPassport', legacy) as { documentNumber: string; dob: Date };
+	expect(decoded.documentNumber).toBe('P1');
+	expect(decoded.dob).toBeInstanceOf(Date);
+	expect(decoded.dob.toISOString()).toBe('1990-01-01T00:00:00.000Z');
+});
+
+test('nested structured date round-trips through a sensitive attribute', async function() {
+	const dob = new Date('1990-01-01T00:00:00.000Z');
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const encrypted = await SensitiveAttribute.create(accounts.withPrivateKey, 'documentPassport', { documentNumber: 'P1', dob } as never);
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	const decrypted = await encrypted.getValue() as { dob: Date };
+	expect(decrypted.dob).toBeInstanceOf(Date);
+	expect(decrypted.dob.toISOString()).toBe(dob.toISOString());
 });
 
 test('publicKey getter matches encryption key', async function() {
