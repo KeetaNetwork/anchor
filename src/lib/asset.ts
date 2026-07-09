@@ -68,14 +68,6 @@ export function isEVMAsset(input: unknown): input is EVMAsset {
 	return(typeof input === 'string' && input.startsWith('evm:0x'));
 }
 
-/**
- * Compute the EIP-55 mixed-case checksum form of a hex EVM address.
- *
- * EVM addresses are case-insensitive on-chain; the mixed-case form is an
- * error-detecting checksum derived from the keccak-256 hash of the lowercase
- * address. We use this single representation as the canonical form so the same
- * token reported by different providers (in different casings) compares equal.
- */
 export function eip55ChecksumHexAddress(input: HexString): HexString {
 	const lower = input.slice(2).toLowerCase();
 	const hashHex = bytesToHex(keccak_256(utf8ToBytes(lower)));
@@ -93,13 +85,6 @@ export function eip55ChecksumHexAddress(input: HexString): HexString {
 
 export function checksumEVMAsset(input: EVMAsset): EVMAsset {
 	return(toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input))));
-}
-
-/**
- * True if an EVM asset string is already in correct EIP-55 checksum casing.
- */
-export function isEVMAssetChecksummed(input: EVMAsset): boolean {
-	return(checksumEVMAsset(input) === input);
 }
 
 export function normalizeChainAssetCasing<T extends string>(input: T): T {
