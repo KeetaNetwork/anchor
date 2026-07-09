@@ -759,20 +759,12 @@ class AnchorGraph {
 			return({ node, next: [] });
 		});
 
-		// Canonical side keys: rail + canonical asset + canonical location. Two
-		// sides connect iff their keys are equal (same rail, asset and location).
-		// #assetLocationKey is memoized per side object, so each node is
-		// canonicalized once (O(n)) -- important now that asset canonicalization
-		// runs keccak for EVM checksumming.
 		const sideKey = (side: GraphNodeLike['from' | 'to']): string =>
 			`${side.rail}:${this.#assetLocationKey(side)}`;
 
 		const fromKeys = graph.map(node => sideKey(node.from));
 		const toKeys = graph.map(node => sideKey(node.to));
 
-		// Build adjacency with a hash join on those keys instead of an O(n^2)
-		// pairwise scan. On a large graph the pairwise scan -- which re-runs the
-		// asset comparison for every pair -- is what hangs the browser.
 		const nodesByFromKey = new Map<string, number[]>();
 		for (let j = 0; j < fromKeys.length; j++) {
 			const key = fromKeys[j];
