@@ -83,14 +83,29 @@ export function eip55ChecksumHexAddress(input: HexString): HexString {
 	return(result as HexString);
 }
 
-export function checksumEVMAsset(input: EVMAsset): EVMAsset {
-	return(toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input))));
+export type EVMChecksumCache = Map<string, EVMAsset>;
+
+export function checksumEVMAsset(input: EVMAsset, cache?: EVMChecksumCache): EVMAsset {
+	if (cache) {
+		const cached = cache?.get(input);
+		if (cached !== undefined) {
+			return(cached);
+		}
+	}
+
+	const checksummed = toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input)));
+
+	if (cache) {
+		cache.set(input, checksummed);
+	}
+
+	return(checksummed);
 }
 
-export function normalizeChainAssetCasing<T extends string>(input: T): T {
+export function normalizeChainAssetCasing<T extends string>(input: T, cache?: EVMChecksumCache): T {
 	if (isEVMAsset(input)) {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(checksumEVMAsset(input) as T);
+		return(checksumEVMAsset(input, cache) as T);
 	}
 
 	return(input);
@@ -162,7 +177,7 @@ export function isExternalChainAsset<T extends ExternalChainLocationType = Exter
 	}
 }
 
-export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {
+export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput, cache?: EVMChecksumCache): MovableAssetSearchCanonical {
 	if (input instanceof CurrencyInfo.Currency || CurrencyInfo.Currency.isCurrencyCode(input) || CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
 		if (CurrencyInfo.Currency.isCurrencyCode(input)) {
 			return(input);
@@ -173,7 +188,7 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 		return(input.code);
 	} else {
 		if (typeof input === 'string') {
-			return(normalizeChainAssetCasing(input));
+			return(normalizeChainAssetCasing(input, cache));
 		}
 
 		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
