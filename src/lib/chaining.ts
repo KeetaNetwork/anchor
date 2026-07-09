@@ -346,15 +346,8 @@ class AnchorGraph {
 
 	readonly assetMovementClient: KeetaAssetMovementAnchorClient;
 	readonly fxClient: KeetaFXAnchorClient;
-	// Cache the in-flight lookup promise (not the resolved value) so concurrent
-	// callers -- e.g. resolveAssetsWithMetadata attaching metadata to every asset
-	// at once -- share a single expensive getProviderByID resolution per provider
-	// instead of each launching their own.
 	readonly #assetMovementProviderCache = new Map<string, Promise<AssetMovementProvider | null>>();
 	readonly #assetNameCache = new Map<MovableAssetSearchCanonical, ISOCurrencyCode | TokenAddress | ExternalChainAsset>();
-	// Per-instance EVM checksum cache: bounded by this graph's asset set and
-	// garbage-collected with the graph, rather than a module-global that grows
-	// unbounded across every resolver/graph ever created.
 	readonly #evmChecksumCache: EVMChecksumCache = new Map();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 	#assetMovementProviderIdsByAssetLocation: Promise<Map<string, Set<string>>> | null = null;
@@ -373,10 +366,6 @@ class AnchorGraph {
 		});
 	}
 
-	// Memoized by side-object identity. Graph nodes are stable (computeGraphNodes
-	// is memoized), so repeated resolveAssets / findPaths / provider-map passes
-	// reuse these keys instead of re-running convertAssetSearchInputToCanonical
-	// (which checksums EVM assets via keccak) for every node on every call.
 	readonly #assetLocationKeyCache = new WeakMap<object, string>();
 	#assetLocationKey = (side: { asset: AnchorChainingAsset; location: AssetLocationLike }) => {
 		const cached = this.#assetLocationKeyCache.get(side);
