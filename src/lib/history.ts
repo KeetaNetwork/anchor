@@ -146,6 +146,12 @@ export type LogicalTransaction = {
 	 */
 	providerStatus?: string;
 	/**
+	 * Set when `type` and `counterparty` were inferred locally from the block's
+	 * anchor `external` without enrichment, so the wallet can render a tentative
+	 * label and enrich on demand. Cleared once the transfer resolves.
+	 */
+	provisional?: boolean;
+	/**
 	 * Flow of value relative to the queried account.
 	 */
 	direction: LogicalDirection;
@@ -194,6 +200,12 @@ export type LogicalTransaction = {
 		 * from the `external` envelope.
 		 */
 		inputs?: AnchorExternalInput[];
+		/**
+		 * Anchor transfer ids declared locally by the block's SEND `external`
+		 * envelopes, available without enrichment. Superseded by `anchorTxIDs`
+		 * once the transfer is resolved.
+		 */
+		declaredAnchorTxIDs?: string[];
 	};
 	/**
 	 * Raw source the transaction was folded from. Present only when
@@ -275,6 +287,33 @@ export type EnrichedBlock = {
 	 * anchor status resolution. Present only when non-empty.
 	 */
 	inputs?: AnchorExternalInput[];
+	/**
+	 * Anchor transfer references decoded locally from the block's SEND
+	 * `external` envelopes and trusted (block-owned by the perspective or
+	 * anchor-signed). Present only when non-empty.
+	 */
+	declaredAnchors?: DeclaredAnchorRef[];
+};
+
+/**
+ * An anchor transfer reference decoded locally from a block's SEND `external`
+ * envelope. `signed` is true when the envelope was signed by `anchorID`, which
+ * makes the reference trustworthy even for a block the perspective does not own.
+ */
+export type DeclaredAnchorRef = {
+	/**
+	 * Anchor public key string the entry is filed under.
+	 */
+	anchorID: string;
+	/**
+	 * Anchor-scoped transaction id declared for this transfer. Matches the
+	 * resolved transfer's id later carried in `refs.anchorTxIDs`.
+	 */
+	transactionID: string;
+	/**
+	 * Whether the declaring `external` was signed by `anchorID`.
+	 */
+	signed: boolean;
 };
 
 /**
@@ -397,8 +436,9 @@ export type UserHistoryListOptions = {
 	 */
 	cursor?: string;
 	/**
-	 * Enable anchor enrichment.
-	 * Defaults to `true` when a status source is set.
+	 * Enable anchor enrichment, which resolves each operation to its anchor
+	 * transfer over HTTP.
+	 * Defaults to `false`.
 	 */
 	enrich?: boolean;
 	/**
@@ -676,10 +716,13 @@ function blockExternals(block: EnrichedBlock): string[] {
 }
 
 /**
- * Decode the on-chain `inputs` declared by a block's SEND `external` envelopes.
+ * Decode a block's SEND `external` envelopes into the on-chain `inputs` they
+ * declare and the anchor transfers they name. Both are captured locally,
+ * independent of anchor status resolution; undecodable envelopes are skipped.
  */
-async function decodeExternalInputs(externals: readonly string[], decryptionKeys: VerifiableAccount[] | undefined): Promise<AnchorExternalInput[]> {
+async function decodeExternalEnvelopes(externals: readonly string[], decryptionKeys: VerifiableAccount[] | undefined): Promise<{ inputs: AnchorExternalInput[]; declaredAnchors: DeclaredAnchorRef[] }> {
 	const inputs: AnchorExternalInput[] = [];
+	const declaredAnchors: DeclaredAnchorRef[] = [];
 	for (const external of externals) {
 		let decoded: AnchorExternal;
 		try {
@@ -699,9 +742,52 @@ async function decodeExternalInputs(externals: readonly string[], decryptionKeys
 				inputs.push(inputReference);
 			}
 		}
+
+		const signerID = decoded.signed?.signer.publicKeyString.get();
+		for (const [ anchorID, entry ] of Object.entries(decoded.envelope.anchors)) {
+			if (!('transactionId' in entry)) {
+				continue;
+			}
+
+			declaredAnchors.push({ anchorID, transactionID: entry.transactionId, signed: signerID === anchorID });
+		}
 	}
 
-	return(inputs);
+	return({ inputs, declaredAnchors });
+}
+
+/**
+ * The single anchor a block's trusted declarations name, or `undefined` when
+ * there are none or they disagree.
+ */
+function declaredAnchorID(block: EnrichedBlock): string | undefined {
+	const refs = block.declaredAnchors ?? [];
+	const first = refs[0];
+	if (first === undefined) {
+		return(undefined);
+	}
+
+	for (const ref of refs) {
+		if (ref.anchorID !== first.anchorID) {
+			return(undefined);
+		}
+	}
+
+	return(first.anchorID);
+}
+
+/**
+ * The distinct anchor transfer ids a block declares locally, in order.
+ */
+function declaredAnchorTxIDsOf(block: EnrichedBlock): string[] {
+	const ids: string[] = [];
+	for (const ref of block.declaredAnchors ?? []) {
+		if (!ids.includes(ref.transactionID)) {
+			ids.push(ref.transactionID);
+		}
+	}
+
+	return(ids);
 }
 
 /**
@@ -718,6 +804,11 @@ function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransact
 		refs.inputs = block.inputs;
 	}
 
+	const declaredAnchorTxIDs = declaredAnchorTxIDsOf(block);
+	if (declaredAnchorTxIDs.length > 0) {
+		refs.declaredAnchorTxIDs = declaredAnchorTxIDs;
+	}
+
 	return(refs);
 }
 
@@ -728,7 +819,7 @@ function buildRefs(block: EnrichedBlock, anchorTxIDs: string[]): LogicalTransact
 /**
  * Build the logical transaction backing one enriched anchor operation.
  */
-function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperation, transfer: KeetaAssetMovementTransaction): LogicalTransaction {
+function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperation, transfer: KeetaAssetMovementTransaction, indexed: boolean): LogicalTransaction {
 	const type = logicalTypeFromTransfer(transfer);
 	const fromKeeta = locationIsChain(transfer.from.location, 'keeta');
 	const direction = directionFromTransfer(type, fromKeeta);
@@ -758,7 +849,7 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
 
 	const refs = buildRefs(block, [ transfer.id ]);
 	const transaction: LogicalTransaction = {
-		id: `${block.blockHash}:${enriched.index}`,
+		id: indexed ? `${block.blockHash}:${enriched.index}` : block.blockHash,
 		type,
 		status: settled.status,
 		providerStatus: settled.providerStatus,
@@ -785,21 +876,25 @@ function buildAnchorTransaction(block: EnrichedBlock, enriched: EnrichedOperatio
  */
 const anchorTransferClassifier: LogicalClassifier = {
 	classify(block) {
-		const transactions: LogicalTransaction[] = [];
+		const resolved: { enriched: EnrichedOperation; transfer: KeetaAssetMovementTransaction }[] = [];
 		for (const enriched of block.operations) {
 			const transfer = enriched.transfer;
-			if (transfer === undefined) {
-				continue;
+			if (transfer !== undefined) {
+				resolved.push({ enriched, transfer });
 			}
-
-			transactions.push(buildAnchorTransaction(block, enriched, transfer));
 		}
 
-		if (transactions.length === 0) {
+		if (resolved.length === 0) {
 			return(null);
 		}
 
-		return(transactions);
+		/*
+		 * Suffix the id with the operation index only when the block settles more
+		 * than one transfer; a single-transfer block keeps the bare block hash so
+		 * its id matches the shape-classified (unenriched) row for the same block.
+		 */
+		const indexed = resolved.length > 1;
+		return(resolved.map(entry => buildAnchorTransaction(block, entry.enriched, entry.transfer, indexed)));
 	}
 };
 
@@ -823,25 +918,67 @@ function principalSend(sends: readonly IndexedView[], receivedToken: string): In
 }
 
 /**
- * Aggregate the non-principal sends into a single fee amount, or `undefined`
- * when there are none or they use more than one token.
+ * Sum amounts into one total, or `undefined` when there are none or they use
+ * more than one token.
  */
-function aggregateFee(feeSends: readonly IndexedView[]): LogicalAmount | undefined {
-	const first = feeSends[0];
+function combineFees(fees: readonly LogicalAmount[]): LogicalAmount | undefined {
+	const first = fees.at(0);
 	if (first === undefined) {
 		return(undefined);
 	}
 
-	let amount = 0n;
-	for (const send of feeSends) {
-		if (send.amount.token !== first.amount.token) {
+	let total = 0n;
+	for (const fee of fees) {
+		if (fee.token !== first.token) {
 			return(undefined);
 		}
 
-		amount += send.amount.amount;
+		total += fee.amount;
 	}
 
-	return({ token: first.amount.token, amount });
+	return({ token: first.token, amount: total });
+}
+
+/**
+ * Aggregate the non-principal sends into a single fee amount, or `undefined`
+ * when there are none or they use more than one token.
+ */
+function aggregateFee(feeSends: readonly IndexedView[]): LogicalAmount | undefined {
+	return(combineFees(feeSends.map(send => send.amount)));
+}
+
+/**
+ * Build a `self`-directed swap from its principal and received legs. Shared by
+ * the single-block classifier and the cross-block accepted-swap fold.
+ */
+function swapTransaction(input: {
+	id: string;
+	timestamp: string;
+	send: LogicalAmount;
+	receive: LogicalAmount;
+	counterparty: NonNullable<LogicalTransaction['counterparty']>;
+	legs: LogicalLeg[];
+	refs: LogicalTransaction['refs'];
+	fee?: LogicalAmount;
+}): LogicalTransaction {
+	const transaction: LogicalTransaction = {
+		id: input.id,
+		type: 'swap',
+		status: 'complete',
+		direction: 'self',
+		timestamp: input.timestamp,
+		send: input.send,
+		receive: input.receive,
+		counterparty: input.counterparty,
+		legs: input.legs,
+		refs: input.refs
+	};
+
+	if (input.fee !== undefined) {
+		transaction.fee = input.fee;
+	}
+
+	return(transaction);
 }
 
 /**
@@ -872,24 +1009,16 @@ const atomicSwapClassifier: LogicalClassifier = {
 
 		const fee = aggregateFee(sends.filter(send => send.index !== principal.index));
 
-		const transaction: LogicalTransaction = {
+		return([ swapTransaction({
 			id: block.blockHash,
-			type: 'swap',
-			status: 'complete',
-			direction: 'self',
 			timestamp: block.timestamp,
 			send: principal.amount,
 			receive: received.amount,
 			counterparty: { kind: 'liquidity', id: counterparty },
 			legs: onchainLegs(block),
-			refs: buildRefs(block, [])
-		};
-
-		if (fee !== undefined) {
-			transaction.fee = fee;
-		}
-
-		return([ transaction ]);
+			refs: buildRefs(block, []),
+			...(fee !== undefined ? { fee } : {})
+		}) ]);
 	}
 };
 
@@ -919,9 +1048,14 @@ const sendClassifier: LogicalClassifier = {
 			refs: buildRefs(block, [])
 		};
 
-		const counterparty = uniformCounterparty(sends);
-		if (counterparty !== undefined) {
-			transaction.counterparty = { kind: 'account', id: counterparty };
+		const anchorID = declaredAnchorID(block);
+		if (anchorID !== undefined) {
+			transaction.counterparty = { kind: 'anchor', id: anchorID };
+		} else {
+			const counterparty = uniformCounterparty(sends);
+			if (counterparty !== undefined) {
+				transaction.counterparty = { kind: 'account', id: counterparty };
+			}
 		}
 
 		return([ transaction ]);
@@ -954,9 +1088,14 @@ const receiveClassifier: LogicalClassifier = {
 			refs: buildRefs(block, [])
 		};
 
-		const counterparty = uniformCounterparty(receives);
-		if (counterparty !== undefined) {
-			transaction.counterparty = { kind: 'account', id: counterparty };
+		const anchorID = declaredAnchorID(block);
+		if (anchorID !== undefined) {
+			transaction.counterparty = { kind: 'anchor', id: anchorID };
+		} else {
+			const counterparty = uniformCounterparty(receives);
+			if (counterparty !== undefined) {
+				transaction.counterparty = { kind: 'account', id: counterparty };
+			}
 		}
 
 		return([ transaction ]);
@@ -1023,12 +1162,98 @@ function suppressCoveredForeignBlocks(blocks: readonly EnrichedBlock[]): readonl
 }
 
 /**
- * Fold enriched blocks into logical transactions by running the ordered
- * classifiers; the first classifier that applies to a block wins.
+ * Find a block authored by `counterparty` within the staple that exactly
+ * consumes `principal` (a RECEIVE from the perspective for the same token and
+ * amount) and pays a different token back to the perspective, returning the
+ * received amount and that block. This is the counterpart leg of an accepted
+ * P2P swap, whose receive leg the perspective never signs itself.
+ */
+function matchSwapCounterpart(blocks: readonly EnrichedBlock[], perspective: string, counterparty: string, principal: LogicalAmount, consumed: ReadonlySet<string>): { block: EnrichedBlock; receive: LogicalAmount } | undefined {
+	for (const block of blocks) {
+		if (block.account !== counterparty || consumed.has(block.blockHash)) {
+			continue;
+		}
+
+		let consumesPrincipal = false;
+		let payout: LogicalAmount | undefined;
+		for (const enriched of block.operations) {
+			const view = operationView(enriched.operation);
+			if (view === null || view.counterparty !== perspective) {
+				continue;
+			}
+
+			if (view.opType === 'receive' && view.amount.token === principal.token && view.amount.amount === principal.amount) {
+				consumesPrincipal = true;
+			} else if (view.opType === 'send' && view.amount.token !== principal.token) {
+				payout = view.amount;
+			}
+		}
+
+		if (consumesPrincipal && payout !== undefined) {
+			return({ block, receive: payout });
+		}
+	}
+
+	return(undefined);
+}
+
+/**
+ * Fold accepted P2P swaps whose legs span two blocks of one staple: the
+ * perspective signs only a SEND (the token it gives) while its RECEIVE lives
+ * in the counterparty's block.
+ */
+function crossBlockSwaps(blocks: readonly EnrichedBlock[]): { transactions: LogicalTransaction[]; consumed: Set<string> } {
+	const consumed = new Set<string>();
+	const transactions: LogicalTransaction[] = [];
+	const perspective = blocks.find(block => block.perspective !== undefined)?.perspective;
+	if (perspective === undefined) {
+		return({ transactions, consumed });
+	}
+
+	for (const owned of blocks) {
+		if (owned.account !== perspective || consumed.has(owned.blockHash)) {
+			continue;
+		}
+
+		const { sends, receives, otherCount } = viewsOf(owned);
+		const principal = sends[0];
+		if (otherCount !== 0 || receives.length !== 0 || sends.length !== 1 || principal === undefined) {
+			continue;
+		}
+
+		const matched = matchSwapCounterpart(blocks, perspective, principal.counterparty, principal.amount, consumed);
+		if (matched === undefined) {
+			continue;
+		}
+
+		const refs = buildRefs(owned, []);
+		refs.blockHashes = [ ...refs.blockHashes, matched.block.blockHash ];
+		transactions.push(swapTransaction({
+			id: owned.blockHash,
+			timestamp: owned.timestamp,
+			send: principal.amount,
+			receive: matched.receive,
+			counterparty: { kind: 'account', id: principal.counterparty },
+			legs: [ ...onchainLegs(owned), ...onchainLegs(matched.block) ],
+			refs
+		}));
+		consumed.add(owned.blockHash);
+		consumed.add(matched.block.blockHash);
+	}
+
+	return({ transactions, consumed });
+}
+
+/**
+ * Fold enriched blocks into logical transactions. Cross-block accepted swaps
+ * are paired first so neither leg is later dropped or split, then the ordered
+ * classifiers run per block; the first classifier that applies to a block wins.
  */
 function foldHistory(blocks: readonly EnrichedBlock[], classifiers: readonly LogicalClassifier[]): LogicalTransaction[] {
-	const results: LogicalTransaction[] = [];
-	for (const block of suppressCoveredForeignBlocks(blocks)) {
+	const { transactions: swaps, consumed } = crossBlockSwaps(blocks);
+	const results: LogicalTransaction[] = [ ...swaps ];
+	const remaining = blocks.filter(block => !consumed.has(block.blockHash));
+	for (const block of suppressCoveredForeignBlocks(remaining)) {
 		for (const classifier of classifiers) {
 			const classified = classifier.classify(block);
 			if (classified !== null) {
@@ -1071,27 +1296,6 @@ function inputsReference(transaction: LogicalTransaction, candidate: LogicalTran
 }
 
 /**
- * Sum the hops' fees when they all share one token.
- */
-function combineFees(fees: readonly LogicalAmount[]): LogicalAmount | undefined {
-	const first = fees.at(0);
-	if (first === undefined) {
-		return(undefined);
-	}
-
-	let total = 0n;
-	for (const fee of fees) {
-		if (fee.token !== first.token) {
-			return(undefined);
-		}
-
-		total += fee.amount;
-	}
-
-	return({ token: first.token, amount: total });
-}
-
-/**
  * The counterparty shared by every hop, or `undefined` when the hops disagree.
  */
 function sharedCounterparty(hops: readonly LogicalTransaction[]): LogicalCounterparty | undefined {
@@ -1124,6 +1328,7 @@ type MergedHopRefs = {
 	anchorTxIDs: string[];
 	externals: string[];
 	inputs: AnchorExternalInput[];
+	declaredAnchorTxIDs: string[];
 };
 
 /**
@@ -1131,7 +1336,7 @@ type MergedHopRefs = {
  * and externals while preserving the ordered on-chain inputs.
  */
 function accumulateHopRefs(hops: readonly LogicalTransaction[]): MergedHopRefs {
-	const merged: MergedHopRefs = { blockHashes: [], anchorTxIDs: [], externals: [], inputs: [] };
+	const merged: MergedHopRefs = { blockHashes: [], anchorTxIDs: [], externals: [], inputs: [], declaredAnchorTxIDs: [] };
 	for (const hop of hops) {
 		for (const blockHash of hop.refs.blockHashes) {
 			pushUnique(merged.blockHashes, blockHash);
@@ -1144,6 +1349,9 @@ function accumulateHopRefs(hops: readonly LogicalTransaction[]): MergedHopRefs {
 		}
 		for (const input of hop.refs.inputs ?? []) {
 			merged.inputs.push(input);
+		}
+		for (const declaredAnchorTxID of hop.refs.declaredAnchorTxIDs ?? []) {
+			pushUnique(merged.declaredAnchorTxIDs, declaredAnchorTxID);
 		}
 	}
 
@@ -1198,6 +1406,21 @@ function collectHopFees(hops: readonly LogicalTransaction[]): LogicalAmount[] {
 }
 
 /**
+ * The provider status of the latest hop that carries one, so a folded
+ * conversion still reports the anchor's settlement status.
+ */
+function latestHopProviderStatus(hops: readonly LogicalTransaction[]): string | undefined {
+	let providerStatus: string | undefined;
+	for (const hop of hops) {
+		if (hop.providerStatus !== undefined) {
+			providerStatus = hop.providerStatus;
+		}
+	}
+
+	return(providerStatus);
+}
+
+/**
  * The head's legs followed by the tail's, suppressing intermediate hops and
  * avoiding a duplicate when head and tail are the same transaction.
  */
@@ -1210,8 +1433,20 @@ function mergeHopLegs(head: LogicalTransaction, tail: LogicalTransaction): Logic
 	return(legs);
 }
 
+/**
+ * The display shape of a folded conversion.
+ */
+function conversionShape(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): { type: LogicalTransaction['type']; direction: LogicalTransaction['direction']; counterparty: LogicalTransaction['counterparty'] } {
+	if (head.type === 'send' && tail.type === 'receive') {
+		return({ type: 'swap', direction: 'self', counterparty: head.counterparty ?? tail.counterparty });
+	}
+
+	const counterparty = tail.type === 'swap' ? sharedCounterparty(hops) : tail.counterparty;
+	return({ type: tail.type, direction: tail.direction, counterparty });
+}
+
 function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops: readonly LogicalTransaction[]): LogicalTransaction {
-	const { blockHashes, anchorTxIDs, externals, inputs } = accumulateHopRefs(hops);
+	const { blockHashes, anchorTxIDs, externals, inputs, declaredAnchorTxIDs } = accumulateHopRefs(hops);
 
 	const refs: LogicalTransaction['refs'] = { blockHashes, anchorTxIDs };
 	if (externals.length > 0) {
@@ -1222,11 +1457,16 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 		refs.inputs = inputs;
 	}
 
+	if (declaredAnchorTxIDs.length > 0) {
+		refs.declaredAnchorTxIDs = declaredAnchorTxIDs;
+	}
+
+	const shape = conversionShape(head, tail, hops);
 	const merged: LogicalTransaction = {
 		id: head.id,
-		type: tail.type,
+		type: shape.type,
 		status: aggregateHopStatus(hops),
-		direction: tail.direction,
+		direction: shape.direction,
 		timestamp: earliestHopTimestamp(hops, head.timestamp),
 		legs: mergeHopLegs(head, tail),
 		refs
@@ -1245,22 +1485,22 @@ function mergeChainHops(head: LogicalTransaction, tail: LogicalTransaction, hops
 		merged.fee = fee;
 	}
 
-	/*
-	 * An all-swap chain reports its shared anchor; a chain that ends in a
-	 * bridge takes the bridge's counterparty, since the swap hops only fund it.
-	 */
-	const counterparty = tail.type === 'swap' ? sharedCounterparty(hops) : tail.counterparty;
-	if (counterparty !== undefined) {
-		merged.counterparty = counterparty;
+	if (shape.counterparty !== undefined) {
+		merged.counterparty = shape.counterparty;
+	}
+
+	const providerStatus = latestHopProviderStatus(hops);
+	if (providerStatus !== undefined) {
+		merged.providerStatus = providerStatus;
 	}
 
 	return(merged);
 }
 
 /**
- * An ordered chain of two or more linked swap hops.
+ * An ordered chain of two or more linked hops.
  */
-type SwapChain = {
+type FoldChain = {
 	id: string;
 	head: LogicalTransaction;
 	tail: LogicalTransaction;
@@ -1268,35 +1508,69 @@ type SwapChain = {
 };
 
 /**
- * Group swap transactions into the chains they form through their
- * `refs.inputs` <-> `refs.blockHashes` links. Only chains of two or more hops
- * are returned, keyed by every member's id.
- *
- * Heads and intermediate hops are always swaps; the tail may also be a bridge,
- * which is how a swap that funds an outbound bridge folds into one conversion.
+ * An unenriched leg attributed to an anchor purely from its locally decoded
+ * `external` (a declared transfer id, no authoritative `anchorTxIDs` yet, and
+ * an anchor counterparty). These are the hops of an anchor conversion before
+ * enrichment resolves their true swap/bridge types, so they chain along their
+ * `inputs` edges the way resolved swaps do.
  */
+function isLocalAnchorHop(transaction: LogicalTransaction): boolean {
+	return(transaction.refs.anchorTxIDs.length === 0
+		&& (transaction.refs.declaredAnchorTxIDs?.length ?? 0) > 0
+		&& transaction.counterparty?.kind === 'anchor');
+}
+
 /**
- * The forward/backward links between swaps and the swap or bridge each one
- * funds, established through their `refs.inputs` <-> `refs.blockHashes` edges.
- * Each swap keeps at most one successor (its first match).
+ * Whether `head` may fold into `successor` along their
+ * `refs.inputs` <-> `refs.blockHashes` link: swaps chain into further swaps or
+ * a capping bridge, and a pay-in `send` caps into its delivery `receive`. The
+ * single source of truth for edge validity, shared by the pure
+ * {@link foldChains} pass and the incremental by-hash resolution.
  */
-type SwapLinks = {
+function canLink(head: LogicalTransaction, successor: LogicalTransaction): boolean {
+	/*
+	 * Unenriched anchor hops chain to one another along their inputs edges the
+	 * way resolved swaps do, so a multi-hop anchor conversion folds into one row
+	 * without enrichment. The inputs edge itself is always separately required
+	 * by the caller.
+	 */
+	if (isLocalAnchorHop(head) && isLocalAnchorHop(successor)) {
+		return(true);
+	}
+
+	if (head.type === 'swap') {
+		return(successor.type === 'swap' || successor.type === 'bridge');
+	}
+
+	if (head.type === 'send') {
+		return(successor.type === 'receive');
+	}
+
+	return(false);
+}
+
+/**
+ * The forward/backward links between each head and the successor it funds,
+ * established through their `refs.inputs` <-> `refs.blockHashes` edges. Each
+ * head keeps at most one successor (its first match).
+ */
+type FoldLinks = {
 	successorOf: Map<string, LogicalTransaction>;
 	predecessorOf: Map<string, LogicalTransaction>;
 };
 
-function linkSwapSuccessors(swaps: readonly LogicalTransaction[], successors: readonly LogicalTransaction[]): SwapLinks {
+function linkChainSuccessors(heads: readonly LogicalTransaction[], successors: readonly LogicalTransaction[]): FoldLinks {
 	const successorOf = new Map<string, LogicalTransaction>();
 	const predecessorOf = new Map<string, LogicalTransaction>();
-	for (const swap of swaps) {
+	for (const head of heads) {
 		for (const other of successors) {
-			if (other.id === swap.id || successorOf.has(swap.id)) {
+			if (other.id === head.id || successorOf.has(head.id)) {
 				continue;
 			}
 
-			if (inputsReference(other, swap)) {
-				successorOf.set(swap.id, other);
-				predecessorOf.set(other.id, swap);
+			if (canLink(head, other) && inputsReference(other, head)) {
+				successorOf.set(head.id, other);
+				predecessorOf.set(other.id, head);
 			}
 		}
 	}
@@ -1326,24 +1600,24 @@ function walkChainFrom(head: LogicalTransaction, successorOf: ReadonlyMap<string
 	return(hops);
 }
 
-function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<string, SwapChain> {
-	const swaps = transactions.filter(transaction => transaction.type === 'swap');
-	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge');
-	const { successorOf, predecessorOf } = linkSwapSuccessors(swaps, successors);
+function buildChains(transactions: readonly LogicalTransaction[]): Map<string, FoldChain> {
+	const heads = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'send' || isLocalAnchorHop(transaction));
+	const successors = transactions.filter(transaction => transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive' || isLocalAnchorHop(transaction));
+	const { successorOf, predecessorOf } = linkChainSuccessors(heads, successors);
 
-	const chainByMemberId = new Map<string, SwapChain>();
-	for (const swap of swaps) {
-		if (predecessorOf.has(swap.id)) {
+	const chainByMemberId = new Map<string, FoldChain>();
+	for (const head of heads) {
+		if (predecessorOf.has(head.id)) {
 			continue;
 		}
 
-		const hops = walkChainFrom(swap, successorOf);
+		const hops = walkChainFrom(head, successorOf);
 		const tail = hops.at(-1);
 		if (hops.length < 2 || tail === undefined) {
 			continue;
 		}
 
-		const chain: SwapChain = { id: swap.id, head: swap, tail, hops };
+		const chain: FoldChain = { id: head.id, head, tail, hops };
 		for (const hop of hops) {
 			chainByMemberId.set(hop.id, chain);
 		}
@@ -1353,10 +1627,12 @@ function buildSwapChains(transactions: readonly LogicalTransaction[]): Map<strin
 }
 
 /**
- * Fold chained swaps into single conversions for display.
+ * Fold linked chains into single conversions for display: multi-hop swaps, a
+ * swap that funds an outbound bridge, and a pay-in send capped by its delivery
+ * receive (a non-atomic anchor swap seen leanly).
  */
 export function foldChains(transactions: readonly LogicalTransaction[]): LogicalTransaction[] {
-	const chainByMemberId = buildSwapChains(transactions);
+	const chainByMemberId = buildChains(transactions);
 	if (chainByMemberId.size === 0) {
 		return([ ...transactions ]);
 	}
@@ -1381,11 +1657,27 @@ export function foldChains(transactions: readonly LogicalTransaction[]): Logical
 }
 
 /**
+ * The anchor transfer ids a transaction settles: the authoritative
+ * `anchorTxIDs` once enriched, otherwise the ids declared locally by the
+ * block's `external` so an unenriched list de-duplicates a transfer's several
+ * legs the same way. The empty-`anchorTxIDs` gate keeps enriched suppression
+ * identical to before.
+ */
+function settlementIDs(transaction: LogicalTransaction): readonly string[] {
+	const refs = transaction.refs;
+	if (refs.anchorTxIDs.length > 0) {
+		return(refs.anchorTxIDs);
+	}
+
+	return(refs.declaredAnchorTxIDs ?? []);
+}
+
+/**
  * Whether every anchor transfer a logical transaction settles has already been
  * emitted, marking it a duplicate settlement leg.
  */
 function isSettledDuplicate(transaction: LogicalTransaction, emitted: ReadonlySet<string>): boolean {
-	const ids = transaction.refs.anchorTxIDs;
+	const ids = settlementIDs(transaction);
 	if (ids.length === 0) {
 		return(false);
 	}
@@ -1397,7 +1689,7 @@ function isSettledDuplicate(transaction: LogicalTransaction, emitted: ReadonlySe
  * Record the anchor transfers a logical transaction settles.
  */
 function markEmittedTransfers(transaction: LogicalTransaction, emitted: Set<string>): void {
-	for (const id of transaction.refs.anchorTxIDs) {
+	for (const id of settlementIDs(transaction)) {
 		emitted.add(id);
 	}
 }
@@ -1449,6 +1741,49 @@ function suppressSettledDuplicates(transactions: readonly LogicalTransaction[]):
 	}
 
 	return(result);
+}
+
+/**
+ * Relabel a lone unenriched anchor leg to its provisional withdraw/deposit
+ * shape for display. A no-op once enriched (the row then carries authoritative
+ * `anchorTxIDs`), for folded swaps, and for rows with no trusted anchor
+ * declaration. Must run AFTER settlement suppression, since it rewrites `type`
+ * and would otherwise defeat the `type === 'receive'` gate in `isSettledLeg`.
+ */
+function normalizeProvisional(transaction: LogicalTransaction): LogicalTransaction {
+	const refs = transaction.refs;
+	if (refs.anchorTxIDs.length > 0) {
+		return(transaction);
+	}
+
+	if (refs.declaredAnchorTxIDs === undefined || refs.declaredAnchorTxIDs.length === 0) {
+		return(transaction);
+	}
+
+	if (transaction.counterparty?.kind !== 'anchor') {
+		return(transaction);
+	}
+
+	if (transaction.type !== 'send' && transaction.type !== 'receive') {
+		return(transaction);
+	}
+
+	return({ ...transaction, type: transaction.type === 'send' ? 'withdraw' : 'deposit', provisional: true });
+}
+
+/**
+ * Re-attach a caller's `source` to a conversion that lost it. A folded
+ * multi-hop conversion is built fresh by {@link mergeChainHops} and carries no
+ * `source`, so an `includeSource` enrichment would otherwise drop the
+ * perspective a detail view needs. Mirrors how {@link UserHistory.iterate}
+ * carries source into a folded conversion in its `#foldForward` pass.
+ */
+function attachConversionSource(transaction: LogicalTransaction, source: LogicalTransactionSource | undefined, includeSource: boolean): LogicalTransaction {
+	if (!includeSource || transaction.source !== undefined || source === undefined) {
+		return(transaction);
+	}
+
+	return({ ...transaction, source });
 }
 
 /**
@@ -1617,12 +1952,63 @@ export class UserHistory {
 			transactions.push(transaction);
 		}
 
-		const folded = suppressSettledDuplicates(foldChains(transactions));
+		const folded = suppressSettledDuplicates(foldChains(transactions)).map(normalizeProvisional);
 		if (limit !== undefined) {
 			return(folded.slice(0, limit));
 		}
 
 		return(folded);
+	}
+
+	/**
+	 * Enrich a single transaction on demand by resolving the anchor transfers
+	 * for only its contributing blocks.
+	 */
+	async enrichTransaction(transaction: LogicalTransaction, account: HistoryAccount, options?: UserHistoryListOptions): Promise<LogicalTransaction> {
+		const source = this.#history;
+		if (typeof source.getVoteStaple !== 'function') {
+			return(transaction);
+		}
+
+		const perspective = perspectiveOf(account);
+		const resolved = this.#withDefaultDecryptionKeys(account, { ...options, enrich: true });
+		const externalCache = new Map<string, ResolvedTransfer | undefined>();
+		const readerCache = new Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>();
+
+		const logical: LogicalTransaction[] = [];
+		const visited = new Set<string>();
+		for (const blockHash of transaction.refs.blockHashes) {
+			if (visited.has(blockHash)) {
+				continue;
+			}
+
+			visited.add(blockHash);
+			const staple = await source.getVoteStaple(blockHash);
+			if (staple === null || staple === undefined) {
+				continue;
+			}
+
+			for (const candidate of await this.#foldStaple(staple, perspective, resolved, externalCache, readerCache)) {
+				logical.push(candidate);
+			}
+		}
+
+		const blockHashes = new Set(transaction.refs.blockHashes);
+		const folded = foldChains(logical);
+		const includeSource = resolved?.includeSource === true;
+
+		const matchByID = folded.find(function(candidate) {
+			return(candidate.id === transaction.id);
+		});
+		if (matchByID !== undefined) {
+			return(attachConversionSource(normalizeProvisional(matchByID), transaction.source, includeSource));
+		}
+
+		const matchByBlock = folded.find(function(candidate) {
+			return(candidate.refs.blockHashes.some(hash => blockHashes.has(hash)));
+		});
+
+		return(attachConversionSource(normalizeProvisional(matchByBlock ?? transaction), transaction.source, includeSource));
 	}
 
 	/**
@@ -1707,7 +2093,7 @@ export class UserHistory {
 
 		markEmittedTransfers(out, context.emittedTransfers);
 		markEmittedBlocks(out, context.emittedBlocks);
-		return(out);
+		return(context.foldCapable ? normalizeProvisional(out) : out);
 	}
 
 	/**
@@ -1748,18 +2134,17 @@ export class UserHistory {
 	}
 
 	/**
-	 * Fold a swap or bridge that declares on-chain inputs into the full
-	 * conversion it caps, resolving every linked predecessor swap by hash and
-	 * marking each hop `consumed` so it is skipped when it later pages in.
-	 * Returns the input transaction unchanged when it is not the tail of a
-	 * linked chain.
+	 * Fold a tail that declares on-chain inputs into the full conversion it
+	 * caps, resolving every linked predecessor by hash and marking each hop
+	 * `consumed` so it is skipped when it later pages in.
 	 */
 	async #foldForward(transaction: LogicalTransaction, consumed: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction> {
-		if ((transaction.type !== 'swap' && transaction.type !== 'bridge') || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
+		const foldable = transaction.type === 'swap' || transaction.type === 'bridge' || transaction.type === 'receive' || isLocalAnchorHop(transaction);
+		if (!foldable || transaction.refs.inputs === undefined || transaction.refs.inputs.length === 0) {
 			return(transaction);
 		}
 
-		const hops = await this.#resolveSwapChainBackward(transaction, perspective, options, externalCache, readerCache);
+		const hops = await this.#resolveChainBackward(transaction, perspective, options, externalCache, readerCache);
 		const head = hops.at(0);
 		const tail = hops.at(-1);
 		if (hops.length < 2 || head === undefined || tail === undefined) {
@@ -1779,11 +2164,11 @@ export class UserHistory {
 	}
 
 	/**
-	 * Walk a swap chain backward from its tail, following each hop's on-chain
-	 * input to the predecessor swap it references, until the head (a swap with
-	 * no resolvable input) is reached. Returns the hops oldest-first.
+	 * Walk a chain backward from its tail, following each hop's on-chain input
+	 * to the predecessor it references, until the head (a hop with no
+	 * resolvable input) is reached. Returns the hops oldest-first.
 	 */
-	async #resolveSwapChainBackward(tail: LogicalTransaction, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction[]> {
+	async #resolveChainBackward(tail: LogicalTransaction, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction[]> {
 		const hops: LogicalTransaction[] = [ tail ];
 		const seenIds = new Set<string>([ tail.id ]);
 		const triedHashes = new Set<string>();
@@ -1803,8 +2188,8 @@ export class UserHistory {
 	}
 
 	/**
-	 * Resolve the first not-yet-tried input of `current` to the predecessor
-	 * swap it references, or `undefined` when none resolve to a new swap.
+	 * Resolve the first not-yet-tried input of `current` to the predecessor it
+	 * references, or `undefined` when none resolve to a new, linkable hop.
 	 */
 	async #walkToPredecessor(current: LogicalTransaction, triedHashes: Set<string>, seenIds: Set<string>, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction | undefined> {
 		for (const input of current.refs.inputs ?? []) {
@@ -1814,7 +2199,7 @@ export class UserHistory {
 
 			triedHashes.add(input.blockHash);
 
-			const predecessor = await this.#resolvePredecessorSwap(input.blockHash, perspective, options, externalCache, readerCache);
+			const predecessor = await this.#resolveContributing(input.blockHash, current, perspective, options, externalCache, readerCache);
 			if (predecessor !== undefined && !seenIds.has(predecessor.id)) {
 				return(predecessor);
 			}
@@ -1824,10 +2209,11 @@ export class UserHistory {
 	}
 
 	/**
-	 * Fetch the staple settling `blockHash` and return the swap logical
-	 * transaction it contributes to, or `undefined` when it cannot be resolved.
+	 * Fetch the staple settling `blockHash` and return the logical transaction
+	 * it contributes that may fold into `successor` (per {@link canLink}), or
+	 * `undefined` when none can be resolved.
 	 */
-	async #resolvePredecessorSwap(blockHash: string, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction | undefined> {
+	async #resolveContributing(blockHash: string, successor: LogicalTransaction, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<LogicalTransaction | undefined> {
 		const source = this.#history;
 		if (typeof source.getVoteStaple !== 'function') {
 			return(undefined);
@@ -1839,7 +2225,7 @@ export class UserHistory {
 		}
 
 		const logical = foldChains(await this.#foldStaple(staple, perspective, options, externalCache, readerCache));
-		return(logical.find(transaction => transaction.type === 'swap' && transaction.refs.blockHashes.includes(blockHash)));
+		return(logical.find(transaction => transaction.refs.blockHashes.includes(blockHash) && canLink(transaction, successor)));
 	}
 
 	/**
@@ -1867,7 +2253,7 @@ export class UserHistory {
 	async #enrichBlock(block: Block, timestamp: string, perspective: string | undefined, options: UserHistoryListOptions | undefined, externalCache: Map<string, ResolvedTransfer | undefined>, readerCache: Map<string, AnchorTransferReader<KeetaAssetMovementTransaction> | null>): Promise<EnrichedBlock> {
 		const blockHash = block.hash.toString();
 		const account = block.account.publicKeyString.get();
-		const enrichEnabled = options?.enrich !== false && this.#status !== undefined;
+		const enrichEnabled = options?.enrich === true && this.#status !== undefined;
 
 		/*
 		 * A single anchor transfer (an FX swap, say) can be settled by several
@@ -1899,9 +2285,21 @@ export class UserHistory {
 			result.perspective = perspective;
 		}
 
-		const inputs = await decodeExternalInputs(blockExternals(result), options?.decryptionKeys);
-		if (inputs.length > 0) {
-			result.inputs = inputs;
+		const decoded = await decodeExternalEnvelopes(blockExternals(result), options?.decryptionKeys);
+		if (decoded.inputs.length > 0) {
+			result.inputs = decoded.inputs;
+		}
+
+		/*
+		 * Only trust a declared anchor reference when the block is issued by the
+		 * perspective (its own history) or the entry was signed by the anchor.
+		 * An unsigned foreign block could otherwise assert a transfer id it does
+		 * not own and corrupt grouping.
+		 */
+		const owned = perspective !== undefined && account === perspective;
+		const trustedAnchors = decoded.declaredAnchors.filter(ref => owned || ref.signed);
+		if (trustedAnchors.length > 0) {
+			result.declaredAnchors = trustedAnchors;
 		}
 
 		return(result);
