@@ -133,7 +133,7 @@ export abstract class KeetaAnchorMetadataServer<
 								throw(new KeetaAnchorUserValidationError({ fields: [] }, 'Account not allowed to access this endpoint'));
 							}
 						} catch (error) {
-							this.logger?.debug('KeetaAnchorMetadataServer: serviceMetadata endpoint authentication failed:', error);
+							this.logger?.debug('KeetaAnchorMetadataServer', 'serviceMetadata endpoint authentication failed:', error);
 
 							return({
 								statusCode: 404,
