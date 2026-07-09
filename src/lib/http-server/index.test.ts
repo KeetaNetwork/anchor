@@ -571,7 +571,7 @@ test('Request protocol: honors X-Forwarded-Proto, defaults to http', async funct
 	];
 
 	for (const testCase of cases) {
-		const headers: Record<string, string> = { 'Accept': 'application/json' };
+		const headers: { [key: string]: string; } = { 'Accept': 'application/json' };
 		if (testCase.header !== undefined) {
 			headers['X-Forwarded-Proto'] = testCase.header;
 		}
