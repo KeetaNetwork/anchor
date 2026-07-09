@@ -236,22 +236,6 @@ function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAss
 	}
 }
 
-function nodeSideSupports(side: AnchorChainingAssetAndLocation, required: AnchorChainingAssetAndLocation): boolean {
-	if (side.rail !== required.rail) {
-		return(false);
-	}
-
-	if (convertAssetLocationToString(side.location) !== convertAssetLocationToString(required.location)) {
-		return(false);
-	}
-
-	if (!isAnchorChainingAssetEqual(side.asset, required.asset)) {
-		return(false);
-	}
-
-	return(true);
-}
-
 /**
  * Returns true for nodes that keep assets on Keeta: FX nodes, plus
  * asset-movement nodes whose from and to share the same Keeta chain location
@@ -775,45 +759,67 @@ class AnchorGraph {
 			return({ node, next: [] });
 		});
 
-		for (const node of nodesWithNext) {
-			for (let secondNodeIdx = 0; secondNodeIdx < nodesWithNext.length; secondNodeIdx++) {
-				const nodeJ = nodesWithNext[secondNodeIdx];
-				if (!nodeJ) {
+		// Canonical side keys: rail + canonical asset + canonical location. Two
+		// sides connect iff their keys are equal (same rail, asset and location).
+		// #assetLocationKey is memoized per side object, so each node is
+		// canonicalized once (O(n)) -- important now that asset canonicalization
+		// runs keccak for EVM checksumming.
+		const sideKey = (side: GraphNodeLike['from' | 'to']): string =>
+			`${side.rail}:${this.#assetLocationKey(side)}`;
+
+		const fromKeys = graph.map(node => sideKey(node.from));
+		const toKeys = graph.map(node => sideKey(node.to));
+
+		// Build adjacency with a hash join on those keys instead of an O(n^2)
+		// pairwise scan. On a large graph the pairwise scan -- which re-runs the
+		// asset comparison for every pair -- is what hangs the browser.
+		const nodesByFromKey = new Map<string, number[]>();
+		for (let j = 0; j < fromKeys.length; j++) {
+			const key = fromKeys[j];
+			if (key === undefined) {
+				throw(new Error(`Invalid node index during adjacency construction: ${j}`));
+			}
+			let bucket = nodesByFromKey.get(key);
+			if (!bucket) {
+				bucket = [];
+				nodesByFromKey.set(key, bucket);
+			}
+			bucket.push(j);
+		}
+
+		for (let i = 0; i < nodesWithNext.length; i++) {
+			const ni = nodesWithNext[i];
+			const toKey = toKeys[i];
+			if (!ni || toKey === undefined) {
+				throw(new Error(`Invalid node index during adjacency construction: ${i}`));
+			}
+			const successors = nodesByFromKey.get(toKey);
+			if (!successors) {
+				continue;
+			}
+			for (const j of successors) {
+				const nj = nodesWithNext[j];
+				if (!nj) {
+					throw(new Error(`Invalid node index during adjacency construction: ${j}`));
+				}
+				// We can ignore chaining one fx anchor to itself
+				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
 					continue;
 				}
-
-				// We can ignore chaining one fx anchor to itself
-				if (node.node.type === 'fx') {
-					if (node.node.type === nodeJ.node.type && node.node.providerID === nodeJ.node.providerID) {
-						continue;
-					}
-				}
-
-				if (nodeSideSupports(node.node.to, nodeJ.node.from)) {
-					node.next.push(secondNodeIdx);
-				}
+				ni.next.push(j);
 			}
 		}
 
 		const paths: GraphNodeLike[][] = [];
 
-		function getAssetLocationString(input: GraphNodeLike['to'], includeRail = false) {
-			let railStr = '';
-			if (includeRail) {
-				railStr = `#${input.rail}`;
-			}
-			return(`${convertAssetSearchInputToCanonical(input.asset)}@${convertAssetLocationToString(input.location)}${railStr}`)
-		}
+		const sourceKey = `${input.source.rail}:${this.#assetLocationKey(input.source)}`;
+		const destinationKey = `${input.destination.rail}:${this.#assetLocationKey(input.destination)}`;
 
 		// Node indices whose `from` side matches the requested source -- the
 		// possible starting legs.
 		const sourceIndices: number[] = [];
-		for (let index = 0; index < nodesWithNext.length; index++) {
-			const node = nodesWithNext[index];
-			if (!node) {
-				continue;
-			}
-			if (nodeSideSupports(node.node.from, input.source)) {
+		for (let index = 0; index < fromKeys.length; index++) {
+			if (fromKeys[index] === sourceKey) {
 				sourceIndices.push(index);
 			}
 		}
@@ -835,12 +841,12 @@ class AnchorGraph {
 			}
 
 			const cur = nodesWithNext[currentIndex];
+			const assetLocationStr = fromKeys[currentIndex];
 
-			if (!cur) {
+			if (!cur || assetLocationStr === undefined) {
 				throw(new Error(`Invalid node index: ${currentIndex}`));
 			}
 
-			const assetLocationStr = getAssetLocationString(cur.node.from, true);
 			if (visitedAssets.has(assetLocationStr)) {
 				return;
 			}
@@ -849,7 +855,7 @@ class AnchorGraph {
 
 			const newPath = [ ...path, cur.node ];
 
-			if (newPath.length === depthLimit && nodeSideSupports(cur.node.to, input.destination)) {
+			if (newPath.length === depthLimit && toKeys[currentIndex] === destinationKey) {
 				paths.push(newPath);
 			}
 
