@@ -988,10 +988,6 @@ class AnchorGraph {
 		const markFromReachable = makeMarkFn(fromReachable, fromDistances);
 		const markToReachable = makeMarkFn(toReachable, toDistances);
 
-		// Traverse from every node matching startCondition. `forward` follows
-		// to -> from edges (marking each visited node's `to`); `backward` follows
-		// from -> to edges (marking `from`). Neighbors are found by key lookup in
-		// the relevant bucket map rather than a precomputed adjacency list.
 		const bfs = (
 			startCondition: (node: GraphNodeLike) => boolean,
 			direction: 'forward' | 'backward',
@@ -1017,8 +1013,6 @@ class AnchorGraph {
 				}
 			}
 
-			// Dequeue with a moving head index rather than Array.shift(), which is
-			// O(n) per call and would make the whole traversal O(n^2) on a large graph.
 			let head = 0;
 			while (head < queue.length) {
 				const queueItem = queue[head];
@@ -1052,8 +1046,6 @@ class AnchorGraph {
 					if (!neighbor) {
 						throw(new Error(`Invalid node index during BFS processing: ${neighborIdx}`));
 					}
-					// Ignore chaining one fx anchor to itself (the exclusion is symmetric
-					// in the edge's endpoints, so it holds in either direction).
 					if (node.type === 'fx' && neighbor.type === 'fx' && node.providerID === neighbor.providerID) {
 						continue;
 					}
