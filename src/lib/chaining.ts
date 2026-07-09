@@ -338,6 +338,29 @@ interface AnchorChainingAccountOverrides {
 	signer?: AccountLike;
 }
 
+/**
+ * Graph-invariant index for resolveAssets, computed once per graph and reused
+ * across every resolveAssets / listAssets call. Rebuilding these per call (they
+ * depend only on the graph, not the filter) is what makes fan-out patterns --
+ * e.g. one listAssets per source asset -- O(callers * nodes) and blow up on a
+ * large graph.
+ */
+interface ResolveIndex {
+	nodes: GraphNodeLike[];
+	/** Rail-free (asset, location) key per node side, for marking and results. */
+	fromAssetKeys: string[];
+	toAssetKeys: string[];
+	/** Rail-inclusive join keys: edge i -> j exists iff toKeys[i] === fromKeys[j]. */
+	fromKeys: string[];
+	toKeys: string[];
+	nodesByFromKey: Map<string, number[]>;
+	nodesByToKey: Map<string, number[]>;
+	/** Rail-free (asset, location) buckets, for finding filter start nodes by key. */
+	nodesByFromAssetKey: Map<string, number[]>;
+	nodesByToAssetKey: Map<string, number[]>;
+	railInfo: Map<string, { asset: AnchorChainingAsset; location: AssetLocationLike; inbound: Set<Rail>; outbound: Set<Rail> }>;
+}
+
 class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
@@ -350,6 +373,7 @@ class AnchorGraph {
 	readonly #evmChecksumCache: EVMChecksumCache = new Map();
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 	#assetMovementProviderIdsByAssetLocation: Promise<Map<string, Set<string>>> | null = null;
+	#resolveIndexPromise: Promise<ResolveIndex> | null = null;
 
 	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
 		this.resolver = args.resolver;
@@ -911,6 +935,68 @@ class AnchorGraph {
 		return(paths);
 	}
 
+	async #getResolveIndex(): Promise<ResolveIndex> {
+		if (this.#resolveIndexPromise === null) {
+			this.#resolveIndexPromise = (async () => {
+				const nodes = await this.computeGraphNodes();
+
+				const fromAssetKeys = nodes.map(node => this.#assetLocationKey(node.from));
+				const toAssetKeys = nodes.map(node => this.#assetLocationKey(node.to));
+				const fromKeys = nodes.map((node, i) => `${node.from.rail}:${fromAssetKeys[i]}`);
+				const toKeys = nodes.map((node, i) => `${node.to.rail}:${toAssetKeys[i]}`);
+
+				const nodesByFromKey = new Map<string, number[]>();
+				const nodesByToKey = new Map<string, number[]>();
+				const nodesByFromAssetKey = new Map<string, number[]>();
+				const nodesByToAssetKey = new Map<string, number[]>();
+				const railInfo: ResolveIndex['railInfo'] = new Map();
+
+				const addToBucket = (map: Map<string, number[]>, key: string | undefined, index: number) => {
+					if (key === undefined) {
+						throw(new Error(`Invalid node index during resolve-index construction: ${index}`));
+					}
+					let bucket = map.get(key);
+					if (!bucket) {
+						bucket = [];
+						map.set(key, bucket);
+					}
+					bucket.push(index);
+				};
+
+				const addRail = (assetKey: string | undefined, side: GraphNodeLike['from' | 'to'], railSide: 'inbound' | 'outbound', index: number) => {
+					if (assetKey === undefined) {
+						throw(new Error(`Invalid node index during resolve-index construction: ${index}`));
+					}
+					let info = railInfo.get(assetKey);
+					if (!info) {
+						info = { asset: side.asset, location: side.location, inbound: new Set(), outbound: new Set() };
+						railInfo.set(assetKey, info);
+					}
+					info[railSide].add(side.rail);
+				};
+
+				for (let i = 0; i < nodes.length; i++) {
+					const node = nodes[i];
+					if (!node) {
+						throw(new Error(`Invalid node index during resolve-index construction: ${i}`));
+					}
+					addToBucket(nodesByFromKey, fromKeys[i], i);
+					addToBucket(nodesByToKey, toKeys[i], i);
+					addToBucket(nodesByFromAssetKey, fromAssetKeys[i], i);
+					addToBucket(nodesByToAssetKey, toAssetKeys[i], i);
+					// Match buildResultMap's node/side ordering (to side before from
+					// side) so the representative asset/location for a key is stable.
+					addRail(toAssetKeys[i], node.to, 'inbound', i);
+					addRail(fromAssetKeys[i], node.from, 'outbound', i);
+				}
+
+				return({ nodes, fromAssetKeys, toAssetKeys, fromKeys, toKeys, nodesByFromKey, nodesByToKey, nodesByFromAssetKey, nodesByToAssetKey, railInfo });
+			})();
+		}
+
+		return(await this.#resolveIndexPromise);
+	}
+
 	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
 
@@ -924,32 +1010,11 @@ class AnchorGraph {
 			? { ...toFilterInput, location: keetaNetworkLocation }
 			: toFilterInput;
 
-		const nodes = await this.computeGraphNodes();
-
-		const fromAssetKeys = nodes.map(node => this.#assetLocationKey(node.from));
-		const toAssetKeys = nodes.map(node => this.#assetLocationKey(node.to));
-
-		let fromKeys: string[] | undefined;
-		let toKeys: string[] | undefined;
-		let nodesByFromKey: Map<string, number[]> | undefined;
-		let nodesByToKey: Map<string, number[]> | undefined;
-
-		const buildBuckets = (keys: string[]): Map<string, number[]> => {
-			const map = new Map<string, number[]>();
-			for (let j = 0; j < keys.length; j++) {
-				const key = keys[j];
-				if (key === undefined) {
-					throw(new Error(`Invalid node index during bucket construction: ${j}`));
-				}
-				let bucket = map.get(key);
-				if (!bucket) {
-					bucket = [];
-					map.set(key, bucket);
-				}
-				bucket.push(j);
-			}
-			return(map);
-		};
+		// Graph-invariant structures (keys, adjacency buckets, per-asset rail
+		// aggregation) are built once and reused across every call, so a fan-out
+		// of many filtered resolveAssets/listAssets calls doesn't rebuild them n
+		// times.
+		const { nodes, fromAssetKeys, toAssetKeys, fromKeys, toKeys, nodesByFromKey, nodesByToKey, nodesByFromAssetKey, nodesByToAssetKey, railInfo } = await this.#getResolveIndex();
 
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
@@ -965,6 +1030,32 @@ class AnchorGraph {
 				return(false);
 			}
 			return(true);
+		};
+
+		// The start nodes for a traversal are those whose relevant side matches the
+		// filter. When the filter pins both asset and location (the common case) we
+		// look them up by key in O(matches); otherwise we fall back to scanning all
+		// nodes. The key path avoids running isAnchorChainingAssetEqual -- and thus
+		// keccak -- per node, which on a large graph dominates fan-out patterns.
+		const assetBucketsForSide = { from: nodesByFromAssetKey, to: nodesByToAssetKey } as const;
+		const computeStartIndices = (f: AnchorChainingListAssetsSideFilter, side: 'from' | 'to'): number[] => {
+			if (f.asset !== undefined && f.location !== undefined) {
+				const key = this.#assetLocationKey({ asset: f.asset, location: f.location });
+				const candidates = assetBucketsForSide[side].get(key) ?? [];
+				if (f.rail === undefined) {
+					return(candidates);
+				}
+				return(candidates.filter(i => nodes[i]?.[side].rail === f.rail));
+			}
+
+			const out: number[] = [];
+			for (let i = 0; i < nodes.length; i++) {
+				const node = nodes[i];
+				if (node && sideMatchesFilter(node[side], f)) {
+					out.push(i);
+				}
+			}
+			return(out);
 		};
 
 		// Separate reachable sets and distance maps for backward (from) and forward (to) traversals.
@@ -988,25 +1079,18 @@ class AnchorGraph {
 		const markToReachable = makeMarkFn(toReachable, toDistances);
 
 		const bfs = (
-			startCondition: (node: GraphNodeLike) => boolean,
+			startIndices: number[],
 			direction: 'forward' | 'backward',
 			markFn: (key: string, depth: number) => void
 		) => {
 			const markKeys = direction === 'forward' ? toAssetKeys : fromAssetKeys;
 			const stepKeys = direction === 'forward' ? toKeys : fromKeys;
 			const neighborBuckets = direction === 'forward' ? nodesByFromKey : nodesByToKey;
-			if (!stepKeys || !neighborBuckets) {
-				throw(new Error(`BFS buckets not initialized for direction ${direction}`));
-			}
 
 			const nodeVisited = new Set<number>();
 			const queue: { nodeIdx: number; depth: number }[] = [];
-			for (let i = 0; i < nodes.length; i++) {
-				const node = nodes[i];
-				if (!node) {
-					throw(new Error(`Invalid node index during BFS initialization: ${i}`));
-				}
-				if (startCondition(node) && !nodeVisited.has(i)) {
+			for (const i of startIndices) {
+				if (!nodeVisited.has(i)) {
 					nodeVisited.add(i);
 					queue.push({ nodeIdx: i, depth: 1 });
 				}
@@ -1054,19 +1138,11 @@ class AnchorGraph {
 			}
 		};
 
-		if (fromFilter || toFilter) {
-			const railFromKeys = nodes.map((node, i) => `${node.from.rail}:${fromAssetKeys[i]}`);
-			const railToKeys = nodes.map((node, i) => `${node.to.rail}:${toAssetKeys[i]}`);
-			fromKeys = railFromKeys;
-			toKeys = railToKeys;
-			if (fromFilter) {
-				nodesByFromKey = buildBuckets(railFromKeys);
-				bfs(node => sideMatchesFilter(node.from, fromFilter), 'forward', markToReachable);
-			}
-			if (toFilter) {
-				nodesByToKey = buildBuckets(railToKeys);
-				bfs(node => sideMatchesFilter(node.to, toFilter), 'backward', markFromReachable);
-			}
+		if (fromFilter) {
+			bfs(computeStartIndices(fromFilter, 'from'), 'forward', markToReachable);
+		}
+		if (toFilter) {
+			bfs(computeStartIndices(toFilter, 'to'), 'backward', markFromReachable);
 		}
 		if (!fromFilter && !toFilter) {
 			for (let i = 0; i < nodes.length; i++) {
@@ -1085,9 +1161,33 @@ class AnchorGraph {
 			}
 		}
 
-		// Second pass: build result maps by collecting inbound/outbound rails for every reachable
-		// (asset, location) pair from ALL graph nodes, not just those on the traversal path.
-		const buildResultMap = (
+		// Build result maps by collecting inbound/outbound rails for every reachable
+		// (asset, location) pair. The common path reads the precomputed per-asset
+		// rail aggregation (railInfo) and so is O(reachable). onlyAllowFXLike needs
+		// to exclude non-fx-like nodes' rails -- which railInfo doesn't distinguish
+		// -- so it falls back to the O(nodes) scan.
+		const buildResultMapFast = (
+			reachable: Set<string>,
+			distances: Map<string, number>
+		): Map<string, AnchorChainingAssetInfo> => {
+			const resultMap = new Map<string, AnchorChainingAssetInfo>();
+			for (const key of reachable) {
+				const info = railInfo.get(key);
+				if (!info) {
+					continue;
+				}
+				const distanceValue = distances.get(key);
+				resultMap.set(key, {
+					asset: info.asset,
+					location: info.location,
+					rails: { inbound: [ ...info.inbound ], outbound: [ ...info.outbound ] },
+					distance: distanceValue !== undefined ? { pathLength: distanceValue } : null
+				});
+			}
+			return(resultMap);
+		};
+
+		const buildResultMapFXLike = (
 			reachable: Set<string>,
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
@@ -1115,7 +1215,7 @@ class AnchorGraph {
 				if (!node || toKey === undefined || fromKey === undefined) {
 					throw(new Error(`Invalid node index during result-map construction: ${i}`));
 				}
-				if (onlyAllowFXLike && !isFXLikeNode(node)) {
+				if (!isFXLikeNode(node)) {
 					continue;
 				}
 				if (reachable.has(toKey)) {
@@ -1133,6 +1233,8 @@ class AnchorGraph {
 			}
 			return(resultMap);
 		};
+
+		const buildResultMap = onlyAllowFXLike ? buildResultMapFXLike : buildResultMapFast;
 
 		const fromResultMap = buildResultMap(fromReachable, fromDistances);
 		const toResultMap = buildResultMap(toReachable, toDistances);
