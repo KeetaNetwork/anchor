@@ -77,6 +77,63 @@ export function ManageStatusUpdates<QueueResult>(id: KeetaAnchorQueueRequestID, 
 }
 
 /**
+ * The reserved marker segment prepended to every encoded queue path so that
+ * the root partition (an empty path) still has a non-empty storage key.
+ */
+const QUEUE_PATH_ROOT_MARKER = 'root';
+
+/**
+ * The separator used to join partition path segments into a storage key.
+ * Segments must never contain it -- see {@link ValidateQueuePartitionSegment}.
+ */
+export const QUEUE_PATH_SEPARATOR = '.';
+
+/**
+ * Encode a partition path into the canonical storage key shared by every
+ * queue storage driver.
+ */
+export function EncodeQueuePath(path: readonly string[]): string {
+	const encodedPath = [QUEUE_PATH_ROOT_MARKER, ...path].join(QUEUE_PATH_SEPARATOR);
+	return(encodedPath);
+}
+
+/**
+ * Decode a canonical storage key into partition path segments relative to
+ * `basePath`. The input must be a key produced by {@link EncodeQueuePath}
+ * for a path at or below `basePath`.
+ */
+export function DecodeQueuePathRelative(encodedPath: string, basePath: readonly string[]): string[] {
+	const absoluteSegments = encodedPath.split(QUEUE_PATH_SEPARATOR).slice(1);
+	const relativeSegments = absoluteSegments.slice(basePath.length);
+	return(relativeSegments);
+}
+
+/**
+ * Check whether a canonical storage key addresses `basePath` itself or a
+ * partition below it.
+ */
+export function IsEncodedQueuePathWithin(encodedPath: string, basePath: readonly string[]): boolean {
+	const encodedBasePath = EncodeQueuePath(basePath);
+	if (encodedPath === encodedBasePath) {
+		return(true);
+	}
+
+	const within = encodedPath.startsWith(`${encodedBasePath}${QUEUE_PATH_SEPARATOR}`);
+	return(within);
+}
+
+/**
+ * Ensure a partition path segment cannot corrupt the encoded storage key.
+ *
+ * @throws {@link Error} when the segment contains the path separator
+ */
+export function ValidateQueuePartitionSegment(segment: string): void {
+	if (segment.includes(QUEUE_PATH_SEPARATOR)) {
+		throw(new Error(`Partition path segment may not contain "${QUEUE_PATH_SEPARATOR}": ${segment}`));
+	}
+}
+
+/**
  * Convert a string to a KeetaAnchorQueueRequestID (branded string type)
  *
  * Use only when appropriate, such as when receiving a request ID from an

@@ -13,7 +13,9 @@ import type {
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	EncodeQueuePath,
+	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -51,7 +53,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		this.logger = options?.logger
 		this.redisInternal = options.redis;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = EncodeQueuePath(this.path);
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Redis queue storage driver');
@@ -413,6 +415,8 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+		ValidateQueuePartitionSegment(path);
+
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.redisInternal === null) {

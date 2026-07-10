@@ -13,7 +13,9 @@ import type {
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	EncodeQueuePath,
+	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -52,7 +54,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.logger = options?.logger;
 		this.firestoreInternal = options.firestore;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = EncodeQueuePath(this.path);
 		this.namespace = options.namespace;
 		Object.freeze(this.path);
 
@@ -326,6 +328,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+		ValidateQueuePartitionSegment(path);
+
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.firestoreInternal === null) {

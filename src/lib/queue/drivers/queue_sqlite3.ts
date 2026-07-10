@@ -13,7 +13,9 @@ import type {
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	EncodeQueuePath,
+	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -56,7 +58,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		this.logger = options?.logger;
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = EncodeQueuePath(this.path);
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -467,6 +469,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	}
 
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+		ValidateQueuePartitionSegment(path);
+
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.dbInternal === null) {

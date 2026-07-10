@@ -89,6 +89,7 @@ export default {
 		'Retryable',
 		'retval',
 		'satoshis',
+		'schedulable',
 		'secp',
 		'SEPA',
 		'singleworker',
