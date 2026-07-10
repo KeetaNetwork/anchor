@@ -59,11 +59,11 @@ export interface KeetaAnchorSchedulable {
 export type KeetaAnchorQueueSchedulerOptions<QueueRequest extends JSONSerializable, QueueResult extends JSONSerializable> = {
 	/**
 	 * The root storage driver to scan for active partitions -- it must
-	 * implement `scanActivePaths`
+	 * implement `scanActivePaths`.
 	 */
 	driver: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 	/**
-	 * The schedulable units to multiplex, keyed by their partition prefix
+	 * The schedulable units to multiplex, keyed by their partition prefix.
 	 */
 	units: Iterable<KeetaAnchorSchedulable>;
 	/**
@@ -71,38 +71,38 @@ export type KeetaAnchorQueueSchedulerOptions<QueueRequest extends JSONSerializab
 	 */
 	logger?: Logger | undefined;
 	/**
-	 * Safety-net cadence between fast passes while idle (default 5s)
+	 * Safety-net cadence between fast passes while idle (default 5s).
 	 */
 	pollIntervalMs?: number | undefined;
 	/**
-	 * Cadence of the recovery sweep (default 60s)
+	 * Cadence of the recovery sweep (default 60s).
 	 */
 	sweepIntervalMs?: number | undefined;
 	/**
 	 * Age bound for the sweep's stale-`processing` scan. Over-selection is
 	 * harmless because the selected unit applies its own stuck threshold
-	 * (default 300s, the anchor default process timeout)
+	 * (default 300s, the anchor default process timeout).
 	 */
 	sweepStalenessMs?: number | undefined;
 	/**
 	 * Recency window for the sweep's failed-move scan. Must exceed
 	 * `sweepIntervalMs` plus worst-case pass latency or the failed-move
-	 * refresh chain breaks between sweeps (default `4 * sweepIntervalMs`)
+	 * refresh chain breaks between sweeps (default `4 * sweepIntervalMs`).
 	 */
 	moveRetryWindowMs?: number | undefined;
 	/**
 	 * Recency window for the startup sweep's failed-move scan, covering
 	 * process downtime during which the failed-move refresh chain could
-	 * not run (default 24 hours)
+	 * not run (default 24 hours).
 	 */
 	startupMoveRetryWindowMs?: number | undefined;
 	/**
 	 * Age after which a unit that has not run is deactivated (default 15
-	 * minutes)
+	 * minutes).
 	 */
 	idleDeactivateMs?: number | undefined;
 	/**
-	 * Per-unit time budget passed to each `runPass` (default none)
+	 * Per-unit time budget passed to each `runPass` (default none).
 	 */
 	passBudgetMs?: number | undefined;
 	/**
@@ -141,25 +141,25 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 	private readonly maxHeadsPerIteration: number;
 
 	/**
-	 * Heads notified since the loop last consumed the set (level-triggered)
+	 * Heads notified since the loop last consumed the set (level-triggered).
 	 */
 	private readonly notifiedHeads = new Set<string>();
 	/**
 	 * Heads whose units reported remaining progress. Rerun at the busy
 	 * cadence rather than immediately: progress reports can be spurious (a
 	 * runner lock held by another worker) and an un-paced rerun would spin
-	 * the loop hot against the backend
+	 * the loop hot against the backend.
 	 */
 	private readonly rerunHeads = new Set<string>();
 	/**
 	 * Heads deferred over the per-iteration cap. Consumed ahead of the
 	 * progress reruns so a busy set of early heads cannot starve the
-	 * deferred ones
+	 * deferred ones.
 	 */
 	private readonly deferredHeads = new Set<string>();
 	/**
 	 * Prefixes of units that have run and not yet been deactivated, with the
-	 * timestamp of their most recent pass
+	 * timestamp of their most recent pass.
 	 */
 	private readonly lastRunAtByPrefix = new Map<string, number>();
 	private wakeLoop: (() => void) | null = null;
@@ -241,7 +241,7 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 	}
 
 	/**
-	 * Stop the scheduler loop and wait for any in-flight iteration to finish
+	 * Stop the scheduler loop and wait for any in-flight iteration to finish.
 	 */
 	async stop(): Promise<void> {
 		this.methodLogger('stop')?.debug('Stopping scheduler loop');
@@ -279,9 +279,11 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 		const logger = this.methodLogger('loop');
 
 		while (this.running) {
+			let iterationFailed = false;
 			try {
 				await this.iteration();
 			} catch (error: unknown) {
+				iterationFailed = true;
 				logger?.error('Scheduler iteration failed:', error);
 			}
 
@@ -290,22 +292,31 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 			}
 
 			/*
-			 * A notify that arrived during the iteration schedules the next
-			 * iteration immediately instead of waiting out the poll interval
+			 * A failed iteration restores its heads for retry, but always
+			 * waits out the poll interval: retrying restored heads at the
+			 * busy cadence would hammer a backend that is already failing.
 			 */
-			if (this.notifiedHeads.size !== 0) {
-				continue;
-			}
+			if (!iterationFailed) {
+				/*
+				 * A notify that arrived during the iteration schedules the
+				 * next iteration immediately instead of waiting out the
+				 * poll interval.
+				 */
+				if (this.notifiedHeads.size !== 0) {
+					continue;
+				}
 
-			/*
-			 * Progress reruns and deferred heads run at the busy cadence,
-			 * never immediately: a unit can report progress without making
-			 * any (its runner lock held by another worker), and an un-paced
-			 * rerun would spin the loop hot against the backend
-			 */
-			if (this.rerunHeads.size !== 0 || this.deferredHeads.size !== 0) {
-				await this.sleepUntilWake(this.busyIntervalMs);
-				continue;
+				/*
+				 * Progress reruns and deferred heads run at the busy
+				 * cadence, never immediately: a unit can report progress
+				 * without making any (its runner lock held by another
+				 * worker), and an un-paced rerun would spin the loop hot
+				 * against the backend.
+				 */
+				if (this.rerunHeads.size !== 0 || this.deferredHeads.size !== 0) {
+					await this.sleepUntilWake(this.busyIntervalMs);
+					continue;
+				}
 			}
 
 			await this.sleepUntilWake(this.pollIntervalMs);
@@ -315,10 +326,24 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 	private async iteration(): Promise<void> {
 		const heads = this.consumeQueuedHeads();
 
-		await this.collectFastPassHeads(heads);
-		await this.collectSweepHeads(heads);
+		try {
+			await this.collectFastPassHeads(heads);
+			await this.collectSweepHeads(heads);
 
-		await this.runOwningUnits(heads);
+			await this.runOwningUnits(heads);
+		} catch (error: unknown) {
+			/*
+			 * A throw before the heads reach their units (a scan failure)
+			 * would silently drop them; restore them so the next iteration
+			 * retries instead of waiting for another scan or notify.
+			 */
+			for (const head of heads) {
+				this.deferredHeads.add(head);
+			}
+
+			throw(error);
+		}
+
 		await this.deactivateIdleUnits();
 	}
 
@@ -356,7 +381,7 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 			const head = path[0];
 			if (head === undefined) {
 				/*
-				 * Entries at the driver's own partition have no head to route
+				 * Entries at the driver's own partition have no head to route.
 				 */
 				continue;
 			}
@@ -378,8 +403,6 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 			return;
 		}
 
-		this.lastSweepAt = now;
-
 		this.methodLogger('collectSweepHeads')?.debug('Running recovery sweep (startup:', isStartupSweep, ')');
 
 		await this.scanHeadsInto(heads, staleProcessingStatuses, {
@@ -398,6 +421,13 @@ export class KeetaAnchorQueueScheduler<QueueRequest extends JSONSerializable = J
 		await this.scanHeadsInto(heads, moveRetryStatuses, {
 			updatedAfter: new Date(now - window)
 		});
+
+		/*
+		 * Committed only after both scans succeed: a failed sweep must be
+		 * retried on the next iteration, not skipped for a full interval,
+		 * and a failed startup sweep must keep its widened window.
+		 */
+		this.lastSweepAt = now;
 	}
 
 	private async runOwningUnits(heads: Set<string>): Promise<void> {

@@ -1383,6 +1383,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 								iterationTargetSeenRequestIDs.add(requestID);
 								allTargetSeenRequestIDs.add(requestID);
 							}
+
+							/*
+							 * The conflict rejected the whole batch, so the
+							 * non-conflicting members were not added either.
+							 */
+							for (const requestID of batchLocalIDs) {
+								if (error.idempotentIDsFound.has(requestID)) {
+									continue;
+								}
+
+								await this.refreshFailedMoveTimestamp(requestID, statusTarget);
+							}
 						} else {
 							/*
 							 * If we got some kind of other error adding these

@@ -2465,6 +2465,65 @@ test('Failed pipe moves refresh the entry timestamp for sweep retry', async func
 	}
 
 	/*
+	 * A batch rejected by an idempotent conflict: the conflicting member is
+	 * marked moved, while the members the rejection left behind keep their
+	 * status but get a fresh `updated` timestamp.
+	 */
+	{
+		await using sourceQueue = await root.partition('conflict-source');
+		await using targetQueue = await root.partition('conflict-target');
+
+		await using targetRunner = new KeetaAnchorQueueRunnerJSONConfigProc<string[], null>({
+			id: 'move-refresh-conflict-target',
+			queue: targetQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: null });
+			}
+		});
+		await using sourceRunner = new KeetaAnchorQueueRunnerJSONConfigProc<JSONSerializable, string>({
+			id: 'move-refresh-conflict-source',
+			queue: sourceQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: 'out' });
+			}
+		});
+
+		/*
+		 * Minimum batch size 2: after the conflict removes one member, the
+		 * remainder can no longer form a batch and stays behind
+		 */
+		sourceRunner.pipeBatch(targetRunner, 10, 2);
+
+		const conflictID = await sourceRunner.add({ key: 'conflict' });
+		const strandedID = await sourceRunner.add({ key: 'stranded' });
+		await sourceRunner.run();
+
+		const stranded = await sourceRunner.get(strandedID);
+		expect(stranded?.status, 'both source entries complete before any move attempt').toBe('completed');
+
+		const updatedAtCompletion = stranded?.updated.getTime();
+
+		/*
+		 * Pre-seed the target with one member's idempotent key so the batch
+		 * add is rejected with an idempotent conflict
+		 */
+		await targetQueue.add(['seed'], { idempotentKeys: new Set([conflictID]) });
+
+		vi.advanceTimersByTime(5000);
+		await sourceRunner.maintain();
+
+		const conflicted = await sourceRunner.get(conflictID);
+		expect(conflicted?.status, 'the conflicting member is marked moved').toBe('moved');
+
+		const strandedAfter = await sourceRunner.get(strandedID);
+		expect(strandedAfter?.status, 'the left-behind member keeps its status').toBe('completed');
+		expect(strandedAfter?.failures, 'the left-behind member keeps its failure count').toBe(stranded?.failures);
+		expect(strandedAfter?.updated.getTime() ?? 0, 'the left-behind member timestamp is refreshed for sweep retry').toBeGreaterThan(updatedAtCompletion ?? Number.POSITIVE_INFINITY);
+	}
+
+	/*
 	 * A working pipe: the successful move still marks the entry as moved
 	 */
 	{

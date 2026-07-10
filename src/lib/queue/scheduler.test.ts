@@ -8,8 +8,12 @@ import * as sqlite3 from 'sqlite3';
 import type { JSONSerializable } from '../utils/json.ts';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
+import type {
+	KeetaAnchorQueueScanFilter,
+	KeetaAnchorQueueStatus,
+	KeetaAnchorQueueStorageDriver
+} from './index.ts';
 import type { KeetaAnchorSchedulable } from './scheduler.ts';
-import type { KeetaAnchorQueueStorageDriver } from './index.ts';
 import { KeetaAnchorQueueScheduler } from './scheduler.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './index.js';
 import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
@@ -62,6 +66,25 @@ class TestSchedulableUnit implements KeetaAnchorSchedulable {
 }
 
 /**
+ * A memory driver that fails selected `scanActivePaths` calls (by 1-based
+ * call index) to model transient backend outages
+ */
+class ScanFailureMemoryDriver extends KeetaAnchorQueueStorageDriverMemory {
+	readonly failScanCalls = new Set<number>();
+	private scanCallIndex = 0;
+
+	override async scanActivePaths(statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter): Promise<string[][]> {
+		this.scanCallIndex++;
+		if (this.failScanCalls.has(this.scanCallIndex)) {
+			throw(new Error(`induced scan failure on call ${this.scanCallIndex}`));
+		}
+
+		const paths = await super.scanActivePaths(statuses, filter);
+		return(paths);
+	}
+}
+
+/**
  * Give the scheduler loop's promise chains enough microtask turns to settle
  * without advancing the fake clock
  */
@@ -91,6 +114,7 @@ type SchedulerHarness = {
  */
 function createSchedulerHarness(cleanup: InstanceType<typeof AsyncDisposableStack>, options: {
 	prefixes: string[];
+	root?: KeetaAnchorQueueStorageDriverMemory;
 	unitOptions?: { [prefix: string]: { yieldPasses?: number; onPass?: () => Promise<void>; }};
 	pollIntervalMs?: number;
 	sweepIntervalMs?: number;
@@ -108,7 +132,7 @@ function createSchedulerHarness(cleanup: InstanceType<typeof AsyncDisposableStac
 		vi.useRealTimers();
 	});
 
-	const root = new KeetaAnchorQueueStorageDriverMemory({ id: 'scheduler-test' });
+	const root = options.root ?? new KeetaAnchorQueueStorageDriverMemory({ id: 'scheduler-test' });
 
 	cleanup.defer(async function() {
 		await root[Symbol.asyncDispose]();
@@ -526,6 +550,87 @@ test('Scheduler startup sweep skips terminal rows older than the startup window'
 	expect(alpha.passBudgets.length, 'the startup sweep never selected the historical terminal row').toBe(0);
 });
 
+test('Scheduler retries a sweep whose scan failed instead of skipping the interval', async function() {
+	await using cleanup = new AsyncDisposableStack();
+
+	const root = new ScanFailureMemoryDriver({ id: 'scheduler-scan-failure' });
+	const { scheduler, units } = createSchedulerHarness(cleanup, {
+		prefixes: ['alpha'],
+		root: root,
+		pollIntervalMs: 1000,
+		sweepIntervalMs: 600_000,
+		sweepStalenessMs: 5000
+	});
+
+	const [alpha] = units;
+	if (!alpha) {
+		throw(new Error('internal error: units missing'));
+	}
+
+	const alphaStage = await root.partition('alpha:stage');
+	const id = await alphaStage.add({ v: 1 });
+	await alphaStage.setStatus(id, 'processing', { oldStatus: 'pending' });
+
+	/*
+	 * Age the in-flight entry past the staleness bound before starting.
+	 */
+	vi.advanceTimersByTime(10_000);
+
+	/*
+	 * The first iteration scans: fast pass (call 1), then the sweep's
+	 * stale-processing scan (call 2), which fails mid-sweep
+	 */
+	root.failScanCalls.add(2);
+
+	scheduler.start();
+
+	await settleAsyncWork();
+	expect(alpha.passBudgets.length, 'the failed sweep selected nothing').toBe(0);
+
+	await advanceAndSettle(1000);
+	expect(alpha.passBudgets.length, 'the sweep was retried on the next poll instead of waiting out the sweep interval').toBe(1);
+});
+
+test('Scheduler restores notified heads dropped by a failed scan', async function() {
+	await using cleanup = new AsyncDisposableStack();
+
+	const root = new ScanFailureMemoryDriver({ id: 'scheduler-head-restore' });
+	const { scheduler, units } = createSchedulerHarness(cleanup, {
+		prefixes: ['alpha'],
+		root: root,
+		pollIntervalMs: 1000,
+		sweepIntervalMs: 600_000,
+		busyIntervalMs: 100
+	});
+
+	const [alpha] = units;
+	if (!alpha) {
+		throw(new Error('internal error: units missing'));
+	}
+
+	scheduler.start();
+	await settleAsyncWork();
+
+	/*
+	 * The startup iteration consumed scan calls 1-3. The notify-triggered
+	 * iteration's fast pass is call 4.
+	 */
+	root.failScanCalls.add(4);
+
+	scheduler.notify('alpha:stage');
+	await settleAsyncWork();
+	expect(alpha.passBudgets.length, 'the failed iteration ran nothing').toBe(0);
+
+	/*
+	 * A failed iteration waits out the poll interval, not the busy cadence.
+	 */
+	await advanceAndSettle(100);
+	expect(alpha.passBudgets.length, 'a failed iteration is not retried at the busy cadence').toBe(0);
+
+	await advanceAndSettle(900);
+	expect(alpha.passBudgets.length, 'the restored head ran once the backend recovered').toBe(1);
+});
+
 test('Scheduler constructor and start validate their inputs', async function() {
 	const root = new KeetaAnchorQueueStorageDriverMemory({ id: 'scheduler-validation' });
 	expect(function() {
@@ -543,7 +648,9 @@ test('Scheduler constructor and start validate their inputs', async function() {
 
 	await root.destroy();
 
-	/* A driver without scanActivePaths cannot back the scheduler */
+	/*
+	 * A driver without scanActivePaths cannot back the scheduler.
+	 */
 	const filePath = path.join(os.tmpdir(), `anchor-scheduler-tests-${crypto.randomUUID()}.sqlite3.db`);
 	const sqliteDriver = new KeetaAnchorQueueStorageDriverSQLite3({
 		db: async function() {
