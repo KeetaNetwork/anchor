@@ -8,13 +8,16 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueScanFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
 	ConvertStringToRequestID,
+	DecodeQueuePathRelative,
 	EncodeQueuePath,
+	QUEUE_PATH_SEPARATOR,
 	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
@@ -24,6 +27,12 @@ import type { JSONSerializable } from '../../utils/json.js';
 import { asleep } from '../../utils/asleep.js';
 
 import type { RedisClientType } from 'redis';
+
+/**
+ * The characters with special meaning in a Redis SCAN MATCH glob pattern,
+ * escaped so partition path characters are always matched literally
+ */
+const GLOB_META_CHARACTER_PATTERN = /[\\*?[\]]/g;
 
 type QueueEntryData = {
 	id: string;
@@ -412,6 +421,77 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');
 
 		return(entries);
+	}
+
+	async scanActivePaths(statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter): Promise<string[][]> {
+		if (statuses.length === 0) {
+			return([]);
+		}
+
+		const redis = await this.getRedis();
+		const logger = this.methodLogger('scanActivePaths');
+
+		logger?.debug('Scanning for active partition paths under', this.pathStr, 'with statuses', statuses, 'and filter', filter);
+
+		/*
+		 * The per-(path, status) sorted-set indexes carry the entry's
+		 * `updated` time as the score, so the time filter maps directly to
+		 * a ZCOUNT score range ('(' marks the exclusive upper bound)
+		 */
+		let minScore = '-inf';
+		if (filter?.updatedAfter) {
+			minScore = String(filter.updatedAfter.getTime());
+		}
+
+		let maxScore = '+inf';
+		if (filter?.updatedBefore) {
+			maxScore = `(${filter.updatedBefore.getTime()}`;
+		}
+
+		const activeEncodedPaths = new Set<string>();
+
+		/* This driver's own partition: probe its index keys directly */
+		for (const status of statuses) {
+			const selfCount = await redis.zCount(this.indexKey(status), minScore, maxScore);
+			if (selfCount > 0) {
+				activeEncodedPaths.add(this.pathStr);
+				break;
+			}
+		}
+
+		/*
+		 * Descendant partitions: their index keys are the only sorted sets
+		 * under the key prefix ending in `:index:<status>`, and Redis
+		 * removes empty sorted sets, so every surviving key is a candidate
+		 */
+		const escapedPrefix = `queue:${this.pathStr}${QUEUE_PATH_SEPARATOR}`.replace(GLOB_META_CHARACTER_PATTERN, '\\$&');
+		for await (const key of redis.scanIterator({ MATCH: `${escapedPrefix}*`, COUNT: 100, TYPE: 'zset' })) {
+			for (const status of statuses) {
+				const indexSuffix = `:index:${status}`;
+				if (!key.endsWith(indexSuffix)) {
+					continue;
+				}
+
+				const encodedPath = key.slice('queue:'.length, key.length - indexSuffix.length);
+				if (activeEncodedPaths.has(encodedPath)) {
+					break;
+				}
+
+				const count = await redis.zCount(key, minScore, maxScore);
+				if (count > 0) {
+					activeEncodedPaths.add(encodedPath);
+				}
+
+				break;
+			}
+		}
+
+		const active: string[][] = [];
+		for (const encodedPath of activeEncodedPaths) {
+			active.push(DecodeQueuePathRelative(encodedPath, this.path));
+		}
+
+		return(active);
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {

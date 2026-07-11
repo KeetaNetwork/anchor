@@ -163,7 +163,7 @@ const drivers: {
 	},
 	'SQLite3': {
 		persistent: true,
-		scanActivePaths: false,
+		scanActivePaths: true,
 		skip: false,
 		create: async function(key: string, options = { leave: false }) {
 			const filePath = path.join(os.tmpdir(), `anchor-queue-tests-${RunKey}-${key}.sqlite3.db`);
@@ -198,7 +198,7 @@ const drivers: {
 	},
 	'Redis': {
 		persistent: true,
-		scanActivePaths: false,
+		scanActivePaths: true,
 		skip: async function() {
 			return(getTestingRedisConfig() === null);
 		},

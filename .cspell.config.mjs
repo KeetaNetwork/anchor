@@ -152,7 +152,8 @@ export default {
 			filename: 'src/lib/queue/**/*.ts',
 			words: [
 				'dequeue',
-				'enqueue'
+				'enqueue',
+				'zset'
 			]
 		},
 		{

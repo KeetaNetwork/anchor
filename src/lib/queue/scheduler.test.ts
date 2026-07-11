@@ -1,9 +1,5 @@
 import { test, expect, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as sqlite from 'sqlite';
-import * as sqlite3 from 'sqlite3';
+import type { Firestore } from '@google-cloud/firestore';
 
 import type { JSONSerializable } from '../utils/json.ts';
 import { AsyncDisposableStack } from '../utils/defer.js';
@@ -16,7 +12,7 @@ import type {
 import type { KeetaAnchorSchedulable } from './scheduler.ts';
 import { KeetaAnchorQueueScheduler } from './scheduler.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './index.js';
-import KeetaAnchorQueueStorageDriverSQLite3 from './drivers/queue_sqlite3.js';
+import KeetaAnchorQueueStorageDriverFirestore from './drivers/queue_firestore.js';
 
 /**
  * A schedulable unit driving a real storage driver: each pass drains the
@@ -649,35 +645,26 @@ test('Scheduler constructor and start validate their inputs', async function() {
 	await root.destroy();
 
 	/*
-	 * A driver without scanActivePaths cannot back the scheduler.
+	 * A driver without scanActivePaths cannot back the scheduler. The
+	 * Firestore driver's connection factory is lazy, so start() rejects
+	 * before any connection is attempted.
 	 */
-	const filePath = path.join(os.tmpdir(), `anchor-scheduler-tests-${crypto.randomUUID()}.sqlite3.db`);
-	const sqliteDriver = new KeetaAnchorQueueStorageDriverSQLite3({
-		db: async function() {
-			return(await sqlite.open({
-				filename: filePath,
-				driver: sqlite3.Database,
-				mode: sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE
-			}));
+	const firestoreDriver = new KeetaAnchorQueueStorageDriverFirestore({
+		firestore: async function(): Promise<Firestore> {
+			throw(new Error('internal error: the connection factory must never be invoked'));
 		},
+		namespace: 'scheduler-unsupported',
 		id: 'scheduler-unsupported'
 	});
 	try {
 		const scheduler = new KeetaAnchorQueueScheduler({
-			driver: sqliteDriver,
+			driver: firestoreDriver,
 			units: []
 		});
 		expect(function() {
 			scheduler.start();
 		}, 'a driver without scanActivePaths is rejected at start').toThrow('does not implement scanActivePaths');
 	} finally {
-		await sqliteDriver.destroy();
-		for (const addFileSuffix of ['', '-shm', '-wal']) {
-			try {
-				fs.unlinkSync(`${filePath}${addFileSuffix}`);
-			} catch {
-				/* Ignore */
-			}
-		}
+		await firestoreDriver.destroy();
 	}
 });
