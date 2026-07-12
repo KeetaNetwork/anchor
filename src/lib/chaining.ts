@@ -1361,6 +1361,10 @@ class AnchorGraph {
 			return(result.to);
 		}
 	}
+
+	async buildForwardingAdjacency(): Promise<Map<string, ForwardingAssetRef[]>> {
+		return(buildForwardingAdjacency(await this.computeGraphNodes()));
+	}
 }
 
 export interface ComputePlanOptions {
@@ -1369,6 +1373,196 @@ export interface ComputePlanOptions {
 	 * Limit the number of plans to calculate, defaults to 3
 	 */
 	limit?: number;
+}
+
+export type ForwardingOnlyOptions = {
+	/** Max asset-movement legs (default 2, matching deposit UX). */
+	maxLegs?: number;
+};
+
+export interface GetPlansOptions extends ComputePlanOptions {
+	includeAllOutput?: boolean;
+	forwardingOnly?: boolean | ForwardingOnlyOptions;
+}
+
+export type ForwardingAssetRef = {
+	asset: AnchorChainingAsset;
+	location: AssetLocationLike;
+};
+
+const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const forwardingAssetKeyCache: EVMChecksumCache = new Map();
+
+function forwardingAssetKey(asset: AnchorChainingAsset, location: AssetLocationLike): string {
+	return(`${convertAssetSearchInputToCanonical(asset, forwardingAssetKeyCache)}@${convertAssetLocationToString(location)}`);
+}
+
+function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
+	if (!forwardingOnly) {
+		return(undefined);
+	}
+
+	if (forwardingOnly === true) {
+		return({ maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
+	}
+
+	return({
+		maxLegs: DEFAULT_FORWARDING_MAX_LEGS,
+		...forwardingOnly
+	});
+}
+
+function isCryptoChainLocation(location: AssetLocationLike): boolean {
+	return(toAssetLocation(location).type === 'chain');
+}
+
+/**
+ * Whether a discovered path is eligible for forwarding-only plan resolution:
+ * crypto chain hops only, no Keeta-origin legs, no FX, within maxLegs.
+ */
+export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingOnlyOptions): boolean {
+	const maxLegs = options?.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS;
+	const legs = path.path;
+
+	if (legs.length < 1 || legs.length > maxLegs) {
+		return(false);
+	}
+
+	return(legs.every((step) => {
+		if (step.type !== 'assetMovement') {
+			return(false);
+		}
+
+		if (!isCryptoChainLocation(step.from.location) || !isCryptoChainLocation(step.to.location)) {
+			return(false);
+		}
+
+		return(!isChainLocation(toAssetLocation(step.from.location), 'keeta'));
+	}));
+}
+
+/**
+ * Whether a resolved plan is anchor-to-anchor with no user intermediary steps.
+ * The user may still fund the initial deposit address once.
+ */
+export function isForwardingPlan(plan: AnchorChainingPlan): boolean {
+	const steps = plan.plan.steps;
+
+	if (steps.length === 0) {
+		return(false);
+	}
+
+	for (const step of steps) {
+		if (step.type === 'fx' || step.type === 'keetaSend') {
+			return(false);
+		}
+
+		if (step.type === 'assetMovement' && step.sendingTo === 'SELF') {
+			return(false);
+		}
+	}
+
+	const last = steps[steps.length - 1];
+	if (last?.type !== 'forwarded') {
+		return(false);
+	}
+
+	for (let i = 0; i < steps.length - 1; i++) {
+		const step = steps[i];
+		if (step?.type !== 'assetMovement' || step.sendingTo !== 'NEXT_STEP') {
+			return(false);
+		}
+	}
+
+	return(true);
+}
+
+/**
+ * Adjacency over crypto persistent-forwarding edges only — excludes FX edges and
+ * any hop that starts on Keeta.
+ */
+export function buildForwardingAdjacency(nodes: GraphNodeLike[]): Map<string, ForwardingAssetRef[]> {
+	const adjacency = new Map<string, ForwardingAssetRef[]>();
+
+	for (const node of nodes) {
+		if (node.type !== 'assetMovement') {
+			continue;
+		}
+
+		if (node.from.supportedOperations?.createPersistentForwarding !== true) {
+			continue;
+		}
+
+		if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
+			continue;
+		}
+
+		if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
+			continue;
+		}
+
+		const key = forwardingAssetKey(node.from.asset, node.from.location);
+		const list = adjacency.get(key) ?? [];
+		list.push({ asset: node.to.asset, location: node.to.location });
+		adjacency.set(key, list);
+	}
+
+	return(adjacency);
+}
+
+/** Whether `dest` is reachable from `source` over ≤`maxLegs` forwarding edges. */
+export function hasForwardingRoute(
+	adjacency: Map<string, ForwardingAssetRef[]>,
+	source: ForwardingAssetRef,
+	dest: ForwardingAssetRef,
+	maxLegs: number = DEFAULT_FORWARDING_MAX_LEGS
+): boolean {
+	const destKey = forwardingAssetKey(dest.asset, dest.location);
+	let frontier = [ forwardingAssetKey(source.asset, source.location) ];
+
+	for (let depth = 0; depth < maxLegs; depth++) {
+		const next: string[] = [];
+
+		for (const key of frontier) {
+			for (const edge of adjacency.get(key) ?? []) {
+				const edgeKey = forwardingAssetKey(edge.asset, edge.location);
+				if (edgeKey === destKey) {
+					return(true);
+				}
+
+				next.push(edgeKey);
+			}
+		}
+
+		frontier = next;
+	}
+
+	return(false);
+}
+
+/** Deposit address for the first forwarding leg of a forwarding-only plan. */
+export function getForwardingDepositAddress(plan: AnchorChainingPlan): string | null {
+	const firstStep = plan.plan.steps[0];
+
+	if (!firstStep) {
+		return(null);
+	}
+
+	if (firstStep.type === 'assetMovement') {
+		const instruction = firstStep.usingInstruction;
+		if ('sendToAddress' in instruction && typeof instruction.sendToAddress === 'string') {
+			return(instruction.sendToAddress);
+		}
+
+		return(null);
+	}
+
+	if (firstStep.type === 'forwarded') {
+		const address = firstStep.persistentAddress.address;
+		return(typeof address === 'string' ? address : null);
+	}
+
+	return(null);
 }
 
 export class AnchorChainingPath {
@@ -2608,13 +2802,21 @@ export class AnchorChaining {
 		return(retval);
 	}
 
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options: ComputePlanOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: boolean }): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
-		const paths = await this.getPaths(input);
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
+		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
+		let paths = await this.getPaths(input);
 
 		if (!paths) {
 			return(null);
+		}
+
+		if (forwardingOpts) {
+			paths = paths.filter((path) => isForwardingPath(path, forwardingOpts));
+			if (paths.length === 0) {
+				return(null);
+			}
 		}
 
 		const limit = options?.limit ?? 3;
@@ -2658,9 +2860,12 @@ export class AnchorChaining {
 				}
 
 				if (result.status === 'fulfilled') {
-					successCount++;
-					if (path && path.path.length < lowestStepsSuccessCount) {
-						lowestStepsSuccessCount = path.path.length;
+					const qualifies = !forwardingOpts || isForwardingPlan(result.value);
+					if (qualifies) {
+						successCount++;
+						if (path && path.path.length < lowestStepsSuccessCount) {
+							lowestStepsSuccessCount = path.path.length;
+						}
 					}
 				}
 			}
@@ -2681,16 +2886,24 @@ export class AnchorChaining {
 			if (options?.includeAllOutput) {
 				if (plan.status === 'rejected') {
 					ret.push({ success: false, error: plan.reason, path });
+				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
+					ret.push({ success: false, error: new Error('Plan does not qualify as a forwarding-only route'), path });
 				} else {
 					ret.push({ success: true, plan: plan.value, path });
 				}
 			} else {
 				if (plan.status === 'rejected') {
 					this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
+					this.logger?.debug(`AnchorChaining::getPlans`, `Skipping plan that does not qualify as forwarding-only`);
 				} else {
 					ret.push(plan.value);
 				}
 			}
+		}
+
+		if (forwardingOpts && !options?.includeAllOutput && ret.length === 0) {
+			return(null);
 		}
 
 		return(ret);
