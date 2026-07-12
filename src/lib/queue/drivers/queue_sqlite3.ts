@@ -8,7 +8,9 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID
+	KeetaAnchorQueueWorkerID,
+	KeetaAnchorQueueDeleteExpiredCompletedOptions,
+	KeetaAnchorQueueDeleteExpiredCompletedResult
 } from '../index.ts';
 import {
 	MethodLogger,
@@ -49,7 +51,10 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private readonly completedRetentionMs: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
+
+	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { db: () => Promise<sqlite.Database>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -57,6 +62,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
+		this.completedRetentionMs = options.completedRetentionMs;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -466,6 +472,46 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		}));
 	}
 
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		return(await this.dbTransaction('deleteExpiredCompleted', async (db, logger): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> => {
+			const retentionMs = this.completedRetentionMs;
+			if (retentionMs === undefined) {
+				return({ deleted: 0, hasMore: false });
+			}
+
+			const cutoffMs = Date.now() - retentionMs;
+			const limit = options?.limit ?? KeetaAnchorQueueStorageDriverSQLite3.defaultDeleteExpiredCompletedLimit;
+
+			await db.run(
+				`DELETE FROM queue_idempotent_keys
+				 WHERE path = ?
+				   AND entry_id IN (
+					SELECT id FROM queue_entries
+					WHERE path = ? AND status = 'completed' AND updated < ?
+					ORDER BY updated ASC
+					LIMIT ?
+				   )`,
+				this.pathStr, this.pathStr, cutoffMs, limit
+			);
+
+			const result = await db.run(
+				`DELETE FROM queue_entries
+				 WHERE rowid IN (
+					SELECT rowid FROM queue_entries
+					WHERE path = ? AND status = 'completed' AND updated < ?
+					ORDER BY updated ASC
+					LIMIT ?
+				 )`,
+				this.pathStr, cutoffMs, limit
+			);
+
+			const deleted = result.changes ?? 0;
+			logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
+
+			return({ deleted: deleted, hasMore: deleted === limit });
+		}));
+	}
+
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
@@ -477,7 +523,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			db: this.dbInternal,
-			path: [...this.path, path]
+			path: [...this.path, path],
+			completedRetentionMs: this.completedRetentionMs
 		});
 
 		return(retval);

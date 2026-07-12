@@ -53,6 +53,18 @@ export type KeetaAnchorQueueEntryExtra = {
 	[key in 'idempotentKeys' | 'id' | 'status']?: (key extends 'id' ? KeetaAnchorQueueRequestID | string : KeetaAnchorQueueEntry<never, never>[key]) | undefined;
 };
 
+export type KeetaAnchorQueueDeleteExpiredCompletedOptions = {
+	/** Max entries to delete per call (default 1000) */
+	limit?: number;
+};
+
+export type KeetaAnchorQueueDeleteExpiredCompletedResult = {
+	deleted: number;
+	hasMore: boolean;
+};
+
+const defaultDeleteExpiredCompletedLimit = 1000;
+
 export type KeetaAnchorQueueFilter = {
 	/**
 	 * Only return entries with this status
@@ -88,6 +100,11 @@ export type KeetaAnchorQueueRunnerOptions = KeetaAnchorQueueCommonOptions & {
 
 export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
 	path?: string[] | undefined;
+	/**
+	 * How long completed entries are kept before {@link KeetaAnchorQueueStorageDriver.deleteExpiredCompleted}
+	 * may remove them. When unset, that method is a no-op.
+	 */
+	completedRetentionMs?: number | undefined;
 };
 
 export type KeetaAnchorQueueEntryAncillaryData<QueueResult> = {
@@ -176,6 +193,12 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
 
 	/**
+	 * Delete completed entries whose `updated` timestamp is before
+	 * `Date.now() - completedRetentionMs` configured on this queue.
+	 */
+	deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult>;
+
+	/**
 	 * Perform maintenance tasks on the storage driver
 	 * (e.g. cleaning up old entries, etc)
 	 *
@@ -215,10 +238,12 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	readonly name: string = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
 	readonly path: string[] = [];
+	protected readonly completedRetentionMs: number | undefined;
 
 	constructor(options?: KeetaAnchorQueueStorageOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
+		this.completedRetentionMs = options?.completedRetentionMs;
 		this.path.push(...(options?.path ?? []));
 		Object.freeze(this.path);
 
@@ -230,6 +255,7 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 			logger: this.logger,
 			id: `${this.id}::${this.partitionCounter++}`,
 			path: [...this.path],
+			completedRetentionMs: this.completedRetentionMs,
 			...options
 		});
 		cloned.queueStorage = this.queueStorage;
@@ -395,6 +421,36 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', retval.length, 'entries');
 
 		return(retval);
+	}
+
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		this.checkDestroyed();
+
+		const logger = this.methodLogger('deleteExpiredCompleted');
+		const retentionMs = this.completedRetentionMs;
+		if (retentionMs === undefined) {
+			return({ deleted: 0, hasMore: false });
+		}
+
+		const cutoff = new Date(Date.now() - retentionMs);
+		const limit = options?.limit ?? defaultDeleteExpiredCompletedLimit;
+
+		let deleted = 0;
+		for (let index = this.queue.length - 1; index >= 0 && deleted < limit; index--) {
+			const entry = this.queue[index];
+			if (entry?.status === 'completed' && entry.updated < cutoff) {
+				this.queue.splice(index, 1);
+				deleted++;
+			}
+		}
+
+		if (deleted === 0) {
+			return({ deleted: 0, hasMore: false });
+		}
+
+		logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
+
+		return({ deleted: deleted, hasMore: deleted === limit });
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
@@ -1424,6 +1480,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				logger?.debug(`Failed to maintain queue storage driver with ID ${this.queue.id}`, error);
 			}
 		}
+	}
+
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		return(await this.queue.deleteExpiredCompleted(options));
 	}
 
 	/**

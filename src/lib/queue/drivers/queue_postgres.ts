@@ -10,7 +10,9 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID
+	KeetaAnchorQueueWorkerID,
+	KeetaAnchorQueueDeleteExpiredCompletedOptions,
+	KeetaAnchorQueueDeleteExpiredCompletedResult
 } from '../index.ts';
 import {
 	MethodLogger,
@@ -71,7 +73,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	private readonly completedRetentionMs: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
+
+	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -80,6 +85,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
+		this.completedRetentionMs = options.completedRetentionMs;
 		Object.freeze(this.path);
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
@@ -589,6 +595,42 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		return(await this.dbTransaction('deleteExpiredCompleted', async (client, logger): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> => {
+			const retentionMs = this.completedRetentionMs;
+			if (retentionMs === undefined) {
+				return({ deleted: 0, hasMore: false });
+			}
+
+			const cutoffMs = Date.now() - retentionMs;
+			const limit = options?.limit ?? KeetaAnchorQueueStorageDriverPostgres.defaultDeleteExpiredCompletedLimit;
+
+			const deletedRows = await client.query<{ id: string }>(
+				`WITH doomed AS (
+					SELECT id FROM ${this.tableNameEntries}
+					WHERE path = $1 AND status = 'completed' AND updated < $2
+					ORDER BY updated ASC
+					LIMIT $3
+				),
+				deleted_idempotent AS (
+					DELETE FROM ${this.tableNameIdempotentKeys} k
+					USING doomed d
+					WHERE k.path = $1 AND k.entry_id = d.id
+				)
+				DELETE FROM ${this.tableNameEntries} e
+				USING doomed d
+				WHERE e.path = $1 AND e.id = d.id
+				RETURNING e.id`,
+				[this.pathStr, cutoffMs, limit]
+			);
+
+			const deleted = deletedRows.rowCount ?? 0;
+			logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
+
+			return({ deleted: deleted, hasMore: deleted === limit });
+		}));
+	}
+
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
@@ -601,7 +643,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger: this.logger,
 			pool: this.poolInternal,
 			path: [...this.path, path],
-			tablePrefix: this.tablePrefix
+			tablePrefix: this.tablePrefix,
+			completedRetentionMs: this.completedRetentionMs
 		});
 
 		return(retval);

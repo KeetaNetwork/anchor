@@ -113,7 +113,7 @@ const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; }) => Promise<{
+		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; completedRetentionMs?: number; }) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
 		}>;
@@ -122,8 +122,12 @@ const drivers: {
 	'Memory': {
 		persistent: false,
 		skip: false,
-		create: async function(key: string) {
-			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
+		create: async function(key: string, options?: { leave?: boolean; randomBackingName?: boolean; completedRetentionMs?: number; }) {
+			const queue = new KeetaAnchorQueueStorageDriverMemory({
+				id: key,
+				logger: logger,
+				completedRetentionMs: options?.completedRetentionMs
+			});
 			return({
 				queue: queue,
 				[Symbol.asyncDispose]: async function() {
@@ -141,7 +145,8 @@ const drivers: {
 			const queue = new KeetaAnchorQueueStorageDriverFile({
 				filePath: filePath,
 				id: key,
-				logger: logger
+				logger: logger,
+				completedRetentionMs: options?.completedRetentionMs
 			});
 			return({
 				queue: queue,
@@ -173,7 +178,8 @@ const drivers: {
 					}));
 				},
 				id: key,
-				logger: logger
+				logger: logger,
+				completedRetentionMs: options?.completedRetentionMs
 			});
 			return({
 				queue: queue,
@@ -226,7 +232,8 @@ const drivers: {
 				},
 				id: key,
 				path: [`key_${key}_${RunKey}`],
-				logger: logger
+				logger: logger,
+				completedRetentionMs: options?.completedRetentionMs
 			});
 
 			return({
@@ -305,6 +312,7 @@ const drivers: {
 					id: key,
 					logger: logger,
 					tablePrefix: tablePrefix,
+					completedRetentionMs: options?.completedRetentionMs,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
@@ -383,7 +391,8 @@ const drivers: {
 				},
 				id: key,
 				namespace: namespace,
-				logger: logger
+				logger: logger,
+				completedRetentionMs: options?.completedRetentionMs
 			});
 
 			return({
@@ -1503,6 +1512,34 @@ suite.sequential('Driver Tests', async function() {
 					const noEntriesBeforePast = await localQueue.query({ updatedBefore: pastDate });
 					expect(noEntriesBeforePast.length).toBe(0);
 				});
+
+				testRunner('Delete Expired Completed', async function() {
+					await using queueInfo = await driverConfig.create('delete-expired-completed', {
+						completedRetentionMs: 25
+					});
+					const localQueue = queueInfo.queue;
+
+					const oldID = await localQueue.add({ key: 'old-completed' });
+					await localQueue.setStatus(oldID, 'completed');
+
+					await asleep(50);
+
+					const recentID = await localQueue.add({ key: 'recent-completed' });
+					await localQueue.setStatus(recentID, 'completed');
+
+					const pendingID = await localQueue.add({ key: 'pending' });
+
+					let result = await localQueue.deleteExpiredCompleted();
+					expect(result.deleted).toBe(1);
+					expect(result.hasMore).toBe(false);
+					expect(await localQueue.get(oldID)).toBeNull();
+					expect(await localQueue.get(recentID)).not.toBeNull();
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+
+					await using noRetentionQueueInfo = await driverConfig.create('delete-expired-no-retention');
+					result = await noRetentionQueueInfo.queue.deleteExpiredCompleted();
+					expect(result.deleted).toBe(0);
+				}, 30_000);
 
 				/* Test that mutating the entry results does not affect the stored entry */
 				testRunner('Entry Immutability', async function() {

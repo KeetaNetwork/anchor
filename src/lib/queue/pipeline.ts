@@ -5,7 +5,9 @@ import type {
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueRequestID,
 	KeetaAnchorQueueCommonOptions,
-	KeetaAnchorQueueEntry
+	KeetaAnchorQueueEntry,
+	KeetaAnchorQueueDeleteExpiredCompletedOptions,
+	KeetaAnchorQueueDeleteExpiredCompletedResult
 } from './index.ts';
 import { MethodLogger } from './internal.js';
 import type { Logger } from '../log/index.ts';
@@ -77,6 +79,10 @@ export interface KeetaAnchorQueuePipeline<QueueRequest, FINALQueueResult> {
 	 * and between stages of the pipeline
 	 */
 	maintain: () => Promise<void>;
+	/**
+	 * Delete expired completed entries from every stage queue
+	 */
+	deleteExpiredCompleted: (options?: KeetaAnchorQueueDeleteExpiredCompletedOptions) => Promise<KeetaAnchorQueueDeleteExpiredCompletedResult>;
 	/**
 	 * Destroy the pipeline and release any resources it allocated
 	 */
@@ -231,6 +237,30 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 		} catch (error) {
 			logger?.error('Error running stage maintenance:', error);
 		}
+	}
+
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		await this.init();
+
+		const logger = this.methodLogger('deleteExpiredCompleted');
+		let deleted = 0;
+		let hasMore = false;
+
+		for (let index = 0; index < this.queues.length; index++) {
+			const queue = this.queues[index];
+			if (queue === undefined) {
+				continue;
+			}
+			try {
+				const result = await queue.deleteExpiredCompleted(options);
+				deleted += result.deleted;
+				hasMore = hasMore || result.hasMore;
+			} catch (error) {
+				logger?.error(`Error deleting expired completed entries for stage "#${index}":`, error);
+			}
+		}
+
+		return({ deleted: deleted, hasMore: hasMore });
 	}
 
 	async destroy(): Promise<void> {

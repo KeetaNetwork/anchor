@@ -8,7 +8,9 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID
+	KeetaAnchorQueueWorkerID,
+	KeetaAnchorQueueDeleteExpiredCompletedOptions,
+	KeetaAnchorQueueDeleteExpiredCompletedResult
 } from '../index.ts';
 import {
 	MethodLogger,
@@ -45,7 +47,10 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private readonly namespace: string;
+	private readonly completedRetentionMs: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
+
+	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace: string; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -54,6 +59,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		this.namespace = options.namespace;
+		this.completedRetentionMs = options.completedRetentionMs;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -325,6 +331,49 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		return(entries);
 	}
 
+	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		const firestore = await this.getFirestore();
+		const collection = await this.getCollection();
+		const idempotentCollection = await this.getIdempotentCollection();
+		const logger = this.methodLogger('deleteExpiredCompleted');
+
+		const retentionMs = this.completedRetentionMs;
+		if (retentionMs === undefined) {
+			return({ deleted: 0, hasMore: false });
+		}
+
+		const cutoffMs = Date.now() - retentionMs;
+		const limit = options?.limit ?? KeetaAnchorQueueStorageDriverFirestore.defaultDeleteExpiredCompletedLimit;
+
+		const snapshot = await collection
+			.where('status', '==', 'completed')
+			.where('updated', '<', cutoffMs)
+			.limit(limit)
+			.get();
+
+		if (snapshot.empty) {
+			return({ deleted: 0, hasMore: false });
+		}
+
+		const batch = firestore.batch();
+		for (const doc of snapshot.docs) {
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const entry = doc.data() as QueueEntryDocument;
+			if (entry.idempotentKeys) {
+				for (const idempotentID of entry.idempotentKeys) {
+					batch.delete(idempotentCollection.doc(idempotentID));
+				}
+			}
+			batch.delete(doc.ref);
+		}
+		await batch.commit();
+
+		const deleted = snapshot.size;
+		logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
+
+		return({ deleted: deleted, hasMore: deleted === limit });
+	}
+
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
@@ -337,7 +386,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			logger: this.logger,
 			firestore: this.firestoreInternal,
 			namespace: this.namespace,
-			path: [...this.path, path]
+			path: [...this.path, path],
+			completedRetentionMs: this.completedRetentionMs
 		});
 
 		return(retval);
