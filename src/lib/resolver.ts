@@ -7,7 +7,7 @@ import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
-import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadataItem } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
 import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString, EVMChecksumCache } from './asset.js';
 import { checksumEVMAsset, isEVMAsset } from './asset.js';
@@ -1142,12 +1142,20 @@ class Metadata implements ValuizableInstance {
 		const metadataBytes = Buffer.from(metadataUncompressed);
 		const metadataDecoded = metadataBytes.toString('utf-8');
 
-		/*
-		 * JSON.parse() will always return a JSONSerializable,
-		 * and not `unknown`, so we can safely cast it.
-		 */
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const retval = await this.resolveValue(JSON.parse(metadataDecoded) as JSONSerializable);
+		let parsed: JSONSerializable;
+		try {
+			/*
+			 * JSON.parse() will always return a JSONSerializable,
+			 * and not `unknown`, so we can safely cast it.
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			parsed = JSON.parse(metadataDecoded) as JSONSerializable;
+		} catch (parseError) {
+			this.#logger?.warn(`Resolver:${this.#resolver.id}`, 'Failed to parse metadata JSON from', this.#url.toString(), ':', parseError);
+			throw(parseError);
+		}
+
+		const retval = await this.resolveValue(parsed);
 
 		return(retval);
 	}
@@ -2049,109 +2057,125 @@ class Resolver {
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssetsMetadata(resolvedService);
+		if (!Array.isArray(resolvedService)) {
+			throw(new Error('Expected "supportedAssets" to be an array'));
+		}
+
+		const supportedAssets: SupportedAssetsMetadata[] = [];
+		for (let supportedAssetIndex = 0; supportedAssetIndex < resolvedService.length; supportedAssetIndex++) {
+			const resolvedSupportedAsset = resolvedService[supportedAssetIndex];
+			try {
+				supportedAssets.push(assertKeetaSupportedAssetsMetadataItem(resolvedSupportedAsset));
+			} catch (assertError) {
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error parsing supportedAssets entry', supportedAssetIndex, ':', assertError, '-- ignoring entry');
+			}
+		}
 
 		const filteredAssetMovement: SupportedAssetsMetadata[] = [];
 		for (const supportedAsset of supportedAssets) {
 			let matchFound = false;
 
 			for (const path of supportedAsset.paths) {
-				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
-					const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
-					const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
+				try {
+					for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+						const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
+						const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
 
-					if (fromCanonical && fromCanonical !== fromAsset.location) {
-						continue;
-					}
-
-					if (toCanonical && toCanonical !== toAsset.location) {
-						continue;
-					}
-
-					if (assetCanonical) {
-						if (typeof assetCanonical === 'string') {
-							if (!([ fromId, toId ].includes(assetCanonical))) {
-								continue;
-							}
-						} else if (fromId !== assetCanonical.from || toId !== assetCanonical.to) {
+						if (fromCanonical && fromCanonical !== fromAsset.location) {
 							continue;
 						}
-					}
 
-					const supportedRails = {
-						inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
-						outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
-					}
+						if (toCanonical && toCanonical !== toAsset.location) {
+							continue;
+						}
 
-					if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
-						continue;
-					}
-
-					const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
-						for (const checkRail of searchIn) {
-							if (typeof checkRail === 'string') {
-								if (checkRail === searchFor) {
-									return(true);
+						if (assetCanonical) {
+							if (typeof assetCanonical === 'string') {
+								if (!([ fromId, toId ].includes(assetCanonical))) {
+									continue;
 								}
-							} else {
-								if (checkRail.rail === searchFor) {
-									return(true);
-								}
+							} else if (fromId !== assetCanonical.from || toId !== assetCanonical.to) {
+								continue;
 							}
 						}
 
-						return(false);
-					}
+						const supportedRails = {
+							inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
+							outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
+						}
 
-					if (criteria.rail !== undefined) {
-						let railMatchFound = false;
-						for (const direction of ['inbound', 'outbound'] as const) {
-							let searchFor;
-							let searchIn;
-							let eitherDirectionSharedSearch;
+						if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
+							continue;
+						}
 
-							if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
-								searchFor = criteria.rail[direction];
-								searchIn = supportedRails[direction];
-								eitherDirectionSharedSearch = false;
-							} else {
-								searchFor = criteria.rail;
-								searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
-								eitherDirectionSharedSearch = true;
-							}
-
-
-							if (searchFor !== undefined) {
-								if (typeof searchFor === 'string') {
-									railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+						const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+							for (const checkRail of searchIn) {
+								if (typeof checkRail === 'string') {
+									if (checkRail === searchFor) {
+										return(true);
+									}
 								} else {
-									for (const checkRail of searchFor) {
-										railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
-
-										if (railMatchFound) {
-											break;
-										}
+									if (checkRail.rail === searchFor) {
+										return(true);
 									}
 								}
 							}
 
-							// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
-							if (eitherDirectionSharedSearch) {
-								break;
+							return(false);
+						}
+
+						if (criteria.rail !== undefined) {
+							let railMatchFound = false;
+							for (const direction of ['inbound', 'outbound'] as const) {
+								let searchFor;
+								let searchIn;
+								let eitherDirectionSharedSearch;
+
+								if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+									searchFor = criteria.rail[direction];
+									searchIn = supportedRails[direction];
+									eitherDirectionSharedSearch = false;
+								} else {
+									searchFor = criteria.rail;
+									searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+									eitherDirectionSharedSearch = true;
+								}
+
+
+								if (searchFor !== undefined) {
+									if (typeof searchFor === 'string') {
+										railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+									} else {
+										for (const checkRail of searchFor) {
+											railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+											if (railMatchFound) {
+												break;
+											}
+										}
+									}
+								}
+
+								// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+								if (eitherDirectionSharedSearch) {
+									break;
+								}
+
+								if (railMatchFound) {
+									break;
+								}
 							}
 
-							if (railMatchFound) {
-								break;
+							if (!railMatchFound) {
+								continue;
 							}
 						}
 
-						if (!railMatchFound) {
-							continue;
-						}
+						matchFound = true;
+						break;
 					}
-
-					matchFound = true;
-					break;
+				} catch (pathError) {
+					this.#logger?.warn(`Resolver:${this.id}`, 'Error parsing asset movement path:', pathError, '-- ignoring path');
 				}
 
 				if (matchFound) {
@@ -2174,24 +2198,24 @@ class Resolver {
 
 		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
 		for (const checkAssetMovementServiceID in assetServices) {
-			const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
-
-			if (checkAssetMovementService === undefined) {
-				return(undefined);
-			}
-
-			if (!('operations' in checkAssetMovementService)) {
-				return(undefined);
-			}
-
 			try {
+				const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
+
+				if (checkAssetMovementService === undefined) {
+					continue;
+				}
+
+				if (!('operations' in checkAssetMovementService)) {
+					continue;
+				}
+
 				const supportedAssets = await this.filterSupportedAssets(checkAssetMovementService, criteria);
 				if (supportedAssets.length === 0) {
 					continue;
 				}
 				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
 			} catch (parseError) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, ' -- ignoring');
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, '-- ignoring');
 			}
 		}
 
@@ -2278,23 +2302,24 @@ class Resolver {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata for', root.publicKeyString.get(), ':', rootMetadata);
 
 				if (!('version' in rootMetadata)) {
-					this.#logger?.debug(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property, skipping');
+					this.#logger?.warn(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property -- ignoring root');
 					continue;
 				}
 
 				const rootMetadataVersion = await rootMetadata.version?.('primitive');
 				if (rootMetadataVersion !== 1) {
-					this.#logger?.debug(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), ', skipping');
+					this.#logger?.warn(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), '-- ignoring root');
 					continue;
 				}
 
 				allRootMetadata.push(rootMetadata);
 			} catch (error) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, ' -- skipping');
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, '-- ignoring root');
 			}
 		}
 
 		if (allRootMetadata.length === 0) {
+			this.#logger?.warn(`Resolver:${this.id}`, 'No valid root metadata found among', this.#roots.length, 'configured root(s)');
 			throw(new Error('No valid root metadata found'));
 		}
 
@@ -2337,9 +2362,13 @@ class Resolver {
 					continue;
 				}
 				if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
-					const currencyMap = await metadata.currencyMap('object');
-					for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
-						mergedCurrencyMap[currencyCode] = tokenValue;
+					try {
+						const currencyMap = await metadata.currencyMap('object');
+						for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
+							mergedCurrencyMap[currencyCode] = tokenValue;
+						}
+					} catch (mergeError) {
+						this.#logger?.warn(`Resolver:${this.id}`, 'Error merging currencyMap from root index', i, ':', mergeError, '-- ignoring root currencyMap');
 					}
 				}
 			}
@@ -2367,7 +2396,13 @@ class Resolver {
 					continue;
 				}
 				if ('services' in metadata && metadata.services !== undefined) {
-					const services = await metadata.services('object');
+					let services: ValuizableObject;
+					try {
+						services = await metadata.services('object');
+					} catch (mergeError) {
+						this.#logger?.warn(`Resolver:${this.id}`, 'Error merging services from root index', i, ':', mergeError, '-- ignoring root services');
+						continue;
+					}
 					for (const [serviceType, serviceValue] of Object.entries(services)) {
 						if (serviceValue === undefined) {
 							continue;

@@ -477,61 +477,66 @@ class AnchorGraph {
 		const networkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
 
 		const providerLookupResult = await Promise.all(Object.entries(fxServices).map(async ([ providerID, service ]) => {
-			const fromEntries = await service.from('array');
+			try {
+				const fromEntries = await service.from('array');
 
-			if (!fromEntries) {
-				return(null);
-			}
-
-			const operations = await service.operations('object');
-			if (!operations.createExchange) {
-				this.logger?.debug('AnchorGraph::computeFXNodes', `FX service ${providerID} does not support createExchange operation, skipping`);
-				return(null);
-			}
-
-			const pathNodes = await Promise.all(fromEntries.map(async function(fromEntry) {
-				const pathNodesResult: GraphNodeLike[] = [];
-
-				const parsedEntry = await fromEntry('object');
-
-				const [ fromCodes, toCodes ] = await Promise.all([
-					parsedEntry.currencyCodes('array'),
-					parsedEntry.to('array')
-				]);
-
-				for (const from of fromCodes) {
-					const fromResolved = await from('string');
-					if (!fromResolved) {
-						continue;
-					}
-
-					const fromAccount = KeetaNet.lib.Account.fromPublicKeyString(fromResolved).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-
-					for (const to of toCodes) {
-						const toResolved = await to('string');
-						if (!toResolved) {
-							continue;
-						}
-
-						const toAccount = KeetaNet.lib.Account.fromPublicKeyString(toResolved).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-
-						if (fromAccount.comparePublicKey(toAccount)) {
-							continue;
-						}
-
-						pathNodesResult.push({
-							type: 'fx',
-							providerID: providerID,
-							from: { asset: fromAccount, location: networkLocation, rail: 'KEETA_SEND' },
-							to: { asset: toAccount, location: networkLocation, rail: 'KEETA_SEND' }
-						});
-					}
+				if (!fromEntries) {
+					return(null);
 				}
 
-				return(pathNodesResult);
-			}));
+				const operations = await service.operations('object');
+				if (!operations.createExchange) {
+					this.logger?.debug('AnchorGraph::computeFXNodes', `FX service ${providerID} does not support createExchange operation, skipping`);
+					return(null);
+				}
 
-			return(pathNodes.flat());
+				const pathNodes = await Promise.all(fromEntries.map(async function(fromEntry) {
+					const pathNodesResult: GraphNodeLike[] = [];
+
+					const parsedEntry = await fromEntry('object');
+
+					const [ fromCodes, toCodes ] = await Promise.all([
+						parsedEntry.currencyCodes('array'),
+						parsedEntry.to('array')
+					]);
+
+					for (const from of fromCodes) {
+						const fromResolved = await from('string');
+						if (!fromResolved) {
+							continue;
+						}
+
+						const fromAccount = KeetaNet.lib.Account.fromPublicKeyString(fromResolved).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+						for (const to of toCodes) {
+							const toResolved = await to('string');
+							if (!toResolved) {
+								continue;
+							}
+
+							const toAccount = KeetaNet.lib.Account.fromPublicKeyString(toResolved).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+							if (fromAccount.comparePublicKey(toAccount)) {
+								continue;
+							}
+
+							pathNodesResult.push({
+								type: 'fx',
+								providerID: providerID,
+								from: { asset: fromAccount, location: networkLocation, rail: 'KEETA_SEND' },
+								to: { asset: toAccount, location: networkLocation, rail: 'KEETA_SEND' }
+							});
+						}
+					}
+
+					return(pathNodesResult);
+				}));
+
+				return(pathNodes.flat());
+			} catch (error) {
+				this.logger?.warn('AnchorGraph::computeFXNodes', `Failed to parse FX service metadata for provider ${providerID} -- ignoring:`, error);
+				return(null);
+			}
 		}));
 
 		return(providerLookupResult.flat().filter((node): node is GraphNodeLike => !!node));
@@ -686,99 +691,104 @@ class AnchorGraph {
 		}
 
 		const providerResults = await Promise.all(Object.entries(assetMovementServices).map(async ([ providerID, service ]) => {
-			const supportedOperationsMetadata = await service.operations('object');
+			try {
+				const supportedOperationsMetadata = await service.operations('object');
 
-			const supportedAssetsEntries = await service.supportedAssets('array');
+				const supportedAssetsEntries = await service.supportedAssets('array');
 
-			if (!supportedAssetsEntries) {
-				this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `No supported assets found for provider ${providerID}`);
-				return(null);
-			}
-
-			const pathNodesResult = await Promise.all(supportedAssetsEntries.map(async (assetEntry): Promise<GraphNodeLike[]> => {
-				const parsedEntry = await assetEntry('object');
-
-				const pathsResolved = await parsedEntry.paths('array');
-				const pathPromises = await Promise.allSettled(pathsResolved.map(async (pathResolvedInput): Promise<GraphNodeLike[]> => {
-					const pathResolved = await pathResolvedInput('object');
-
-					const pairResolved = await pathResolved.pair('array');
-
-					const [ fromResolved, toResolved ] = await Promise.all([
-						this.#computeAssetMovementPairSide(pairResolved[0]),
-						this.#computeAssetMovementPairSide(pairResolved[1])
-					]);
-
-					function getProviderSupportedOperationsForRail(railSpecific?: RailSupportedOperations): RailSupportedOperations {
-						const retval: RailSupportedOperations = {
-							createPersistentForwarding: supportedOperationsMetadata.createPersistentForwarding !== undefined,
-							initiateTransfer: supportedOperationsMetadata.initiateTransfer !== undefined
-						};
-
-						if (railSpecific) {
-							retval.createPersistentForwarding = railSpecific.createPersistentForwarding ?? false;
-							retval.initiateTransfer = railSpecific.initiateTransfer ?? false;
-						}
-
-						return(retval);
-					}
-
-					const pathNodes: GraphNodeLike[] = [];
-					for (const [ src, dest ] of [
-						[ fromResolved, toResolved ],
-						[ toResolved, fromResolved ]
-					] as const) {
-						for (const inboundRail of [ ...(src.rails.common ?? []), ...(src.rails.inbound ?? []) ]) {
-							/*
-							 * Drop edges whose source rail explicitly cannot
-							 * initiate a transfer and also cannot create a
-							 * persistent forwarding address.
-							 */
-							const inboundSupportedOperations = getProviderSupportedOperationsForRail(inboundRail.supportedOperations);
-							if (inboundSupportedOperations.initiateTransfer === false && inboundSupportedOperations.createPersistentForwarding === false) {
-								this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `Skipping ${providerID} edge from ${convertAssetLocationToString(src.location)} via rail ${inboundRail.rail}: neither initiateTransfer nor createPersistentForwarding supported`);
-								continue;
-							}
-
-							for (const outboundRail of [ ...(dest.rails.common ?? []), ...(dest.rails.outbound ?? []) ]) {
-								pathNodes.push({
-									type: 'assetMovement',
-									providerID: providerID,
-									from: {
-										asset: src.id,
-										location: src.location,
-										rail: inboundRail.rail,
-										supportedOperations: getProviderSupportedOperationsForRail(inboundRail.supportedOperations)
-									},
-									to: {
-										asset: dest.id,
-										location: dest.location,
-										rail: outboundRail.rail,
-										supportedOperations: getProviderSupportedOperationsForRail(outboundRail.supportedOperations)
-									}
-								});
-							}
-						}
-
-					}
-
-					return(pathNodes);
-				}));
-
-				const allPaths = [];
-
-				for (const resolved of pathPromises) {
-					if (resolved.status === 'rejected') {
-						this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `error fetching nodes for ... TODO`, resolved.reason);
-					} else {
-						allPaths.push(...resolved.value);
-					}
+				if (!supportedAssetsEntries) {
+					this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `No supported assets found for provider ${providerID}`);
+					return(null);
 				}
 
-				return(allPaths);
-			}));
+				const pathNodesResult = await Promise.all(supportedAssetsEntries.map(async (assetEntry): Promise<GraphNodeLike[]> => {
+					const parsedEntry = await assetEntry('object');
 
-			return(pathNodesResult.flat());
+					const pathsResolved = await parsedEntry.paths('array');
+					const pathPromises = await Promise.allSettled(pathsResolved.map(async (pathResolvedInput): Promise<GraphNodeLike[]> => {
+						const pathResolved = await pathResolvedInput('object');
+
+						const pairResolved = await pathResolved.pair('array');
+
+						const [ fromResolved, toResolved ] = await Promise.all([
+							this.#computeAssetMovementPairSide(pairResolved[0]),
+							this.#computeAssetMovementPairSide(pairResolved[1])
+						]);
+
+						function getProviderSupportedOperationsForRail(railSpecific?: RailSupportedOperations): RailSupportedOperations {
+							const retval: RailSupportedOperations = {
+								createPersistentForwarding: supportedOperationsMetadata.createPersistentForwarding !== undefined,
+								initiateTransfer: supportedOperationsMetadata.initiateTransfer !== undefined
+							};
+
+							if (railSpecific) {
+								retval.createPersistentForwarding = railSpecific.createPersistentForwarding ?? false;
+								retval.initiateTransfer = railSpecific.initiateTransfer ?? false;
+							}
+
+							return(retval);
+						}
+
+						const pathNodes: GraphNodeLike[] = [];
+						for (const [ src, dest ] of [
+							[ fromResolved, toResolved ],
+							[ toResolved, fromResolved ]
+						] as const) {
+							for (const inboundRail of [ ...(src.rails.common ?? []), ...(src.rails.inbound ?? []) ]) {
+								/*
+								 * Drop edges whose source rail explicitly cannot
+								 * initiate a transfer and also cannot create a
+								 * persistent forwarding address.
+								 */
+								const inboundSupportedOperations = getProviderSupportedOperationsForRail(inboundRail.supportedOperations);
+								if (inboundSupportedOperations.initiateTransfer === false && inboundSupportedOperations.createPersistentForwarding === false) {
+									this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `Skipping ${providerID} edge from ${convertAssetLocationToString(src.location)} via rail ${inboundRail.rail}: neither initiateTransfer nor createPersistentForwarding supported`);
+									continue;
+								}
+
+								for (const outboundRail of [ ...(dest.rails.common ?? []), ...(dest.rails.outbound ?? []) ]) {
+									pathNodes.push({
+										type: 'assetMovement',
+										providerID: providerID,
+										from: {
+											asset: src.id,
+											location: src.location,
+											rail: inboundRail.rail,
+											supportedOperations: getProviderSupportedOperationsForRail(inboundRail.supportedOperations)
+										},
+										to: {
+											asset: dest.id,
+											location: dest.location,
+											rail: outboundRail.rail,
+											supportedOperations: getProviderSupportedOperationsForRail(outboundRail.supportedOperations)
+										}
+									});
+								}
+							}
+
+						}
+
+						return(pathNodes);
+					}));
+
+					const allPaths = [];
+
+					for (const resolved of pathPromises) {
+						if (resolved.status === 'rejected') {
+							this.logger?.debug('AnchorGraph::computeAssetMovementNodes', `error fetching nodes for provider ${providerID}:`, resolved.reason);
+						} else {
+							allPaths.push(...resolved.value);
+						}
+					}
+
+					return(allPaths);
+				}));
+
+				return(pathNodesResult.flat());
+			} catch (error) {
+				this.logger?.warn('AnchorGraph::computeAssetMovementNodes', `Failed to parse asset movement service metadata for provider ${providerID} -- ignoring:`, error);
+				return(null);
+			}
 		}));
 
 		return(providerResults.flat().filter((node): node is GraphNodeLike => !!node));
