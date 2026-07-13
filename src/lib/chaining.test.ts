@@ -3953,6 +3953,7 @@ describe('getPlans forwardingOnly', function() {
 
 	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
 	const PFR_OPS = { initiateTransfer: false, createPersistentForwarding: true } as const;
+	const DUAL_OPS = { initiateTransfer: true, createPersistentForwarding: true } as const;
 
 	type LegMode = 'managed' | 'pfr';
 
@@ -3989,7 +3990,7 @@ describe('getPlans forwardingOnly', function() {
 		const ethSide = (id: AMSide['id']): AMSide => ({
 			location: LOC.eth,
 			id,
-			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: MANAGED_OPS }] }
+			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: legMode === 'pfr' ? DUAL_OPS : MANAGED_OPS }] }
 		});
 		const fiatSide = (iso: AMSide['id']): AMSide => ({
 			location: LOC.sepa,
@@ -4120,8 +4121,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 
 		expect(isForwardingPlan(plan)).toBe(true);
-		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'assetMovement', 'forwarded' ]);
-		expect(plan.plan.steps[0]?.type === 'assetMovement' && plan.plan.steps[0].sendingTo).toEqual('NEXT_STEP');
+		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded', 'forwarded' ]);
 		expect(getForwardingDepositAddress(plan)).toEqual(expect.any(String));
 	});
 
@@ -4227,10 +4227,91 @@ describe('getPlans forwardingOnly', function() {
 			adjacency,
 			{ asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth },
 			{ asset: w.tokens.USDC, location: w.keetaLocation }
-		)).toBe(false);
+		)).toBe(true);
 
 		const graphAdjacency = await w.anchorChaining.graph.buildForwardingAdjacency();
 		expect(graphAdjacency.size).toEqual(adjacency.size);
+	});
+
+	test('forwardingOnly uses PFR on the last leg even when initiateTransfer is also supported', async function() {
+		const DUAL_OPS = { initiateTransfer: true, createPersistentForwarding: true } as const;
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const { userClient: client, fees } = await createNodeAndClient(account);
+
+		const makeToken = async () => {
+			const { account: tokenAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			await client.setInfo(
+				{ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS']) },
+				{ account: tokenAccount }
+			);
+			return(tokenAccount.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN));
+		};
+
+		const keetaLocation = `chain:keeta:${client.network}` satisfies AssetLocationLike;
+		const usdc = await makeToken();
+
+		type AMAssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
+		type AMSide = AMAssetEntry['paths'][number]['pair'][number];
+		const baseSide = (id: AMSide['id']): AMSide => ({
+			location: LOC.base,
+			id,
+			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: DUAL_OPS }] }
+		});
+		const keetaSide = (token: TokenAddress): AMSide => ({
+			location: keetaLocation,
+			id: token.publicKeyString.get(),
+			rails: { common: [{ rail: 'KEETA_SEND', supportedOperations: MANAGED_OPS }] }
+		});
+
+		const am2 = new TestChainAnchorServer({
+			...(DEBUG ? { logger } : {}),
+			client,
+			convert: ({ value }) => value,
+			assetMovement: {
+				supportedAssets: [ {
+					asset: [ keetaSide(usdc).id, baseSide(EXTERNAL_IDS.USDC_BASE).id ],
+					paths: [{ pair: [ keetaSide(usdc), baseSide(EXTERNAL_IDS.USDC_BASE) ] }]
+				} ]
+			}
+		});
+
+		await am2.start();
+		fees.addFeeFreeAccount(client.account);
+
+		await client.setInfo({
+			description: 'Dual-ops forwarding-only test',
+			name: 'TEST',
+			metadata: Resolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: { '$USDC': usdc.publicKeyString.get() },
+				services: { assetMovement: { AM2: await am2.serviceMetadata() }}
+			} satisfies ServiceMetadataExternalizable)
+		});
+
+		const anchorChaining = new AnchorChaining({
+			client,
+			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+		});
+
+		const request = {
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: usdc, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+		};
+
+		try {
+			const managedPlans = await anchorChaining.getPlans(request, { limit: 1 });
+			expect(managedPlans?.[0]?.plan.steps.map((s) => s.type)).toEqual([ 'assetMovement' ]);
+
+			const forwardingPlans = await anchorChaining.getPlans(request, { limit: 1, forwardingOnly: true });
+			const forwardingPlan = forwardingPlans?.[0];
+			if (!forwardingPlan) {
+				throw(new Error('Expected a forwarding plan'));
+			}
+			expect(forwardingPlan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
+			expect(isForwardingPlan(forwardingPlan)).toBe(true);
+		} finally {
+			await am2[Symbol.asyncDispose]?.();
+		}
 	});
 });
 
