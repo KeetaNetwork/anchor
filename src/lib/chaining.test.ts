@@ -4070,3 +4070,54 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 		expect(sends[1]?.token).toEqual(h.tokens.USD.publicKeyString.get());
 	});
 });
+
+describe('invalid anchor metadata', function() {
+	test('computeGraphNodes ignores providers whose metadata cannot be parsed', async function() {
+		const testRoot = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const fromToken = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		const toToken = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+		const { userClient, fees } = await createNodeAndClient(testRoot);
+		fees.disable();
+
+		await userClient.setInfo({
+			name: '',
+			description: '',
+			metadata: Resolver.Metadata.formatMetadata(toJSONSerializable({
+				version: 1,
+				currencyMap: {},
+				services: {
+					fx: {
+						good_fx: {
+							operations: {
+								createExchange: 'https://fx.good.com/createExchange'
+							},
+							from: [{
+								currencyCodes: [fromToken.publicKeyString.get()],
+								to: [toToken.publicKeyString.get()]
+							}]
+						},
+						broken_fx: {
+							from: 'not-an-array'
+						}
+					}
+				}
+			}))
+		});
+
+		fees.enable();
+
+		const anchorChaining = new AnchorChaining({
+			client: userClient,
+			resolver: new Resolver({
+				root: testRoot,
+				client: userClient,
+				trustedCAs: []
+			})
+		});
+
+		const nodes = await anchorChaining.graph.computeGraphNodes();
+		expect(nodes.some(n => n.type === 'fx' && n.providerID === 'good_fx')).toBe(true);
+		expect(nodes.some(n => n.providerID === 'broken_fx')).toBe(false);
+	});
+});
