@@ -111,11 +111,8 @@ export default class KeetaAnchorQueueStorageDriverFile extends KeetaAnchorQueueS
 		return(retval);
 	}
 
-	async deleteExpiredCompleted(...args: Parameters<KeetaAnchorQueueStorageDriverMemory['deleteExpiredCompleted']>): ReturnType<KeetaAnchorQueueStorageDriverMemory['deleteExpiredCompleted']> {
-		const retval = await super.deleteExpiredCompleted(...args);
-
+	async delete(input: Parameters<KeetaAnchorQueueStorageDriverMemory['delete']>[0]): ReturnType<KeetaAnchorQueueStorageDriverMemory['delete']> {
+		await super.delete(input);
 		await this.syncFile();
-
-		return(retval);
 	}
 }

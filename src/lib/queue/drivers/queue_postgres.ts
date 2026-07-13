@@ -10,15 +10,13 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID,
-	KeetaAnchorQueueDeleteExpiredCompletedOptions,
-	KeetaAnchorQueueDeleteExpiredCompletedResult
+	KeetaAnchorQueueDeleteInput,
+	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID,
-	RequireCompletedRetentionMs
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -74,10 +72,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
-
-	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -86,7 +82,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.completedRetentionMs = options.completedRetentionMs;
+		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
@@ -596,37 +592,41 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
-	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
-		return(await this.dbTransaction('deleteExpiredCompleted', async (client, logger): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> => {
-			const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
 
-			const cutoffMs = Date.now() - retentionMs;
-			const limit = options?.limit ?? KeetaAnchorQueueStorageDriverPostgres.defaultDeleteExpiredCompletedLimit;
+		await this.dbTransaction('delete', async (client, logger): Promise<void> => {
+			const ids = input.map(function(entry) {
+				return(String(entry.id));
+			});
+			const statuses = input.map(function(entry) {
+				return(entry.status);
+			});
 
 			const deletedRows = await client.query<{ id: string }>(
-				`WITH doomed AS (
-					SELECT id FROM ${this.tableNameEntries}
-					WHERE path = $1 AND status = 'completed' AND updated < $2
-					ORDER BY updated ASC
-					LIMIT $3
+				`WITH targets(id, status) AS (
+					SELECT * FROM unnest($2::text[], $3::text[])
 				),
 				deleted_idempotent AS (
 					DELETE FROM ${this.tableNameIdempotentKeys} k
-					USING doomed d
-					WHERE k.path = $1 AND k.entry_id = d.id
+					USING ${this.tableNameEntries} e, targets t
+					WHERE k.path = $1 AND k.entry_id = e.id AND e.path = $1
+						AND e.id = t.id AND e.status = t.status
 				)
 				DELETE FROM ${this.tableNameEntries} e
-				USING doomed d
-				WHERE e.path = $1 AND e.id = d.id
+				USING targets t
+				WHERE e.path = $1 AND e.id = t.id AND e.status = t.status
 				RETURNING e.id`,
-				[this.pathStr, cutoffMs, limit]
+				[this.pathStr, ids, statuses]
 			);
 
 			const deleted = deletedRows.rowCount ?? 0;
-			logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
-
-			return({ deleted: deleted, hasMore: deleted === limit });
-		}));
+			if (deleted > 0) {
+				logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
+			}
+		});
 	}
 
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
@@ -642,7 +642,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			pool: this.poolInternal,
 			path: [...this.path, path],
 			tablePrefix: this.tablePrefix,
-			completedRetentionMs: this.completedRetentionMs
+			completedRetentionDays: this.completedRetentionDays
 		});
 
 		return(retval);

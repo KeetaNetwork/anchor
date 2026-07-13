@@ -8,15 +8,13 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID,
-	KeetaAnchorQueueDeleteExpiredCompletedOptions,
-	KeetaAnchorQueueDeleteExpiredCompletedResult
+	KeetaAnchorQueueDeleteInput,
+	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID,
-	RequireCompletedRetentionMs
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -48,10 +46,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private readonly namespace: string;
-	readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
-
-	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace: string; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -60,7 +56,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		this.namespace = options.namespace;
-		this.completedRetentionMs = options.completedRetentionMs;
+		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -332,44 +328,45 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		return(entries);
 	}
 
-	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
 		const firestore = await this.getFirestore();
 		const collection = await this.getCollection();
 		const idempotentCollection = await this.getIdempotentCollection();
-		const logger = this.methodLogger('deleteExpiredCompleted');
-
-		const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
-
-		const cutoffMs = Date.now() - retentionMs;
-		const limit = options?.limit ?? KeetaAnchorQueueStorageDriverFirestore.defaultDeleteExpiredCompletedLimit;
-
-		const snapshot = await collection
-			.where('status', '==', 'completed')
-			.where('updated', '<', cutoffMs)
-			.limit(limit)
-			.get();
-
-		if (snapshot.empty) {
-			return({ deleted: 0, hasMore: false });
-		}
-
+		const logger = this.methodLogger('delete');
 		const batch = firestore.batch();
-		for (const doc of snapshot.docs) {
+		let deleted = 0;
+
+		for (const target of input) {
+			const doc = await collection.doc(String(target.id)).get();
+			if (!doc.exists) {
+				continue;
+			}
+
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const entry = doc.data() as QueueEntryDocument;
+			if (entry.status !== target.status) {
+				continue;
+			}
+
 			if (entry.idempotentKeys) {
 				for (const idempotentID of entry.idempotentKeys) {
 					batch.delete(idempotentCollection.doc(idempotentID));
 				}
 			}
 			batch.delete(doc.ref);
+			deleted++;
 		}
+
+		if (deleted === 0) {
+			return;
+		}
+
 		await batch.commit();
-
-		const deleted = snapshot.size;
-		logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
-
-		return({ deleted: deleted, hasMore: deleted === limit });
+		logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
@@ -385,7 +382,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			firestore: this.firestoreInternal,
 			namespace: this.namespace,
 			path: [...this.path, path],
-			completedRetentionMs: this.completedRetentionMs
+			completedRetentionDays: this.completedRetentionDays
 		});
 
 		return(retval);

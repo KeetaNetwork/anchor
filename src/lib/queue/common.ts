@@ -34,7 +34,7 @@ class KeetaAnchorQueueCompletedRetentionNotConfiguredError extends KeetaAnchorEr
 	private static readonly KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID = 'c4e8f1a2-6b3d-4e91-9f0a-1d2c3b4a5e6f';
 
 	constructor(message?: string) {
-		super(message ?? 'completedRetentionMs is not configured on this queue');
+		super(message ?? 'completedRetentionDays is not configured on this queue');
 		this.statusCode = -1;
 
 		Object.defineProperty(this, 'KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID', {
@@ -54,7 +54,7 @@ class KeetaAnchorQueueCompletedRetentionPipingError extends KeetaAnchorError {
 	private static readonly KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID = 'f8a2c4e1-7b3d-4f92-a1c0-9e8d7f6a5b4c';
 
 	constructor(message?: string) {
-		super(message ?? 'Queues with completedRetentionMs configured cannot be piped to or from other queues');
+		super(message ?? 'Queues with completedRetentionDays configured cannot be piped to or from other queues');
 		this.statusCode = -1;
 
 		Object.defineProperty(this, 'KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID', {
@@ -105,13 +105,13 @@ export const Errors: {
 	 */
 	IncorrectStateAssertedError: KeetaAnchorQueueIncorrectStateAssertedError,
 	/**
-	 * {@link KeetaAnchorQueueStorageDriver.deleteExpiredCompleted} was called without
-	 * `completedRetentionMs` configured on the queue.
+	 * {@link KeetaAnchorQueueRunner.deleteExpiredCompleted} was called without
+	 * `completedRetentionDays` configured on the queue.
 	 */
 	CompletedRetentionNotConfiguredError: KeetaAnchorQueueCompletedRetentionNotConfiguredError,
 	/**
-	 * A queue with `completedRetentionMs` was piped to or from another queue, or
-	 * {@link KeetaAnchorQueueStorageDriver.deleteExpiredCompleted} was called while piped.
+	 * A queue with `completedRetentionDays` was piped to or from another queue, or
+	 * {@link KeetaAnchorQueueRunner.deleteExpiredCompleted} was called while piped.
 	 */
 	CompletedRetentionPipingError: KeetaAnchorQueueCompletedRetentionPipingError
 };

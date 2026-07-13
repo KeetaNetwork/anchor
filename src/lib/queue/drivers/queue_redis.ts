@@ -8,15 +8,13 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
-	KeetaAnchorQueueWorkerID,
-	KeetaAnchorQueueDeleteExpiredCompletedOptions,
-	KeetaAnchorQueueDeleteExpiredCompletedResult
+	KeetaAnchorQueueDeleteInput,
+	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID,
-	RequireCompletedRetentionMs
+	ConvertStringToRequestID
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -47,10 +45,8 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
-
-	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { redis: () => Promise<RedisClientType>; }) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -58,7 +54,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		this.redisInternal = options.redis;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.completedRetentionMs = options.completedRetentionMs;
+		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Redis queue storage driver');
@@ -419,49 +415,46 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		return(entries);
 	}
 
-	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
 		const redis = await this.getRedis();
-		const logger = this.methodLogger('deleteExpiredCompleted');
-
-		const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
-
-		const cutoffMs = Date.now() - retentionMs;
-		const limit = options?.limit ?? KeetaAnchorQueueStorageDriverRedis.defaultDeleteExpiredCompletedLimit;
-
-		const completedIndex = this.indexKey('completed');
-		const candidateIDs = await redis.zRangeByScore(completedIndex, 0, cutoffMs, {
-			LIMIT: {
-				offset: 0,
-				count: limit
-			}
-		});
-
-		if (candidateIDs.length === 0) {
-			return({ deleted: 0, hasMore: false });
-		}
-
+		const logger = this.methodLogger('delete');
 		const multi = redis.multi();
-		for (const entryIDStr of candidateIDs) {
-			const entryID = ConvertStringToRequestID(entryIDStr);
-			const entryJSON = await redis.get(this.queueKey(entryID));
-			if (entryJSON) {
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				const entryData = JSON.parse(entryJSON) as QueueEntryData;
-				if (entryData.idempotentKeys) {
-					for (const idempotentID of entryData.idempotentKeys) {
-						multi.del(this.idempotentKey(ConvertStringToRequestID(idempotentID)));
-					}
-				}
-				multi.zRem(this.indexKey(entryData.status), entryIDStr);
+		let deleted = 0;
+
+		for (const target of input) {
+			const entryIDStr = String(target.id);
+			const entryJSON = await redis.get(this.queueKey(target.id));
+			if (!entryJSON) {
+				continue;
 			}
-			multi.del(this.queueKey(entryID));
+
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const entryData = JSON.parse(entryJSON) as QueueEntryData;
+			if (entryData.status !== target.status) {
+				continue;
+			}
+
+			if (entryData.idempotentKeys) {
+				for (const idempotentID of entryData.idempotentKeys) {
+					multi.del(this.idempotentKey(ConvertStringToRequestID(idempotentID)));
+				}
+			}
+			multi.zRem(this.indexKey(entryData.status), entryIDStr);
+			multi.del(this.queueKey(target.id));
 			multi.zRem(this.indexKey(), entryIDStr);
+			deleted++;
 		}
+
+		if (deleted === 0) {
+			return;
+		}
+
 		await multi.exec();
-
-		logger?.debug(`Deleted ${candidateIDs.length} expired completed entries from queue ${this.id}`);
-
-		return({ deleted: candidateIDs.length, hasMore: candidateIDs.length === limit });
+		logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
@@ -476,7 +469,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			logger: this.logger,
 			redis: this.redisInternal,
 			path: [...this.path, path],
-			completedRetentionMs: this.completedRetentionMs
+			completedRetentionDays: this.completedRetentionDays
 		});
 
 		return(retval);

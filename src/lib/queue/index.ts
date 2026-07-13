@@ -9,8 +9,7 @@ import { Errors } from './common.js';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID,
-	RequireCompletedRetentionMs
+	ConvertStringToRequestID
 } from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
@@ -54,17 +53,33 @@ export type KeetaAnchorQueueEntryExtra = {
 	[key in 'idempotentKeys' | 'id' | 'status']?: (key extends 'id' ? KeetaAnchorQueueRequestID | string : KeetaAnchorQueueEntry<never, never>[key]) | undefined;
 };
 
-export type KeetaAnchorQueueDeleteExpiredCompletedOptions = {
-	/** Max entries to delete per call (default 1000) */
-	limit?: number;
-};
-
-export type KeetaAnchorQueueDeleteExpiredCompletedResult = {
-	deleted: number;
-	hasMore: boolean;
-};
-
 const defaultDeleteExpiredCompletedLimit = 1000;
+
+export async function deleteExpiredCompletedFromStorageDriver<QueueRequest extends JSONSerializable, QueueResult extends JSONSerializable>(
+	queue: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>
+): Promise<void> {
+	if (queue.completedRetentionDays === undefined) {
+		throw(new Errors.CompletedRetentionNotConfiguredError());
+	}
+
+	const cutoff = new Date(Date.now() - queue.completedRetentionDays * 86_400_000);
+	const entries = await queue.query({
+		status: 'completed',
+		updatedBefore: cutoff,
+		limit: defaultDeleteExpiredCompletedLimit
+	});
+
+	if (entries.length === 0) {
+		return;
+	}
+
+	await queue.delete(entries.map(function(entry) {
+		return({
+			id: entry.id,
+			status: entry.status
+		});
+	}));
+}
 
 export type KeetaAnchorQueueFilter = {
 	/**
@@ -79,6 +94,11 @@ export type KeetaAnchorQueueFilter = {
 	 * Limit the number of entries returned
 	 */
 	limit?: number;
+};
+
+export type KeetaAnchorQueueDeleteInput = {
+	id: KeetaAnchorQueueRequestID;
+	status: KeetaAnchorQueueStatus;
 };
 
 export type KeetaAnchorQueueCommonOptions = {
@@ -102,10 +122,10 @@ export type KeetaAnchorQueueRunnerOptions = KeetaAnchorQueueCommonOptions & {
 export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
 	path?: string[] | undefined;
 	/**
-	 * How long completed entries are kept before {@link KeetaAnchorQueueStorageDriver.deleteExpiredCompleted}
+	 * How long completed entries are kept, in days, before {@link KeetaAnchorQueueRunner.deleteExpiredCompleted}
 	 * may remove them. Required for that method.
 	 */
-	completedRetentionMs?: number | undefined;
+	completedRetentionDays?: number | undefined;
 };
 
 export type KeetaAnchorQueueEntryAncillaryData<QueueResult> = {
@@ -155,7 +175,7 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	/**
 	 * Retention period for completed entries, if configured on this queue partition.
 	 */
-	readonly completedRetentionMs?: number | undefined;
+	readonly completedRetentionDays?: number | undefined;
 
 	/**
 	 * Enqueue an item to be processed by the queue
@@ -199,10 +219,10 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
 
 	/**
-	 * Delete completed entries whose `updated` timestamp is before
-	 * `Date.now() - completedRetentionMs` configured on this queue.
+	 * Delete entries by ID. Each entry is removed only if its current status matches
+	 * the status given in the input.
 	 */
-	deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult>;
+	delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void>;
 
 	/**
 	 * Perform maintenance tasks on the storage driver
@@ -244,12 +264,12 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	readonly name: string = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
 	readonly path: string[] = [];
-	readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionDays: number | undefined;
 
 	constructor(options?: KeetaAnchorQueueStorageOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
-		this.completedRetentionMs = options?.completedRetentionMs;
+		this.completedRetentionDays = options?.completedRetentionDays;
 		this.path.push(...(options?.path ?? []));
 		Object.freeze(this.path);
 
@@ -261,7 +281,7 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 			logger: this.logger,
 			id: `${this.id}::${this.partitionCounter++}`,
 			path: [...this.path],
-			completedRetentionMs: this.completedRetentionMs,
+			completedRetentionDays: this.completedRetentionDays,
 			...options
 		});
 		cloned.queueStorage = this.queueStorage;
@@ -429,31 +449,35 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		return(retval);
 	}
 
-	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
 		this.checkDestroyed();
 
-		const logger = this.methodLogger('deleteExpiredCompleted');
-		const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
+		if (input.length === 0) {
+			return;
+		}
 
-		const cutoff = new Date(Date.now() - retentionMs);
-		const limit = options?.limit ?? defaultDeleteExpiredCompletedLimit;
-
+		const logger = this.methodLogger('delete');
+		const targets = new Map(input.map(function(target) {
+			return([target.id, target.status] as const);
+		}));
 		let deleted = 0;
-		for (let index = this.queue.length - 1; index >= 0 && deleted < limit; index--) {
+
+		for (let index = this.queue.length - 1; index >= 0; index--) {
 			const entry = this.queue[index];
-			if (entry?.status === 'completed' && entry.updated < cutoff) {
+			if (entry === undefined) {
+				continue;
+			}
+
+			const expectedStatus = targets.get(entry.id);
+			if (expectedStatus !== undefined && entry.status === expectedStatus) {
 				this.queue.splice(index, 1);
 				deleted++;
 			}
 		}
 
-		if (deleted === 0) {
-			return({ deleted: 0, hasMore: false });
+		if (deleted > 0) {
+			logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
 		}
-
-		logger?.debug(`Deleted ${deleted} expired completed entries from queue ${this.id}`);
-
-		return({ deleted: deleted, hasMore: deleted === limit });
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
@@ -1490,18 +1514,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
-	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+	async deleteExpiredCompleted(): Promise<void> {
 		this.assertCompletedRetentionQueueNotPiped();
-		return(await this.queue.deleteExpiredCompleted(options));
+		await deleteExpiredCompletedFromStorageDriver(this.queue);
 	}
 
 	private assertCompletedRetentionQueueNotPiped(): void {
-		if (this.queue.completedRetentionMs === undefined) {
+		if (this.queue.completedRetentionDays === undefined) {
 			return;
 		}
 
 		if (this.pipes.length > 0 || this.incomingPipeCount > 0) {
-			throw(new Errors.CompletedRetentionPipingError('Queues with completedRetentionMs configured cannot delete expired completed entries while piped to or from another queue'));
+			throw(new Errors.CompletedRetentionPipingError('Queues with completedRetentionDays configured cannot delete expired completed entries while piped to or from another queue'));
 		}
 	}
 
@@ -1509,7 +1533,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipe the the completed entries of this runner to another runner
 	 */
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
 			throw(new Errors.CompletedRetentionPipingError());
 		}
 		target.incomingPipeCount++;
@@ -1523,7 +1547,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
 			throw(new Errors.CompletedRetentionPipingError());
 		}
 		target.incomingPipeCount++;
@@ -1540,7 +1564,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
 	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
 			throw(new Errors.CompletedRetentionPipingError());
 		}
 		target.incomingPipeCount++;
@@ -1556,7 +1580,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
 			throw(new Errors.CompletedRetentionPipingError());
 		}
 		target.incomingPipeCount++;
