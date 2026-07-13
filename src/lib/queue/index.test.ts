@@ -1585,7 +1585,7 @@ suite.sequential('Driver Tests', async function() {
 
 					const pendingID = await localQueue.add({ key: 'pending' });
 
-					let result = await localQueue.deleteExpiredCompleted();
+					const result = await localQueue.deleteExpiredCompleted();
 					expect(result.deleted).toBe(1);
 					expect(result.hasMore).toBe(false);
 					expect(await localQueue.get(oldID)).toBeNull();
