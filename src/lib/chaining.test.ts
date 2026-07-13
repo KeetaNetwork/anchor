@@ -7,8 +7,8 @@ import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetCon
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining, AnchorChainingPlan, buildForwardingAdjacency, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, ComputePlanOptions, Disclaimer, AnchorChainingPathInput, AnchorChainingPath } from './chaining.js';
+import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
@@ -1540,7 +1540,7 @@ async function createChainingTestHarness(options: { includeSwapAnchor?: boolean 
 		return(path);
 	};
 
-	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo', options?: ComputePlanOptions) => {
+	const getPlanVia = async (fxProviderID: 'FXOne' | 'FXTwo', options?: GetPlansOptions) => {
 		const plans = await anchorChaining.getPlans({
 			source: { asset: tokens.USDC, location: keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
@@ -3940,6 +3940,20 @@ describe('Generic Test Cases', function() {
 });
 
 describe('getPlans forwardingOnly', function() {
+	test('estimateForwardingValueOut includes fixed, variable, and total fees', function() {
+		const fees = {
+			lineItems: [
+				{ purpose: 'RAIL' as const, value: '5' },
+				{ purpose: 'NETWORK' as const, value: '3' },
+				{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 100 }
+			],
+			total: '18'
+		};
+
+		expect(estimateForwardingValueOut(1000n, fees)).toEqual(982n);
+		expect(estimateForwardingValueOut(1000n, { ...fees, total: '25' })).toEqual(975n);
+	});
+
 	const EXTERNAL_IDS = {
 		USDC_BASE: 'evm:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
 		USDC_ETH:  'evm:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
@@ -4101,9 +4115,12 @@ describe('getPlans forwardingOnly', function() {
 			throw(new Error('Expected a forwarding plan'));
 		}
 
+		expect(plan).toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
+		expect('execute' in plan).toBe(false);
 		expect(isForwardingPlan(plan)).toBe(true);
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
-		expect(getForwardingDepositAddress(plan)).toEqual(expect.any(String));
+		expect(plan.getDepositAddress()).toEqual(expect.any(String));
+		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
 	});
 
 	test('returns a two-leg forwarding plan from ethereum to keeta', async function() {
@@ -4120,9 +4137,12 @@ describe('getPlans forwardingOnly', function() {
 			throw(new Error('Expected a forwarding plan'));
 		}
 
+		expect(plan).toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
+		expect('execute' in plan).toBe(false);
 		expect(isForwardingPlan(plan)).toBe(true);
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded', 'forwarded' ]);
-		expect(getForwardingDepositAddress(plan)).toEqual(expect.any(String));
+		expect(plan.getDepositAddress()).toEqual(expect.any(String));
+		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
 	});
 
 	test('returns null for managed final-leg routes', async function() {
@@ -4312,6 +4332,22 @@ describe('getPlans forwardingOnly', function() {
 		} finally {
 			await am2[Symbol.asyncDispose]?.();
 		}
+	});
+
+	test('AnchorChainingPlan created with forwardingOnly cannot execute', async function() {
+		await using w = await buildForwardingWorld('pfr');
+
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		});
+		const path = paths?.[0];
+		if (!path) {
+			throw(new Error('Expected path'));
+		}
+
+		const plan = await AnchorChainingPlan.create(path, { forwardingOnly: true });
+		await expect(plan.execute()).rejects.toThrow(/cannot be executed/i);
 	});
 });
 

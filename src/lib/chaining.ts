@@ -1466,10 +1466,10 @@ export type ForwardingOnlyOptions = {
 
 export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
 	includeAllOutput?: boolean;
-	forwardingOnly?: boolean | ForwardingOnlyOptions;
+	forwardingOnly?: true | ForwardingOnlyOptions;
 }
 
-function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
+function normalizeForwardingOnlyOptions(forwardingOnly: true | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
 		return(undefined);
 	}
@@ -1532,30 +1532,35 @@ function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: Pe
 		return(valueIn);
 	}
 
-	let feeTotal = 0n;
+	let feeFromLineItems = 0n;
 
 	for (const lineItem of fees.lineItems) {
-		if (lineItem.purpose === 'VALUE_VARIABLE' && lineItem.basisPoints !== undefined) {
-			feeTotal += valueIn * BigInt(lineItem.basisPoints) / 10000n;
+		if ('value' in lineItem && lineItem.value !== undefined && lineItem.value !== '') {
+			feeFromLineItems += BigInt(lineItem.value);
+		} else if (lineItem.purpose === 'VALUE_VARIABLE' && lineItem.basisPoints !== undefined) {
+			feeFromLineItems += valueIn * BigInt(lineItem.basisPoints) / 10000n;
 		}
 	}
 
+	let feeTotal = feeFromLineItems;
 	if (fees.total !== undefined && fees.total !== '') {
-		const declaredTotal = BigInt(fees.total);
-		if (declaredTotal > feeTotal) {
-			feeTotal = declaredTotal;
-		}
+		feeTotal = BigInt(fees.total);
 	}
 
 	const valueOut = valueIn - feeTotal;
 	return(valueOut < 1n ? 1n : valueOut);
 }
 
+/** @internal Exported for unit tests. */
+export function estimateForwardingValueOut(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
+	return(estimateValueOutFromPersistentForwardingFees(valueIn, fees));
+}
+
 /**
  * Whether a resolved plan is anchor-to-anchor with no user intermediary steps.
  * The user may still fund the initial deposit address once.
  */
-export function isForwardingPlan(plan: AnchorChainingPlan): boolean {
+export function isForwardingPlan(plan: { plan: AnchorChainingPathComputedPlan }): boolean {
 	const steps = plan.plan.steps;
 
 	if (steps.length === 0) {
@@ -1566,7 +1571,7 @@ export function isForwardingPlan(plan: AnchorChainingPlan): boolean {
 }
 
 /** Deposit address for the first forwarding leg of a forwarding-only plan. */
-export function getForwardingDepositAddress(plan: AnchorChainingPlan): string | null {
+export function getForwardingDepositAddress(plan: { plan: AnchorChainingPathComputedPlan }): string | null {
 	const firstStep = plan.plan.steps[0];
 
 	if (!firstStep || firstStep.type !== 'forwarded') {
@@ -2603,6 +2608,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
+		if (this.#options?.forwardingOnly) {
+			throw(new Error('Forwarding-only plans cannot be executed. Use getPlans({ forwardingOnly: true }), which returns AnchorChainingForwardingOnlyPlan, and fund the deposit address externally.'));
+		}
+
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
 		}
@@ -2786,7 +2795,39 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 }
 
+/**
+ * Forwarding-only chaining plan for persistent-forwarding routes. Resolves deposit
+ * addresses and fee estimates but cannot be executed: the user funds the
+ * external deposit address directly.
+ */
+export class AnchorChainingForwardingOnlyPlan extends AnchorChainingPath {
+	readonly #plan: AnchorChainingPathComputedPlan;
+
+	private constructor(path: AnchorChainingPath, plan: AnchorChainingPathComputedPlan) {
+		super({ request: path.request, path: path.path, parent: path.parent });
+		this.#plan = plan;
+	}
+
+	get plan(): AnchorChainingPathComputedPlan {
+		return(this.#plan);
+	}
+
+	getDepositAddress(): string | null {
+		return(getForwardingDepositAddress(this));
+	}
+
+	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingForwardingOnlyPlan> {
+		const computed = await AnchorChainingPlan.create(path, { ...options, forwardingOnly: true });
+		if (!isForwardingPlan(computed)) {
+			throw(new Error('Computed plan does not qualify as a forwarding-only route'));
+		}
+
+		return(new AnchorChainingForwardingOnlyPlan(path, computed.plan));
+	}
+}
+
 type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
+type AnchorChainingFullForwardingOnlyPlanResult = (({ success: true; plan: AnchorChainingForwardingOnlyPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
 
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
@@ -2865,9 +2906,10 @@ export class AnchorChaining {
 		return(retval);
 	}
 
-	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
+	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true }): Promise<(AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { forwardingOnly: true | ForwardingOnlyOptions }): Promise<AnchorChainingForwardingOnlyPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
 		let paths = await this.getPaths(input);
 
@@ -2893,7 +2935,7 @@ export class AnchorChaining {
 		const maxAttemptLoops = 3;
 		let currentAttemptLoop = 0;
 
-		const allOutput: PromiseSettledResult<AnchorChainingPlan>[] = [];
+		const allOutput: PromiseSettledResult<AnchorChainingPlan | AnchorChainingForwardingOnlyPlan>[] = [];
 
 		while (successCount < limit && lastAttemptedPathIdx < sortedPaths.length - 1 && currentAttemptLoop < maxAttemptLoops) {
 			currentAttemptLoop++;
@@ -2909,7 +2951,12 @@ export class AnchorChaining {
 			}
 
 			const currentTry = await Promise.allSettled(pathsToTry.map(async function(path) {
-				return(await AnchorChainingPlan.create(path, toComputePlanOptions(options, forwardingOpts)));
+				const computeOptions = toComputePlanOptions(options, forwardingOpts);
+				if (forwardingOpts) {
+					return(await AnchorChainingForwardingOnlyPlan.create(path, computeOptions));
+				}
+
+				return(await AnchorChainingPlan.create(path, computeOptions));
 			}));
 
 			allOutput.push(...currentTry);
@@ -2936,7 +2983,7 @@ export class AnchorChaining {
 			lastAttemptedPathIdx += pathsToTry.length;
 		}
 
-		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
+		const ret: (AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] = [];
 
 		for (let i = 0; i < allOutput.length; i++) {
 			const path = sortedPaths[i];
@@ -2951,7 +2998,9 @@ export class AnchorChaining {
 					ret.push({ success: false, error: plan.reason, path });
 				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
 					ret.push({ success: false, error: new Error('Plan does not qualify as a forwarding-only route'), path });
-				} else {
+				} else if (plan.value instanceof AnchorChainingForwardingOnlyPlan) {
+					ret.push({ success: true, plan: plan.value, path });
+				} else if (plan.value instanceof AnchorChainingPlan) {
 					ret.push({ success: true, plan: plan.value, path });
 				}
 			} else {
