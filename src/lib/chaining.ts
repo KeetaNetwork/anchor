@@ -361,6 +361,85 @@ interface ResolveIndex {
 	railInfo: Map<string, { asset: AnchorChainingAsset; location: AssetLocationLike; inbound: Set<Rail>; outbound: Set<Rail> }>;
 }
 
+export type ForwardingAssetRef = {
+	asset: AnchorChainingAsset;
+	location: AssetLocationLike;
+};
+
+const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const forwardingAssetKeyCache: EVMChecksumCache = new Map();
+
+function forwardingAssetKey(asset: AnchorChainingAsset, location: AssetLocationLike): string {
+	return(`${convertAssetSearchInputToCanonical(asset, forwardingAssetKeyCache)}@${convertAssetLocationToString(location)}`);
+}
+
+function isCryptoChainLocation(location: AssetLocationLike): boolean {
+	return(toAssetLocation(location).type === 'chain');
+}
+
+/**
+ * Adjacency over crypto persistent-forwarding edges only - excludes FX edges and
+ * any hop that starts on Keeta.
+ */
+export function buildForwardingAdjacency(nodes: GraphNodeLike[]): Map<string, ForwardingAssetRef[]> {
+	const adjacency = new Map<string, ForwardingAssetRef[]>();
+
+	for (const node of nodes) {
+		if (node.type !== 'assetMovement') {
+			continue;
+		}
+
+		if (node.from.supportedOperations?.createPersistentForwarding !== true) {
+			continue;
+		}
+
+		if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
+			continue;
+		}
+
+		if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
+			continue;
+		}
+
+		const key = forwardingAssetKey(node.from.asset, node.from.location);
+		const list = adjacency.get(key) ?? [];
+		list.push({ asset: node.to.asset, location: node.to.location });
+		adjacency.set(key, list);
+	}
+
+	return(adjacency);
+}
+
+/** Whether `dest` is reachable from `source` over <=`maxLegs` forwarding edges. */
+export function hasForwardingRoute(
+	adjacency: Map<string, ForwardingAssetRef[]>,
+	source: ForwardingAssetRef,
+	dest: ForwardingAssetRef,
+	maxLegs: number = DEFAULT_FORWARDING_MAX_LEGS
+): boolean {
+	const destKey = forwardingAssetKey(dest.asset, dest.location);
+	let frontier = [ forwardingAssetKey(source.asset, source.location) ];
+
+	for (let depth = 0; depth < maxLegs; depth++) {
+		const next: string[] = [];
+
+		for (const key of frontier) {
+			for (const edge of adjacency.get(key) ?? []) {
+				const edgeKey = forwardingAssetKey(edge.asset, edge.location);
+				if (edgeKey === destKey) {
+					return(true);
+				}
+
+				next.push(edgeKey);
+			}
+		}
+
+		frontier = next;
+	}
+
+	return(false);
+}
+
 class AnchorGraph {
 	client: KeetaNet.UserClient;
 	resolver: Resolver;
@@ -1385,18 +1464,6 @@ export interface GetPlansOptions extends ComputePlanOptions {
 	forwardingOnly?: boolean | ForwardingOnlyOptions;
 }
 
-export type ForwardingAssetRef = {
-	asset: AnchorChainingAsset;
-	location: AssetLocationLike;
-};
-
-const DEFAULT_FORWARDING_MAX_LEGS = 2;
-const forwardingAssetKeyCache: EVMChecksumCache = new Map();
-
-function forwardingAssetKey(asset: AnchorChainingAsset, location: AssetLocationLike): string {
-	return(`${convertAssetSearchInputToCanonical(asset, forwardingAssetKeyCache)}@${convertAssetLocationToString(location)}`);
-}
-
 function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
 		return(undefined);
@@ -1410,10 +1477,6 @@ function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnly
 		maxLegs: DEFAULT_FORWARDING_MAX_LEGS,
 		...forwardingOnly
 	});
-}
-
-function isCryptoChainLocation(location: AssetLocationLike): boolean {
-	return(toAssetLocation(location).type === 'chain');
 }
 
 /**
@@ -1475,69 +1538,6 @@ export function isForwardingPlan(plan: AnchorChainingPlan): boolean {
 	}
 
 	return(true);
-}
-
-/**
- * Adjacency over crypto persistent-forwarding edges only — excludes FX edges and
- * any hop that starts on Keeta.
- */
-export function buildForwardingAdjacency(nodes: GraphNodeLike[]): Map<string, ForwardingAssetRef[]> {
-	const adjacency = new Map<string, ForwardingAssetRef[]>();
-
-	for (const node of nodes) {
-		if (node.type !== 'assetMovement') {
-			continue;
-		}
-
-		if (node.from.supportedOperations?.createPersistentForwarding !== true) {
-			continue;
-		}
-
-		if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
-			continue;
-		}
-
-		if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
-			continue;
-		}
-
-		const key = forwardingAssetKey(node.from.asset, node.from.location);
-		const list = adjacency.get(key) ?? [];
-		list.push({ asset: node.to.asset, location: node.to.location });
-		adjacency.set(key, list);
-	}
-
-	return(adjacency);
-}
-
-/** Whether `dest` is reachable from `source` over ≤`maxLegs` forwarding edges. */
-export function hasForwardingRoute(
-	adjacency: Map<string, ForwardingAssetRef[]>,
-	source: ForwardingAssetRef,
-	dest: ForwardingAssetRef,
-	maxLegs: number = DEFAULT_FORWARDING_MAX_LEGS
-): boolean {
-	const destKey = forwardingAssetKey(dest.asset, dest.location);
-	let frontier = [ forwardingAssetKey(source.asset, source.location) ];
-
-	for (let depth = 0; depth < maxLegs; depth++) {
-		const next: string[] = [];
-
-		for (const key of frontier) {
-			for (const edge of adjacency.get(key) ?? []) {
-				const edgeKey = forwardingAssetKey(edge.asset, edge.location);
-				if (edgeKey === destKey) {
-					return(true);
-				}
-
-				next.push(edgeKey);
-			}
-		}
-
-		frontier = next;
-	}
-
-	return(false);
 }
 
 /** Deposit address for the first forwarding leg of a forwarding-only plan. */
