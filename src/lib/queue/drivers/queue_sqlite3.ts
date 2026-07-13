@@ -15,7 +15,8 @@ import type {
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	RequireCompletedRetentionMs
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -51,7 +52,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	private readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionMs: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
@@ -474,10 +475,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
 		return(await this.dbTransaction('deleteExpiredCompleted', async (db, logger): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> => {
-			const retentionMs = this.completedRetentionMs;
-			if (retentionMs === undefined) {
-				return({ deleted: 0, hasMore: false });
-			}
+			const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
 
 			const cutoffMs = Date.now() - retentionMs;
 			const limit = options?.limit ?? KeetaAnchorQueueStorageDriverSQLite3.defaultDeleteExpiredCompletedLimit;

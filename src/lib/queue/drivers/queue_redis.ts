@@ -15,7 +15,8 @@ import type {
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	RequireCompletedRetentionMs
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -46,7 +47,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	private readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionMs: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	private static readonly defaultDeleteExpiredCompletedLimit = 1000;
@@ -422,10 +423,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		const redis = await this.getRedis();
 		const logger = this.methodLogger('deleteExpiredCompleted');
 
-		const retentionMs = this.completedRetentionMs;
-		if (retentionMs === undefined) {
-			return({ deleted: 0, hasMore: false });
-		}
+		const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
 
 		const cutoffMs = Date.now() - retentionMs;
 		const limit = options?.limit ?? KeetaAnchorQueueStorageDriverRedis.defaultDeleteExpiredCompletedLimit;

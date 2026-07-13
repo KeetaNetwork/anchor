@@ -92,3 +92,11 @@ export function ConvertStringToRequestID(input: string | KeetaAnchorQueueRequest
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(input as KeetaAnchorQueueRequestID);
 }
+
+export function RequireCompletedRetentionMs(completedRetentionMs: number | undefined): number {
+	if (completedRetentionMs === undefined) {
+		throw(new Errors.CompletedRetentionNotConfiguredError());
+	}
+
+	return(completedRetentionMs);
+}

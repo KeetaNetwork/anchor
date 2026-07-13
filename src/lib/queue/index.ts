@@ -9,7 +9,8 @@ import { Errors } from './common.js';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	RequireCompletedRetentionMs
 } from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
@@ -102,7 +103,7 @@ export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
 	path?: string[] | undefined;
 	/**
 	 * How long completed entries are kept before {@link KeetaAnchorQueueStorageDriver.deleteExpiredCompleted}
-	 * may remove them. When unset, that method is a no-op.
+	 * may remove them. Required for that method.
 	 */
 	completedRetentionMs?: number | undefined;
 };
@@ -150,6 +151,11 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	 * a hierarchical partition name.
 	 */
 	readonly path: string[];
+
+	/**
+	 * Retention period for completed entries, if configured on this queue partition.
+	 */
+	readonly completedRetentionMs?: number | undefined;
 
 	/**
 	 * Enqueue an item to be processed by the queue
@@ -238,7 +244,7 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	readonly name: string = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
 	readonly path: string[] = [];
-	protected readonly completedRetentionMs: number | undefined;
+	readonly completedRetentionMs: number | undefined;
 
 	constructor(options?: KeetaAnchorQueueStorageOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
@@ -427,10 +433,7 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		this.checkDestroyed();
 
 		const logger = this.methodLogger('deleteExpiredCompleted');
-		const retentionMs = this.completedRetentionMs;
-		if (retentionMs === undefined) {
-			return({ deleted: 0, hasMore: false });
-		}
+		const retentionMs = RequireCompletedRetentionMs(this.completedRetentionMs);
 
 		const cutoff = new Date(Date.now() - retentionMs);
 		const limit = options?.limit ?? defaultDeleteExpiredCompletedLimit;
@@ -578,6 +581,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			}))
 		) & AdditionalPipeOptions
 	)[] = [];
+
+	/**
+	 * Runners that pipe into this runner
+	 */
+	private incomingPipeCount = 0;
 
 	/**
 	 * Initialization promise
@@ -1483,13 +1491,28 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	async deleteExpiredCompleted(options?: KeetaAnchorQueueDeleteExpiredCompletedOptions): Promise<KeetaAnchorQueueDeleteExpiredCompletedResult> {
+		this.assertCompletedRetentionQueueNotPiped();
 		return(await this.queue.deleteExpiredCompleted(options));
+	}
+
+	private assertCompletedRetentionQueueNotPiped(): void {
+		if (this.queue.completedRetentionMs === undefined) {
+			return;
+		}
+
+		if (this.pipes.length > 0 || this.incomingPipeCount > 0) {
+			throw(new Errors.CompletedRetentionPipingError('Queues with completedRetentionMs configured cannot delete expired completed entries while piped to or from another queue'));
+		}
 	}
 
 	/**
 	 * Pipe the the completed entries of this runner to another runner
 	 */
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
+		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+			throw(new Errors.CompletedRetentionPipingError());
+		}
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: false,
@@ -1500,6 +1523,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
+		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+			throw(new Errors.CompletedRetentionPipingError());
+		}
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: false,
@@ -1513,6 +1540,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
 	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
+		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+			throw(new Errors.CompletedRetentionPipingError());
+		}
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: true,
@@ -1525,6 +1556,10 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
+		if (this.queue.completedRetentionMs !== undefined || target.queue.completedRetentionMs !== undefined) {
+			throw(new Errors.CompletedRetentionPipingError());
+		}
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: true,

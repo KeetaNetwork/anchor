@@ -1205,6 +1205,45 @@ test('Pipeline Basic Tests', async function() {
 	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
+test('completed retention queues cannot be piped', async function() {
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(
+		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>,
+		processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorQueueStatus; output: OUTPUT; }>
+	) {
+		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
+			queue: queue,
+			processor: processor
+		}));
+	}
+
+	const retentionQueue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'retention-pipe-test',
+		completedRetentionMs: 60_000
+	});
+	const normalQueue = new KeetaAnchorQueueStorageDriverMemory({ id: 'normal-pipe-test' });
+
+	const retentionSource = createStage<{ key: string; }, string>(retentionQueue, async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+	const retentionTarget = createStage<string, string>(await retentionQueue.partition('retained'), async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+	const normalSource = createStage<string, string>(normalQueue, async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+	const normalTarget = createStage<string, string>(await normalQueue.partition('stage2'), async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+
+	expect(function() {
+		retentionSource.pipe(normalTarget);
+	}).toThrow(Errors.CompletedRetentionPipingError);
+
+	expect(function() {
+		normalSource.pipe(retentionTarget);
+	}).toThrow(Errors.CompletedRetentionPipingError);
+});
+
 test('Errors', async function() {
 	const id1 = generateRequestID();
 	const id2 = generateRequestID();
@@ -1223,6 +1262,23 @@ test('Errors', async function() {
 		expect(error.retryable).toBe(true);
 		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(true);
 		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
+	}
+
+	{
+		const error = new Errors.CompletedRetentionNotConfiguredError('Test completed retention not configured error');
+		expect(error.message).toBe('Test completed retention not configured error');
+		expect(error.retryable).toBe(false);
+		expect(Errors.CompletedRetentionNotConfiguredError.isInstance(error)).toBe(true);
+		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
+		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(false);
+	}
+
+	{
+		const error = new Errors.CompletedRetentionPipingError('Test completed retention piping error');
+		expect(error.message).toBe('Test completed retention piping error');
+		expect(error.retryable).toBe(false);
+		expect(Errors.CompletedRetentionPipingError.isInstance(error)).toBe(true);
+		expect(Errors.CompletedRetentionNotConfiguredError.isInstance(error)).toBe(false);
 	}
 });
 
@@ -1537,8 +1593,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(await localQueue.get(pendingID)).not.toBeNull();
 
 					await using noRetentionQueueInfo = await driverConfig.create('delete-expired-no-retention');
-					result = await noRetentionQueueInfo.queue.deleteExpiredCompleted();
-					expect(result.deleted).toBe(0);
+					await expect(noRetentionQueueInfo.queue.deleteExpiredCompleted()).rejects.toThrow(Errors.CompletedRetentionNotConfiguredError);
 				}, 30_000);
 
 				/* Test that mutating the entry results does not affect the stored entry */
