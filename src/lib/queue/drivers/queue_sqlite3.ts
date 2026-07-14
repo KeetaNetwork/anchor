@@ -133,7 +133,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		let lastError: unknown;
 		for (let retry = 0; retry < 100; retry++) {
 			if (this.dbInternal === null) {
-				this.methodLogger('runWithBusyHandler')?.debug('Aborting DB operation retries because the instance was destroyed');
+				logger?.debug('Aborting DB operation retries because the instance was destroyed');
 
 				if (lastError !== undefined) {
 					/*
@@ -160,7 +160,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 						const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
 						const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
 
-						this.methodLogger('runWithBusyHandler')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) (interval size: ${backoffIntervalSize}ms, min: ${minBackoff}ms, max: ${maxBackoff}ms) from`, new Error().stack);
+						logger?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) (interval size: ${backoffIntervalSize}ms, min: ${minBackoff}ms, max: ${maxBackoff}ms) from`, new Error().stack);
 						await asleep(backoff);
 
 						continue;
@@ -198,7 +198,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		})());
 	}
 
-	private async dbTransaction<T>(className: string, fn: (db: sqlite.Database, logger: Logger | undefined) => Promise<T>): Promise<T> {
+	private async dbTransaction<T>(className: string, fn: (db: sqlite.Database) => Promise<T>): Promise<T> {
 		await using dbConnection = await this.newDBConnection();
 		const db = dbConnection.db;
 		const logger = this.methodLogger(className);
@@ -209,7 +209,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			logger?.debug('DB transaction started');
 
 			try {
-				const retval = await fn(db, logger);
+				const retval = await fn(db);
 
 				logger?.debug('Committing DB transaction');
 				await db.run('COMMIT');
@@ -233,7 +233,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
-		return(await this.dbTransaction('add', async (db, logger): Promise<KeetaAnchorQueueRequestID> => {
+		return(await this.dbTransaction('add', async (db): Promise<KeetaAnchorQueueRequestID> => {
+			const logger = this.methodLogger('add');
 			let entryID = ConvertStringToRequestID(info?.id);
 			if (entryID) {
 				const existingEntry = await db.get<{ id: string }>('SELECT id FROM queue_entries WHERE id = ? AND path = ?', entryID, this.pathStr);
@@ -299,7 +300,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	}
 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
-		return(await this.dbTransaction('setStatus', async (db, logger): Promise<void> => {
+		return(await this.dbTransaction('setStatus', async (db): Promise<void> => {
+			const logger = this.methodLogger('setStatus');
 			const existingEntry = await db.get<{ status: KeetaAnchorQueueStatus; failures: number; lastError: string | null; output: string | null }>('SELECT status, failures, lastError, output FROM queue_entries WHERE id = ? AND path = ?', id, this.pathStr);
 			if (!existingEntry) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
@@ -400,7 +402,8 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	}
 
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
-		return(await this.dbTransaction('query', async (db, logger): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+		return(await this.dbTransaction('query', async (db): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+			const logger = this.methodLogger('query');
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 			const conditions: string[] = [];
@@ -474,38 +477,33 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			return;
 		}
 
-		await this.dbTransaction('delete', async (db, logger): Promise<void> => {
-			const valuePlaceholders = input.map(function() {
-				return('(?, ?)');
-			}).join(', ');
-			const params: (string)[] = [this.pathStr];
-			for (const entry of input) {
-				params.push(String(entry.id), entry.status);
-			}
+		await this.dbTransaction('delete', async (db): Promise<void> => {
+			const logger = this.methodLogger('delete');
+			const matchConditions = input.map(function() {
+				return('(id = ? AND status = ?)');
+			}).join(' OR ');
+			const matchParams = input.flatMap(function(entry) {
+				return([String(entry.id), entry.status]);
+			});
 
 			await db.run(
 				`DELETE FROM queue_idempotent_keys
 				 WHERE path = ?
 				   AND entry_id IN (
-					SELECT e.id FROM queue_entries e
-					INNER JOIN (VALUES ${valuePlaceholders}) AS t(id, status) ON e.id = t.id AND e.status = t.status
-					WHERE e.path = ?
+					SELECT id FROM queue_entries
+					WHERE path = ? AND (${matchConditions})
 				   )`,
-				...params,
-				this.pathStr
+				this.pathStr,
+				this.pathStr,
+				...matchParams
 			);
 
 			const result = await db.run(
 				`DELETE FROM queue_entries
 				 WHERE path = ?
-				   AND EXISTS (
-					SELECT 1 FROM (VALUES ${valuePlaceholders}) AS t(id, status)
-					WHERE queue_entries.id = t.id AND queue_entries.status = t.status
-				   )`,
+				   AND (${matchConditions})`,
 				this.pathStr,
-				...input.flatMap(function(entry) {
-					return([String(entry.id), entry.status]);
-				})
+				...matchParams
 			);
 
 			const deleted = result.changes ?? 0;

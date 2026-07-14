@@ -62,12 +62,15 @@ export async function deleteExpiredCompletedFromStorageDriver<QueueRequest exten
 		throw(new Errors.CompletedRetentionNotConfiguredError());
 	}
 
-	const cutoff = new Date(Date.now() - queue.completedRetentionDays * 86_400_000);
-	const entries = await queue.query({
+	const filter: KeetaAnchorQueueFilter = {
 		status: 'completed',
-		updatedBefore: cutoff,
 		limit: defaultDeleteExpiredCompletedLimit
-	});
+	};
+	if (queue.completedRetentionDays > 0) {
+		filter.updatedBefore = new Date(Date.now() - queue.completedRetentionDays * 86_400_000);
+	}
+
+	const entries = await queue.query(filter);
 
 	if (entries.length === 0) {
 		return;

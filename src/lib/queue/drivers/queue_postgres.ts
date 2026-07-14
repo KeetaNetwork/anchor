@@ -252,7 +252,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		let lastError: unknown;
 		for (let retry = 0; retry < 16; retry++) {
 			if (this.poolInternal === null) {
-				this.methodLogger('runWithRetry')?.debug('Aborting DB operation retries because the instance was destroyed');
+				logger?.debug('Aborting DB operation retries because the instance was destroyed');
 
 				if (lastError !== undefined) {
 					// eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -284,7 +284,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
 					const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
 
-					this.methodLogger('runWithRetry')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
+					logger?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
 					await asleep(backoff);
 
 					continue;
@@ -313,7 +313,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
-	private async dbTransaction<T>(className: string, fn: (client: pg.PoolClient, logger: Logger | undefined) => Promise<T>): Promise<T> {
+	private async dbTransaction<T>(className: string, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
 		const pool = await this.newDBConnection();
 		const logger = this.methodLogger(className);
 
@@ -331,7 +331,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					await client.query('SET LOCAL enable_seqscan TO off');
 				}
 
-				const retval = await fn(client, logger);
+				const retval = await fn(client);
 
 				logger?.debug('Committing DB transaction');
 				await client.query('COMMIT');
@@ -356,7 +356,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
-		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
+		return(await this.dbTransaction('add', async (client): Promise<KeetaAnchorQueueRequestID> => {
+			const logger = this.methodLogger('add');
 			let entryID = ConvertStringToRequestID(info?.id);
 			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
@@ -417,7 +418,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
 		const { oldStatus } = ancillary ?? {};
 
-		return(await this.dbTransaction('setStatus', async (client, logger): Promise<void> => {
+		return(await this.dbTransaction('setStatus', async (client): Promise<void> => {
+			const logger = this.methodLogger('setStatus');
 			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>(`SELECT status, failures, last_error, output FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2 FOR UPDATE`, [id, this.pathStr]);
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
@@ -518,7 +520,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
-		return(await this.dbTransaction('query', async (client, logger): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+		return(await this.dbTransaction('query', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+			const logger = this.methodLogger('query');
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 			const conditions: string[] = [];
@@ -597,7 +600,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			return;
 		}
 
-		await this.dbTransaction('delete', async (client, logger): Promise<void> => {
+		await this.dbTransaction('delete', async (client): Promise<void> => {
+			const logger = this.methodLogger('delete');
 			const ids = input.map(function(entry) {
 				return(String(entry.id));
 			});
