@@ -8,12 +8,17 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueScanFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	DecodeQueuePathRelative,
+	EncodeQueuePath,
+	QUEUE_PATH_SEPARATOR,
+	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -56,7 +61,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		this.logger = options?.logger;
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = EncodeQueuePath(this.path);
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -104,6 +109,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 
 				CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
 				CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated);
+				CREATE INDEX IF NOT EXISTS idx_queue_entries_status_path ON queue_entries(status, path);
 				CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id);
 			`);
 
@@ -466,7 +472,52 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		}));
 	}
 
+	async scanActivePaths(statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter): Promise<string[][]> {
+		if (statuses.length === 0) {
+			return([]);
+		}
+
+		return(await this.dbTransaction('scanActivePaths', async (db, logger) => {
+			logger?.debug('Scanning for active partition paths under', this.pathStr, 'with statuses', statuses, 'and filter', filter);
+
+			/*
+			 * substr() prefix matching instead of LIKE: SQLite's LIKE is
+			 * ASCII case-insensitive and would need wildcard escaping
+			 */
+			const prefix = `${this.pathStr}${QUEUE_PATH_SEPARATOR}`;
+			const statusPlaceholders = statuses.map(function() {
+				return('?');
+			}).join(', ');
+
+			const conditions = [
+				`status IN (${statusPlaceholders})`,
+				'(path = ? OR substr(path, 1, ?) = ?)'
+			];
+
+			const params: (string | number)[] = [...statuses, this.pathStr, prefix.length, prefix];
+			if (filter?.updatedBefore) {
+				conditions.push('updated < ?');
+				params.push(filter.updatedBefore.getTime());
+			}
+			if (filter?.updatedAfter) {
+				conditions.push('updated >= ?');
+				params.push(filter.updatedAfter.getTime());
+			}
+
+			const rows = await db.all<{ path: string }[]>(
+				`SELECT DISTINCT path FROM queue_entries WHERE ${conditions.join(' AND ')}`,
+				...params
+			);
+
+			return(rows.map((row) => {
+				return(DecodeQueuePathRelative(row.path, this.path));
+			}));
+		}));
+	}
+
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+		ValidateQueuePartitionSegment(path);
+
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.dbInternal === null) {

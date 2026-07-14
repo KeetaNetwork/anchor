@@ -10,12 +10,17 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueScanFilter,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	DecodeQueuePathRelative,
+	EncodeQueuePath,
+	QUEUE_PATH_SEPARATOR,
+	ValidateQueuePartitionSegment
 } from '../internal.js';
 import { Errors } from '../common.js';
 
@@ -25,6 +30,13 @@ import type { Logger } from '../../log/index.ts';
 import type { JSONSerializable } from '../../utils/json.js';
 
 import type * as pg from 'pg';
+
+/**
+ * Characters with special meaning inside a SQL LIKE pattern (PostgreSQL 17
+ * docs section 9.7.1): `%` and `_` are wildcards and `\` is the default
+ * escape character.
+ */
+const LIKE_META_CHARACTER_PATTERN = /[\\%_]/g;
 
 type QueueEntryRow = {
 	id: string;
@@ -79,7 +91,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = EncodeQueuePath(this.path);
+
 		Object.freeze(this.path);
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
@@ -201,6 +214,29 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (2, $1)`, [Date.now()]);
 							await client.query('COMMIT');
 							logger?.debug('Applied schema version 2');
+						} catch (error) {
+							await client.query('ROLLBACK');
+							throw(error);
+						}
+					}
+
+					/*
+					 * Version 3: status-leading composite index.
+					 *
+					 * scanActivePaths filters on status across all paths, so
+					 * the path-leading version-2 indexes cannot serve it as a
+					 * range scan.
+					 */
+					if (currentVersion < 3) {
+						logger?.debug('Applying schema version 3: Status-leading composite index');
+
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
+						try {
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_status_path ON ${this.tableNameEntries}(status, path)`);
+
+							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (3, $1)`, [Date.now()]);
+							await client.query('COMMIT');
+							logger?.debug('Applied schema version 3');
 						} catch (error) {
 							await client.query('ROLLBACK');
 							throw(error);
@@ -589,7 +625,41 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
+	async scanActivePaths(statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter): Promise<string[][]> {
+		if (statuses.length === 0) {
+			return([]);
+		}
+
+		return(await this.dbTransaction('scanActivePaths', async (client, logger) => {
+			logger?.debug('Scanning for active partition paths under', this.pathStr, 'with statuses', statuses, 'and filter', filter);
+
+			const escapedPrefix = this.pathStr.replace(LIKE_META_CHARACTER_PATTERN, '\\$&');
+			const prefixLike = `${escapedPrefix}${QUEUE_PATH_SEPARATOR}%`;
+
+			const conditions = ['status = ANY($1::text[])', '(path = $2 OR path LIKE $3)'];
+			const params: (KeetaAnchorQueueStatus[] | string | number)[] = [statuses, this.pathStr, prefixLike];
+			let paramIndex = params.length + 1;
+			if (filter?.updatedBefore) {
+				conditions.push(`updated < $${paramIndex++}`);
+				params.push(filter.updatedBefore.getTime());
+			}
+			if (filter?.updatedAfter) {
+				conditions.push(`updated >= $${paramIndex++}`);
+				params.push(filter.updatedAfter.getTime());
+			}
+
+			const rows = await client.query<{ path: string }>(`
+				SELECT DISTINCT path FROM ${this.tableNameEntries}
+				WHERE ${conditions.join(' AND ')}`, params);
+
+			return(rows.rows.map((row) => {
+				return(DecodeQueuePathRelative(row.path, this.path));
+			}));
+		}));
+	}
+
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
+		ValidateQueuePartitionSegment(path);
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
 		if (this.poolInternal === null) {

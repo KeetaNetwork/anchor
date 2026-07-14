@@ -9,7 +9,11 @@ import { Errors } from './common.js';
 import {
 	MethodLogger,
 	ManageStatusUpdates,
-	ConvertStringToRequestID
+	ConvertStringToRequestID,
+	DecodeQueuePathRelative,
+	EncodeQueuePath,
+	IsEncodedQueuePathWithin,
+	ValidateQueuePartitionSegment
 } from './internal.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 
@@ -51,6 +55,17 @@ export type KeetaAnchorQueueEntry<QueueRequest, QueueResult> = {
  */
 export type KeetaAnchorQueueEntryExtra = {
 	[key in 'idempotentKeys' | 'id' | 'status']?: (key extends 'id' ? KeetaAnchorQueueRequestID | string : KeetaAnchorQueueEntry<never, never>[key]) | undefined;
+};
+
+export type KeetaAnchorQueueScanFilter = {
+	/**
+	 * Only consider entries last updated before this date
+	 */
+	updatedBefore?: Date;
+	/**
+	 * Only consider entries last updated at or after this date
+	 */
+	updatedAfter?: Date;
 };
 
 export type KeetaAnchorQueueFilter = {
@@ -176,6 +191,24 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
 
 	/**
+	 * Return the distinct partition paths at or below this driver's path that
+	 * hold at least one entry whose status is in `statuses` and, when a filter
+	 * is given, whose `updated` timestamp falls inside the filter bounds.
+	 *
+	 * This lets a multiplexing scheduler poll only the partitions with
+	 * actionable work in a single backend round-trip, instead of polling
+	 * every partition individually.
+	 *
+	 * Optional: drivers that do not implement it cannot back a multiplexing
+	 * scheduler.
+	 *
+	 * @param statuses The statuses that mark a partition as active
+	 * @param filter Optional bounds on the entries' `updated` timestamp
+	 * @returns The distinct active partition paths, relative to this driver
+	 */
+	scanActivePaths?: (statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter) => Promise<string[][]>;
+
+	/**
 	 * Perform maintenance tasks on the storage driver
 	 * (e.g. cleaning up old entries, etc)
 	 *
@@ -238,11 +271,12 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	}
 
 	protected get queue(): KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] {
-		const pathKey = ['root', ...this.path].join('.');
+		const pathKey = EncodeQueuePath(this.path);
 		let retval = this.queueStorage[pathKey];
 		if (retval === undefined) {
 			retval = this.queueStorage[pathKey] = [];
 		}
+
 		return(retval);
 	}
 
@@ -397,8 +431,49 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		return(retval);
 	}
 
+	async scanActivePaths(statuses: KeetaAnchorQueueStatus[], filter?: KeetaAnchorQueueScanFilter): Promise<string[][]> {
+		this.checkDestroyed();
+
+		if (statuses.length === 0) {
+			return([]);
+		}
+
+		const wanted = new Set(statuses);
+		const updatedBefore = filter?.updatedBefore;
+		const updatedAfter = filter?.updatedAfter;
+		const active: string[][] = [];
+		for (const [ pathKey, entries ] of Object.entries(this.queueStorage)) {
+			if (!IsEncodedQueuePathWithin(pathKey, this.path)) {
+				continue;
+			}
+
+			const hasActive = entries.some(function(entry) {
+				if (!wanted.has(entry.status)) {
+					return(false);
+				}
+				if (updatedBefore && entry.updated >= updatedBefore) {
+					return(false);
+				}
+				if (updatedAfter && entry.updated < updatedAfter) {
+					return(false);
+				}
+
+				return(true);
+			});
+			if (!hasActive) {
+				continue;
+			}
+
+			active.push(DecodeQueuePathRelative(pathKey, this.path));
+		}
+
+		return(active);
+	}
+
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.checkDestroyed();
+
+		ValidateQueuePartitionSegment(path);
 
 		const logger = this.methodLogger('partition');
 
@@ -1150,6 +1225,20 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 	}
 
+	/**
+	 * Re-arm a pipeable entry whose move to the next stage failed by bumping
+	 * its `updated` timestamp without changing its status or failure count.
+	 */
+	private async refreshFailedMoveTimestamp(id: KeetaAnchorQueueRequestID, statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
+		const logger = this.methodLogger('refreshFailedMoveTimestamp');
+
+		try {
+			await this.queue.setStatus(id, statusTarget, { oldStatus: statusTarget, by: this.workerID });
+		} catch (error: unknown) {
+			logger?.debug(`Failed to refresh timestamp for ${statusTarget} request with id ${String(id)} after a failed move:`, error);
+		}
+	}
+
 	private async moveCompletedToNextStage(statusTarget: KeetaAnchorPipeableQueueStatus): Promise<void> {
 		const logger = this.methodLogger('moveCompletedToNextStage');
 
@@ -1296,6 +1385,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 								iterationTargetSeenRequestIDs.add(requestID);
 								allTargetSeenRequestIDs.add(requestID);
 							}
+
+							/*
+							 * The conflict rejected the whole batch, so the
+							 * non-conflicting members were not added either.
+							 */
+							for (const requestID of batchLocalIDs) {
+								if (error.idempotentIDsFound.has(requestID)) {
+									continue;
+								}
+
+								await this.refreshFailedMoveTimestamp(requestID, statusTarget);
+							}
 						} else {
 							/*
 							 * If we got some kind of other error adding these
@@ -1306,6 +1407,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 							for (const requestID of batchLocalIDs) {
 								skipRequestIDs.add(requestID);
+								await this.refreshFailedMoveTimestamp(requestID, statusTarget);
 							}
 
 						}
@@ -1343,6 +1445,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					} catch (error: unknown) {
 						logger?.error(`Failed to move completed request with id ${String(request.id)} to next stage:`, error);
 						shouldMarkAsMoved = false;
+						await this.refreshFailedMoveTimestamp(request.id, statusTarget);
 					}
 					if (shouldMarkAsMoved) {
 						IncrRequestSentToPipes(request.id);

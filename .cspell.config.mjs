@@ -89,6 +89,7 @@ export default {
 		'Retryable',
 		'retval',
 		'satoshis',
+		'schedulable',
 		'secp',
 		'SEPA',
 		'singleworker',
@@ -151,7 +152,8 @@ export default {
 			filename: 'src/lib/queue/**/*.ts',
 			words: [
 				'dequeue',
-				'enqueue'
+				'enqueue',
+				'zset'
 			]
 		},
 		{

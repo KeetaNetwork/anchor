@@ -112,6 +112,7 @@ function getTestingFirestoreConfig(): { host: string; port: number; } | null {
 const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
+		scanActivePaths: boolean;
 		skip: boolean | (() => Promise<boolean>);
 		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; }) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
@@ -121,6 +122,7 @@ const drivers: {
 } = {
 	'Memory': {
 		persistent: false,
+		scanActivePaths: true,
 		skip: false,
 		create: async function(key: string) {
 			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
@@ -134,6 +136,7 @@ const drivers: {
 	},
 	'File': {
 		persistent: true,
+		scanActivePaths: true,
 		skip: false,
 		create: async function(key: string, options = { leave: false }) {
 			const filePath = path.join(os.tmpdir(), `anchor-queue-tests-${RunKey}-${key}.file.json`);
@@ -160,6 +163,7 @@ const drivers: {
 	},
 	'SQLite3': {
 		persistent: true,
+		scanActivePaths: true,
 		skip: false,
 		create: async function(key: string, options = { leave: false }) {
 			const filePath = path.join(os.tmpdir(), `anchor-queue-tests-${RunKey}-${key}.sqlite3.db`);
@@ -194,6 +198,7 @@ const drivers: {
 	},
 	'Redis': {
 		persistent: true,
+		scanActivePaths: true,
 		skip: async function() {
 			return(getTestingRedisConfig() === null);
 		},
@@ -248,6 +253,7 @@ const drivers: {
 	},
 	'PostgreSQL': {
 		persistent: true,
+		scanActivePaths: true,
 		skip: async function() {
 			return(getTestingPostgresConfig() === null);
 		},
@@ -351,6 +357,7 @@ const drivers: {
 	},
 	'Firestore': {
 		persistent: true,
+		scanActivePaths: false,
 		skip: async function() {
 			return(getTestingFirestoreConfig() === null);
 		},
@@ -1876,7 +1883,132 @@ suite.sequential('Driver Tests', async function() {
 						expect(entry1_partition?.request).toEqual({ key: 'partition_test_1_again' });
 					}
 				});
+
+				/* Test that partition segments containing the path separator are rejected */
+				testRunner('Partition Segment Validation', async function() {
+					await expect(queue.partition('invalid.segment')).rejects.toThrow('may not contain');
+
+					await using validPartition = await queue.partition('valid-segment');
+					await expect(validPartition.partition('nested.invalid')).rejects.toThrow('may not contain');
+				});
 			});
+
+			if (driverConfig.scanActivePaths) {
+				suite('Scan Active Paths', function(): void {
+					/**
+					 * Get the driver's scanActivePaths method, which the
+					 * driver config asserts is implemented
+					 */
+					function getScan(scanQueue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>): NonNullable<KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>['scanActivePaths']> {
+						const scan = scanQueue.scanActivePaths?.bind(scanQueue);
+						if (scan === undefined) {
+							throw(new Error(`internal error: driver '${driver}' is expected to implement scanActivePaths`));
+						}
+						return(scan);
+					}
+
+					/**
+					 * Sort relative paths into a deterministic order for comparison
+					 */
+					function sortPaths(paths: string[][]): string[][] {
+						return([...paths].sort(function(a, b) {
+							return(a.join('\u0000').localeCompare(b.join('\u0000')));
+						}));
+					}
+
+					testRunner('Active Partitions Only', async function() {
+						await using driverInstance = await driverConfig.create('scan_active');
+						const localQueue = driverInstance.queue;
+						const scan = getScan(localQueue);
+
+						await using stageA = await localQueue.partition('saga-one:deposit');
+						await using stageB = await localQueue.partition('saga-one:withdraw');
+						await using stageC = await localQueue.partition('saga-two:deposit');
+						await using nested = await stageA.partition('inner');
+
+						await localQueue.add({ v: 0 });
+						await stageA.add({ v: 1 });
+						await stageB.add({ v: 2 }, { status: 'failed_temporarily' });
+						await stageC.add({ v: 3 }, { status: 'completed' });
+						await nested.add({ v: 4 });
+
+						const active = await scan(['pending', 'failed_temporarily', 'stuck', 'aborted']);
+						expect(sortPaths(active), 'active paths are relative and exclude quiescent partitions').toEqual(sortPaths([
+							[],
+							['saga-one:deposit'],
+							['saga-one:deposit', 'inner'],
+							['saga-one:withdraw']
+						]));
+
+						/* A partitioned driver reports only its own subtree, relative to itself */
+						const scanFromStageA = getScan(stageA);
+						const scopedToStageA = await scanFromStageA(['pending']);
+						expect(sortPaths(scopedToStageA), 'a partitioned driver reports its own subtree relative to itself').toEqual(sortPaths([
+							[],
+							['inner']
+						]));
+
+						/* An empty status list matches nothing */
+						const noStatuses = await scan([]);
+						expect(noStatuses, 'an empty status list matches nothing').toEqual([]);
+					});
+
+					testRunner('Prefix Wildcard Escaping', async function() {
+						await using driverInstance = await driverConfig.create('scan_meta');
+						const localQueue = driverInstance.queue;
+
+						await using underscoreName = await localQueue.partition('p_a');
+						await using underscoreDecoy = await localQueue.partition('pxa');
+						await using percentName = await localQueue.partition('q%');
+						await using percentDecoy = await localQueue.partition('qqq');
+
+						await using underscoreChild = await underscoreName.partition('child');
+						await using underscoreDecoyChild = await underscoreDecoy.partition('child');
+						await using percentChild = await percentName.partition('child');
+						await using percentDecoyChild = await percentDecoy.partition('child');
+
+						await underscoreChild.add({ v: 1 });
+						await underscoreDecoyChild.add({ v: 2 });
+						await percentChild.add({ v: 3 });
+						await percentDecoyChild.add({ v: 4 });
+
+						const underscoreScan = getScan(underscoreName);
+						const underscoreActive = await underscoreScan(['pending']);
+						expect(underscoreActive, 'a "_" in the prefix does not match other partitions').toEqual([['child']]);
+
+						const percentScan = getScan(percentName);
+						const percentActive = await percentScan(['pending']);
+						expect(percentActive, 'a "%" in the prefix does not match other partitions').toEqual([['child']]);
+					});
+
+					testRunner('Time Filters', async function() {
+						await using driverInstance = await driverConfig.create('scan_time');
+						const localQueue = driverInstance.queue;
+						const scan = getScan(localQueue);
+
+						await using partition = await localQueue.partition('part');
+						await partition.add({ v: 1 });
+
+						const future = new Date(Date.now() + 100_000);
+						const past = new Date(Date.now() - 100_000);
+
+						const beforeFuture = await scan(['pending'], { updatedBefore: future });
+						expect(beforeFuture, 'updatedBefore in the future includes a fresh entry').toEqual([['part']]);
+
+						const beforePast = await scan(['pending'], { updatedBefore: past });
+						expect(beforePast, 'updatedBefore in the past excludes a fresh entry').toEqual([]);
+
+						const afterPast = await scan(['pending'], { updatedAfter: past });
+						expect(afterPast, 'updatedAfter in the past includes a fresh entry').toEqual([['part']]);
+
+						const afterFuture = await scan(['pending'], { updatedAfter: future });
+						expect(afterFuture, 'updatedAfter in the future excludes a fresh entry').toEqual([]);
+
+						const bothBounds = await scan(['pending'], { updatedAfter: past, updatedBefore: future });
+						expect(bothBounds, 'an entry inside both bounds is included').toEqual([['part']]);
+					});
+				});
+			}
 
 			if (driverConfig.persistent) {
 				testRunner('Persistence Tests', async function() {
@@ -2230,5 +2362,201 @@ suite.sequential('Driver Tests', async function() {
 				}
 			}
 		});
+	}
+});
+
+test('Failed pipe moves refresh the entry timestamp for sweep retry', async function() {
+	await using cleanup = new AsyncDisposableStack();
+
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using root = new KeetaAnchorQueueStorageDriverMemory({ id: 'move-refresh', logger: logger });
+
+	/*
+	 * A single pipe whose target is destroyed: the move fails, so the entry
+	 * must keep its status and failure count but get a fresh `updated`
+	 * timestamp so a time-bounded sweep keeps retrying it
+	 */
+	{
+		await using sourceQueue = await root.partition('single-source');
+		const targetQueue = await root.partition('single-target');
+
+		await using targetRunner = new KeetaAnchorQueueRunnerJSONConfigProc<string, null>({
+			id: 'move-refresh-single-target',
+			queue: targetQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: null });
+			}
+		});
+		await using sourceRunner = new KeetaAnchorQueueRunnerJSONConfigProc<JSONSerializable, string>({
+			id: 'move-refresh-single-source',
+			queue: sourceQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: 'out' });
+			}
+		});
+
+		sourceRunner.pipe(targetRunner);
+
+		const id = await sourceRunner.add({ key: 'single' });
+		await sourceRunner.run();
+
+		const completed = await sourceRunner.get(id);
+		expect(completed?.status, 'the source entry completes before any move attempt').toBe('completed');
+
+		const updatedAtCompletion = completed?.updated.getTime();
+
+		await targetQueue.destroy();
+		vi.advanceTimersByTime(5000);
+		await sourceRunner.maintain();
+
+		const afterFailedMove = await sourceRunner.get(id);
+		expect(afterFailedMove?.status, 'a failed move leaves the status unchanged').toBe('completed');
+		expect(afterFailedMove?.failures, 'a failed move leaves the failure count unchanged').toBe(completed?.failures);
+		expect(afterFailedMove?.updated.getTime() ?? 0, 'a failed move refreshes the updated timestamp').toBeGreaterThan(updatedAtCompletion ?? Number.POSITIVE_INFINITY);
+	}
+
+	/*
+	 * A batch pipe whose target is destroyed: same refresh contract
+	 */
+	{
+		await using sourceQueue = await root.partition('batch-source');
+		const targetQueue = await root.partition('batch-target');
+
+		await using targetRunner = new KeetaAnchorQueueRunnerJSONConfigProc<string[], null>({
+			id: 'move-refresh-batch-target',
+			queue: targetQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: null });
+			}
+		});
+		await using sourceRunner = new KeetaAnchorQueueRunnerJSONConfigProc<JSONSerializable, string>({
+			id: 'move-refresh-batch-source',
+			queue: sourceQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: 'out' });
+			}
+		});
+		sourceRunner.pipeBatch(targetRunner, 10, 1);
+
+		const id = await sourceRunner.add({ key: 'batch' });
+		await sourceRunner.run();
+
+		const completed = await sourceRunner.get(id);
+		expect(completed?.status, 'the source entry completes before any move attempt').toBe('completed');
+
+		const updatedAtCompletion = completed?.updated.getTime();
+
+		await targetQueue.destroy();
+		vi.advanceTimersByTime(5000);
+		await sourceRunner.maintain();
+
+		const afterFailedMove = await sourceRunner.get(id);
+		expect(afterFailedMove?.status, 'a failed batch move leaves the status unchanged').toBe('completed');
+		expect(afterFailedMove?.failures, 'a failed batch move leaves the failure count unchanged').toBe(completed?.failures);
+		expect(afterFailedMove?.updated.getTime() ?? 0, 'a failed batch move refreshes the updated timestamp').toBeGreaterThan(updatedAtCompletion ?? Number.POSITIVE_INFINITY);
+	}
+
+	/*
+	 * A batch rejected by an idempotent conflict: the conflicting member is
+	 * marked moved, while the members the rejection left behind keep their
+	 * status but get a fresh `updated` timestamp.
+	 */
+	{
+		await using sourceQueue = await root.partition('conflict-source');
+		await using targetQueue = await root.partition('conflict-target');
+
+		await using targetRunner = new KeetaAnchorQueueRunnerJSONConfigProc<string[], null>({
+			id: 'move-refresh-conflict-target',
+			queue: targetQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: null });
+			}
+		});
+		await using sourceRunner = new KeetaAnchorQueueRunnerJSONConfigProc<JSONSerializable, string>({
+			id: 'move-refresh-conflict-source',
+			queue: sourceQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: 'out' });
+			}
+		});
+
+		/*
+		 * Minimum batch size 2: after the conflict removes one member, the
+		 * remainder can no longer form a batch and stays behind
+		 */
+		sourceRunner.pipeBatch(targetRunner, 10, 2);
+
+		const conflictID = await sourceRunner.add({ key: 'conflict' });
+		const strandedID = await sourceRunner.add({ key: 'stranded' });
+		await sourceRunner.run();
+
+		const stranded = await sourceRunner.get(strandedID);
+		expect(stranded?.status, 'both source entries complete before any move attempt').toBe('completed');
+
+		const updatedAtCompletion = stranded?.updated.getTime();
+
+		/*
+		 * Pre-seed the target with one member's idempotent key so the batch
+		 * add is rejected with an idempotent conflict
+		 */
+		await targetQueue.add(['seed'], { idempotentKeys: new Set([conflictID]) });
+
+		vi.advanceTimersByTime(5000);
+		await sourceRunner.maintain();
+
+		const conflicted = await sourceRunner.get(conflictID);
+		expect(conflicted?.status, 'the conflicting member is marked moved').toBe('moved');
+
+		const strandedAfter = await sourceRunner.get(strandedID);
+		expect(strandedAfter?.status, 'the left-behind member keeps its status').toBe('completed');
+		expect(strandedAfter?.failures, 'the left-behind member keeps its failure count').toBe(stranded?.failures);
+		expect(strandedAfter?.updated.getTime() ?? 0, 'the left-behind member timestamp is refreshed for sweep retry').toBeGreaterThan(updatedAtCompletion ?? Number.POSITIVE_INFINITY);
+	}
+
+	/*
+	 * A working pipe: the successful move still marks the entry as moved
+	 */
+	{
+		await using sourceQueue = await root.partition('working-source');
+		await using targetQueue = await root.partition('working-target');
+
+		await using targetRunner = new KeetaAnchorQueueRunnerJSONConfigProc<string, null>({
+			id: 'move-refresh-working-target',
+			queue: targetQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: null });
+			}
+		});
+		await using sourceRunner = new KeetaAnchorQueueRunnerJSONConfigProc<JSONSerializable, string>({
+			id: 'move-refresh-working-source',
+			queue: sourceQueue,
+			logger: logger,
+			processor: async function() {
+				return({ status: 'completed', output: 'out' });
+			}
+		});
+
+		sourceRunner.pipe(targetRunner);
+
+		const id = await sourceRunner.add({ key: 'working' });
+		await sourceRunner.run();
+		await sourceRunner.maintain();
+
+		const afterMove = await sourceRunner.get(id);
+		expect(afterMove?.status, 'a successful move marks the entry as moved').toBe('moved');
+
+		const movedEntry = await targetRunner.get(id);
+		expect(movedEntry, 'the moved entry arrives at the target stage').toBeDefined();
 	}
 });
