@@ -1038,6 +1038,10 @@ export type KeetaPersistentForwardingAddressDetails = {
 	destinationAddress?: AddressResolved | AddressObfuscated;
 	outgoingRail?: Rail;
 	incomingRail?: Rail[];
+	minimumTransferValue?: {
+		asset: MovableAssetSearchCanonical;
+		value: string;
+	}
 	fees?: PersistentAddressAssetFeeBreakdown;
 }
 
