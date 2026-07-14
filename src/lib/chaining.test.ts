@@ -14,6 +14,7 @@ import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
+import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -3400,6 +3401,7 @@ describe('Persistent Forwarding chaining', function() {
 				continue;
 			}
 
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			meta.asset = {
 				from: convertAssetSearchInputToCanonical(meta.asset.from).toLowerCase(),
 				to: convertAssetSearchInputToCanonical(meta.asset.to)
@@ -4059,11 +4061,12 @@ describe('getPlans forwardingOnly', function() {
 						to: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, rail: 'EVM_SEND' }
 					},
 					persistentAddress: { address: 'persistentForwarding-test', fees },
-					provider: null
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					provider: null as unknown as KeetaAssetMovementAnchorProvider
 				}],
 				totalValueIn: 1000n,
 				totalValueOut: 975n
-			} as unknown as Parameters<typeof listChainingPlanFees>[0]['plan']
+			}
 		});
 
 		const feeSum = listed.lineItems.reduce((sum, item) => sum + BigInt(item.value ?? 0), 0n);

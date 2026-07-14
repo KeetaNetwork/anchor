@@ -255,16 +255,10 @@ export function doesAssetOrPairMatch(asset: AssetOrPair, expected: AssetOrPair, 
 	const expectedPair = toAssetPair(expected);
 
 	if (isAssetPairLike(asset)) {
-		return(
-			isMovableAssetEqual(asset.from, expectedPair.from, cache) &&
-			isMovableAssetEqual(asset.to, expectedPair.to, cache)
-		);
+		return(isMovableAssetEqual(asset.from, expectedPair.from, cache) && isMovableAssetEqual(asset.to, expectedPair.to, cache));
+	} else {
+		return(isMovableAssetEqual(asset, expectedPair.from, cache) || isMovableAssetEqual(asset, expectedPair.to, cache));
 	}
-
-	return(
-		isMovableAssetEqual(asset, expectedPair.from, cache) ||
-		isMovableAssetEqual(asset, expectedPair.to, cache)
-	);
 }
 
 

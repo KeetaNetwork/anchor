@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
 import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
-import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isAssetPairLike, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
+import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
