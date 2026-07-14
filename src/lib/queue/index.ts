@@ -1367,24 +1367,28 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	async maintain(): Promise<void> {
-		/*
-		 * Only the worker with ID 0 should perform maintenance tasks on requests
-		 */
-		if (this.workers.id !== 0) {
-			return;
-		}
-
 		const logger = this.methodLogger('maintain');
 
 		await this.initialize();
 
 		/*
-		 * Each worker should maintain its own lock
+		 * Call `maintainRunnerLock` for every worker ID (not just 0)
+		 * so that we can ensure the runner lock is maintained and not
+		 * stale as part of maintain()
 		 */
 		try {
 			await this.maintainRunnerLock();
 		} catch (error: unknown) {
 			logger?.debug('Failed to maintain runner lock:', error);
+		}
+
+		/*
+		 * Only the worker with ID 0 should the rest of the maintenance tasks
+		 * so that we don't have multiple workers trying to do the same
+		 * maintenance tasks at the same time on the same queues
+		 */
+		if (this.workers.id !== 0) {
+			return;
 		}
 
 		try {
