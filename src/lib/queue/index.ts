@@ -1008,6 +1008,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				by = undefined;
 			}
 
+			logger?.debug(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
+
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
 			return(processJobOk);
@@ -1365,6 +1367,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	async maintain(): Promise<void> {
+		/*
+		 * Only the worker with ID 0 should perform maintenance tasks on requests
+		 */
+		if (this.workers.id !== 0) {
+			return;
+		}
+
 		const logger = this.methodLogger('maintain');
 
 		await this.initialize();
@@ -1378,13 +1387,6 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to maintain runner lock:', error);
 		}
 
-		if (this.workers.id !== 0) {
-			return;
-		}
-
-		/*
-		 * Only the worker with ID 0 should perform maintenance tasks on requests
-		 */
 		try {
 			await this.markStuckRequestsAsStuck();
 		} catch (error: unknown) {
