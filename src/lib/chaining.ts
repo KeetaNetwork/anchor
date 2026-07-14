@@ -1582,13 +1582,8 @@ export type AnchorChainingFeeLineItemSource =
 
 export type AnchorChainingFeeLineItemMetadata = {
 	stepIndex: number;
-	stepType: 'fx' | 'assetMovement' | 'forwarded';
-	providerID?: string;
+	step: Exclude<ChainStepResolution, { type: 'keetaSend' }>;
 	source: AnchorChainingFeeLineItemSource;
-	valueIn: bigint;
-	valueOut: bigint;
-	estimateMin?: bigint;
-	estimateMax?: bigint;
 };
 
 export type AnchorChainingFeeLineItem = {
@@ -1608,21 +1603,6 @@ export type AnchorChainingPlanFeeBreakdown = {
 /** List combined fees for a computed chaining plan. Keeta-send steps are omitted (treated as zero). */
 export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPlan }): AnchorChainingPlanFeeBreakdown {
 	const lineItems: AnchorChainingFeeLineItem[] = [];
-
-	const buildMetadata = (
-		step: Exclude<ChainStepResolution, { type: 'keetaSend' }>,
-		stepIndex: number,
-		source: AnchorChainingFeeLineItemSource,
-		extras?: Pick<AnchorChainingFeeLineItemMetadata, 'estimateMin' | 'estimateMax'>
-	): AnchorChainingFeeLineItemMetadata => ({
-		stepIndex,
-		stepType: step.type,
-		providerID: step.step.providerID,
-		source,
-		valueIn: step.valueIn,
-		valueOut: step.valueOut,
-		...extras
-	});
 
 	const defaultFeeAsset = (step: Exclude<ChainStepResolution, { type: 'keetaSend' }>): MovableAssetSearchCanonical => {
 		if (step.type === 'fx') {
@@ -1647,8 +1627,8 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[] },
 			source: AnchorChainingFeeLineItemSource
 		) => {
-			const metadata = buildMetadata(step, stepIndex, source);
 			const stepDefaultAsset = defaultFeeAsset(step);
+			const metadata = { stepIndex, step, source };
 
 			for (const item of breakdown.lineItems) {
 				const asset = item.asset ?? stepDefaultAsset;
@@ -1687,7 +1667,7 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 					purpose: 'OTHER',
 					asset: defaultFeeAsset(step),
 					value: assetFee,
-					metadata: buildMetadata(step, stepIndex, source)
+					metadata: { stepIndex, step, source }
 				});
 				return;
 			}
@@ -1701,17 +1681,14 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 					purpose: 'PROVIDER',
 					asset: step.result.quote.cost.token.publicKeyString.get(),
 					value: step.result.quote.cost.amount.toString(),
-					metadata: buildMetadata(step, stepIndex, 'fxQuote')
+					metadata: { stepIndex, step, source: 'fxQuote' }
 				});
 			} else {
 				lineItems.push({
 					purpose: 'PROVIDER',
 					asset: step.result.estimate.expectedCost.token.publicKeyString.get(),
 					value: step.result.estimate.expectedCost.max.toString(),
-					metadata: buildMetadata(step, stepIndex, 'fxEstimate', {
-						estimateMin: step.result.estimate.expectedCost.min,
-						estimateMax: step.result.estimate.expectedCost.max
-					})
+					metadata: { stepIndex, step, source: 'fxEstimate' }
 				});
 			}
 
@@ -1741,7 +1718,7 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 				purpose: 'OTHER',
 				asset: defaultFeeAsset(step),
 				value: (step.valueIn - step.valueOut).toString(),
-				metadata: buildMetadata(step, stepIndex, 'persistentAddress')
+				metadata: { stepIndex, step, source: 'persistentAddress' }
 			});
 		}
 	}

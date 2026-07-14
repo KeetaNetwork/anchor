@@ -4186,7 +4186,7 @@ describe('getPlans forwardingOnly', function() {
 		expect(fees.lineItems).toHaveLength(1);
 		expect(fees.lineItems[0]?.value).toEqual('15');
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
-		expect(fees.lineItems[0]?.metadata.stepType).toEqual('forwarded');
+		expect(fees.lineItems[0]?.metadata.step.type).toEqual('forwarded');
 		expect(fees.lineItems[0]?.asset).toEqual(EXTERNAL_IDS.USDC_BASE);
 		expect('total' in fees).toBe(false);
 		expect(plan.plan.steps[0]?.valueOut).toEqual(985n);
