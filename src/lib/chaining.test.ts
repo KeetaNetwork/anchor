@@ -85,6 +85,7 @@ function buildTxRecord(args: {
 	toLocation: KeetaAssetMovementTransaction['to']['location'];
 	fromValue: string;
 	toValue: string;
+	additionalTransferDetails?: KeetaAssetMovementTransaction['additionalTransferDetails'];
 }): KeetaAssetMovementTransaction {
 	const now = new Date().toISOString();
 	return({
@@ -95,7 +96,8 @@ function buildTxRecord(args: {
 		to:   { location: args.toLocation,   value: args.toValue,   transactions: { ...EMPTY_TO_TRANSACTIONS }},
 		fee: null,
 		createdAt: now,
-		updatedAt: now
+		updatedAt: now,
+		...(args.additionalTransferDetails !== undefined ? { additionalTransferDetails: args.additionalTransferDetails } : {})
 	});
 }
 
@@ -450,6 +452,7 @@ type PersistentForwardingBridgeAddressMeta = {
 	destinationLocation: AssetLocationLike;
 	destinationAddress: string;
 	asset: KeetaAssetMovementTransaction['asset'];
+	fees?: KeetaPersistentForwardingAddressDetails['fees'];
 };
 
 type TestPersistentForwardingBridgeServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'assetMovement'> & {
@@ -520,6 +523,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 											...existing,
 											status: 'COMPLETE',
 											updatedAt: new Date().toISOString(),
+											additionalTransferDetails: { type: 'markdown', content: 'Bridge withdraw complete' },
 											to: {
 												...existing.to,
 												transactions: { withdraw: { id: withdrawTxId, nonce: '0' }}
@@ -542,7 +546,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 											fromLocation: convertAssetLocationToString(meta.sourceLocation),
 											toLocation: convertAssetLocationToString(meta.destinationLocation),
 											fromValue: value.toString(),
-											toValue: value.toString()
+											toValue: value.toString(),
+											additionalTransferDetails: { type: 'markdown', content: 'Forwarded leg complete' }
 										});
 										forwarded.from.transactions = {
 											...forwarded.from.transactions,
@@ -626,14 +631,15 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 
 					/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
 					const evmTokenHex = tokenAddress.slice('evm:'.length) as `0x${string}`;
+					const fee = 25n;
 					return({
 						instructionChoices: [{
 							type: 'EVM_SEND' as const,
 							location: request.from.location,
 							value: value.toString(),
 							tokenAddress: evmTokenHex,
-							assetFee: '0',
-							totalReceiveAmount: value.toString()
+							assetFee: fee.toString(),
+							totalReceiveAmount: (value - fee).toString()
 						}]
 					});
 				},
@@ -673,7 +679,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 							asset: meta.asset,
 							sourceLocation: meta.sourceLocation,
 							destinationLocation: meta.destinationLocation,
-							destinationAddress: meta.destinationAddress
+							destinationAddress: meta.destinationAddress,
+							...(meta.fees !== undefined ? { fees: meta.fees } : {})
 						});
 					}
 
@@ -990,20 +997,32 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 						throw(new KeetaAnchorUserError('Test anchor only supports string destinationAddress for persistent forwarding'));
 					}
 					const address = `persistentForwarding-${Math.random().toString(36).slice(2)}`;
+					const fees = {
+						lineItems: [ { purpose: 'RAIL' as const, value: '15' } ],
+						total: '15'
+					};
 					const meta: PersistentForwardingBridgeAddressMeta = {
 						sourceLocation: request.sourceLocation,
 						destinationLocation: request.destinationLocation,
 						destinationAddress: request.destinationAddress,
-						asset: request.asset
+						asset: request.asset,
+						fees
 					};
 					addresses.set(address, meta);
-					return({ address, asset: meta.asset, sourceLocation: meta.sourceLocation, destinationLocation: meta.destinationLocation, destinationAddress: meta.destinationAddress });
+					return({ address, asset: meta.asset, sourceLocation: meta.sourceLocation, destinationLocation: meta.destinationLocation, destinationAddress: meta.destinationAddress, fees });
 				},
 
 				async listPersistentForwarding(request) {
 					const all: KeetaPersistentForwardingAddressDetails[] = [];
 					for (const [address, meta] of addresses) {
-						all.push({ address, asset: meta.asset, sourceLocation: meta.sourceLocation, destinationLocation: meta.destinationLocation, destinationAddress: meta.destinationAddress });
+						all.push({
+							address,
+							asset: meta.asset,
+							sourceLocation: meta.sourceLocation,
+							destinationLocation: meta.destinationLocation,
+							destinationAddress: meta.destinationAddress,
+							...(meta.fees !== undefined ? { fees: meta.fees } : {})
+						});
 					}
 					let filtered = all;
 					const searches = request.search;
@@ -3340,7 +3359,17 @@ describe('Persistent Forwarding chaining', function() {
 
 		expect(forwardedResolved.persistentAddress.address).toEqual(persistentAddress);
 		expect(forwardedResolved.valueIn).toEqual(1000n);
-		expect(forwardedResolved.valueOut).toEqual(1000n);
+		expect(forwardedResolved.valueOut).toEqual(975n);
+		expect(forwardedResolved.simulatedTransfer).toBeDefined();
+		expect(forwardedResolved.simulatedTransfer?.isSimulation).toBe(true);
+
+		const fees = plan.listFees();
+		const forwardedFees = fees.lineItems.filter((item) => item.metadata.stepIndex === 1);
+		expect(forwardedFees).toHaveLength(1);
+		expect(forwardedFees[0]?.value).toEqual('25');
+		expect(forwardedFees[0]?.metadata.source).toEqual('simulatedTransfer');
+		expect(forwardedFees[0]?.asset).toBeDefined();
+		expect('total' in fees).toBe(false);
 	});
 
 	test('plan reuses an existing persistent forwarding address when present', async function() {
@@ -3366,6 +3395,20 @@ describe('Persistent Forwarding chaining', function() {
 		const path = await getKeetaUsdcToUsdc2Path(h, 1000n, destinationAccount);
 
 		const plan = await AnchorChainingPlan.create(path);
+
+		const observedTransactions: {
+			stepIndex: number;
+			source: 'getTransferStatus' | 'listTransactions';
+			additionalTransferDetails?: KeetaAssetMovementTransaction['additionalTransferDetails'];
+		}[] = [];
+		plan.on('transactionObserved', (payload) => {
+			observedTransactions.push({
+				stepIndex: payload.stepIndex,
+				source: payload.source,
+				additionalTransferDetails: payload.transaction.additionalTransferDetails
+			});
+		});
+
 		const result = await plan.execute();
 		expect(result.steps).toHaveLength(2);
 
@@ -3382,6 +3425,9 @@ describe('Persistent Forwarding chaining', function() {
 		expect(forwardedExecuted.observedTransaction.status).toEqual('COMPLETE');
 		expect(forwardedExecuted.observedTransaction.from.value).toEqual('1000');
 		expect(forwardedExecuted.observedTransaction.to.location).toEqual(h.keetaLocation);
+
+		expect(observedTransactions.some((item) => item.stepIndex === 0 && item.source === 'getTransferStatus' && item.additionalTransferDetails?.content === 'Bridge withdraw complete')).toBe(true);
+		expect(observedTransactions.some((item) => item.stepIndex === 1 && item.source === 'listTransactions' && item.additionalTransferDetails?.content === 'Forwarded leg complete')).toBe(true);
 
 		expect(plan.state.status).toEqual('completed');
 	});
@@ -4121,6 +4167,29 @@ describe('getPlans forwardingOnly', function() {
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
 		expect(plan.getDepositAddress()).toEqual(expect.any(String));
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
+	});
+
+	test('listFees returns persistent address fees for forwarding-only plans', async function() {
+		await using w = await buildForwardingWorld('pfr');
+
+		const plans = await w.anchorChaining.getPlans({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		}, { limit: 1, forwardingOnly: true });
+
+		const plan = plans?.[0];
+		if (!plan) {
+			throw(new Error('Expected a forwarding plan'));
+		}
+
+		const fees = plan.listFees();
+		expect(fees.lineItems).toHaveLength(1);
+		expect(fees.lineItems[0]?.value).toEqual('15');
+		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
+		expect(fees.lineItems[0]?.metadata.stepType).toEqual('forwarded');
+		expect(fees.lineItems[0]?.asset).toEqual(EXTERNAL_IDS.USDC_BASE);
+		expect('total' in fees).toBe(false);
+		expect(plan.plan.steps[0]?.valueOut).toEqual(985n);
 	});
 
 	test('returns a two-leg forwarding plan from ethereum to keeta', async function() {
