@@ -10,8 +10,8 @@ import { KeetaAnchorUserError, type KeetaAnchorError } from '../../lib/error.js'
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
-import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset, EVMChecksumCache } from '../../lib/asset.js';
+import { convertAssetSearchInputToCanonical, isMovableAssetEqual } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
@@ -56,7 +56,8 @@ export {
 	parseSolanaAsset,
 	isSolanaAsset,
 	convertAssetSearchInputToCanonical,
-	isExternalChainAsset
+	isExternalChainAsset,
+	isMovableAssetEqual
 } from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
@@ -244,6 +245,26 @@ export function toAssetPair(input: AssetOrPair): AssetPair {
 	}
 
 	return({ from: input, to: input });
+}
+
+/**
+ * Returns true when `asset` matches `expected`.
+ * A single asset matches either leg of an expected pair; pairs require both legs to match.
+ */
+export function doesAssetOrPairMatch(asset: AssetOrPair, expected: AssetOrPair, cache?: EVMChecksumCache): boolean {
+	const expectedPair = toAssetPair(expected);
+
+	if (isAssetPairLike(asset)) {
+		return(
+			isMovableAssetEqual(asset.from, expectedPair.from, cache) &&
+			isMovableAssetEqual(asset.to, expectedPair.to, cache)
+		);
+	}
+
+	return(
+		isMovableAssetEqual(asset, expectedPair.from, cache) ||
+		isMovableAssetEqual(asset, expectedPair.to, cache)
+	);
 }
 
 

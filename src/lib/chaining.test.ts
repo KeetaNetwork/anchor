@@ -2,12 +2,12 @@ import { test, expect, describe } from 'vitest';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementServerConfig } from '../services/asset-movement/server.js';
-import { type AnchorTokenLocationMetadata, convertAssetLocationToString, toAssetLocation, toAssetPair, type AssetLocationLike, type KeetaAssetMovementTransaction, type KeetaPersistentForwardingAddressDetails } from '../services/asset-movement/common.js';
+import { type AnchorTokenLocationMetadata, convertAssetLocationToString, convertAssetSearchInputToCanonical, isAssetPairLike, toAssetLocation, toAssetPair, type AssetLocationLike, type AssetOrPair, type KeetaAssetMovementTransaction, type KeetaPersistentForwardingAddressDetails } from '../services/asset-movement/common.js';
 import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetConversionRateAndFeeContext, type KeetaFXInternalPriceQuote } from '../services/fx/server.js';
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan } from './chaining.js';
+import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
@@ -3386,6 +3386,31 @@ describe('Persistent Forwarding chaining', function() {
 		expect(h.bridgeServer.addresses.size).toEqual(1);
 	});
 
+	test('plan reuses persistent forwarding address when listed assets use canonical string form', async function() {
+		await using h = await createPersistentForwardingHarness();
+
+		const destinationAccount = newDestinationAccount();
+
+		const initialPath = await getKeetaUsdcToUsdc2Path(h, 500n, destinationAccount);
+		await AnchorChainingPlan.create(initialPath);
+		expect(h.bridgeServer.addresses.size).toEqual(1);
+
+		for (const meta of h.bridgeServer.addresses.values()) {
+			if (!isAssetPairLike(meta.asset)) {
+				continue;
+			}
+
+			meta.asset = {
+				from: convertAssetSearchInputToCanonical(meta.asset.from).toLowerCase(),
+				to: convertAssetSearchInputToCanonical(meta.asset.to)
+			} as AssetOrPair;
+		}
+
+		const retryPath = await getKeetaUsdcToUsdc2Path(h, 500n, destinationAccount);
+		await AnchorChainingPlan.create(retryPath);
+		expect(h.bridgeServer.addresses.size).toEqual(1);
+	});
+
 	test('executes the chain through the persistent forwarding step end-to-end', async function() {
 		await using h = await createPersistentForwardingHarness();
 
@@ -4010,6 +4035,42 @@ describe('getPlans forwardingOnly', function() {
 		eth:  'chain:evm:1',
 		sepa: 'bank-account:iban-swift'
 	} as const satisfies { [key: string]: AssetLocationLike };
+
+	test('listChainingPlanFees reconciles fees.total with line items for persistent forwarding', function() {
+		const fees = {
+			lineItems: [
+				{ purpose: 'RAIL' as const, value: '5' },
+				{ purpose: 'NETWORK' as const, value: '3' },
+				{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 100 }
+			],
+			total: '25'
+		};
+
+		const listed = listChainingPlanFees({
+			plan: {
+				steps: [{
+					type: 'forwarded',
+					valueIn: 1000n,
+					valueOut: 975n,
+					step: {
+						type: 'assetMovement',
+						providerID: 'AM1',
+						from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, rail: 'EVM_SEND' },
+						to: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, rail: 'EVM_SEND' }
+					},
+					persistentAddress: { address: 'persistentForwarding-test', fees },
+					provider: null
+				}],
+				totalValueIn: 1000n,
+				totalValueOut: 975n
+			} as unknown as Parameters<typeof listChainingPlanFees>[0]['plan']
+		});
+
+		const feeSum = listed.lineItems.reduce((sum, item) => sum + BigInt(item.value ?? 0), 0n);
+		expect(feeSum).toEqual(25n);
+		expect(listed.lineItems.at(-1)?.purpose).toEqual('OTHER');
+		expect(listed.lineItems.at(-1)?.value).toEqual('7');
+	});
 
 	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
 	const PFR_OPS = { initiateTransfer: false, createPersistentForwarding: true } as const;

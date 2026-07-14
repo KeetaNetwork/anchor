@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
 import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
-import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isAssetPairLike, isChainLocation, toAssetLocation, toAssetPair } from "../services/asset-movement/common.js";
+import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isAssetPairLike, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
@@ -14,7 +14,7 @@ import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
-import { isExternalChainAsset, normalizeChainAssetCasing } from './asset.js';
+import { isExternalChainAsset, isMovableAssetEqual } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
 import type { AnchorExternalInput } from './anchor-external.js';
@@ -219,33 +219,8 @@ export type AnchorChainingStepLike = GraphNodeLike | KeetaSendStepLike;
 
 export type AnchorChainingAsset = TokenAddress | ISOCurrencyCode | ExternalChainAsset;
 
-function areBothTokenAndEqual(a: string | TokenAddress, b: string | TokenAddress): boolean {
-	try {
-		const aParsed = KeetaNet.lib.Account.toAccount(a);
-		const bParsed = KeetaNet.lib.Account.toAccount(b);
-
-		if (!aParsed.isToken() || !bParsed.isToken()) {
-			return(false);
-		}
-
-
-		return(aParsed.comparePublicKey(bParsed));
-	} catch {
-		return(false);
-	}
-}
-
 function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAsset): boolean {
-	// Compare string assets (currency codes, external-chain assets) with EVM
-	// casing normalized, so the same token reported by two providers in
-	// different EIP-55 casings is treated as equal.
-	if (typeof a === 'string' && typeof b === 'string' && normalizeChainAssetCasing(a) === normalizeChainAssetCasing(b)) {
-		return(true);
-	} else if (areBothTokenAndEqual(a, b)) {
-		return(true);
-	} else {
-		return(false);
-	}
+	return(isMovableAssetEqual(a, b));
 }
 
 /**
@@ -1624,11 +1599,12 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		const appendBreakdown = (
-			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[] },
+			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string },
 			source: AnchorChainingFeeLineItemSource
 		) => {
 			const stepDefaultAsset = defaultFeeAsset(step);
 			const metadata = { stepIndex, step, source };
+			const startLength = lineItems.length;
 
 			for (const item of breakdown.lineItems) {
 				const asset = item.asset ?? stepDefaultAsset;
@@ -1653,6 +1629,35 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 						...base,
 						basisPoints: item.basisPoints,
 						value: (step.valueIn * BigInt(item.basisPoints) / 10000n).toString()
+					});
+				}
+			}
+
+			if (breakdown.total !== undefined && breakdown.total !== '') {
+				const authoritativeTotal = computeFeeTotalFromBreakdown(step.valueIn, breakdown);
+				let lineItemSum = 0n;
+
+				for (let i = startLength; i < lineItems.length; i++) {
+					const emitted = lineItems[i];
+					if (emitted?.value !== undefined && emitted.value !== '') {
+						lineItemSum += BigInt(emitted.value);
+					}
+				}
+
+				if (authoritativeTotal > lineItemSum) {
+					lineItems.push({
+						purpose: 'OTHER',
+						asset: stepDefaultAsset,
+						value: (authoritativeTotal - lineItemSum).toString(),
+						metadata
+					});
+				} else if (authoritativeTotal < lineItemSum) {
+					lineItems.splice(startLength);
+					lineItems.push({
+						purpose: 'OTHER',
+						asset: stepDefaultAsset,
+						value: authoritativeTotal.toString(),
+						metadata
 					});
 				}
 			}
@@ -1975,7 +1980,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
 					const destLocationString = convertAssetLocationToString(scanStep.to.location);
-					const expectedAssetPair = toAssetPair(forwardedAssetPair);
 					const match = existing.addresses.find(addr => {
 						if (addr.destinationAddress !== destinationAddress) {
 							return(false);
@@ -1986,14 +1990,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
 							return(false);
 						}
-						if (addr.asset) {
-							if (isAssetPairLike(addr.asset)) {
-								if (addr.asset.from !== expectedAssetPair.from || addr.asset.to !== expectedAssetPair.to) {
-									return(false);
-								}
-							} else if (addr.asset !== expectedAssetPair.from && addr.asset !== expectedAssetPair.to) {
-								return(false);
-							}
+						if (addr.asset && !doesAssetOrPairMatch(addr.asset, forwardedAssetPair)) {
+							return(false);
 						}
 
 						return(true);
