@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
 import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
-import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
+import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isAssetPairLike, isChainLocation, toAssetLocation, toAssetPair } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
@@ -1991,13 +1991,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						search: [{
 							sourceLocation: scanStep.from.location,
 							destinationLocation: scanStep.to.location,
-							asset: scanStep.from.asset,
+							asset: forwardedAssetPair,
 							destinationAddress
 						}]
 					});
 
 					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
 					const destLocationString = convertAssetLocationToString(scanStep.to.location);
+					const expectedAssetPair = toAssetPair(forwardedAssetPair);
 					const match = existing.addresses.find(addr => {
 						if (addr.destinationAddress !== destinationAddress) {
 							return(false);
@@ -2007,6 +2008,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						}
 						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
 							return(false);
+						}
+						if (addr.asset) {
+							if (isAssetPairLike(addr.asset)) {
+								if (addr.asset.from !== expectedAssetPair.from || addr.asset.to !== expectedAssetPair.to) {
+									return(false);
+								}
+							} else if (addr.asset !== expectedAssetPair.from && addr.asset !== expectedAssetPair.to) {
+								return(false);
+							}
 						}
 
 						return(true);

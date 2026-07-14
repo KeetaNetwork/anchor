@@ -234,7 +234,7 @@ export type AssetOrPair = MovableAsset | AssetPair;
 export type AssetPairCanonical<From extends MovableAssetSearchCanonical = MovableAssetSearchCanonical, To extends MovableAssetSearchCanonical = MovableAssetSearchCanonical> = { from: From; to: To; };
 export type AssetOrPairCanonical = MovableAssetSearchCanonical | AssetPairCanonical;
 
-function isAssetPairLike(input: unknown): input is AssetPair {
+export function isAssetPairLike(input: unknown): input is AssetPair {
 	return(typeof input === 'object' && input !== null && 'from' in input && 'to' in input);
 }
 
@@ -1081,7 +1081,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingClientRequest = {
 	search?: {
 		sourceLocation?: AssetLocationLike;
 		destinationLocation?: AssetLocationLike;
-		asset?: MovableAsset;
+		asset?: AssetOrPair;
 		destinationAddress?: string;
 		persistentAddressTemplateId?: string;
 	}[];
@@ -1094,7 +1094,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
 	search?: {
 		sourceLocation?: AssetLocationCanonical | undefined;
 		destinationLocation?: AssetLocationCanonical | undefined;
-		asset?: MovableAssetSearchCanonical | undefined;
+		asset?: AssetOrPairCanonical | undefined;
 		destinationAddress?: string | undefined;
 		persistentAddressTemplateId?: string | undefined;
 	}[] | undefined;

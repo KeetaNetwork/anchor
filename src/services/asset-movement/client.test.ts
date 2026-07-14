@@ -1334,6 +1334,22 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			],
 			total: 1
 		});
+
+		const listedWithAssetPair = await usdcProvider.listForwardingAddresses({
+			account,
+			search: [
+				{
+					asset: { from: testCurrencyUSDC.publicKeyString.get(), to: testCurrencyUSDC.publicKeyString.get() },
+					sourceLocation: 'chain:evm:100',
+					destinationLocation: `chain:keeta:${client.network}`,
+					destinationAddress: account.publicKeyString.get()
+				}
+			]
+		});
+		expect(listedWithAssetPair.addresses[0]?.asset).toEqual({
+			from: testCurrencyUSDC.publicKeyString.get(),
+			to: testCurrencyUSDC.publicKeyString.get()
+		});
 	}
 
 	{
