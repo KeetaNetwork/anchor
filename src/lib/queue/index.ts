@@ -992,7 +992,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				]);
 			} catch (error: unknown) {
 				if (Errors.IncorrectStateAssertedError.isInstance(error)) {
-					logger?.info(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
+					logger?.debug(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
 
 					return(processJobOk);
 				}
