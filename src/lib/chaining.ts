@@ -1,7 +1,7 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
-import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, SimulatedAssetTransferInstructions } from "../services/asset-movement/common.js";
-import { convertAssetLocationToString, convertAssetSearchInputToCanonical, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
+import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
+import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
 import type { ISOCurrencyCode } from '@keetanetwork/currency-info';
@@ -14,11 +14,12 @@ import { assertNever } from './utils/never.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
-import { isExternalChainAsset, normalizeChainAssetCasing } from './asset.js';
+import { isExternalChainAsset, isMovableAssetEqual } from './asset.js';
 import type { Logger } from './log/index.js';
 import type { BlockHash } from '@keetanetwork/keetanet-client/lib/block/index.js';
 import type { AnchorExternalInput } from './anchor-external.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
+import type { ClientRenderableContent } from './metadata.types.js';
 import { AnchorExternalBuilder } from './anchor-external.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
@@ -56,6 +57,8 @@ interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSen
 interface ChainStepResolutionForwarded extends ChainStepResolutionBase<'forwarded'> {
 	persistentAddress: KeetaPersistentForwardingAddressDetails;
 	provider: AssetMovementProvider;
+	/** Present when simulateTransfer succeeded during plan computation (non-forwardingOnly). */
+	simulatedTransfer?: Awaited<ReturnType<AssetMovementProvider['simulateTransfer']>>;
 };
 
 export type Disclaimer = Exclude<AnchorMetadataLegalField['disclaimers'], undefined>[number];
@@ -140,7 +143,17 @@ type AnchorChainingPathEventMap = {
 	completed: [result: AnchorChainingPathExecuteResult];
 	failed: [error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number];
 	stepNeedsAction: [StepNeededActionEventPayload];
+	transactionObserved: [payload: AnchorChainingTransactionObservedEvent];
 }
+
+export type AnchorChainingTransactionObservedSource = 'getTransferStatus' | 'listTransactions';
+
+export type AnchorChainingTransactionObservedEvent = {
+	stepIndex: number;
+	planStep: ChainStepResolution;
+	transaction: KeetaAssetMovementTransaction;
+	source: AnchorChainingTransactionObservedSource;
+};
 
 interface RailSupportedOperations {
 	createPersistentForwarding?: boolean;
@@ -206,33 +219,8 @@ export type AnchorChainingStepLike = GraphNodeLike | KeetaSendStepLike;
 
 export type AnchorChainingAsset = TokenAddress | ISOCurrencyCode | ExternalChainAsset;
 
-function areBothTokenAndEqual(a: string | TokenAddress, b: string | TokenAddress): boolean {
-	try {
-		const aParsed = KeetaNet.lib.Account.toAccount(a);
-		const bParsed = KeetaNet.lib.Account.toAccount(b);
-
-		if (!aParsed.isToken() || !bParsed.isToken()) {
-			return(false);
-		}
-
-
-		return(aParsed.comparePublicKey(bParsed));
-	} catch {
-		return(false);
-	}
-}
-
 function isAnchorChainingAssetEqual(a: AnchorChainingAsset, b: AnchorChainingAsset): boolean {
-	// Compare string assets (currency codes, external-chain assets) with EVM
-	// casing normalized, so the same token reported by two providers in
-	// different EIP-55 casings is treated as equal.
-	if (typeof a === 'string' && typeof b === 'string' && normalizeChainAssetCasing(a) === normalizeChainAssetCasing(b)) {
-		return(true);
-	} else if (areBothTokenAndEqual(a, b)) {
-		return(true);
-	} else {
-		return(false);
-	}
+	return(isMovableAssetEqual(a, b));
 }
 
 /**
@@ -359,6 +347,85 @@ interface ResolveIndex {
 	nodesByFromAssetKey: Map<string, number[]>;
 	nodesByToAssetKey: Map<string, number[]>;
 	railInfo: Map<string, { asset: AnchorChainingAsset; location: AssetLocationLike; inbound: Set<Rail>; outbound: Set<Rail> }>;
+}
+
+export type ForwardingAssetRef = {
+	asset: AnchorChainingAsset;
+	location: AssetLocationLike;
+};
+
+const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const forwardingAssetKeyCache: EVMChecksumCache = new Map();
+
+function forwardingAssetKey(asset: AnchorChainingAsset, location: AssetLocationLike): string {
+	return(`${convertAssetSearchInputToCanonical(asset, forwardingAssetKeyCache)}@${convertAssetLocationToString(location)}`);
+}
+
+function isCryptoChainLocation(location: AssetLocationLike): boolean {
+	return(toAssetLocation(location).type === 'chain');
+}
+
+/**
+ * Adjacency over crypto persistent-forwarding edges only - excludes FX edges and
+ * any hop that starts on Keeta.
+ */
+export function buildForwardingAdjacency(nodes: GraphNodeLike[]): Map<string, ForwardingAssetRef[]> {
+	const adjacency = new Map<string, ForwardingAssetRef[]>();
+
+	for (const node of nodes) {
+		if (node.type !== 'assetMovement') {
+			continue;
+		}
+
+		if (node.from.supportedOperations?.createPersistentForwarding !== true) {
+			continue;
+		}
+
+		if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
+			continue;
+		}
+
+		if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
+			continue;
+		}
+
+		const key = forwardingAssetKey(node.from.asset, node.from.location);
+		const list = adjacency.get(key) ?? [];
+		list.push({ asset: node.to.asset, location: node.to.location });
+		adjacency.set(key, list);
+	}
+
+	return(adjacency);
+}
+
+/** Whether `dest` is reachable from `source` over <=`maxLegs` forwarding edges. */
+export function hasForwardingRoute(
+	adjacency: Map<string, ForwardingAssetRef[]>,
+	source: ForwardingAssetRef,
+	dest: ForwardingAssetRef,
+	maxLegs: number = DEFAULT_FORWARDING_MAX_LEGS
+): boolean {
+	const destKey = forwardingAssetKey(dest.asset, dest.location);
+	let frontier = [ forwardingAssetKey(source.asset, source.location) ];
+
+	for (let depth = 0; depth < maxLegs; depth++) {
+		const next: string[] = [];
+
+		for (const key of frontier) {
+			for (const edge of adjacency.get(key) ?? []) {
+				const edgeKey = forwardingAssetKey(edge.asset, edge.location);
+				if (edgeKey === destKey) {
+					return(true);
+				}
+
+				next.push(edgeKey);
+			}
+		}
+
+		frontier = next;
+	}
+
+	return(false);
 }
 
 class AnchorGraph {
@@ -1371,6 +1438,10 @@ class AnchorGraph {
 			return(result.to);
 		}
 	}
+
+	async buildForwardingAdjacency(): Promise<Map<string, ForwardingAssetRef[]>> {
+		return(buildForwardingAdjacency(await this.computeGraphNodes()));
+	}
 }
 
 export interface ComputePlanOptions {
@@ -1379,6 +1450,321 @@ export interface ComputePlanOptions {
 	 * Limit the number of plans to calculate, defaults to 3
 	 */
 	limit?: number;
+	/**
+	 * When true, plan computation uses persistent forwarding for the final leg
+	 * instead of initiateTransfer, even when the source rail supports both.
+	 */
+	forwardingOnly?: boolean;
+}
+
+export type ForwardingOnlyOptions = {
+	/** Max asset-movement legs (default 2, matching deposit UX). */
+	maxLegs?: number;
+};
+
+export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
+	includeAllOutput?: boolean;
+	forwardingOnly?: true | ForwardingOnlyOptions;
+}
+
+function normalizeForwardingOnlyOptions(forwardingOnly: true | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
+	if (!forwardingOnly) {
+		return(undefined);
+	}
+
+	if (forwardingOnly === true) {
+		return({ maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
+	}
+
+	return({
+		maxLegs: DEFAULT_FORWARDING_MAX_LEGS,
+		...forwardingOnly
+	});
+}
+
+function toComputePlanOptions(options?: GetPlansOptions, forwardingOpts?: ForwardingOnlyOptions): ComputePlanOptions | undefined {
+	const overrides = options?.overrides;
+	const forwardingOnly = forwardingOpts !== undefined;
+
+	if (overrides === undefined && !forwardingOnly) {
+		return(undefined);
+	}
+
+	return({
+		...(overrides !== undefined ? { overrides } : {}),
+		...(forwardingOnly ? { forwardingOnly: true } : {})
+	});
+}
+
+/**
+ * Whether a discovered path is eligible for forwarding-only plan resolution:
+ * crypto chain hops only, no Keeta-origin legs, no FX, within maxLegs.
+ */
+export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingOnlyOptions): boolean {
+	const maxLegs = options?.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS;
+	const legs = path.path;
+
+	if (legs.length < 1 || legs.length > maxLegs) {
+		return(false);
+	}
+
+	return(legs.every((step) => {
+		if (step.type !== 'assetMovement') {
+			return(false);
+		}
+
+		if (!isCryptoChainLocation(step.from.location) || !isCryptoChainLocation(step.to.location)) {
+			return(false);
+		}
+
+		if (isChainLocation(toAssetLocation(step.from.location), 'keeta')) {
+			return(false);
+		}
+
+		return(step.from.supportedOperations?.createPersistentForwarding === true);
+	}));
+}
+
+function computeFeeTotalFromBreakdown(valueIn: bigint, fees: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string }): bigint {
+	let feeFromLineItems = 0n;
+
+	for (const lineItem of fees.lineItems) {
+		if ('value' in lineItem && lineItem.value !== undefined && lineItem.value !== '') {
+			feeFromLineItems += BigInt(lineItem.value);
+		} else if (lineItem.purpose === 'VALUE_VARIABLE' && lineItem.basisPoints !== undefined) {
+			feeFromLineItems += valueIn * BigInt(lineItem.basisPoints) / 10000n;
+		}
+	}
+
+	let feeTotal = feeFromLineItems;
+	if (fees.total !== undefined && fees.total !== '') {
+		feeTotal = BigInt(fees.total);
+	}
+
+	return(feeTotal);
+}
+
+function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
+	if (!fees) {
+		return(valueIn);
+	}
+
+	const valueOut = valueIn - computeFeeTotalFromBreakdown(valueIn, fees);
+	return(valueOut < 1n ? 1n : valueOut);
+}
+
+/** @internal Exported for unit tests. */
+export function estimateForwardingValueOut(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
+	return(estimateValueOutFromPersistentForwardingFees(valueIn, fees));
+}
+
+export type AnchorChainingFeeLineItemSource =
+	| 'persistentAddress'
+	| 'simulatedTransfer'
+	| 'transferInstruction'
+	| 'fxQuote'
+	| 'fxEstimate';
+
+export type AnchorChainingFeeLineItemMetadata = {
+	stepIndex: number;
+	step: Exclude<ChainStepResolution, { type: 'keetaSend' }>;
+	source: AnchorChainingFeeLineItemSource;
+};
+
+export type AnchorChainingFeeLineItem = {
+	purpose: AssetFeeLineItemType;
+	asset: MovableAssetSearchCanonical;
+	value?: string;
+	basisPoints?: number;
+	details?: ClientRenderableContent;
+	metadata: AnchorChainingFeeLineItemMetadata;
+};
+
+/** Combined fee breakdown for a computed chaining plan. Does not include a total. */
+export type AnchorChainingPlanFeeBreakdown = {
+	lineItems: AnchorChainingFeeLineItem[];
+};
+
+/** List combined fees for a computed chaining plan. Keeta-send steps are omitted (treated as zero). */
+export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPlan }): AnchorChainingPlanFeeBreakdown {
+	const lineItems: AnchorChainingFeeLineItem[] = [];
+
+	const defaultFeeAsset = (step: Exclude<ChainStepResolution, { type: 'keetaSend' }>): MovableAssetSearchCanonical => {
+		if (step.type === 'fx') {
+			const token = step.result.isQuote ? step.result.quote.cost.token : step.result.estimate.expectedCost.token;
+			return(token.publicKeyString.get());
+		}
+
+		if (KeetaNet.lib.Account.isInstance(step.step.from.asset)) {
+			return(step.step.from.asset.publicKeyString.get());
+		}
+
+		return(step.step.from.asset);
+	};
+
+	for (let stepIndex = 0; stepIndex < plan.plan.steps.length; stepIndex++) {
+		const step = plan.plan.steps[stepIndex];
+		if (!step || step.type === 'keetaSend') {
+			continue;
+		}
+
+		const appendBreakdown = (
+			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string },
+			source: AnchorChainingFeeLineItemSource
+		) => {
+			const stepDefaultAsset = defaultFeeAsset(step);
+			const metadata = { stepIndex, step, source };
+			const startLength = lineItems.length;
+
+			for (const item of breakdown.lineItems) {
+				const asset = item.asset ?? stepDefaultAsset;
+				const base = {
+					purpose: item.purpose,
+					asset,
+					metadata,
+					...(item.details !== undefined ? { details: item.details } : {})
+				};
+
+				if ('value' in item && item.value !== undefined && item.value !== '') {
+					lineItems.push({
+						...base,
+						value: item.value,
+						...(item.purpose === 'VALUE_VARIABLE' && 'basisPoints' in item && item.basisPoints !== undefined ? { basisPoints: item.basisPoints } : {})
+					});
+					continue;
+				}
+
+				if (item.purpose === 'VALUE_VARIABLE' && 'basisPoints' in item && item.basisPoints !== undefined) {
+					lineItems.push({
+						...base,
+						basisPoints: item.basisPoints,
+						value: (step.valueIn * BigInt(item.basisPoints) / 10000n).toString()
+					});
+				}
+			}
+
+			if (breakdown.total !== undefined && breakdown.total !== '') {
+				const authoritativeTotal = computeFeeTotalFromBreakdown(step.valueIn, breakdown);
+				let lineItemSum = 0n;
+
+				for (let i = startLength; i < lineItems.length; i++) {
+					const emitted = lineItems[i];
+					if (emitted?.value !== undefined && emitted.value !== '') {
+						lineItemSum += BigInt(emitted.value);
+					}
+				}
+
+				if (authoritativeTotal > lineItemSum) {
+					lineItems.push({
+						purpose: 'OTHER',
+						asset: stepDefaultAsset,
+						value: (authoritativeTotal - lineItemSum).toString(),
+						metadata
+					});
+				} else if (authoritativeTotal < lineItemSum) {
+					lineItems.splice(startLength);
+					lineItems.push({
+						purpose: 'OTHER',
+						asset: stepDefaultAsset,
+						value: authoritativeTotal.toString(),
+						metadata
+					});
+				}
+			}
+		};
+
+		const appendAssetFee = (
+			assetFee: string | AssetFeeBreakdown | PersistentAddressAssetFeeBreakdown,
+			source: AnchorChainingFeeLineItemSource
+		) => {
+			if (typeof assetFee === 'string') {
+				lineItems.push({
+					purpose: 'OTHER',
+					asset: defaultFeeAsset(step),
+					value: assetFee,
+					metadata: { stepIndex, step, source }
+				});
+				return;
+			}
+
+			appendBreakdown(assetFee, source);
+		};
+
+		if (step.type === 'fx') {
+			if (step.result.isQuote) {
+				lineItems.push({
+					purpose: 'PROVIDER',
+					asset: step.result.quote.cost.token.publicKeyString.get(),
+					value: step.result.quote.cost.amount.toString(),
+					metadata: { stepIndex, step, source: 'fxQuote' }
+				});
+			} else {
+				lineItems.push({
+					purpose: 'PROVIDER',
+					asset: step.result.estimate.expectedCost.token.publicKeyString.get(),
+					value: step.result.estimate.expectedCost.max.toString(),
+					metadata: { stepIndex, step, source: 'fxEstimate' }
+				});
+			}
+
+			continue;
+		}
+
+		if (step.type === 'assetMovement') {
+			appendAssetFee(step.usingInstruction.assetFee, 'transferInstruction');
+			continue;
+		}
+
+		if (step.simulatedTransfer) {
+			const simulatedInstruction = step.simulatedTransfer.instructions.find((instr) => instr.type === step.step.from.rail);
+			if (simulatedInstruction && 'assetFee' in simulatedInstruction) {
+				appendAssetFee(simulatedInstruction.assetFee, 'simulatedTransfer');
+				continue;
+			}
+		}
+
+		if (step.persistentAddress.fees) {
+			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
+			continue;
+		}
+
+		if (step.valueIn > step.valueOut) {
+			lineItems.push({
+				purpose: 'OTHER',
+				asset: defaultFeeAsset(step),
+				value: (step.valueIn - step.valueOut).toString(),
+				metadata: { stepIndex, step, source: 'persistentAddress' }
+			});
+		}
+	}
+
+	return({ lineItems });
+}
+
+/**
+ * Whether a resolved plan is anchor-to-anchor with no user intermediary steps.
+ * The user may still fund the initial deposit address once.
+ */
+export function isForwardingPlan(plan: { plan: AnchorChainingPathComputedPlan }): boolean {
+	const steps = plan.plan.steps;
+
+	if (steps.length === 0) {
+		return(false);
+	}
+
+	return(steps.every((step) => step.type === 'forwarded'));
+}
+
+/** Deposit address for the first forwarding leg of a forwarding-only plan. */
+export function getForwardingDepositAddress(plan: { plan: AnchorChainingPathComputedPlan }): string | null {
+	const firstStep = plan.plan.steps[0];
+
+	if (!firstStep || firstStep.type !== 'forwarded') {
+		return(null);
+	}
+
+	const address = firstStep.persistentAddress.address;
+	return(typeof address === 'string' ? address : null);
 }
 
 export class AnchorChainingPath {
@@ -1502,6 +1888,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(this.#_plan);
 	}
 
+	listFees(): AnchorChainingPlanFeeBreakdown {
+		return(listChainingPlanFees(this));
+	}
+
 	async #computePlan() {
 		if (this.#_plan) {
 			throw(new Error(`Steps have already been computed`));
@@ -1554,7 +1944,135 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 */
 		type ForwardedStepInfo = { provider: AssetMovementProvider; persistentAddress: KeetaPersistentForwardingAddressDetails };
 		const forwardedSteps = new Map<number, ForwardedStepInfo>();
+		const forwardingOnly = this.#options?.forwardingOnly === true;
+
+		const resolvePersistentForwardingForStep = async (scanIndex: number, destinationAddress: string): Promise<void> => {
+			const scanStep = this.path[scanIndex];
+			if (!scanStep || scanStep.type !== 'assetMovement') {
+				throw(new Error(`Expected asset movement step at index ${scanIndex} for persistent forwarding`));
+			}
+
+			const forwardedAssetPair = { from: scanStep.from.asset, to: scanStep.to.asset };
+			const forwardedProviders = await assetMovementClient.getProvidersForTransfer(
+				{ asset: forwardedAssetPair, from: scanStep.from.location, to: scanStep.to.location },
+				{ providerIDs: [ scanStep.providerID ] }
+			);
+			if (!forwardedProviders?.[0] || forwardedProviders.length === 0) {
+				throw(new Error(`Could not get asset movement provider ${scanStep.providerID} for persistent-forwarding step at index ${scanIndex}`));
+			}
+
+			const forwardedProvider = forwardedProviders[0];
+			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
+				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
+			}
+			if (!forwardingOnly && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
+				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
+			}
+
+			const { signer: forwardedSigner } = await this.getAccountsForAction({
+				type: 'assetMovement',
+				providerMethod: 'initiateTransfer',
+				provider: forwardedProvider
+			}, this.#options?.overrides);
+
+			let persistentAddress: KeetaPersistentForwardingAddressDetails | undefined;
+			if (await forwardedProvider.isOperationSupported('listPersistentForwarding')) {
+				try {
+					const existing = await forwardedProvider.listForwardingAddresses({
+						account: forwardedSigner,
+						search: [{
+							sourceLocation: scanStep.from.location,
+							destinationLocation: scanStep.to.location,
+							asset: forwardedAssetPair,
+							destinationAddress
+						}]
+					});
+
+					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
+					const destLocationString = convertAssetLocationToString(scanStep.to.location);
+					const match = existing.addresses.find(addr => {
+						if (addr.destinationAddress !== destinationAddress) {
+							return(false);
+						}
+						if (!addr.sourceLocation || convertAssetLocationToString(addr.sourceLocation) !== sourceLocationString) {
+							return(false);
+						}
+						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
+							return(false);
+						}
+						if (addr.asset && !doesAssetOrPairMatch(addr.asset, forwardedAssetPair)) {
+							return(false);
+						}
+
+						return(true);
+					});
+					if (match) {
+						persistentAddress = match;
+					}
+				} catch (error) {
+					this.logger?.debug('AnchorChainingPlan::computePlan', `listForwardingAddresses lookup failed for step ${scanIndex}, will create a new address`, error);
+				}
+			}
+
+			if (!persistentAddress) {
+				persistentAddress = await forwardedProvider.createPersistentForwardingAddress({
+					account: forwardedSigner,
+					sourceLocation: scanStep.from.location,
+					destinationLocation: scanStep.to.location,
+					destinationAddress,
+					asset: forwardedAssetPair
+				});
+			}
+
+			if (typeof persistentAddress.address !== 'string') {
+				throw(new Error(`Persistent forwarding address for step ${scanIndex} is not a resolved string (got ${typeof persistentAddress.address})`));
+			}
+
+			forwardedSteps.set(scanIndex, { provider: forwardedProvider, persistentAddress });
+		};
+
+		if (forwardingOnly) {
+			for (let scanIndex = this.path.length - 1; scanIndex >= 0; scanIndex--) {
+				const scanStep = this.path[scanIndex];
+				if (!scanStep || scanStep.type !== 'assetMovement') {
+					continue;
+				}
+
+				const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
+				const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
+
+				if (sourceIsKeeta || !pfrSupported) {
+					throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${scanIndex} at ${convertAssetLocationToString(scanStep.from.location)} does not qualify`));
+				}
+
+				let destinationAddress: string;
+				if (scanIndex === this.path.length - 1) {
+					const finalRecipient = this.request.destination.recipient;
+					if (typeof finalRecipient !== 'string') {
+						throw(new Error(`Forwarding-only plan requires the destination recipient to be a resolved address string`));
+					}
+					destinationAddress = finalRecipient;
+				} else {
+					const nextForwarded = forwardedSteps.get(scanIndex + 1);
+					if (!nextForwarded) {
+						throw(new Error(`Forwarding-only plan expected persistent forwarding to be resolved for next step ${scanIndex + 1}`));
+					}
+					const nextAddress = nextForwarded.persistentAddress.address;
+					if (typeof nextAddress !== 'string') {
+						throw(new Error(`Forwarding-only plan requires the next step persistent forwarding address to be a resolved string at index ${scanIndex + 1}`));
+					}
+					destinationAddress = nextAddress;
+				}
+
+				await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+			}
+		}
+
 		for (let scanIndex = 0; scanIndex < this.path.length; scanIndex++) {
+			if (forwardingOnly) {
+				continue;
+			}
+
 			const scanStep = this.path[scanIndex];
 			if (!scanStep || scanStep.type !== 'assetMovement') {
 				continue;
@@ -1599,83 +2117,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
 			}
 
-			const forwardedAssetPair = { from: scanStep.from.asset, to: scanStep.to.asset };
-			const forwardedProviders = await assetMovementClient.getProvidersForTransfer(
-				{ asset: forwardedAssetPair, from: scanStep.from.location, to: scanStep.to.location },
-				{ providerIDs: [ scanStep.providerID ] }
-			);
-			if (!forwardedProviders?.[0] || forwardedProviders.length === 0) {
-				throw(new Error(`Could not get asset movement provider ${scanStep.providerID} for persistent-forwarding step at index ${scanIndex}`));
-			}
-
-			const forwardedProvider = forwardedProviders[0];
-			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
-				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
-			}
-			if (!await forwardedProvider.isOperationSupported('simulateTransfer')) {
-				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
-			}
-
-			const { signer: forwardedSigner } = await this.getAccountsForAction({
-				type: 'assetMovement',
-				providerMethod: 'initiateTransfer',
-				provider: forwardedProvider
-			}, this.#options?.overrides);
-
-			let persistentAddress: KeetaPersistentForwardingAddressDetails | undefined;
-			if (await forwardedProvider.isOperationSupported('listPersistentForwarding')) {
-				try {
-					const existing = await forwardedProvider.listForwardingAddresses({
-						account: forwardedSigner,
-						search: [{
-							sourceLocation: scanStep.from.location,
-							destinationLocation: scanStep.to.location,
-							asset: scanStep.from.asset,
-							destinationAddress
-						}]
-					});
-
-					/*
-					 * Filter to the exact address this step requires.
-					 */
-					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
-					const destLocationString = convertAssetLocationToString(scanStep.to.location);
-					const match = existing.addresses.find(addr => {
-						if (addr.destinationAddress !== destinationAddress) {
-							return(false);
-						}
-						if (!addr.sourceLocation || convertAssetLocationToString(addr.sourceLocation) !== sourceLocationString) {
-							return(false);
-						}
-						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
-							return(false);
-						}
-
-						return(true);
-					});
-					if (match) {
-						persistentAddress = match;
-					}
-				} catch (error) {
-					this.logger?.debug('AnchorChainingPlan::computePlan', `listForwardingAddresses lookup failed for step ${scanIndex}, will create a new address`, error);
-				}
-			}
-
-			if (!persistentAddress) {
-				persistentAddress = await forwardedProvider.createPersistentForwardingAddress({
-					account: forwardedSigner,
-					sourceLocation: scanStep.from.location,
-					destinationLocation: scanStep.to.location,
-					destinationAddress,
-					asset: forwardedAssetPair
-				});
-			}
-
-			if (typeof persistentAddress.address !== 'string') {
-				throw(new Error(`Persistent forwarding address for step ${scanIndex} is not a resolved string (got ${typeof persistentAddress.address})`));
-			}
-
-			forwardedSteps.set(scanIndex, { provider: forwardedProvider, persistentAddress });
+			await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
 		}
 
 		const stepPromises: Promise<ChainStepResolution>[] = [];
@@ -1787,19 +2229,18 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						if (forwardedInfo) {
 							const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
 
-							/*
-							 * Best-effort plan-time valueOut: simulateTransfer if available,
-							 * otherwise assume no rail fee.
-							 */
 							let estimatedValueOut = depositValue;
-							if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
+							let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
+							if (forwardingOnly) {
+								estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
+							} else if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
 								try {
 									const { signer: forwardedSigner } = await this.getAccountsForAction({
 										type: 'assetMovement',
 										providerMethod: 'initiateTransfer',
 										provider: forwardedProvider
 									}, this.#options?.overrides);
-									const simulated = await forwardedProvider.simulateTransfer({
+									simulatedTransfer = await forwardedProvider.simulateTransfer({
 										account: forwardedSigner,
 										asset: assetPair,
 										from: { location: step.from.location },
@@ -1807,7 +2248,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 										value: depositValue
 									});
 
-									const simulatedInstruction = simulated.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
+									const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
 									let simulatedTotalReceive: string | undefined;
 									if (simulatedInstruction) {
 										simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
@@ -1829,8 +2270,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								valueIn: depositValue,
 								valueOut: estimatedValueOut,
 								persistentAddress,
-								provider: forwardedProvider
+								provider: forwardedProvider,
+								...(simulatedTransfer !== undefined ? { simulatedTransfer } : {})
 							});
+						}
+
+						if (this.#options?.forwardingOnly) {
+							throw(new Error(`Forwarding-only plan requires persistent forwarding for step at index ${index}, but none was resolved`));
 						}
 
 						const providers = await assetMovementClient.getProvidersForTransfer(
@@ -2246,6 +2692,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
+		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
@@ -2258,6 +2705,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 
 			const status = await transfer.getTransferStatus();
+			this.#emit('transactionObserved', {
+				stepIndex: context.stepIndex,
+				planStep: context.planStep,
+				transaction: status.transaction,
+				source: 'getTransferStatus'
+			});
+
 			if (status.transaction.status === 'COMPLETE') {
 				return(status);
 			}
@@ -2275,6 +2729,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	async #pollForwardedTransaction(
 		step: ChainStepResolutionForwarded,
 		sourceTransaction: { location: AssetLocationLike; transaction: { id: string }},
+		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<KeetaAssetMovementTransaction> {
 		const intervalMs = options?.intervalMs ?? 2000;
@@ -2312,6 +2767,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				transactions = response.transactions;
 			} catch (error) {
 				this.logger?.debug('AnchorChainingPlan::pollForwardedTransaction', `listTransactions failed for PersistentForwardingRelay address ${pfiAddress}`, error);
+			}
+
+			for (const transaction of transactions) {
+				this.#emit('transactionObserved', {
+					stepIndex: context.stepIndex,
+					planStep: context.planStep,
+					transaction,
+					source: 'listTransactions'
+				});
 			}
 
 			const candidate = transactions.find(tx => tx.status === 'COMPLETE');
@@ -2356,6 +2820,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
+		if (this.#options?.forwardingOnly) {
+			throw(new Error('Forwarding-only plans cannot be executed. Use getPlans({ forwardingOnly: true }), which returns AnchorChainingForwardingOnlyPlan, and fund the deposit address externally.'));
+		}
+
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
 		}
@@ -2402,6 +2870,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					throw(new Error(`Step ${index} is not defined`));
 				}
 
+				const pollContext = { stepIndex: index, planStep: step };
+
 				// Verify the actual output from the previous step matches the expected
 				// input for this step. A mismatch indicates a provider delivered a
 				// different amount than was negotiated in computeSteps.
@@ -2429,7 +2899,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 					}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, {
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, {
 						...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
 					});
 					prevActualValueOut = BigInt(observed.to.value);
@@ -2476,7 +2946,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 
 					if (step.type === 'assetMovement') {
-						const status = await this.#pollTransferStatus(step.transfer,  {
+						const status = await this.#pollTransferStatus(step.transfer, pollContext, {
 							...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
 						});
 						prevActualValueOut = BigInt(status.transaction.to.value);
@@ -2539,7 +3009,43 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 }
 
+/**
+ * Forwarding-only chaining plan for persistent-forwarding routes. Resolves deposit
+ * addresses and fee estimates but cannot be executed: the user funds the
+ * external deposit address directly.
+ */
+export class AnchorChainingForwardingOnlyPlan extends AnchorChainingPath {
+	readonly #plan: AnchorChainingPathComputedPlan;
+
+	private constructor(path: AnchorChainingPath, plan: AnchorChainingPathComputedPlan) {
+		super({ request: path.request, path: path.path, parent: path.parent });
+		this.#plan = plan;
+	}
+
+	get plan(): AnchorChainingPathComputedPlan {
+		return(this.#plan);
+	}
+
+	getDepositAddress(): string | null {
+		return(getForwardingDepositAddress(this));
+	}
+
+	listFees(): AnchorChainingPlanFeeBreakdown {
+		return(listChainingPlanFees(this));
+	}
+
+	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingForwardingOnlyPlan> {
+		const computed = await AnchorChainingPlan.create(path, { ...options, forwardingOnly: true });
+		if (!isForwardingPlan(computed)) {
+			throw(new Error('Computed plan does not qualify as a forwarding-only route'));
+		}
+
+		return(new AnchorChainingForwardingOnlyPlan(path, computed.plan));
+	}
+}
+
 type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
+type AnchorChainingFullForwardingOnlyPlanResult = (({ success: true; plan: AnchorChainingForwardingOnlyPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
 
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
@@ -2618,13 +3124,22 @@ export class AnchorChaining {
 		return(retval);
 	}
 
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: false }): Promise<AnchorChainingPlan[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options: ComputePlanOptions & { includeAllOutput: true }): Promise<AnchorChainingFullPlanResult[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options?: ComputePlanOptions & { includeAllOutput?: boolean }): Promise<(AnchorChainingPlan | AnchorChainingFullPlanResult)[] | null> {
-		const paths = await this.getPaths(input);
+	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true }): Promise<(AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { forwardingOnly: true | ForwardingOnlyOptions }): Promise<AnchorChainingForwardingOnlyPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
+		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
+		let paths = await this.getPaths(input);
 
 		if (!paths) {
 			return(null);
+		}
+
+		if (forwardingOpts) {
+			paths = paths.filter((path) => isForwardingPath(path, forwardingOpts));
+			if (paths.length === 0) {
+				return(null);
+			}
 		}
 
 		const limit = options?.limit ?? 3;
@@ -2638,7 +3153,7 @@ export class AnchorChaining {
 		const maxAttemptLoops = 3;
 		let currentAttemptLoop = 0;
 
-		const allOutput: PromiseSettledResult<AnchorChainingPlan>[] = [];
+		const allOutput: PromiseSettledResult<AnchorChainingPlan | AnchorChainingForwardingOnlyPlan>[] = [];
 
 		while (successCount < limit && lastAttemptedPathIdx < sortedPaths.length - 1 && currentAttemptLoop < maxAttemptLoops) {
 			currentAttemptLoop++;
@@ -2654,7 +3169,12 @@ export class AnchorChaining {
 			}
 
 			const currentTry = await Promise.allSettled(pathsToTry.map(async function(path) {
-				return(await AnchorChainingPlan.create(path, options));
+				const computeOptions = toComputePlanOptions(options, forwardingOpts);
+				if (forwardingOpts) {
+					return(await AnchorChainingForwardingOnlyPlan.create(path, computeOptions));
+				}
+
+				return(await AnchorChainingPlan.create(path, computeOptions));
 			}));
 
 			allOutput.push(...currentTry);
@@ -2668,9 +3188,12 @@ export class AnchorChaining {
 				}
 
 				if (result.status === 'fulfilled') {
-					successCount++;
-					if (path && path.path.length < lowestStepsSuccessCount) {
-						lowestStepsSuccessCount = path.path.length;
+					const qualifies = !forwardingOpts || isForwardingPlan(result.value);
+					if (qualifies) {
+						successCount++;
+						if (path && path.path.length < lowestStepsSuccessCount) {
+							lowestStepsSuccessCount = path.path.length;
+						}
 					}
 				}
 			}
@@ -2678,7 +3201,7 @@ export class AnchorChaining {
 			lastAttemptedPathIdx += pathsToTry.length;
 		}
 
-		const ret: (AnchorChainingPlan | AnchorChainingFullPlanResult)[] = [];
+		const ret: (AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] = [];
 
 		for (let i = 0; i < allOutput.length; i++) {
 			const path = sortedPaths[i];
@@ -2691,16 +3214,26 @@ export class AnchorChaining {
 			if (options?.includeAllOutput) {
 				if (plan.status === 'rejected') {
 					ret.push({ success: false, error: plan.reason, path });
-				} else {
+				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
+					ret.push({ success: false, error: new Error('Plan does not qualify as a forwarding-only route'), path });
+				} else if (plan.value instanceof AnchorChainingForwardingOnlyPlan) {
+					ret.push({ success: true, plan: plan.value, path });
+				} else if (plan.value instanceof AnchorChainingPlan) {
 					ret.push({ success: true, plan: plan.value, path });
 				}
 			} else {
 				if (plan.status === 'rejected') {
 					this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
+				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
+					this.logger?.debug(`AnchorChaining::getPlans`, `Skipping plan that does not qualify as forwarding-only`);
 				} else {
 					ret.push(plan.value);
 				}
 			}
+		}
+
+		if (forwardingOpts && !options?.includeAllOutput && ret.length === 0) {
+			return(null);
 		}
 
 		return(ret);
