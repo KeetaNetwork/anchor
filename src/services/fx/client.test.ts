@@ -1732,14 +1732,14 @@ test('FX Server Pricing test', async function() {
 			throw(new Error('No result for GBP'));
 		}
 		expect(gbpResult.averageConvertedAmount).toBe(12500);
-		expect(gbpResult.providerEstimates.length).toBe(1);
+		expect(gbpResult.providerMarketPrices.length + gbpResult.providerEstimates.length).toBe(1);
 
 		const usdResult = retval.get(testCurrencyUSD);
 		if (!usdResult) {
 			throw(new Error('No result for USD'));
 		}
 		expect(usdResult.averageConvertedAmount).toBe(10025);
-		expect(usdResult.providerEstimates.length).toBe(2);
+		expect(usdResult.providerMarketPrices.length + usdResult.providerEstimates.length).toBe(2);
 	}
 
 	{
@@ -1807,9 +1807,37 @@ test('FX Server Pricing test', async function() {
 					throw(new Error(`No result for ${toJSONSerializable(expectedEntry.asset)}`));
 				}
 				expect(Math.round(result.averageConvertedAmount)).toBe(Math.round(expectedEntry.average));
-				expect(result.providerEstimates.length).toBe(expectedEntry.providerCount);
+				expect(result.providerMarketPrices.length + result.providerEstimates.length).toBe(expectedEntry.providerCount);
 			}
 		}
+	}
+
+	{
+		const usdString = testCurrencyUSD.publicKeyString.get();
+		const eurString = testCurrencyEUR.publicKeyString.get();
+		const gbpString = testCurrencyGBP.publicKeyString.get();
+
+		const marketPrices = await fxClient.getMarketPrices('TestServer0', {
+			quoteAssets: [usdString, gbpString],
+			base: eurString
+		});
+		expect(marketPrices).toEqual({
+			base: eurString,
+			quoteAssets: {
+				[usdString]: {
+					current: {
+						quote: '1000',
+						base: '1002'
+					}
+				},
+				[gbpString]: {
+					current: {
+						quote: '1000',
+						base: '1250'
+					}
+				}
+			}
+		});
 	}
 });
 

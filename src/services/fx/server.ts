@@ -9,6 +9,7 @@ import {
 import {
 	assertConversionInputCanonicalJSON,
 	assertKeetaFXAnchorClientCreateExchangeRequestJSON,
+	assertKeetaNetTokenPublicKeyString,
 	Errors
 } from './common.js';
 import type {
@@ -17,11 +18,15 @@ import type {
 	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
+	KeetaFXAnchorMarketPrices,
+	KeetaFXAnchorMarketPricesRequest,
+	KeetaFXAnchorMarketPricesResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteJSON,
 	KeetaFXAnchorQuoteResponse,
 	KeetaNetAccount,
-	KeetaNetStorageAccount
+	KeetaNetStorageAccount,
+	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
@@ -147,6 +152,13 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorMetadataServerConf
 		 * can select a preferred cost asset.
 		 */
 		acceptedCostAssets?: NonNullable<ServiceMetadata['services']['fx']>[string]['acceptedCostAssets'];
+
+		/**
+		 * Optional callback to provide market prices for a set of quote
+		 * assets against a base asset. When not provided, prices are
+		 * derived from estimate rate data.
+		 */
+		getMarketPrices?: (request: KeetaFXAnchorMarketPricesRequest) => Promise<KeetaFXAnchorMarketPrices>;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -1205,6 +1217,34 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		}
 	}
 
+	protected async getMarketPrices(request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		if ('getMarketPrices' in this.fx && this.fx.getMarketPrices !== undefined) {
+			return(await this.fx.getMarketPrices(request));
+		}
+
+		const referenceAmount = 1000n;
+		const quoteAssetEntries = await Promise.all(request.quoteAssets.map(async (quoteAsset) => {
+			const rateAndFee = await this.getUnsignedQuoteData({
+				from: quoteAsset,
+				to: request.base,
+				amount: referenceAmount.toString(),
+				affinity: 'from'
+			}, 'estimate');
+
+			return([quoteAsset, {
+				current: {
+					quote: referenceAmount.toString(),
+					base: rateAndFee.convertedAmount.toString()
+				}
+			}] as const);
+		}));
+
+		return({
+			base: request.base,
+			quoteAssets: Object.fromEntries(quoteAssetEntries)
+		});
+	}
+
 	protected async initRoutes(config: ConfigType): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
@@ -1299,6 +1339,44 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			});
 		}
 
+		if (routes['GET /api/getMarketPrices'] === undefined) {
+			routes['GET /api/getMarketPrices'] = async function(_ignore_params, _ignore_body, _ignore_headers, url) {
+				const quoteAssetsParameter = url.searchParams.get('quoteAssets');
+				const baseParameter = url.searchParams.get('base');
+
+				if (!quoteAssetsParameter) {
+					throw(new KeetaAnchorUserError('Missing quoteAssets parameter'));
+				}
+
+				if (!baseParameter) {
+					throw(new KeetaAnchorUserError('Missing base parameter'));
+				}
+
+				const base = assertKeetaNetTokenPublicKeyString(baseParameter.trim());
+				const quoteAssets = quoteAssetsParameter.split(',').map(function(token) {
+					return(token.trim());
+				}).filter(function(token) {
+					return(token.length > 0);
+				}).map(function(token) {
+					return(assertKeetaNetTokenPublicKeyString(token));
+				});
+
+				if (quoteAssets.length === 0) {
+					throw(new KeetaAnchorUserError('quoteAssets must contain at least one token'));
+				}
+
+				const marketPrices = await instance.getMarketPrices({ quoteAssets, base });
+				const marketPricesResponse: KeetaFXAnchorMarketPricesResponse = {
+					ok: true,
+					...marketPrices
+				};
+
+				return({
+					output: JSON.stringify(marketPricesResponse)
+				});
+			};
+		}
+
 		return(routes);
 	}
 
@@ -1307,7 +1385,8 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	 */
 	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
-			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
+			getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
+			getMarketPrices: (new URL('/api/getMarketPrices', this.url)).toString()
 		};
 
 		const metadata: NonNullable<ServiceMetadata['services']['fx']>[string] = {

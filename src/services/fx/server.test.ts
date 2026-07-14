@@ -263,6 +263,7 @@ test('FX Server Tests', async function() {
 			}],
 			operations: {
 				getEstimate: new URL('/api/getEstimate', url).toString(),
+				getMarketPrices: new URL('/api/getMarketPrices', url).toString(),
 				getQuote: new URL('/api/getQuote', url).toString(),
 				createExchange: new URL('/api/createExchange', url).toString(),
 				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
