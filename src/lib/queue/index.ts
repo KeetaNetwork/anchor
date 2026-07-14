@@ -953,13 +953,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 
-			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
+			logger?.debug(`Trying to acquire process lock for entry request with id ${String(entry.id)}`);
 
 			try {
 				/*
 				 * Get a lock by setting it to 'processing'
 				 */
 				await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
+
+				/*
+				 * Log an info-level log when we start and finish processing an entry
+				 */
+				logger?.info(`Processing entry request with id ${String(entry.id)}`);
 
 				/*
 				 * Process the entry with a timeout, if the timeout is reached
@@ -1008,7 +1013,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				by = undefined;
 			}
 
-			logger?.debug(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
+			logger?.info(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
 
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
