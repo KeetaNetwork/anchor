@@ -782,6 +782,102 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 	}
 });
 
+test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'aborted-stuck-test',
+		logger: logger
+	});
+
+	const processCallCountByKey = new Map<string, number>();
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+		id: 'aborted-stuck-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function(entry) {
+			const key = entry.request.key;
+			if (key.startsWith('timedout_early')) {
+				await asleep(5000);
+			}
+
+			const callCount = processCallCountByKey.get(key) ?? 0;
+			processCallCountByKey.set(key, callCount + 1);
+
+			if (key.startsWith('timedout_late')) {
+				await asleep(5000);
+			}
+
+			if (key.startsWith('error')) {
+				throw(new Error('Processing error'));
+			}
+
+			return({ status: entry.request.newStatus, output: 'OK' });
+		},
+		processorAborted: 'RETRY',
+		processorStuck: 'RETRY'
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
+
+	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
+
+	/**
+	 * Test that aborted jobs are handled by the aborted processor (Retry)
+	 */
+	{
+		logger?.debug('aborted', '> Test that aborted jobs are handled by the aborted retry processor');
+
+		/*
+		 * Run the job, it should be aborted and then processed by the
+		 * aborted processor which will complete it (since the key contains 'forward')
+		 */
+		{
+			/*
+			 * First run to pick up the job -- it will timeout and consume the
+			 * entire time budget for the `run` call so it will not transition
+			 * from aborted to processing to completed in the same run
+			 */
+			vi.useRealTimers();
+			await runner.run({ timeoutMs: 90 });
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('aborted');
+
+			/* The main processor was called once -- resulting a timeout, leading to the aborted status */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+		}
+
+		{
+			/*
+			 * Next, run the process again and this time it
+			 * should be processed by the aborted processor
+			 */
+			vi.useRealTimers();
+			await runner.run();
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('failed_temporarily');
+
+			/* The main processor was already called above and not called again, so should remain 1 */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+		}
+	}
+});
+
 
 for (const singleWorkerID of [true, false]) {
 	let mode = 'Multiple Workers IDs';
