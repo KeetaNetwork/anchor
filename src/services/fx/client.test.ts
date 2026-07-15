@@ -52,6 +52,11 @@ async function waitForExchangeToComplete(server: KeetaNetFXAnchorHTTPServer, exc
 
 const testingLegalField: SharedAnchorMetadataLegalExtension = {
 	legal: {
+		anchorDetails: {
+			name: 'Test FX Anchor',
+			description: { type: 'markdown', content: 'Test FX anchor details' },
+			logo: 'https://example.com/fx-logo.png'
+		},
 		disclaimers: [
 			{ purpose: 'general', content: { type: 'plaintext', content: 'Test disclaimer' }},
 			{ purpose: 'general', content: { type: 'markdown', content: 'Test disclaimer' }}
@@ -428,6 +433,7 @@ for (const useDeprecated of [false, true]) {
 
 			expect(providers?.length).toEqual(1);
 			expect(providers?.[0]?.serviceInfo.legal).toEqual(testingLegalField.legal);
+			expect(providers?.[0]?.serviceInfo.legal?.anchorDetails).toEqual(testingLegalField.legal?.anchorDetails);
 
 			const disclaimersFromClient = await fxClient.getLegalDisclaimersById('Test');
 			expect(disclaimersFromClient).toEqual(testingLegalField.legal?.disclaimers)

@@ -98,6 +98,11 @@ test('Asset Movement Anchor Client Test', async function() {
 	}
 
 	const testLegalField: SharedAnchorMetadataLegalExtension['legal'] = {
+		anchorDetails: {
+			name: 'Test Anchor',
+			description: { type: 'plaintext', content: 'Test anchor details' },
+			logo: 'https://example.com/anchor-logo.png'
+		},
 		disclaimers: [
 			{ purpose: 'general', content: { type: 'markdown', content: 'Test Disclaimer' }}
 		]
@@ -463,6 +468,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		/* Expect legal field to be parsed properly on the client side */
 		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+		expect(testProvider.serviceInfo.legal?.anchorDetails).toEqual(testLegalField.anchorDetails);
 		expect(testProvider.getLegalDisclaimers()).toEqual(testLegalField.disclaimers);
 
 		/* Expect custom token metadata to be resolved correctly */
