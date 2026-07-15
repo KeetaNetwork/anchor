@@ -655,6 +655,21 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		this.methodLogger('new')?.debug('Created new queue runner attached to queue', this.queue.id);
 	}
 
+	/**
+	 * Helpful common handlers for the processorAborted and processorStuck methods
+	 */
+	static processorHandlerHelpers: {
+		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<any, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<any, any>['processorStuck']>;
+	} = {
+		RETRY: async (entry) => {
+			return({
+				status: 'failed_temporarily',
+				output: entry.output,
+				error: `Job was ${entry.status} after ${entry.failures} failures, retrying`
+			});
+		}
+	}
+
 	private async initialize(): Promise<void> {
 		if (this.initializePromise) {
 			return(await this.initializePromise);
@@ -1529,8 +1544,8 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 
 	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & {
 		processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
-		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | undefined;
-		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | undefined;
+		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
+		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
 	} & Partial<KeetaAnchorQueueRunnerConfigurationObject>) {
 		super(config);
 
@@ -1539,10 +1554,18 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 		this.processor = processor;
 
 		if (processorStuck) {
-			this.processorStuck = processorStuck;
+			if (typeof processorStuck === 'string') {
+				this.processorStuck = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorStuck];
+			} else {
+				this.processorStuck = processorStuck;
+			}
 		}
 		if (processorAborted) {
-			this.processorAborted = processorAborted;
+			if (typeof processorAborted === 'string') {
+				this.processorAborted = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorAborted];
+			} else {
+				this.processorAborted = processorAborted;
+			}
 		}
 
 		this.setConfiguration(parameters);
