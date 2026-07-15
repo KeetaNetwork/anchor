@@ -659,16 +659,28 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Helpful common handlers for the processorAborted and processorStuck methods
 	 */
 	static processorHandlerHelpers: {
-		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<any, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<any, any>['processorStuck']>;
+		/*
+		 * Because we are just passing the value through we do not
+		 * care about the type, we can handle any type because we
+		 * simply return the existing value
+		 */
+		// @eslint-disable-next-line @typescript-eslint/no-explicit-any
+		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorStuck']>;
 	} = {
-		RETRY: async (entry) => {
-			return({
-				status: 'failed_temporarily',
-				output: entry.output,
-				error: `Job was ${entry.status} after ${entry.failures} failures, retrying`
-			});
-		}
-	}
+			RETRY: async (entry) => {
+				return({
+					status: 'failed_temporarily',
+					/*
+					 * This is safe because we are not
+					 * doing any operations on the value
+					 * and it just being copied over itself
+					 */
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+					output: entry.output,
+					error: `Job was ${entry.status} after ${entry.failures} failures, retrying`
+				});
+			}
+		};
 
 	private async initialize(): Promise<void> {
 		if (this.initializePromise) {
