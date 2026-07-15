@@ -121,6 +121,19 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 export const testPathPolicy: TestPathPolicy = new TestPathPolicy();
 
 /**
+ * Like {@link TestPathPolicy}, but lets any account sign a public read instead of
+ * only the owner. Returning `null` from `getAuthorizedSigner` makes the server trust
+ * the signer named in the URL, which matches how the deployed anchors behave.
+ */
+export class AnySignerTestPathPolicy extends TestPathPolicy {
+	getAuthorizedSigner(): InstanceType<typeof KeetaNet.lib.Account> | null {
+		return(null);
+	}
+}
+
+export const anySignerTestPathPolicy: AnySignerTestPathPolicy = new AnySignerTestPathPolicy();
+
+/**
  * Create test metadata with sensible defaults.
  */
 export function testMetadata(
@@ -547,8 +560,9 @@ export interface StorageProviderTestContext {
  * Shared test harness that stands up a storage server, resolves a provider,
  * and passes the provider context to the test function.
  */
-export async function withStorageProvider(
+async function runWithStorageProvider(
 	seed: string | ArrayBuffer,
+	pathPolicies: PathPolicy<TestParsedPath>[],
 	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
 ): Promise<void> {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
@@ -564,7 +578,7 @@ export async function withStorageProvider(
 	await using server = new KeetaNetStorageAnchorHTTPServer({
 		backend,
 		anchorAccount,
-		pathPolicies: [testPathPolicy]
+		pathPolicies
 	});
 
 	await server.start();
@@ -595,6 +609,28 @@ export async function withStorageProvider(
 	}
 
 	await testFunction({ provider: maybeProvider, account, storageClient });
+}
+
+/**
+ * Test harness with the default owner-only policy.
+ */
+export async function withStorageProvider(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
+): Promise<void> {
+	return(await runWithStorageProvider(seed, [testPathPolicy], testFunction));
+}
+
+/**
+ * Test harness for cross-account public reads, where any account can read a public
+ * object. `ctx.account` is the reader doing the signing; spin up a separate owner
+ * account inside the test to play the other side.
+ */
+export async function withAnySignerStorageProvider(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
+): Promise<void> {
+	return(await runWithStorageProvider(seed, [anySignerTestPathPolicy], testFunction));
 }
 
 // #endregion

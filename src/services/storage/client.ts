@@ -447,6 +447,31 @@ export class KeetaStorageAnchorSession {
 
 		return(await this.provider.getPublicUrl(urlOpts));
 	}
+
+	/**
+	 * Fetch a public object's content under this session's working directory.
+	 *
+	 * Note we don't sign with `this.account` here. The session might be pointed at
+	 * someone else's namespace (a contact, who we only have a public key for), so the
+	 * client account does the signing instead.
+	 *
+	 * @param relativePath - Path relative to the session's working directory
+	 * @param options.ttl - Optional TTL in seconds for the signed URL we generate
+	 *
+	 * @returns The decrypted data and mime-type, or null if not found
+	 */
+	async getPublicContent(
+		relativePath: string,
+		options?: { ttl?: number }
+	): Promise<{ data: Buffer; mimeType: string } | null> {
+		const fullPath = this.#resolvePath(relativePath);
+		const opts: Parameters<typeof this.provider.getPublicContent>[0] = { path: fullPath };
+		if (options?.ttl) {
+			opts.ttl = options.ttl;
+		}
+
+		return(await this.provider.getPublicContent(opts));
+	}
 }
 
 /**
@@ -1291,6 +1316,61 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		const finalUrl = addSignatureToURL(publicUrl, { signedField: signed, account: signerAccount.assertAccount() });
 		return(finalUrl.toString());
+	}
+
+	/**
+	 * Download a public object's content. The anchor decrypts it server-side, so
+	 * unlike `get` you can read an object you don't own (e.g. someone else's icon)
+	 * without their private key.
+	 *
+	 * We sign the request as the client account, not the owner. The server decides
+	 * whether that's allowed via its path policy, so a non-owner read may be rejected.
+	 *
+	 * @param options.path - Path to the public object
+	 * @param options.ttl - Optional TTL in seconds for the signed URL we generate
+	 * @param options.account - Optional signer override; defaults to the client account (needs a private key)
+	 *
+	 * @returns The decrypted data and mime-type, or null if not found
+	 *
+	 * @throws AccessDenied if the object exists but is not public
+	 * @throws PrivateKeyRequired if no account with a private key is available to sign
+	 */
+	async getPublicContent(options: {
+		path: string;
+		ttl?: number;
+		account?: KeetaNetAccount;
+	}): Promise<{ data: Buffer; mimeType: string } | null> {
+		this.logger?.debug(`Getting public content at path: ${options.path}`);
+
+		const url = await this.getPublicUrl(options);
+
+		let response: Response;
+		try {
+			response = await fetch(url, { method: 'GET' });
+		} catch (e) {
+			throw(new Errors.ServiceUnavailable(`Network error: ${e instanceof Error ? e.message : String(e)}`));
+		}
+
+		if (!response.ok) {
+			try {
+				await this.#handleBinaryResponseError(response);
+			} catch (e) {
+				if (Errors.DocumentNotFound.isInstance(e)) {
+					return(null);
+				}
+
+				throw(e);
+			}
+		}
+
+		const arrayBuffer = await response.arrayBuffer();
+		const data = arrayBufferLikeToBuffer(arrayBuffer);
+		const contentType = response.headers.get('Content-Type') ?? '';
+		const mimeType = (contentType.split(';')[0] ?? '').trim() || CONTENT_TYPE_OCTET_STREAM;
+
+		this.logger?.debug(`Get public content successful for path: ${options.path}`);
+
+		return({ data, mimeType });
 	}
 
 	/**
