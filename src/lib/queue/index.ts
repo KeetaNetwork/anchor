@@ -664,7 +664,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 * care about the type, we can handle any type because we
 		 * simply return the existing value
 		 */
-		// @eslint-disable-next-line @typescript-eslint/no-explicit-any
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorStuck']>;
 	} = {
 			RETRY: async (entry) => {
