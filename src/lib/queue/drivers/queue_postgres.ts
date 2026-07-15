@@ -10,6 +10,7 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueDeleteInput,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
@@ -71,6 +72,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
+	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
@@ -80,6 +82,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
+		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
@@ -249,7 +252,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		let lastError: unknown;
 		for (let retry = 0; retry < 16; retry++) {
 			if (this.poolInternal === null) {
-				this.methodLogger('runWithRetry')?.debug('Aborting DB operation retries because the instance was destroyed');
+				logger?.debug('Aborting DB operation retries because the instance was destroyed');
 
 				if (lastError !== undefined) {
 					// eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -281,7 +284,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					const backoffIntervalSize = Math.min(maxBackoff - minBackoff, (retry + 50) ** 2);
 					const backoff = Math.round((Math.random() * backoffIntervalSize)) + minBackoff;
 
-					this.methodLogger('runWithRetry')?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
+					logger?.debug(`Retrying DB operation in ${backoff}ms (retry #${retry}) from`, new Error().stack);
 					await asleep(backoff);
 
 					continue;
@@ -310,7 +313,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
-	private async dbTransaction<T>(className: string, fn: (client: pg.PoolClient, logger: Logger | undefined) => Promise<T>): Promise<T> {
+	private async dbTransaction<T>(className: string, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
 		const pool = await this.newDBConnection();
 		const logger = this.methodLogger(className);
 
@@ -328,7 +331,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					await client.query('SET LOCAL enable_seqscan TO off');
 				}
 
-				const retval = await fn(client, logger);
+				const retval = await fn(client);
 
 				logger?.debug('Committing DB transaction');
 				await client.query('COMMIT');
@@ -353,7 +356,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	async add(request: KeetaAnchorQueueRequest<QueueRequest>, info?: KeetaAnchorQueueEntryExtra): Promise<KeetaAnchorQueueRequestID> {
-		return(await this.dbTransaction('add', async (client, logger): Promise<KeetaAnchorQueueRequestID> => {
+		return(await this.dbTransaction('add', async (client): Promise<KeetaAnchorQueueRequestID> => {
+			const logger = this.methodLogger('add');
 			let entryID = ConvertStringToRequestID(info?.id);
 			entryID ??= ConvertStringToRequestID(crypto.randomUUID());
 
@@ -414,7 +418,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	async setStatus(id: KeetaAnchorQueueRequestID, status: KeetaAnchorQueueStatus, ancillary?: KeetaAnchorQueueEntryAncillaryData<QueueResult>): Promise<void> {
 		const { oldStatus } = ancillary ?? {};
 
-		return(await this.dbTransaction('setStatus', async (client, logger): Promise<void> => {
+		return(await this.dbTransaction('setStatus', async (client): Promise<void> => {
+			const logger = this.methodLogger('setStatus');
 			const existingEntry = await client.query<{ status: KeetaAnchorQueueStatus; failures: number; last_error: string | null; output: string | null }>(`SELECT status, failures, last_error, output FROM ${this.tableNameEntries} WHERE id = $1 AND path = $2 FOR UPDATE`, [id, this.pathStr]);
 			if (existingEntry.rows.length === 0) {
 				throw(new Error(`Request with ID ${String(id)} not found`));
@@ -515,7 +520,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
-		return(await this.dbTransaction('query', async (client, logger): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+		return(await this.dbTransaction('query', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
+			const logger = this.methodLogger('query');
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
 			const conditions: string[] = [];
@@ -589,6 +595,44 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
+		await this.dbTransaction('delete', async (client): Promise<void> => {
+			const logger = this.methodLogger('delete');
+			const ids = input.map(function(entry) {
+				return(String(entry.id));
+			});
+			const statuses = input.map(function(entry) {
+				return(entry.status);
+			});
+
+			const deletedRows = await client.query<{ id: string }>(
+				`WITH targets(id, status) AS (
+					SELECT * FROM unnest($2::text[], $3::text[])
+				),
+				deleted_idempotent AS (
+					DELETE FROM ${this.tableNameIdempotentKeys} k
+					USING ${this.tableNameEntries} e, targets t
+					WHERE k.path = $1 AND k.entry_id = e.id AND e.path = $1
+						AND e.id = t.id AND e.status = t.status
+				)
+				DELETE FROM ${this.tableNameEntries} e
+				USING targets t
+				WHERE e.path = $1 AND e.id = t.id AND e.status = t.status
+				RETURNING e.id`,
+				[this.pathStr, ids, statuses]
+			);
+
+			const deleted = deletedRows.rowCount ?? 0;
+			if (deleted > 0) {
+				logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
+			}
+		});
+	}
+
 	async partition(path: string) : Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
@@ -601,7 +645,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger: this.logger,
 			pool: this.poolInternal,
 			path: [...this.path, path],
-			tablePrefix: this.tablePrefix
+			tablePrefix: this.tablePrefix,
+			completedRetentionDays: this.completedRetentionDays
 		});
 
 		return(retval);

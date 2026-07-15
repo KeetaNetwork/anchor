@@ -8,6 +8,7 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueDeleteInput,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
@@ -45,6 +46,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private readonly namespace: string;
+	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace: string; }) {
@@ -54,6 +56,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		this.namespace = options.namespace;
+		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -325,6 +328,47 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		return(entries);
 	}
 
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
+		const firestore = await this.getFirestore();
+		const collection = await this.getCollection();
+		const idempotentCollection = await this.getIdempotentCollection();
+		const logger = this.methodLogger('delete');
+		const batch = firestore.batch();
+		let deleted = 0;
+
+		for (const target of input) {
+			const doc = await collection.doc(String(target.id)).get();
+			if (!doc.exists) {
+				continue;
+			}
+
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const entry = doc.data() as QueueEntryDocument;
+			if (entry.status !== target.status) {
+				continue;
+			}
+
+			if (entry.idempotentKeys) {
+				for (const idempotentID of entry.idempotentKeys) {
+					batch.delete(idempotentCollection.doc(idempotentID));
+				}
+			}
+			batch.delete(doc.ref);
+			deleted++;
+		}
+
+		if (deleted === 0) {
+			return;
+		}
+
+		await batch.commit();
+		logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
+	}
+
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.methodLogger('partition')?.debug(`Creating partitioned queue storage driver for path: ${path}`);
 
@@ -337,7 +381,8 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			logger: this.logger,
 			firestore: this.firestoreInternal,
 			namespace: this.namespace,
-			path: [...this.path, path]
+			path: [...this.path, path],
+			completedRetentionDays: this.completedRetentionDays
 		});
 
 		return(retval);

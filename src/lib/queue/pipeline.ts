@@ -1,5 +1,6 @@
 import {
-	KeetaAnchorQueueRunner
+	KeetaAnchorQueueRunner,
+	deleteExpiredCompletedFromStorageDriver
 } from './index.js';
 import type {
 	KeetaAnchorQueueStorageDriver,
@@ -77,6 +78,10 @@ export interface KeetaAnchorQueuePipeline<QueueRequest, FINALQueueResult> {
 	 * and between stages of the pipeline
 	 */
 	maintain: () => Promise<void>;
+	/**
+	 * Delete expired completed entries from every stage queue
+	 */
+	deleteExpiredCompleted: () => Promise<void>;
 	/**
 	 * Destroy the pipeline and release any resources it allocated
 	 */
@@ -230,6 +235,24 @@ export abstract class KeetaAnchorQueuePipelineAdvanced<IN1 = unknown, FINALOUT =
 			await stage1.maintain();
 		} catch (error) {
 			logger?.error('Error running stage maintenance:', error);
+		}
+	}
+
+	async deleteExpiredCompleted(): Promise<void> {
+		await this.init();
+
+		const logger = this.methodLogger('deleteExpiredCompleted');
+
+		for (let index = 0; index < this.queues.length; index++) {
+			const queue = this.queues[index];
+			if (queue === undefined) {
+				continue;
+			}
+			try {
+				await deleteExpiredCompletedFromStorageDriver(queue);
+			} catch (error) {
+				logger?.error(`Error deleting expired completed entries for stage "#${index}":`, error);
+			}
 		}
 	}
 

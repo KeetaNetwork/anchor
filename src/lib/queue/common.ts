@@ -28,6 +28,46 @@ class KeetaAnchorQueueIdempotentKeyExistsError extends KeetaAnchorError {
 	}
 }
 
+class KeetaAnchorQueueCompletedRetentionNotConfiguredError extends KeetaAnchorError {
+	static override readonly name: string = 'KeetaAnchorQueueCompletedRetentionNotConfigured';
+	private readonly KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID = 'c4e8f1a2-6b3d-4e91-9f0a-1d2c3b4a5e6f';
+
+	constructor(message?: string) {
+		super(message ?? 'completedRetentionDays is not configured on this queue');
+		this.statusCode = -1;
+
+		Object.defineProperty(this, 'KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID', {
+			value: KeetaAnchorQueueCompletedRetentionNotConfiguredError.KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaAnchorQueueCompletedRetentionNotConfiguredError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID', KeetaAnchorQueueCompletedRetentionNotConfiguredError.KeetaAnchorQueueCompletedRetentionNotConfiguredErrorObjectTypeID));
+	}
+}
+
+class KeetaAnchorQueueCompletedRetentionPipingError extends KeetaAnchorError {
+	static override readonly name: string = 'KeetaAnchorQueueCompletedRetentionPiping';
+	private readonly KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID!: string;
+	private static readonly KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID = 'f8a2c4e1-7b3d-4f92-a1c0-9e8d7f6a5b4c';
+
+	constructor(message?: string) {
+		super(message ?? 'Queues with completedRetentionDays configured cannot be piped to or from other queues');
+		this.statusCode = -1;
+
+		Object.defineProperty(this, 'KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID', {
+			value: KeetaAnchorQueueCompletedRetentionPipingError.KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaAnchorQueueCompletedRetentionPipingError {
+		return(this.hasPropWithValue(input, 'KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID', KeetaAnchorQueueCompletedRetentionPipingError.KeetaAnchorQueueCompletedRetentionPipingErrorObjectTypeID));
+	}
+}
+
 class KeetaAnchorQueueIncorrectStateAssertedError extends KeetaAnchorError {
 	static override readonly name: string = 'KeetaAnchorQueueIncorrectState';
 	private readonly KeetaAnchorQueueIncorrectStateAssertedErrorObjectTypeID!: string;
@@ -52,6 +92,8 @@ class KeetaAnchorQueueIncorrectStateAssertedError extends KeetaAnchorError {
 export const Errors: {
 	IdempotentExistsError: typeof KeetaAnchorQueueIdempotentKeyExistsError;
 	IncorrectStateAssertedError: typeof KeetaAnchorQueueIncorrectStateAssertedError;
+	CompletedRetentionNotConfiguredError: typeof KeetaAnchorQueueCompletedRetentionNotConfiguredError;
+	CompletedRetentionPipingError: typeof KeetaAnchorQueueCompletedRetentionPipingError;
 } = {
 	/**
 	 * An entry already exists in the queue that contains one of the idempotent
@@ -61,5 +103,15 @@ export const Errors: {
 	/**
 	 * The entry is not in the state asserted by the request
 	 */
-	IncorrectStateAssertedError: KeetaAnchorQueueIncorrectStateAssertedError
+	IncorrectStateAssertedError: KeetaAnchorQueueIncorrectStateAssertedError,
+	/**
+	 * {@link KeetaAnchorQueueRunner.deleteExpiredCompleted} was called without
+	 * `completedRetentionDays` configured on the queue.
+	 */
+	CompletedRetentionNotConfiguredError: KeetaAnchorQueueCompletedRetentionNotConfiguredError,
+	/**
+	 * A queue with `completedRetentionDays` was piped to or from another queue, or
+	 * {@link KeetaAnchorQueueRunner.deleteExpiredCompleted} was called while piped.
+	 */
+	CompletedRetentionPipingError: KeetaAnchorQueueCompletedRetentionPipingError
 };
