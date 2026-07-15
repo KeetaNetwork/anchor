@@ -19,7 +19,7 @@ import type {
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorMarketPrices,
-	KeetaFXAnchorMarketPricesCacheControl,
+	KeetaFXAnchorMarketPricesConfig,
 	KeetaFXAnchorMarketPricesRequest,
 	KeetaFXAnchorMarketPricesResponse,
 	KeetaFXAnchorQuote,
@@ -154,22 +154,13 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorMetadataServerConf
 		acceptedCostAssets?: NonNullable<ServiceMetadata['services']['fx']>[string]['acceptedCostAssets'];
 
 		/**
-		 * Optional callback to provide market prices for a set of quote
-		 * assets against a base asset. When not provided, prices are
-		 * derived from estimate rate data.
+		 * Market prices endpoint configuration.
 		 *
-		 * The callback may optionally include `cacheControl`, which
-		 * overrides {@link marketPricesCacheControl}.
+		 * - `false` disables GET /api/getMarketPrices and omits it from metadata
+		 * - `{ cacheControl, referenceAmount, get }` enables and configures it
+		 * - omitted enables the endpoint with defaults
 		 */
-		getMarketPrices?: (request: KeetaFXAnchorMarketPricesRequest) => Promise<KeetaFXAnchorMarketPrices & { cacheControl?: KeetaFXAnchorMarketPricesCacheControl; }>;
-
-		/**
-		 * Default cache policy for GET /api/getMarketPrices responses.
-		 * Overridden when {@link getMarketPrices} returns `cacheControl`.
-		 *
-		 * Example: `{ maxAge: { seconds: 30 } }`
-		 */
-		marketPricesCacheControl?: KeetaFXAnchorMarketPricesCacheControl;
+		getMarketPrices?: false | KeetaFXAnchorMarketPricesConfig;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -1228,12 +1219,25 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		}
 	}
 
-	protected async getMarketPrices(request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices & { cacheControl?: KeetaFXAnchorMarketPricesCacheControl; }> {
-		if ('getMarketPrices' in this.fx && this.fx.getMarketPrices !== undefined) {
-			return(await this.fx.getMarketPrices(request));
+	protected getMarketPricesConfig(): KeetaFXAnchorMarketPricesConfig | null {
+		if (this.fx.getMarketPrices === false) {
+			return(null);
 		}
 
-		const referenceAmount = 1000n;
+		return(this.fx.getMarketPrices ?? {});
+	}
+
+	protected async getMarketPrices(request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		const config = this.getMarketPricesConfig();
+		if (config === null) {
+			throw(new Error('getMarketPrices is disabled'));
+		}
+
+		if (config.get !== undefined) {
+			return(await config.get(request));
+		}
+
+		const referenceAmount = config.referenceAmount ?? 1000n;
 		const quoteAssetEntries = await Promise.all(request.quoteAssets.map(async (quoteAsset) => {
 			const rateAndFee = await this.getUnsignedQuoteData({
 				from: quoteAsset,
@@ -1350,7 +1354,8 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			});
 		}
 
-		if (routes['GET /api/getMarketPrices'] === undefined) {
+		const marketPricesConfig = instance.getMarketPricesConfig();
+		if (marketPricesConfig !== null && routes['GET /api/getMarketPrices'] === undefined) {
 			routes['GET /api/getMarketPrices'] = async function(_ignore_params, _ignore_body, _ignore_headers, url) {
 				const quoteAssetsParameter = url.searchParams.get('quoteAssets');
 				const baseParameter = url.searchParams.get('base');
@@ -1376,12 +1381,11 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 					throw(new KeetaAnchorUserError('quoteAssets must contain at least one token'));
 				}
 
-				const marketPricesResult = await instance.getMarketPrices({ quoteAssets, base });
-				const cacheControl = marketPricesResult.cacheControl ?? instance.fx.marketPricesCacheControl;
+				const marketPrices = await instance.getMarketPrices({ quoteAssets, base });
+				const cacheControl = marketPricesConfig.cacheControl;
 				const marketPricesResponse: KeetaFXAnchorMarketPricesResponse = {
 					ok: true,
-					base: marketPricesResult.base,
-					quoteAssets: marketPricesResult.quoteAssets
+					...marketPrices
 				};
 
 				return({
@@ -1403,9 +1407,12 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 	 */
 	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['fx']>[string]> {
 		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
-			getEstimate: (new URL('/api/getEstimate', this.url)).toString(),
-			getMarketPrices: (new URL('/api/getMarketPrices', this.url)).toString()
+			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
 		};
+
+		if (this.getMarketPricesConfig() !== null) {
+			operations.getMarketPrices = (new URL('/api/getMarketPrices', this.url)).toString();
+		}
 
 		const metadata: NonNullable<ServiceMetadata['services']['fx']>[string] = {
 			from: this.fx.from ?? [],
