@@ -1738,14 +1738,14 @@ test('FX Server Pricing test', async function() {
 			throw(new Error('No result for GBP'));
 		}
 		expect(gbpResult.averageConvertedAmount).toBe(12500);
-		expect(gbpResult.providerEstimates.length).toBe(1);
+		expect(gbpResult.providerMarketPrices.length + gbpResult.providerEstimates.length).toBe(1);
 
 		const usdResult = retval.get(testCurrencyUSD);
 		if (!usdResult) {
 			throw(new Error('No result for USD'));
 		}
 		expect(usdResult.averageConvertedAmount).toBe(10025);
-		expect(usdResult.providerEstimates.length).toBe(2);
+		expect(usdResult.providerMarketPrices.length + usdResult.providerEstimates.length).toBe(2);
 	}
 
 	{
@@ -1813,10 +1813,123 @@ test('FX Server Pricing test', async function() {
 					throw(new Error(`No result for ${toJSONSerializable(expectedEntry.asset)}`));
 				}
 				expect(Math.round(result.averageConvertedAmount)).toBe(Math.round(expectedEntry.average));
-				expect(result.providerEstimates.length).toBe(expectedEntry.providerCount);
+				expect(result.providerMarketPrices.length + result.providerEstimates.length).toBe(expectedEntry.providerCount);
 			}
 		}
 	}
+
+	{
+		const usdString = testCurrencyUSD.publicKeyString.get();
+		const eurString = testCurrencyEUR.publicKeyString.get();
+		const gbpString = testCurrencyGBP.publicKeyString.get();
+
+		const marketPrices = await fxClient.getMarketPrices('TestServer0', {
+			quoteAssets: [usdString, gbpString],
+			base: eurString
+		});
+		expect(marketPrices).toEqual({
+			base: eurString,
+			quoteAssets: {
+				[usdString]: {
+					valueRatio: {
+						quote: '1000',
+						base: '1002'
+					}
+				},
+				[gbpString]: {
+					valueRatio: {
+						quote: '1000',
+						base: '1250'
+					}
+				}
+			}
+		});
+	}
+});
+
+test('getPrices omits or throws invalid market price ratios based on onInvalidRatio', async function() {
+	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using nodeAndClient = await createNodeAndClient(userAccount);
+	const client = nodeAndClient.userClient;
+
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
+		throw(new Error('Test currencies not tokens'));
+	}
+
+	await using server = new KeetaNetFXAnchorEstimateHTTPServer({
+		logger: logger,
+		fx: {
+			from: [{
+				currencyCodes: [testCurrencyUSD.publicKeyString.get()],
+				to: [testCurrencyEUR.publicKeyString.get()]
+			}],
+			performExchanges: false,
+			estimateRateAndFee: async function() {
+				return({
+					convertedAmount: 100n,
+					cost: { amount: 0n, token: testCurrencyUSD }
+				});
+			},
+			getMarketPrices: {
+				get: async function(request) {
+					return({
+						base: request.base,
+						quoteAssets: Object.fromEntries(request.quoteAssets.map(function(quoteAsset) {
+							return([quoteAsset, {
+								valueRatio: {
+									quote: '0',
+									base: '100'
+								}
+							}]);
+						}))
+					});
+				}
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		name: 'TEST',
+		description: '',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: testCurrencyUSD.publicKeyString.get(),
+				EUR: testCurrencyEUR.publicKeyString.get()
+			},
+			services: {
+				fx: {
+					InvalidRatio: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const fxClient = new KeetaNetAnchor.FX.Client(client, {
+		root: userAccount,
+		signer: userAccount,
+		account: userAccount,
+		logger: logger
+	});
+
+	const omitted = await fxClient.getPrices({
+		assets: [testCurrencyUSD],
+		priceIn: testCurrencyEUR,
+		conversionValue: 100n,
+		onInvalidRatio: 'omit'
+	});
+	expect(omitted.get(testCurrencyUSD)).toBeNull();
+
+	await expect(fxClient.getPrices({
+		assets: [testCurrencyUSD],
+		priceIn: testCurrencyEUR,
+		conversionValue: 100n,
+		onInvalidRatio: 'throw'
+	})).rejects.toThrow(/Invalid market price ratio/);
 });
 
 
