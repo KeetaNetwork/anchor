@@ -182,8 +182,20 @@ export type KeetaFXAnchorMarketPrices = {
 	 */
 	quoteAssets: {
 		[quoteAsset in KeetaNetTokenPublicKeyString]?: {
-			current: KeetaFXAnchorMarketPriceRatio;
+			valueRatio: KeetaFXAnchorMarketPriceRatio;
 		};
+	};
+};
+
+/**
+ * Controls Cache-Control for GET /api/getMarketPrices responses.
+ */
+export type KeetaFXAnchorMarketPricesCacheControl = {
+	/**
+	 * Cache freshness interval. Sets the `max-age` Cache-Control directive.
+	 */
+	maxAge: {
+		seconds: number;
 	};
 };
 

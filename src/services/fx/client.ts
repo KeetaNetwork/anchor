@@ -1130,7 +1130,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			}
 		}
 
-		const providerPriceResults = await Promise.all([...providerAssets.entries()].map(async ([_providerID, entries]) => {
+		const providerPriceResults = await Promise.all([...providerAssets.entries()].map(async ([_ignore_providerID, entries]) => {
 			const firstEntry = entries[0];
 			if (firstEntry === undefined) {
 				return(null);
@@ -1165,7 +1165,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 				const prices = assetProviderPrices.get(entry.asset) ?? [];
 				prices.push({
 					provider: result.provider,
-					price: priceEntry.current
+					price: priceEntry.valueRatio
 				});
 				assetProviderPrices.set(entry.asset, prices);
 			}

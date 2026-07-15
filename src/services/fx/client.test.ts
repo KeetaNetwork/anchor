@@ -1825,13 +1825,13 @@ test('FX Server Pricing test', async function() {
 			base: eurString,
 			quoteAssets: {
 				[usdString]: {
-					current: {
+					valueRatio: {
 						quote: '1000',
 						base: '1002'
 					}
 				},
 				[gbpString]: {
-					current: {
+					valueRatio: {
 						quote: '1000',
 						base: '1250'
 					}

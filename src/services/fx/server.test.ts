@@ -1201,3 +1201,73 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 	expect(noAcceptedBody).toHaveProperty('ok', false);
 	expect(noAcceptedBody).toHaveProperty('error');
 }, 30000);
+
+test('getMarketPrices sets Cache-Control from config and callback override', async function() {
+	await using harness = await createFXTestHarness();
+	const { token1, token2, serverAccount, createServer } = harness;
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	await using defaultServer = createServer({
+		marketPricesCacheControl: { maxAge: { seconds: 30 }},
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 100n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await defaultServer.start();
+	const defaultResponse = await fetch(`${defaultServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(defaultResponse.status).toBe(200);
+	expect(defaultResponse.headers.get('Cache-Control')).toBe('public, max-age=30');
+
+	await using overrideServer = createServer({
+		marketPricesCacheControl: { maxAge: { seconds: 30 }},
+		getConversionRateAndFee: async function() {
+			throw(new Error('getConversionRateAndFee should not be called when getMarketPrices is provided'));
+		},
+		getMarketPrices: async function(request) {
+			const quoteAsset = request.quoteAssets[0];
+			if (quoteAsset === undefined) {
+				throw(new Error('Expected at least one quote asset'));
+			}
+
+			return({
+				base: request.base,
+				quoteAssets: {
+					[quoteAsset]: {
+						valueRatio: {
+							quote: '1',
+							base: '1'
+						}
+					}
+				},
+				cacheControl: { maxAge: { seconds: 5 }}
+			});
+		}
+	});
+
+	await overrideServer.start();
+	const overrideResponse = await fetch(`${overrideServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(overrideResponse.status).toBe(200);
+	expect(overrideResponse.headers.get('Cache-Control')).toBe('public, max-age=5');
+}, 30000);
