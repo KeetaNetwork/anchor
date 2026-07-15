@@ -809,14 +809,14 @@ test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
 		processor: async function(entry) {
 			const key = entry.request.key;
 			if (key.startsWith('timedout_early')) {
-				await asleep(500);
+				await asleep(5000);
 			}
 
 			const callCount = processCallCountByKey.get(key) ?? 0;
 			processCallCountByKey.set(key, callCount + 1);
 
 			if (key.startsWith('timedout_late')) {
-				await asleep(500);
+				await asleep(5000);
 			}
 
 			if (key.startsWith('error')) {
@@ -829,7 +829,7 @@ test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
 		processorStuck: 'RETRY'
 	});
 
-	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 50, maxRetries: 3 });
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
 
 	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
 
@@ -850,7 +850,7 @@ test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
 			 * from aborted to processing to completed in the same run
 			 */
 			vi.useRealTimers();
-			await runner.run({ timeoutMs: 50 });
+			await runner.run({ timeoutMs: 90 });
 			vi.useFakeTimers();
 
 			const status_aborted = await runner.get(id_aborted);
