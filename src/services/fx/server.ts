@@ -19,7 +19,6 @@ import type {
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
 	KeetaFXAnchorMarketPrices,
-	KeetaFXAnchorMarketPricesConfig,
 	KeetaFXAnchorMarketPricesRequest,
 	KeetaFXAnchorMarketPricesResponse,
 	KeetaFXAnchorQuote,
@@ -58,6 +57,55 @@ import { Buffer } from '../../lib/utils/buffer.js';
  * misconfigurations so it is enabled by default for now.
  */
 const PARANOID = true;
+
+/**
+ * Controls Cache-Control for GET /api/getMarketPrices responses.
+ */
+export type KeetaFXAnchorMarketPricesCacheControl = {
+	/**
+	 * Cache freshness interval. Sets the `max-age` Cache-Control directive.
+	 */
+	maxAge: {
+		seconds: number;
+	};
+};
+
+/**
+ * Configuration for the optional GET /api/getMarketPrices endpoint.
+ *
+ * Set to `false` to disable the endpoint. When enabled (or omitted for
+ * the default enabled behavior), prices are derived from estimate rate
+ * data unless `get` is provided.
+ */
+export type KeetaFXAnchorMarketPricesConfig = {
+	/**
+	 * Cache policy for getMarketPrices responses. Defaults to
+	 * `{ maxAge: { seconds: 0 } }` when omitted.
+	 *
+	 * Example: `{ maxAge: { seconds: 30 } }`
+	 */
+	cacheControl?: KeetaFXAnchorMarketPricesCacheControl;
+
+	/**
+	 * Reference quote amount used when deriving prices from estimate
+	 * rate data. Defaults to `1000n`. Ignored when `get` is provided.
+	 */
+	referenceAmount?: bigint;
+
+	/**
+	 * Behavior when deriving a price for one quote asset fails or yields
+	 * an invalid (zero) ratio. Defaults to `'omit'`.
+	 *
+	 * Invalid/failed quotes are always logged regardless of this setting.
+	 */
+	onQuoteError?: 'omit' | 'throw';
+
+	/**
+	 * Optional custom price provider. When omitted, prices are derived
+	 * from estimate/rate data using {@link referenceAmount}.
+	 */
+	get?: (request: KeetaFXAnchorMarketPricesRequest) => Promise<KeetaFXAnchorMarketPrices>;
+};
 
 export type GetConversionRateAndFeeContext = {
 	/**
@@ -1238,13 +1286,32 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		}
 
 		const referenceAmount = config.referenceAmount ?? 1000n;
+		const onQuoteError = config.onQuoteError ?? 'omit';
 		const quoteAssetEntries = await Promise.all(request.quoteAssets.map(async (quoteAsset) => {
-			const rateAndFee = await this.getUnsignedQuoteData({
-				from: quoteAsset,
-				to: request.base,
-				amount: referenceAmount.toString(),
-				affinity: 'from'
-			}, 'estimate');
+			let rateAndFee;
+			try {
+				rateAndFee = await this.getUnsignedQuoteData({
+					from: quoteAsset,
+					to: request.base,
+					amount: referenceAmount.toString(),
+					affinity: 'from'
+				}, 'estimate');
+			} catch (error) {
+				this.logger.error('GET /api/getMarketPrices', `Failed to derive price for quote asset ${quoteAsset} against base ${request.base}:`, error);
+				if (onQuoteError === 'throw') {
+					throw(error);
+				}
+				return(null);
+			}
+
+			if (referenceAmount === 0n || rateAndFee.convertedAmount === 0n) {
+				const error = new Error(`Invalid market price ratio for quote asset ${quoteAsset} against base ${request.base}: quote=${referenceAmount.toString()} base=${rateAndFee.convertedAmount.toString()}`);
+				this.logger.error('GET /api/getMarketPrices', error.message);
+				if (onQuoteError === 'throw') {
+					throw(error);
+				}
+				return(null);
+			}
 
 			return([quoteAsset, {
 				valueRatio: {
@@ -1256,7 +1323,9 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 
 		return({
 			base: request.base,
-			quoteAssets: Object.fromEntries(quoteAssetEntries)
+			quoteAssets: Object.fromEntries(quoteAssetEntries.filter(function(entry): entry is NonNullable<typeof entry> {
+				return(entry !== null);
+			}))
 		});
 	}
 
@@ -1382,7 +1451,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 				}
 
 				const marketPrices = await instance.getMarketPrices({ quoteAssets, base });
-				const cacheControl = marketPricesConfig.cacheControl;
+				const maxAgeSeconds = marketPricesConfig.cacheControl?.maxAge.seconds ?? 0;
 				const marketPricesResponse: KeetaFXAnchorMarketPricesResponse = {
 					ok: true,
 					...marketPrices
@@ -1390,11 +1459,9 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 
 				return({
 					output: JSON.stringify(marketPricesResponse),
-					...(cacheControl !== undefined ? {
-						headers: {
-							'Cache-Control': `public, max-age=${cacheControl.maxAge.seconds}`
-						}
-					} : {})
+					headers: {
+						'Cache-Control': `public, max-age=${maxAgeSeconds}`
+					}
 				});
 			};
 		}

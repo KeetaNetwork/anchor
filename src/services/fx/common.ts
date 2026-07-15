@@ -187,46 +187,6 @@ export type KeetaFXAnchorMarketPrices = {
 	};
 };
 
-/**
- * Controls Cache-Control for GET /api/getMarketPrices responses.
- */
-export type KeetaFXAnchorMarketPricesCacheControl = {
-	/**
-	 * Cache freshness interval. Sets the `max-age` Cache-Control directive.
-	 */
-	maxAge: {
-		seconds: number;
-	};
-};
-
-/**
- * Configuration for the optional GET /api/getMarketPrices endpoint.
- *
- * Set to `false` to disable the endpoint. When enabled (or omitted for
- * the default enabled behavior), prices are derived from estimate rate
- * data unless `get` is provided.
- */
-export type KeetaFXAnchorMarketPricesConfig = {
-	/**
-	 * Cache policy for getMarketPrices responses.
-	 *
-	 * Example: `{ maxAge: { seconds: 30 } }`
-	 */
-	cacheControl?: KeetaFXAnchorMarketPricesCacheControl;
-
-	/**
-	 * Reference quote amount used when deriving prices from estimate
-	 * rate data. Defaults to `1000n`. Ignored when `get` is provided.
-	 */
-	referenceAmount?: bigint;
-
-	/**
-	 * Optional custom price provider. When omitted, prices are derived
-	 * from estimate/rate data using {@link referenceAmount}.
-	 */
-	get?: (request: KeetaFXAnchorMarketPricesRequest) => Promise<KeetaFXAnchorMarketPrices>;
-};
-
 export type KeetaFXAnchorMarketPricesResponse = ({
 	ok: true;
 } & KeetaFXAnchorMarketPrices) | {

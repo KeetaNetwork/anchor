@@ -714,7 +714,7 @@ function convertUsingMarketPriceRatio(
 	const quote = BigInt(ratio.quote);
 	const base = BigInt(ratio.base);
 	if (quote === 0n || base === 0n) {
-		throw(new Error('Invalid market price ratio'));
+		throw(new Error(`Invalid market price ratio: quote=${ratio.quote} base=${ratio.base}`));
 	}
 
 	if (affinity === 'from') {
@@ -729,6 +729,13 @@ export interface GetPricesArgs<Asset extends ConversionInput['from']> {
 	priceIn: ConversionInput['from'],
 	conversionValue?: bigint | ((input: Asset) => bigint | Promise<bigint>)
 	conversionAffinity?: ConversionInput['affinity']
+	/**
+	 * Behavior when a provider returns an invalid market price ratio
+	 * (e.g. zero quote/base). Defaults to `'omit'`.
+	 *
+	 * Invalid ratios are always logged regardless of this setting.
+	 */
+	onInvalidRatio?: 'omit' | 'throw';
 }
 
 class KeetaFXAnchorClient extends KeetaFXAnchorBase {
@@ -1057,6 +1064,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		const base = priceInCanonical.to.publicKeyString.get();
 		const affinity = input.conversionAffinity ?? 'from';
 		const priceIn = input.priceIn ?? 'USD';
+		const onInvalidRatio = input.onInvalidRatio ?? 'omit';
 
 		const assetEntries = await Promise.all(input.assets.map(async (asset) => {
 			const canonical = await this.canonicalizeConversionTokens({ from: asset });
@@ -1159,6 +1167,17 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			for (const entry of result.entries) {
 				const priceEntry = result.marketPrices.quoteAssets[entry.quoteAsset];
 				if (priceEntry === undefined) {
+					continue;
+				}
+
+				try {
+					// Validate ratio early so convertUsingMarketPriceRatio cannot crash the batch later.
+					convertUsingMarketPriceRatio(priceEntry.valueRatio, entry.conversionValue, affinity);
+				} catch (error) {
+					this.logger?.error(`Invalid market price ratio from provider ${String(result.provider.providerID)} for quote asset ${entry.quoteAsset} against base ${base}:`, error, priceEntry.valueRatio);
+					if (onInvalidRatio === 'throw') {
+						throw(error);
+					}
 					continue;
 				}
 
