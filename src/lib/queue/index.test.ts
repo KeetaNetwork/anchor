@@ -113,7 +113,7 @@ const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; }) => Promise<{
+		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; path?: string[] }) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
 		}>;
@@ -122,8 +122,8 @@ const drivers: {
 	'Memory': {
 		persistent: false,
 		skip: false,
-		create: async function(key: string) {
-			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
+		create: async function(key: string, options) {
+			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger, path: options?.path });
 			return({
 				queue: queue,
 				[Symbol.asyncDispose]: async function() {
@@ -141,7 +141,8 @@ const drivers: {
 			const queue = new KeetaAnchorQueueStorageDriverFile({
 				filePath: filePath,
 				id: key,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -173,7 +174,8 @@ const drivers: {
 					}));
 				},
 				id: key,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -225,7 +227,7 @@ const drivers: {
 					return(client);
 				},
 				id: key,
-				path: [`key_${key}_${RunKey}`],
+				path: [`key_${key}_${RunKey}`, ...(options?.path ?? [])],
 				logger: logger
 			});
 
@@ -305,6 +307,7 @@ const drivers: {
 					id: key,
 					logger: logger,
 					tablePrefix: tablePrefix,
+					path: options?.path,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
@@ -383,7 +386,8 @@ const drivers: {
 				},
 				id: key,
 				namespace: namespace,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 
 			return({
@@ -2042,6 +2046,27 @@ suite.sequential('Driver Tests', async function() {
 					expect(part111_entry).toBeDefined();
 					expect(part111_entry?.request).toEqual({ partition: 'part1.1.1' });
 				});
+
+				/*
+				 * Test that partitioning works and we can
+				 * add and get entries from same partition
+				 * either using `partition` or `path`
+				 */
+				testRunner('Partitioning and Opening Work the same', async function() {
+					await using driverInstance1 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false
+					});
+					await using partition1 = await driverInstance1.queue.partition('partition1');
+					const entry1_id = await partition1.add({ key: 'partition_test_1' });
+
+					await using driverInstance2 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false,
+						path: ['partition1']
+					});
+
+					const check_entry1 = await driverInstance2.queue.get(entry1_id);
+					expect(check_entry1?.id).toBe(entry1_id);
+				}, 60_000);
 			}
 
 			/*
