@@ -1128,6 +1128,9 @@ class AnchorGraph {
 		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const forwardingOpts = normalizeForwardingOnlyOptions(filter.forwardingOnly);
 		const forwardingMethod = forwardingOpts?.method;
+		const traversalStepLimit = forwardingOpts
+			? Math.min(maxStepCount ?? Infinity, forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS)
+			: maxStepCount;
 
 		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
 
@@ -1253,7 +1256,7 @@ class AnchorGraph {
 					continue;
 				}
 				markFn(markKey, depth);
-				if (maxStepCount !== undefined && depth >= maxStepCount) {
+				if (traversalStepLimit !== undefined && depth >= traversalStepLimit) {
 					continue;
 				}
 				const neighbors = neighborBuckets.get(stepKey);
