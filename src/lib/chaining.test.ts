@@ -1315,13 +1315,12 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 
 	expect(path.path).toHaveLength(3);
 
-	const BANK_ANCHOR_SUPPORTED_OPS = { createPersistentForwarding: true, initiateTransfer: true } as const;
 	expect(toJSONSerializable([
 		{
 			providerID: 'BankAnchor',
 			type: 'assetMovement',
-			from: { asset: 'USD', location: 'bank-account:us', rail: 'ACH', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS },
-			to: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
+			from: { asset: 'USD', location: 'bank-account:us', rail: 'ACH' },
+			to: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND' }
 		},
 		{
 			from: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND' },
@@ -1332,8 +1331,8 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 		{
 			providerID: 'BankAnchor',
 			type: 'assetMovement',
-			from: { asset: tokens.EURC, location: keetaLocation, rail: 'KEETA_SEND', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS },
-			to: { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH', supportedOperations: BANK_ANCHOR_SUPPORTED_OPS }
+			from: { asset: tokens.EURC, location: keetaLocation, rail: 'KEETA_SEND' },
+			to: { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }
 		}
 	])).toEqual(toJSONSerializable(path.path));
 });
@@ -4783,7 +4782,9 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 		if (!secondLeg || secondLeg.type !== 'assetMovement') {
 			throw(new Error(`Expected the second path leg to be an asset-movement node`));
 		}
-		expect(secondLeg.from.supportedOperations?.createPersistentForwarding).toBe(true);
+		// Bare KEETA_SEND rails omit supportedOperations; plan computation must still
+		// treat Keeta-origin hops as managed sends (not persistent forwarding).
+		expect(secondLeg.from.supportedOperations).toBeUndefined();
 
 		const plan = await AnchorChainingPlan.create(path);
 
