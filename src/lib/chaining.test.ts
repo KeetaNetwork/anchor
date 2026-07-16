@@ -4099,12 +4099,12 @@ describe('getPlans forwardingOnly', function() {
 		const tokens = { USDC: await makeToken(), USD: await makeToken(), EUR: await makeToken(), KTA: await makeToken() };
 		const baseEvmOps = legMode === 'pfr' ? PFR_OPS
 			: legMode === 'omitted' ? undefined
-			: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
-			: MANAGED_OPS;
+				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
+					: MANAGED_OPS;
 		const ethEvmOps = legMode === 'pfr' ? DUAL_OPS
 			: legMode === 'omitted' ? undefined
-			: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
-			: MANAGED_OPS;
+				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
+					: MANAGED_OPS;
 
 		type AMAssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
 		type AMSide = AMAssetEntry['paths'][number]['pair'][number];

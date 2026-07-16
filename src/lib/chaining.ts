@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
-import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem, AssetLocationString } from "../services/asset-movement/common.js";
+import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
@@ -1125,6 +1125,7 @@ class AnchorGraph {
 
 	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const forwardingOpts = normalizeForwardingOnlyOptions(filter.forwardingOnly);
 		const forwardingMethod = forwardingOpts?.method;
 
@@ -2096,7 +2097,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				// Accept explicit createPersistentForwarding:true or omitted supportedOperations
-				// (implied). Reject partial ops that omit the flag — those imply false.
+				// (implied). Reject partial ops that omit the flag - those imply false.
 				const pfrEligible = supportsPersistentForwarding(scanStep.from.supportedOperations, 'implied');
 				const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
