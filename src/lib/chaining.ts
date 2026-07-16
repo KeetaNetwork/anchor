@@ -3127,7 +3127,7 @@ export class AnchorChaining {
 	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true; forwardingOnly: true | ForwardingOnlyOptions }): Promise<AnchorChainingFullForwardingOnlyPlanResult[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput: true; forwardingOnly?: false; }): Promise<AnchorChainingFullPlanResult[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options: GetPlansOptions & { includeAllOutput?: false; forwardingOnly: true | ForwardingOnlyOptions }): Promise<AnchorChainingForwardingOnlyPlan[] | null>;
-	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null>;
+	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
 		let paths = await this.getPaths(input);
