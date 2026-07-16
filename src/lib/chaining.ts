@@ -259,11 +259,24 @@ export type AnchorChainingListAssetsFilter =
 	| ({ to: AnchorChainingListAssetsSideFilter; from?: never } & AnchorChainingListAssetsShared)
 	| ({ from?: never; to?: never } & AnchorChainingListAssetsShared);
 
+export type ForwardingOnlyMethod = 'explicit' | 'implied';
+
+export type ForwardingOnlyOptions = {
+	method: ForwardingOnlyMethod;
+	/** Max asset-movement legs (default 2, matching deposit UX). */
+	maxLegs?: number;
+};
+
 export type AnchorChainingResolveAssetsFilter = {
 	from?: AnchorChainingListAssetsSideFilter;
 	to?: AnchorChainingListAssetsSideFilter;
 	maxStepCount?: number;
 	onlyAllowFXLike?: boolean;
+	/**
+	 * When set, only consider persistent-forwarding-eligible crypto hops
+	 * (asset-movement, non-Keeta origin). `true` means `{ method: 'explicit' }`.
+	 */
+	forwardingOnly?: boolean | Pick<ForwardingOnlyOptions, 'method'>;
 };
 
 export const DEFAULT_MAX_PATH_LENGTH = 5;
@@ -366,6 +379,47 @@ function isCryptoChainLocation(location: AssetLocationLike): boolean {
 }
 
 /**
+ * Whether a rail's supportedOperations qualify for forwarding-only filtering.
+ * - explicit: createPersistentForwarding must be true
+ * - implied: supportedOperations omitted, or createPersistentForwarding is true
+ *   (a partial object like `{ initiateTransfer: true }` does not qualify)
+ */
+export function supportsPersistentForwarding(
+	supportedOperations: RailSupportedOperations | undefined,
+	method: ForwardingOnlyMethod
+): boolean {
+	if (method === 'explicit') {
+		return(supportedOperations?.createPersistentForwarding === true);
+	}
+
+	if (supportedOperations === undefined) {
+		return(true);
+	}
+
+	return(supportedOperations.createPersistentForwarding === true);
+}
+
+/**
+ * Whether a graph node is a forwarding-eligible crypto hop (asset-movement,
+ * crypto locations, non-Keeta origin, and createPersistentForwarding per method).
+ */
+function isForwardingEligibleNode(node: GraphNodeLike, method: ForwardingOnlyMethod): boolean {
+	if (node.type !== 'assetMovement') {
+		return(false);
+	}
+
+	if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
+		return(false);
+	}
+
+	if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
+		return(false);
+	}
+
+	return(supportsPersistentForwarding(node.from.supportedOperations, method));
+}
+
+/**
  * Adjacency over crypto persistent-forwarding edges only - excludes FX edges and
  * any hop that starts on Keeta.
  */
@@ -373,19 +427,7 @@ export function buildForwardingAdjacency(nodes: GraphNodeLike[]): Map<string, Fo
 	const adjacency = new Map<string, ForwardingAssetRef[]>();
 
 	for (const node of nodes) {
-		if (node.type !== 'assetMovement') {
-			continue;
-		}
-
-		if (node.from.supportedOperations?.createPersistentForwarding !== true) {
-			continue;
-		}
-
-		if (!isCryptoChainLocation(node.from.location) || !isCryptoChainLocation(node.to.location)) {
-			continue;
-		}
-
-		if (isChainLocation(toAssetLocation(node.from.location), 'keeta')) {
+		if (!isForwardingEligibleNode(node, 'explicit')) {
 			continue;
 		}
 
@@ -796,6 +838,23 @@ class AnchorGraph {
 							return(retval);
 						}
 
+						const makeFromTo = (input: {
+							asset: { id: AnchorChainingAsset; location: AssetLocationLike; };
+							rail: { rail: Rail; supportedOperations?: RailSupportedOperations | undefined; }
+						}) => {
+							const retval: Extract<GraphNodeLike, { type: 'assetMovement' }>['from' | 'to'] = {
+								asset: input.asset.id,
+								location: input.asset.location,
+								rail: input.rail.rail
+							};
+
+							if (input.rail.supportedOperations !== undefined) {
+								retval.supportedOperations = getProviderSupportedOperationsForRail(input.rail.supportedOperations);
+							}
+
+							return(retval);
+						};
+
 						const pathNodes: GraphNodeLike[] = [];
 						for (const [ src, dest ] of [
 							[ fromResolved, toResolved ],
@@ -817,18 +876,8 @@ class AnchorGraph {
 									pathNodes.push({
 										type: 'assetMovement',
 										providerID: providerID,
-										from: {
-											asset: src.id,
-											location: src.location,
-											rail: inboundRail.rail,
-											supportedOperations: getProviderSupportedOperationsForRail(inboundRail.supportedOperations)
-										},
-										to: {
-											asset: dest.id,
-											location: dest.location,
-											rail: outboundRail.rail,
-											supportedOperations: getProviderSupportedOperationsForRail(outboundRail.supportedOperations)
-										}
+										from: makeFromTo({ asset: src, rail: inboundRail }),
+										to: makeFromTo({ asset: dest, rail: outboundRail })
 									});
 								}
 							}
@@ -1076,6 +1125,12 @@ class AnchorGraph {
 
 	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
+		// eslint-disable-next-line @typescript-eslint/no-use-before-define
+		const forwardingOpts = normalizeForwardingOnlyOptions(filter.forwardingOnly);
+		const forwardingMethod = forwardingOpts?.method;
+		const traversalStepLimit = forwardingOpts
+			? Math.min(maxStepCount ?? Infinity, forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS)
+			: maxStepCount;
 
 		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
 
@@ -1092,6 +1147,16 @@ class AnchorGraph {
 		// of many filtered resolveAssets/listAssets calls doesn't rebuild them n
 		// times.
 		const { nodes, fromAssetKeys, toAssetKeys, fromKeys, toKeys, nodesByFromKey, nodesByToKey, nodesByFromAssetKey, nodesByToAssetKey, railInfo } = await this.#getResolveIndex();
+
+		const nodeAllowed = (node: GraphNodeLike): boolean => {
+			if (onlyAllowFXLike && !isFXLikeNode(node)) {
+				return(false);
+			}
+			if (forwardingMethod !== undefined && !isForwardingEligibleNode(node, forwardingMethod)) {
+				return(false);
+			}
+			return(true);
+		};
 
 		const sideMatchesFilter = (
 			side: GraphNodeLike['from' | 'to'],
@@ -1187,11 +1252,11 @@ class AnchorGraph {
 				if (!node || markKey === undefined || stepKey === undefined) {
 					throw(new Error(`Invalid node index during BFS processing: ${nodeIdx}`));
 				}
-				if (onlyAllowFXLike && !isFXLikeNode(node)) {
+				if (!nodeAllowed(node)) {
 					continue;
 				}
 				markFn(markKey, depth);
-				if (maxStepCount !== undefined && depth >= maxStepCount) {
+				if (traversalStepLimit !== undefined && depth >= traversalStepLimit) {
 					continue;
 				}
 				const neighbors = neighborBuckets.get(stepKey);
@@ -1229,7 +1294,7 @@ class AnchorGraph {
 				if (!node || fromKey === undefined || toKey === undefined) {
 					throw(new Error(`Invalid node index during reachability marking: ${i}`));
 				}
-				if (!onlyAllowFXLike || isFXLikeNode(node)) {
+				if (nodeAllowed(node)) {
 					markFromReachable(fromKey);
 					markFromReachable(toKey);
 					markToReachable(fromKey);
@@ -1240,9 +1305,9 @@ class AnchorGraph {
 
 		// Build result maps by collecting inbound/outbound rails for every reachable
 		// (asset, location) pair. The common path reads the precomputed per-asset
-		// rail aggregation (railInfo) and so is O(reachable). onlyAllowFXLike needs
-		// to exclude non-fx-like nodes' rails -- which railInfo doesn't distinguish
-		// -- so it falls back to the O(nodes) scan.
+		// rail aggregation (railInfo) and so is O(reachable). onlyAllowFXLike and
+		// forwardingOnly need to exclude disallowed nodes' rails -- which railInfo
+		// doesn't distinguish -- so they fall back to the O(nodes) scan.
 		const buildResultMapFast = (
 			reachable: Set<string>,
 			distances: Map<string, number>
@@ -1264,7 +1329,7 @@ class AnchorGraph {
 			return(resultMap);
 		};
 
-		const buildResultMapFXLike = (
+		const buildResultMapFiltered = (
 			reachable: Set<string>,
 			distances: Map<string, number>
 		): Map<string, AnchorChainingAssetInfo> => {
@@ -1292,7 +1357,7 @@ class AnchorGraph {
 				if (!node || toKey === undefined || fromKey === undefined) {
 					throw(new Error(`Invalid node index during result-map construction: ${i}`));
 				}
-				if (!isFXLikeNode(node)) {
+				if (!nodeAllowed(node)) {
 					continue;
 				}
 				if (reachable.has(toKey)) {
@@ -1311,7 +1376,7 @@ class AnchorGraph {
 			return(resultMap);
 		};
 
-		const buildResultMap = onlyAllowFXLike ? buildResultMapFXLike : buildResultMapFast;
+		const buildResultMap = (onlyAllowFXLike || forwardingMethod !== undefined) ? buildResultMapFiltered : buildResultMapFast;
 
 		const fromResultMap = buildResultMap(fromReachable, fromDistances);
 		const toResultMap = buildResultMap(toReachable, toDistances);
@@ -1457,23 +1522,18 @@ export interface ComputePlanOptions {
 	forwardingOnly?: boolean;
 }
 
-export type ForwardingOnlyOptions = {
-	/** Max asset-movement legs (default 2, matching deposit UX). */
-	maxLegs?: number;
-};
-
 export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
 	includeAllOutput?: boolean;
-	forwardingOnly?: true | ForwardingOnlyOptions;
+	forwardingOnly?: boolean | ForwardingOnlyOptions;
 }
 
-function normalizeForwardingOnlyOptions(forwardingOnly: true | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
+function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
 		return(undefined);
 	}
 
 	if (forwardingOnly === true) {
-		return({ maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
+		return({ method: 'explicit', maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
 	}
 
 	return({
@@ -1502,6 +1562,7 @@ function toComputePlanOptions(options?: GetPlansOptions, forwardingOpts?: Forwar
  */
 export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingOnlyOptions): boolean {
 	const maxLegs = options?.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS;
+	const method = options?.method ?? 'explicit';
 	const legs = path.path;
 
 	if (legs.length < 1 || legs.length > maxLegs) {
@@ -1521,7 +1582,7 @@ export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingO
 			return(false);
 		}
 
-		return(step.from.supportedOperations?.createPersistentForwarding === true);
+		return(supportsPersistentForwarding(step.from.supportedOperations, method));
 	}));
 }
 
@@ -2038,10 +2099,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					continue;
 				}
 
-				const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
+				// Accept explicit createPersistentForwarding:true or omitted supportedOperations
+				// (implied). Reject partial ops that omit the flag - those imply false.
+				const pfrEligible = supportsPersistentForwarding(scanStep.from.supportedOperations, 'implied');
 				const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
-				if (sourceIsKeeta || !pfrSupported) {
+				if (sourceIsKeeta || !pfrEligible) {
 					throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${scanIndex} at ${convertAssetLocationToString(scanStep.from.location)} does not qualify`));
 				}
 
