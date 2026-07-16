@@ -7,7 +7,7 @@ import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetCon
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees } from './chaining.js';
+import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
@@ -4078,8 +4078,9 @@ describe('getPlans forwardingOnly', function() {
 	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
 	const PFR_OPS = { initiateTransfer: false, createPersistentForwarding: true } as const;
 	const DUAL_OPS = { initiateTransfer: true, createPersistentForwarding: true } as const;
+	const INITIATE_ONLY_OPS = { initiateTransfer: true } as const;
 
-	type LegMode = 'managed' | 'pfr';
+	type LegMode = 'managed' | 'pfr' | 'omitted' | 'initiateOnly';
 
 	async function buildForwardingWorld(legMode: LegMode) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -4096,7 +4097,14 @@ describe('getPlans forwardingOnly', function() {
 
 		const keetaLocation = `chain:keeta:${client.network}` satisfies AssetLocationLike;
 		const tokens = { USDC: await makeToken(), USD: await makeToken(), EUR: await makeToken(), KTA: await makeToken() };
-		const baseEvmOps = legMode === 'pfr' ? PFR_OPS : MANAGED_OPS;
+		const baseEvmOps = legMode === 'pfr' ? PFR_OPS
+			: legMode === 'omitted' ? undefined
+			: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
+			: MANAGED_OPS;
+		const ethEvmOps = legMode === 'pfr' ? DUAL_OPS
+			: legMode === 'omitted' ? undefined
+			: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
+			: MANAGED_OPS;
 
 		type AMAssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
 		type AMSide = AMAssetEntry['paths'][number]['pair'][number];
@@ -4109,12 +4117,12 @@ describe('getPlans forwardingOnly', function() {
 		const baseSide = (id: AMSide['id']): AMSide => ({
 			location: LOC.base,
 			id,
-			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: baseEvmOps }] }
+			rails: { common: [{ rail: 'EVM_SEND', ...(baseEvmOps !== undefined ? { supportedOperations: baseEvmOps } : {}) }] }
 		});
 		const ethSide = (id: AMSide['id']): AMSide => ({
 			location: LOC.eth,
 			id,
-			rails: { common: [{ rail: 'EVM_SEND', supportedOperations: legMode === 'pfr' ? DUAL_OPS : MANAGED_OPS }] }
+			rails: { common: [{ rail: 'EVM_SEND', ...(ethEvmOps !== undefined ? { supportedOperations: ethEvmOps } : {}) }] }
 		});
 		const fiatSide = (iso: AMSide['id']): AMSide => ({
 			location: LOC.sepa,
@@ -4341,7 +4349,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 
 		expect(isForwardingPath(path)).toBe(true);
-		expect(isForwardingPath(path, { maxLegs: 0 })).toBe(false);
+		expect(isForwardingPath(path, { method: 'explicit', maxLegs: 0 })).toBe(false);
 
 		const plan = await AnchorChainingPlan.create(path);
 		expect(isForwardingPlan(plan)).toBe(true);
@@ -4481,6 +4489,92 @@ describe('getPlans forwardingOnly', function() {
 
 		const plan = await AnchorChainingPlan.create(path, { forwardingOnly: true });
 		await expect(plan.execute()).rejects.toThrow(/cannot be executed/i);
+	});
+
+	test('supportsPersistentForwarding distinguishes explicit and implied', function() {
+		expect(supportsPersistentForwarding(undefined, 'explicit')).toBe(false);
+		expect(supportsPersistentForwarding(undefined, 'implied')).toBe(true);
+		expect(supportsPersistentForwarding({ createPersistentForwarding: true }, 'explicit')).toBe(true);
+		expect(supportsPersistentForwarding({ createPersistentForwarding: true }, 'implied')).toBe(true);
+		expect(supportsPersistentForwarding({ initiateTransfer: true }, 'explicit')).toBe(false);
+		expect(supportsPersistentForwarding({ initiateTransfer: true }, 'implied')).toBe(false);
+		expect(supportsPersistentForwarding({ createPersistentForwarding: false }, 'implied')).toBe(false);
+	});
+
+	test('getPlans method:implied includes omitted supportedOperations; explicit does not', async function() {
+		await using w = await buildForwardingWorld('omitted');
+
+		const request = {
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+		};
+
+		const paths = await w.anchorChaining.getPaths(request);
+		const path = paths?.[0];
+		if (!path) {
+			throw(new Error('Expected path with omitted supportedOperations'));
+		}
+		expect(path.path[0]?.type).toBe('assetMovement');
+		if (path.path[0]?.type === 'assetMovement') {
+			expect(path.path[0].from.supportedOperations).toBeUndefined();
+		}
+
+		expect(isForwardingPath(path, { method: 'explicit' })).toBe(false);
+		expect(isForwardingPath(path, { method: 'implied' })).toBe(true);
+
+		const explicitPlans = await w.anchorChaining.getPlans(request, { limit: 1, forwardingOnly: { method: 'explicit' }});
+		expect(explicitPlans).toBeNull();
+
+		const impliedPlans = await w.anchorChaining.getPlans(request, { limit: 1, forwardingOnly: { method: 'implied' }});
+		expect(impliedPlans).not.toBeNull();
+		expect(impliedPlans?.[0]).toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
+	});
+
+	test('getPlans method:implied excludes initiateTransfer-only rails', async function() {
+		await using w = await buildForwardingWorld('initiateOnly');
+
+		const plans = await w.anchorChaining.getPlans({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		}, { limit: 1, forwardingOnly: { method: 'implied' }});
+
+		expect(plans).toBeNull();
+	});
+
+	test('resolveAssets forwardingOnly respects explicit vs implied', async function() {
+		await using omitted = await buildForwardingWorld('omitted');
+		await using pfr = await buildForwardingWorld('pfr');
+		await using initiateOnly = await buildForwardingWorld('initiateOnly');
+
+		const omittedExplicit = await omitted.anchorChaining.graph.resolveAssets({
+			from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
+			forwardingOnly: { method: 'explicit' }
+		});
+		expect(omittedExplicit.to).toHaveLength(0);
+
+		const omittedImplied = await omitted.anchorChaining.graph.resolveAssets({
+			from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
+			forwardingOnly: { method: 'implied' }
+		});
+		const omittedKeys = omittedImplied.to.map((item) =>
+			`${typeof item.asset === 'string' ? item.asset : item.asset.publicKeyString.get()}@${convertAssetLocationToString(item.location)}`
+		);
+		expect(omittedKeys).toContain(`${omitted.tokens.USDC.publicKeyString.get()}@${omitted.keetaLocation}`);
+
+		const pfrExplicit = await pfr.anchorChaining.graph.resolveAssets({
+			from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
+			forwardingOnly: true
+		});
+		const pfrKeys = pfrExplicit.to.map((item) =>
+			`${typeof item.asset === 'string' ? item.asset : item.asset.publicKeyString.get()}@${convertAssetLocationToString(item.location)}`
+		);
+		expect(pfrKeys).toContain(`${pfr.tokens.USDC.publicKeyString.get()}@${pfr.keetaLocation}`);
+
+		const initiateOnlyImplied = await initiateOnly.anchorChaining.graph.resolveAssets({
+			from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
+			forwardingOnly: { method: 'implied' }
+		});
+		expect(initiateOnlyImplied.to).toHaveLength(0);
 	});
 });
 
