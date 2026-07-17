@@ -1,6 +1,6 @@
 import type { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as KeetaNet from "@keetanetwork/keetanet-client";
-import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem } from "../services/asset-movement/common.js";
+import type { AnchorTokenLocationMetadata, AssetLocationLike, AssetFeeBreakdown, AssetFeeLineItemType, AssetTransferInstructions, AssetWithRails, FiatPushRails, KeetaAssetMovementTransaction, KeetaPersistentForwardingAddressDetails, MovableAssetSearchCanonical, PersistentAddressAssetFeeBreakdown, PickChainLocation, Rail, RailOrRailWithExtendedDetails, RecipientResolved, ResolvedFeeLineItem, SimulatedAssetTransferInstructions, UnresolvedFeeLineItem, AssetOrAssetWithLocation } from "../services/asset-movement/common.js";
 import { convertAssetLocationToString, convertAssetSearchInputToCanonical, doesAssetOrPairMatch, isChainLocation, toAssetLocation } from "../services/asset-movement/common.js";
 import type { Resolver } from "./index.js";
 import { getDefaultResolver } from '../config.js';
@@ -1603,7 +1603,7 @@ export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingO
 	}));
 }
 
-function computeFeeTotalFromBreakdown(valueIn: bigint, fees: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string }): bigint {
+function computeFeeTotalFromBreakdown(valueIn: bigint, fees: AssetFeeBreakdown | PersistentAddressAssetFeeBreakdown): bigint {
 	let feeFromLineItems = 0n;
 
 	for (const lineItem of fees.lineItems) {
@@ -1615,7 +1615,7 @@ function computeFeeTotalFromBreakdown(valueIn: bigint, fees: { lineItems: readon
 	}
 
 	let feeTotal = feeFromLineItems;
-	if (fees.total !== undefined && fees.total !== '') {
+	if ('total' in fees && fees.total !== undefined && fees.total !== '') {
 		feeTotal = BigInt(fees.total);
 	}
 
@@ -1651,7 +1651,7 @@ export type AnchorChainingFeeLineItemMetadata = {
 
 export type AnchorChainingFeeLineItem = {
 	purpose: AssetFeeLineItemType;
-	asset: MovableAssetSearchCanonical;
+	asset: AssetOrAssetWithLocation;
 	value?: string;
 	basisPoints?: number;
 	details?: ClientRenderableContent;
@@ -1667,17 +1667,19 @@ export type AnchorChainingPlanFeeBreakdown = {
 export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPlan }): AnchorChainingPlanFeeBreakdown {
 	const lineItems: AnchorChainingFeeLineItem[] = [];
 
-	const defaultFeeAsset = (step: Exclude<ChainStepResolution, { type: 'keetaSend' }>): MovableAssetSearchCanonical => {
+	const defaultFeeAsset = (step: Exclude<ChainStepResolution, { type: 'keetaSend' }>): AssetOrAssetWithLocation => {
+		const location = convertAssetLocationToString(step.step.from.location);
+
 		if (step.type === 'fx') {
 			const token = step.result.isQuote ? step.result.quote.cost.token : step.result.estimate.expectedCost.token;
-			return(token.publicKeyString.get());
+			return({ id: token.publicKeyString.get(), location });
 		}
 
-		if (KeetaNet.lib.Account.isInstance(step.step.from.asset)) {
-			return(step.step.from.asset.publicKeyString.get());
-		}
+		const id = KeetaNet.lib.Account.isInstance(step.step.from.asset)
+			? step.step.from.asset.publicKeyString.get()
+			: step.step.from.asset;
 
-		return(step.step.from.asset);
+		return({ id, location });
 	};
 
 	for (let stepIndex = 0; stepIndex < plan.plan.steps.length; stepIndex++) {
@@ -1687,18 +1689,16 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		const appendBreakdown = (
-			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string },
+			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[] },
 			source: AnchorChainingFeeLineItemSource
 		) => {
 			const stepDefaultAsset = defaultFeeAsset(step);
 			const metadata = { stepIndex, step, source };
-			const startLength = lineItems.length;
 
 			for (const item of breakdown.lineItems) {
-				const asset = item.asset ?? stepDefaultAsset;
 				const base = {
 					purpose: item.purpose,
-					asset,
+					asset: item.asset ?? stepDefaultAsset,
 					metadata,
 					...(item.details !== undefined ? { details: item.details } : {})
 				};
@@ -1709,43 +1709,11 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 						value: item.value,
 						...(item.purpose === 'VALUE_VARIABLE' && 'basisPoints' in item && item.basisPoints !== undefined ? { basisPoints: item.basisPoints } : {})
 					});
-					continue;
-				}
-
-				if (item.purpose === 'VALUE_VARIABLE' && 'basisPoints' in item && item.basisPoints !== undefined) {
+				} else if (item.purpose === 'VALUE_VARIABLE' && 'basisPoints' in item && item.basisPoints !== undefined) {
 					lineItems.push({
 						...base,
 						basisPoints: item.basisPoints,
 						value: (step.valueIn * BigInt(item.basisPoints) / 10000n).toString()
-					});
-				}
-			}
-
-			if (breakdown.total !== undefined && breakdown.total !== '') {
-				const authoritativeTotal = computeFeeTotalFromBreakdown(step.valueIn, breakdown);
-				let lineItemSum = 0n;
-
-				for (let i = startLength; i < lineItems.length; i++) {
-					const emitted = lineItems[i];
-					if (emitted?.value !== undefined && emitted.value !== '') {
-						lineItemSum += BigInt(emitted.value);
-					}
-				}
-
-				if (authoritativeTotal > lineItemSum) {
-					lineItems.push({
-						purpose: 'OTHER',
-						asset: stepDefaultAsset,
-						value: (authoritativeTotal - lineItemSum).toString(),
-						metadata
-					});
-				} else if (authoritativeTotal < lineItemSum) {
-					lineItems.splice(startLength);
-					lineItems.push({
-						purpose: 'OTHER',
-						asset: stepDefaultAsset,
-						value: authoritativeTotal.toString(),
-						metadata
 					});
 				}
 			}
@@ -1769,17 +1737,18 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		};
 
 		if (step.type === 'fx') {
+			const location = convertAssetLocationToString(step.step.from.location);
 			if (step.result.isQuote) {
 				lineItems.push({
 					purpose: 'PROVIDER',
-					asset: step.result.quote.cost.token.publicKeyString.get(),
+					asset: { id: step.result.quote.cost.token.publicKeyString.get(), location },
 					value: step.result.quote.cost.amount.toString(),
 					metadata: { stepIndex, step, source: 'fxQuote' }
 				});
 			} else {
 				lineItems.push({
 					purpose: 'PROVIDER',
-					asset: step.result.estimate.expectedCost.token.publicKeyString.get(),
+					asset: { id: step.result.estimate.expectedCost.token.publicKeyString.get(), location },
 					value: step.result.estimate.expectedCost.max.toString(),
 					metadata: { stepIndex, step, source: 'fxEstimate' }
 				});
