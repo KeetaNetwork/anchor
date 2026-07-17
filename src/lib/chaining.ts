@@ -267,6 +267,23 @@ export type ForwardingOnlyOptions = {
 	maxLegs?: number;
 };
 
+const DEFAULT_FORWARDING_MAX_LEGS = 2;
+
+function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
+	if (!forwardingOnly) {
+		return(undefined);
+	}
+
+	if (forwardingOnly === true) {
+		return({ method: 'explicit', maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
+	}
+
+	return({
+		maxLegs: DEFAULT_FORWARDING_MAX_LEGS,
+		...forwardingOnly
+	});
+}
+
 export type AnchorChainingResolveAssetsFilter = {
 	from?: AnchorChainingListAssetsSideFilter;
 	to?: AnchorChainingListAssetsSideFilter;
@@ -275,6 +292,8 @@ export type AnchorChainingResolveAssetsFilter = {
 	/**
 	 * When set, only consider persistent-forwarding-eligible crypto hops
 	 * (asset-movement, non-Keeta origin). `true` means `{ method: 'explicit' }`.
+	 * Depth is controlled by `maxStepCount` when provided; otherwise defaults to
+	 * {@link DEFAULT_FORWARDING_MAX_LEGS} (same as getPlans' maxLegs default).
 	 */
 	forwardingOnly?: boolean | Pick<ForwardingOnlyOptions, 'method'>;
 };
@@ -284,14 +303,23 @@ export const DEFAULT_MAX_PATHS = 50;
 
 export type AnchorChainingFindPathsOptions = {
 	/**
-	 * Maximum number of legs a path may contain. Defaults to DEFAULT_MAX_PATH_LENGTH.
+	 * Maximum number of legs a path may contain. Defaults to DEFAULT_MAX_PATH_LENGTH,
+	 * or to forwarding `maxLegs` when `forwardingOnly` is set.
 	 */
 	maxPathLength?: number;
 	/**
 	 * Maximum number of paths to collect before halting the search. Defaults to DEFAULT_MAX_PATHS.
 	 */
 	maxPaths?: number;
+	/**
+	 * When set, only traverse persistent-forwarding-eligible crypto hops.
+	 * `true` means `{ method: 'explicit' }` with default maxLegs.
+	 */
+	forwardingOnly?: boolean | ForwardingOnlyOptions;
 };
+
+/** Options for {@link AnchorChaining.getPaths}; same shape as graph findPaths. */
+export type GetPathsOptions = AnchorChainingFindPathsOptions;
 
 export interface AnchorChainingResolveAssetsResult {
 	from: AnchorChainingAssetInfo[];
@@ -367,7 +395,6 @@ export type ForwardingAssetRef = {
 	location: AssetLocationLike;
 };
 
-const DEFAULT_FORWARDING_MAX_LEGS = 2;
 const forwardingAssetKeyCache: EVMChecksumCache = new Map();
 
 function forwardingAssetKey(asset: AnchorChainingAsset, location: AssetLocationLike): string {
@@ -926,7 +953,13 @@ class AnchorGraph {
 	}
 
 	async findPaths(input: AnchorChainingPathInput, options?: AnchorChainingFindPathsOptions): Promise<GraphNodeLike[][]> {
-		const maxPathLength = options?.maxPathLength ?? DEFAULT_MAX_PATH_LENGTH;
+		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
+		const maxPathLength = forwardingOpts
+			? Math.min(
+				options?.maxPathLength ?? Infinity,
+				forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS
+			)
+			: (options?.maxPathLength ?? DEFAULT_MAX_PATH_LENGTH);
 		if (maxPathLength < 1) {
 			throw(new Error(`maxPathLength must be at least 1, got ${maxPathLength}`));
 		}
@@ -935,7 +968,10 @@ class AnchorGraph {
 			throw(new Error(`maxPaths must be at least 1, got ${maxPaths}`));
 		}
 
-		const graph = await this.computeGraphNodes();
+		const allNodes = await this.computeGraphNodes();
+		const graph = forwardingOpts
+			? allNodes.filter((node) => isForwardingEligibleNode(node, forwardingOpts.method))
+			: allNodes;
 
 		const nodesWithNext: { node: GraphNodeLike, next: number[] }[] = graph.map(function(node) {
 			return({ node, next: [] });
@@ -1125,11 +1161,10 @@ class AnchorGraph {
 
 	async resolveAssets(filter: AnchorChainingResolveAssetsFilter = {}): Promise<AnchorChainingResolveAssetsResult> {
 		const { from: fromFilterInput, to: toFilterInput, maxStepCount, onlyAllowFXLike } = filter;
-		// eslint-disable-next-line @typescript-eslint/no-use-before-define
 		const forwardingOpts = normalizeForwardingOnlyOptions(filter.forwardingOnly);
 		const forwardingMethod = forwardingOpts?.method;
 		const traversalStepLimit = forwardingOpts
-			? Math.min(maxStepCount ?? Infinity, forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS)
+			? (maxStepCount ?? forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS)
 			: maxStepCount;
 
 		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
@@ -1525,21 +1560,6 @@ export interface ComputePlanOptions {
 export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
 	includeAllOutput?: boolean;
 	forwardingOnly?: boolean | ForwardingOnlyOptions;
-}
-
-function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
-	if (!forwardingOnly) {
-		return(undefined);
-	}
-
-	if (forwardingOnly === true) {
-		return({ method: 'explicit', maxLegs: DEFAULT_FORWARDING_MAX_LEGS });
-	}
-
-	return({
-		maxLegs: DEFAULT_FORWARDING_MAX_LEGS,
-		...forwardingOnly
-	});
 }
 
 function toComputePlanOptions(options?: GetPlansOptions, forwardingOpts?: ForwardingOnlyOptions): ComputePlanOptions | undefined {
@@ -3129,7 +3149,12 @@ export class AnchorChaining {
 		}
 	}
 
-	async getPaths(input: AnchorChainingPathInput): Promise<AnchorChainingPath[] | null> {
+	async getPaths(input: AnchorChainingPathInput, options?: GetPathsOptions): Promise<AnchorChainingPath[] | null> {
+		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
+		if (forwardingOpts && (forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS) < 1) {
+			return(null);
+		}
+
 		// Direct send: same Keeta location, same asset, same rail no providers needed.
 		const sourceLocation = toAssetLocation(input.source.location);
 		const destinationLocation = toAssetLocation(input.destination.location);
@@ -3144,6 +3169,11 @@ export class AnchorChaining {
 			isChainLocation(destinationLocation, 'keeta') &&
 			isAnchorChainingAssetEqual(input.source.asset, input.destination.asset)
 		) {
+			// Direct Keeta sends are never forwarding routes.
+			if (forwardingOpts) {
+				return(null);
+			}
+
 			const fromTo = {
 				asset: input.source.asset,
 				location: sourceLocation,
@@ -3154,7 +3184,7 @@ export class AnchorChaining {
 				[{ type: 'keetaSend', from: fromTo, to: fromTo }]
 			];
 		} else {
-			foundPaths = await this.graph.findPaths(input);
+			foundPaths = await this.graph.findPaths(input, options);
 		}
 
 		// Filter out paths with non-chain steps in intermediate positions
@@ -3184,6 +3214,11 @@ export class AnchorChaining {
 			retval.push(new AnchorChainingPath({ request: input, path, parent: this }));
 		}
 
+		if (forwardingOpts) {
+			const forwardingPaths = retval.filter((path) => isForwardingPath(path, forwardingOpts));
+			return(forwardingPaths.length === 0 ? null : forwardingPaths);
+		}
+
 		return(retval);
 	}
 
@@ -3193,17 +3228,10 @@ export class AnchorChaining {
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
-		let paths = await this.getPaths(input);
+		const paths = await this.getPaths(input, options?.forwardingOnly ? { forwardingOnly: options.forwardingOnly } : undefined);
 
 		if (!paths) {
 			return(null);
-		}
-
-		if (forwardingOpts) {
-			paths = paths.filter((path) => isForwardingPath(path, forwardingOpts));
-			if (paths.length === 0) {
-				return(null);
-			}
 		}
 
 		const limit = options?.limit ?? 3;

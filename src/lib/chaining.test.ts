@@ -4240,6 +4240,51 @@ describe('getPlans forwardingOnly', function() {
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
 	});
 
+	test('getPaths forwardingOnly filters like getPlans', async function() {
+		await using pfr = await buildForwardingWorld('pfr');
+		await using managed = await buildForwardingWorld('managed');
+		await using omitted = await buildForwardingWorld('omitted');
+
+		const requestFor = (w: Awaited<ReturnType<typeof buildForwardingWorld>>) => ({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+		});
+
+		const pfrPaths = await pfr.anchorChaining.getPaths(requestFor(pfr), { forwardingOnly: true });
+		expect(pfrPaths).not.toBeNull();
+		expect(pfrPaths?.every((path) => isForwardingPath(path, { method: 'explicit' }))).toBe(true);
+
+		const managedPaths = await managed.anchorChaining.getPaths(requestFor(managed), { forwardingOnly: true });
+		expect(managedPaths).toBeNull();
+
+		const omittedExplicit = await omitted.anchorChaining.getPaths(requestFor(omitted), { forwardingOnly: { method: 'explicit' }});
+		expect(omittedExplicit).toBeNull();
+
+		const omittedImplied = await omitted.anchorChaining.getPaths(requestFor(omitted), { forwardingOnly: { method: 'implied' }});
+		expect(omittedImplied).not.toBeNull();
+		expect(omittedImplied?.every((path) => isForwardingPath(path, { method: 'implied' }))).toBe(true);
+	});
+
+	test('getPaths forwardingOnly honors maxLegs', async function() {
+		await using w = await buildForwardingWorld('pfr');
+
+		const request = {
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+		};
+
+		const defaultPaths = await w.anchorChaining.getPaths(request, { forwardingOnly: true });
+		expect(defaultPaths).not.toBeNull();
+		expect(defaultPaths?.every((path) => path.path.length <= 2)).toBe(true);
+
+		const oneLeg = await w.anchorChaining.getPaths(request, { forwardingOnly: { method: 'explicit', maxLegs: 1 }});
+		expect(oneLeg).not.toBeNull();
+		expect(oneLeg?.every((path) => path.path.length === 1)).toBe(true);
+
+		const zeroLegs = await w.anchorChaining.getPaths(request, { forwardingOnly: { method: 'explicit', maxLegs: 0 }});
+		expect(zeroLegs).toBeNull();
+	});
+
 	test('listFees returns persistent address fees for forwarding-only plans', async function() {
 		await using w = await buildForwardingWorld('pfr');
 
@@ -4664,20 +4709,35 @@ describe('getPlans forwardingOnly', function() {
 		});
 
 		try {
+			const assetKey = (item: { asset: string | { publicKeyString: { get(): string }}; location: AssetLocationLike }) =>
+				`${typeof item.asset === 'string' ? item.asset : item.asset.publicKeyString.get()}@${convertAssetLocationToString(item.location)}`;
+
 			const defaultForwarding = await anchorChaining.graph.resolveAssets({
 				from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
 				forwardingOnly: true
 			});
-			const defaultKeys = defaultForwarding.to.map((item) =>
-				`${typeof item.asset === 'string' ? item.asset : item.asset.publicKeyString.get()}@${convertAssetLocationToString(item.location)}`
-			);
+			const defaultKeys = defaultForwarding.to.map(assetKey);
 			expect(defaultKeys).not.toContain(`${tokens.USDC.publicKeyString.get()}@${keetaLocation}`);
 			expect(defaultKeys).toContain(`${EXTERNAL_MULTI.USDC_ARB}@${LOC_MULTI.arb}`);
+			expect(defaultKeys).not.toContain(`${EXTERNAL_MULTI.USDC_OP}@${LOC_MULTI.op}`);
 
-			const plans = await anchorChaining.getPlans({
-				source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
-				destination: { asset: tokens.USDC, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
-			}, { limit: 1, forwardingOnly: true });
+			const threeStep = await anchorChaining.graph.resolveAssets({
+				from: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base },
+				forwardingOnly: true,
+				maxStepCount: 3
+			});
+			expect(threeStep.to.map(assetKey)).toContain(`${EXTERNAL_MULTI.USDC_OP}@${LOC_MULTI.op}`);
+
+			const pathRequest = {
+				source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+				destination: { asset: tokens.USDC, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' as const }
+			};
+
+			// 4-leg route exceeds default maxLegs=2
+			expect(await anchorChaining.getPaths(pathRequest, { forwardingOnly: true })).toBeNull();
+			expect(await anchorChaining.getPaths(pathRequest, { forwardingOnly: { method: 'explicit', maxLegs: 4 }})).not.toBeNull();
+
+			const plans = await anchorChaining.getPlans(pathRequest, { limit: 1, forwardingOnly: true });
 			expect(plans).toBeNull();
 		} finally {
 			await am1[Symbol.asyncDispose]?.();
