@@ -118,9 +118,9 @@ export type KeetaFXAnchorClientConfig = {
 	 * How long `getPrices` waits for additional calls with the same base
 	 * so their provider `getMarketPrices` requests can be batched together.
 	 *
-	 * - `true` / omitted — (`waitMs: 25`, `maxWaitMs: 100`)
-	 * - `false` — disable batching
-	 * - `{ waitMs, maxWaitMs? }` — custom timing (`maxWaitMs` defaults to `4 * waitMs`)
+	 * - `true` / omitted - (`waitMs: 25`, `maxWaitMs: 100`)
+	 * - `false` - disable batching
+	 * - `{ waitMs, maxWaitMs? }` - custom timing (`maxWaitMs` defaults to `4 * waitMs`)
 	 */
 	getPricesBatching?: KeetaFXAnchorClientGetPricesBatching | boolean;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
