@@ -182,9 +182,11 @@ test('Asset Movement Anchor Client Test', async function() {
 			{
 				purpose: 'VALUE_VARIABLE',
 				basisPoints: 50,
+				asset: { id: 'USD', location: 'bank-account:us' },
 				details: { type: 'markdown', content: 'Variable fee of 50 basis points' }
 			}
 		],
+		totalPricedIn: { id: 'USD', location: 'bank-account:us' },
 		total: '10'
 	}
 

@@ -4038,12 +4038,16 @@ describe('getPlans forwardingOnly', function() {
 	} as const satisfies { [key: string]: AssetLocationLike };
 
 	test('listChainingPlanFees reconciles fees.total with line items for persistent forwarding', function() {
+		const feeAssetWithLocation = { id: EXTERNAL_IDS.USDC_ETH, location: LOC.eth } as const;
+		const stepDefaultAsset = { id: EXTERNAL_IDS.USDC_BASE, location: LOC.base } as const;
+		const totalPricedIn = { id: EXTERNAL_IDS.USDC_ETH, location: LOC.eth } as const;
 		const fees = {
 			lineItems: [
-				{ purpose: 'RAIL' as const, value: '5' },
-				{ purpose: 'NETWORK' as const, value: '3' },
+				{ purpose: 'RAIL' as const, value: '5', asset: feeAssetWithLocation },
+				{ purpose: 'NETWORK' as const, value: '3', asset: EXTERNAL_IDS.USDC_BASE },
 				{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 100 }
 			],
+			totalPricedIn,
 			total: '25'
 		};
 
@@ -4070,8 +4074,12 @@ describe('getPlans forwardingOnly', function() {
 
 		const feeSum = listed.lineItems.reduce((sum, item) => sum + BigInt(item.value ?? 0), 0n);
 		expect(feeSum).toEqual(25n);
+		expect(listed.lineItems[0]?.asset).toEqual(feeAssetWithLocation);
+		expect(listed.lineItems[1]?.asset).toEqual(EXTERNAL_IDS.USDC_BASE);
+		expect(listed.lineItems[2]?.asset).toEqual(stepDefaultAsset);
 		expect(listed.lineItems.at(-1)?.purpose).toEqual('OTHER');
 		expect(listed.lineItems.at(-1)?.value).toEqual('7');
+		expect(listed.lineItems.at(-1)?.asset).toEqual(totalPricedIn);
 	});
 
 	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
@@ -4303,7 +4311,7 @@ describe('getPlans forwardingOnly', function() {
 		expect(fees.lineItems[0]?.value).toEqual('15');
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 		expect(fees.lineItems[0]?.metadata.step.type).toEqual('forwarded');
-		expect(fees.lineItems[0]?.asset).toEqual(EXTERNAL_IDS.USDC_BASE);
+		expect(fees.lineItems[0]?.asset).toEqual({ id: EXTERNAL_IDS.USDC_BASE, location: LOC.base });
 		expect('total' in fees).toBe(false);
 		expect(plan.plan.steps[0]?.valueOut).toEqual(985n);
 	});

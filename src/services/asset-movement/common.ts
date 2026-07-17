@@ -382,6 +382,13 @@ export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(in
 type FixedFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'OTHER';
 type VariableFeeLineItemType = 'VALUE_VARIABLE';
 
+interface AssetWithLocation {
+	id: MovableAssetSearchCanonical;
+	location: AssetLocationString;
+}
+
+export type AssetOrAssetWithLocation = AssetWithLocation | MovableAssetSearchCanonical;
+
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
  */
@@ -396,7 +403,7 @@ interface BaseAssetFeeLineItem<Purpose extends AssetFeeLineItemType> {
 	/**
 	 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
 	 */
-	asset?: MovableAssetSearchCanonical;
+	asset?: AssetOrAssetWithLocation;
 
 	/**
 	 * Additional details about this fee line item that (optionally) can be rendered in the client application.
@@ -432,10 +439,11 @@ export type UnresolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemUnreso
 
 interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> {
 	lineItems: LineItemType[];
+
 	/**
 	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
 	 */
-	totalPricedIn?: MovableAssetSearchCanonical;
+	totalPricedIn?: AssetOrAssetWithLocation;
 
 	/**
 	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
