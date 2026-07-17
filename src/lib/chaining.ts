@@ -318,9 +318,6 @@ export type AnchorChainingFindPathsOptions = {
 	forwardingOnly?: boolean | ForwardingOnlyOptions;
 };
 
-/** Options for {@link AnchorChaining.getPaths}; same shape as graph findPaths. */
-export type GetPathsOptions = AnchorChainingFindPathsOptions;
-
 export interface AnchorChainingResolveAssetsResult {
 	from: AnchorChainingAssetInfo[];
 	to: AnchorChainingAssetInfo[];
@@ -3149,7 +3146,7 @@ export class AnchorChaining {
 		}
 	}
 
-	async getPaths(input: AnchorChainingPathInput, options?: GetPathsOptions): Promise<AnchorChainingPath[] | null> {
+	async getPaths(input: AnchorChainingPathInput, options?: AnchorChainingFindPathsOptions): Promise<AnchorChainingPath[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
 		if (forwardingOpts && (forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS) < 1) {
 			return(null);
