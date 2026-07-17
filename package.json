@@ -1,6 +1,6 @@
 {
 	"name": "@keetanetwork/anchor",
-	"version": "0.0.91",
+	"version": "0.0.92",
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
