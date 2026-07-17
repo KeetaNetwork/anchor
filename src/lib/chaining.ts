@@ -1603,7 +1603,7 @@ export function isForwardingPath(path: AnchorChainingPath, options?: ForwardingO
 	}));
 }
 
-function computeFeeTotalFromBreakdown(valueIn: bigint, fees: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string }): bigint {
+function computeFeeTotalFromBreakdown(valueIn: bigint, fees: AssetFeeBreakdown | PersistentAddressAssetFeeBreakdown): bigint {
 	let feeFromLineItems = 0n;
 
 	for (const lineItem of fees.lineItems) {
@@ -1615,7 +1615,7 @@ function computeFeeTotalFromBreakdown(valueIn: bigint, fees: { lineItems: readon
 	}
 
 	let feeTotal = feeFromLineItems;
-	if (fees.total !== undefined && fees.total !== '') {
+	if ('total' in fees && fees.total !== undefined && fees.total !== '') {
 		feeTotal = BigInt(fees.total);
 	}
 
@@ -1689,12 +1689,11 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		const appendBreakdown = (
-			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[]; total?: string; totalPricedIn?: AssetOrAssetWithLocation },
+			breakdown: { lineItems: readonly (ResolvedFeeLineItem | UnresolvedFeeLineItem)[] },
 			source: AnchorChainingFeeLineItemSource
 		) => {
 			const stepDefaultAsset = defaultFeeAsset(step);
 			const metadata = { stepIndex, step, source };
-			const startLength = lineItems.length;
 
 			for (const item of breakdown.lineItems) {
 				const base = {
@@ -1715,36 +1714,6 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 						...base,
 						basisPoints: item.basisPoints,
 						value: (step.valueIn * BigInt(item.basisPoints) / 10000n).toString()
-					});
-				}
-			}
-
-			if (breakdown.total !== undefined && breakdown.total !== '') {
-				const authoritativeTotal = computeFeeTotalFromBreakdown(step.valueIn, breakdown);
-				const totalAsset = breakdown.totalPricedIn ?? stepDefaultAsset;
-				let lineItemSum = 0n;
-
-				for (let i = startLength; i < lineItems.length; i++) {
-					const emitted = lineItems[i];
-					if (emitted?.value !== undefined && emitted.value !== '') {
-						lineItemSum += BigInt(emitted.value);
-					}
-				}
-
-				if (authoritativeTotal > lineItemSum) {
-					lineItems.push({
-						purpose: 'OTHER',
-						asset: totalAsset,
-						value: (authoritativeTotal - lineItemSum).toString(),
-						metadata
-					});
-				} else if (authoritativeTotal < lineItemSum) {
-					lineItems.splice(startLength);
-					lineItems.push({
-						purpose: 'OTHER',
-						asset: totalAsset,
-						value: authoritativeTotal.toString(),
-						metadata
 					});
 				}
 			}

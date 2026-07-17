@@ -4018,8 +4018,7 @@ describe('getPlans forwardingOnly', function() {
 				{ purpose: 'RAIL' as const, value: '5' },
 				{ purpose: 'NETWORK' as const, value: '3' },
 				{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 100 }
-			],
-			total: '18'
+			]
 		};
 
 		expect(estimateForwardingValueOut(1000n, fees)).toEqual(982n);
@@ -4037,17 +4036,15 @@ describe('getPlans forwardingOnly', function() {
 		sepa: 'bank-account:iban-swift'
 	} as const satisfies { [key: string]: AssetLocationLike };
 
-	test('listChainingPlanFees reconciles fees.total with line items for persistent forwarding', function() {
+	test('listChainingPlanFees preserves fee assets including location', function() {
 		const feeAssetWithLocation = { id: EXTERNAL_IDS.USDC_ETH, location: LOC.eth } as const;
 		const stepDefaultAsset = { id: EXTERNAL_IDS.USDC_BASE, location: LOC.base } as const;
-		const totalPricedIn = { id: EXTERNAL_IDS.USDC_ETH, location: LOC.eth } as const;
 		const fees = {
 			lineItems: [
 				{ purpose: 'RAIL' as const, value: '5', asset: feeAssetWithLocation },
 				{ purpose: 'NETWORK' as const, value: '3', asset: EXTERNAL_IDS.USDC_BASE },
 				{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 100 }
 			],
-			totalPricedIn,
 			total: '25'
 		};
 
@@ -4072,14 +4069,10 @@ describe('getPlans forwardingOnly', function() {
 			}
 		});
 
-		const feeSum = listed.lineItems.reduce((sum, item) => sum + BigInt(item.value ?? 0), 0n);
-		expect(feeSum).toEqual(25n);
-		expect(listed.lineItems[0]?.asset).toEqual(feeAssetWithLocation);
-		expect(listed.lineItems[1]?.asset).toEqual(EXTERNAL_IDS.USDC_BASE);
-		expect(listed.lineItems[2]?.asset).toEqual(stepDefaultAsset);
-		expect(listed.lineItems.at(-1)?.purpose).toEqual('OTHER');
-		expect(listed.lineItems.at(-1)?.value).toEqual('7');
-		expect(listed.lineItems.at(-1)?.asset).toEqual(totalPricedIn);
+		expect(listed.lineItems).toHaveLength(3);
+		expect(listed.lineItems[0]).toMatchObject({ purpose: 'RAIL', value: '5', asset: feeAssetWithLocation });
+		expect(listed.lineItems[1]).toMatchObject({ purpose: 'NETWORK', value: '3', asset: EXTERNAL_IDS.USDC_BASE });
+		expect(listed.lineItems[2]).toMatchObject({ purpose: 'VALUE_VARIABLE', basisPoints: 100, value: '10', asset: stepDefaultAsset });
 	});
 
 	const MANAGED_OPS = { initiateTransfer: true, createPersistentForwarding: false } as const;
