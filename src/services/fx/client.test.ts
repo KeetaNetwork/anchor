@@ -1932,6 +1932,119 @@ test('getPrices omits or throws invalid market price ratios based on onInvalidRa
 	})).rejects.toThrow(/Invalid market price ratio/);
 });
 
+test.each([
+	{ label: 'by default', getPricesBatching: undefined, expectBatched: true },
+	{ label: 'when getPricesBatching is true', getPricesBatching: true, expectBatched: true },
+	{ label: 'when getPricesBatching is false', getPricesBatching: false, expectBatched: false }
+] as const)('getPrices batches concurrent same-base calls $label', async function({ getPricesBatching, expectBatched }) {
+	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using nodeAndClient = await createNodeAndClient(userAccount);
+	const client = nodeAndClient.userClient;
+
+	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const { account: testCurrencyGBP } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken() || !testCurrencyGBP.isToken()) {
+		throw(new Error('Test currencies not tokens'));
+	}
+
+	const usdString = testCurrencyUSD.publicKeyString.get();
+	const eurString = testCurrencyEUR.publicKeyString.get();
+	const gbpString = testCurrencyGBP.publicKeyString.get();
+
+	const marketPriceRequests: { quoteAssets: string[]; base: string; }[] = [];
+
+	await using server = new KeetaNetFXAnchorEstimateHTTPServer({
+		logger: logger,
+		fx: {
+			from: [{
+				currencyCodes: [usdString, gbpString],
+				to: [eurString]
+			}],
+			performExchanges: false,
+			estimateRateAndFee: async function() {
+				return({
+					convertedAmount: 100n,
+					cost: { amount: 0n, token: testCurrencyUSD }
+				});
+			},
+			getMarketPrices: {
+				get: async function(request) {
+					marketPriceRequests.push({
+						quoteAssets: [...request.quoteAssets].sort(),
+						base: request.base
+					});
+					return({
+						base: request.base,
+						quoteAssets: Object.fromEntries(request.quoteAssets.map(function(quoteAsset) {
+							const ratio = quoteAsset === usdString
+								? { quote: '1000', base: '1002' }
+								: { quote: '1000', base: '1250' };
+							return([quoteAsset, { valueRatio: ratio }]);
+						}))
+					});
+				}
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		name: 'TEST',
+		description: '',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {
+				USD: usdString,
+				EUR: eurString,
+				GBP: gbpString
+			},
+			services: {
+				fx: {
+					BatchPrices: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const fxClient = new KeetaNetAnchor.FX.Client(client, {
+		root: userAccount,
+		signer: userAccount,
+		account: userAccount,
+		logger: logger,
+		...(getPricesBatching === undefined ? {} : { getPricesBatching })
+	});
+
+	const [usdPrices, gbpPrices] = await Promise.all([
+		fxClient.getPrices({
+			assets: [testCurrencyUSD],
+			priceIn: testCurrencyEUR,
+			conversionValue: 10000n
+		}),
+		fxClient.getPrices({
+			assets: [testCurrencyGBP],
+			priceIn: testCurrencyEUR,
+			conversionValue: 10000n
+		})
+	]);
+
+	if (expectBatched) {
+		expect(marketPriceRequests).toEqual([{
+			quoteAssets: [gbpString, usdString].sort(),
+			base: eurString
+		}]);
+	} else {
+		expect(marketPriceRequests).toHaveLength(2);
+		expect(marketPriceRequests).toEqual(expect.arrayContaining([
+			{ quoteAssets: [usdString], base: eurString },
+			{ quoteAssets: [gbpString], base: eurString }
+		]));
+	}
+
+	expect(usdPrices.get(testCurrencyUSD)?.averageConvertedAmount).toBe(10020);
+	expect(gbpPrices.get(testCurrencyGBP)?.averageConvertedAmount).toBe(12500);
+});
 
 test('FX Server Queue extensions', async function() {
 	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);

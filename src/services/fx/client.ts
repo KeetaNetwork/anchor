@@ -58,6 +58,30 @@ type AccountOptions = {
 };
 
 /**
+ * Controls how {@link KeetaFXAnchorClient.getPrices} coalesces concurrent
+ * calls that share the same base (`priceIn`) into fewer `getMarketPrices`
+ * requests.
+ */
+export interface KeetaFXAnchorClientGetPricesBatching {
+	/**
+	 * How long to wait after each `getPrices` call for additional calls
+	 * with the same base before sending the batched `getMarketPrices`
+	 * request. Each new same-base call resets this timer.
+	 *
+	 * Defaults to `25`.
+	 */
+	waitMs: number;
+	/**
+	 * Maximum time to wait from the first `getPrices` call in a batch
+	 * before flushing, even if new same-base calls keep arriving.
+	 *
+	 * Defaults to `100` for the client default. When omitted from a custom
+	 * object, defaults to `4 * waitMs`.
+	 */
+	maxWaitMs?: number;
+}
+
+/**
  * The configuration options for the FX Anchor client.
  */
 export type KeetaFXAnchorClientConfig = {
@@ -90,6 +114,15 @@ export type KeetaFXAnchorClientConfig = {
 	 * account associated with the client, an error occurs.
 	 */
 	account?: InstanceType<typeof KeetaNetLib.Account>;
+	/**
+	 * How long `getPrices` waits for additional calls with the same base
+	 * so their provider `getMarketPrices` requests can be batched together.
+	 *
+	 * - `true` / omitted - (`waitMs: 25`, `maxWaitMs: 100`)
+	 * - `false` - disable batching
+	 * - `{ waitMs, maxWaitMs? }` - custom timing (`maxWaitMs` defaults to `4 * waitMs`)
+	 */
+	getPricesBatching?: KeetaFXAnchorClientGetPricesBatching | boolean;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
 
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
@@ -743,11 +776,49 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	readonly id: string;
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
+	readonly #getPricesBatching: Required<KeetaFXAnchorClientGetPricesBatching>;
+	readonly #pendingGetMarketPricesBatches = new Map<string, {
+		provider: KeetaFXAnchorProviderBase;
+		base: KeetaNetTokenPublicKeyString;
+		quoteAssets: Set<KeetaNetTokenPublicKeyString>;
+		waiters: {
+			resolve: (prices: KeetaFXAnchorMarketPrices) => void;
+			reject: (error: unknown) => void;
+		}[];
+		waitTimer: ReturnType<typeof setTimeout> | null;
+		maxWaitTimer: ReturnType<typeof setTimeout> | null;
+	}>();
+
+	static #resolveGetPricesBatching(input?: KeetaFXAnchorClientGetPricesBatching | boolean): Required<KeetaFXAnchorClientGetPricesBatching> {
+		if (input === false) {
+			return({ waitMs: 0, maxWaitMs: 0 });
+		} else {
+			if (input === true || input === undefined) {
+				input = { waitMs: 25 }
+			}
+
+			return({
+				waitMs: input.waitMs,
+				maxWaitMs: input.maxWaitMs ?? (input.waitMs * 4)
+			});
+		}
+	}
 
 	constructor(client: KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
 		super({ client, logger: config.logger });
 		this.resolver = config.resolver ?? getDefaultResolver(client, config);
 		this.id = config.id ?? crypto.randomUUID();
+		this.#getPricesBatching = KeetaFXAnchorClient.#resolveGetPricesBatching(config.getPricesBatching);
+
+		if (!Number.isFinite(this.#getPricesBatching.waitMs) || this.#getPricesBatching.waitMs < 0) {
+			throw(new Error('getPricesBatching.waitMs must be a non-negative finite number'));
+		}
+		if (!Number.isFinite(this.#getPricesBatching.maxWaitMs) || this.#getPricesBatching.maxWaitMs < 0) {
+			throw(new Error('getPricesBatching.maxWaitMs must be a non-negative finite number'));
+		}
+		if (this.#getPricesBatching.maxWaitMs < this.#getPricesBatching.waitMs) {
+			throw(new Error('getPricesBatching.maxWaitMs must be greater than or equal to waitMs'));
+		}
 
 		if (config.signer) {
 			this.#signer = config.signer;
@@ -766,6 +837,84 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else {
 			throw(new Error('KeetaFXAnchorClient requires an Account or a UserClient with an associated Account'));
 		}
+	}
+
+	#getMarketPricesBatchKey(providerID: ProviderID, base: KeetaNetTokenPublicKeyString): string {
+		return(`${String(providerID)}\0${base}`);
+	}
+
+	#flushGetMarketPricesBatch(batchKey: string) {
+		const batch = this.#pendingGetMarketPricesBatches.get(batchKey);
+		if (batch === undefined) {
+			return;
+		}
+
+		this.#pendingGetMarketPricesBatches.delete(batchKey);
+		if (batch.waitTimer !== null) {
+			clearTimeout(batch.waitTimer);
+		}
+		if (batch.maxWaitTimer !== null) {
+			clearTimeout(batch.maxWaitTimer);
+		}
+
+		const quoteAssets = [...batch.quoteAssets];
+		batch.provider.getMarketPrices({ quoteAssets, base: batch.base }).then(function(marketPrices) {
+			for (const waiter of batch.waiters) {
+				waiter.resolve(marketPrices);
+			}
+		}, function(error: unknown) {
+			for (const waiter of batch.waiters) {
+				waiter.reject(error);
+			}
+		});
+	}
+
+	#getMarketPricesBatched(provider: KeetaFXAnchorProviderBase, request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		const batching = this.#getPricesBatching;
+		if (batching.waitMs === 0 && batching.maxWaitMs === 0) {
+			return(provider.getMarketPrices(request));
+		}
+
+		const batchKey = this.#getMarketPricesBatchKey(provider.providerID, request.base);
+		let batch = this.#pendingGetMarketPricesBatches.get(batchKey);
+		if (batch === undefined) {
+			batch = {
+				provider,
+				base: request.base,
+				quoteAssets: new Set(),
+				waiters: [],
+				waitTimer: null,
+				maxWaitTimer: null
+			};
+			this.#pendingGetMarketPricesBatches.set(batchKey, batch);
+
+			batch.maxWaitTimer = setTimeout(() => {
+				this.#flushGetMarketPricesBatch(batchKey);
+			}, batching.maxWaitMs);
+		}
+
+		for (const quoteAsset of request.quoteAssets) {
+			batch.quoteAssets.add(quoteAsset);
+		}
+
+		const activeBatch = batch;
+		const result = new Promise<KeetaFXAnchorMarketPrices>(function(resolve, reject) {
+			activeBatch.waiters.push({ resolve, reject });
+		});
+
+		if (activeBatch.waitTimer !== null) {
+			clearTimeout(activeBatch.waitTimer);
+		}
+
+		if (batching.waitMs === 0) {
+			this.#flushGetMarketPricesBatch(batchKey);
+		} else {
+			activeBatch.waitTimer = setTimeout(() => {
+				this.#flushGetMarketPricesBatch(batchKey);
+			}, batching.waitMs);
+		}
+
+		return(result);
 	}
 
 	private async canonicalizeConversionTokens(input: Partial<ConversionInput>): Promise<Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>> {
@@ -1150,7 +1299,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			}))];
 
 			try {
-				const marketPrices = await provider.getMarketPrices({ quoteAssets, base });
+				const marketPrices = await this.#getMarketPricesBatched(provider, { quoteAssets, base });
 				return({ provider, marketPrices, entries });
 			} catch (error) {
 				this.logger?.error(`Failed to get market prices from provider ${String(provider.providerID)}:`, error);
