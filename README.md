@@ -11,7 +11,7 @@ It implements:
   - The Anchor Client in TypeScript
 
 The goal of an Anchor is to bridge the logical (blockchain ledger) and the
-physical (banking, payment networks) realms.  The Anchor SDK is a set of
+physical (banking, payment networks, and RWA) realms.  The Anchor SDK is a set of
 tools that allow developers to build Anchors.  The Anchor Client is a set
 of tools that allow developers to interact with Anchors.
 
