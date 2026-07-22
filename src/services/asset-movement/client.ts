@@ -104,7 +104,8 @@ import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
-import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
+import type { EVMChecksumCache, ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
+import { normalizeChainAssetCasing } from '../../lib/asset.js';
 
 // const PARANOID = true;
 
@@ -545,6 +546,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	private readonly parent: KeetaAssetMovementAnchorClient;
+	readonly #evmChecksumCache: EVMChecksumCache = new Map();
+	readonly #canonicalAssetsByLocation = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
 
 	constructor(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID, parent: KeetaAssetMovementAnchorClient) {
 		const parentPrivate = parent._internals(KeetaAssetMovementAnchorClientAccessToken);
@@ -1265,17 +1268,53 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const locationSpecificMetadata = (locationMetadata as { [key: string]: PerChainLocationMetadata })[locationString];
 
-		if (!locationSpecificMetadata?.assets || !(asset in locationSpecificMetadata.assets)) {
+		if (!locationSpecificMetadata?.assets) {
 			return(null);
 		}
 
+		/*
+		 * Fast path: the caller supplied exactly the spelling that was published, so
+		 * there is no need to compute any checksum.
+		 */
 		const assetMetadata = locationSpecificMetadata.assets[asset];
 
-		if (!assetMetadata) {
-			return(null);
+		if (assetMetadata) {
+			return(assetMetadata);
 		}
 
-		return(assetMetadata);
+		const canonicalAssets = this.#canonicalAssetsForLocation(locationString, locationSpecificMetadata.assets);
+
+		return(canonicalAssets.get(normalizeChainAssetCasing(asset, this.#evmChecksumCache)) ?? null);
+	}
+
+	/**
+	 * Index a location's published assets by their canonical spelling.
+	 *
+	 * `serviceInfo` is fixed at construction, so the index is built once per location
+	 * and reused. That bounds the work to a single keccak per published asset for the
+	 * lifetime of the provider, and the shared checksum cache makes the lookup side
+	 * free on repeat calls.
+	 */
+	#canonicalAssetsForLocation(locationString: string, assets: NonNullable<PerChainLocationMetadata['assets']>): Map<string, AnchorTokenLocationMetadata> {
+		const cached = this.#canonicalAssetsByLocation.get(locationString);
+
+		if (cached !== undefined) {
+			return(cached);
+		}
+
+		const canonicalAssets = new Map<string, AnchorTokenLocationMetadata>();
+
+		for (const [ publishedAsset, metadata ] of Object.entries(assets)) {
+			if (!metadata) {
+				continue;
+			}
+
+			canonicalAssets.set(normalizeChainAssetCasing(publishedAsset, this.#evmChecksumCache), metadata);
+		}
+
+		this.#canonicalAssetsByLocation.set(locationString, canonicalAssets);
+
+		return(canonicalAssets);
 	}
 
 	getLegalDisclaimers(): NonNullable<AnchorMetadataLegalField['disclaimers']> | null {
