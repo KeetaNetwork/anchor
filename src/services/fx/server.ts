@@ -9,13 +9,18 @@ import {
 import {
 	assertConversionInputCanonicalJSON,
 	assertKeetaFXAnchorClientCreateExchangeRequestJSON,
+	assertKeetaNetTokenPublicKeyString,
 	Errors
 } from './common.js';
 import type {
 	ConversionInputCanonicalJSON,
+	KeetaFXAnchorConversionSummary,
 	KeetaFXAnchorEstimate,
 	KeetaFXAnchorEstimateResponse,
 	KeetaFXAnchorExchangeResponse,
+	KeetaFXAnchorMarketPrices,
+	KeetaFXAnchorMarketPricesRequest,
+	KeetaFXAnchorMarketPricesResponse,
 	KeetaFXAnchorQuote,
 	KeetaFXAnchorQuoteJSON,
 	KeetaFXAnchorQuoteResponse,
@@ -26,6 +31,8 @@ import * as Signing from '../../lib/utils/signing.js';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
+import { ConvertStringToRequestID } from '../../lib/queue/internal.js';
+import { AnchorExternal } from '../../lib/anchor-external.js';
 import type { KeetaAnchorQueueStorageDriver, KeetaAnchorQueueRequestID, KeetaAnchorQueueRunnerConfigurationObject } from '../../lib/queue/index.ts';
 import { KeetaAnchorQueuePipelineAdvanced } from '../../lib/queue/pipeline.js';
 import type { JSONSerializable, ToJSONSerializable } from '../../lib/utils/json.ts';
@@ -33,6 +40,7 @@ import { assertNever } from '../../lib/utils/never.js';
 import type { DeepRequired } from '../../lib/utils/types.ts';
 import * as typia from 'typia';
 import { assertExchangeBlockParametersAndComputeRefund, convertQuoteToExpectedSwapWithoutCost } from './util.js';
+import type { RefundValue } from './util.js';
 import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
@@ -49,6 +57,55 @@ import { Buffer } from '../../lib/utils/buffer.js';
  * misconfigurations so it is enabled by default for now.
  */
 const PARANOID = true;
+
+/**
+ * Controls Cache-Control for GET /api/getMarketPrices responses.
+ */
+export type KeetaFXAnchorMarketPricesCacheControl = {
+	/**
+	 * Cache freshness interval. Sets the `max-age` Cache-Control directive.
+	 */
+	maxAge: {
+		seconds: number;
+	};
+};
+
+/**
+ * Configuration for the optional GET /api/getMarketPrices endpoint.
+ *
+ * Set to `false` to disable the endpoint. When enabled (or omitted for
+ * the default enabled behavior), prices are derived from estimate rate
+ * data unless `get` is provided.
+ */
+export type KeetaFXAnchorMarketPricesConfig = {
+	/**
+	 * Cache policy for getMarketPrices responses. Defaults to
+	 * `{ maxAge: { seconds: 0 } }` when omitted.
+	 *
+	 * Example: `{ maxAge: { seconds: 30 } }`
+	 */
+	cacheControl?: KeetaFXAnchorMarketPricesCacheControl;
+
+	/**
+	 * Reference quote amount used when deriving prices from estimate
+	 * rate data. Defaults to `1000n`. Ignored when `get` is provided.
+	 */
+	referenceAmount?: bigint;
+
+	/**
+	 * Behavior when deriving a price for one quote asset fails or yields
+	 * an invalid (zero) ratio. Defaults to `'omit'`.
+	 *
+	 * Invalid/failed quotes are always logged regardless of this setting.
+	 */
+	onQuoteError?: 'omit' | 'throw';
+
+	/**
+	 * Optional custom price provider. When omitted, prices are derived
+	 * from estimate/rate data using {@link referenceAmount}.
+	 */
+	get?: (request: KeetaFXAnchorMarketPricesRequest) => Promise<KeetaFXAnchorMarketPrices>;
+};
 
 export type GetConversionRateAndFeeContext = {
 	/**
@@ -143,6 +200,15 @@ export interface KeetaAnchorFXServerConfig extends KeetaAnchorMetadataServerConf
 		 * can select a preferred cost asset.
 		 */
 		acceptedCostAssets?: NonNullable<ServiceMetadata['services']['fx']>[string]['acceptedCostAssets'];
+
+		/**
+		 * Market prices endpoint configuration.
+		 *
+		 * - `false` disables GET /api/getMarketPrices and omits it from metadata
+		 * - `{ cacheControl, referenceAmount, get }` enables and configures it
+		 * - omitted enables the endpoint with defaults
+		 */
+		getMarketPrices?: false | KeetaFXAnchorMarketPricesConfig;
 
 		/**
 		 * Optional callback to validate a quote before completing an exchange
@@ -358,6 +424,11 @@ type KeetaFXAnchorQueueStage1Response = {
 	 * The hash of one of the blocks submitted
 	 */
 	blockhash: string;
+	/**
+	 * Summary of the settled conversion, recorded when the swap is published so
+	 * the status route can report it without re-reading the chain.
+	 */
+	conversion?: KeetaFXAnchorConversionSummary;
 };
 
 function encodeKeetaFXAnchorQueueStage1Request(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {
@@ -423,6 +494,88 @@ function decodeKeetaFXAnchorQueueStage1Request(request: JSONSerializable): Keeta
 	};
 
 	return(retval);
+}
+
+/**
+ * Build the conversion summary surfaced for FX history correlation.
+ */
+function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchorQueueStage1Request['expected']>, block: KeetaFXAnchorQueueStage1Request['block'], account: KeetaNetAccount, refunds: readonly RefundValue[] = []): KeetaFXAnchorConversionSummary {
+	const conversion: KeetaFXAnchorConversionSummary = {
+		from: {
+			token: expected.receive.token.publicKeyString.get(),
+			amount: expected.receive.amount.toString()
+		},
+		to: {
+			token: expected.send.token.publicKeyString.get(),
+			amount: expected.send.amount.toString()
+		},
+		liquidityProvider: account.publicKeyString.get()
+	};
+
+	/*
+	 * The user's block funds the swap with the principal (the `from` token)
+	 * and, when charged, a separate cost send in another token. Under a
+	 * variable rate the user may over-send the cost and the anchor refunds the
+	 * excess, so net the refunds against the gross send to report the cost the
+	 * user actually paid.
+	 */
+	for (const operation of block.operations) {
+		if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+			continue;
+		}
+		if (operation.token.comparePublicKey(expected.receive.token)) {
+			continue;
+		}
+
+		let costAmount = operation.amount;
+		for (const refund of refunds) {
+			if (operation.token.comparePublicKey(refund.token)) {
+				costAmount -= refund.amount;
+			}
+		}
+
+		if (costAmount > 0n) {
+			conversion.cost = {
+				token: operation.token.publicKeyString.get(),
+				amount: costAmount.toString()
+			};
+		}
+
+		break;
+	}
+
+	return(conversion);
+}
+
+/**
+ * Extract the client correlation id from a swap block's anchor external for the
+ * given provider account, or `undefined` when the block carries none.
+ */
+async function correlationIdFromBlock(block: KeetaFXAnchorQueueStage1Request['block'], providerAccount: KeetaNetAccount): Promise<string | undefined> {
+	const anchorKey = providerAccount.publicKeyString.get();
+	for (const operation of block.operations) {
+		if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+			continue;
+		}
+
+		if (operation.external === undefined) {
+			continue;
+		}
+
+		let decoded: AnchorExternal;
+		try {
+			decoded = await AnchorExternal.fromPlainExternal(operation.external);
+		} catch {
+			continue;
+		}
+
+		const entry = decoded.envelope.anchors[anchorKey];
+		if (entry !== undefined && 'transactionId' in entry) {
+			return(entry.transactionId);
+		}
+	}
+
+	return(undefined);
 }
 
 class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> {
@@ -515,12 +668,20 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			const existingOutput = entry.output;
 			const blocks = existingOutput?.blocks ?? [Buffer.from(block.toBytes()).toString('base64')];
 
+			const completedOutput: KeetaFXAnchorQueueStage1Response = {
+				blockhash: block.hash.toString(),
+				blocks: blocks
+			};
+
+			if (existingOutput?.conversion !== undefined) {
+				completedOutput.conversion = existingOutput.conversion;
+			} else if (entry.request.expected !== null) {
+				completedOutput.conversion = buildKeetaFXAnchorConversionSummary(entry.request.expected, block, entry.request.account);
+			}
+
 			return({
 				status: 'completed',
-				output: {
-					blockhash: block.hash.toString(),
-					blocks: blocks
-				}
+				output: completedOutput
 			});
 		}
 
@@ -575,6 +736,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 		/* We are clear to attempt the swap now */
 		const builder = userClient.initBuilder();
 		let expected = entry.request.expected;
+		let refunds: readonly RefundValue[] = [];
 
 		/**
 		 * We only want to refund excess for cost/paying token if it is not a fixed rate
@@ -612,13 +774,14 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 			const quote = await this.serverConfig.fx.getConversionRateAndFee(request, { purpose: 'exchange', request: entry.request });
 
-			const { refunds } = assertExchangeBlockParametersAndComputeRefund({
+			const refundResult = assertExchangeBlockParametersAndComputeRefund({
 				block: block,
 				liquidityAccount: entry.request.account,
 				allowedLiquidityAccounts: null,
 				checks: { quote, request },
 				isQuoteBasedExchange: false
 			});
+			refunds = refundResult.refunds;
 
 			for (const refund of refunds) {
 				builder.send(block.account, refund.amount, refund.token);
@@ -663,6 +826,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			throw(error);
 		}
 
+		const conversion = buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account, refunds);
+
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
 		return({
 			status: 'pending',
@@ -670,7 +835,8 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				blockhash: block.hash.toString(),
 				blocks: swapBlocks.map(function(block) {
 					return(Buffer.from(block.toBytes()).toString('base64'));
-				})
+				}),
+				conversion: conversion
 			}
 		});
 	}
@@ -713,6 +879,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 	private readonly serverConfig: KeetaAnchorFXServerConfig;
 	private readonly accounts: InstanceType<typeof KeetaNet.lib.Account.Set>;
 	private runners: { [account: string]: KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response> } = {};
+	private correlationIndex: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable> | null = null;
 
 	private extensions?: KeetaFXAnchorQueuePipelineExtensions | undefined;
 
@@ -841,6 +1008,51 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 
 			this.runners[account.publicKeyAndTypeString] = runner;
 		}
+
+		this.correlationIndex = await this.createQueue('correlation-index');
+	}
+
+	/**
+	 * Record a correlation-id -> exchange-ID mapping so a swap can be resolved
+	 * from the correlation id carried in its on-chain anchor external.
+	 */
+	async registerCorrelation(correlationId: string, exchangeID: KeetaAnchorQueueRequestID): Promise<void> {
+		await super.init();
+
+		if (this.correlationIndex === null) {
+			throw(new Error('Correlation index not initialized'));
+		}
+
+		await this.correlationIndex.add({ exchangeID: String(exchangeID) }, { id: correlationId });
+	}
+
+	/**
+	 * Resolve the exchange ID for a correlation id, or `undefined` when no
+	 * exchange registered it.
+	 */
+	async lookupCorrelation(correlationId: string): Promise<string | undefined> {
+		await super.init();
+
+		if (this.correlationIndex === null) {
+			throw(new Error('Correlation index not initialized'));
+		}
+
+		const entry = await this.correlationIndex.get(ConvertStringToRequestID(correlationId));
+		if (entry === null) {
+			return(undefined);
+		}
+
+		const request = entry.request;
+		if (typeof request !== 'object' || request === null || !('exchangeID' in request)) {
+			return(undefined);
+		}
+
+		const exchangeID = request.exchangeID;
+		if (typeof exchangeID !== 'string') {
+			return(undefined);
+		}
+
+		return(exchangeID);
 	}
 
 	protected getStage(stageID: typeof KeetaAnchorQueuePipelineAdvanced.StageID.first | typeof KeetaAnchorQueuePipelineAdvanced.StageID.last): KeetaFXAnchorQueuePipelineStage1;
@@ -992,7 +1204,7 @@ class KeetaFXAnchorQueuePipeline extends KeetaAnchorQueuePipelineAdvanced<KeetaF
 }
 
 type SharedHTTPServerConfigType = Pick<KeetaAnchorFXServerConfig, 'fx' | 'homepage' | keyof KeetaAnchorMetadataServerConfig>;
-abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['fx']>[string], ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration' | 'metadataSigner'> {
+abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServerConfigType> extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['fx']>[string], ConfigType> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'accounts' | 'account' | 'signer' | 'client' | 'quoteSigner' | 'quoteConfiguration' | 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly homepage: NonNullable<KeetaAnchorFXServerConfig['homepage']>;
 	readonly fx: KeetaAnchorFXServerConfig['fx'];
 	readonly canPerformExchanges: boolean;
@@ -1055,8 +1267,70 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		}
 	}
 
+	protected getMarketPricesConfig(): KeetaFXAnchorMarketPricesConfig | null {
+		if (this.fx.getMarketPrices === false) {
+			return(null);
+		}
+
+		return(this.fx.getMarketPrices ?? {});
+	}
+
+	protected async getMarketPrices(request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		const config = this.getMarketPricesConfig();
+		if (config === null) {
+			throw(new Error('getMarketPrices is disabled'));
+		}
+
+		if (config.get !== undefined) {
+			return(await config.get(request));
+		}
+
+		const referenceAmount = config.referenceAmount ?? 1000n;
+		const onQuoteError = config.onQuoteError ?? 'omit';
+		const quoteAssetEntries = await Promise.all(request.quoteAssets.map(async (quoteAsset) => {
+			let rateAndFee;
+			try {
+				rateAndFee = await this.getUnsignedQuoteData({
+					from: quoteAsset,
+					to: request.base,
+					amount: referenceAmount.toString(),
+					affinity: 'from'
+				}, 'estimate');
+			} catch (error) {
+				this.logger.error('GET /api/getMarketPrices', `Failed to derive price for quote asset ${quoteAsset} against base ${request.base}:`, error);
+				if (onQuoteError === 'throw') {
+					throw(error);
+				}
+				return(null);
+			}
+
+			if (referenceAmount === 0n || rateAndFee.convertedAmount === 0n) {
+				const error = new Error(`Invalid market price ratio for quote asset ${quoteAsset} against base ${request.base}: quote=${referenceAmount.toString()} base=${rateAndFee.convertedAmount.toString()}`);
+				this.logger.error('GET /api/getMarketPrices', error.message);
+				if (onQuoteError === 'throw') {
+					throw(error);
+				}
+				return(null);
+			}
+
+			return([quoteAsset, {
+				valueRatio: {
+					quote: referenceAmount.toString(),
+					base: rateAndFee.convertedAmount.toString()
+				}
+			}] as const);
+		}));
+
+		return({
+			base: request.base,
+			quoteAssets: Object.fromEntries(quoteAssetEntries.filter(function(entry): entry is NonNullable<typeof entry> {
+				return(entry !== null);
+			}))
+		});
+	}
+
 	protected async initRoutes(config: ConfigType): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
 		/*
 		 * To use the instance within the route handlers, we need to
@@ -1149,6 +1423,49 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			});
 		}
 
+		const marketPricesConfig = instance.getMarketPricesConfig();
+		if (marketPricesConfig !== null && routes['GET /api/getMarketPrices'] === undefined) {
+			routes['GET /api/getMarketPrices'] = async function(_ignore_params, _ignore_body, _ignore_headers, url) {
+				const quoteAssetsParameter = url.searchParams.get('quoteAssets');
+				const baseParameter = url.searchParams.get('base');
+
+				if (!quoteAssetsParameter) {
+					throw(new KeetaAnchorUserError('Missing quoteAssets parameter'));
+				}
+
+				if (!baseParameter) {
+					throw(new KeetaAnchorUserError('Missing base parameter'));
+				}
+
+				const base = assertKeetaNetTokenPublicKeyString(baseParameter.trim());
+				const quoteAssets = quoteAssetsParameter.split(',').map(function(token) {
+					return(token.trim());
+				}).filter(function(token) {
+					return(token.length > 0);
+				}).map(function(token) {
+					return(assertKeetaNetTokenPublicKeyString(token));
+				});
+
+				if (quoteAssets.length === 0) {
+					throw(new KeetaAnchorUserError('quoteAssets must contain at least one token'));
+				}
+
+				const marketPrices = await instance.getMarketPrices({ quoteAssets, base });
+				const maxAgeSeconds = marketPricesConfig.cacheControl?.maxAge.seconds ?? 0;
+				const marketPricesResponse: KeetaFXAnchorMarketPricesResponse = {
+					ok: true,
+					...marketPrices
+				};
+
+				return({
+					output: JSON.stringify(marketPricesResponse),
+					headers: {
+						'Cache-Control': `public, max-age=${maxAgeSeconds}`
+					}
+				});
+			};
+		}
+
 		return(routes);
 	}
 
@@ -1159,6 +1476,10 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		const operations: NonNullable<ServiceMetadata['services']['fx']>[string]['operations'] = {
 			getEstimate: (new URL('/api/getEstimate', this.url)).toString()
 		};
+
+		if (this.getMarketPricesConfig() !== null) {
+			operations.getMarketPrices = (new URL('/api/getMarketPrices', this.url)).toString();
+		}
 
 		const metadata: NonNullable<ServiceMetadata['services']['fx']>[string] = {
 			from: this.fx.from ?? [],
@@ -1189,7 +1510,7 @@ export class KeetaNetFXAnchorEstimateHTTPServer extends BaseKeetaNetFXAnchorHTTP
 	}
 }
 
-export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'metadataSigner'> {
+export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<KeetaAnchorFXServerConfig> implements Omit<Required<KeetaAnchorFXServerConfig>, 'storage' | 'queueRunnerExtensions' | 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly client: KeetaAnchorFXServerConfig['client'];
 	readonly accounts: NonNullable<KeetaAnchorFXServerConfig['accounts']>;
 	readonly account: KeetaAnchorFXServerConfig['account'] = undefined;
@@ -1448,6 +1769,15 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				expected: expectedConversion
 			});
 
+			/*
+			 * Index the correlation id carried in the swap block's anchor
+			 * external so the exchange is resolvable from chain history.
+			 */
+			const correlationId = await correlationIdFromBlock(block, liquidityAccountInstance);
+			if (correlationId !== undefined) {
+				await instance.pipeline.registerCorrelation(correlationId, exchangeID);
+			}
+
 			const exchangeResponse: KeetaFXAnchorExchangeResponse = {
 				ok: true,
 				exchangeID: exchangeID.toString(),
@@ -1498,15 +1828,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 			});
 		}
 
-		routes['GET /api/getExchangeStatus/:id'] = async function(params) {
-			if (params === undefined || params === null) {
-				throw(new KeetaAnchorUserError('Expected params'));
-			}
-			const exchangeID = params.get('id');
-			if (typeof exchangeID !== 'string') {
-				throw(new Error('Missing exchangeID in params'));
-			}
-
+		const buildExchangeStatus = async function(exchangeID: string): Promise<KeetaFXAnchorExchangeResponse> {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const queueEntryInfo = await instance.pipeline.get(exchangeID as unknown as KeetaAnchorQueueRequestID);
 			const exchangeResponse = (function(): KeetaFXAnchorExchangeResponse {
@@ -1533,12 +1855,19 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 								exchangeID: exchangeID
 							});
 						} else {
-							return({
+							const completed: KeetaFXAnchorExchangeResponse = {
 								ok: true,
 								status: 'completed',
 								exchangeID: exchangeID,
 								blockhash: blockhash
-							});
+							};
+
+							const conversion = queueEntryInfo?.output?.conversion;
+							if (conversion !== undefined) {
+								completed.conversion = conversion;
+							}
+
+							return(completed);
 						}
 					}
 					case 'failed_permanently':
@@ -1557,7 +1886,28 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				}
 			})();
 
-			logger.debug('GET /api/getExchangeStatus/:id', 'Exchange Status for ID', exchangeID, 'is', exchangeResponse, 'based on jobInfo', queueEntryInfo);
+			logger.debug('buildExchangeStatus', 'Exchange Status for ID', exchangeID, 'is', exchangeResponse, 'based on jobInfo', queueEntryInfo);
+
+			return(exchangeResponse);
+		}
+
+		routes['GET /api/getExchangeStatus/:id'] = async function(params) {
+			if (params === undefined || params === null) {
+				throw(new KeetaAnchorUserError('Expected params'));
+			}
+
+			const id = params.get('id');
+			if (typeof id !== 'string') {
+				throw(new Error('Missing exchangeID in params'));
+			}
+
+			/*
+			 * Accept either an exchange id or a client correlation id.
+			 */
+			const correlated = await instance.pipeline.lookupCorrelation(id);
+			const exchangeID = correlated ?? id;
+
+			const exchangeResponse = await buildExchangeStatus(exchangeID);
 
 			return({
 				output: JSON.stringify(exchangeResponse)

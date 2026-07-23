@@ -14,6 +14,7 @@ import {
 	assertKeetaNetTokenPublicKeyString,
 	isKeetaFXAnchorEstimateResponse,
 	isKeetaFXAnchorExchangeResponse,
+	isKeetaFXAnchorMarketPricesResponse,
 	isKeetaFXAnchorQuoteResponse,
 	Errors as FXErrors
 } from './common.js';
@@ -23,12 +24,18 @@ import type {
 	ConversionInputCanonicalJSON,
 	KeetaFXAnchorEstimate,
 	KeetaFXAnchorExchange,
+	KeetaFXAnchorMarketPrices,
+	KeetaFXAnchorMarketPricesRequest,
+	KeetaFXAnchorMarketPriceRatio,
 	KeetaFXAnchorQuote,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
+import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
+import type { AnchorExternalInput } from '../../lib/anchor-external.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import { resolveSharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import type { AnchorMetadataLegalField, SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
+import type { AnchorReference } from '../../lib/anchor-status.js';
 
 /**
  * An opaque type that represents a provider ID.
@@ -49,6 +56,30 @@ type AccountOptions = {
 	 */
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 };
+
+/**
+ * Controls how {@link KeetaFXAnchorClient.getPrices} coalesces concurrent
+ * calls that share the same base (`priceIn`) into fewer `getMarketPrices`
+ * requests.
+ */
+export interface KeetaFXAnchorClientGetPricesBatching {
+	/**
+	 * How long to wait after each `getPrices` call for additional calls
+	 * with the same base before sending the batched `getMarketPrices`
+	 * request. Each new same-base call resets this timer.
+	 *
+	 * Defaults to `25`.
+	 */
+	waitMs: number;
+	/**
+	 * Maximum time to wait from the first `getPrices` call in a batch
+	 * before flushing, even if new same-base calls keep arriving.
+	 *
+	 * Defaults to `100` for the client default. When omitted from a custom
+	 * object, defaults to `4 * waitMs`.
+	 */
+	maxWaitMs?: number;
+}
 
 /**
  * The configuration options for the FX Anchor client.
@@ -83,6 +114,15 @@ export type KeetaFXAnchorClientConfig = {
 	 * account associated with the client, an error occurs.
 	 */
 	account?: InstanceType<typeof KeetaNetLib.Account>;
+	/**
+	 * How long `getPrices` waits for additional calls with the same base
+	 * so their provider `getMarketPrices` requests can be batched together.
+	 *
+	 * - `true` / omitted - (`waitMs: 25`, `maxWaitMs: 100`)
+	 * - `false` - disable batching
+	 * - `{ waitMs, maxWaitMs? }` - custom timing (`maxWaitMs` defaults to `4 * waitMs`)
+	 */
+	getPricesBatching?: KeetaFXAnchorClientGetPricesBatching | boolean;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
 
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
@@ -399,7 +439,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		});
 	}
 
-	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
+	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchange> {
 		let swapBlock = block;
 		if (swapBlock === undefined) {
 			/* Liquidity Provider that will complete the swap */
@@ -458,7 +498,19 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
-			builder.send(liquidityProvider, sendAmount, request.from);
+
+			/*
+			 * Tag the principal send with an anchor external naming the FX
+			 * provider and a client-chosen correlation id.
+			 */
+			const correlationId = crypto.randomUUID();
+			const externalBuilder = new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId });
+			for (const inputReference of options?.inputs ?? []) {
+				externalBuilder.addInput(inputReference.blockHash, inputReference.operationIndex);
+			}
+
+			const external = await externalBuilder.build();
+			builder.send(liquidityProvider, sendAmount, request.from, external);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {
@@ -513,6 +565,34 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
 		return(requestInformationJSON);
+	}
+
+	async getMarketPrices(request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		const serviceURL = await this.#getEndpoint('getMarketPrices');
+		serviceURL.searchParams.set('quoteAssets', request.quoteAssets.join(','));
+		serviceURL.searchParams.set('base', request.base);
+
+		const requestInformation = await fetch(serviceURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+
+		const requestInformationJSON: unknown = await requestInformation.json();
+		if (!isKeetaFXAnchorMarketPricesResponse(requestInformationJSON)) {
+			throw(new Error(`Invalid response from FX market prices service: ${JSON.stringify(requestInformationJSON)}`));
+		}
+
+		if (!requestInformationJSON.ok) {
+			throw(await this.#parseResponseError(requestInformationJSON));
+		}
+
+		this.logger?.debug(`FX market prices request successful, to provider ${serviceURL} for quoteAssets=${request.quoteAssets.join(',')} base=${request.base}`);
+		return({
+			base: requestInformationJSON.base,
+			quoteAssets: requestInformationJSON.quoteAssets
+		});
 	}
 
 	async getExchangeStatus(exchangeID: string): Promise<KeetaFXAnchorExchange> {
@@ -573,7 +653,7 @@ interface CanCreateExchange {
 
 	get request(): ConversionInputCanonical;
 
-	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider>;
+	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider>;
 }
 
 class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
@@ -590,8 +670,8 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 		return(this.quote.request);
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		const exchange = await this.provider.createExchange({ quote: this.quote }, block);
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange({ quote: this.quote }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 
@@ -625,8 +705,8 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchangeWithProvider> {
-		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block);
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
 	}
 
@@ -648,7 +728,33 @@ interface GetProvidersOptions extends AccountOptions {
 interface GetPricesAssetReturnValue {
 	value: bigint;
 	averageConvertedAmount: number;
+	providerMarketPrices: {
+		provider: KeetaFXAnchorProviderBase;
+		price: KeetaFXAnchorMarketPriceRatio;
+	}[];
 	providerEstimates: KeetaFXAnchorEstimateWithProvider[];
+}
+
+function providerSupportsGetMarketPrices(provider: KeetaFXAnchorProviderBase): boolean {
+	return(Object.prototype.hasOwnProperty.call(provider.serviceInfo.operations, 'getMarketPrices'));
+}
+
+function convertUsingMarketPriceRatio(
+	ratio: KeetaFXAnchorMarketPriceRatio,
+	conversionValue: bigint,
+	affinity: 'from' | 'to'
+): bigint {
+	const quote = BigInt(ratio.quote);
+	const base = BigInt(ratio.base);
+	if (quote === 0n || base === 0n) {
+		throw(new Error(`Invalid market price ratio: quote=${ratio.quote} base=${ratio.base}`));
+	}
+
+	if (affinity === 'from') {
+		return(conversionValue * base / quote);
+	}
+
+	return(conversionValue * quote / base);
 }
 
 export interface GetPricesArgs<Asset extends ConversionInput['from']> {
@@ -656,6 +762,13 @@ export interface GetPricesArgs<Asset extends ConversionInput['from']> {
 	priceIn: ConversionInput['from'],
 	conversionValue?: bigint | ((input: Asset) => bigint | Promise<bigint>)
 	conversionAffinity?: ConversionInput['affinity']
+	/**
+	 * Behavior when a provider returns an invalid market price ratio
+	 * (e.g. zero quote/base). Defaults to `'omit'`.
+	 *
+	 * Invalid ratios are always logged regardless of this setting.
+	 */
+	onInvalidRatio?: 'omit' | 'throw';
 }
 
 class KeetaFXAnchorClient extends KeetaFXAnchorBase {
@@ -663,11 +776,49 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	readonly id: string;
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
+	readonly #getPricesBatching: Required<KeetaFXAnchorClientGetPricesBatching>;
+	readonly #pendingGetMarketPricesBatches = new Map<string, {
+		provider: KeetaFXAnchorProviderBase;
+		base: KeetaNetTokenPublicKeyString;
+		quoteAssets: Set<KeetaNetTokenPublicKeyString>;
+		waiters: {
+			resolve: (prices: KeetaFXAnchorMarketPrices) => void;
+			reject: (error: unknown) => void;
+		}[];
+		waitTimer: ReturnType<typeof setTimeout> | null;
+		maxWaitTimer: ReturnType<typeof setTimeout> | null;
+	}>();
+
+	static #resolveGetPricesBatching(input?: KeetaFXAnchorClientGetPricesBatching | boolean): Required<KeetaFXAnchorClientGetPricesBatching> {
+		if (input === false) {
+			return({ waitMs: 0, maxWaitMs: 0 });
+		} else {
+			if (input === true || input === undefined) {
+				input = { waitMs: 25 }
+			}
+
+			return({
+				waitMs: input.waitMs,
+				maxWaitMs: input.maxWaitMs ?? (input.waitMs * 4)
+			});
+		}
+	}
 
 	constructor(client: KeetaNetUserClient, config: KeetaFXAnchorClientConfig = {}) {
 		super({ client, logger: config.logger });
 		this.resolver = config.resolver ?? getDefaultResolver(client, config);
 		this.id = config.id ?? crypto.randomUUID();
+		this.#getPricesBatching = KeetaFXAnchorClient.#resolveGetPricesBatching(config.getPricesBatching);
+
+		if (!Number.isFinite(this.#getPricesBatching.waitMs) || this.#getPricesBatching.waitMs < 0) {
+			throw(new Error('getPricesBatching.waitMs must be a non-negative finite number'));
+		}
+		if (!Number.isFinite(this.#getPricesBatching.maxWaitMs) || this.#getPricesBatching.maxWaitMs < 0) {
+			throw(new Error('getPricesBatching.maxWaitMs must be a non-negative finite number'));
+		}
+		if (this.#getPricesBatching.maxWaitMs < this.#getPricesBatching.waitMs) {
+			throw(new Error('getPricesBatching.maxWaitMs must be greater than or equal to waitMs'));
+		}
 
 		if (config.signer) {
 			this.#signer = config.signer;
@@ -686,6 +837,84 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		} else {
 			throw(new Error('KeetaFXAnchorClient requires an Account or a UserClient with an associated Account'));
 		}
+	}
+
+	#getMarketPricesBatchKey(providerID: ProviderID, base: KeetaNetTokenPublicKeyString): string {
+		return(`${String(providerID)}\0${base}`);
+	}
+
+	#flushGetMarketPricesBatch(batchKey: string) {
+		const batch = this.#pendingGetMarketPricesBatches.get(batchKey);
+		if (batch === undefined) {
+			return;
+		}
+
+		this.#pendingGetMarketPricesBatches.delete(batchKey);
+		if (batch.waitTimer !== null) {
+			clearTimeout(batch.waitTimer);
+		}
+		if (batch.maxWaitTimer !== null) {
+			clearTimeout(batch.maxWaitTimer);
+		}
+
+		const quoteAssets = [...batch.quoteAssets];
+		batch.provider.getMarketPrices({ quoteAssets, base: batch.base }).then(function(marketPrices) {
+			for (const waiter of batch.waiters) {
+				waiter.resolve(marketPrices);
+			}
+		}, function(error: unknown) {
+			for (const waiter of batch.waiters) {
+				waiter.reject(error);
+			}
+		});
+	}
+
+	#getMarketPricesBatched(provider: KeetaFXAnchorProviderBase, request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices> {
+		const batching = this.#getPricesBatching;
+		if (batching.waitMs === 0 && batching.maxWaitMs === 0) {
+			return(provider.getMarketPrices(request));
+		}
+
+		const batchKey = this.#getMarketPricesBatchKey(provider.providerID, request.base);
+		let batch = this.#pendingGetMarketPricesBatches.get(batchKey);
+		if (batch === undefined) {
+			batch = {
+				provider,
+				base: request.base,
+				quoteAssets: new Set(),
+				waiters: [],
+				waitTimer: null,
+				maxWaitTimer: null
+			};
+			this.#pendingGetMarketPricesBatches.set(batchKey, batch);
+
+			batch.maxWaitTimer = setTimeout(() => {
+				this.#flushGetMarketPricesBatch(batchKey);
+			}, batching.maxWaitMs);
+		}
+
+		for (const quoteAsset of request.quoteAssets) {
+			batch.quoteAssets.add(quoteAsset);
+		}
+
+		const activeBatch = batch;
+		const result = new Promise<KeetaFXAnchorMarketPrices>(function(resolve, reject) {
+			activeBatch.waiters.push({ resolve, reject });
+		});
+
+		if (activeBatch.waitTimer !== null) {
+			clearTimeout(activeBatch.waitTimer);
+		}
+
+		if (batching.waitMs === 0) {
+			this.#flushGetMarketPricesBatch(batchKey);
+		} else {
+			activeBatch.waitTimer = setTimeout(() => {
+				this.#flushGetMarketPricesBatch(batchKey);
+			}, batching.waitMs);
+		}
+
+		return(result);
 	}
 
 	private async canonicalizeConversionTokens(input: Partial<ConversionInput>): Promise<Partial<Pick<ConversionInputCanonical, 'from' | 'to'>>> {
@@ -803,6 +1032,49 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		});
 
 		return(providers);
+	}
+
+	/**
+	 * Resolve an FX provider by the account that signs its advertised service metadata.
+	 */
+	async getProviderByAccount(anchor: AnchorReference, requiredOperations?: (keyof KeetaFXAnchorOperations)[]): Promise<KeetaFXAnchorProviderBase | null> {
+		const request: Parameters<typeof getEndpoints>[1] = {};
+		if (requiredOperations !== undefined) {
+			request.requiredOperations = requiredOperations;
+		}
+
+		const providerEndpoints = await getEndpoints(this.resolver, request, this.#account, { accounts: [ anchor ] }, { logger: this.logger });
+		if (providerEndpoints === null) {
+			return(null);
+		}
+
+		const [ entry ] = typedFxServiceEntries(providerEndpoints);
+		if (entry === undefined) {
+			return(null);
+		}
+
+		const [ providerID, serviceInfo ] = entry;
+
+		const pair = serviceInfo.from[0];
+		if (pair === undefined) {
+			return(null);
+		}
+
+		const fromCode = pair.currencyCodes[0];
+		const toCode = pair.to[0];
+		if (fromCode === undefined || toCode === undefined) {
+			return(null);
+		}
+
+		const conversion: ConversionInputCanonical = {
+			from: KeetaNetLib.Account.fromPublicKeyString(fromCode),
+			to: KeetaNetLib.Account.fromPublicKeyString(toCode),
+			amount: 0n,
+			affinity: 'from'
+		};
+
+		const provider = new KeetaFXAnchorProviderBase(serviceInfo, providerID, conversion, this);
+		return(provider);
 	}
 
 	async getEstimates(request: ConversionInput, options: Omit<GetProvidersOptions, 'requiredOperations'> = {}, sharedCriteria?: SharedLookupCriteria): Promise<KeetaFXAnchorEstimateWithProvider[] | null> {
@@ -932,13 +1204,24 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		return(retval);
 	}
 
-	async getPrices<Asset extends ConversionInput['from']>(input: GetPricesArgs<Asset>): Promise<Map<Asset, GetPricesAssetReturnValue | null>> {
-		const priceInAsset: ConversionInput['from'] = input.priceIn ?? 'USD';
+	async getPrices<Asset extends ConversionInput['from']>(input: GetPricesArgs<Asset>, options: Omit<GetProvidersOptions, 'requiredOperations'> = {}, sharedCriteria?: SharedLookupCriteria): Promise<Map<Asset, GetPricesAssetReturnValue | null>> {
+		const priceInCanonical = await this.canonicalizeConversionTokens({ to: input.priceIn ?? 'USD' });
+		if (priceInCanonical.to === undefined) {
+			throw(new Error('Could not canonicalize priceIn asset'));
+		}
 
-		const retval = new Map<Asset, GetPricesAssetReturnValue | null>();
+		const base = priceInCanonical.to.publicKeyString.get();
+		const affinity = input.conversionAffinity ?? 'from';
+		const priceIn = input.priceIn ?? 'USD';
+		const onInvalidRatio = input.onInvalidRatio ?? 'omit';
 
-		await Promise.all(input.assets.map(async (asset) => {
-			let conversionValue;
+		const assetEntries = await Promise.all(input.assets.map(async (asset) => {
+			const canonical = await this.canonicalizeConversionTokens({ from: asset });
+			if (canonical.from === undefined) {
+				throw(new Error(`Could not canonicalize asset: ${String(asset)}`));
+			}
+
+			let conversionValue: bigint;
 			if (input.conversionValue !== undefined) {
 				if (typeof input.conversionValue === 'function') {
 					conversionValue = await input.conversionValue(asset);
@@ -949,29 +1232,166 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 				conversionValue = 1n;
 			}
 
-			const estimates = await this.getEstimates({
+			const providers = await this.getBaseProvidersForConversion({
 				from: asset,
-				to: priceInAsset,
+				to: priceIn,
 				amount: conversionValue,
-				affinity: input.conversionAffinity ?? 'from'
+				affinity
+			}, options, sharedCriteria);
+
+			return({
+				asset,
+				quoteAsset: canonical.from.publicKeyString.get(),
+				conversionValue,
+				providers
 			});
+		}));
 
-			if (estimates === null || estimates.length === 0) {
-				retval.set(asset, null);
-			} else {
-				const convertedAmountSum = estimates.reduce(function(sum, estimate) {
-					return(sum + estimate.estimate.convertedAmount);
-				}, 0n);
+		type ProviderAssetEntry = {
+			asset: Asset;
+			quoteAsset: KeetaNetTokenPublicKeyString;
+			conversionValue: bigint;
+			provider: KeetaFXAnchorProviderBase;
+		};
 
-				const averageConvertedAmount = Number(convertedAmountSum) / estimates.length;
+		type EstimateAssetEntry = {
+			asset: Asset;
+			conversionValue: bigint;
+			provider: KeetaFXAnchorProviderBase;
+		};
 
-				retval.set(asset, {
-					value: conversionValue,
-					averageConvertedAmount,
-					providerEstimates: estimates
-				});
+		const providerAssets = new Map<ProviderID, ProviderAssetEntry[]>();
+		const estimateEntries: EstimateAssetEntry[] = [];
+		for (const entry of assetEntries) {
+			if (entry.providers === null) {
+				continue;
+			}
+
+			for (const provider of entry.providers) {
+				if (providerSupportsGetMarketPrices(provider)) {
+					const existing = providerAssets.get(provider.providerID) ?? [];
+					existing.push({
+						asset: entry.asset,
+						quoteAsset: entry.quoteAsset,
+						conversionValue: entry.conversionValue,
+						provider
+					});
+					providerAssets.set(provider.providerID, existing);
+				} else {
+					estimateEntries.push({
+						asset: entry.asset,
+						conversionValue: entry.conversionValue,
+						provider
+					});
+				}
+			}
+		}
+
+		const providerPriceResults = await Promise.all([...providerAssets.entries()].map(async ([_ignore_providerID, entries]) => {
+			const firstEntry = entries[0];
+			if (firstEntry === undefined) {
+				return(null);
+			}
+
+			const provider = firstEntry.provider;
+			const quoteAssets = [...new Set(entries.map(function(entry) {
+				return(entry.quoteAsset);
+			}))];
+
+			try {
+				const marketPrices = await this.#getMarketPricesBatched(provider, { quoteAssets, base });
+				return({ provider, marketPrices, entries });
+			} catch (error) {
+				this.logger?.error(`Failed to get market prices from provider ${String(provider.providerID)}:`, error);
+				return(null);
 			}
 		}));
+
+		const assetProviderPrices = new Map<Asset, GetPricesAssetReturnValue['providerMarketPrices']>();
+		for (const result of providerPriceResults) {
+			if (result === null) {
+				continue;
+			}
+
+			for (const entry of result.entries) {
+				const priceEntry = result.marketPrices.quoteAssets[entry.quoteAsset];
+				if (priceEntry === undefined) {
+					continue;
+				}
+
+				try {
+					// Validate ratio early so convertUsingMarketPriceRatio cannot crash the batch later.
+					convertUsingMarketPriceRatio(priceEntry.valueRatio, entry.conversionValue, affinity);
+				} catch (error) {
+					this.logger?.error(`Invalid market price ratio from provider ${String(result.provider.providerID)} for quote asset ${entry.quoteAsset} against base ${base}:`, error, priceEntry.valueRatio);
+					if (onInvalidRatio === 'throw') {
+						throw(error);
+					}
+					continue;
+				}
+
+				const prices = assetProviderPrices.get(entry.asset) ?? [];
+				prices.push({
+					provider: result.provider,
+					price: priceEntry.valueRatio
+				});
+				assetProviderPrices.set(entry.asset, prices);
+			}
+		}
+
+		const estimateResults = await Promise.all(estimateEntries.map(async (entry) => {
+			try {
+				const estimate = await entry.provider.getEstimate();
+				return({
+					asset: entry.asset,
+					estimate: new KeetaFXAnchorEstimateWithProvider(entry.provider, estimate)
+				});
+			} catch (error) {
+				this.logger?.error(`Failed to get estimate from provider ${String(entry.provider.providerID)}:`, error);
+				return(null);
+			}
+		}));
+
+		const assetProviderEstimates = new Map<Asset, KeetaFXAnchorEstimateWithProvider[]>();
+		for (const result of estimateResults) {
+			if (result === null) {
+				continue;
+			}
+
+			const estimates = assetProviderEstimates.get(result.asset) ?? [];
+			estimates.push(result.estimate);
+			assetProviderEstimates.set(result.asset, estimates);
+		}
+
+		const retval = new Map<Asset, GetPricesAssetReturnValue | null>();
+		for (const entry of assetEntries) {
+			const providerMarketPrices = assetProviderPrices.get(entry.asset) ?? [];
+			const providerEstimates = assetProviderEstimates.get(entry.asset) ?? [];
+			if (providerMarketPrices.length === 0 && providerEstimates.length === 0) {
+				retval.set(entry.asset, null);
+				continue;
+			}
+
+			const convertedAmountSum = [
+				...providerMarketPrices.map(function(providerPrice) {
+					return(convertUsingMarketPriceRatio(providerPrice.price, entry.conversionValue, affinity));
+				}),
+				...providerEstimates.map(function(providerEstimate) {
+					return(providerEstimate.estimate.convertedAmount);
+				})
+			].reduce(function(sum, convertedAmount) {
+				return(sum + convertedAmount);
+			}, 0n);
+
+			const providerCount = providerMarketPrices.length + providerEstimates.length;
+
+			retval.set(entry.asset, {
+				value: entry.conversionValue,
+				averageConvertedAmount: Number(convertedAmountSum) / providerCount,
+				providerMarketPrices,
+				providerEstimates
+			});
+		}
 
 		return(retval);
 	}
@@ -993,6 +1413,30 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		}
 
 		return(disclaimers);
+	}
+
+	async getMarketPrices(providerID: string, request: KeetaFXAnchorMarketPricesRequest): Promise<KeetaFXAnchorMarketPrices | null> {
+		const endpoints = await getEndpoints(this.resolver, {
+			requiredOperations: ['getMarketPrices']
+		}, this.#account, { providerIDs: [providerID] }, { logger: this.logger });
+		if (endpoints === null) {
+			return(null);
+		}
+
+		const serviceEntry = typedFxServiceEntries(endpoints)[0];
+		if (!serviceEntry) {
+			return(null);
+		}
+
+		const [ resolvedProviderID, serviceInfo ] = serviceEntry;
+		const provider = new KeetaFXAnchorProviderBase(serviceInfo, resolvedProviderID, {
+			from: KeetaNetLib.Account.fromPublicKeyString(request.quoteAssets[0] ?? request.base),
+			to: KeetaNetLib.Account.fromPublicKeyString(request.base),
+			amount: 1n,
+			affinity: 'from'
+		}, this);
+
+		return(await provider.getMarketPrices(request));
 	}
 
 	/** @internal */

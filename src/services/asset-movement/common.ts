@@ -6,13 +6,13 @@ import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { SharableCertificateAttributes } from '../../lib/certificates.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import { KeetaAnchorUserError } from '../../lib/error.js';
+import { KeetaAnchorUserError, type KeetaAnchorError } from '../../lib/error.js';
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
-import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
-import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties } from './common.generated.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset, EVMChecksumCache } from '../../lib/asset.js';
+import { convertAssetSearchInputToCanonical, isMovableAssetEqual } from '../../lib/asset.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
@@ -20,6 +20,7 @@ import type { ACLPermissionRequirement } from '@keetanetwork/keetanet-client/lib
 import type { Certificate } from '@keetanetwork/keetanet-client/lib/utils/certificate.js';
 import type { UserClientBuilder } from '@keetanetwork/keetanet-client/client/builder.js';
 import { objectToSignable } from '../../lib/utils/signing.js';
+import { assertNever } from '../../lib/utils/never.js';
 
 export * from './lib/data/addresses/types.generated.js';
 
@@ -55,7 +56,8 @@ export {
 	parseSolanaAsset,
 	isSolanaAsset,
 	convertAssetSearchInputToCanonical,
-	isExternalChainAsset
+	isExternalChainAsset,
+	isMovableAssetEqual
 } from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
@@ -233,7 +235,7 @@ export type AssetOrPair = MovableAsset | AssetPair;
 export type AssetPairCanonical<From extends MovableAssetSearchCanonical = MovableAssetSearchCanonical, To extends MovableAssetSearchCanonical = MovableAssetSearchCanonical> = { from: From; to: To; };
 export type AssetOrPairCanonical = MovableAssetSearchCanonical | AssetPairCanonical;
 
-function isAssetPairLike(input: unknown): input is AssetPair {
+export function isAssetPairLike(input: unknown): input is AssetPair {
 	return(typeof input === 'object' && input !== null && 'from' in input && 'to' in input);
 }
 
@@ -243,6 +245,20 @@ export function toAssetPair(input: AssetOrPair): AssetPair {
 	}
 
 	return({ from: input, to: input });
+}
+
+/**
+ * Returns true when `asset` matches `expected`.
+ * A single asset matches either leg of an expected pair; pairs require both legs to match.
+ */
+export function doesAssetOrPairMatch(asset: AssetOrPair, expected: AssetOrPair, cache?: EVMChecksumCache): boolean {
+	const expectedPair = toAssetPair(expected);
+
+	if (isAssetPairLike(asset)) {
+		return(isMovableAssetEqual(asset.from, expectedPair.from, cache) && isMovableAssetEqual(asset.to, expectedPair.to, cache));
+	} else {
+		return(isMovableAssetEqual(asset, expectedPair.from, cache) || isMovableAssetEqual(asset, expectedPair.to, cache));
+	}
 }
 
 
@@ -366,6 +382,13 @@ export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(in
 type FixedFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'OTHER';
 type VariableFeeLineItemType = 'VALUE_VARIABLE';
 
+interface AssetWithLocation {
+	id: MovableAssetSearchCanonical;
+	location: AssetLocationString;
+}
+
+export type AssetOrAssetWithLocation = AssetWithLocation | MovableAssetSearchCanonical;
+
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
  */
@@ -380,7 +403,7 @@ interface BaseAssetFeeLineItem<Purpose extends AssetFeeLineItemType> {
 	/**
 	 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
 	 */
-	asset?: MovableAssetSearchCanonical;
+	asset?: AssetOrAssetWithLocation;
 
 	/**
 	 * Additional details about this fee line item that (optionally) can be rendered in the client application.
@@ -414,30 +437,34 @@ interface VariableFeeLineItemResolved extends BaseAssetFeeLineItem<VariableFeeLi
 export type ResolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemResolved;
 export type UnresolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemUnresolved;
 
-interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> {
+type BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> = {
 	lineItems: LineItemType[];
-	/**
-	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
-	 */
-	totalPricedIn?: MovableAssetSearchCanonical;
+} & ({
+	total?: never;
+	totalPricedIn?: never;
+} | {
+	lineItems: LineItemType[];
 
 	/**
-	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
+	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD). If omitted, the total is assumed to be the sum of the line items.
 	 */
 	total: string;
-}
+
+	/**
+	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred. Only valid when `total` is provided.
+	 */
+	totalPricedIn?: AssetOrAssetWithLocation;
+});
 
 /**
- * Breakdown of fees for an asset transfer, including line items and total amounts.
+ * Breakdown of fees for an asset transfer, including line items and an optional total amount.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface AssetFeeBreakdown extends BaseAssetFeeBreakdown<ResolvedFeeLineItem> {};
+export type AssetFeeBreakdown = BaseAssetFeeBreakdown<ResolvedFeeLineItem>;
 
 /**
  * Breakdown of fees for an asset transfer with unresolved variable fee line items, where the basis points are provided but the exact fee amount is not yet resolved. This can be used for transfer instructions that are returned before execution, where the variable fee amount cannot be calculated until the transfer value is finalized.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface PersistentAddressAssetFeeBreakdown extends BaseAssetFeeBreakdown<UnresolvedFeeLineItem> {};
+export type PersistentAddressAssetFeeBreakdown = BaseAssetFeeBreakdown<UnresolvedFeeLineItem>;
 
 /**
  * An instruction on how to complete a transfer, ex: where to send tokens, or where to wire USD.
@@ -666,6 +693,57 @@ export interface KeetaAssetMovementAnchorGetTransferStatusRequest {
 export function getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData(input: KeetaAssetMovementAnchorGetTransferStatusRequest): Signable {
 	return([ 'get-transaction', input.id ]);
 }
+
+export interface KeetaAssetMovementAnchorGetAccountStatusClientRequest {
+	account?: KeetaNetAccount;
+}
+
+export type KeetaAssetMovementAnchorGetAccountStatusRequest = ConvertToExternalRequest<KeetaAssetMovementAnchorGetAccountStatusClientRequest, unknown>;
+
+export function getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(): Signable {
+	return([ 'get-account-status' ]);
+}
+
+/**
+ * A single account-status blocker, encoded the same way every {@link KeetaAnchorError} serializes
+ * over the wire (`asErrorResponse('application/json')`): a generic error envelope keyed by `name`,
+ * carrying whatever additional fields that error type serializes (e.g. `code` and `data`). The client
+ * parses each entry from this JSON the same way it parses any other error response, rehydrating it into
+ * its typed {@link Errors} instance, so callers keep `instanceof` checks. Build these from error
+ * instances with {@link encodeKeetaAssetMovementAnchorAccountStatusError}.
+ */
+export interface KeetaAssetMovementAnchorAccountStatusEntry {
+	ok: false;
+	name: string;
+	error: string;
+	[key: string]: unknown;
+}
+
+export type KeetaAssetMovementAnchorGetAccountStatusResponse = {
+	ok: true;
+	actionRequired: false;
+} | {
+	ok: true;
+	actionRequired: true;
+	errors: KeetaAssetMovementAnchorAccountStatusEntry[];
+} | {
+	ok: false;
+	error: string;
+};
+
+/**
+ * The account status: returned by a `getAccountStatus` handler (server side) and resolved by the
+ * client, mirroring the wire response's `actionRequired` discriminant. `false` means the account is
+ * ready; `true` carries the `errors` the account must resolve as typed {@link Errors} instances (the
+ * server encodes them for the wire; the client rehydrates them via `KeetaAnchorError.fromJSON`) so
+ * callers can `instanceof`-check each one.
+ */
+export type KeetaAssetMovementAnchorAccountStatus = {
+	actionRequired: false;
+} | {
+	actionRequired: true;
+	errors: KeetaAnchorError[];
+};
 
 /**
  * Client-side request to deactivate a persistent forwarding address template.
@@ -971,6 +1049,10 @@ export type KeetaPersistentForwardingAddressDetails = {
 	destinationAddress?: AddressResolved | AddressObfuscated;
 	outgoingRail?: Rail;
 	incomingRail?: Rail[];
+	minimumTransferValue?: {
+		asset: MovableAssetSearchCanonical;
+		value: string;
+	}
 	fees?: PersistentAddressAssetFeeBreakdown;
 }
 
@@ -1029,7 +1111,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingClientRequest = {
 	search?: {
 		sourceLocation?: AssetLocationLike;
 		destinationLocation?: AssetLocationLike;
-		asset?: MovableAsset;
+		asset?: AssetOrPair;
 		destinationAddress?: string;
 		persistentAddressTemplateId?: string;
 	}[];
@@ -1042,7 +1124,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
 	search?: {
 		sourceLocation?: AssetLocationCanonical | undefined;
 		destinationLocation?: AssetLocationCanonical | undefined;
-		asset?: MovableAssetSearchCanonical | undefined;
+		asset?: AssetOrPairCanonical | undefined;
 		destinationAddress?: string | undefined;
 		persistentAddressTemplateId?: string | undefined;
 	}[] | undefined;
@@ -1248,7 +1330,7 @@ type KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSON = ReturnType<KeetaAnch
 class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaAssetMovementAnchorAdditionalKYCNeededError';
 	private readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID!: string;
-	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '3f4d6acd-8915-40de-94fa-4c6c48c01623';
+	private static readonly KeetaAssetMovementAnchorAdditionalKYCNeededErrorObjectTypeID = '6b8c684a-4dba-4cb6-9e1c-a1cf5dfcff03';
 
 	readonly toCompleteFlow: KeetaAssetMovementAnchorKYCExternalURLFlow | undefined;
 
@@ -1412,6 +1494,9 @@ export type KeetaAssetMovementAnchorUserAction = ({
 } | {
 	type: 'grant-permission';
 	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
+} | {
+	type: 'provider-kyc-flow';
+	flow: KeetaAssetMovementAnchorKYCExternalURLFlow;
 }) & {
 	details?: ClientRenderableContent;
 }
@@ -1482,9 +1567,17 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
 					}
 				});
+			} else if (action.type === 'provider-kyc-flow') {
+				return({
+					...shared,
+					type: action.type,
+					flow: action.flow
+				});
 			} else {
-				throw(new Error('Unsupported action type'));
+				assertNever(action);
 			}
+
+			throw(new Error('Unsupported action type'));
 		}));
 	}
 
@@ -1556,9 +1649,17 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
 						}
 					});
+				} else if (action.type === 'provider-kyc-flow') {
+					return({
+						...shared,
+						type: action.type,
+						flow: action.flow
+					});
 				} else {
-					throw(new Error('Unsupported action type'));
+					assertNever(action);
 				}
+
+				throw(new Error('Unsupported action type'));
 			})
 		});
 	}
@@ -1605,3 +1706,25 @@ export const Errors: {
 	 */
 	UserActionNeeded: KeetaAssetMovementAnchorUserActionNeededError
 };
+
+/**
+ * Encode an account-status error instance into a {@link KeetaAssetMovementAnchorAccountStatusEntry}.
+ * The server uses this to turn the error instances an account-status handler returns into the wire
+ * response. Reuses the error's own `asErrorResponse` serialization (the same one thrown errors use), so
+ * an entry is identical to what the error would produce if thrown and is parsed client-side the same way.
+ */
+export function encodeKeetaAssetMovementAnchorAccountStatusError(error: KeetaAnchorError): KeetaAssetMovementAnchorAccountStatusEntry {
+	return(assertKeetaAssetMovementAnchorAccountStatusEntry(JSON.parse(error.asErrorResponse('application/json').error)));
+}
+
+/**
+ * Whether an error is one of the asset movement errors {@link Errors}
+ */
+export function isKeetaAssetMovementAnchorError(error: unknown): error is KeetaAnchorError {
+	for (const ErrorClass of Object.values(Errors)) {
+		if (ErrorClass.isInstance(error)) {
+			return(true);
+		}
+	}
+	return(false)
+}

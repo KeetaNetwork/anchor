@@ -653,7 +653,7 @@ export type AnchorPayoutExternalOptions = {
 	/**
 	 * Service-scoped transfer/transaction id to correlate.
 	 */
-	transactionId: string;
+	transactionID: string;
 	/**
 	 * On-chain operations feeding this payout in relevance order.
 	 */
@@ -676,7 +676,7 @@ export type AnchorPayoutExternalOptions = {
  */
 export async function buildSignedAnchorExternal(options: AnchorPayoutExternalOptions): Promise<string> {
 	const builder = new AnchorExternalBuilder();
-	builder.setAnchor(options.anchor, { transactionId: options.transactionId });
+	builder.setAnchor(options.anchor, { transactionId: options.transactionID });
 	builder.withSigner(options.anchor);
 	builder.withBinding(options.binding.previousBlockHash, options.binding.operationIndex);
 
@@ -797,6 +797,25 @@ export class AnchorExternal {
 
 		const result = await AnchorExternal.fromContainer(container, true);
 		return(result);
+	}
+
+	/**
+	 * Decode an external string, dispatching on whether the blob is encrypted.
+	 *
+	 * Encrypted blobs are decrypted with the supplied decryption keys.
+	 * Plaintext blobs ignore them.
+	 *
+	 * @throws {@link AnchorExternalError} on decode failure.
+	 */
+	static async fromExternal(external: string, options?: { decryptionKeys?: Account[] }): Promise<AnchorExternal> {
+		const peeked = await AnchorExternal.peek(external);
+		if (peeked.encrypted) {
+			const encryptedResult = await AnchorExternal.fromEncryptedExternal(external, options?.decryptionKeys ?? []);
+			return(encryptedResult);
+		}
+
+		const plainResult = await AnchorExternal.fromPlainExternal(external);
+		return(plainResult);
 	}
 
 	/**

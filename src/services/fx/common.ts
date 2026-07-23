@@ -150,6 +150,50 @@ export type KeetaFXAnchorEstimateResponse = ({
 	error: string;
 });
 
+export type KeetaFXAnchorMarketPriceRatio = {
+	/**
+	 * Amount of the base (destination) token in the price ratio
+	 */
+	base: string;
+	/**
+	 * Amount of the quote (source) token in the price ratio
+	 */
+	quote: string;
+};
+
+export type KeetaFXAnchorMarketPricesRequest = {
+	/**
+	 * Source tokens to price against the base asset
+	 */
+	quoteAssets: KeetaNetTokenPublicKeyString[];
+	/**
+	 * Destination token against which quote asset prices are expressed
+	 */
+	base: KeetaNetTokenPublicKeyString;
+};
+
+export type KeetaFXAnchorMarketPrices = {
+	/**
+	 * The destination token against which quote asset prices are expressed
+	 */
+	base: KeetaNetTokenPublicKeyString;
+	/**
+	 * Current market prices for each requested quote asset, keyed by token public key
+	 */
+	quoteAssets: {
+		[quoteAsset in KeetaNetTokenPublicKeyString]?: {
+			valueRatio: KeetaFXAnchorMarketPriceRatio;
+		};
+	};
+};
+
+export type KeetaFXAnchorMarketPricesResponse = ({
+	ok: true;
+} & KeetaFXAnchorMarketPrices) | {
+	ok: false;
+	error: string;
+};
+
 export type KeetaFXAnchorQuote = {
 	/**
 	 * Conversion request that was provided
@@ -191,6 +235,38 @@ export type KeetaFXAnchorQuoteResponse = ({
 	error: string;
 });
 
+/**
+ * Transport summary of a completed exchange's conversion, sufficient to
+ * reconstruct the swap without re-reading the on-chain blocks.
+ */
+export type KeetaFXAnchorConversionSummary = {
+	/**
+	 * Token and amount the user sent (the principal being converted from).
+	 */
+	from: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+	/**
+	 * Token and amount the user received (the converted-to currency).
+	 */
+	to: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+	/**
+	 * Liquidity provider account that settled the exchange.
+	 */
+	liquidityProvider: string;
+	/**
+	 * Fee charged for the exchange, when the server computed it.
+	 */
+	cost?: {
+		token: KeetaNetTokenPublicKeyString;
+		amount: string;
+	};
+};
+
 export type KeetaFXAnchorExchange = {
 	/**
 	 * ID used to identify the conversion request
@@ -214,6 +290,10 @@ export type KeetaFXAnchorExchange = {
 	 * that initial block.
 	 */
 	blockhash: string;
+	/**
+	 * Summary of the conversion that settled, when the server recorded it.
+	 */
+	conversion?: KeetaFXAnchorConversionSummary;
 });
 
 export type KeetaFXAnchorExchangeResponse = (KeetaFXAnchorExchange & {
@@ -226,6 +306,7 @@ export type KeetaFXAnchorExchangeResponse = (KeetaFXAnchorExchange & {
 export const isKeetaFXAnchorEstimateResponse: (input: unknown) => input is KeetaFXAnchorEstimateResponse = createIs<KeetaFXAnchorEstimateResponse>();
 export const isKeetaFXAnchorQuoteResponse: (input: unknown) => input is KeetaFXAnchorQuoteResponse = createIs<KeetaFXAnchorQuoteResponse>();
 export const isKeetaFXAnchorExchangeResponse: (input: unknown) => input is KeetaFXAnchorExchangeResponse = createIs<KeetaFXAnchorExchangeResponse>();
+export const isKeetaFXAnchorMarketPricesResponse: (input: unknown) => input is KeetaFXAnchorMarketPricesResponse = createIs<KeetaFXAnchorMarketPricesResponse>();
 export const assertKeetaNetTokenPublicKeyString: (input: unknown)  => KeetaNetTokenPublicKeyString = createAssert<KeetaNetTokenPublicKeyString>();
 export const assertConversionInputCanonicalJSON: (input: unknown) => ConversionInputCanonicalJSON = createAssert<ConversionInputCanonicalJSON>();
 export const assertKeetaFXAnchorClientCreateExchangeRequestJSON: (input: unknown) => KeetaFXAnchorClientCreateExchangeRequestJSON = createAssert<KeetaFXAnchorClientCreateExchangeRequestJSON>();

@@ -275,6 +275,23 @@ export type IconsClientConfig = {
 };
 
 /**
+ * Configuration for a profile client.
+ * The profile is stored as a private object plus a public projection under the base path.
+ */
+export type ProfileClientConfig = {
+	/**
+	 * The account to use for the profile client.
+	 */
+	account: KeetaNetAccount;
+	/**
+	 * The base path for the profile client.
+	 * Defaults to `/user/<pubkey>/profile/` derived from the account.
+	 * Provide it only to store the profile in a non-standard location.
+	 */
+	basePath?: string | undefined;
+};
+
+/**
  * Generic response type for storage operations.
  */
 export type StorageResponse<T> = ({ ok: true } & T) | { ok: false; error: string };

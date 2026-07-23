@@ -26,6 +26,10 @@ import type {
 	KeetaAssetMovementAnchorListForwardingAddressTemplateClientRequest,
 	PersistentAddressTemplateData,
 	KeetaAssetMovementAnchorGetTransferStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusClientRequest,
+	KeetaAssetMovementAnchorGetAccountStatusRequest,
+	KeetaAssetMovementAnchorGetAccountStatusResponse,
+	KeetaAssetMovementAnchorAccountStatus,
 	KeetaAssetMovementAnchorShareKYCClientRequest,
 	KeetaAssetMovementAnchorShareKYCRequest,
 	KeetaAssetMovementAnchorShareKYCResponse,
@@ -58,6 +62,9 @@ import {
 	getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
 	getKeetaAssetMovementAnchorExecuteTransferRequestSigningData,
 	getKeetaAssetMovementAnchorGetTransferStatusRequestSigningData,
+	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+	isKeetaAssetMovementAnchorGetAccountStatusResponse,
+	isKeetaAssetMovementAnchorError,
 	getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
 	getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 	getKeetaAssetMovementAnchorListPersistentForwardingRequestSigningData,
@@ -97,7 +104,8 @@ import { SignData } from '../../lib/utils/signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
-import type { ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
+import type { EVMChecksumCache, ExternalChainAsset, ExternalChainLocationType } from '../../lib/asset.js';
+import { normalizeChainAssetCasing } from '../../lib/asset.js';
 
 // const PARANOID = true;
 
@@ -488,7 +496,7 @@ abstract class BaseKeetaAssetMovementTransfer<Request extends KeetaAssetMovement
 class KeetaAssetMovementTransfer extends BaseKeetaAssetMovementTransfer<KeetaAssetMovementAnchorInitiateTransferClientRequest, ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>> {
 	readonly isSimulation = false as const;
 
-	get transferId(): string {
+	get transferID(): string {
 		return(this.transfer.id);
 	}
 
@@ -538,6 +546,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	private readonly parent: KeetaAssetMovementAnchorClient;
+	readonly #evmChecksumCache: EVMChecksumCache = new Map();
+	readonly #canonicalAssetsByLocation = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
 
 	constructor(serviceInfo: KeetaAssetMovementServiceInfo, providerID: ProviderID, parent: KeetaAssetMovementAnchorClient) {
 		const parentPrivate = parent._internals(KeetaAssetMovementAnchorClientAccessToken);
@@ -604,7 +614,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				errorStr = 'Unknown error';
 			}
 
-			return(new Error(`asset movement request failed: ${errorStr}`));
+			return(new KeetaAnchorError(`asset movement request failed: ${errorStr}`));
 		}
 	}
 
@@ -809,6 +819,56 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		this.logger?.debug(`asset movement request successful, request ID ${request.id}`);
 
 		return(requestInformationJSON);
+	}
+
+	/**
+	 * Check whether the (authenticated) account is ready to use this asset movement provider.
+	 *
+	 * Resolves with the account status, mirroring the wire `actionRequired` discriminant:
+	 * `{ actionRequired: false }` means the account is ready, while `{ actionRequired: true, errors }`
+	 * lists the actions the account must complete before it can proceed, rehydrated into their typed
+	 * errors (e.g. `Errors.KYCShareNeeded`, `Errors.AdditionalKYCNeeded`, `Errors.UserActionNeeded`,
+	 * `Errors.OperationNotSupported`). Request-level failures (e.g. an invalid signature) still reject.
+	 */
+	async getAccountStatus(request: KeetaAssetMovementAnchorGetAccountStatusClientRequest): Promise<KeetaAssetMovementAnchorAccountStatus> {
+		this.logger?.debug(`Getting account status for provider ID: ${String(this.providerID)}`);
+
+		const { account } = request;
+
+		let response;
+		try {
+			response = await this.#makeRequest<
+				KeetaAssetMovementAnchorGetAccountStatusResponse,
+				{ [key: string]: never },
+				KeetaAssetMovementAnchorGetAccountStatusRequest
+			>({
+				method: 'POST',
+				endpoint: 'getAccountStatus',
+				account,
+				body: {},
+				serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+				getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
+				isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
+			});
+		} catch (error: unknown) {
+			if (isKeetaAssetMovementAnchorError(error)) {
+				this.logger?.debug('get account status successful, 1 required action(s) (thrown)');
+				return({ actionRequired: true, errors: [ error ] });
+			}
+
+			throw(error);
+		}
+
+		if (!response.actionRequired) {
+			this.logger?.debug('get account status successful, account ready');
+			return({ actionRequired: false });
+		}
+
+		const errors = await Promise.all(response.errors.map((entry) => this.#parseResponseError(entry)));
+
+		this.logger?.debug(`get account status successful, ${errors.length} required action(s)`);
+
+		return({ actionRequired: true, errors });
 	}
 
 	async deactivatePersistentForwardingTemplate(request: { id: string; account?: KeetaNetAccount }): Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>> {
@@ -1018,7 +1078,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					search: body.search ? body.search.map(function(searchItem) {
 						return({
 							...searchItem,
-							asset: searchItem.asset ? convertAssetSearchInputToCanonical(searchItem.asset) : undefined,
+							asset: searchItem.asset ? convertAssetOrPairSearchInputToCanonical(searchItem.asset) : undefined,
 							sourceLocation: searchItem.sourceLocation ? convertAssetLocationToString(searchItem.sourceLocation) : undefined,
 							destinationLocation: searchItem.destinationLocation ? convertAssetLocationToString(searchItem.destinationLocation) : undefined
 						})
@@ -1208,17 +1268,53 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const locationSpecificMetadata = (locationMetadata as { [key: string]: PerChainLocationMetadata })[locationString];
 
-		if (!locationSpecificMetadata?.assets || !(asset in locationSpecificMetadata.assets)) {
+		if (!locationSpecificMetadata?.assets) {
 			return(null);
 		}
 
+		/*
+		 * Fast path: the caller supplied exactly the spelling that was published, so
+		 * there is no need to compute any checksum.
+		 */
 		const assetMetadata = locationSpecificMetadata.assets[asset];
 
-		if (!assetMetadata) {
-			return(null);
+		if (assetMetadata) {
+			return(assetMetadata);
 		}
 
-		return(assetMetadata);
+		const canonicalAssets = this.#canonicalAssetsForLocation(locationString, locationSpecificMetadata.assets);
+
+		return(canonicalAssets.get(normalizeChainAssetCasing(asset, this.#evmChecksumCache)) ?? null);
+	}
+
+	/**
+	 * Index a location's published assets by their canonical spelling.
+	 *
+	 * `serviceInfo` is fixed at construction, so the index is built once per location
+	 * and reused. That bounds the work to a single keccak per published asset for the
+	 * lifetime of the provider, and the shared checksum cache makes the lookup side
+	 * free on repeat calls.
+	 */
+	#canonicalAssetsForLocation(locationString: string, assets: NonNullable<PerChainLocationMetadata['assets']>): Map<string, AnchorTokenLocationMetadata> {
+		const cached = this.#canonicalAssetsByLocation.get(locationString);
+
+		if (cached !== undefined) {
+			return(cached);
+		}
+
+		const canonicalAssets = new Map<string, AnchorTokenLocationMetadata>();
+
+		for (const [ publishedAsset, metadata ] of Object.entries(assets)) {
+			if (!metadata) {
+				continue;
+			}
+
+			canonicalAssets.set(normalizeChainAssetCasing(publishedAsset, this.#evmChecksumCache), metadata);
+		}
+
+		this.#canonicalAssetsByLocation.set(locationString, canonicalAssets);
+
+		return(canonicalAssets);
 	}
 
 	getLegalDisclaimers(): NonNullable<AnchorMetadataLegalField['disclaimers']> | null {

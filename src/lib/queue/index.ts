@@ -655,6 +655,33 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		this.methodLogger('new')?.debug('Created new queue runner attached to queue', this.queue.id);
 	}
 
+	/**
+	 * Helpful common handlers for the processorAborted and processorStuck methods
+	 */
+	static processorHandlerHelpers: {
+		/*
+		 * Because we are just passing the value through we do not
+		 * care about the type, we can handle any type because we
+		 * simply return the existing value
+		 */
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorStuck']>;
+	} = {
+			RETRY: async (entry) => {
+				return({
+					status: 'failed_temporarily',
+					/*
+					 * This is safe because we are not
+					 * doing any operations on the value
+					 * and it just being copied over itself
+					 */
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+					output: entry.output,
+					error: `Job was ${entry.status} after ${entry.failures} failures, retrying`
+				});
+			}
+		};
+
 	private async initialize(): Promise<void> {
 		if (this.initializePromise) {
 			return(await this.initializePromise);
@@ -953,13 +980,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 
-			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
+			logger?.debug(`Trying to acquire process lock for entry request with id ${String(entry.id)}`);
 
 			try {
 				/*
 				 * Get a lock by setting it to 'processing'
 				 */
 				await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
+
+				/*
+				 * Log an info-level log when we start and finish processing an entry
+				 */
+				logger?.info(`Processing entry request with id ${String(entry.id)}`);
 
 				/*
 				 * Process the entry with a timeout, if the timeout is reached
@@ -987,7 +1019,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				]);
 			} catch (error: unknown) {
 				if (Errors.IncorrectStateAssertedError.isInstance(error)) {
-					logger?.info(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
+					logger?.debug(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
 
 					return(processJobOk);
 				}
@@ -1007,6 +1039,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			if (setEntryStatus.status === 'pending') {
 				by = undefined;
 			}
+
+			logger?.info(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
 
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
@@ -1370,7 +1404,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		await this.initialize();
 
 		/*
-		 * Each worker should maintain its own lock
+		 * Call `maintainRunnerLock` for every worker ID (not just 0)
+		 * so that we can ensure the runner lock is maintained and not
+		 * stale as part of maintain()
 		 */
 		try {
 			await this.maintainRunnerLock();
@@ -1378,13 +1414,15 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to maintain runner lock:', error);
 		}
 
+		/*
+		 * Only the worker with ID 0 should the rest of the maintenance tasks
+		 * so that we don't have multiple workers trying to do the same
+		 * maintenance tasks at the same time on the same queues
+		 */
 		if (this.workers.id !== 0) {
 			return;
 		}
 
-		/*
-		 * Only the worker with ID 0 should perform maintenance tasks on requests
-		 */
 		try {
 			await this.markStuckRequestsAsStuck();
 		} catch (error: unknown) {
@@ -1518,8 +1556,8 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 
 	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & {
 		processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
-		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | undefined;
-		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | undefined;
+		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
+		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
 	} & Partial<KeetaAnchorQueueRunnerConfigurationObject>) {
 		super(config);
 
@@ -1528,10 +1566,18 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 		this.processor = processor;
 
 		if (processorStuck) {
-			this.processorStuck = processorStuck;
+			if (typeof processorStuck === 'string') {
+				this.processorStuck = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorStuck];
+			} else {
+				this.processorStuck = processorStuck;
+			}
 		}
 		if (processorAborted) {
-			this.processorAborted = processorAborted;
+			if (typeof processorAborted === 'string') {
+				this.processorAborted = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorAborted];
+			} else {
+				this.processorAborted = processorAborted;
+			}
 		}
 
 		this.setConfiguration(parameters);

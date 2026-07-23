@@ -7,6 +7,7 @@ import type { ServiceMetadata, ServiceMetadataExternalizable, ServiceSearchCrite
 import { createNodeAndClient, setResolverInfo as setInfo } from './utils/tests/node.js';
 import { SignData, objectToSignable } from './utils/signing.js';
 import { extractSignedFields } from './anchor-metadata-server.js';
+import { toJSONSerializable } from './utils/json.js';
 
 async function setupForResolverTests() {
 	const testAccountSeed = KeetaNetClient.lib.Account.generateRandomSeed();
@@ -978,4 +979,256 @@ test('SharedLookupCriteria.accounts: filters banking entries by signing account'
 		const result = await resolver.lookup('banking', testCase.criteria, testCase.shared);
 		expect(summarizeBankingLookup(result), testCase.name).toEqual(testCase.expected);
 	}
+});
+
+test('ignores unparsable anchor metadata', async function() {
+	const validRoot = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const invalidRoot = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const brokenKeetaAnchor = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const fromToken = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const toToken = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const ampToken = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	const { userClient, fees } = await createNodeAndClient(validRoot);
+	fees.disable();
+
+	for (const [account, metadata] of [
+		[invalidRoot, 'not-valid-root-metadata'],
+		[brokenKeetaAnchor, 'not-valid-anchor-metadata']
+	] as const) {
+		const accountClient = new KeetaNetClient.UserClient({
+			client: userClient.client,
+			signer: account,
+			usePublishAid: false,
+			network: userClient.network,
+			networkAlias: 'test'
+		});
+		await accountClient.setInfo({
+			name: '',
+			description: '',
+			metadata
+		});
+	}
+
+	const keetaLocation = `chain:keeta:${userClient.network}`;
+	const ampPathSideKeeta = {
+		id: ampToken.publicKeyString.get(),
+		location: keetaLocation,
+		rails: { common: ['KEETA_SEND'], outbound: ['KEETA_SEND'] }
+	};
+	const ampPathSideBank = {
+		id: 'USD',
+		location: 'bank-account:us',
+		rails: { common: ['ACH'], inbound: ['ACH'] }
+	};
+	const ampGoodPath = {
+		pair: [ampPathSideKeeta, ampPathSideBank]
+	};
+	const ampSupportedAssetsEntry = {
+		asset: [ampToken.publicKeyString.get(), 'USD'],
+		paths: [ampGoodPath]
+	};
+
+	const malformedRootMetadata = toJSONSerializable({
+		version: 1,
+		currencyMap: {},
+		services: {
+			banking: {
+				good_bank: {
+					operations: {
+						createAccount: 'https://bank.good.com/api/v1/createAccount'
+					},
+					countryCodes: ['US'],
+					currencyCodes: ['USD'],
+					kycProviders: []
+				},
+				broken_bank_keeta: {
+					external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+					url: `keetanet://${brokenKeetaAnchor.publicKeyString.get()}/metadata`
+				},
+				broken_bank_https: {
+					external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+					url: 'https://keeta.com/__TEST__/metadata'
+				},
+				broken_bank_schema: {
+					operations: {
+						createAccount: 'https://bank.bad-schema.com/api/v1/createAccount'
+					},
+					countryCodes: 'USD'
+				},
+				broken_bank_empty: {}
+			},
+			fx: {
+				good_fx: {
+					operations: {
+						createExchange: 'https://fx.good.com/createExchange'
+					},
+					from: [{
+						currencyCodes: [fromToken.publicKeyString.get()],
+						to: [toToken.publicKeyString.get()]
+					}]
+				},
+				broken_fx: {
+					from: 'not-an-array'
+				}
+			},
+			kyc: {
+				good_kyc: {
+					operations: {
+						createVerification: 'https://kyc.good.com/createVerification'
+					},
+					countryCodes: ['US'],
+					ca: 'TEST'
+				},
+				broken_kyc: {
+					operations: {
+						createVerification: 'https://kyc.bad.com/createVerification'
+					},
+					countryCodes: ['US']
+				}
+			},
+			assetMovement: {
+				good_amp: {
+					operations: {
+						initiateTransfer: 'https://amp.good.com/initiateTransfer'
+					},
+					supportedAssets: [ampSupportedAssetsEntry]
+				},
+				good_amp_partial_paths: {
+					operations: {
+						initiateTransfer: 'https://amp.partial.com/initiateTransfer'
+					},
+					supportedAssets: [{
+						asset: [ampToken.publicKeyString.get(), 'USD'],
+						paths: [
+							ampGoodPath,
+							{
+								pair: [
+									{
+										id: ampToken.publicKeyString.get(),
+										location: keetaLocation,
+										rails: {}
+									},
+									ampPathSideBank
+								]
+							}
+						]
+					}]
+				},
+				good_amp_partial_entries: {
+					operations: {
+						initiateTransfer: 'https://amp.partial-entry.com/initiateTransfer'
+					},
+					supportedAssets: [
+						ampSupportedAssetsEntry,
+						'not-a-supported-assets-entry'
+					]
+				},
+				broken_amp: {
+					supportedAssets: 'not-an-array'
+				},
+				broken_amp_keeta: {
+					external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
+					url: `keetanet://${brokenKeetaAnchor.publicKeyString.get()}/metadata`
+				}
+			}
+		}
+	});
+
+	await userClient.setInfo({
+		name: '',
+		description: '',
+		metadata: Resolver.Metadata.formatMetadata(malformedRootMetadata)
+	});
+
+	fees.enable();
+
+	const warnLogs: unknown[][] = [];
+	const resolver = new Resolver({
+		root: [invalidRoot, validRoot],
+		client: userClient,
+		trustedCAs: [],
+		logger: {
+			log: () => {},
+			debug: () => {},
+			info: () => {},
+			warn: (...args: unknown[]) => { warnLogs.push(args); },
+			error: () => {}
+		}
+	});
+
+	const malformedMetadataLookupCases = [
+		{
+			name: 'banking survives invalid root metadata',
+			service: 'banking',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_bank']
+		},
+		{
+			name: 'banking ignores keetanet external anchor with unparsable metadata',
+			service: 'banking',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_bank']
+		},
+		{
+			name: 'banking ignores unreachable HTTPS external metadata',
+			service: 'banking',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_bank']
+		},
+		{
+			name: 'banking ignores schema-invalid provider metadata',
+			service: 'banking',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_bank']
+		},
+		{
+			name: 'banking ignores empty provider metadata',
+			service: 'banking',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_bank']
+		},
+		{
+			name: 'fx ignores provider with unparsable from paths',
+			service: 'fx',
+			criteria: {},
+			expectedProviderIDs: ['good_fx']
+		},
+		{
+			name: 'kyc ignores provider missing required ca field',
+			service: 'kyc',
+			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['good_kyc']
+		},
+		{
+			name: 'assetMovement keeps provider when another path has no usable rails',
+			service: 'assetMovement',
+			criteria: {},
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
+		},
+		{
+			name: 'assetMovement ignores provider with unparsable supportedAssets',
+			service: 'assetMovement',
+			criteria: {},
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
+		},
+		{
+			name: 'assetMovement ignores keetanet external anchor with unparsable metadata',
+			service: 'assetMovement',
+			criteria: {},
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
+		}
+	] satisfies {
+		name: string;
+		service: keyof NonNullable<ServiceMetadata['services']>;
+		criteria: ServiceSearchCriteria<keyof NonNullable<ServiceMetadata['services']>>;
+		expectedProviderIDs: string[];
+	}[];
+
+	for (const testCase of malformedMetadataLookupCases) {
+		const result = await resolver.lookup(testCase.service, testCase.criteria);
+		expect(Object.keys(result ?? {}).sort(), testCase.name).toEqual([...testCase.expectedProviderIDs].sort());
+	}
+
+	expect(warnLogs.length).toBeGreaterThan(0);
 });
