@@ -1761,6 +1761,7 @@ export interface ComputePlanOptions {
 export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
 	includeAllOutput?: boolean;
 	forwardingOnly?: boolean | ForwardingOnlyOptions;
+	maxPathLength?: number;
 }
 
 function toComputePlanOptions(options?: GetPlansOptions, forwardingOpts?: ForwardingOnlyOptions): ComputePlanOptions | undefined {
@@ -3445,7 +3446,10 @@ export class AnchorChaining {
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
-		const paths = await this.getPaths(input, options?.forwardingOnly ? { forwardingOnly: options.forwardingOnly } : undefined);
+		const paths = await this.getPaths(input, {
+			...(options?.forwardingOnly ? { forwardingOnly: options.forwardingOnly } : {}),
+			...(options?.maxPathLength !== undefined ? { maxPathLength: options.maxPathLength } : {})
+		});
 
 		if (!paths) {
 			return(null);
