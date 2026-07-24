@@ -1315,9 +1315,13 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 
 	expect(path.path).toHaveLength(3);
 
+	// Every asset-movement node carries what its provider publishes, whether or not any rail declares its own.
+	const bankAnchorOperations = { createPersistentForwarding: true, initiateTransfer: true, simulateTransfer: false };
+
 	expect(toJSONSerializable([
 		{
 			providerID: 'BankAnchor',
+			providerOperations: bankAnchorOperations,
 			type: 'assetMovement',
 			from: { asset: 'USD', location: 'bank-account:us', rail: 'ACH' },
 			to: { asset: tokens.USDC, location: keetaLocation, rail: 'KEETA_SEND' }
@@ -1330,6 +1334,7 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 		},
 		{
 			providerID: 'BankAnchor',
+			providerOperations: bankAnchorOperations,
 			type: 'assetMovement',
 			from: { asset: tokens.EURC, location: keetaLocation, rail: 'KEETA_SEND' },
 			to: { asset: 'EUR', location: 'bank-account:iban-swift', rail: 'SEPA_PUSH' }
@@ -1607,6 +1612,15 @@ async function createChainingTestHarness(options: { includeSwapAnchor?: boolean 
 	});
 }
 
+const expectRejectedByPlanCreateAndPathValidate = async (path: AnchorChainingPath, expectedError: string) => {
+	await expect(AnchorChainingPlan.create(path)).rejects.toThrow(expectedError);
+	const validation = path.validate();
+	expect(validation.valid).toBe(false);
+	if (!validation.valid) {
+		expect(validation.reason).toContain(expectedError);
+	}
+};
+
 describe('AnchorChainingPath computeSteps', function() {
 	test.each([
 		{ providerID: 'FXOne' as const, expectedFxOut: 88n, totalOut: 78n },
@@ -1635,7 +1649,7 @@ describe('AnchorChainingPath computeSteps', function() {
 	test('affinity:to is unsupported for paths with AM steps', async function() {
 		await using h = await createChainingTestHarness();
 		const path = await h.getPathVia('FXOne', 'to');
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('not currently supported for asset movement steps');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'not currently supported for asset movement steps');
 	});
 
 	test('BankEU initiateTransfer failure propagates from computeSteps', async function() {
@@ -1834,7 +1848,7 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 		path.request.source.value = 100n;
 		path.request.destination.value = 100n;
 
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value but not both');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'Must have source.value or destination.value but not both');
 	});
 
 	test('providing neither source.value nor destination.value throws', async function() {
@@ -1844,7 +1858,7 @@ describe('AnchorChainingPath execute with destination.value (to affinity)', func
 		delete path.request.source.value;
 		delete path.request.destination.value;
 
-		await expect(AnchorChainingPlan.create(path)).rejects.toThrow('Must have source.value or destination.value');
+		await expectRejectedByPlanCreateAndPathValidate(path, 'Must have source.value or destination.value');
 	});
 });
 
@@ -3195,6 +3209,12 @@ describe('AnchorChainingPlan disclaimers', function() {
 describe('Persistent Forwarding chaining', function() {
 	const PFR_SUPPORTED_OPS = { initiateTransfer: false, createPersistentForwarding: true } as const;
 
+	/*
+	 * What the graph resolves the rail-level ops above into: the rail values are
+	 * kept, and provider-level operations are added from the service metadata.
+	 */
+	const PFR_RESOLVED_OPS = { ...PFR_SUPPORTED_OPS, simulateTransfer: true } as const;
+
 	function newDestinationAccount() {
 		return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
 	}
@@ -3307,7 +3327,7 @@ describe('Persistent Forwarding chaining', function() {
 			n.from.rail === 'EVM_SEND'
 		);
 		expect(evmSourceNode).toBeDefined();
-		expect(evmSourceNode?.from.supportedOperations).toEqual(PFR_SUPPORTED_OPS);
+		expect(evmSourceNode?.from.supportedOperations).toEqual(PFR_RESOLVED_OPS);
 	});
 
 	test('plan computes a forwarded step when last step source rail forbids initiateTransfer', async function() {
@@ -3322,7 +3342,7 @@ describe('Persistent Forwarding chaining', function() {
 			throw(new Error(`Expected last path step to be assetMovement`));
 		}
 
-		expect(lastPathStep.from.supportedOperations).toEqual(PFR_SUPPORTED_OPS);
+		expect(lastPathStep.from.supportedOperations).toEqual(PFR_RESOLVED_OPS);
 
 		const plan = await AnchorChainingPlan.create(path);
 		expect(plan.plan.steps).toHaveLength(2);
@@ -3456,6 +3476,53 @@ describe('Persistent Forwarding chaining', function() {
 		expect(observedTransactions.some((item) => item.stepIndex === 1 && item.source === 'listTransactions' && item.additionalTransferDetails?.content === 'Forwarded leg complete')).toBe(true);
 
 		expect(plan.state.status).toEqual('completed');
+	});
+});
+
+describe('AnchorChainingPath validate', function() {
+	test('reports valid for a well formed path and invalid for bad request/structure', async function() {
+		await using h = await createChainingTestHarness();
+
+		// Valid: USDC@keeta -> EUR@iban-swift with affinity 'from'.
+		const validPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		});
+		const validPath = validPaths?.[0];
+		if (!validPath) {
+			throw(new Error('Expected at least one path for the valid case'));
+		}
+		expect(validPath.validate()).toEqual({ valid: true });
+
+		// Invalid request: both source.value and destination.value set.
+		const bothValuesPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
+		});
+		const bothValuesPath = bothValuesPaths?.[0];
+		if (!bothValuesPath) {
+			throw(new Error('Expected at least one path for the both-values case'));
+		}
+		const bothResult = bothValuesPath.validate();
+		expect(bothResult.valid).toBe(false);
+		if (!bothResult.valid) {
+			expect(bothResult.reason).toContain('Must have source.value or destination.value but not both');
+		}
+
+		// Invalid structure: affinity 'to' (destination.value) on an asset-movement path.
+		const affinityToPaths = await h.anchorChaining.getPaths({
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const, value: 100n }
+		});
+		const affinityToPath = affinityToPaths?.[0];
+		if (!affinityToPath) {
+			throw(new Error('Expected at least one path for the affinity-to case'));
+		}
+		const affinityResult = affinityToPath.validate();
+		expect(affinityResult.valid).toBe(false);
+		if (!affinityResult.valid) {
+			expect(affinityResult.reason).toContain('not currently supported for asset movement steps');
+		}
 	});
 });
 
@@ -4082,7 +4149,22 @@ describe('getPlans forwardingOnly', function() {
 
 	type LegMode = 'managed' | 'pfr' | 'omitted' | 'initiateOnly';
 
-	async function buildForwardingWorld(legMode: LegMode) {
+	/**
+	 * Publishes every operation except simulateTransfer. The handler still exists;
+	 * it simply is not advertised, which is how a real provider that cannot
+	 * simulate presents itself to the resolver.
+	 */
+	class NoSimulateChainAnchorServer extends TestChainAnchorServer {
+		protected override async buildServiceMetadata() {
+			const metadata = await super.buildServiceMetadata();
+			const operations = { ...metadata.operations };
+			delete operations.simulateTransfer;
+
+			return({ ...metadata, operations });
+		}
+	}
+
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4112,7 +4194,7 @@ describe('getPlans forwardingOnly', function() {
 		const keetaSide = (token: TokenAddress): AMSide => ({
 			location: keetaLocation,
 			id: token.publicKeyString.get(),
-			rails: { common: [{ rail: 'KEETA_SEND', supportedOperations: MANAGED_OPS }] }
+			rails: { common: [{ rail: 'KEETA_SEND', ...(opts?.railsWithoutSupportedOperations ? {} : { supportedOperations: MANAGED_OPS }) }] }
 		});
 		const baseSide = (id: AMSide['id']): AMSide => ({
 			location: LOC.base,
@@ -4148,7 +4230,8 @@ describe('getPlans forwardingOnly', function() {
 				]
 			}
 		});
-		const am2 = new TestChainAnchorServer({
+		const AM2Server = opts?.am2WithoutSimulateTransfer ? NoSimulateChainAnchorServer : TestChainAnchorServer;
+		const am2 = new AM2Server({
 			...(DEBUG ? { logger } : {}),
 			client,
 			convert,
@@ -4264,6 +4347,108 @@ describe('getPlans forwardingOnly', function() {
 		const omittedImplied = await omitted.anchorChaining.getPaths(requestFor(omitted), { forwardingOnly: { method: 'implied' }});
 		expect(omittedImplied).not.toBeNull();
 		expect(omittedImplied?.every((path) => isForwardingPath(path, { method: 'implied' }))).toBe(true);
+	});
+
+	test('validate(forwardingOnly) agrees with what AnchorChainingPlan.create throws', async function() {
+		await using managed = await buildForwardingWorld('managed');
+		await using pfr = await buildForwardingWorld('pfr');
+
+		const requestFor = (w: Awaited<ReturnType<typeof buildForwardingWorld>>) => ({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+		});
+
+		/*
+		 * Unfiltered getPaths returns managed paths that are fine as a default
+		 * plan but cannot be computed as forwarding-only. validate must reject
+		 * them under forwardingOnly with the same message create throws, rather
+		 * than reporting valid and failing later at getPlan time.
+		 */
+		const managedPath = (await managed.anchorChaining.getPaths(requestFor(managed)))?.[0];
+		if (!managedPath) {
+			throw(new Error('Expected an unfiltered path in the managed world'));
+		}
+
+		expect(managedPath.validate()).toEqual({ valid: true });
+
+		const managedResult = managedPath.validate({ forwardingOnly: true });
+		if (managedResult.valid) {
+			throw(new Error('Expected forwardingOnly validation to fail for a managed path'));
+		}
+		expect(managedResult.reason).toContain('requires persistent forwarding support on every leg');
+		await expect(AnchorChainingPlan.create(managedPath, { forwardingOnly: true })).rejects.toThrow(managedResult.reason);
+
+		// A genuinely forwarding-capable path validates and computes in both modes.
+		const pfrPath = (await pfr.anchorChaining.getPaths(requestFor(pfr), { forwardingOnly: true }))?.[0];
+		if (!pfrPath) {
+			throw(new Error('Expected a forwarding-only path in the pfr world'));
+		}
+
+		expect(pfrPath.validate({ forwardingOnly: true })).toEqual({ valid: true });
+		await expect(AnchorChainingForwardingOnlyPlan.create(pfrPath)).resolves.toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
+	});
+
+	test('validate reports a missing simulateTransfer at a non-keeta intermediate location', async function() {
+		await using w = await buildForwardingWorld('managed', { am2WithoutSimulateTransfer: true });
+
+		/*
+		 * USDC@keeta -> USDC@eth routes as AM2 (keeta -> base) then AM3 (base ->
+		 * eth). The base intermediate is non-keeta and AM3 is a managed leg, so
+		 * AM2 must simulate to know the deposit amount. It does not advertise
+		 * simulateTransfer, so this can never be planned.
+		 */
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+
+		const result = path.validate();
+		if (result.valid) {
+			throw(new Error('Expected validate to reject a path whose provider cannot simulateTransfer'));
+		}
+
+		expect(result.reason).toContain('does not support simulateTransfer');
+		expect(result.reason).toContain(LOC.base);
+
+		// The message and the failure must match what computing the plan produces.
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow(result.reason);
+	});
+
+	test('validate reports a missing simulateTransfer when no rail advertises supportedOperations', async function() {
+		await using w = await buildForwardingWorld('omitted', { am2WithoutSimulateTransfer: true, railsWithoutSupportedOperations: true });
+
+		/*
+		 * Same route as the test above, which cannot be planned, but no rail publishes
+		 * supportedOperations, which is how most real providers present
+		 * themselves. The capability is then only known at the provider level,
+		 * and validate must still report it rather than deferring the failure to
+		 * getPlan.
+		 */
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+
+		const result = path.validate();
+		if (result.valid) {
+			throw(new Error('Expected validate to reject a path whose provider cannot simulateTransfer'));
+		}
+
+		expect(result.reason).toContain('does not support simulateTransfer');
+		expect(result.reason).toContain(LOC.base);
+
+		// The message and the failure must match what computing the plan produces.
+		await expect(AnchorChainingPlan.create(path)).rejects.toThrow(result.reason);
 	});
 
 	test('getPaths forwardingOnly honors maxLegs', async function() {
