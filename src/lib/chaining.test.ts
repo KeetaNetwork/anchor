@@ -4423,7 +4423,7 @@ describe('getPlans forwardingOnly', function() {
 		await using w = await buildForwardingWorld('omitted', { am2WithoutSimulateTransfer: true, railsWithoutSupportedOperations: true });
 
 		/*
-		 * Same unplannable route as the test above, but no rail publishes
+		 * Same route as the test above, which cannot be planned, but no rail publishes
 		 * supportedOperations, which is how most real providers present
 		 * themselves. The capability is then only known at the provider level,
 		 * and validate must still report it rather than deferring the failure to
