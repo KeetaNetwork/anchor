@@ -11,6 +11,8 @@ import { isAssetLocationLike } from '../services/asset-movement/lib/location.gen
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
+import { createAnchorChainingPollRetryHandler } from './utils/poll-retry.js';
+import type { AnchorChainingPollOptions } from './utils/poll-retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
@@ -107,6 +109,8 @@ export type AnchorChainingPathExecuteResult = {
 
 export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
+	abortSignal?: AbortSignal;
+	poll?: AnchorChainingPollOptions;
 };
 
 export type AnchorChainingPathState =
@@ -2986,18 +2990,36 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
 		context: { stepIndex: number; planStep: ChainStepResolution },
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: AnchorChainingPollOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
+		const timeoutMessage = `Timed out waiting for transfer ${transfer.transferID} to complete`;
+
+		const pollRetry = createAnchorChainingPollRetryHandler({
+			scope: 'AnchorChainingPlan::pollTransferStatus',
+			deadline: deadline,
+			timeoutMessage: timeoutMessage,
+			...(options?.poll ? { options: options.poll } : {}),
+			...(this.logger ? { logger: this.logger } : {}),
+			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
+		});
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
 				throw(new Error(`Aborted while waiting for transfer ${transfer.transferID} to complete`));
 			}
 
-			const status = await transfer.getTransferStatus();
+			let status: Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>;
+			try {
+				status = await transfer.getTransferStatus();
+			} catch (pollError) {
+				await pollRetry.failure(pollError);
+				continue;
+			}
+			pollRetry.success();
+
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
 				planStep: context.planStep,
@@ -3009,7 +3031,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				return(status);
 			}
 			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for transfer ${transfer.transferID} to complete`));
+				throw(new Error(timeoutMessage));
 			}
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
@@ -3086,18 +3108,36 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollExchangeStatus(
 		exchange: FXExchange,
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: AnchorChainingPollOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
+		const timeoutMessage = `Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`;
+
+		const pollRetry = createAnchorChainingPollRetryHandler({
+			scope: 'AnchorChainingPlan::pollExchangeStatus',
+			deadline: deadline,
+			timeoutMessage: timeoutMessage,
+			...(options?.poll ? { options: options.poll } : {}),
+			...(this.logger ? { logger: this.logger } : {}),
+			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
+		});
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
 				throw(new Error(`Aborted while waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			const status = await exchange.getExchangeStatus();
+			let status: Awaited<ReturnType<FXExchange['getExchangeStatus']>>;
+			try {
+				status = await exchange.getExchangeStatus();
+			} catch (pollError) {
+				await pollRetry.failure(pollError);
+				continue;
+			}
+			pollRetry.success();
+
 			if (status.status === 'completed') {
 				return(status);
 			}
@@ -3105,14 +3145,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`FX exchange ${exchange.exchange.exchangeID} failed`));
 			}
 			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
+				throw(new Error(timeoutMessage));
 			}
 
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
 	}
 
-	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
+	async execute(options?: AnchorChainingPathExecuteOptions): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#options?.forwardingOnly) {
 			throw(new Error('Forwarding-only plans cannot be executed. Use getPlans({ forwardingOnly: true }), which returns AnchorChainingForwardingOnlyPlan, and fund the deposit address externally.'));
 		}
@@ -3180,7 +3220,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				if (step.type === 'fx') {
 					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
-					const exchangeStatus = await this.#pollExchangeStatus(exchange);
+					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
 					publishedInputs.push({ blockHash: exchangeStatus.blockhash });
 
@@ -3192,9 +3232,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 					}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, {
-						...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-					});
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, options);
 					prevActualValueOut = BigInt(observed.to.value);
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
@@ -3239,9 +3277,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 
 					if (step.type === 'assetMovement') {
-						const status = await this.#pollTransferStatus(step.transfer, pollContext, {
-							...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-						});
+						const status = await this.#pollTransferStatus(step.transfer, pollContext, options);
 						prevActualValueOut = BigInt(status.transaction.to.value);
 						const withdraw = status.transaction.to.transactions.withdraw;
 						if (withdraw) {
