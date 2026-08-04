@@ -3014,7 +3014,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
-		const timeoutMessage = `Timed out waiting for transfer ${transfer.transferID} to complete`;
 		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options)
 
 		while (true) {
@@ -3037,7 +3036,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				return(status);
 			}
 			if (Date.now() >= deadline) {
-				throw(new Error(timeoutMessage));
+				throw(new Error(`Timed out waiting for transfer ${transfer.transferID} to complete`));
 			}
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
@@ -3119,7 +3118,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
-		const timeoutMessage = `Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`;
 		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options)
 
 		while (true) {
@@ -3138,7 +3136,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`FX exchange ${exchange.exchange.exchangeID} failed`));
 			}
 			if (Date.now() >= deadline) {
-				throw(new Error(timeoutMessage));
+				throw(new Error(`Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
