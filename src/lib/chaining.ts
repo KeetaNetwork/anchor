@@ -2988,9 +2988,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * Retry policy for a single status poll. A status read is idempotent, so
-	 * every failure is retried, bounded by the attempt budget and by whatever
-	 * is left of the surrounding poll deadline.
+	 * Retry policy for a single status poll.
 	 */
 	#pollRetryOptions(
 		scope: string,
@@ -2998,15 +2996,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): RetryOptions {
 		const remainingMs = Math.max(0, deadline - Date.now());
-		const abortSignal = options?.abortSignal;
 
 		return({
 			...options?.poll,
 			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
-			isRetryable: function() {
-				return(abortSignal?.aborted !== true);
-			},
 			loggerContext: scope,
+			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
 			...(this.logger ? { logger: this.logger } : {})
 		});
 	}
@@ -3020,32 +3015,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 		const timeoutMessage = `Timed out waiting for transfer ${transfer.transferID} to complete`;
+		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options)
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
 				throw(new Error(`Aborted while waiting for transfer ${transfer.transferID} to complete`));
 			}
 
-			let status: Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>;
-			try {
-				status = await withRetry(async function() {
-					return(await transfer.getTransferStatus());
-				}, this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options));
-			} catch (pollError) {
-				/*
-				 * An abort stops the retries mid-flight; let the top of the
-				 * loop raise the abort error rather than the poll failure.
-				 */
-				if (options?.abortSignal?.aborted) {
-					continue;
-				}
-
-				if (Date.now() >= deadline) {
-					throw(new Error(timeoutMessage, { cause: pollError }));
-				}
-
-				throw(pollError);
-			}
+			const status = await withRetry(async function() {
+				return(await transfer.getTransferStatus());
+			}, pollOptions);
 
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
@@ -3141,32 +3120,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 		const timeoutMessage = `Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`;
+		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options)
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
 				throw(new Error(`Aborted while waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			let status: Awaited<ReturnType<FXExchange['getExchangeStatus']>>;
-			try {
-				status = await withRetry(async function() {
-					return(await exchange.getExchangeStatus());
-				}, this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options));
-			} catch (pollError) {
-				/*
-				 * An abort stops the retries mid-flight; let the top of the
-				 * loop raise the abort error rather than the poll failure.
-				 */
-				if (options?.abortSignal?.aborted) {
-					continue;
-				}
-
-				if (Date.now() >= deadline) {
-					throw(new Error(timeoutMessage, { cause: pollError }));
-				}
-
-				throw(pollError);
-			}
+			const status = await withRetry(async function() {
+				return(await exchange.getExchangeStatus());
+			}, pollOptions);
 
 			if (status.status === 'completed') {
 				return(status);

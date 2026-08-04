@@ -240,6 +240,74 @@ describe('withRetry non-retryable paths', function() {
 	});
 });
 
+describe('withRetry abort', function() {
+	it('throws ABORTED without calling fn when the signal is already aborted', async function() {
+		const controller = new AbortController();
+		controller.abort();
+
+		const run = runRetry([ { ok: 'never' } ], { abortSignal: controller.signal });
+		const settled = await caught(run.settled);
+
+		expect(KeetaAnchorRetryError.isInstance(settled)).toBe(true);
+		expect(settled).toMatchObject({ code: 'ABORTED' });
+		expect(run.calls()).toBe(0);
+	});
+
+	it('stops retrying once the signal aborts, keeping the last error as cause', async function() {
+		const controller = new AbortController();
+		const error = new Error('blip');
+		const outcomes: Outcome<string>[] = [ { err: error }, { err: error }, { ok: 'never' } ];
+
+		const clock = numericClock();
+		const script = scriptedFn<string>(outcomes);
+		const observed: number[] = [];
+
+		/*
+		 * Abort while the second backoff is in flight, the window a caller
+		 * cancelling mid-poll actually lands in.
+		 */
+		const sleep = async function(ms: number): Promise<void> {
+			observed.push(ms);
+			clock.advance(ms);
+			if (observed.length === 2) {
+				controller.abort();
+			}
+			await Promise.resolve();
+		};
+
+		const settled = await caught(withRetry(script.fn, {
+			now: clock.now,
+			sleep,
+			maxTotalMs: 60_000,
+			backoff: function() {
+				return(50);
+			},
+			isRetryable: ALWAYS_RETRY,
+			abortSignal: controller.signal
+		}));
+
+		expect(KeetaAnchorRetryError.isInstance(settled)).toBe(true);
+		expect(settled).toMatchObject({ code: 'ABORTED', cause: error });
+		expect(observed).toEqual([ 50, 50 ]);
+		expect(script.calls()).toBe(2);
+	});
+
+	it('ignores the signal when it never aborts', async function() {
+		const controller = new AbortController();
+		const run = runRetry([ { err: new Error('blip') }, { ok: 'ok' } ], {
+			maxTotalMs: 60_000,
+			backoff: function() {
+				return(50);
+			},
+			isRetryable: ALWAYS_RETRY,
+			abortSignal: controller.signal
+		});
+
+		expect(await run.settled).toBe('ok');
+		expect(run.observed).toEqual([ 50 ]);
+	});
+});
+
 describe('withRetry exhaustion', function() {
 	interface ExhaustionCase {
 		name: string;

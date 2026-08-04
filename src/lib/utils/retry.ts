@@ -1,10 +1,3 @@
-/**
- * Generic retry with truncated exponential backoff.
- *
- * Ported from the Asset Movement Anchor SDK durability layer so both packages
- * share one retry policy shape.
- */
-
 import type { Logger } from '../log/index.js';
 import { KeetaAnchorError } from '../error.js';
 import { asleep } from './asleep.js';
@@ -14,6 +7,7 @@ const DEFAULT_BASE_BACKOFF_MS = 500;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 
 export const RetryErrorCodes = [
+	'ABORTED',
 	'INVALID_OPTION',
 	'NON_ERROR_THROWN',
 	'RETRY_EXHAUSTED'
@@ -94,6 +88,7 @@ export interface RetryOptions {
 	isRetryable?: (err: unknown) => boolean;
 	sleep?: (ms: number) => Promise<void>;
 	now?: () => number;
+	abortSignal?: AbortSignal | undefined;
 	logger?: Logger | undefined;
 	loggerContext?: string;
 }
@@ -158,7 +153,8 @@ function readRetryAfterMs(err: unknown): number | undefined {
 
 /**
  * Run `fn` with backoff between attempts. Stops on a non-retryable error,
- * once `maxTotalMs` is exhausted, or once `maxAttempts` is reached.
+ * once `maxTotalMs` is exhausted, once `maxAttempts` is reached, or once
+ * `abortSignal` aborts.
  */
 export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
 	const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
@@ -175,6 +171,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 	const isRetryable = options.isRetryable ?? defaultIsRetryable;
 	const sleep = options.sleep ?? asleep;
 	const now = options.now ?? Date.now;
+	const abortSignal = options.abortSignal;
 	const logger = options.logger;
 	const context = options.loggerContext ?? 'withRetry';
 
@@ -182,6 +179,15 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 	let lastError: unknown;
 	let attemptsMade = 0;
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		if (abortSignal?.aborted === true) {
+			logger?.debug(context, `Aborted after ${attemptsMade} attempt(s)`, { err: lastError });
+			throw(new KeetaAnchorRetryError(
+				'ABORTED',
+				`withRetry: aborted after ${attemptsMade} attempt(s)`,
+				{ ...(lastError !== undefined ? { cause: lastError } : {}) }
+			));
+		}
+
 		attemptsMade = attempt + 1;
 		try {
 			const result = await fn();
