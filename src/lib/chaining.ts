@@ -11,8 +11,8 @@ import { isAssetLocationLike } from '../services/asset-movement/lib/location.gen
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
-import { createAnchorChainingPollRetryHandler } from './utils/poll-retry.js';
-import type { AnchorChainingPollOptions } from './utils/poll-retry.js';
+import { withRetry } from './utils/retry.js';
+import type { PublicRetryOptions, RetryOptions } from './utils/retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
@@ -110,7 +110,7 @@ export type AnchorChainingPathExecuteResult = {
 export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
 	abortSignal?: AbortSignal;
-	poll?: AnchorChainingPollOptions;
+	poll?: PublicRetryOptions;
 };
 
 export type AnchorChainingPathState =
@@ -2987,24 +2987,39 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(external);
 	}
 
+	/**
+	 * Retry policy for a single status poll. A status read is idempotent, so
+	 * every failure is retried, bounded by the attempt budget and by whatever
+	 * is left of the surrounding poll deadline.
+	 */
+	#pollRetryOptions(
+		scope: string,
+		deadline: number,
+		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
+	): RetryOptions {
+		const remainingMs = Math.max(0, deadline - Date.now());
+		const abortSignal = options?.abortSignal;
+
+		return({
+			...options?.poll,
+			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
+			isRetryable: function() {
+				return(abortSignal?.aborted !== true);
+			},
+			loggerContext: scope,
+			...(this.logger ? { logger: this.logger } : {})
+		});
+	}
+
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
 		context: { stepIndex: number; planStep: ChainStepResolution },
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: AnchorChainingPollOptions; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 		const timeoutMessage = `Timed out waiting for transfer ${transfer.transferID} to complete`;
-
-		const pollRetry = createAnchorChainingPollRetryHandler({
-			scope: 'AnchorChainingPlan::pollTransferStatus',
-			deadline: deadline,
-			timeoutMessage: timeoutMessage,
-			...(options?.poll ? { options: options.poll } : {}),
-			...(this.logger ? { logger: this.logger } : {}),
-			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-		});
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
@@ -3013,12 +3028,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 			let status: Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>;
 			try {
-				status = await transfer.getTransferStatus();
+				status = await withRetry(async function() {
+					return(await transfer.getTransferStatus());
+				}, this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options));
 			} catch (pollError) {
-				await pollRetry.failure(pollError);
-				continue;
+				/*
+				 * An abort stops the retries mid-flight; let the top of the
+				 * loop raise the abort error rather than the poll failure.
+				 */
+				if (options?.abortSignal?.aborted) {
+					continue;
+				}
+
+				if (Date.now() >= deadline) {
+					throw(new Error(timeoutMessage, { cause: pollError }));
+				}
+
+				throw(pollError);
 			}
-			pollRetry.success();
 
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
@@ -3108,21 +3135,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollExchangeStatus(
 		exchange: FXExchange,
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: AnchorChainingPollOptions; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
 		const timeoutMessage = `Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`;
-
-		const pollRetry = createAnchorChainingPollRetryHandler({
-			scope: 'AnchorChainingPlan::pollExchangeStatus',
-			deadline: deadline,
-			timeoutMessage: timeoutMessage,
-			...(options?.poll ? { options: options.poll } : {}),
-			...(this.logger ? { logger: this.logger } : {}),
-			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-		});
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
@@ -3131,12 +3149,24 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 			let status: Awaited<ReturnType<FXExchange['getExchangeStatus']>>;
 			try {
-				status = await exchange.getExchangeStatus();
+				status = await withRetry(async function() {
+					return(await exchange.getExchangeStatus());
+				}, this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options));
 			} catch (pollError) {
-				await pollRetry.failure(pollError);
-				continue;
+				/*
+				 * An abort stops the retries mid-flight; let the top of the
+				 * loop raise the abort error rather than the poll failure.
+				 */
+				if (options?.abortSignal?.aborted) {
+					continue;
+				}
+
+				if (Date.now() >= deadline) {
+					throw(new Error(timeoutMessage, { cause: pollError }));
+				}
+
+				throw(pollError);
 			}
-			pollRetry.success();
 
 			if (status.status === 'completed') {
 				return(status);

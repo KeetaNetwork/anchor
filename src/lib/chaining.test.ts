@@ -9,7 +9,6 @@ import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
-import type { AnchorChainingPollOptions } from './utils/poll-retry.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
@@ -27,13 +26,6 @@ type RateFn = (request: ConversionInputCanonicalJSON, context: GetConversionRate
 
 const EMPTY_FROM_TRANSACTIONS = { deposit: null, persistentForwarding: null, finalization: null } as const;
 const EMPTY_TO_TRANSACTIONS = { withdraw: null } as const;
-
-/**
- * Poll retry tuning for tests: the same failure budget the library defaults
- * to, with the backoff compressed to a few milliseconds so exhausting it
- * costs no meaningful wall-clock time.
- */
-const fastPollRetry: AnchorChainingPollOptions = { baseBackoffMs: 1, maxBackoffMs: 4 };
 
 /**
  * `true` when a SEND's external field references the given transfer, either
@@ -114,7 +106,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	private readonly _initiateRef: { fn: InitiateTransferFn };
 	#defaultInitiateRef: { fn: InitiateTransferFn; };
 	private readonly _statusMap: Map<string, KeetaAssetMovementTransaction>;
-	private readonly _getStatusRef: { interceptor: (() => void) | null; callCount: number };
+	private readonly _getStatusRef: { interceptor: (() => void) | null };
 
 	constructor(config: Omit<KeetaAnchorAssetMovementServerConfig, 'assetMovement'> & {
 		assetMovement: Omit<KeetaAnchorAssetMovementServerConfig['assetMovement'], 'initiateTransfer' | 'getTransferStatus'>;
@@ -126,7 +118,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 
 		const statusMap = new Map<string, KeetaAssetMovementTransaction>();
 		const blockListener = new BlockListener({ client: userClient.client });
-		const getStatusRef: { interceptor: (() => void) | null; callCount: number } = { interceptor: null, callCount: 0 };
+		const getStatusRef: { interceptor: (() => void) | null } = { interceptor: null };
 
 		const initiateRef: { fn: InitiateTransferFn } = {
 			fn: async (request) => {
@@ -230,11 +222,10 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				},
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				getTransferStatus: async (id: string): Promise<any> => {
-					getStatusRef.callCount++;
-
 					// Allow tests to arm a one-shot failure for the next status poll.
 					const interceptor = getStatusRef.interceptor;
 					if (interceptor) {
+						getStatusRef.interceptor = null;
 						interceptor();
 					}
 					// Scan recent blocks to detect any KEETA_SEND that completes a pending transfer.
@@ -324,32 +315,10 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		return(this);
 	}
 
-	/**
-	 * Arm the server so the next `count` getTransferStatus calls throw, then
-	 * disarm. A user error is used so the message survives the wire and tests
-	 * can assert on it.
-	 */
-	failTransferStatusTimes(count: number, message = 'Transfer status check failed'): this {
-		let remaining = count;
-
-		this._getStatusRef.interceptor = () => {
-			if (remaining <= 0) {
-				this._getStatusRef.interceptor = null;
-
-				return;
-			}
-
-			remaining--;
-
-			throw(new KeetaAnchorUserError(message));
-		};
-
+	/** Arm the server so the next getTransferStatus call throws (then restores). */
+	failNextTransferStatus(message = 'Transfer status check failed'): this {
+		this._getStatusRef.interceptor = () => { throw(new KeetaAnchorUserError(message)); };
 		return(this);
-	}
-
-	/** Number of getTransferStatus calls this server has served. */
-	get getTransferStatusCallCount(): number {
-		return(this._getStatusRef.callCount);
 	}
 
 	/** Manually update the status of an in-flight transfer. */
@@ -2090,12 +2059,8 @@ describe('AnchorChainingPath execute', function() {
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
 		const path = await h.getPlanVia('FXOne');
 
-		/*
-		 * Arm failure after computeSteps so initiation succeeds but status
-		 * polling throws. Status polling retries transient failures, so the
-		 * whole budget has to be exhausted for the step to fail.
-		 */
-		h.bankServerEU.failTransferStatusTimes(6, 'AM step 1 poll failed');
+		// Arm failure after computeSteps so initiation succeeds but status polling throws.
+		h.bankServerEU.failNextTransferStatus('AM step 1 poll failed');
 
 		const emittedSteps: ExecutedStep[] = [];
 		path.on('stepExecuted', (step: ExecutedStep) => emittedSteps.push(step));
@@ -2105,7 +2070,8 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		await expect(path.execute({ poll: fastPollRetry })).rejects.toThrow('AM step 1 poll failed');
+		// One attempt per poll, so the single armed failure is fatal.
+		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('AM step 1 poll failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);
@@ -2279,11 +2245,7 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
 
-		/*
-		 * Status polling retries transient failures, so the whole budget has
-		 * to be exhausted for the step to fail.
-		 */
-		h.bankServerUS.failTransferStatusTimes(6, 'ACH poll failed');
+		h.bankServerUS.failNextTransferStatus('ACH poll failed');
 
 		const failedEvents: { error: Error; completedSteps: ExecutedStep[]; index: number }[] = [];
 		path.on('failed', (error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number) => {
@@ -2297,7 +2259,8 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		await expect(path.execute({ poll: fastPollRetry })).rejects.toThrow('ACH poll failed');
+		// One attempt per poll, so the single armed failure is fatal.
+		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
@@ -2309,65 +2272,6 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		if (!failedEvent) {throw(new Error('Expected failed event'));}
 		expect(failedEvent.index).toEqual(0);
 		expect(failedEvent.completedSteps).toHaveLength(0);
-	});
-
-	function completeStepActions(path: Awaited<ReturnType<typeof getBankUSPath>>) {
-		path.on('stepNeedsAction', (payload) => {
-			if (payload.type === 'keetaSendAuthRequired') {
-				payload.markCompleted({ sent: true });
-			} else {
-				payload.markCompleted()
-			}
-		});
-	}
-
-	test('recovers after 5 consecutive transient status failures', async function() {
-		await using h = await createChainingTestHarness();
-		const path = await getBankUSPath(h);
-
-		h.bankServerUS.failTransferStatusTimes(5);
-
-		const failedEvents: Error[] = [];
-		path.on('failed', (error: Error) => {
-			failedEvents.push(error);
-		});
-		completeStepActions(path);
-
-		const result = await path.execute({ poll: fastPollRetry });
-
-		expect(result.steps).toHaveLength(1);
-		expect(failedEvents).toHaveLength(0);
-		expect(h.bankServerUS.getTransferStatusCallCount).toEqual(6);
-	});
-
-	test('throws after more than 5 consecutive status failures', async function() {
-		await using h = await createChainingTestHarness();
-		const path = await getBankUSPath(h);
-
-		h.bankServerUS.failTransferStatusTimes(6, 'ACH poll failed');
-
-		completeStepActions(path);
-
-		await expect(path.execute({ poll: fastPollRetry })).rejects.toThrow('ACH poll failed');
-
-		expect(path.state.status).toEqual('failed');
-		if (path.state.status === 'failed') {
-			expect(path.state.failedAtStepIndex).toEqual(0);
-		}
-		expect(h.bankServerUS.getTransferStatusCallCount).toEqual(6);
-	});
-
-	test('maxConsecutiveFailures 0 restores fail-on-first-error', async function() {
-		await using h = await createChainingTestHarness();
-		const path = await getBankUSPath(h);
-
-		h.bankServerUS.failTransferStatusTimes(1, 'ACH poll failed');
-
-		completeStepActions(path);
-
-		await expect(path.execute({ poll: { maxConsecutiveFailures: 0 }})).rejects.toThrow('ACH poll failed');
-
-		expect(h.bankServerUS.getTransferStatusCallCount).toEqual(1);
 	});
 });
 
