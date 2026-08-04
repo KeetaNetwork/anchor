@@ -3014,7 +3014,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
-		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options)
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
@@ -3023,7 +3022,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 			const status = await withRetry(async function() {
 				return(await transfer.getTransferStatus());
-			}, pollOptions);
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options));
 
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
@@ -3118,7 +3117,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
 		const deadline = Date.now() + timeoutMs;
-		const pollOptions = this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options)
 
 		while (true) {
 			if (options?.abortSignal?.aborted) {
@@ -3127,7 +3125,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 			const status = await withRetry(async function() {
 				return(await exchange.getExchangeStatus());
-			}, pollOptions);
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options));
 
 			if (status.status === 'completed') {
 				return(status);
