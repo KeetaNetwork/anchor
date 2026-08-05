@@ -11,6 +11,8 @@ import { isAssetLocationLike } from '../services/asset-movement/lib/location.gen
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
+import { withRetry } from './utils/retry.js';
+import type { PublicRetryOptions, RetryOptions } from './utils/retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
@@ -107,6 +109,8 @@ export type AnchorChainingPathExecuteResult = {
 
 export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
+	abortSignal?: AbortSignal;
+	poll?: PublicRetryOptions;
 };
 
 export type AnchorChainingPathState =
@@ -2983,10 +2987,29 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(external);
 	}
 
+	/**
+	 * Retry policy for a single status poll.
+	 */
+	#pollRetryOptions(
+		scope: string,
+		deadline: number,
+		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
+	): RetryOptions {
+		const remainingMs = Math.max(0, deadline - Date.now());
+
+		return({
+			...options?.poll,
+			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
+			loggerContext: scope,
+			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
+			...(this.logger ? { logger: this.logger } : {})
+		});
+	}
+
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
 		context: { stepIndex: number; planStep: ChainStepResolution },
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
@@ -2997,7 +3020,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Aborted while waiting for transfer ${transfer.transferID} to complete`));
 			}
 
-			const status = await transfer.getTransferStatus();
+			const status = await withRetry(async function() {
+				return(await transfer.getTransferStatus());
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options));
+
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
 				planStep: context.planStep,
@@ -3086,7 +3112,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollExchangeStatus(
 		exchange: FXExchange,
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
@@ -3097,7 +3123,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Aborted while waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			const status = await exchange.getExchangeStatus();
+			const status = await withRetry(async function() {
+				return(await exchange.getExchangeStatus());
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options));
+
 			if (status.status === 'completed') {
 				return(status);
 			}
@@ -3112,7 +3141,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 	}
 
-	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
+	async execute(options?: AnchorChainingPathExecuteOptions): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#options?.forwardingOnly) {
 			throw(new Error('Forwarding-only plans cannot be executed. Use getPlans({ forwardingOnly: true }), which returns AnchorChainingForwardingOnlyPlan, and fund the deposit address externally.'));
 		}
@@ -3180,7 +3209,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				if (step.type === 'fx') {
 					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
-					const exchangeStatus = await this.#pollExchangeStatus(exchange);
+					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
 					publishedInputs.push({ blockHash: exchangeStatus.blockhash });
 
@@ -3192,9 +3221,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 					}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, {
-						...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-					});
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, options);
 					prevActualValueOut = BigInt(observed.to.value);
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
@@ -3239,9 +3266,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 
 					if (step.type === 'assetMovement') {
-						const status = await this.#pollTransferStatus(step.transfer, pollContext, {
-							...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-						});
+						const status = await this.#pollTransferStatus(step.transfer, pollContext, options);
 						prevActualValueOut = BigInt(status.transaction.to.value);
 						const withdraw = status.transaction.to.transactions.withdraw;
 						if (withdraw) {

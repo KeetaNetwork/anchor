@@ -2070,7 +2070,8 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		await expect(path.execute()).rejects.toThrow('AM step 1 poll failed');
+		// One attempt per poll, so the single armed failure is fatal.
+		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('AM step 1 poll failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);
@@ -2258,7 +2259,8 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		await expect(path.execute()).rejects.toThrow('ACH poll failed');
+		// One attempt per poll, so the single armed failure is fatal.
+		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
