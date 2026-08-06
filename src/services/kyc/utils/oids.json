@@ -445,6 +445,67 @@
 			"type": "Document",
 			"description": "Residence document",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.6"
+		},
+		"documentBusinessRegistration": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 7 ],
+			"token": "DocumentBusinessRegistration",
+			"type": "Document",
+			"description": "Business registration document",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.7"
+		},
+		"organizationName": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 12 ],
+			"token": "OrganizationName",
+			"type": "UTF8String",
+			"description": "Organization's legal name",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.12"
+		},
+		"tradeName": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 12, 1 ],
+			"token": "TradeName",
+			"type": "UTF8String",
+			"description": "Organization's trade name (doing-business-as name)",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.12.1"
+		},
+		"legalForm": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 13 ],
+			"token": "LegalForm",
+			"type": "UTF8String",
+			"description": "Organization's legal form",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.13"
+		},
+		"incorporation": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 14 ],
+			"token": "Incorporation",
+			"type": "SEQUENCE",
+			"description": "Organization incorporation details",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.14",
+			"fields": {
+				"country": {
+					"type": "Country",
+					"optional": false
+				},
+				"countrySubDivision": {
+					"type": "CountrySubDivision",
+					"optional": true
+				},
+				"incorporationDate": {
+					"type": "GeneralizedTime",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"country",
+				"countrySubDivision",
+				"incorporationDate"
+			]
+		},
+		"website": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 15 ],
+			"token": "Website",
+			"type": "UTF8String",
+			"description": "Organization's website",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.15"
 		}
 	},
 	"iso20022_types": {
