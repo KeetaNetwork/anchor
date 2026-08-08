@@ -294,6 +294,69 @@ function unwrapContextTagsFromSchema(schema: ASN1.Schema): ASN1.Schema {
 }
 
 /**
+ * Determine whether a schema node is an ASN.1 CHOICE.
+ */
+function isChoiceSchema(schema: ASN1.Schema): boolean {
+	return(typeof schema === 'object' && schema !== null && 'choice' in schema);
+}
+
+/**
+ * Produce a legacy-compatible schema in which CHOICE fields are encoded without
+ * the positional context-tag wrapper that newer certificates add.
+ */
+function toLegacyChoiceSchema(schema: ASN1.Schema): ASN1.Schema {
+	if (typeof schema !== 'object' || schema === null) {
+		return(schema);
+	}
+	if (Array.isArray(schema)) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(schema.map(toLegacyChoiceSchema) as unknown as ASN1.Schema);
+	}
+
+	if ('choice' in schema) {
+		if (Array.isArray(schema.choice)) {
+			return({ choice: schema.choice.map(toLegacyChoiceSchema) });
+		}
+
+		const mappedChoice: { [key: string]: ASN1.Schema } = {};
+		for (const [key, value] of Object.entries(schema.choice)) {
+			mappedChoice[key] = toLegacyChoiceSchema(value);
+		}
+
+		return({ choice: mappedChoice });
+	}
+
+	if ('sequenceOf' in schema) {
+		return({ sequenceOf: toLegacyChoiceSchema(schema.sequenceOf) });
+	}
+	if ('optional' in schema) {
+		return({ optional: toLegacyChoiceSchema(schema.optional) });
+	}
+	if ('type' in schema && schema.type === 'context') {
+		// Strip the positional wrapper when it wraps a CHOICE to restore the bare form
+		if (isChoiceSchema(schema.contains)) {
+			return(toLegacyChoiceSchema(schema.contains));
+		}
+
+		return({ ...schema, contains: toLegacyChoiceSchema(schema.contains) });
+	}
+	if ('type' in schema && schema.type === 'struct') {
+		const legacyContains: { [key: string]: ASN1.Schema } = {};
+		for (const [fieldName, fieldSchema] of Object.entries(schema.contains)) {
+			legacyContains[fieldName] = toLegacyChoiceSchema(fieldSchema);
+		}
+
+		return({
+			type: 'struct',
+			fieldNames: schema.fieldNames,
+			contains: legacyContains
+		});
+	}
+
+	return(schema);
+}
+
+/**
  * Fallback decoder for entityType attribute from old certificates.
  * Transforms raw ASN1 into the expected EntityType structure.
  */
@@ -375,22 +438,37 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		// @ts-expect-error
 		decodedASN1 = new ASN1.BufferStorageASN1(value, schema).getASN1();
 	} catch (firstError) {
-		// Fallback: try with backwards-compatible schema (context tags stripped)
-		// This supports old certificates encoded before context tags were added
+		/*
+		 * Certificates signed before CHOICE fields gained their positional wrapper
+		 * encode those fields bare; retry with the pre-wrapper schema
+		 */
 		try {
-			// Special handling for entityType
-			if (name === 'entityType') {
-				const candidate = decodeEntityTypeFallback(value, principals);
-				return(asAttributeValue(name, candidate));
-			}
-
-			const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
+			const legacyChoiceSchema = toLegacyChoiceSchema(schema);
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-			decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
-			usedSchema = backwardsCompatSchema;
+			decodedASN1 = new ASN1.BufferStorageASN1(value, legacyChoiceSchema).getASN1();
+			usedSchema = legacyChoiceSchema;
 		} catch {
-			// If both fail, throw the original error
-			throw(firstError);
+			/*
+			 * Fallback: try with backwards-compatible schema (context tags stripped)
+			 * This supports old certificates encoded before context tags were added
+			 */
+			try {
+				/*
+				 * Special handling for entityType
+				 */
+				if (name === 'entityType') {
+					const candidate = decodeEntityTypeFallback(value, principals);
+					return(asAttributeValue(name, candidate));
+				}
+
+				const backwardsCompatSchema = unwrapContextTagsFromSchema(schema);
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				decodedASN1 = new ASN1.BufferStorageASN1(value, backwardsCompatSchema).getASN1();
+				usedSchema = backwardsCompatSchema;
+			} catch {
+				// If both fail, throw the original error
+				throw(firstError);
+			}
 		}
 	}
 

@@ -478,8 +478,13 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 
 		const baseSchema = fieldInfo.schema;
 		const isOptional = fieldInfo.optional;
-		const isChoiceField = fieldInfo.isChoice;
-		if (hasAnyOptionalField && !isChoiceField) {
+		/*
+		 * CHOICE fields are wrapped in a positional context tag just like every
+		 * other field. Leaving them bare lets a CHOICE alternative's own context
+		 * tag collide with a sibling field's positional tag, which makes the
+		 * SEQUENCE ambiguous to a tag-driven decoder.
+		 */
+		if (hasAnyOptionalField) {
 			const wrappedInContext = `{ type: 'context', kind: 'explicit', value: ${index}, contains: ${baseSchema} }`;
 			if (isOptional) {
 				return(`\t\t${fname}: { optional: ${wrappedInContext} }`);
