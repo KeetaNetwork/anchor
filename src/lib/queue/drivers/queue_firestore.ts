@@ -8,6 +8,7 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueDeleteInput,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
@@ -323,6 +324,47 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');
 
 		return(entries);
+	}
+
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
+		const firestore = await this.getFirestore();
+		const collection = await this.getCollection();
+		const idempotentCollection = await this.getIdempotentCollection();
+		const logger = this.methodLogger('delete');
+		const batch = firestore.batch();
+		let deleted = 0;
+
+		for (const target of input) {
+			const doc = await collection.doc(String(target.id)).get();
+			if (!doc.exists) {
+				continue;
+			}
+
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const entry = doc.data() as QueueEntryDocument;
+			if (entry.status !== target.status) {
+				continue;
+			}
+
+			if (entry.idempotentKeys) {
+				for (const idempotentID of entry.idempotentKeys) {
+					batch.delete(idempotentCollection.doc(idempotentID));
+				}
+			}
+			batch.delete(doc.ref);
+			deleted++;
+		}
+
+		if (deleted === 0) {
+			return;
+		}
+
+		await batch.commit();
+		logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
