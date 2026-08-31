@@ -110,11 +110,17 @@ function getTestingFirestoreConfig(): { host: string; port: number; } | null {
 	return({ host: host, port: port });
 }
 
+type DriverCreateOptions = {
+	leave?: boolean;
+	randomBackingName?: boolean;
+	path?: string[];
+};
+
 const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; completedRetentionDays?: number; }) => Promise<{
+		create: (key: string, options?: DriverCreateOptions) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
 		}>;
@@ -123,12 +129,17 @@ const drivers: {
 	'Memory': {
 		persistent: false,
 		skip: false,
-		create: async function(key: string, options?: { leave?: boolean; randomBackingName?: boolean; completedRetentionDays?: number; }) {
+		create: async function(key: string, options?: DriverCreateOptions) {
+			if (options?.leave === true) {
+				throw(new Error('Memory driver does not support leave=true option'));
+			}
+
 			const queue = new KeetaAnchorQueueStorageDriverMemory({
 				id: key,
 				logger: logger,
-				completedRetentionDays: options?.completedRetentionDays
+				path: options?.path
 			});
+
 			return({
 				queue: queue,
 				[Symbol.asyncDispose]: async function() {
@@ -147,7 +158,7 @@ const drivers: {
 				filePath: filePath,
 				id: key,
 				logger: logger,
-				completedRetentionDays: options?.completedRetentionDays
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -180,7 +191,7 @@ const drivers: {
 				},
 				id: key,
 				logger: logger,
-				completedRetentionDays: options?.completedRetentionDays
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -232,9 +243,8 @@ const drivers: {
 					return(client);
 				},
 				id: key,
-				path: [`key_${key}_${RunKey}`],
-				logger: logger,
-				completedRetentionDays: options?.completedRetentionDays
+				path: [`key_${key}_${RunKey}`, ...(options?.path ?? [])],
+				logger: logger
 			});
 
 			return({
@@ -313,7 +323,7 @@ const drivers: {
 					id: key,
 					logger: logger,
 					tablePrefix: tablePrefix,
-					completedRetentionDays: options?.completedRetentionDays,
+					path: options?.path,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
@@ -393,7 +403,7 @@ const drivers: {
 				id: key,
 				namespace: namespace,
 				logger: logger,
-				completedRetentionDays: options?.completedRetentionDays
+				path: options?.path
 			});
 
 			return({
@@ -788,6 +798,102 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 
 			/* The stuck processor should have been called once */
 			expect(processStuckCallCountByKey.get('timedout_late_forward_stuck')).toBe(1);
+		}
+	}
+});
+
+test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'aborted-stuck-test',
+		logger: logger
+	});
+
+	const processCallCountByKey = new Map<string, number>();
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+		id: 'aborted-stuck-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function(entry) {
+			const key = entry.request.key;
+			if (key.startsWith('timedout_early')) {
+				await asleep(5000);
+			}
+
+			const callCount = processCallCountByKey.get(key) ?? 0;
+			processCallCountByKey.set(key, callCount + 1);
+
+			if (key.startsWith('timedout_late')) {
+				await asleep(5000);
+			}
+
+			if (key.startsWith('error')) {
+				throw(new Error('Processing error'));
+			}
+
+			return({ status: entry.request.newStatus, output: 'OK' });
+		},
+		processorAborted: 'RETRY',
+		processorStuck: 'RETRY'
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
+
+	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
+
+	/**
+	 * Test that aborted jobs are handled by the aborted processor (Retry)
+	 */
+	{
+		logger?.debug('aborted', '> Test that aborted jobs are handled by the aborted retry processor');
+
+		/*
+		 * Run the job, it should be aborted and then processed by the
+		 * aborted processor which will complete it (since the key contains 'forward')
+		 */
+		{
+			/*
+			 * First run to pick up the job -- it will timeout and consume the
+			 * entire time budget for the `run` call so it will not transition
+			 * from aborted to processing to completed in the same run
+			 */
+			vi.useRealTimers();
+			await runner.run({ timeoutMs: 90 });
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('aborted');
+
+			/* The main processor was called once -- resulting a timeout, leading to the aborted status */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+		}
+
+		{
+			/*
+			 * Next, run the process again and this time it
+			 * should be processed by the aborted processor
+			 */
+			vi.useRealTimers();
+			await runner.run();
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('failed_temporarily');
+
+			/* The main processor was already called above and not called again, so should remain 1 */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
 		}
 	}
 });
@@ -1571,18 +1677,14 @@ suite.sequential('Driver Tests', async function() {
 				});
 
 				testRunner('Delete Expired Completed', async function() {
-					await using retainedQueueInfo = await driverConfig.create('delete-expired-retained', {
-						completedRetentionDays: 7
-					});
+					await using retainedQueueInfo = await driverConfig.create('delete-expired-retained');
 					const retainedQueue = retainedQueueInfo.queue;
 					const retainedID = await retainedQueue.add({ key: 'recent-completed' });
 					await retainedQueue.setStatus(retainedID, 'completed');
 					await deleteExpiredCompletedFromStorageDriver(retainedQueue);
 					expect(await retainedQueue.get(retainedID)).not.toBeNull();
 
-					await using queueInfo = await driverConfig.create('delete-expired-completed', {
-						completedRetentionDays: 0
-					});
+					await using queueInfo = await driverConfig.create('delete-expired-completed');
 					const localQueue = queueInfo.queue;
 
 					const oldID = await localQueue.add({ key: 'old-completed' });
@@ -2044,6 +2146,27 @@ suite.sequential('Driver Tests', async function() {
 					expect(part111_entry).toBeDefined();
 					expect(part111_entry?.request).toEqual({ partition: 'part1.1.1' });
 				});
+
+				/*
+				 * Test that partitioning works and we can
+				 * add and get entries from same partition
+				 * either using `partition` or `path`
+				 */
+				testRunner('Partitioning and Opening Work the same', async function() {
+					await using driverInstance1 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false
+					});
+					await using partition1 = await driverInstance1.queue.partition('partition1');
+					const entry1_id = await partition1.add({ key: 'partition_test_1' });
+
+					await using driverInstance2 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false,
+						path: ['partition1']
+					});
+
+					const check_entry1 = await driverInstance2.queue.get(entry1_id);
+					expect(check_entry1?.id).toBe(entry1_id);
+				}, 60_000);
 			}
 
 			/*

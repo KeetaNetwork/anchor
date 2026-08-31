@@ -54,7 +54,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.logger = options?.logger;
 		this.firestoreInternal = options.firestore;
 		this.path = options.path ?? [];
-		this.pathStr = ['root', ...this.path].join('.');
+		this.pathStr = ['root', ...this.path].join('::');
 		this.namespace = options.namespace;
 		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);

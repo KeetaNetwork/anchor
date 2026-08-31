@@ -263,6 +263,7 @@ test('FX Server Tests', async function() {
 			}],
 			operations: {
 				getEstimate: new URL('/api/getEstimate', url).toString(),
+				getMarketPrices: new URL('/api/getMarketPrices', url).toString(),
 				getQuote: new URL('/api/getQuote', url).toString(),
 				createExchange: new URL('/api/createExchange', url).toString(),
 				getExchangeStatus: new URL('/api/getExchangeStatus', url).toString() + '/{id}'
@@ -1199,4 +1200,164 @@ test('FX Server acceptedCostAssets and preferredCostAsset Tests', async function
 	const noAcceptedBody: unknown = await noAcceptedResponse.json();
 	expect(noAcceptedBody).toHaveProperty('ok', false);
 	expect(noAcceptedBody).toHaveProperty('error');
+}, 30000);
+
+test('getMarketPrices config controls cache, reference amount, and disable', async function() {
+	await using harness = await createFXTestHarness();
+	const { token1, token2, serverAccount, createServer } = harness;
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	await using cachedServer = createServer({
+		getMarketPrices: {
+			cacheControl: { maxAge: { seconds: 30 }},
+			referenceAmount: 500n
+		},
+		getConversionRateAndFee: async function(request) {
+			return({
+				account: serverAccount,
+				convertedAmount: BigInt(request.amount) * 2n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await cachedServer.start();
+	const cachedResponse = await fetch(`${cachedServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(cachedResponse.status).toBe(200);
+	expect(cachedResponse.headers.get('Cache-Control')).toBe('public, max-age=30');
+	expect(await cachedResponse.json()).toEqual({
+		ok: true,
+		base: token2String,
+		quoteAssets: {
+			[token1String]: {
+				valueRatio: {
+					quote: '500',
+					base: '1000'
+				}
+			}
+		}
+	});
+
+	await using disabledServer = createServer({
+		getMarketPrices: false,
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 100n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await disabledServer.start();
+	const metadata = await disabledServer.serviceMetadata();
+	expect(metadata.operations.getMarketPrices).toBeUndefined();
+
+	const disabledResponse = await fetch(`${disabledServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+	expect(disabledResponse.status).toBe(404);
+}, 30000);
+
+test('getMarketPrices omits or throws failed quote assets based on onQuoteError', async function() {
+	await using harness = await createFXTestHarness();
+	const { token1, token2, serverAccount, serverClient, createServer } = harness;
+
+	const { account: token3 } = await serverClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!token3.isToken()) {
+		throw(new Error('token3 is not a token'));
+	}
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+	const token3String = token3.publicKeyString.get();
+
+	await using omitServer = createServer({
+		getMarketPrices: {
+			onQuoteError: 'omit'
+		},
+		getConversionRateAndFee: async function(request) {
+			if (request.from === token3String) {
+				throw(new Error('no liquidity for token3'));
+			}
+
+			return({
+				account: serverAccount,
+				convertedAmount: BigInt(request.amount) * 2n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await omitServer.start();
+	const omitResponse = await fetch(`${omitServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(`${token1String},${token3String}`)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(omitResponse.status).toBe(200);
+	expect(omitResponse.headers.get('Cache-Control')).toBe('public, max-age=0');
+	expect(await omitResponse.json()).toEqual({
+		ok: true,
+		base: token2String,
+		quoteAssets: {
+			[token1String]: {
+				valueRatio: {
+					quote: '1000',
+					base: '2000'
+				}
+			}
+		}
+	});
+
+	await using throwServer = createServer({
+		getMarketPrices: {
+			onQuoteError: 'throw'
+		},
+		getConversionRateAndFee: async function(request) {
+			if (request.from === token3String) {
+				throw(new Error('no liquidity for token3'));
+			}
+
+			return({
+				account: serverAccount,
+				convertedAmount: BigInt(request.amount) * 2n,
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await throwServer.start();
+	const throwResponse = await fetch(`${throwServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(`${token1String},${token3String}`)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+	expect(throwResponse.status).toBe(500);
 }, 30000);

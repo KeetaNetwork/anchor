@@ -1075,7 +1075,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					search: body.search ? body.search.map(function(searchItem) {
 						return({
 							...searchItem,
-							asset: searchItem.asset ? convertAssetSearchInputToCanonical(searchItem.asset) : undefined,
+							asset: searchItem.asset ? convertAssetOrPairSearchInputToCanonical(searchItem.asset) : undefined,
 							sourceLocation: searchItem.sourceLocation ? convertAssetLocationToString(searchItem.sourceLocation) : undefined,
 							destinationLocation: searchItem.destinationLocation ? convertAssetLocationToString(searchItem.destinationLocation) : undefined
 						})

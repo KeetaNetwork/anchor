@@ -28,7 +28,15 @@ export type ServiceMetadataAuthenticationType = {
  */
 export type ServiceMetadataEndpoint = string | { url: string; options?: { authentication?: ServiceMetadataAuthenticationType; }};
 
+export type AnchorMetadataLegalAnchorDetails = {
+	name?: string;
+	description?: ClientRenderableContent;
+	logo?: string;
+};
+
 export interface AnchorMetadataLegalField {
+	anchorDetails?: AnchorMetadataLegalAnchorDetails;
+
 	disclaimers?: {
 		purpose: 'general';
 		content: ClientRenderableContent;
@@ -74,6 +82,44 @@ async function resolveClientRenderableContent(content: ToValuizable<ClientRender
 	})
 }
 
+async function resolveAnchorDetails(anchorDetails: ToValuizable<AnchorMetadataLegalAnchorDetails> | undefined, options: {
+	logger?: Logger | undefined;
+}): Promise<AnchorMetadataLegalAnchorDetails | undefined> {
+	if (!anchorDetails) {
+		return(undefined);
+	}
+
+	const resolved = await anchorDetails('object');
+	if (!resolved) {
+		return(undefined);
+	}
+
+	const name = await resolved.name?.('string');
+	const logo = await resolved.logo?.('string');
+
+	let description: ClientRenderableContent | undefined;
+	if (resolved.description) {
+		try {
+			description = await resolveClientRenderableContent(resolved.description);
+		} catch (error) {
+			options.logger?.warn('resolveSharedAnchorMetadataLegalExtension', 'Failed to resolve anchorDetails.description', error);
+		}
+	}
+
+	const parsed: AnchorMetadataLegalAnchorDetails = {};
+	if (name !== undefined) {
+		parsed.name = name;
+	}
+	if (description !== undefined) {
+		parsed.description = description;
+	}
+	if (logo !== undefined) {
+		parsed.logo = logo;
+	}
+
+	return(parsed);
+}
+
 export async function resolveSharedAnchorMetadataLegalExtension(metadata: ToValuizable<AnchorMetadataLegalField> | undefined, options: {
 	logger?: Logger | undefined;
 }): Promise<SharedAnchorMetadataLegalExtension> {
@@ -86,6 +132,8 @@ export async function resolveSharedAnchorMetadataLegalExtension(metadata: ToValu
 	if (!resolvedField) {
 		return({});
 	}
+
+	const anchorDetails = await resolveAnchorDetails(resolvedField.anchorDetails, options);
 
 	const disclaimers = await (async (): Promise<AnchorMetadataLegalField['disclaimers']> => {
 		const resolvedDisclaimers = await resolvedField.disclaimers?.('array');
@@ -123,6 +171,7 @@ export async function resolveSharedAnchorMetadataLegalExtension(metadata: ToValu
 
 	return({
 		legal: {
+			...(anchorDetails !== undefined ? { anchorDetails } : {}),
 			disclaimers
 		}
 	});

@@ -195,3 +195,8 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 		return(input.publicKeyString.get());
 	}
 }
+
+/** Compare movable assets after canonicalizing representation (EVM casing, token public keys, currency codes). */
+export function isMovableAssetEqual(a: MovableAsset, b: MovableAsset, cache?: EVMChecksumCache): boolean {
+	return(convertAssetSearchInputToCanonical(a, cache) === convertAssetSearchInputToCanonical(b, cache));
+}

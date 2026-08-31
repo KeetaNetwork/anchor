@@ -6,7 +6,8 @@ import type KeetaStorageAnchorClient from '../client.js';
 import { StorageIconsClient } from './icon.js';
 import { Errors } from '../common.js';
 import { Buffer } from '../../../lib/utils/buffer.js';
-import { randomSeed, withStorageProvider } from '../test-utils.js';
+import { KeetaNet } from '../../../client/index.js';
+import { randomSeed, withStorageProvider, withAnySignerStorageProvider } from '../test-utils.js';
 
 // #region Test Harness
 
@@ -125,6 +126,95 @@ describe('Icons Client - MIME Type Validation', function() {
 			const invalidIcon: IconData = { data: Buffer.from('not an image'), mimeType };
 			await expect(iconsClient.set(invalidIcon))
 				.rejects.toSatisfy(function(e: unknown) { return(Errors.ValidationFailed.isInstance(e)); });
+		}));
+	});
+});
+
+describe('Icons Client - Get Public (own icon)', function() {
+	test.each(sampleIcons)('set and getPublic icon: $name', function({ icon }) {
+		return(withIcons(randomSeed(), async function({ iconsClient }) {
+			await iconsClient.set(icon);
+
+			const retrieved = await iconsClient.getPublic();
+			expect(retrieved).not.toBeNull();
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(retrieved!.mimeType).toBe(icon.mimeType);
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(retrieved!.data).toEqual(icon.data);
+		}));
+	});
+
+	test('getPublic nonexistent icon returns null', function() {
+		return(withIcons(randomSeed(), async function({ iconsClient }) {
+			const result = await iconsClient.getPublic();
+			expect(result).toBeNull();
+		}));
+	});
+
+	test('getPublic matches get() for the same icon', function() {
+		return(withIcons(randomSeed(), async function({ iconsClient }) {
+			await iconsClient.set(jpegIcon);
+
+			const viaGet = await iconsClient.get();
+			const viaPublic = await iconsClient.getPublic();
+			expect(viaGet).not.toBeNull();
+			expect(viaPublic).not.toBeNull();
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(viaPublic!.mimeType).toBe(viaGet!.mimeType);
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(viaPublic!.data).toEqual(viaGet!.data);
+		}));
+	});
+
+	test('getPublic after delete returns null', function() {
+		return(withIcons(randomSeed(), async function({ iconsClient }) {
+			await iconsClient.set(pngIcon);
+			await iconsClient.delete();
+
+			const result = await iconsClient.getPublic();
+			expect(result).toBeNull();
+		}));
+	});
+});
+
+describe('Icons Client - Get Public (cross-account)', function() {
+	test("reads another account's public icon when the signer is authorized", function() {
+		return(withAnySignerStorageProvider(randomSeed(), async function({ provider, account }) {
+			// Some other account uploads an icon to its own namespace.
+			const owner = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const ownerKey = owner.publicKeyString.get();
+			expect(ownerKey).not.toBe(account.publicKeyString.get());
+			const basePath = `/user/${ownerKey}/`;
+
+			await provider.getIconsClient({ account: owner, basePath }).set(pngIcon);
+
+			// Now we (the client account, not the owner) pull it down. getPublic
+			// signs as the client, so we never touch the owner's private key.
+			const readerIcons = provider.getIconsClient({ account: owner, basePath });
+			const result = await readerIcons.getPublic();
+			expect(result).not.toBeNull();
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(result!.mimeType).toBe(pngIcon.mimeType);
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			expect(result!.data).toEqual(pngIcon.data);
+		}));
+	});
+
+	test('rejects a foreign signer when the policy pins the signer to the owner', function() {
+		return(withStorageProvider(randomSeed(), async function({ provider, account }) {
+			const owner = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const ownerKey = owner.publicKeyString.get();
+			expect(ownerKey).not.toBe(account.publicKeyString.get());
+			const basePath = `/user/${ownerKey}/`;
+
+			await provider.getIconsClient({ account: owner, basePath }).set(pngIcon);
+
+			// This policy only trusts the owner's signature, so our client-signed read
+			// should be turned away. The point is it errors rather than quietly returning null.
+			const readerIcons = provider.getIconsClient({ account: owner, basePath });
+			await expect(readerIcons.getPublic()).rejects.toSatisfy(function(e: unknown) {
+				return(!Errors.DocumentNotFound.isInstance(e));
+			});
 		}));
 	});
 });

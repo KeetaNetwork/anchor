@@ -5,8 +5,8 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
 import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
-import { Errors, toAssetPair } from './common.js';
-import type { AssetOrPair, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse, KeetaAssetMovementAnchorUserAction, PersistentAddressAssetFeeBreakdown } from './common.js';
+import { Errors, toAssetPair, isMovableAssetEqual, doesAssetOrPairMatch } from './common.js';
+import type { AssetOrPair, AssetPair, EVMAsset, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse, KeetaAssetMovementAnchorUserAction, PersistentAddressAssetFeeBreakdown } from './common.js';
 import { Certificate, CertificateBuilder, SensitiveAttribute, SharableCertificateAttributes } from '../../lib/certificates.js';
 import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
@@ -98,6 +98,11 @@ test('Asset Movement Anchor Client Test', async function() {
 	}
 
 	const testLegalField: SharedAnchorMetadataLegalExtension['legal'] = {
+		anchorDetails: {
+			name: 'Test Anchor',
+			description: { type: 'plaintext', content: 'Test anchor details' },
+			logo: 'https://example.com/anchor-logo.png'
+		},
 		disclaimers: [
 			{ purpose: 'general', content: { type: 'markdown', content: 'Test Disclaimer' }}
 		]
@@ -177,9 +182,11 @@ test('Asset Movement Anchor Client Test', async function() {
 			{
 				purpose: 'VALUE_VARIABLE',
 				basisPoints: 50,
+				asset: { id: 'USD', location: 'bank-account:us' },
 				details: { type: 'markdown', content: 'Variable fee of 50 basis points' }
 			}
 		],
+		totalPricedIn: { id: 'USD', location: 'bank-account:us' },
 		total: '10'
 	}
 
@@ -463,6 +470,7 @@ test('Asset Movement Anchor Client Test', async function() {
 
 		/* Expect legal field to be parsed properly on the client side */
 		expect(testProvider?.serviceInfo.legal).toEqual(testLegalField);
+		expect(testProvider.serviceInfo.legal?.anchorDetails).toEqual(testLegalField.anchorDetails);
 		expect(testProvider.getLegalDisclaimers()).toEqual(testLegalField.disclaimers);
 
 		/* Expect custom token metadata to be resolved correctly */
@@ -1334,6 +1342,22 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			],
 			total: 1
 		});
+
+		const listedWithAssetPair = await usdcProvider.listForwardingAddresses({
+			account,
+			search: [
+				{
+					asset: { from: testCurrencyUSDC.publicKeyString.get(), to: testCurrencyUSDC.publicKeyString.get() },
+					sourceLocation: 'chain:evm:100',
+					destinationLocation: `chain:keeta:${client.network}`,
+					destinationAddress: account.publicKeyString.get()
+				}
+			]
+		});
+		expect(listedWithAssetPair.addresses[0]?.asset).toEqual({
+			from: testCurrencyUSDC.publicKeyString.get(),
+			to: testCurrencyUSDC.publicKeyString.get()
+		});
 	}
 
 	{
@@ -1494,4 +1518,26 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			expect(toJSONSerializable(userActionNeededError.actionsNeeded)).toEqual(toJSONSerializable(testCase.actions));
 		}
 	}
+});
+
+test('isMovableAssetEqual normalizes EVM address casing', function() {
+	expect(isMovableAssetEqual(
+		'evm:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+		'evm:0x833589fcd6edb6e08f4c7c32d4f71b54bdA02913'
+	)).toBe(true);
+});
+
+test('doesAssetOrPairMatch compares pair legs with mixed representations', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
+	const { userClient: client } = await createNodeAndClient(account);
+	const { account: tokenAccount } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const token = tokenAccount.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+
+	const evmLower = 'evm:0x833589fcd6edb6e08f4c7c32d4f71b54bdA02913' satisfies EVMAsset;
+	const evmChecksum = 'evm:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' satisfies EVMAsset;
+
+	const expected: AssetPair = { from: evmLower, to: token };
+	const listed: AssetPair = { from: evmChecksum, to: token.publicKeyString.get() };
+
+	expect(doesAssetOrPairMatch(listed, expected)).toBe(true);
 });

@@ -10,8 +10,8 @@ import { KeetaAnchorUserError, type KeetaAnchorError } from '../../lib/error.js'
 import type { AssetLocationLike, AssetLocationString, AssetLocationInput, AssetLocationCanonical, ChainLocationString } from './lib/location.js';
 import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
-import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset } from '../../lib/asset.js';
-import { convertAssetSearchInputToCanonical } from '../../lib/asset.js';
+import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset, EVMChecksumCache } from '../../lib/asset.js';
+import { convertAssetSearchInputToCanonical, isMovableAssetEqual } from '../../lib/asset.js';
 import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
@@ -56,7 +56,8 @@ export {
 	parseSolanaAsset,
 	isSolanaAsset,
 	convertAssetSearchInputToCanonical,
-	isExternalChainAsset
+	isExternalChainAsset,
+	isMovableAssetEqual
 } from '../../lib/asset.js';
 
 export type ISOCountryCode = CurrencyInfo.ISOCountryCode;
@@ -234,7 +235,7 @@ export type AssetOrPair = MovableAsset | AssetPair;
 export type AssetPairCanonical<From extends MovableAssetSearchCanonical = MovableAssetSearchCanonical, To extends MovableAssetSearchCanonical = MovableAssetSearchCanonical> = { from: From; to: To; };
 export type AssetOrPairCanonical = MovableAssetSearchCanonical | AssetPairCanonical;
 
-function isAssetPairLike(input: unknown): input is AssetPair {
+export function isAssetPairLike(input: unknown): input is AssetPair {
 	return(typeof input === 'object' && input !== null && 'from' in input && 'to' in input);
 }
 
@@ -244,6 +245,20 @@ export function toAssetPair(input: AssetOrPair): AssetPair {
 	}
 
 	return({ from: input, to: input });
+}
+
+/**
+ * Returns true when `asset` matches `expected`.
+ * A single asset matches either leg of an expected pair; pairs require both legs to match.
+ */
+export function doesAssetOrPairMatch(asset: AssetOrPair, expected: AssetOrPair, cache?: EVMChecksumCache): boolean {
+	const expectedPair = toAssetPair(expected);
+
+	if (isAssetPairLike(asset)) {
+		return(isMovableAssetEqual(asset.from, expectedPair.from, cache) && isMovableAssetEqual(asset.to, expectedPair.to, cache));
+	} else {
+		return(isMovableAssetEqual(asset, expectedPair.from, cache) || isMovableAssetEqual(asset, expectedPair.to, cache));
+	}
 }
 
 
@@ -367,6 +382,13 @@ export function getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(in
 type FixedFeeLineItemType = 'RAIL' | 'NETWORK' | 'PROVIDER' | 'OTHER';
 type VariableFeeLineItemType = 'VALUE_VARIABLE';
 
+interface AssetWithLocation {
+	id: MovableAssetSearchCanonical;
+	location: AssetLocationString;
+}
+
+export type AssetOrAssetWithLocation = AssetWithLocation | MovableAssetSearchCanonical;
+
 /**
  * Fee line item type in an asset transfer fee breakdown, showing the purpose of each fee line item.
  */
@@ -381,7 +403,7 @@ interface BaseAssetFeeLineItem<Purpose extends AssetFeeLineItemType> {
 	/**
 	 * The asset in which the fee line item is denominated. If omitted, it is assumed to be the same as the asset being transferred.
 	 */
-	asset?: MovableAssetSearchCanonical;
+	asset?: AssetOrAssetWithLocation;
 
 	/**
 	 * Additional details about this fee line item that (optionally) can be rendered in the client application.
@@ -415,30 +437,34 @@ interface VariableFeeLineItemResolved extends BaseAssetFeeLineItem<VariableFeeLi
 export type ResolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemResolved;
 export type UnresolvedFeeLineItem = FixedFeeLineItem | VariableFeeLineItemUnresolved;
 
-interface BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> {
+type BaseAssetFeeBreakdown<LineItemType extends ResolvedFeeLineItem | UnresolvedFeeLineItem> = {
 	lineItems: LineItemType[];
-	/**
-	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred.
-	 */
-	totalPricedIn?: MovableAssetSearchCanonical;
+} & ({
+	total?: never;
+	totalPricedIn?: never;
+} | {
+	lineItems: LineItemType[];
 
 	/**
-	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD).
+	 * The total fee amount, as a string in the asset's smallest unit (e.g. cents for USD). If omitted, the total is assumed to be the sum of the line items.
 	 */
 	total: string;
-}
+
+	/**
+	 * The total fee amount priced in a canonical asset. If omitted, the total is assumed to be in the asset being transferred. Only valid when `total` is provided.
+	 */
+	totalPricedIn?: AssetOrAssetWithLocation;
+});
 
 /**
- * Breakdown of fees for an asset transfer, including line items and total amounts.
+ * Breakdown of fees for an asset transfer, including line items and an optional total amount.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface AssetFeeBreakdown extends BaseAssetFeeBreakdown<ResolvedFeeLineItem> {};
+export type AssetFeeBreakdown = BaseAssetFeeBreakdown<ResolvedFeeLineItem>;
 
 /**
  * Breakdown of fees for an asset transfer with unresolved variable fee line items, where the basis points are provided but the exact fee amount is not yet resolved. This can be used for transfer instructions that are returned before execution, where the variable fee amount cannot be calculated until the transfer value is finalized.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface PersistentAddressAssetFeeBreakdown extends BaseAssetFeeBreakdown<UnresolvedFeeLineItem> {};
+export type PersistentAddressAssetFeeBreakdown = BaseAssetFeeBreakdown<UnresolvedFeeLineItem>;
 
 /**
  * An instruction on how to complete a transfer, ex: where to send tokens, or where to wire USD.
@@ -1023,6 +1049,10 @@ export type KeetaPersistentForwardingAddressDetails = {
 	destinationAddress?: AddressResolved | AddressObfuscated;
 	outgoingRail?: Rail;
 	incomingRail?: Rail[];
+	minimumTransferValue?: {
+		asset: MovableAssetSearchCanonical;
+		value: string;
+	}
 	fees?: PersistentAddressAssetFeeBreakdown;
 }
 
@@ -1081,7 +1111,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingClientRequest = {
 	search?: {
 		sourceLocation?: AssetLocationLike;
 		destinationLocation?: AssetLocationLike;
-		asset?: MovableAsset;
+		asset?: AssetOrPair;
 		destinationAddress?: string;
 		persistentAddressTemplateId?: string;
 	}[];
@@ -1094,7 +1124,7 @@ export type KeetaAssetMovementAnchorListPersistentForwardingRequest = {
 	search?: {
 		sourceLocation?: AssetLocationCanonical | undefined;
 		destinationLocation?: AssetLocationCanonical | undefined;
-		asset?: MovableAssetSearchCanonical | undefined;
+		asset?: AssetOrPairCanonical | undefined;
 		destinationAddress?: string | undefined;
 		persistentAddressTemplateId?: string | undefined;
 	}[] | undefined;
