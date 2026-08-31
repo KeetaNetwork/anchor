@@ -1721,18 +1721,14 @@ suite.sequential('Driver Tests', async function() {
 				});
 
 				testRunner('Delete Expired Completed', async function() {
-					await using cleanup = new AsyncDisposableStack();
-					vi.useFakeTimers();
-					cleanup.defer(function() {
-						vi.useRealTimers();
-					});
-
+					const retentionMs = 100;
 					await using queueInfo = await driverConfig.create('delete-expired-completed');
 					const localQueue = queueInfo.queue;
 
 					await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
 						id: 'delete-expired-completed-runner',
 						queue: localQueue,
+						completedRetentionDays: retentionMs / 86_400_000,
 						processor: async function() {
 							return({ status: 'completed', output: null });
 						}
@@ -1747,7 +1743,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(await localQueue.get(expiredID)).not.toBeNull();
 					expect(await localQueue.get(pendingID)).not.toBeNull();
 
-					vi.advanceTimersByTime(31 * 86_400_000);
+					await asleep(retentionMs * 2);
 
 					const recentID = await localQueue.add({ key: 'recent-completed' });
 					await localQueue.setStatus(recentID, 'completed');
@@ -1756,15 +1752,10 @@ suite.sequential('Driver Tests', async function() {
 					expect(await localQueue.get(expiredID)).toBeNull();
 					expect(await localQueue.get(recentID)).not.toBeNull();
 					expect(await localQueue.get(pendingID)).not.toBeNull();
-				}, 30_000);
+				});
 
 				testRunner('Delete Expired Completed Does Not Affect Same Job ID In Other Partitions', async function() {
-					await using cleanup = new AsyncDisposableStack();
-					vi.useFakeTimers();
-					cleanup.defer(function() {
-						vi.useRealTimers();
-					});
-
+					const retentionMs = 100;
 					await using queueInfo = await driverConfig.create('delete-expired-completed-partition');
 					const localQueue = queueInfo.queue;
 					await using partitionA = await localQueue.partition('partition-a');
@@ -1773,6 +1764,7 @@ suite.sequential('Driver Tests', async function() {
 					await using runnerA = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
 						id: 'delete-expired-completed-partition-a-runner',
 						queue: partitionA,
+						completedRetentionDays: retentionMs / 86_400_000,
 						processor: async function() {
 							return({ status: 'completed', output: null });
 						}
@@ -1794,7 +1786,7 @@ suite.sequential('Driver Tests', async function() {
 					await partitionB.setStatus(expiredPartitionBOtherID, 'completed');
 					expect(expiredPartitionBOtherID).toBe(otherSharedID);
 
-					vi.advanceTimersByTime(31 * 86_400_000);
+					await asleep(retentionMs * 2);
 
 					await runnerA.maintain();
 
@@ -1810,7 +1802,7 @@ suite.sequential('Driver Tests', async function() {
 					expect(completedInB).not.toBeNull();
 					expect(completedInB?.status).toBe('completed');
 					expect(completedInB?.request).toEqual({ key: 'completed-in-b-2' });
-				}, 30_000);
+				});
 
 				/* Test that mutating the entry results does not affect the stored entry */
 				testRunner('Entry Immutability', async function() {
