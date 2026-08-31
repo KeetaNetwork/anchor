@@ -1348,6 +1348,69 @@ test('completed retention cleanup is skipped for piped queues', async function()
 	expect(await source.get(id)).not.toBeNull();
 });
 
+test('completed retention cleanup preserves pipelined jobs in all stages', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(
+		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>,
+		processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorQueueStatus; output: OUTPUT; }>
+	) {
+		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
+			queue: queue,
+			processor: processor
+		}));
+	}
+
+	const queue = new KeetaAnchorQueueStorageDriverMemory({ id: 'pipeline-retention-test' });
+	const stage2Queue = await queue.partition('stage2');
+	const stage3Queue = await queue.partition('stage3');
+
+	await using stage1 = createStage<{ key: string; }, string>(queue, async function() {
+		return({ status: 'completed', output: 'stage1' });
+	});
+	await using stage2 = createStage<string, string>(stage2Queue, async function() {
+		return({ status: 'completed', output: 'stage2' });
+	});
+	await using stage3 = createStage<string, string>(stage3Queue, async function() {
+		return({ status: 'completed', output: 'stage3' });
+	});
+
+	stage1.pipe(stage2).pipe(stage3);
+
+	const id = await stage1.add({ key: 'piped' });
+	await stage1.run();
+	await stage1.maintain();
+	await stage2.run();
+	await stage1.maintain();
+	await stage3.run();
+	await stage1.maintain();
+
+	expect((await queue.get(id))?.status).toBe('moved');
+	expect((await stage2Queue.get(id))?.status).toBe('moved');
+	expect((await stage3Queue.get(id))?.status).toBe('completed');
+
+	vi.advanceTimersByTime(31 * 86_400_000);
+
+	await stage3.maintain();
+
+	expect(await stage3Queue.get(id)).not.toBeNull();
+	expect((await stage3Queue.get(id))?.status).toBe('completed');
+	expect(await stage2Queue.get(id)).not.toBeNull();
+	expect((await stage2Queue.get(id))?.status).toBe('moved');
+	expect(await queue.get(id)).not.toBeNull();
+	expect((await queue.get(id))?.status).toBe('moved');
+
+	await stage1.maintain();
+
+	expect(await stage3Queue.get(id)).not.toBeNull();
+	expect(await stage2Queue.get(id)).not.toBeNull();
+	expect(await queue.get(id)).not.toBeNull();
+});
+
 test('Errors', async function() {
 	const id1 = generateRequestID();
 	const id2 = generateRequestID();
@@ -1693,6 +1756,60 @@ suite.sequential('Driver Tests', async function() {
 					expect(await localQueue.get(expiredID)).toBeNull();
 					expect(await localQueue.get(recentID)).not.toBeNull();
 					expect(await localQueue.get(pendingID)).not.toBeNull();
+				}, 30_000);
+
+				testRunner('Delete Expired Completed Does Not Affect Same Job ID In Other Partitions', async function() {
+					await using cleanup = new AsyncDisposableStack();
+					vi.useFakeTimers();
+					cleanup.defer(function() {
+						vi.useRealTimers();
+					});
+
+					await using queueInfo = await driverConfig.create('delete-expired-completed-partition');
+					const localQueue = queueInfo.queue;
+					await using partitionA = await localQueue.partition('partition-a');
+					await using partitionB = await localQueue.partition('partition-b');
+
+					await using runnerA = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-partition-a-runner',
+						queue: partitionA,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const sharedID = generateRequestID();
+
+					const expiredPartitionAID = await partitionA.add({ key: 'completed-in-a' }, { id: sharedID });
+					await partitionA.setStatus(expiredPartitionAID, 'completed');
+
+					const pendingPartitionBID = await partitionB.add({ key: 'pending-in-b' }, { id: sharedID });
+					expect(pendingPartitionBID).toBe(sharedID);
+
+					const otherSharedID = generateRequestID();
+					const expiredPartitionAOtherID = await partitionA.add({ key: 'completed-in-a-2' }, { id: otherSharedID });
+					await partitionA.setStatus(expiredPartitionAOtherID, 'completed');
+
+					const expiredPartitionBOtherID = await partitionB.add({ key: 'completed-in-b-2' }, { id: otherSharedID });
+					await partitionB.setStatus(expiredPartitionBOtherID, 'completed');
+					expect(expiredPartitionBOtherID).toBe(otherSharedID);
+
+					vi.advanceTimersByTime(31 * 86_400_000);
+
+					await runnerA.maintain();
+
+					expect(await partitionA.get(sharedID)).toBeNull();
+					expect(await partitionA.get(otherSharedID)).toBeNull();
+
+					const pendingInB = await partitionB.get(sharedID);
+					expect(pendingInB).not.toBeNull();
+					expect(pendingInB?.status).toBe('pending');
+					expect(pendingInB?.request).toEqual({ key: 'pending-in-b' });
+
+					const completedInB = await partitionB.get(otherSharedID);
+					expect(completedInB).not.toBeNull();
+					expect(completedInB?.status).toBe('completed');
+					expect(completedInB?.request).toEqual({ key: 'completed-in-b-2' });
 				}, 30_000);
 
 				/* Test that mutating the entry results does not affect the stored entry */
