@@ -11,6 +11,8 @@ import { isAssetLocationLike } from '../services/asset-movement/lib/location.gen
 import type { ToValuizable } from './resolver.js';
 import { isFiatRail, isMovableAssetSearchCanonical, isRail } from '../services/asset-movement/common.generated.js';
 import { assertNever } from './utils/never.js';
+import { withRetry } from './utils/retry.js';
+import type { PublicRetryOptions, RetryOptions } from './utils/retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
@@ -107,6 +109,8 @@ export type AnchorChainingPathExecuteResult = {
 
 export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
+	abortSignal?: AbortSignal;
+	poll?: PublicRetryOptions;
 };
 
 export type AnchorChainingPathState =
@@ -158,6 +162,7 @@ export type AnchorChainingTransactionObservedEvent = {
 interface RailSupportedOperations {
 	createPersistentForwarding?: boolean;
 	initiateTransfer?: boolean;
+	simulateTransfer?: boolean;
 }
 
 interface RailWithSupportedOperations {
@@ -201,8 +206,17 @@ interface BaseGraphNodeLike<Type extends 'fx' | 'assetMovement', AssetType exten
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface FXGraphNode extends BaseGraphNodeLike<'fx', Exclude<AnchorChainingAsset, ExternalChainAsset>> {}
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface AssetMovementGraphNode extends BaseGraphNodeLike<'assetMovement', AnchorChainingAsset> {}
+interface AssetMovementGraphNode extends BaseGraphNodeLike<'assetMovement', AnchorChainingAsset> {
+	/**
+	 * Operations the provider itself publishes, independent of any rail-specific
+	 * declaration. Mirrors what `provider.isOperationSupported()` answers at plan
+	 * time, so a pure validation can reach the same verdict as computing a plan.
+	 *
+	 * Distinct from the per-side `supportedOperations`, which describes one rail
+	 * and is absent for providers that publish no rail-level detail.
+	 */
+	providerOperations?: RailSupportedOperations;
+}
 export type GraphNodeLike = FXGraphNode | AssetMovementGraphNode;
 
 type KeetaLocationLike = Extract<AssetLocationLike, `chain:keeta:${bigint}`> | PickChainLocation<'keeta'>;
@@ -236,6 +250,7 @@ function isFXLikeNode(node: GraphNodeLike): boolean {
 	const toStr = convertAssetLocationToString(node.to.location);
 	return(fromStr === toStr && fromStr.startsWith('chain:keeta:'));
 }
+
 
 interface AssetMovementResolvedRails {
 	common: RailWithSupportedOperations[];
@@ -421,6 +436,189 @@ export function supportsPersistentForwarding(
 	}
 
 	return(supportedOperations.createPersistentForwarding === true);
+}
+
+/**
+ * Validate request-level invariants (value affinity) before any network call.
+ * Pure: derives the amount/affinity and throws the same messages the inline
+ * affinity block in #computePlan used to throw, so observable behavior is
+ * unchanged.
+ */
+function validateRequest(request: AnchorChainingPathInput): { affinity: 'to' | 'from'; amount: bigint } {
+	if (request.source.value !== undefined && request.destination.value !== undefined) {
+		throw(new Error('Must have source.value or destination.value but not both'));
+	} else if (request.source.value !== undefined) {
+		return({ affinity: 'from', amount: request.source.value });
+	} else if (request.destination.value !== undefined) {
+		return({ affinity: 'to', amount: request.destination.value });
+	} else {
+		throw(new Error('Must have source.value or destination.value'));
+	}
+}
+
+/**
+ * Whether #computePlan's default-mode scan would select persistent forwarding
+ * for this step. Mirrors that selection exactly, including the non-Keeta
+ * restriction: a Keeta-source leg is always a user-initiated send, never PFR,
+ * even when the provider advertises createPersistentForwarding.
+ *
+ * Only meaningful outside forwarding-only mode, where every leg is forwarded.
+ */
+function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
+	const step = path[index];
+	if (!step || step.type !== 'assetMovement') {
+		return(false);
+	}
+
+	const priorStep = index > 0 ? path[index - 1] : null;
+	const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
+	const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
+	const initiateForbidden = step.from.supportedOperations?.initiateTransfer === false;
+	const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
+
+	return(!sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported)));
+}
+
+/**
+ * Validate structural invariants of a resolved path before any network call,
+ * so a structurally-invalid plan fails fast instead of after wasted provider
+ * round-trips. Pure: hoists the structural throws that live inline in
+ * #computePlan's forwarding-only scan, PFR scan and resolveStep branches,
+ * preserving each message verbatim.
+ *
+ * The three scans run in the same order as #computePlan (forwarding-only, then
+ * PFR, then per-step), and each mirrors its selection logic exactly, so the
+ * first error thrown here is the same one #computePlan would have thrown.
+ *
+ * Persistent-forwarding selection depends on the plan options, so callers that
+ * intend to compute a forwarding-only plan must pass forwardingOnly:true to get
+ * the matching rules. The two modes are mutually exclusive in #computePlan:
+ * forwarding-only applies PFR to every leg (chaining each into the next leg's
+ * persistent address), while the default mode allows PFR only as the final step.
+ */
+function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string): void {
+	/*
+	 * Forwarding-only requires every asset-movement leg to qualify for
+	 * persistent forwarding. #computePlan walks backwards here because each leg
+	 * forwards into the next leg's address; the checks below are the
+	 * order-independent subset, so a forward walk would report the same first
+	 * failure for a single-issue path. The backwards walk is kept to match.
+	 */
+	if (forwardingOnly) {
+		for (let index = path.length - 1; index >= 0; index--) {
+			const step = path[index];
+			if (!step || step.type !== 'assetMovement') {
+				continue;
+			}
+
+			const pfrEligible = supportsPersistentForwarding(step.from.supportedOperations, 'implied');
+			const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
+
+			if (sourceIsKeeta || !pfrEligible) {
+				throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${index} at ${convertAssetLocationToString(step.from.location)} does not qualify`));
+			}
+
+			/*
+			 * Only the final leg forwards to the request recipient; earlier legs
+			 * forward to the next leg's persistent address, which is not known
+			 * until the plan is computed.
+			 */
+			if (index === path.length - 1 && typeof request.destination.recipient !== 'string') {
+				throw(new Error(`Forwarding-only plan requires the destination recipient to be a resolved address string`));
+			}
+		}
+	}
+
+	if (!forwardingOnly) {
+		for (let index = 0; index < path.length; index++) {
+			const step = path[index];
+			if (!step || step.type !== 'assetMovement') {
+				continue;
+			}
+
+			const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
+
+			if (!stepUsesPFR(path, index)) {
+				continue;
+			}
+
+			if (!pfrSupported) {
+				throw(new Error(`Asset movement provider ${step.providerID} source rail ${step.from.rail} at ${convertAssetLocationToString(step.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
+			}
+
+			if (index !== path.length - 1) {
+				throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${index} of ${path.length})`));
+			}
+
+			if (typeof request.destination.recipient !== 'string') {
+				throw(new Error(`Persistent-forwarding step at index ${index} requires the chain's destination recipient to be a resolved address string`));
+			}
+		}
+	}
+
+	for (let index = 0; index < path.length; index++) {
+		const step = path[index];
+		if (!step) {
+			throw(new Error(`Step ${index} is not defined`));
+		}
+
+		if (step.type === 'assetMovement') {
+			if (affinity === 'to') {
+				throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+			}
+
+			/*
+			 * Chaining out of an asset-movement step to a non-Keeta intermediate
+			 * location requires simulateTransfer to compute the deposit amount.
+			 * #computePlan only reaches that branch when the step is not last, the
+			 * next step is not persistent-forwarded (which supplies its own address
+			 * instead), and the next location is not this network's Keeta chain
+			 * (where funds are parked in the user's account instead).
+			 *
+			 * Only reported when the metadata positively says the operation is
+			 * absent, and guessing when it is unknown would reject paths that
+			 * compute fine. Most providers publish no rail-level detail at all, so
+			 * the provider-level operations are what usually settles it; they are
+			 * the same source `isOperationSupported` consults when planning.
+			 */
+			const nextPathStep = index !== path.length - 1 ? path[index + 1] : undefined;
+			const cannotSimulateTransfer = step.providerOperations?.simulateTransfer === false ||
+				step.from.supportedOperations?.simulateTransfer === false;
+			if (
+				!forwardingOnly &&
+				nextPathStep !== undefined &&
+				!stepUsesPFR(path, index + 1) &&
+				nextPathStep.from.location !== keetaLocation &&
+				cannotSimulateTransfer
+			) {
+				throw(new Error(`Asset movement provider ${step.providerID} does not support simulateTransfer, which is required for chaining at non-keeta intermediate location ${convertAssetLocationToString(nextPathStep.from.location)}`));
+			}
+		} else if (step.type === 'keetaSend') {
+			if (path.length !== 1) {
+				throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
+			}
+			if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
+				throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
+			}
+			if (!step.from.asset.comparePublicKey(step.to.asset)) {
+				throw(new Error(`For KEETA_SEND step, from and to asset must be the same account`));
+			}
+
+			let keetaRecipientDestination = null;
+			if (KeetaNet.lib.Account.isInstance(request.destination.recipient)) {
+				keetaRecipientDestination = request.destination.recipient;
+			} else if (typeof request.destination.recipient === 'string') {
+				try {
+					keetaRecipientDestination = KeetaNet.lib.Account.fromPublicKeyString(request.destination.recipient);
+				} catch {
+					/* ignore errors */
+				}
+			}
+			if (!keetaRecipientDestination) {
+				throw(new Error(`Expected destination recipient to be a public key string for KEETA_SEND step`));
+			}
+		}
+	}
 }
 
 /**
@@ -848,11 +1046,20 @@ class AnchorGraph {
 							this.#computeAssetMovementPairSide(pairResolved[1])
 						]);
 
+						/**
+						 * What the provider publishes for itself. An operation the
+						 * service does not expose cannot be called on any of its rails,
+						 * which is the same thing `isOperationSupported` reports when a
+						 * plan is computed.
+						 */
+						const providerOperations: RailSupportedOperations = {
+							createPersistentForwarding: supportedOperationsMetadata.createPersistentForwarding !== undefined,
+							initiateTransfer: supportedOperationsMetadata.initiateTransfer !== undefined,
+							simulateTransfer: supportedOperationsMetadata.simulateTransfer !== undefined
+						};
+
 						function getProviderSupportedOperationsForRail(railSpecific?: RailSupportedOperations): RailSupportedOperations {
-							const retval: RailSupportedOperations = {
-								createPersistentForwarding: supportedOperationsMetadata.createPersistentForwarding !== undefined,
-								initiateTransfer: supportedOperationsMetadata.initiateTransfer !== undefined
-							};
+							const retval: RailSupportedOperations = { ...providerOperations };
 
 							if (railSpecific) {
 								retval.createPersistentForwarding = railSpecific.createPersistentForwarding ?? false;
@@ -900,6 +1107,7 @@ class AnchorGraph {
 									pathNodes.push({
 										type: 'assetMovement',
 										providerID: providerID,
+										providerOperations: providerOperations,
 										from: makeFromTo({ asset: src, rail: inboundRail }),
 										to: makeFromTo({ asset: dest, rail: outboundRail })
 									});
@@ -1557,6 +1765,7 @@ export interface ComputePlanOptions {
 export interface GetPlansOptions extends Omit<ComputePlanOptions, 'forwardingOnly'> {
 	includeAllOutput?: boolean;
 	forwardingOnly?: boolean | ForwardingOnlyOptions;
+	maxPathLength?: number;
 }
 
 function toComputePlanOptions(options?: GetPlansOptions, forwardingOpts?: ForwardingOnlyOptions): ComputePlanOptions | undefined {
@@ -1814,6 +2023,18 @@ export function getForwardingDepositAddress(plan: { plan: AnchorChainingPathComp
 	return(typeof address === 'string' ? address : null);
 }
 
+export type AnchorChainingPathValidationResult =
+	| { valid: true }
+	| { valid: false; reason: string };
+
+export interface AnchorChainingPathValidateOptions {
+	/**
+	 * Validate against forwarding-only plan rules (every asset-movement leg must
+	 * qualify for persistent forwarding), matching ComputePlanOptions.
+	 */
+	forwardingOnly?: boolean;
+}
+
 export class AnchorChainingPath {
 	readonly request: AnchorChainingPathInput;
 	readonly path: AnchorChainingStepLike[];
@@ -1829,8 +2050,37 @@ export class AnchorChainingPath {
 		this.parent = input.parent;
 	}
 
+	/**
+	 * Synchronously check whether this path is structurally and request valid,
+	 * with no network call. Returns { valid: true } when the request value and
+	 * affinity are well formed and the path step shape is allowed.
+	 *
+	 * Persistent-forwarding rules differ between a default plan and a
+	 * forwarding-only plan, so pass the same forwardingOnly value you intend to
+	 * pass to getPlans/AnchorChainingPlan.create. Validating with the wrong mode
+	 * reports the wrong rules.
+	 *
+	 * This does NOT confirm the path will succeed: real feasibility (provider
+	 * availability, quotes, fees, simulated amounts) is only known when the plan
+	 * is computed via getPlans. Use it as a cheap check in a UI.
+	 */
+	validate(options?: AnchorChainingPathValidateOptions): AnchorChainingPathValidationResult {
+		try {
+			const { affinity } = validateRequest(this.request);
+			validatePathStructure(this.path, this.request, affinity, options?.forwardingOnly === true, this.keetaLocation);
+			return({ valid: true });
+		} catch (error) {
+			return({ valid: false, reason: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
 	get logger(): Logger | undefined {
 		return(this.parent['logger']);
+	}
+
+	/** This client's Keeta chain location, as compared against in #computePlan. */
+	protected get keetaLocation(): string {
+		return(`chain:keeta:${this.parent['client'].network}`);
 	}
 
 	protected async getAccountLike(action: GetAccountForActionPayload, override?: AccountLike): Promise<InstanceType<typeof KeetaNetLib.Account>> {
@@ -1944,6 +2194,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			throw(new Error(`Steps have already been computed`));
 		}
 
+		const affinityAndAmount = validateRequest(this.request);
+		const { affinity } = affinityAndAmount;
+		validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation);
+
 		const sharedClientOptions = {
 			resolver: this.parent['resolver'],
 			...(this.parent['logger'] ? { logger: this.parent['logger'] } : {})
@@ -1952,26 +2206,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const fxClient = new KeetaFXAnchorClient(this.parent['client'], sharedClientOptions);
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
-
-		let affinityAndAmount: { affinity: 'to' | 'from'; amount: bigint } | undefined = undefined;
-
-		if (this.request.source.value !== undefined && this.request.destination.value !== undefined) {
-			throw(new Error('Must have source.value or destination.value but not both'));
-		} else if (this.request.source.value !== undefined) {
-			affinityAndAmount = {
-				affinity: 'from',
-				amount: this.request.source.value
-			}
-		} else if (this.request.destination.value !== undefined) {
-			affinityAndAmount = {
-				affinity: 'to',
-				amount: this.request.destination.value
-			}
-		} else {
-			throw(new Error('Must have source.value or destination.value'));
-		}
-
-		const { affinity } = affinityAndAmount
 
 		const findInstruction = <R extends AssetTransferInstructions['type']>(allInstructions: AssetTransferInstructions[], type: R): Extract<AssetTransferInstructions, { type: R }> => {
 			const found = allInstructions.find((instr): instr is Extract<AssetTransferInstructions, { type: R }> => {
@@ -2090,6 +2324,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				const pfrEligible = supportsPersistentForwarding(scanStep.from.supportedOperations, 'implied');
 				const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
+				// Defense in depth: validatePathStructure enforces this before any network call.
 				if (sourceIsKeeta || !pfrEligible) {
 					throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${scanIndex} at ${convertAssetLocationToString(scanStep.from.location)} does not qualify`));
 				}
@@ -2153,6 +2388,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!shouldUsePFR) {
 				continue;
 			}
+			/*
+			 * Defense in depth: validatePathStructure enforces these PFR rules before
+			 * any network call. They are kept here next to the operation so the
+			 * guarantee holds even if the early pass is bypassed. The typeof check
+			 * also narrows destinationAddress to string for the call below.
+			 */
 			if (!pfrSupported) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
 			}
@@ -2252,6 +2493,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 						return({ type: 'fx', step, valueIn, valueOut, result });
 					} else if (step.type === 'assetMovement') {
+						/*
+						 * Defense in depth: validatePathStructure rejects affinity 'to' on
+						 * asset-movement steps before any network call. This guard keeps the
+						 * check next to the operation in case the early pass is bypassed.
+						 */
 						if (affinity === 'to') {
 							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
 						}
@@ -2371,7 +2617,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								}
 
 								resolvedRecipient = pfiAddress;
-							} else if (nextPathStep.from.location === `chain:keeta:${this.parent['client'].network}`) {
+							} else if (nextPathStep.from.location === this.keetaLocation) {
 								const { account } = await this.getAccountsForAction({
 									type: 'assetMovement',
 									providerMethod: 'initiateTransfer'
@@ -2425,6 +2671,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 									}
 
 									if (foundInstruction.type === 'KEETA_SEND') {
+										// Structurally unreachable now that validatePathStructure requires a keetaSend step to be the sole step; kept as a defensive invariant.
 										throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
 									} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
 										if (foundInstruction.depositMessage) {
@@ -2492,6 +2739,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							provider: provider
 						})
 					} else if (step.type === 'keetaSend') {
+						// Defense in depth: validatePathStructure also enforces this early.
 						if (this.path.length !== 1) {
 							throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
 						}
@@ -2739,10 +2987,29 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(external);
 	}
 
+	/**
+	 * Retry policy for a single status poll.
+	 */
+	#pollRetryOptions(
+		scope: string,
+		deadline: number,
+		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
+	): RetryOptions {
+		const remainingMs = Math.max(0, deadline - Date.now());
+
+		return({
+			...options?.poll,
+			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
+			loggerContext: scope,
+			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
+			...(this.logger ? { logger: this.logger } : {})
+		});
+	}
+
 	async #pollTransferStatus(
 		transfer: AssetMovementTransfer,
 		context: { stepIndex: number; planStep: ChainStepResolution },
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
@@ -2753,7 +3020,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Aborted while waiting for transfer ${transfer.transferID} to complete`));
 			}
 
-			const status = await transfer.getTransferStatus();
+			const status = await withRetry(async function() {
+				return(await transfer.getTransferStatus());
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollTransferStatus', deadline, options));
+
 			this.#emit('transactionObserved', {
 				stepIndex: context.stepIndex,
 				planStep: context.planStep,
@@ -2842,7 +3112,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 	async #pollExchangeStatus(
 		exchange: FXExchange,
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
 		const timeoutMs  = options?.timeoutMs  ?? 300_000;
@@ -2853,7 +3123,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Aborted while waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			const status = await exchange.getExchangeStatus();
+			const status = await withRetry(async function() {
+				return(await exchange.getExchangeStatus());
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollExchangeStatus', deadline, options));
+
 			if (status.status === 'completed') {
 				return(status);
 			}
@@ -2868,7 +3141,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 	}
 
-	async execute(options?: { requireSendAuth?: boolean; abortSignal?: AbortSignal; }): Promise<AnchorChainingPathExecuteResult> {
+	async execute(options?: AnchorChainingPathExecuteOptions): Promise<AnchorChainingPathExecuteResult> {
 		if (this.#options?.forwardingOnly) {
 			throw(new Error('Forwarding-only plans cannot be executed. Use getPlans({ forwardingOnly: true }), which returns AnchorChainingForwardingOnlyPlan, and fund the deposit address externally.'));
 		}
@@ -2936,7 +3209,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				if (step.type === 'fx') {
 					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
-					const exchangeStatus = await this.#pollExchangeStatus(exchange);
+					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
 					publishedInputs.push({ blockHash: exchangeStatus.blockhash });
 
@@ -2948,9 +3221,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 					}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, {
-						...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-					});
+					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, options);
 					prevActualValueOut = BigInt(observed.to.value);
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
@@ -2995,9 +3266,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					}
 
 					if (step.type === 'assetMovement') {
-						const status = await this.#pollTransferStatus(step.transfer, pollContext, {
-							...(options?.abortSignal ? { abortSignal: options.abortSignal } : {})
-						});
+						const status = await this.#pollTransferStatus(step.transfer, pollContext, options);
 						prevActualValueOut = BigInt(status.transaction.to.value);
 						const withdraw = status.transaction.to.transactions.withdraw;
 						if (withdraw) {
@@ -3081,6 +3350,14 @@ export class AnchorChainingForwardingOnlyPlan extends AnchorChainingPath {
 
 	listFees(): AnchorChainingPlanFeeBreakdown {
 		return(listChainingPlanFees(this));
+	}
+
+	/**
+	 * Always validated as forwarding-only, since that is the only mode this
+	 * class is ever computed under.
+	 */
+	override validate(options?: AnchorChainingPathValidateOptions): AnchorChainingPathValidationResult {
+		return(super.validate({ ...options, forwardingOnly: true }));
 	}
 
 	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingForwardingOnlyPlan> {
@@ -3194,7 +3471,10 @@ export class AnchorChaining {
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<AnchorChainingPlan[] | null>;
 	async getPlans(input: AnchorChainingPathInput, options?: GetPlansOptions): Promise<(AnchorChainingPlan | AnchorChainingForwardingOnlyPlan | AnchorChainingFullPlanResult | AnchorChainingFullForwardingOnlyPlanResult)[] | null> {
 		const forwardingOpts = normalizeForwardingOnlyOptions(options?.forwardingOnly);
-		const paths = await this.getPaths(input, options?.forwardingOnly ? { forwardingOnly: options.forwardingOnly } : undefined);
+		const paths = await this.getPaths(input, {
+			...(options?.forwardingOnly ? { forwardingOnly: options.forwardingOnly } : {}),
+			...(options?.maxPathLength !== undefined ? { maxPathLength: options.maxPathLength } : {})
+		});
 
 		if (!paths) {
 			return(null);

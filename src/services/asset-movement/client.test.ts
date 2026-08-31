@@ -116,6 +116,12 @@ test('Asset Movement Anchor Client Test', async function() {
 					displayName: 'Cool Token',
 					ticker: '$COOL',
 					logoURI: 'https://example.com/logo.png'
+				},
+				/* Published in EIP-55 form; callers may supply it all-lowercase. */
+				'evm:0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E': {
+					decimalPlaces: 6,
+					displayName: 'USD Coin',
+					ticker: '$USDC'
 				}
 			}
 		},
@@ -481,6 +487,19 @@ test('Asset Movement Anchor Client Test', async function() {
 		expect(testProvider.getAssetMetadataForLocation({ type: 'chain', chain: { type: 'evm', chainId: 1n }}, 'evm:0x5')).toEqual(evm0x5Metadata);
 		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0x0')).toEqual(null);
 		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'solana:test')).toEqual(null);
+
+		/*
+		 * An EVM address is case-insensitive, so every spelling of the same address
+		 * must resolve to the same metadata regardless of how it was published.
+		 */
+		const usdcMetadata = validLocationMetadata['chain:evm:1']['assets']['evm:0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'];
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E')).toEqual(usdcMetadata);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e')).toEqual(usdcMetadata);
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0xB97EF9EF8734C71904D8002F8B6BC66DD9C48A6E')).toEqual(usdcMetadata);
+		/* Repeat lookups go through the memoised index. */
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e')).toEqual(usdcMetadata);
+		/* A different address must still miss. */
+		expect(testProvider.getAssetMetadataForLocation('chain:evm:1', 'evm:0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6f')).toEqual(null);
 		const solanaGenesis = 'ffffffffffffffffffffffffffffffffffffffffffff';
 		const testSolanaAssetID: SolanaAsset = 'solana:So11111111111111111111111111111111111111112';
 		const testSolanaAssetMetadata = validLocationMetadata[`chain:solana:${solanaGenesis}`]['assets']['solana:So11111111111111111111111111111111111111112'];
