@@ -72,7 +72,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
@@ -82,7 +81,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.poolInternal = options.pool;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.tableNameEntries = `${this.tablePrefix ?? 'queue'}_entries`;
@@ -645,8 +643,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger: this.logger,
 			pool: this.poolInternal,
 			path: [...this.path, path],
-			tablePrefix: this.tablePrefix,
-			completedRetentionDays: this.completedRetentionDays
+			tablePrefix: this.tablePrefix
 		});
 
 		return(retval);

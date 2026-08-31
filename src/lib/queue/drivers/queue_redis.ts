@@ -45,7 +45,6 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { redis: () => Promise<RedisClientType>; }) {
@@ -54,7 +53,6 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		this.redisInternal = options.redis;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Redis queue storage driver');
@@ -468,8 +466,7 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			redis: this.redisInternal,
-			path: [...this.path, path],
-			completedRetentionDays: this.completedRetentionDays
+			path: [...this.path, path]
 		});
 
 		return(retval);

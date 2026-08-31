@@ -46,7 +46,6 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private readonly namespace: string;
-	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { firestore: () => Promise<Firestore>; namespace: string; }) {
@@ -56,7 +55,6 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('::');
 		this.namespace = options.namespace;
-		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized Firestore queue storage driver');
@@ -381,8 +379,7 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 			logger: this.logger,
 			firestore: this.firestoreInternal,
 			namespace: this.namespace,
-			path: [...this.path, path],
-			completedRetentionDays: this.completedRetentionDays
+			path: [...this.path, path]
 		});
 
 		return(retval);

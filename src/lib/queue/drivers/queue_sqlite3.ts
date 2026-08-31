@@ -50,7 +50,6 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 	readonly id: string;
 	readonly path: string[] = [];
 	private readonly pathStr: string;
-	readonly completedRetentionDays: number | undefined;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & { db: () => Promise<sqlite.Database>; }) {
@@ -59,7 +58,6 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 		this.dbInternal = options.db;
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
-		this.completedRetentionDays = options.completedRetentionDays;
 		Object.freeze(this.path);
 
 		this.methodLogger('new')?.debug('Initialized SQLite3 queue storage driver with DB:', options.db);
@@ -524,8 +522,7 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			id: `${this.id}::${path}`,
 			logger: this.logger,
 			db: this.dbInternal,
-			path: [...this.path, path],
-			completedRetentionDays: this.completedRetentionDays
+			path: [...this.path, path]
 		});
 
 		return(retval);

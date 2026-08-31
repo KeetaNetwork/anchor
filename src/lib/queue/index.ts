@@ -53,37 +53,6 @@ export type KeetaAnchorQueueEntryExtra = {
 	[key in 'idempotentKeys' | 'id' | 'status']?: (key extends 'id' ? KeetaAnchorQueueRequestID | string : KeetaAnchorQueueEntry<never, never>[key]) | undefined;
 };
 
-const defaultDeleteExpiredCompletedLimit = 1000;
-
-export async function deleteExpiredCompletedFromStorageDriver<QueueRequest extends JSONSerializable, QueueResult extends JSONSerializable>(
-	queue: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>
-): Promise<void> {
-	if (queue.completedRetentionDays === undefined) {
-		throw(new Errors.CompletedRetentionNotConfiguredError());
-	}
-
-	const filter: KeetaAnchorQueueFilter = {
-		status: 'completed',
-		limit: defaultDeleteExpiredCompletedLimit
-	};
-	if (queue.completedRetentionDays > 0) {
-		filter.updatedBefore = new Date(Date.now() - queue.completedRetentionDays * 86_400_000);
-	}
-
-	const entries = await queue.query(filter);
-
-	if (entries.length === 0) {
-		return;
-	}
-
-	await queue.delete(entries.map(function(entry) {
-		return({
-			id: entry.id,
-			status: entry.status
-		});
-	}));
-}
-
 export type KeetaAnchorQueueFilter = {
 	/**
 	 * Only return entries with this status
@@ -124,11 +93,6 @@ export type KeetaAnchorQueueRunnerOptions = KeetaAnchorQueueCommonOptions & {
 
 export type KeetaAnchorQueueStorageOptions = KeetaAnchorQueueCommonOptions & {
 	path?: string[] | undefined;
-	/**
-	 * How long completed entries are kept, in days, before {@link KeetaAnchorQueueRunner.deleteExpiredCompleted}
-	 * may remove them. Required for that method.
-	 */
-	completedRetentionDays?: number | undefined;
 };
 
 export type KeetaAnchorQueueEntryAncillaryData<QueueResult> = {
@@ -174,11 +138,6 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	 * a hierarchical partition name.
 	 */
 	readonly path: string[];
-
-	/**
-	 * Retention period for completed entries, if configured on this queue partition.
-	 */
-	readonly completedRetentionDays?: number | undefined;
 
 	/**
 	 * Enqueue an item to be processed by the queue
@@ -267,12 +226,10 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 	readonly name: string = 'KeetaAnchorQueueStorageDriverMemory';
 	readonly id: string;
 	readonly path: string[] = [];
-	readonly completedRetentionDays: number | undefined;
 
 	constructor(options?: KeetaAnchorQueueStorageOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
-		this.completedRetentionDays = options?.completedRetentionDays;
 		this.path.push(...(options?.path ?? []));
 		Object.freeze(this.path);
 
@@ -284,7 +241,6 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 			logger: this.logger,
 			id: `${this.id}::${this.partitionCounter++}`,
 			path: [...this.path],
-			completedRetentionDays: this.completedRetentionDays,
 			...options
 		});
 		cloned.queueStorage = this.queueStorage;
@@ -522,12 +478,14 @@ export interface KeetaAnchorQueueRunnerConfigurationObject {
 	batchSize: number;
 	retryDelay: number;
 	stuckMultiplier: number;
+	completedRetentionDays: number;
+	completedRetentionLimitPerRun: number;
 }
 
 // Ensure that KeetaAnchorQueueRunnerConfigurationObject has all the required properties of KeetaAnchorQueueRunner, and no extra properties
 // if this assertion fails, it means that KeetaAnchorQueueRunnerConfigurationObject is missing a property from KeetaAnchorQueueRunner or has an extra property
 // @ts-ignore
-type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout'>>;
+type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout' | 'completedRetentionDays' | 'completedRetentionLimitPerRun'>>;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 type __check = AssertNever<__check_KeetaAnchorQueueRunnerConfigurationObject extends KeetaAnchorQueueRunnerConfigurationObject ? (KeetaAnchorQueueRunnerConfigurationObject extends __check_KeetaAnchorQueueRunnerConfigurationObject ? never : false) : false>;
 
@@ -701,6 +659,28 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * How many runners can process this queue in parallel
 	 */
 	protected maxRunners?: number;
+
+	/**
+	 * How long to keep completed entries in the queue to avoid
+	 * re-using the same ID.  A negative value means that completed
+	 * records will be immediately deleted.
+	 *
+	 * In units of days.  Setting this to infinity will disable
+	 * cleanup.
+	 *
+	 * Default is 30 days.
+	 */
+	protected completedRetentionDays = 30;
+
+	/**
+	 * How many completed entries to delete per maintain() call
+	 */
+	protected completedRetentionLimitPerRun = 5000;
+
+	/**
+	 * A unique key to identify this runner for fencing the same worker
+	 * from running at the same time
+	 */
 	private readonly runnerLockKey: KeetaAnchorQueueRequestID;
 
 	/**
@@ -798,7 +778,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	protected setConfiguration(parameters: Partial<KeetaAnchorQueueRunnerConfigurationObject>): void {
-		const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier' ] as const satisfies (keyof typeof parameters)[];
+		const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier', 'completedRetentionDays', 'completedRetentionLimitPerRun' ] as const satisfies (keyof typeof parameters)[];
 		// Ensure that all keys in the config object are expected and used
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		type __checkAllExtensionConfigKeysAreValid = AssertNever<Exclude<keyof typeof parameters, typeof parameterNames[number]>>;
@@ -1528,6 +1508,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to requeue failed requests:', error);
 		}
 
+		try {
+			await this.deleteExpiredCompleted();
+		} catch (error: unknown) {
+			logger?.debug('Failed to delete expired completed requests:', error);
+		}
+
 		for (const pipeStatus of keetaAnchorPipeableQueueStatuses) {
 			try {
 				await this.moveCompletedToNextStage(pipeStatus);
@@ -1559,28 +1545,42 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		logger?.debug(`Worker ID ${this.workerID} completed maintenance tasks for queue ${this.queue.id}`);
 	}
 
-	async deleteExpiredCompleted(): Promise<void> {
-		this.assertCompletedRetentionQueueNotPiped();
-		await deleteExpiredCompletedFromStorageDriver(this.queue);
-	}
-
-	private assertCompletedRetentionQueueNotPiped(): void {
-		if (this.queue.completedRetentionDays === undefined) {
+	private async deleteExpiredCompleted(): Promise<void> {
+		if (this.completedRetentionDays === Infinity) {
 			return;
 		}
 
 		if (this.pipes.length > 0 || this.incomingPipeCount > 0) {
-			throw(new Errors.CompletedRetentionPipingError('Queues with completedRetentionDays configured cannot delete expired completed entries while piped to or from another queue'));
+			return;
 		}
+
+		const filter: KeetaAnchorQueueFilter = {
+			status: 'completed',
+			limit: this.completedRetentionLimitPerRun
+		};
+
+		if (this.completedRetentionDays > 0) {
+			filter.updatedBefore = new Date(Date.now() - this.completedRetentionDays * 86_400_000);
+		}
+
+		const entries = await this.queue.query(filter);
+
+		if (entries.length === 0) {
+			return;
+		}
+
+		await this.queue.delete(entries.map(function(entry) {
+			return({
+				id: entry.id,
+				status: entry.status
+			});
+		}));
 	}
 
 	/**
 	 * Pipe the the completed entries of this runner to another runner
 	 */
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
-			throw(new Errors.CompletedRetentionPipingError());
-		}
 		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
@@ -1592,9 +1592,6 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
-			throw(new Errors.CompletedRetentionPipingError());
-		}
 		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
@@ -1609,9 +1606,6 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
 	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
-			throw(new Errors.CompletedRetentionPipingError());
-		}
 		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
@@ -1625,9 +1619,6 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
-		if (this.queue.completedRetentionDays !== undefined || target.queue.completedRetentionDays !== undefined) {
-			throw(new Errors.CompletedRetentionPipingError());
-		}
 		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,

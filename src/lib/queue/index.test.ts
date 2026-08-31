@@ -7,8 +7,7 @@ import { hash } from '../utils/tests/hash.js';
 
 import {
 	KeetaAnchorQueueRunnerJSONConfigProc,
-	KeetaAnchorQueueStorageDriverMemory,
-	deleteExpiredCompletedFromStorageDriver
+	KeetaAnchorQueueStorageDriverMemory
 } from './index.js';
 import type {
 	KeetaAnchorQueueStatus,
@@ -1312,7 +1311,13 @@ test('Pipeline Basic Tests', async function() {
 	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
-test('completed retention queues cannot be piped', async function() {
+test('completed retention cleanup is skipped for piped queues', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
 	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(
 		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>,
 		processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorQueueStatus; output: OUTPUT; }>
@@ -1323,32 +1328,24 @@ test('completed retention queues cannot be piped', async function() {
 		}));
 	}
 
-	const retentionQueue = new KeetaAnchorQueueStorageDriverMemory({
-		id: 'retention-pipe-test',
-		completedRetentionDays: 7
-	});
-	const normalQueue = new KeetaAnchorQueueStorageDriverMemory({ id: 'normal-pipe-test' });
+	const queue = new KeetaAnchorQueueStorageDriverMemory({ id: 'retention-pipe-test' });
 
-	const retentionSource = createStage<{ key: string; }, string>(retentionQueue, async function() {
+	const source = createStage<{ key: string; }, string>(queue, async function() {
 		return({ status: 'completed', output: 'ok' });
 	});
-	const retentionTarget = createStage<string, string>(await retentionQueue.partition('retained'), async function() {
-		return({ status: 'completed', output: 'ok' });
-	});
-	const normalSource = createStage<string, string>(normalQueue, async function() {
-		return({ status: 'completed', output: 'ok' });
-	});
-	const normalTarget = createStage<string, string>(await normalQueue.partition('stage2'), async function() {
+	const target = createStage<string, string>(await queue.partition('stage2'), async function() {
 		return({ status: 'completed', output: 'ok' });
 	});
 
-	expect(function() {
-		retentionSource.pipe(normalTarget);
-	}).toThrow(Errors.CompletedRetentionPipingError);
+	source.pipe(target);
 
-	expect(function() {
-		normalSource.pipe(retentionTarget);
-	}).toThrow(Errors.CompletedRetentionPipingError);
+	const id = await source.add({ key: 'piped' });
+	await source.run();
+
+	vi.advanceTimersByTime(31 * 86_400_000);
+	await source.maintain();
+
+	expect(await source.get(id)).not.toBeNull();
 });
 
 test('Errors', async function() {
@@ -1371,22 +1368,6 @@ test('Errors', async function() {
 		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
 	}
 
-	{
-		const error = new Errors.CompletedRetentionNotConfiguredError('Test completed retention not configured error');
-		expect(error.message).toBe('Test completed retention not configured error');
-		expect(error.retryable).toBe(false);
-		expect(Errors.CompletedRetentionNotConfiguredError.isInstance(error)).toBe(true);
-		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
-		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(false);
-	}
-
-	{
-		const error = new Errors.CompletedRetentionPipingError('Test completed retention piping error');
-		expect(error.message).toBe('Test completed retention piping error');
-		expect(error.retryable).toBe(false);
-		expect(Errors.CompletedRetentionPipingError.isInstance(error)).toBe(true);
-		expect(Errors.CompletedRetentionNotConfiguredError.isInstance(error)).toBe(false);
-	}
 });
 
 suite.sequential('Driver Tests', async function() {
@@ -1677,31 +1658,41 @@ suite.sequential('Driver Tests', async function() {
 				});
 
 				testRunner('Delete Expired Completed', async function() {
-					await using retainedQueueInfo = await driverConfig.create('delete-expired-retained');
-					const retainedQueue = retainedQueueInfo.queue;
-					const retainedID = await retainedQueue.add({ key: 'recent-completed' });
-					await retainedQueue.setStatus(retainedID, 'completed');
-					await deleteExpiredCompletedFromStorageDriver(retainedQueue);
-					expect(await retainedQueue.get(retainedID)).not.toBeNull();
+					await using cleanup = new AsyncDisposableStack();
+					vi.useFakeTimers();
+					cleanup.defer(function() {
+						vi.useRealTimers();
+					});
 
 					await using queueInfo = await driverConfig.create('delete-expired-completed');
 					const localQueue = queueInfo.queue;
 
-					const oldID = await localQueue.add({ key: 'old-completed' });
-					await localQueue.setStatus(oldID, 'completed');
+					await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-runner',
+						queue: localQueue,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const expiredID = await localQueue.add({ key: 'old-completed' });
+					await localQueue.setStatus(expiredID, 'completed');
+
+					const pendingID = await localQueue.add({ key: 'pending' });
+
+					await runner.maintain();
+					expect(await localQueue.get(expiredID)).not.toBeNull();
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+
+					vi.advanceTimersByTime(31 * 86_400_000);
 
 					const recentID = await localQueue.add({ key: 'recent-completed' });
 					await localQueue.setStatus(recentID, 'completed');
 
-					const pendingID = await localQueue.add({ key: 'pending' });
-
-					await deleteExpiredCompletedFromStorageDriver(localQueue);
-					expect(await localQueue.get(oldID)).toBeNull();
-					expect(await localQueue.get(recentID)).toBeNull();
+					await runner.maintain();
+					expect(await localQueue.get(expiredID)).toBeNull();
+					expect(await localQueue.get(recentID)).not.toBeNull();
 					expect(await localQueue.get(pendingID)).not.toBeNull();
-
-					await using noRetentionQueueInfo = await driverConfig.create('delete-expired-no-retention');
-					await expect(deleteExpiredCompletedFromStorageDriver(noRetentionQueueInfo.queue)).rejects.toThrow(Errors.CompletedRetentionNotConfiguredError);
 				}, 30_000);
 
 				/* Test that mutating the entry results does not affect the stored entry */
