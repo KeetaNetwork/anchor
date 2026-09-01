@@ -16,7 +16,7 @@ jobs:
       packages: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # We need to fetch the parent branch information for SonarCloud
           fetch-depth: 0
@@ -27,7 +27,7 @@ jobs:
         id: node_version
 
       - name: Use Node.js ${{ steps.node_version.outputs.NODE_VERSION }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '${{ steps.node_version.outputs.NODE_VERSION }}'
           cache: 'npm'
@@ -55,7 +55,7 @@ jobs:
 
       # Run SonarCloud after completing tests and generating code coverage report
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@v6.0.0
+        uses: SonarSource/sonarqube-scan-action@v8.2.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
