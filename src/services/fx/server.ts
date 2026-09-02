@@ -514,7 +514,8 @@ function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchor
 
 	/*
 	 * The user's block funds the swap with the principal (the `from` token)
-	 * and, when charged, a separate cost send in another token. Under a
+	 * and, when charged, a cost send. Cost is usually a separate token; when
+	 * it is the same token it is combined into the principal send. Under a
 	 * variable rate the user may over-send the cost and the anchor refunds the
 	 * excess, so net the refunds against the gross send to report the cost the
 	 * user actually paid.
@@ -542,6 +543,33 @@ function buildKeetaFXAnchorConversionSummary(expected: NonNullable<KeetaFXAnchor
 		}
 
 		break;
+	}
+
+	if (conversion.cost === undefined) {
+		let fromTokenSent = 0n;
+		for (const operation of block.operations) {
+			if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+				continue;
+			}
+			if (!operation.token.comparePublicKey(expected.receive.token)) {
+				continue;
+			}
+			fromTokenSent += operation.amount;
+		}
+
+		let sameTokenCost = fromTokenSent - expected.receive.amount;
+		for (const refund of refunds) {
+			if (refund.token.comparePublicKey(expected.receive.token)) {
+				sameTokenCost -= refund.amount;
+			}
+		}
+
+		if (sameTokenCost > 0n) {
+			conversion.cost = {
+				token: expected.receive.token.publicKeyString.get(),
+				amount: sameTokenCost.toString()
+			};
+		}
 	}
 
 	return(conversion);
