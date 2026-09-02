@@ -486,15 +486,26 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			/* Construct the required operations for the swap request */
 			const builder = this.client.initBuilder(this.options);
 
+			let costAmount = 0n;
+			let costToken;
 			if ('quote' in input) {
-				/* If cost is required then send the required amount as well */
-				if (input.quote.cost.amount > 0) {
-					builder.send(liquidityProvider, input.quote.cost.amount, input.quote.cost.token);
-				}
-			} else if ('estimate' in input) {
-				if (input.estimate.expectedCost.max > 0) {
-					builder.send(liquidityProvider, input.estimate.expectedCost.max, input.estimate.expectedCost.token);
-				}
+				costAmount = input.quote.cost.amount;
+				costToken = input.quote.cost.token;
+			} else {
+				costAmount = input.estimate.expectedCost.max;
+				costToken = input.estimate.expectedCost.token;
+			}
+
+			/*
+			 * When the fee is charged in the same token as the swap send,
+			 * combine them into a single SEND. The principal send carries an
+			 * external, so the builder will not merge a separate cost send
+			 * of the same token into that operation.
+			 */
+			const costUsesSendToken = costAmount > 0n && costToken.comparePublicKey(request.from);
+
+			if (costAmount > 0n && !costUsesSendToken) {
+				builder.send(liquidityProvider, costAmount, costToken);
 			}
 
 			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
@@ -510,7 +521,8 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			}
 
 			const external = await externalBuilder.build();
-			builder.send(liquidityProvider, sendAmount, request.from, external);
+			const taggedSendAmount = costUsesSendToken ? sendAmount + costAmount : sendAmount;
+			builder.send(liquidityProvider, taggedSendAmount, request.from, external);
 
 			const blocks = await builder.computeBlocks();
 			if (blocks.blocks.length !== 1) {

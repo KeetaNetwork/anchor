@@ -78,8 +78,6 @@ export function assertExchangeBlockParametersAndComputeRefund(args: {
 
 			if (!(userSent[tokenPub])) {
 				userSent[tokenPub] = 0n;
-			} else {
-				throw(new KeetaAnchorUserError(`Multiple send operations for token ${tokenPub} in exchange block are not allowed`));
 			}
 
 			userSent[tokenPub] += operation.amount;
