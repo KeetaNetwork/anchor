@@ -1827,12 +1827,22 @@ suite.sequential('Driver Tests', async function() {
 					const expiredKey2 = generateRequestID();
 					const keptKey = generateRequestID();
 
+					/*
+					 * Create a queue entry at T=0 which will be expired
+					 * when maintain is called (after `asleep()`).
+					 */
 					const expiredID = await localQueue.add(
 						{ key: 'old-completed' },
 						{ idempotentKeys: new Set([expiredKey1, expiredKey2]) }
 					);
 					await localQueue.setStatus(expiredID, 'completed');
 
+					/*
+					 * Create a queue entry at T=0 which will NOT be
+					 * expired when maintain is called because the
+					 * status isn't changed to `completed` until
+					 * T=retentionMs * 2, which is after the `asleep()` call.
+					 */
 					const keptCompletedID = await localQueue.add(
 						{ key: 'kept-completed' },
 						{ idempotentKeys: new Set([keptKey]) }
@@ -1850,8 +1860,21 @@ suite.sequential('Driver Tests', async function() {
 
 					await runner.maintain();
 
+					/*
+					 * This is expired because it was set to completed before
+					 * the `asleep()` call, and should have been deleted by the
+					 * retention cleanup in `runner.maintain()`.
+					 */
 					expect(await localQueue.get(expiredID)).toBeNull();
+					/*
+					 * This is not expired because it was set to completed after
+					 * the `asleep()` call, so is more recent than the retention
+					 * period
+					 */
 					expect(await localQueue.get(keptCompletedID)).not.toBeNull();
+					/*
+					 * This is not expired because it's still pending
+					 */
 					expect(await localQueue.get(pendingID)).not.toBeNull();
 
 					/*
