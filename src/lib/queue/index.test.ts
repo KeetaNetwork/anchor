@@ -1804,6 +1804,227 @@ suite.sequential('Driver Tests', async function() {
 					expect(completedInB?.request).toEqual({ key: 'completed-in-b-2' });
 				});
 
+				/*
+				 * Retention cleanup must free idempotent keys for deleted
+				 * completed entries, without freeing keys still held by
+				 * surviving entries in the same partition.
+				 */
+				testRunner('Delete Expired Completed Cleans Idempotent Keys Without Over/Under Delete', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed-idempotent');
+					const localQueue = queueInfo.queue;
+
+					await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-idempotent-runner',
+						queue: localQueue,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const expiredKey1 = generateRequestID();
+					const expiredKey2 = generateRequestID();
+					const keptKey = generateRequestID();
+
+					/*
+					 * Create a queue entry at T=0 which will be expired
+					 * when maintain is called (after `asleep()`).
+					 */
+					const expiredID = await localQueue.add(
+						{ key: 'old-completed' },
+						{ idempotentKeys: new Set([expiredKey1, expiredKey2]) }
+					);
+					await localQueue.setStatus(expiredID, 'completed');
+
+					/*
+					 * Create a queue entry at T=0 which will NOT be
+					 * expired when maintain is called because the
+					 * status isn't changed to `completed` until
+					 * T=retentionMs * 2, which is after the `asleep()` call.
+					 */
+					const keptCompletedID = await localQueue.add(
+						{ key: 'kept-completed' },
+						{ idempotentKeys: new Set([keptKey]) }
+					);
+
+					await asleep(retentionMs * 2);
+
+					await localQueue.setStatus(keptCompletedID, 'completed');
+
+					const pendingKey = generateRequestID();
+					const pendingID = await localQueue.add(
+						{ key: 'pending' },
+						{ idempotentKeys: new Set([pendingKey]) }
+					);
+
+					await runner.maintain();
+
+					/*
+					 * This is expired because it was set to completed before
+					 * the `asleep()` call, and should have been deleted by the
+					 * retention cleanup in `runner.maintain()`.
+					 */
+					expect(await localQueue.get(expiredID)).toBeNull();
+					/*
+					 * This is not expired because it was set to completed after
+					 * the `asleep()` call, so is more recent than the retention
+					 * period
+					 */
+					expect(await localQueue.get(keptCompletedID)).not.toBeNull();
+					/*
+					 * This is not expired because it's still pending
+					 */
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+
+					/*
+					 * Under-delete would leave expiredKey1/expiredKey2
+					 * reserved and cause IdempotentExistsError here.
+					 */
+					const reusedID = await localQueue.add(
+						{ key: 'reused-expired-keys' },
+						{ idempotentKeys: new Set([expiredKey1, expiredKey2]) }
+					);
+					expect(await localQueue.get(reusedID)).not.toBeNull();
+
+					/*
+					 * Over-delete would free keptKey/pendingKey and let
+					 * these adds succeed.
+					 */
+					try {
+						await localQueue.add(
+							{ key: 'should-conflict-kept' },
+							{ idempotentKeys: new Set([keptKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError for kept completed key');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([keptKey]));
+					}
+
+					try {
+						await localQueue.add(
+							{ key: 'should-conflict-pending' },
+							{ idempotentKeys: new Set([pendingKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError for pending key');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([pendingKey]));
+					}
+				});
+
+				/*
+				 * Status-guarded delete must not free idempotent keys when
+				 * the entry status does not match the delete target.
+				 */
+				testRunner('Delete With Mismatched Status Does Not Remove Idempotent Keys', async function() {
+					await using queueInfo = await driverConfig.create('delete-mismatched-status-idempotent');
+					const localQueue = queueInfo.queue;
+
+					const idempotentKey = generateRequestID();
+					const entryID = await localQueue.add(
+						{ key: 'status-guarded' },
+						{ idempotentKeys: new Set([idempotentKey]) }
+					);
+					await localQueue.setStatus(entryID, 'completed');
+
+					await localQueue.delete([{ id: entryID, status: 'pending' }]);
+
+					expect(await localQueue.get(entryID)).not.toBeNull();
+					expect((await localQueue.get(entryID))?.status).toBe('completed');
+
+					try {
+						await localQueue.add(
+							{ key: 'should-still-conflict' },
+							{ idempotentKeys: new Set([idempotentKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError after mismatched-status delete');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([idempotentKey]));
+					}
+
+					await localQueue.delete([{ id: entryID, status: 'completed' }]);
+					expect(await localQueue.get(entryID)).toBeNull();
+
+					const reusedID = await localQueue.add(
+						{ key: 'reused-after-matching-delete' },
+						{ idempotentKeys: new Set([idempotentKey]) }
+					);
+					expect(await localQueue.get(reusedID)).not.toBeNull();
+				});
+
+				/*
+				 * Cleaning a completed entry in one partition must free that
+				 * partition's idempotent keys without touching the same keys
+				 * held by another partition.
+				 */
+				testRunner('Delete Expired Completed Idempotent Keys Are Partition Scoped', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed-idempotent-partition');
+					const localQueue = queueInfo.queue;
+					await using partitionA = await localQueue.partition('partition-a');
+					await using partitionB = await localQueue.partition('partition-b');
+
+					await using runnerA = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-idempotent-partition-a-runner',
+						queue: partitionA,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const sharedIdempotentKey = generateRequestID();
+
+					const expiredAID = await partitionA.add(
+						{ key: 'completed-in-a' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+					await partitionA.setStatus(expiredAID, 'completed');
+
+					const pendingBID = await partitionB.add(
+						{ key: 'pending-in-b' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+
+					await asleep(retentionMs * 2);
+					await runnerA.maintain();
+
+					expect(await partitionA.get(expiredAID)).toBeNull();
+					expect(await partitionB.get(pendingBID)).not.toBeNull();
+
+					const reusedAID = await partitionA.add(
+						{ key: 'reused-in-a' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+					expect(await partitionA.get(reusedAID)).not.toBeNull();
+
+					try {
+						await partitionB.add(
+							{ key: 'should-conflict-in-b' },
+							{ idempotentKeys: new Set([sharedIdempotentKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError in other partition');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([sharedIdempotentKey]));
+					}
+				});
+
 				/* Test that mutating the entry results does not affect the stored entry */
 				testRunner('Entry Immutability', async function() {
 					const id = await queue.add({ key: 'immutable', nested: { value: 42 }});
