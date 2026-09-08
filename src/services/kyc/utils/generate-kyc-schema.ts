@@ -413,7 +413,7 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 
 		// Check if field type is GeneralizedTime (date)
 		if (baseType === 'GeneralizedTime') {
-			fieldSchema = 'ASN1.ValidateASN1.IsDate';
+			fieldSchema = 'ASN1.ValidateASN1.IsAnyDate';
 		} else {
 			// Check if this is a SEQUENCE OF type directly or via type reference
 			let fieldType = baseType.trim();
@@ -854,7 +854,7 @@ function generateIso20022Types() {
 			} else if (isExtensionType) {
 				schemaRef = `${baseType}Schema`;
 			} else if (baseType === 'GeneralizedTime') {
-				schemaRef = 'ASN1.ValidateASN1.IsDate';
+				schemaRef = 'ASN1.ValidateASN1.IsAnyDate';
 			} else if (baseType === 'OCTET STRING') {
 				schemaRef = 'ASN1.ValidateASN1.IsOctetString';
 			} else if (baseType === 'OBJECT IDENTIFIER') {

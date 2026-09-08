@@ -109,11 +109,17 @@ function getTestingFirestoreConfig(): { host: string; port: number; } | null {
 	return({ host: host, port: port });
 }
 
+type DriverCreateOptions = {
+	leave?: boolean;
+	randomBackingName?: boolean;
+	path?: string[];
+};
+
 const drivers: {
 	[driverName: string]: {
 		persistent: boolean;
 		skip: boolean | (() => Promise<boolean>);
-		create: (key: string, options?: { leave?: boolean; randomBackingName?: boolean; }) => Promise<{
+		create: (key: string, options?: DriverCreateOptions) => Promise<{
 			queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>;
 			[Symbol.asyncDispose]: () => Promise<void>;
 		}>;
@@ -122,8 +128,17 @@ const drivers: {
 	'Memory': {
 		persistent: false,
 		skip: false,
-		create: async function(key: string) {
-			const queue = new KeetaAnchorQueueStorageDriverMemory({ id: key, logger: logger });
+		create: async function(key: string, options?: DriverCreateOptions) {
+			if (options?.leave === true) {
+				throw(new Error('Memory driver does not support leave=true option'));
+			}
+
+			const queue = new KeetaAnchorQueueStorageDriverMemory({
+				id: key,
+				logger: logger,
+				path: options?.path
+			});
+
 			return({
 				queue: queue,
 				[Symbol.asyncDispose]: async function() {
@@ -141,7 +156,8 @@ const drivers: {
 			const queue = new KeetaAnchorQueueStorageDriverFile({
 				filePath: filePath,
 				id: key,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -173,7 +189,8 @@ const drivers: {
 					}));
 				},
 				id: key,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 			return({
 				queue: queue,
@@ -225,7 +242,7 @@ const drivers: {
 					return(client);
 				},
 				id: key,
-				path: [`key_${key}_${RunKey}`],
+				path: [`key_${key}_${RunKey}`, ...(options?.path ?? [])],
 				logger: logger
 			});
 
@@ -305,6 +322,7 @@ const drivers: {
 					id: key,
 					logger: logger,
 					tablePrefix: tablePrefix,
+					path: options?.path,
 					pool: async function(): Promise<pg.Pool> {
 						if (!pool) {
 							throw(new Error('Pool is not available'));
@@ -383,7 +401,8 @@ const drivers: {
 				},
 				id: key,
 				namespace: namespace,
-				logger: logger
+				logger: logger,
+				path: options?.path
 			});
 
 			return({
@@ -778,6 +797,102 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 
 			/* The stuck processor should have been called once */
 			expect(processStuckCallCountByKey.get('timedout_late_forward_stuck')).toBe(1);
+		}
+	}
+});
+
+test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
+	type RequestType = {
+		key: string;
+		newStatus: KeetaAnchorQueueStatus;
+	};
+
+	type ResponseType = string;
+
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'aborted-stuck-test',
+		logger: logger
+	});
+
+	const processCallCountByKey = new Map<string, number>();
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<RequestType, ResponseType>({
+		id: 'aborted-stuck-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function(entry) {
+			const key = entry.request.key;
+			if (key.startsWith('timedout_early')) {
+				await asleep(5000);
+			}
+
+			const callCount = processCallCountByKey.get(key) ?? 0;
+			processCallCountByKey.set(key, callCount + 1);
+
+			if (key.startsWith('timedout_late')) {
+				await asleep(5000);
+			}
+
+			if (key.startsWith('error')) {
+				throw(new Error('Processing error'));
+			}
+
+			return({ status: entry.request.newStatus, output: 'OK' });
+		},
+		processorAborted: 'RETRY',
+		processorStuck: 'RETRY'
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 3 });
+
+	const id_aborted = await runner.add({ key: 'timedout_late_forward_aborted', newStatus: 'completed' });
+
+	/**
+	 * Test that aborted jobs are handled by the aborted processor (Retry)
+	 */
+	{
+		logger?.debug('aborted', '> Test that aborted jobs are handled by the aborted retry processor');
+
+		/*
+		 * Run the job, it should be aborted and then processed by the
+		 * aborted processor which will complete it (since the key contains 'forward')
+		 */
+		{
+			/*
+			 * First run to pick up the job -- it will timeout and consume the
+			 * entire time budget for the `run` call so it will not transition
+			 * from aborted to processing to completed in the same run
+			 */
+			vi.useRealTimers();
+			await runner.run({ timeoutMs: 90 });
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('aborted');
+
+			/* The main processor was called once -- resulting a timeout, leading to the aborted status */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
+		}
+
+		{
+			/*
+			 * Next, run the process again and this time it
+			 * should be processed by the aborted processor
+			 */
+			vi.useRealTimers();
+			await runner.run();
+			vi.useFakeTimers();
+
+			const status_aborted = await runner.get(id_aborted);
+			expect(status_aborted?.status).toBe('failed_temporarily');
+
+			/* The main processor was already called above and not called again, so should remain 1 */
+			expect(processCallCountByKey.get('timedout_late_forward_aborted')).toBe(1);
 		}
 	}
 });
@@ -1196,6 +1311,106 @@ test('Pipeline Basic Tests', async function() {
 	expect(completedFailedEntry.output).toBe('handled:job-fail');
 });
 
+test('completed retention cleanup is skipped for piped queues', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(
+		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>,
+		processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorQueueStatus; output: OUTPUT; }>
+	) {
+		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
+			queue: queue,
+			processor: processor
+		}));
+	}
+
+	const queue = new KeetaAnchorQueueStorageDriverMemory({ id: 'retention-pipe-test' });
+
+	const source = createStage<{ key: string; }, string>(queue, async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+	const target = createStage<string, string>(await queue.partition('stage2'), async function() {
+		return({ status: 'completed', output: 'ok' });
+	});
+
+	source.pipe(target);
+
+	const id = await source.add({ key: 'piped' });
+	await source.run();
+
+	vi.advanceTimersByTime(31 * 86_400_000);
+	await source.maintain();
+
+	expect(await source.get(id)).not.toBeNull();
+});
+
+test('completed retention cleanup preserves pipelined jobs in all stages', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	function createStage<INPUT extends JSONSerializable, OUTPUT extends JSONSerializable>(
+		queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>,
+		processor: (entry: KeetaAnchorQueueEntry<INPUT, OUTPUT>) => Promise<{ status: KeetaAnchorQueueStatus; output: OUTPUT; }>
+	) {
+		return(new KeetaAnchorQueueRunnerJSONConfigProc<INPUT, OUTPUT>({
+			queue: queue,
+			processor: processor
+		}));
+	}
+
+	const queue = new KeetaAnchorQueueStorageDriverMemory({ id: 'pipeline-retention-test' });
+	const stage2Queue = await queue.partition('stage2');
+	const stage3Queue = await queue.partition('stage3');
+
+	await using stage1 = createStage<{ key: string; }, string>(queue, async function() {
+		return({ status: 'completed', output: 'stage1' });
+	});
+	await using stage2 = createStage<string, string>(stage2Queue, async function() {
+		return({ status: 'completed', output: 'stage2' });
+	});
+	await using stage3 = createStage<string, string>(stage3Queue, async function() {
+		return({ status: 'completed', output: 'stage3' });
+	});
+
+	stage1.pipe(stage2).pipe(stage3);
+
+	const id = await stage1.add({ key: 'piped' });
+	await stage1.run();
+	await stage1.maintain();
+	await stage2.run();
+	await stage1.maintain();
+	await stage3.run();
+	await stage1.maintain();
+
+	expect((await queue.get(id))?.status).toBe('moved');
+	expect((await stage2Queue.get(id))?.status).toBe('moved');
+	expect((await stage3Queue.get(id))?.status).toBe('completed');
+
+	vi.advanceTimersByTime(31 * 86_400_000);
+
+	await stage3.maintain();
+
+	expect(await stage3Queue.get(id)).not.toBeNull();
+	expect((await stage3Queue.get(id))?.status).toBe('completed');
+	expect(await stage2Queue.get(id)).not.toBeNull();
+	expect((await stage2Queue.get(id))?.status).toBe('moved');
+	expect(await queue.get(id)).not.toBeNull();
+	expect((await queue.get(id))?.status).toBe('moved');
+
+	await stage1.maintain();
+
+	expect(await stage3Queue.get(id)).not.toBeNull();
+	expect(await stage2Queue.get(id)).not.toBeNull();
+	expect(await queue.get(id)).not.toBeNull();
+});
+
 test('Errors', async function() {
 	const id1 = generateRequestID();
 	const id2 = generateRequestID();
@@ -1215,6 +1430,7 @@ test('Errors', async function() {
 		expect(Errors.IncorrectStateAssertedError.isInstance(error)).toBe(true);
 		expect(Errors.IdempotentExistsError.isInstance(error)).toBe(false);
 	}
+
 });
 
 suite.sequential('Driver Tests', async function() {
@@ -1502,6 +1718,311 @@ suite.sequential('Driver Tests', async function() {
 					const pastDate = new Date(Date.now() - 100000);
 					const noEntriesBeforePast = await localQueue.query({ updatedBefore: pastDate });
 					expect(noEntriesBeforePast.length).toBe(0);
+				});
+
+				testRunner('Delete Expired Completed', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed');
+					const localQueue = queueInfo.queue;
+
+					await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-runner',
+						queue: localQueue,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const expiredID = await localQueue.add({ key: 'old-completed' });
+					await localQueue.setStatus(expiredID, 'completed');
+
+					const pendingID = await localQueue.add({ key: 'pending' });
+
+					await runner.maintain();
+					expect(await localQueue.get(expiredID)).not.toBeNull();
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+
+					await asleep(retentionMs * 2);
+
+					const recentID = await localQueue.add({ key: 'recent-completed' });
+					await localQueue.setStatus(recentID, 'completed');
+
+					await runner.maintain();
+					expect(await localQueue.get(expiredID)).toBeNull();
+					expect(await localQueue.get(recentID)).not.toBeNull();
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+				});
+
+				testRunner('Delete Expired Completed Does Not Affect Same Job ID In Other Partitions', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed-partition');
+					const localQueue = queueInfo.queue;
+					await using partitionA = await localQueue.partition('partition-a');
+					await using partitionB = await localQueue.partition('partition-b');
+
+					await using runnerA = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-partition-a-runner',
+						queue: partitionA,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const sharedID = generateRequestID();
+
+					const expiredPartitionAID = await partitionA.add({ key: 'completed-in-a' }, { id: sharedID });
+					await partitionA.setStatus(expiredPartitionAID, 'completed');
+
+					const pendingPartitionBID = await partitionB.add({ key: 'pending-in-b' }, { id: sharedID });
+					expect(pendingPartitionBID).toBe(sharedID);
+
+					const otherSharedID = generateRequestID();
+					const expiredPartitionAOtherID = await partitionA.add({ key: 'completed-in-a-2' }, { id: otherSharedID });
+					await partitionA.setStatus(expiredPartitionAOtherID, 'completed');
+
+					const expiredPartitionBOtherID = await partitionB.add({ key: 'completed-in-b-2' }, { id: otherSharedID });
+					await partitionB.setStatus(expiredPartitionBOtherID, 'completed');
+					expect(expiredPartitionBOtherID).toBe(otherSharedID);
+
+					await asleep(retentionMs * 2);
+
+					await runnerA.maintain();
+
+					expect(await partitionA.get(sharedID)).toBeNull();
+					expect(await partitionA.get(otherSharedID)).toBeNull();
+
+					const pendingInB = await partitionB.get(sharedID);
+					expect(pendingInB).not.toBeNull();
+					expect(pendingInB?.status).toBe('pending');
+					expect(pendingInB?.request).toEqual({ key: 'pending-in-b' });
+
+					const completedInB = await partitionB.get(otherSharedID);
+					expect(completedInB).not.toBeNull();
+					expect(completedInB?.status).toBe('completed');
+					expect(completedInB?.request).toEqual({ key: 'completed-in-b-2' });
+				});
+
+				/*
+				 * Retention cleanup must free idempotent keys for deleted
+				 * completed entries, without freeing keys still held by
+				 * surviving entries in the same partition.
+				 */
+				testRunner('Delete Expired Completed Cleans Idempotent Keys Without Over/Under Delete', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed-idempotent');
+					const localQueue = queueInfo.queue;
+
+					await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-idempotent-runner',
+						queue: localQueue,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const expiredKey1 = generateRequestID();
+					const expiredKey2 = generateRequestID();
+					const keptKey = generateRequestID();
+
+					/*
+					 * Create a queue entry at T=0 which will be expired
+					 * when maintain is called (after `asleep()`).
+					 */
+					const expiredID = await localQueue.add(
+						{ key: 'old-completed' },
+						{ idempotentKeys: new Set([expiredKey1, expiredKey2]) }
+					);
+					await localQueue.setStatus(expiredID, 'completed');
+
+					/*
+					 * Create a queue entry at T=0 which will NOT be
+					 * expired when maintain is called because the
+					 * status isn't changed to `completed` until
+					 * T=retentionMs * 2, which is after the `asleep()` call.
+					 */
+					const keptCompletedID = await localQueue.add(
+						{ key: 'kept-completed' },
+						{ idempotentKeys: new Set([keptKey]) }
+					);
+
+					await asleep(retentionMs * 2);
+
+					await localQueue.setStatus(keptCompletedID, 'completed');
+
+					const pendingKey = generateRequestID();
+					const pendingID = await localQueue.add(
+						{ key: 'pending' },
+						{ idempotentKeys: new Set([pendingKey]) }
+					);
+
+					await runner.maintain();
+
+					/*
+					 * This is expired because it was set to completed before
+					 * the `asleep()` call, and should have been deleted by the
+					 * retention cleanup in `runner.maintain()`.
+					 */
+					expect(await localQueue.get(expiredID)).toBeNull();
+					/*
+					 * This is not expired because it was set to completed after
+					 * the `asleep()` call, so is more recent than the retention
+					 * period
+					 */
+					expect(await localQueue.get(keptCompletedID)).not.toBeNull();
+					/*
+					 * This is not expired because it's still pending
+					 */
+					expect(await localQueue.get(pendingID)).not.toBeNull();
+
+					/*
+					 * Under-delete would leave expiredKey1/expiredKey2
+					 * reserved and cause IdempotentExistsError here.
+					 */
+					const reusedID = await localQueue.add(
+						{ key: 'reused-expired-keys' },
+						{ idempotentKeys: new Set([expiredKey1, expiredKey2]) }
+					);
+					expect(await localQueue.get(reusedID)).not.toBeNull();
+
+					/*
+					 * Over-delete would free keptKey/pendingKey and let
+					 * these adds succeed.
+					 */
+					try {
+						await localQueue.add(
+							{ key: 'should-conflict-kept' },
+							{ idempotentKeys: new Set([keptKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError for kept completed key');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([keptKey]));
+					}
+
+					try {
+						await localQueue.add(
+							{ key: 'should-conflict-pending' },
+							{ idempotentKeys: new Set([pendingKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError for pending key');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([pendingKey]));
+					}
+				});
+
+				/*
+				 * Status-guarded delete must not free idempotent keys when
+				 * the entry status does not match the delete target.
+				 */
+				testRunner('Delete With Mismatched Status Does Not Remove Idempotent Keys', async function() {
+					await using queueInfo = await driverConfig.create('delete-mismatched-status-idempotent');
+					const localQueue = queueInfo.queue;
+
+					const idempotentKey = generateRequestID();
+					const entryID = await localQueue.add(
+						{ key: 'status-guarded' },
+						{ idempotentKeys: new Set([idempotentKey]) }
+					);
+					await localQueue.setStatus(entryID, 'completed');
+
+					await localQueue.delete([{ id: entryID, status: 'pending' }]);
+
+					expect(await localQueue.get(entryID)).not.toBeNull();
+					expect((await localQueue.get(entryID))?.status).toBe('completed');
+
+					try {
+						await localQueue.add(
+							{ key: 'should-still-conflict' },
+							{ idempotentKeys: new Set([idempotentKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError after mismatched-status delete');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([idempotentKey]));
+					}
+
+					await localQueue.delete([{ id: entryID, status: 'completed' }]);
+					expect(await localQueue.get(entryID)).toBeNull();
+
+					const reusedID = await localQueue.add(
+						{ key: 'reused-after-matching-delete' },
+						{ idempotentKeys: new Set([idempotentKey]) }
+					);
+					expect(await localQueue.get(reusedID)).not.toBeNull();
+				});
+
+				/*
+				 * Cleaning a completed entry in one partition must free that
+				 * partition's idempotent keys without touching the same keys
+				 * held by another partition.
+				 */
+				testRunner('Delete Expired Completed Idempotent Keys Are Partition Scoped', async function() {
+					const retentionMs = 100;
+					await using queueInfo = await driverConfig.create('delete-expired-completed-idempotent-partition');
+					const localQueue = queueInfo.queue;
+					await using partitionA = await localQueue.partition('partition-a');
+					await using partitionB = await localQueue.partition('partition-b');
+
+					await using runnerA = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string; }, null>({
+						id: 'delete-expired-completed-idempotent-partition-a-runner',
+						queue: partitionA,
+						completedRetentionDays: retentionMs / 86_400_000,
+						processor: async function() {
+							return({ status: 'completed', output: null });
+						}
+					});
+
+					const sharedIdempotentKey = generateRequestID();
+
+					const expiredAID = await partitionA.add(
+						{ key: 'completed-in-a' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+					await partitionA.setStatus(expiredAID, 'completed');
+
+					const pendingBID = await partitionB.add(
+						{ key: 'pending-in-b' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+
+					await asleep(retentionMs * 2);
+					await runnerA.maintain();
+
+					expect(await partitionA.get(expiredAID)).toBeNull();
+					expect(await partitionB.get(pendingBID)).not.toBeNull();
+
+					const reusedAID = await partitionA.add(
+						{ key: 'reused-in-a' },
+						{ idempotentKeys: new Set([sharedIdempotentKey]) }
+					);
+					expect(await partitionA.get(reusedAID)).not.toBeNull();
+
+					try {
+						await partitionB.add(
+							{ key: 'should-conflict-in-b' },
+							{ idempotentKeys: new Set([sharedIdempotentKey]) }
+						);
+						expect.unreachable('Expected IdempotentExistsError in other partition');
+					} catch (error: unknown) {
+						expect(Errors.IdempotentExistsError.isInstance(error)).toBe(true);
+						if (!Errors.IdempotentExistsError.isInstance(error)) {
+							throw(new Error('internal error: Error is not IdempotentExistsError'));
+						}
+						expect(error.idempotentIDsFound).toEqual(new Set([sharedIdempotentKey]));
+					}
 				});
 
 				/* Test that mutating the entry results does not affect the stored entry */
@@ -1946,6 +2467,27 @@ suite.sequential('Driver Tests', async function() {
 					expect(part111_entry).toBeDefined();
 					expect(part111_entry?.request).toEqual({ partition: 'part1.1.1' });
 				});
+
+				/*
+				 * Test that partitioning works and we can
+				 * add and get entries from same partition
+				 * either using `partition` or `path`
+				 */
+				testRunner('Partitioning and Opening Work the same', async function() {
+					await using driverInstance1 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false
+					});
+					await using partition1 = await driverInstance1.queue.partition('partition1');
+					const entry1_id = await partition1.add({ key: 'partition_test_1' });
+
+					await using driverInstance2 = await driverConfig.create('partition_reopen', {
+						randomBackingName: false,
+						path: ['partition1']
+					});
+
+					const check_entry1 = await driverInstance2.queue.get(entry1_id);
+					expect(check_entry1?.id).toBe(entry1_id);
+				}, 60_000);
 			}
 
 			/*

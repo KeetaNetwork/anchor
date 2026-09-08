@@ -375,8 +375,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorMetadataServer<N
 
 	// Note: We use this.* properties instead of config.*.
 	// The config parameter is required by the abstract method signature but unused here.
-	protected async initRoutes(_ignoreConfig: KeetaAnchorStorageServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+	protected async initRoutes(config: KeetaAnchorStorageServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 		const backend = this.backend;
 		const anchorAccount = this.anchorAccount;
 		const quotas = this.quotas;

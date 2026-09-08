@@ -24,6 +24,13 @@ export interface IconsClient {
 	set(icon: IconData): Promise<void>;
 	get(): Promise<IconData | null>;
 	delete(): Promise<boolean>;
+	/**
+	 * Fetch a public icon, including one that belongs to another account.
+	 * `get` only works for your own icon; this goes through the public endpoint,
+	 * where the anchor decrypts server-side so you don't need the owner's key.
+	 * Optional so existing implementers don't break.
+	 */
+	getPublic?(): Promise<IconData | null>;
 }
 
 // #endregion
@@ -69,6 +76,19 @@ export class StorageIconsClient implements IconsClient {
 		}
 
 		this.#logger?.debug('StorageIconsClient::get', 'Icon retrieved');
+		return({ data: result.data, mimeType: result.mimeType });
+	}
+
+	async getPublic(): Promise<IconData | null> {
+		this.#logger?.debug('StorageIconsClient::getPublic', 'Getting public icon');
+
+		const result = await this.#session.getPublicContent(ICON_FILENAME);
+		if (!result) {
+			this.#logger?.debug('StorageIconsClient::getPublic', 'Public icon not found');
+			return(null);
+		}
+
+		this.#logger?.debug('StorageIconsClient::getPublic', 'Public icon retrieved');
 		return({ data: result.data, mimeType: result.mimeType });
 	}
 

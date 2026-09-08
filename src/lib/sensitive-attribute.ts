@@ -99,6 +99,31 @@ const sensitiveAttributeOIDDB = {
 };
 
 /**
+ * Rewrite every `Date`, at any depth, as an explicit GeneralizedTime value.
+ */
+function preferGeneralizedDates(value: unknown): unknown {
+	if (value instanceof Date) {
+		return({ type: 'date', kind: 'general', date: value });
+	}
+	if (Buffer.isBuffer(value) || value instanceof ArrayBuffer) {
+		return(value);
+	}
+	if (Array.isArray(value)) {
+		return(value.map(preferGeneralizedDates));
+	}
+	if (value !== null && typeof value === 'object') {
+		const rewritten: { [key: string]: unknown } = {};
+		for (const [key, nested] of Object.entries(value)) {
+			rewritten[key] = preferGeneralizedDates(nested);
+		}
+
+		return(rewritten);
+	}
+
+	return(value);
+}
+
+/**
  * Encode an attribute value using its ASN.1 schema
  */
 export function encodeAttribute(name: CertificateAttributeNames, value: unknown): ArrayBuffer {
@@ -106,7 +131,7 @@ export function encodeAttribute(name: CertificateAttributeNames, value: unknown)
 
 	let encodedJS;
 	try {
-		encodedJS = new ASN1.ValidateASN1(schema).fromJavaScriptObject(value);
+		encodedJS = new ASN1.ValidateASN1(schema).fromJavaScriptObject(preferGeneralizedDates(value));
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		throw(new Error(`Attribute ${name}: ${message} (value: ${JSON.stringify(DPO(value))})`));
@@ -139,7 +164,7 @@ export function encodeForSensitive(
 	}
 
 	if (value instanceof Date) {
-		const asn1 = ASN1.JStoASN1(value);
+		const asn1 = ASN1.JStoASN1({ type: 'date', kind: 'general', date: value });
 		return(arrayBufferToBuffer(asn1.toBER(false)));
 	}
 
@@ -245,7 +270,7 @@ function setGCMAuthTag(decipher: ReturnType<typeof crypto.createDecipheriv>, tag
  *
  * @internal
  */
-function decodeForSensitive(
+export function decodeForSensitive(
 	name: CertificateAttributeNames,
 	data: Buffer | ArrayBuffer
 ): unknown {

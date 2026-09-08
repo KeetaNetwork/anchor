@@ -3,7 +3,8 @@ import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import {
-	KeetaAnchorUserError
+	KeetaAnchorUserError,
+	KeetaAnchorError
 } from '../../lib/error.js';
 import type {
 	KeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -26,7 +27,10 @@ import type {
 	KeetaAssetMovementAnchorExecuteTransferRequest,
 	KeetaAssetMovementAnchorExecuteTransferResponse,
 	KeetaAssetMovementAnchorSimulateTransferRequest,
-	KeetaAssetMovementAnchorSimulateTransferResponse
+	KeetaAssetMovementAnchorSimulateTransferResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	KeetaAssetMovementAnchorAccountStatus
 } from './common.ts';
 import {
 	assertKeetaAssetMovementAnchorCreatePersistentForwardingRequest,
@@ -34,6 +38,8 @@ import {
 	assertKeetaAssetMovementAnchorInitiateTransferRequest,
 	assertKeetaAssetMovementAnchorInitiateTransferResponse,
 	assertKeetaAssetMovementAnchorGetTransferStatusResponse,
+	assertKeetaAssetMovementAnchorGetAccountStatusRequest,
+	getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
 	assertKeetaAssetMovementAnchorlistTransactionsRequest,
 	assertKeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse,
 	assertKeetaAssetMovementAnchorListPersistentForwardingRequest,
@@ -62,7 +68,15 @@ import {
 	assertKeetaAssetMovementAnchorExecuteTransferResponse,
 	getKeetaAssetMovementAnchorSimulateTransferRequestSigningData,
 	assertKeetaAssetMovementAnchorSimulateTransferRequest,
-	assertKeetaAssetMovementAnchorSimulateTransferResponse
+	assertKeetaAssetMovementAnchorSimulateTransferResponse,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+	assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+	getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData,
+	assertKeetaAssetMovementAnchorGetAccountStatusResponse,
+	encodeKeetaAssetMovementAnchorAccountStatusError
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
@@ -130,6 +144,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		getTransferStatus?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
 
 		/**
+		 * Method to get the authenticated account's readiness/status for asset movement.
+		 */
+		getAccountStatus?: (account: Account.Account) => Promise<KeetaAssetMovementAnchorAccountStatus>;
+
+		/**
 		 * Method to list transactions
 		 */
 		listTransactions?: (request: KeetaAssetMovementAnchorlistTransactionsRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse>>;
@@ -143,6 +162,16 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		 * Method to execute a transfer instruction, used for pull based transactions
 		 */
 		executeTransfer?: (request: KeetaAssetMovementAnchorExecuteTransferRequest & { id: string; }) => Promise<ExtractOk<KeetaAssetMovementAnchorExecuteTransferResponse>>;
+
+		/**
+		 * Method to deactivate a persistent forwarding address template
+		 */
+		deactivatePersistentForwardingTemplate?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse>>;
+
+		/**
+		 * Method to deactivate a persistent forwarding address
+		 */
+		deactivatePersistentForwarding?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorDeactivatePersistentForwardingResponse>>;
 	}
 };
 
@@ -167,7 +196,7 @@ function serializePersistentAddressTemplateResponse(template: ExtractOk<KeetaAss
 	});
 }
 
-export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['assetMovement']>[string], KeetaAnchorAssetMovementServerConfig> implements Omit<Required<KeetaAnchorAssetMovementServerConfig>, 'metadataSigner'> {
+export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['assetMovement']>[string], KeetaAnchorAssetMovementServerConfig> implements Omit<Required<KeetaAnchorAssetMovementServerConfig>, 'metadataSigner' | 'serviceMetadataEndpoint'> {
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
 
@@ -179,7 +208,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 	}
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -432,6 +461,54 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		});
 
 		addRoute({
+			method: 'POST',
+			handlerName: 'deactivatePersistentForwardingTemplate',
+			pathName: 'deactivatePersistentForwardingTemplate/:id',
+			assertRequest: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequest,
+			assertResponse: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse,
+			getSigningData(_ignore_request, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return(getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData({ id }));
+			},
+			parseRequestToArgs: ({ params, account }) => {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return([ id, account ] as const);
+			}
+		});
+
+		addRoute({
+			method: 'POST',
+			handlerName: 'deactivatePersistentForwarding',
+			pathName: 'deactivatePersistentForwarding/:id',
+			assertRequest: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingRequest,
+			assertResponse: assertKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse,
+			getSigningData(_ignore_request, params) {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return(getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData({ id }));
+			},
+			parseRequestToArgs: ({ params, account }) => {
+				const id = params.get('id');
+				if (typeof id !== 'string' || id.length === 0) {
+					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
+				}
+
+				return([ id, account ] as const);
+			}
+		});
+
+		addRoute({
 			method: 'GET',
 			handlerName: 'getTransferStatus',
 			pathName: 'getTransferStatus/:id',
@@ -465,6 +542,52 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					...data,
 					transaction: serializeTransactionResponse(data.transaction)
 				});
+			}
+		});
+
+		addRoute({
+			method: 'POST',
+			handlerName: 'getAccountStatus',
+			assertRequest: assertKeetaAssetMovementAnchorGetAccountStatusRequest,
+			assertResponse: (data) => {
+				if (typeof data !== 'object' || data === null) {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an object'));
+				}
+				if (!('actionRequired' in data) || typeof data.actionRequired !== 'boolean') {
+					throw(new KeetaAnchorUserError('getAccountStatus must resolve with an actionRequired boolean'));
+				}
+				if (data.actionRequired) {
+					if (!('errors' in data) || !Array.isArray(data.errors)) {
+						throw(new KeetaAnchorUserError('getAccountStatus must resolve with an errors array when actionRequired is true'));
+					}
+					if (!data.errors.every((entry: unknown) => KeetaAnchorError.isInstance(entry))) {
+						throw(new KeetaAnchorUserError('getAccountStatus errors must be KeetaAnchorError instances'));
+					}
+				}
+
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				return(data as { ok: true } & ({ actionRequired: false } | { actionRequired: true, errors: KeetaAnchorError[] }));
+			},
+			serializeResponse: (data) => {
+				if (!data.actionRequired) {
+					return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
+						ok: true,
+						actionRequired: false
+					}));
+				}
+
+				return(assertKeetaAssetMovementAnchorGetAccountStatusResponse({
+					ok: true,
+					actionRequired: true,
+					errors: data.errors.map(encodeKeetaAssetMovementAnchorAccountStatusError)
+				}));
+			},
+			getSigningData: getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData,
+			parseRequestToArgs: ({ account }) => {
+				if (!account) {
+					throw(new KeetaAnchorUserError('Authentication required'));
+				}
+				return([ account ] as const);
 			}
 		});
 
@@ -543,7 +666,9 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			'listPersistentForwarding',
 			'shareKYC',
 			[ 'getTransferStatus', 'getTransferStatus/{id}' ],
-			[ 'executeTransfer', 'executeTransfer/{id}' ]
+			[ 'executeTransfer', 'executeTransfer/{id}' ],
+			[ 'deactivatePersistentForwardingTemplate', 'deactivatePersistentForwardingTemplate/{id}' ],
+			[ 'deactivatePersistentForwarding', 'deactivatePersistentForwarding/{id}' ]
 		] as const satisfies ((keyof typeof operations) | [ keyof typeof operations, string ])[];
 
 		for (const routeInput of routes) {
@@ -568,6 +693,18 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					operations[op] = computedURL;
 				}
 			}
+		}
+
+		/**
+		 * `getAccountStatus` returns the caller's own account status, so it must always be
+		 * authenticated regardless of the global `authenticationRequired` flag. Publish it with
+		 * `authentication: required` unconditionally so the client always signs the request.
+		 */
+		if (this.assetMovement.getAccountStatus !== undefined) {
+			operations['getAccountStatus'] = {
+				url: (new URL('/api/getAccountStatus', this.url)).toString(),
+				options: { authentication: { method: 'keeta-account', type: 'required' }}
+			};
 		}
 
 		if (Object.keys(operations).length === 0) {

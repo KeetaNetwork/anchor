@@ -14,6 +14,7 @@ import { Log } from '../log/index.js';
 import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
+import { Buffer } from '../utils/buffer.js';
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -401,12 +402,30 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
+			const forwardedProtoHeader = request.headers['x-forwarded-proto'];
+			let forwardedProto: string | undefined;
+			if (Array.isArray(forwardedProtoHeader)) {
+				forwardedProto = forwardedProtoHeader[0];
+			} else {
+				forwardedProto = forwardedProtoHeader;
+			}
+			forwardedProto = forwardedProto?.split(',')[0]?.trim();
+
+			let protocol: string;
+			if (forwardedProto !== undefined && forwardedProto !== '') {
+				protocol = forwardedProto;
+			} else if ('encrypted' in request.socket && request.socket.encrypted === true) {
+				protocol = 'https';
+			} else {
+				protocol = 'http';
+			}
+
 			/*
 			 * Get the Base URL from the request Host header (if
 			 * available) or default to localhost. This is used
 			 * to construct the full URL for routing.
 			 */
-			const inputURLBaseRaw = new URL(`http://${request.headers.host ?? 'localhost'}`);
+			const inputURLBaseRaw = new URL(`${protocol}://${request.headers.host ?? 'localhost'}`);
 			const inputURLBase = inputURLBaseRaw.protocol + '//' + inputURLBaseRaw.host;
 
 			/*

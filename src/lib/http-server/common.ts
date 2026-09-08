@@ -6,8 +6,9 @@ import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { assertAccountCertificateChain } from "../utils/certificate-network.js";
 import { createAssertEquals } from "typia";
 import { VerifySignedData } from "../utils/signing.js";
+import type { DistributiveOmit } from "@keetanetwork/keetanet-client/lib/utils/helper.js";
 
-export type ExtractOk<T> = Omit<Extract<T, { ok: true }>, 'ok'>;
+export type ExtractOk<T> = DistributiveOmit<Extract<T, { ok: true }>, 'ok'>;
 
 export type HTTPSignedField = {
 	nonce: string;

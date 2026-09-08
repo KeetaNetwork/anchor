@@ -3,6 +3,7 @@ import * as util from 'util';
 import { PIIStore, PIIError } from './pii.js';
 import type { PIIAttributeNames } from './pii.js';
 import type { CertificateAttributeValue } from '../../services/kyc/iso20022.generated.js';
+import { CertificateAttributeOIDDB, SENSITIVE_CERTIFICATE_ATTRIBUTES } from '../../services/kyc/iso20022.generated.js';
 import { createTestCertificate, testAttributeValues, testAccounts } from './tests/certificates.js';
 import { Certificate } from '../certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
@@ -279,4 +280,46 @@ test('setSensitiveAttribute rejects wrong subject key', async function() {
 	expect(function() {
 		createBuilder().setSensitiveAttribute('email', wrongKeyAttr);
 	}).toThrowError('SensitiveAttribute was encrypted for a different subject');
+});
+
+// ============================================================================
+// Tests: Organization (KYB) Attributes
+// ============================================================================
+
+const ORGANIZATION_TEST_ATTRIBUTES = [
+	attr('organizationName', 'Maple Creek Ventures LLC'),
+	attr('tradeName', 'Maple Creek'),
+	attr('legalForm', 'LLC'),
+	attr('incorporation', {
+		country: 'US',
+		countrySubDivision: 'DE',
+		incorporationDate: new Date('1990-01-01')
+	}),
+	attr('website', 'https://maplecreekventures.example'),
+	attr('entityType', {
+		organization: [{ id: '824531097', schemeName: 'TXID', issuer: 'US' }]
+	})
+];
+
+test('organization attributes round-trip through Certificate.Builder', async function() {
+	const store = createStore();
+	for (const { name, value } of ORGANIZATION_TEST_ATTRIBUTES) {
+		store.setAttribute(name, value);
+	}
+
+	const certificate = await (await store
+		.toCertificateBuilder(createBuilder(), testAccounts.subject))
+		.build({ serial: 1 });
+
+	const certificateWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
+
+	for (const { name, value } of ORGANIZATION_TEST_ATTRIBUTES) {
+		expect(certificateWithKey.attributes[name]?.sensitive, name).toBe(true);
+		expect(await certificateWithKey.getAttributeValue(name), name).toEqual(value);
+	}
+});
+
+test('documentBusinessRegistration is registered as a sensitive certificate attribute', function() {
+	expect(SENSITIVE_CERTIFICATE_ATTRIBUTES).toContain('documentBusinessRegistration');
+	expect(CertificateAttributeOIDDB.documentBusinessRegistration).toBe('1.3.6.1.4.1.62675.1.11.7');
 });

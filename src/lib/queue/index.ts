@@ -68,6 +68,11 @@ export type KeetaAnchorQueueFilter = {
 	limit?: number;
 };
 
+export type KeetaAnchorQueueDeleteInput = {
+	id: KeetaAnchorQueueRequestID;
+	status: KeetaAnchorQueueStatus;
+};
+
 export type KeetaAnchorQueueCommonOptions = {
 	logger?: Logger | undefined;
 	id?: string | undefined;
@@ -174,6 +179,12 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	 * @returns The entry if found, or null if not found
 	 */
 	get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
+
+	/**
+	 * Delete entries by ID. Each entry is removed only if its current status matches
+	 * the status given in the input.
+	 */
+	delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void>;
 
 	/**
 	 * Perform maintenance tasks on the storage driver
@@ -397,6 +408,37 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 		return(retval);
 	}
 
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		this.checkDestroyed();
+
+		if (input.length === 0) {
+			return;
+		}
+
+		const logger = this.methodLogger('delete');
+		const targets = new Map(input.map(function(target) {
+			return([target.id, target.status] as const);
+		}));
+		let deleted = 0;
+
+		for (let index = this.queue.length - 1; index >= 0; index--) {
+			const entry = this.queue[index];
+			if (entry === undefined) {
+				continue;
+			}
+
+			const expectedStatus = targets.get(entry.id);
+			if (expectedStatus !== undefined && entry.status === expectedStatus) {
+				this.queue.splice(index, 1);
+				deleted++;
+			}
+		}
+
+		if (deleted > 0) {
+			logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
+		}
+	}
+
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {
 		this.checkDestroyed();
 
@@ -436,12 +478,14 @@ export interface KeetaAnchorQueueRunnerConfigurationObject {
 	batchSize: number;
 	retryDelay: number;
 	stuckMultiplier: number;
+	completedRetentionDays: number;
+	completedRetentionLimitPerRun: number;
 }
 
 // Ensure that KeetaAnchorQueueRunnerConfigurationObject has all the required properties of KeetaAnchorQueueRunner, and no extra properties
 // if this assertion fails, it means that KeetaAnchorQueueRunnerConfigurationObject is missing a property from KeetaAnchorQueueRunner or has an extra property
 // @ts-ignore
-type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout'>>;
+type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout' | 'completedRetentionDays' | 'completedRetentionLimitPerRun'>>;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 type __check = AssertNever<__check_KeetaAnchorQueueRunnerConfigurationObject extends KeetaAnchorQueueRunnerConfigurationObject ? (KeetaAnchorQueueRunnerConfigurationObject extends __check_KeetaAnchorQueueRunnerConfigurationObject ? never : false) : false>;
 
@@ -522,6 +566,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			}))
 		) & AdditionalPipeOptions
 	)[] = [];
+
+	/**
+	 * Runners that pipe into this runner
+	 */
+	private incomingPipeCount = 0;
 
 	/**
 	 * Initialization promise
@@ -610,6 +659,28 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * How many runners can process this queue in parallel
 	 */
 	protected maxRunners?: number;
+
+	/**
+	 * How long to keep completed entries in the queue to avoid
+	 * re-using the same ID.  A negative value means that completed
+	 * records will be immediately deleted.
+	 *
+	 * In units of days.  Setting this to infinity will disable
+	 * cleanup.
+	 *
+	 * Default is 30 days.
+	 */
+	protected completedRetentionDays = 30;
+
+	/**
+	 * How many completed entries to delete per maintain() call
+	 */
+	protected completedRetentionLimitPerRun = 5000;
+
+	/**
+	 * A unique key to identify this runner for fencing the same worker
+	 * from running at the same time
+	 */
 	private readonly runnerLockKey: KeetaAnchorQueueRequestID;
 
 	/**
@@ -655,6 +726,33 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		this.methodLogger('new')?.debug('Created new queue runner attached to queue', this.queue.id);
 	}
 
+	/**
+	 * Helpful common handlers for the processorAborted and processorStuck methods
+	 */
+	static processorHandlerHelpers: {
+		/*
+		 * Because we are just passing the value through we do not
+		 * care about the type, we can handle any type because we
+		 * simply return the existing value
+		 */
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		[key in 'RETRY']: NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorAborted']> | NonNullable<KeetaAnchorQueueRunner<unknown, any>['processorStuck']>;
+	} = {
+			RETRY: async (entry) => {
+				return({
+					status: 'failed_temporarily',
+					/*
+					 * This is safe because we are not
+					 * doing any operations on the value
+					 * and it just being copied over itself
+					 */
+					// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+					output: entry.output,
+					error: `Job was ${entry.status} after ${entry.failures} failures, retrying`
+				});
+			}
+		};
+
 	private async initialize(): Promise<void> {
 		if (this.initializePromise) {
 			return(await this.initializePromise);
@@ -680,7 +778,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	protected setConfiguration(parameters: Partial<KeetaAnchorQueueRunnerConfigurationObject>): void {
-		const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier' ] as const satisfies (keyof typeof parameters)[];
+		const parameterNames = [ 'batchSize', 'maxRetries', 'processTimeout', 'retryDelay', 'stuckMultiplier', 'completedRetentionDays', 'completedRetentionLimitPerRun' ] as const satisfies (keyof typeof parameters)[];
 		// Ensure that all keys in the config object are expected and used
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		type __checkAllExtensionConfigKeysAreValid = AssertNever<Exclude<keyof typeof parameters, typeof parameterNames[number]>>;
@@ -953,13 +1051,18 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
 
-			logger?.debug(`Processing entry request with id ${String(entry.id)}`);
+			logger?.debug(`Trying to acquire process lock for entry request with id ${String(entry.id)}`);
 
 			try {
 				/*
 				 * Get a lock by setting it to 'processing'
 				 */
 				await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
+
+				/*
+				 * Log an info-level log when we start and finish processing an entry
+				 */
+				logger?.info(`Processing entry request with id ${String(entry.id)}`);
 
 				/*
 				 * Process the entry with a timeout, if the timeout is reached
@@ -987,7 +1090,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				]);
 			} catch (error: unknown) {
 				if (Errors.IncorrectStateAssertedError.isInstance(error)) {
-					logger?.info(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
+					logger?.debug(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
 
 					return(processJobOk);
 				}
@@ -1007,6 +1110,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			if (setEntryStatus.status === 'pending') {
 				by = undefined;
 			}
+
+			logger?.info(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
 
 			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
 
@@ -1370,7 +1475,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		await this.initialize();
 
 		/*
-		 * Each worker should maintain its own lock
+		 * Call `maintainRunnerLock` for every worker ID (not just 0)
+		 * so that we can ensure the runner lock is maintained and not
+		 * stale as part of maintain()
 		 */
 		try {
 			await this.maintainRunnerLock();
@@ -1378,13 +1485,17 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			logger?.debug('Failed to maintain runner lock:', error);
 		}
 
+		/*
+		 * Only the worker with ID 0 should the rest of the maintenance tasks
+		 * so that we don't have multiple workers trying to do the same
+		 * maintenance tasks at the same time on the same queues
+		 */
 		if (this.workers.id !== 0) {
 			return;
 		}
 
-		/*
-		 * Only the worker with ID 0 should perform maintenance tasks on requests
-		 */
+		logger?.debug(`Worker ID ${this.workerID} beginning maintenance tasks for queue ${this.queue.id}`);
+
 		try {
 			await this.markStuckRequestsAsStuck();
 		} catch (error: unknown) {
@@ -1395,6 +1506,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			await this.requeueFailedRequests();
 		} catch (error: unknown) {
 			logger?.debug('Failed to requeue failed requests:', error);
+		}
+
+		try {
+			await this.deleteExpiredCompleted();
+		} catch (error: unknown) {
+			logger?.debug('Failed to delete expired completed requests:', error);
 		}
 
 		for (const pipeStatus of keetaAnchorPipeableQueueStatuses) {
@@ -1424,12 +1541,47 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				logger?.debug(`Failed to maintain queue storage driver with ID ${this.queue.id}`, error);
 			}
 		}
+
+		logger?.debug(`Worker ID ${this.workerID} completed maintenance tasks for queue ${this.queue.id}`);
+	}
+
+	private async deleteExpiredCompleted(): Promise<void> {
+		if (this.completedRetentionDays === Infinity) {
+			return;
+		}
+
+		if (this.pipes.length > 0 || this.incomingPipeCount > 0) {
+			return;
+		}
+
+		const filter: KeetaAnchorQueueFilter = {
+			status: 'completed',
+			limit: this.completedRetentionLimitPerRun
+		};
+
+		if (this.completedRetentionDays > 0) {
+			filter.updatedBefore = new Date(Date.now() - this.completedRetentionDays * 86_400_000);
+		}
+
+		const entries = await this.queue.query(filter);
+
+		if (entries.length === 0) {
+			return;
+		}
+
+		await this.queue.delete(entries.map(function(entry) {
+			return({
+				id: entry.id,
+				status: entry.status
+			});
+		}));
 	}
 
 	/**
 	 * Pipe the the completed entries of this runner to another runner
 	 */
 	pipe<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: false,
@@ -1440,6 +1592,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest, T1, QueueResult, T2>, options?: AdditionalPipeOptions): typeof target {
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: false,
@@ -1453,6 +1606,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * Pipe batches of completed entries from this runner to another runner
 	 */
 	pipeBatch<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserResult[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: true,
@@ -1465,6 +1619,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	}
 
 	pipeBatchFailed<T1, T2 extends JSONSerializable>(target: KeetaAnchorQueueRunner<UserRequest[], T1, JSONSerializable, T2>, maxBatchSize = 100, minBatchSize = 1, options?: AdditionalPipeOptions): typeof target {
+		target.incomingPipeCount++;
 		this.pipes.push({
 			...options,
 			isBatchPipe: true,
@@ -1518,8 +1673,8 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 
 	constructor(config: ConstructorParameters<typeof KeetaAnchorQueueRunner>[0] & {
 		processor: KeetaAnchorQueueRunner<UserRequest, UserResult>['processor'];
-		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | undefined;
-		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | undefined;
+		processorStuck?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorStuck'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
+		processorAborted?: KeetaAnchorQueueRunner<UserRequest, UserResult>['processorAborted'] | keyof typeof KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers | undefined;
 	} & Partial<KeetaAnchorQueueRunnerConfigurationObject>) {
 		super(config);
 
@@ -1528,10 +1683,18 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 		this.processor = processor;
 
 		if (processorStuck) {
-			this.processorStuck = processorStuck;
+			if (typeof processorStuck === 'string') {
+				this.processorStuck = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorStuck];
+			} else {
+				this.processorStuck = processorStuck;
+			}
 		}
 		if (processorAborted) {
-			this.processorAborted = processorAborted;
+			if (typeof processorAborted === 'string') {
+				this.processorAborted = KeetaAnchorQueueRunnerJSONConfigProc.processorHandlerHelpers[processorAborted];
+			} else {
+				this.processorAborted = processorAborted;
+			}
 		}
 
 		this.setConfiguration(parameters);

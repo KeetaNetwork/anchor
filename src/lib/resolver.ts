@@ -1,5 +1,5 @@
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import type { AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
+import type { Account, AccountPublicKeyString, GenericAccount as KeetaNetGenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
 import type { Logger } from './log/index.ts';
 import type { JSONSerializable } from './utils/json.ts';
@@ -7,19 +7,27 @@ import type { DeepPartial } from './utils/types.ts';
 import { assertNever } from './utils/never.js';
 import { Buffer } from './utils/buffer.js';
 import crypto from './utils/crypto.js';
-import { createIs, createAssert } from 'typia';
-import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadata } from '../services/asset-movement/common.js';
+import { convertAssetLocationInputToCanonical, convertAssetOrPairSearchInputToCanonical, assertKeetaSupportedAssetsMetadataItem } from '../services/asset-movement/common.js';
 import type { AssetLocationString, Rail, SupportedAssetsMetadata, RailOrRailWithExtendedDetails, AssetMovementRailSearchInput, AnchorCustomLocationMetadata } from '../services/asset-movement/common.js';
-import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString } from './asset.js';
+import type { MovableAssetSearchInput, KeetaNetTokenPublicKeyString, EVMChecksumCache } from './asset.js';
+import { checksumEVMAsset, isEVMAsset } from './asset.js';
 import type { NotificationChannelType, NotificationSubscriptionType, SupportedChannelConfigurationMetadata } from '../services/notification/common.js';
 import type { ServiceMetadataEndpoint, SharedAnchorCallerCertificateRequirementMetadata, SharedAnchorMetadataLegalExtension, SharedAnchorMetadataSignedExtension } from './metadata.types.js';
-import type { VerifiableAccount } from './utils/signing.js';
+import { SignData, type Signable, type VerifiableAccount } from './utils/signing.js';
 import type { HTTPSignedField } from './http-server/common.js';
 import type { SignableServiceMetadata } from './anchor-metadata-server.js';
-import { assertHTTPSignedField } from './http-server/common.js';
+import { addSignatureToURL, assertHTTPSignedField } from './http-server/common.js';
 import { verifyMetadataSignature } from './anchor-metadata-server.js';
+import { assertServiceMetadata, assertSignableServiceMetadataLegal, assertSignableServiceMetadataOperations, isCurrencySearchCanonical, isCurrencySearchInput, isExternalURL } from './resolver.generated.js';
 
-type ExternalURL = { external: '2b828e33-2692-46e9-817e-9b93d63f28fd'; url: string; };
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+const ExternalURLKey = '2b828e33-2692-46e9-817e-9b93d63f28fd' as const;
+type ExternalURLOptions = Pick<NonNullable<Exclude<NonNullable<ServiceMetadataEndpoint>, string>['options']>, 'authentication'>;
+interface ExternalURL {
+	external: typeof ExternalURLKey;
+	url: string;
+	options?: ExternalURLOptions;
+};
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetClient.lib.Account>;
 const KeetaNetAccount: typeof KeetaNetClient.lib.Account = KeetaNetClient.lib.Account;
@@ -39,8 +47,6 @@ type CurrencySearchInput = ServiceMetadataCurrencyCodeCanonical | CurrencyInfo.I
 type CurrencySearchCanonical = ServiceMetadataCurrencyCodeCanonical;
 type CountrySearchInput = CurrencyInfo.ISOCountryCode | CurrencyInfo.ISOCountryNumber | CurrencyInfo.Country;
 type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
-
-const isCurrencySearchCanonical = createIs<CurrencySearchCanonical>();
 
 // #region Global Service Metadata
 /**
@@ -172,6 +178,11 @@ type ServiceMetadata = {
 					 * which was previously created
 					 */
 					getExchangeStatus?: string;
+					/**
+					 * Get current market prices for a set of
+					 * quote assets against a base asset (optional)
+					 */
+					getMarketPrices?: string;
 				};
 				/**
 				 * Path for which can be used to identify which
@@ -238,11 +249,14 @@ type ServiceMetadata = {
 						'simulateTransfer' |
 						'executeTransfer' |
 						'getTransferStatus' |
+						'getAccountStatus' |
 						'initiatePersistentForwardingTemplate' |
 						'createPersistentForwardingTemplate' |
 						'listPersistentForwardingTemplate' |
 						'createPersistentForwarding' |
 						'listPersistentForwarding' |
+						'deactivatePersistentForwardingTemplate' |
+						'deactivatePersistentForwarding' |
 						'listTransactions' |
 						'shareKYC'
 					)]?: ServiceMetadataEndpoint;
@@ -363,7 +377,7 @@ type ServiceSearchCriteria<T extends Services> = {
 		/**
 		 * Search for a provider which supports ALL of the following FX operations
 		 */
-		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus'>[];
+		requiredOperations?: Extract<keyof NonNullable<ServiceMetadata['services']['fx']>[string]['operations'], 'getEstimate' | 'getQuote' | 'createExchange' | 'getExchangeStatus' | 'getMarketPrices'>[];
 
 		/**
 		 * Search for a provider which supports the specified affinity
@@ -758,11 +772,6 @@ function convertToCountrySearchCanonical(input: CountrySearchInput): CountrySear
 	return(input.code);
 }
 
-/**
- * Check if a value is an ExternalURL
- */
-const isExternalURL = createIs<ExternalURL>();
-
 type JSONSerializablePrimitive = Exclude<JSONSerializable, object>;
 type ValuizeInput = JSONSerializablePrimitive | ValuizableObject | ValuizableArray;
 type ValuizableArray = (ValuizableMethod | undefined)[];
@@ -896,7 +905,7 @@ type ResolverConfig = {
 	/**
 	 * Additional configuration for reading metadata
 	 */
-	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols'>;
+	metadataConfig?: Pick<MetadataConfig, 'allowInsecureProtocols' | 'signing'>;
 }
 
 
@@ -917,13 +926,26 @@ type MetadataConfig = {
 	 * Defaults to false
 	 */
 	allowInsecureProtocols?: boolean;
+
+	/**
+	 * Optional signing configuration for signing requests to external services.
+	 * If not provided, then requests will not be signed.
+	 */
+	signing?: {
+		/**
+		 * The account to sign requests with.  If not provided, then requests will not be signed.
+		 */
+		account: Account;
+
+		/**
+		 * Flag indicating if requests that do not explicitly deny signing should be signed.
+		 * Defaults to false.
+		 */
+		signAllRequests?: boolean;
+	}
 };
 
 type ValuizableInstance = { value: ValuizableMethod };
-
-const assertServiceMetadata = createAssert<ToJSONValuizable<ServiceMetadata>>();
-const assertSignableServiceMetadataOperations = createAssert<SignableServiceMetadata['operations']>();
-const assertSignableServiceMetadataLegal = createAssert<NonNullable<SignableServiceMetadata['legal']>>();
 
 /**
  * Instance type ID for anonymous Valuizable methods created dynamically
@@ -939,6 +961,8 @@ class Metadata implements ValuizableInstance {
 	readonly #resolver: Resolver;
 	readonly #stats: ResolverStats;
 	readonly #allowInsecureProtocols: boolean;
+	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
+	readonly #urlOptions: ExternalURLOptions | undefined;
 
 	private readonly seenURLs: Set<string>;
 
@@ -969,6 +993,17 @@ class Metadata implements ValuizableInstance {
 		const metadataEncoded = Buffer.from(metadataCompressed).toString('base64');
 
 		return(metadataEncoded);
+	}
+
+	static getExternalURLSignable(url: URL): Signable {
+		const formattedURL = new URL(url.toString());
+		formattedURL.search = '';
+
+		return([
+			ExternalURLKey,
+			'sign-external-url',
+			formattedURL.toString().toLowerCase()
+		]);
 	}
 
 	/**
@@ -1088,7 +1123,7 @@ class Metadata implements ValuizableInstance {
 		throw(new Error('invalid input'));
 	}
 
-	constructor(url: string | URL, config: MetadataConfig) {
+	constructor(url: string | URL | ExternalURL, config: MetadataConfig) {
 		/*
 		 * Define an "instanceTypeID" as an unenumerable property to
 		 * ensure that we can identify this object as an instance of
@@ -1098,7 +1133,13 @@ class Metadata implements ValuizableInstance {
 			value: Metadata.instanceTypeID,
 			enumerable: false
 		});
-		this.#url = new URL(url);
+		if (isExternalURL(url)) {
+			this.#url = new URL(url.url);
+			this.#urlOptions = url.options;
+		} else {
+			this.#url = new URL(url);
+			this.#urlOptions = undefined;
+		}
 		this.#cache = {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			instance: config.cache?.instance ?? new Map() satisfies URLCacheObject as URLCacheObject,
@@ -1110,6 +1151,7 @@ class Metadata implements ValuizableInstance {
 		this.#logger = config.logger;
 		this.#resolver = config.resolver;
 		this.#allowInsecureProtocols = config.allowInsecureProtocols ?? false;
+		this.#signing = config.signing ?? null;
 
 		this.#stats = this.#resolver._mutableStats(statsAccessToken);
 		if (config.parent !== undefined) {
@@ -1141,12 +1183,20 @@ class Metadata implements ValuizableInstance {
 		const metadataBytes = Buffer.from(metadataUncompressed);
 		const metadataDecoded = metadataBytes.toString('utf-8');
 
-		/*
-		 * JSON.parse() will always return a JSONSerializable,
-		 * and not `unknown`, so we can safely cast it.
-		 */
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const retval = await this.resolveValue(JSON.parse(metadataDecoded) as JSONSerializable);
+		let parsed: JSONSerializable;
+		try {
+			/*
+			 * JSON.parse() will always return a JSONSerializable,
+			 * and not `unknown`, so we can safely cast it.
+			 */
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			parsed = JSON.parse(metadataDecoded) as JSONSerializable;
+		} catch (parseError) {
+			this.#logger?.warn(`Resolver:${this.#resolver.id}`, 'Failed to parse metadata JSON from', this.#url.toString(), ':', parseError);
+			throw(parseError);
+		}
+
+		const retval = await this.resolveValue(parsed);
 
 		return(retval);
 	}
@@ -1214,7 +1264,42 @@ class Metadata implements ValuizableInstance {
 		return(retval);
 	}
 
-	private async readURL(url: URL) {
+	private async getResolvedExternalURL(input: URL, options?: ExternalURLOptions) {
+		const authenticationOptions: NonNullable<ExternalURLOptions['authentication']> = options?.authentication ?? { type: 'none' };
+
+		let shouldSign;
+		if (authenticationOptions.type === 'none') {
+			shouldSign = false;
+		} else {
+			if (authenticationOptions.method !== 'keeta-account') {
+				throw(new Error(`Unsupported authentication method`));
+			}
+
+			if (authenticationOptions.type === 'optional') {
+				shouldSign = this.#signing?.signAllRequests === true;
+			} else if (authenticationOptions.type === 'required') {
+				shouldSign = true;
+			} else {
+				assertNever(authenticationOptions.type);
+			}
+		}
+
+		if (!shouldSign) {
+			return(input);
+		}
+
+		if (!this.#signing) {
+			throw(new Error('Signing is requested, but no signing configuration is provided'));
+		}
+
+		const signable = Metadata.getExternalURLSignable(input);
+
+		const signed = await SignData(this.#signing.account, signable);
+
+		return(addSignatureToURL(input, { signedField: signed, account: this.#signing.account }));
+	}
+
+	private async readURL(url: URL, options?: ExternalURLOptions) {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
@@ -1258,12 +1343,15 @@ class Metadata implements ValuizableInstance {
 
 			const readPromise = (async (): Promise<URLCacheObjectEntry> => {
 				let retval: JSONSerializable;
+				let usingUrl = url;
+
 				try {
 					const protocol = url.protocol;
 					if (protocol === 'keetanet:') {
 						retval = await this.readKeetaNetURL(url);
 					} else if (protocol === 'https:' || (protocol === 'http:' && this.#allowInsecureProtocols)) {
-						retval = await this.readHTTPSURL(url);
+						usingUrl = await this.getResolvedExternalURL(url, options);
+						retval = await this.readHTTPSURL(usingUrl);
 					} else {
 						this.#stats.unsupported.reads++;
 						throw(new Error(`Unsupported protocol: ${protocol}`));
@@ -1277,7 +1365,7 @@ class Metadata implements ValuizableInstance {
 						expires: new Date(Date.now() + this.#cache.positiveTTL)
 					});
 				} catch (readError) {
-					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', url.toString(), 'failed:', readError);
+					this.#logger?.debug(`Resolver:${this.#resolver.id}`, 'Read URL', usingUrl.toString(), 'failed:', readError);
 
 					return({
 						pass: false,
@@ -1314,7 +1402,7 @@ class Metadata implements ValuizableInstance {
 		 */
 		if (isExternalURL(value)) {
 			const url = new URL(value.url);
-			const retval = await this.readURL(url);
+			const retval = await this.readURL(url, value.options);
 
 			return(await this.resolveValue(retval));
 		}
@@ -1387,13 +1475,14 @@ class Metadata implements ValuizableInstance {
 						throw(new Error('internal error: newValue is an array, but it should be an object since it is an external field, which can only be an object'));
 					}
 
-					const newMetadataObject = new Metadata(keyValue.url, {
+					const newMetadataObject = new Metadata(keyValue, {
 						trustedCAs: this.#trustedCAs,
 						client: this.#client,
 						logger: this.#logger,
 						resolver: this.#resolver,
 						cache: this.#cache,
 						allowInsecureProtocols: this.#allowInsecureProtocols,
+						...(this.#signing !== null ? { signing: this.#signing } : {}),
 						parent: this
 					});
 
@@ -1447,7 +1536,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
-		const value = await this.readURL(this.#url);
+		const value = await this.readURL(this.#url, this.#urlOptions);
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 
@@ -1565,9 +1654,17 @@ class Resolver {
 	readonly #metadataCache: NonNullable<MetadataConfig['cache']>;
 	readonly #metadataConfig: ResolverConfig['metadataConfig'];
 
+	/** EVM asset ids already warned about, to avoid repeating the info log. */
+	readonly #warnedNonCanonicalizedAssets = new Set<string>();
+	readonly #evmChecksumCache: EVMChecksumCache = new Map();
+
 	readonly id: string;
 
 	static readonly Metadata: typeof Metadata = Metadata;
+
+	static getExternalURLSignable(url: URL): Signable {
+		return(Metadata.getExternalURLSignable(url));
+	}
 
 	private readonly lookupMap: {
 		[Service in Services]: {
@@ -1810,20 +1907,46 @@ class Resolver {
 			return(undefined);
 		}
 
-		const isCurrencySearchInput = createIs<CurrencySearchInput>();
-		// if currency code is provided then convert to canonical format otherwise token public key string was provided
-		const canonicalInputCurrencyCriteria = isCurrencySearchInput(criteria.inputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.inputCurrencyCode) : criteria.inputCurrencyCode;
-		const canonicalOutputCurrencyCriteria = isCurrencySearchInput(criteria.outputCurrencyCode) ? convertToCurrencySearchCanonical(criteria.outputCurrencyCode) : criteria.outputCurrencyCode;
-		// if search criteria is not provided then set token to undefined
-		const inputToken = canonicalInputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalInputCurrencyCriteria) : undefined;
-		const outputToken = canonicalOutputCurrencyCriteria !== undefined ? await this.lookupToken(canonicalOutputCurrencyCriteria) : undefined;
+		// Helper to resolve token from either currency code or direct token public key
+		const resolveToken = async (currencyOrToken: CurrencySearchInput | KeetaNetAccountTokenPublicKeyString | undefined): Promise<{ token: KeetaNetAccountTokenPublicKeyString; currency: CurrencySearchCanonical; } | null | undefined> => {
+			if (currencyOrToken === undefined) {
+				return(undefined);
+			}
+
+			// Check if it's a currency code that needs lookup
+			if (isCurrencySearchInput(currencyOrToken)) {
+				const canonicalCurrency = convertToCurrencySearchCanonical(currencyOrToken);
+				return(await this.lookupToken(canonicalCurrency));
+			}
+
+			// It's potentially a direct token public key string
+			// Validate it and use directly without requiring currencyMap entry
+			const tokenAccount = KeetaNetAccount.fromPublicKeyString(currencyOrToken);
+			if (tokenAccount.isToken()) {
+				const tokenPublicKeyString = tokenAccount.publicKeyString.get();
+				// Return the token using its public key string as the currency identifier
+				// This allows FX lookups to work with tokens that aren't in the currencyMap
+				return({
+					token: tokenPublicKeyString,
+					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+					currency: tokenPublicKeyString as CurrencySearchCanonical
+				});
+			}
+
+			return(undefined);
+		};
+
+		// Resolve tokens for input and output
+		const inputToken = await resolveToken(criteria.inputCurrencyCode);
+		const outputToken = await resolveToken(criteria.outputCurrencyCode);
+
 		if (criteria.inputCurrencyCode !== undefined && inputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', canonicalInputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Input currency code', criteria.inputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
 		if (criteria.outputCurrencyCode !== undefined && outputToken === null) {
-			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', canonicalOutputCurrencyCriteria, 'could not be resolved to a token');
+			this.#logger?.debug(`Resolver:${this.id}`, 'Output currency code', criteria.outputCurrencyCode, 'could not be resolved to a token');
 			return(undefined);
 		}
 
@@ -1986,112 +2109,145 @@ class Resolver {
 		return(retval);
 	}
 
+	#canonicalizeMetadataAssetId(id: string): string {
+		if (!isEVMAsset(id)) {
+			return(id);
+		}
+
+		const canonicalized = checksumEVMAsset(id, this.#evmChecksumCache);
+		if (canonicalized !== id && !this.#warnedNonCanonicalizedAssets.has(id)) {
+			this.#warnedNonCanonicalizedAssets.add(id);
+			this.#logger?.info(`Resolver:${this.id}`, `Provider metadata published EVM asset "${id}" with non-canonicalized casing; normalized to EIP-55 canonicalized form "${canonicalized}"`);
+		}
+
+		return(canonicalized);
+	}
+
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
 		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
-		const supportedAssets = assertKeetaSupportedAssetsMetadata(resolvedService);
+		if (!Array.isArray(resolvedService)) {
+			throw(new Error('Expected "supportedAssets" to be an array'));
+		}
+
+		const supportedAssets: SupportedAssetsMetadata[] = [];
+		for (let supportedAssetIndex = 0; supportedAssetIndex < resolvedService.length; supportedAssetIndex++) {
+			const resolvedSupportedAsset = resolvedService[supportedAssetIndex];
+			try {
+				supportedAssets.push(assertKeetaSupportedAssetsMetadataItem(resolvedSupportedAsset));
+			} catch (assertError) {
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error parsing supportedAssets entry', supportedAssetIndex, ':', assertError, '-- ignoring entry');
+			}
+		}
 
 		const filteredAssetMovement: SupportedAssetsMetadata[] = [];
 		for (const supportedAsset of supportedAssets) {
 			let matchFound = false;
 
 			for (const path of supportedAsset.paths) {
-				for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
-					if (fromCanonical && fromCanonical !== fromAsset.location) {
-						continue;
-					}
+				try {
+					for (const [ fromAsset, toAsset ] of [ [ path.pair[0], path.pair[1] ], [ path.pair[1], path.pair[0] ] ] as const) {
+						const fromId = this.#canonicalizeMetadataAssetId(fromAsset.id);
+						const toId = this.#canonicalizeMetadataAssetId(toAsset.id);
 
-					if (toCanonical && toCanonical !== toAsset.location) {
-						continue;
-					}
-
-					if (assetCanonical) {
-						if (typeof assetCanonical === 'string') {
-							if (!([ fromAsset.id, toAsset.id ].includes(assetCanonical))) {
-								continue;
-							}
-						} else if (fromAsset.id !== assetCanonical.from || toAsset.id !== assetCanonical.to) {
+						if (fromCanonical && fromCanonical !== fromAsset.location) {
 							continue;
 						}
-					}
 
-					const supportedRails = {
-						inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
-						outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
-					}
+						if (toCanonical && toCanonical !== toAsset.location) {
+							continue;
+						}
 
-					if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
-						continue;
-					}
-
-					const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
-						for (const checkRail of searchIn) {
-							if (typeof checkRail === 'string') {
-								if (checkRail === searchFor) {
-									return(true);
+						if (assetCanonical) {
+							if (typeof assetCanonical === 'string') {
+								if (!([ fromId, toId ].includes(assetCanonical))) {
+									continue;
 								}
-							} else {
-								if (checkRail.rail === searchFor) {
-									return(true);
-								}
+							} else if (fromId !== assetCanonical.from || toId !== assetCanonical.to) {
+								continue;
 							}
 						}
 
-						return(false);
-					}
+						const supportedRails = {
+							inbound: [ ...(fromAsset.rails.inbound ?? []), ...(fromAsset.rails.common ?? []) ],
+							outbound: [ ...(toAsset.rails.outbound ?? []), ...(toAsset.rails.common ?? []) ]
+						}
 
-					if (criteria.rail !== undefined) {
-						let railMatchFound = false;
-						for (const direction of ['inbound', 'outbound'] as const) {
-							let searchFor;
-							let searchIn;
-							let eitherDirectionSharedSearch;
+						if ((supportedRails.inbound.length + supportedRails.outbound.length) === 0) {
+							continue;
+						}
 
-							if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
-								searchFor = criteria.rail[direction];
-								searchIn = supportedRails[direction];
-								eitherDirectionSharedSearch = false;
-							} else {
-								searchFor = criteria.rail;
-								searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
-								eitherDirectionSharedSearch = true;
-							}
-
-
-							if (searchFor !== undefined) {
-								if (typeof searchFor === 'string') {
-									railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+						const checkSupportedRailIncludes = (searchFor: Rail, searchIn: RailOrRailWithExtendedDetails[]): boolean => {
+							for (const checkRail of searchIn) {
+								if (typeof checkRail === 'string') {
+									if (checkRail === searchFor) {
+										return(true);
+									}
 								} else {
-									for (const checkRail of searchFor) {
-										railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
-
-										if (railMatchFound) {
-											break;
-										}
+									if (checkRail.rail === searchFor) {
+										return(true);
 									}
 								}
 							}
 
-							// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
-							if (eitherDirectionSharedSearch) {
-								break;
+							return(false);
+						}
+
+						if (criteria.rail !== undefined) {
+							let railMatchFound = false;
+							for (const direction of ['inbound', 'outbound'] as const) {
+								let searchFor;
+								let searchIn;
+								let eitherDirectionSharedSearch;
+
+								if (typeof criteria.rail === 'object' && !Array.isArray(criteria.rail)) {
+									searchFor = criteria.rail[direction];
+									searchIn = supportedRails[direction];
+									eitherDirectionSharedSearch = false;
+								} else {
+									searchFor = criteria.rail;
+									searchIn = [ ...supportedRails.inbound, ...supportedRails.outbound ];
+									eitherDirectionSharedSearch = true;
+								}
+
+
+								if (searchFor !== undefined) {
+									if (typeof searchFor === 'string') {
+										railMatchFound = checkSupportedRailIncludes(searchFor, searchIn);
+									} else {
+										for (const checkRail of searchFor) {
+											railMatchFound = checkSupportedRailIncludes(checkRail, searchIn);
+
+											if (railMatchFound) {
+												break;
+											}
+										}
+									}
+								}
+
+								// If we are doing a shared search across both directions, then we only need to find a match in one direction, so we can break early. If we are doing separate searches for each direction, then we need to continue and check the next direction if we don't find a match in the first direction.
+								if (eitherDirectionSharedSearch) {
+									break;
+								}
+
+								if (railMatchFound) {
+									break;
+								}
 							}
 
-							if (railMatchFound) {
-								break;
+							if (!railMatchFound) {
+								continue;
 							}
 						}
 
-						if (!railMatchFound) {
-							continue;
-						}
+						matchFound = true;
+						break;
 					}
-
-					matchFound = true;
-					break;
+				} catch (pathError) {
+					this.#logger?.warn(`Resolver:${this.id}`, 'Error parsing asset movement path:', pathError, '-- ignoring path');
 				}
 
 				if (matchFound) {
@@ -2114,24 +2270,24 @@ class Resolver {
 
 		const retval: ResolverLookupServiceResults<'assetMovement'> = {};
 		for (const checkAssetMovementServiceID in assetServices) {
-			const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
-
-			if (checkAssetMovementService === undefined) {
-				return(undefined);
-			}
-
-			if (!('operations' in checkAssetMovementService)) {
-				return(undefined);
-			}
-
 			try {
+				const checkAssetMovementService = await assetServices[checkAssetMovementServiceID]?.('object');
+
+				if (checkAssetMovementService === undefined) {
+					continue;
+				}
+
+				if (!('operations' in checkAssetMovementService)) {
+					continue;
+				}
+
 				const supportedAssets = await this.filterSupportedAssets(checkAssetMovementService, criteria);
 				if (supportedAssets.length === 0) {
 					continue;
 				}
 				retval[checkAssetMovementServiceID] = await assertResolverLookupAssetMovementResults(checkAssetMovementService);
 			} catch (parseError) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, ' -- ignoring');
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error checking AssetMovement service', checkAssetMovementServiceID, ':', parseError, '-- ignoring');
 			}
 		}
 
@@ -2218,23 +2374,24 @@ class Resolver {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Root Metadata for', root.publicKeyString.get(), ':', rootMetadata);
 
 				if (!('version' in rootMetadata)) {
-					this.#logger?.debug(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property, skipping');
+					this.#logger?.warn(`Resolver:${this.id}`, 'Root metadata for', root.publicKeyString.get(), 'is missing "version" property -- ignoring root');
 					continue;
 				}
 
 				const rootMetadataVersion = await rootMetadata.version?.('primitive');
 				if (rootMetadataVersion !== 1) {
-					this.#logger?.debug(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), ', skipping');
+					this.#logger?.warn(`Resolver:${this.id}`, 'Unsupported metadata version', rootMetadataVersion, 'for', root.publicKeyString.get(), '-- ignoring root');
 					continue;
 				}
 
 				allRootMetadata.push(rootMetadata);
 			} catch (error) {
-				this.#logger?.debug(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, ' -- skipping');
+				this.#logger?.warn(`Resolver:${this.id}`, 'Error fetching metadata for', root.publicKeyString.get(), ':', error, '-- ignoring root');
 			}
 		}
 
 		if (allRootMetadata.length === 0) {
+			this.#logger?.warn(`Resolver:${this.id}`, 'No valid root metadata found among', this.#roots.length, 'configured root(s)');
 			throw(new Error('No valid root metadata found'));
 		}
 
@@ -2277,9 +2434,13 @@ class Resolver {
 					continue;
 				}
 				if ('currencyMap' in metadata && metadata.currencyMap !== undefined) {
-					const currencyMap = await metadata.currencyMap('object');
-					for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
-						mergedCurrencyMap[currencyCode] = tokenValue;
+					try {
+						const currencyMap = await metadata.currencyMap('object');
+						for (const [currencyCode, tokenValue] of Object.entries(currencyMap)) {
+							mergedCurrencyMap[currencyCode] = tokenValue;
+						}
+					} catch (mergeError) {
+						this.#logger?.warn(`Resolver:${this.id}`, 'Error merging currencyMap from root index', i, ':', mergeError, '-- ignoring root currencyMap');
 					}
 				}
 			}
@@ -2307,7 +2468,13 @@ class Resolver {
 					continue;
 				}
 				if ('services' in metadata && metadata.services !== undefined) {
-					const services = await metadata.services('object');
+					let services: ValuizableObject;
+					try {
+						services = await metadata.services('object');
+					} catch (mergeError) {
+						this.#logger?.warn(`Resolver:${this.id}`, 'Error merging services from root index', i, ':', mergeError, '-- ignoring root services');
+						continue;
+					}
 					for (const [serviceType, serviceValue] of Object.entries(services)) {
 						if (serviceValue === undefined) {
 							continue;
@@ -2807,6 +2974,10 @@ export type {
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,
 	Services,
-	SharedLookupCriteria
+	SharedLookupCriteria,
+	CurrencySearchCanonical,
+	CurrencySearchInput,
+	ExternalURL,
+	ToJSONValuizable
 };
 export type { ServiceMetadataEndpoint, ServiceMetadataAuthenticationType } from './metadata.types.js';

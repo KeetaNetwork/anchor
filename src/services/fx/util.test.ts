@@ -94,6 +94,37 @@ test('assertExchangeBlockParameters', async function() {
 		]
 	}).seal())
 
+	/*
+	 * Reproduces the client creating a separate cost SEND and a principal
+	 * SEND in the same token (what happens when FX fees are charged in the
+	 * swap `from` token). The operations must be summed, not rejected.
+	 */
+	const aSendsTokenATwiceToBBlock = await (new KeetaNet.lib.Block.Builder({
+		network: networkId,
+		previous: KeetaNet.lib.Block.NO_PREVIOUS,
+		signer: accountA,
+		operations: [
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: accountB,
+				token: tokenA,
+				amount: 25n
+			},
+			{
+				type: KeetaNet.lib.Block.OperationType.RECEIVE,
+				from: accountB,
+				token: tokenB,
+				amount: 500n
+			},
+			{
+				type: KeetaNet.lib.Block.OperationType.SEND,
+				to: accountB,
+				token: tokenA,
+				amount: 475n
+			}
+		]
+	}).seal())
+
 	const baseQuoteRequest = {
 		quote: {
 			convertedAmount: 4000n,
@@ -251,6 +282,52 @@ test('assertExchangeBlockParameters', async function() {
 				isQuoteBasedExchange: false
 			},
 			pass: false
+		},
+		{
+			args: {
+				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
+				block: aSendsTokenATwiceToBBlock,
+				liquidityAccount: accountB,
+				checks: {
+					...baseQuoteRequest,
+					quote: {
+						...baseQuoteRequest.quote,
+						cost: {
+							token: tokenA,
+							amount: 25n
+						}
+					},
+					request: {
+						...baseQuoteRequest.request,
+						amount: 475n
+					}
+				},
+				isQuoteBasedExchange: true
+			},
+			pass: true
+		},
+		{
+			args: {
+				allowedLiquidityAccounts: new KeetaNet.lib.Account.Set([accountB]),
+				block: aSendsTokenATwiceToBBlock,
+				liquidityAccount: accountB,
+				checks: {
+					...baseQuoteRequest,
+					quote: {
+						...baseQuoteRequest.quote,
+						cost: {
+							token: tokenA,
+							amount: 25n
+						}
+					},
+					request: {
+						...baseQuoteRequest.request,
+						amount: 475n
+					}
+				},
+				isQuoteBasedExchange: false
+			},
+			pass: true
 		}
 	];
 

@@ -297,9 +297,12 @@ export class StorageContactsClient implements ContactsClient {
 		return(result);
 	}
 
+	async list(options?: { location?: AssetLocationLike; metadataOnly?: false; }): Promise<ContactWithMetadata[]>;
+	async list(options: { location?: AssetLocationLike; metadataOnly: true; }): Promise<StorageObjectMetadata[]>;
 	async list(options?: {
 		location?: AssetLocationLike;
-	}): Promise<ContactWithMetadata[]> {
+		metadataOnly?: boolean;
+	}): Promise<ContactWithMetadata[] | StorageObjectMetadata[]> {
 		this.#logger?.debug('StorageContactsClient::list', 'Listing contacts');
 
 		const criteria: { pathPrefix: string; tags?: string[] } = {
@@ -311,15 +314,31 @@ export class StorageContactsClient implements ContactsClient {
 		}
 
 		const searchResult = await this.#session.search(criteria);
-		const contacts: ContactWithMetadata[] = [];
-		for (const metadata of searchResult.results) {
-			const result = await this.#session.get(metadata.path);
-			if (result) {
+
+		if (options?.metadataOnly) {
+			this.#logger?.debug('StorageContactsClient::list', `Listed ${searchResult.results.length} contact metadata entries`);
+			return(searchResult.results);
+		}
+
+		const settled = await Promise.allSettled(
+			searchResult.results.map(async (metadata) => {
+				const result = await this.#session.get(metadata.path);
+				if (!result) {
+					return(undefined);
+				}
 				try {
-					contacts.push(this.#deserialize(result.data, metadata));
+					return(this.#deserialize(result.data, metadata));
 				} catch (error) {
 					this.#logger?.warn('StorageContactsClient::list', `Skipping corrupt contact at ${metadata.path}`, error);
+					return(undefined);
 				}
+			})
+		);
+
+		const contacts: ContactWithMetadata[] = [];
+		for (const outcome of settled) {
+			if (outcome.status === 'fulfilled' && outcome.value) {
+				contacts.push(outcome.value);
 			}
 		}
 
