@@ -135,7 +135,7 @@ const isKeetaKYCAnchorGetVerificationStatusResponse = createIs<KeetaKYCAnchorGet
 async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
 		countryCodes: request.countryCodes,
-		entityType: request.entityType ?? 'individual'
+		...(request.entityType !== undefined ? { entityType: request.entityType } : {})
 	});
 
 	if (response === undefined) {
@@ -384,7 +384,11 @@ class KeetaKYCAnchorClient {
 			signed: signedData
 		};
 
-		const endpoints = await getEndpoints(this.resolver, signedRequest);
+		/* Only provider selection defaults to individual; the by-ID lookups below must not filter. */
+		const endpoints = await getEndpoints(this.resolver, {
+			countryCodes: signedRequest.countryCodes,
+			entityType: signedRequest.entityType ?? 'individual'
+		});
 		if (endpoints === null) {
 			throw(new Error('No KYC endpoints found for the given criteria'));
 		}

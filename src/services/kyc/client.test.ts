@@ -358,6 +358,7 @@ test('KYC Anchor Client Test - business-only provider and the individual default
 			verificationStarted: async function() {
 				return({
 					ok: true,
+					id: crypto.randomUUID(),
 					expectedCost: {
 						min: '0',
 						max: '0',
@@ -403,6 +404,23 @@ test('KYC Anchor Client Test - business-only provider and the individual default
 		entityType: 'business'
 	});
 	expect(businessProviders.length).toBeGreaterThan(0);
+
+	/*
+	 * A caller polling by provider ID must reach a business-only provider even
+	 * without repeating entityType: the ID already picked the provider, so the
+	 * lookup behind these two methods must not filter it back out.
+	 */
+	const businessProvider = businessProviders[0];
+	if (businessProvider === undefined) {
+		throw(new Error('internal error: no business provider available'));
+	}
+	const businessVerification = await businessProvider.startVerification();
+	const directStatus = await kycClient.getVerificationStatus(businessVerification.providerID, {
+		id: businessVerification.id,
+		account: account,
+		countryCodes: ['CA']
+	});
+	expect(directStatus.status).toBe(KYCVerificationStatus.PASSED);
 
 	const individualCountries = (await kycClient.getSupportedCountries()).map(function(country) {
 		return(country.code);

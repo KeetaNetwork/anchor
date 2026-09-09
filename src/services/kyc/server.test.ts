@@ -246,6 +246,8 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 	 * cheap: one server/metadata round-trip per distinct provider config
 	 * instead of one per assertion.
 	 */
+	const startedServers: KeetaNetKYCAnchorHTTPServer[] = [];
+
 	async function buildProvider(entityTypes: ('individual' | 'business')[] | undefined, countryCodes: ('US' | 'CA')[]) {
 		const providerSigner = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: providerClient } = await createNodeAndClient(providerSigner);
@@ -274,6 +276,7 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 		});
 
 		await server.start();
+		startedServers.push(server);
 
 		await providerClient.setInfo({
 			name: 'USER',
@@ -304,22 +307,22 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 			return(match !== undefined && 'Test' in match);
 		}
 
-		return({ server, matches, resolver });
+		return({ matches, resolver });
 	}
 
-	/*
-	 * One provider per distinct config. Keyed so the table below reads as
-	 * (provider, requested entity type, requested country) -> expected.
-	 */
-	const providers = {
-		individualUS: await buildProvider(['individual'], ['US']),
-		businessUS: await buildProvider(['business'], ['US']),
-		bothUS: await buildProvider(['individual', 'business'], ['US']),
-		undeclaredUS: await buildProvider(undefined, ['US']),
-		bothMultiCountry: await buildProvider(['individual', 'business'], ['US', 'CA'])
-	};
-
 	try {
+		/*
+		 * One provider per distinct config. Keyed so the table below reads as
+		 * (provider, requested entity type, requested country) -> expected.
+		 */
+		const providers = {
+			individualUS: await buildProvider(['individual'], ['US']),
+			businessUS: await buildProvider(['business'], ['US']),
+			bothUS: await buildProvider(['individual', 'business'], ['US']),
+			undeclaredUS: await buildProvider(undefined, ['US']),
+			bothMultiCountry: await buildProvider(['individual', 'business'], ['US', 'CA'])
+		};
+
 		const cases: {
 			name: string;
 			provider: keyof typeof providers;
@@ -372,8 +375,8 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 		expect(await individualOnlyEntityTypes?.individual?.('boolean')).toBe(true);
 		expect(await individualOnlyEntityTypes?.business?.('boolean')).toBe(false);
 	} finally {
-		for (const provider of Object.values(providers)) {
-			await provider.server[Symbol.asyncDispose]();
+		for (const startedServer of startedServers) {
+			await startedServer[Symbol.asyncDispose]();
 		}
 	}
 });

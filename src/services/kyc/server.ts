@@ -194,7 +194,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		this.kyc = config.kyc;
 		this.routes = config.routes ?? {};
 		this.kycProviderURL = config.kycProviderURL ?? kycProviderURLUndefined;
-		this.#entityTypes = config.kyc.entityTypes ?? ['individual'];
+		if (config.kyc.entityTypes !== undefined && config.kyc.entityTypes.length === 0) {
+			throw(new Error('Expected "kyc.entityTypes" to declare at least one entity type'));
+		}
+
+		this.#entityTypes = [...config.kyc.entityTypes ?? ['individual']];
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
