@@ -10,8 +10,7 @@ import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse,
-	KeetaKYCAnchorGetVerificationStatusResponse,
-	KYCEntityType
+	KeetaKYCAnchorGetVerificationStatusResponse
 } from './common.ts';
 import {
 	assertCreateVerificationRequest,
@@ -22,7 +21,7 @@ import {
 } from './common.js';
 import type { Account } from '@keetanetwork/keetanet-client/lib/account.js';
 import type * as Signing from '../../lib/utils/signing.js';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { KYCEntityType, ServiceMetadata } from '../../lib/resolver.ts';
 import { kycEntityTypes } from '../../lib/resolver.js';
 import { parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';

@@ -20,26 +20,6 @@ export type OperationNames = keyof Operations;
 
 export type KYCRedirectStatus = 'completed' | 'cancelled' | 'failed';
 
-/**
- * The type of legal entity a KYC Anchor verification applies to.
- *
- * A provider declares which of these it supports via the `entityTypes`
- * field of its service metadata. A verification request declares which
- * one it is for via {@link KeetaKYCAnchorCreateVerificationRequest.entityType}.
- *
- * Both flows are redirect flows: the provider returns a `webURL` to a
- * hosted experience and the client polls for the certificate. The entity
- * type tells the provider which hosted experience to present:
- *
- * - `individual` collects individual KYC details (the classic flow).
- * - `business` collects Know Your Business (KYB) details.
- *
- * The provider hosts and owns the collection experience for both, so the
- * request does not carry the entity-specific details -- only which kind of
- * experience to start.
- */
-export type { KYCEntityType };
-
 export interface KeetaKYCAnchorCreateVerificationRequest {
 	countryCodes: CountryCodesSearchCriteria;
 	account: ReturnType<InstanceType<typeof KeetaNet.lib.Account>['publicKeyString']['get']>;

@@ -245,6 +245,11 @@ test('KYC Anchor Client Test', async function() {
 	}
 	const businessVerification = await businessProvider.startVerification();
 	expect(businessVerification.webURL).toBeDefined();
+	expect(verifications.get(businessVerification.id)?.entityType).toBe('business');
+
+	/* The status poll must resolve the same provider, so it carries the entity type too. */
+	const businessStatus = await businessVerification.getVerificationStatus();
+	expect(businessStatus.status).toBe(KYCVerificationStatus.PASSED);
 
 	const verification = await provider.startVerification();
 	loggerBase?.log('Request ID:', verification.id, 'on provider', verification.providerID);
@@ -326,4 +331,86 @@ test('KYC Anchor Client Test', async function() {
 		}, { depth: null, colors: true }));
 	}))).join('\n\n');
 	loggerBase?.log(output);
+}, 30000);
+
+test('KYC Anchor Client Test - business-only provider and the individual default', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuer: kycCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const kycCA = await kycCABuilder.build();
+
+	await using server = new KeetaNetKYCAnchorHTTPServer({
+		signer: account,
+		ca: kycCA,
+		client: client,
+		kycProviderURL: 'https://example.com/journey/{id}',
+		kyc: {
+			countryCodes: ['CA'],
+			entityTypes: ['business'],
+			verificationStarted: async function() {
+				return({
+					ok: true,
+					expectedCost: {
+						min: '0',
+						max: '0',
+						token: client.baseToken.publicKeyString.get()
+					}
+				});
+			},
+			getCertificates: async function() {
+				return([{ certificate: '' }]);
+			},
+			getVerificationStatus: async function() {
+				return({ status: KYCVerificationStatus.PASSED });
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		name: 'TEST',
+		description: 'KYC Anchor Test Root (business-only)',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			services: {
+				kyc: {
+					Test: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const kycClient = new KeetaNetAnchor.KYC.Client(client, { root: account });
+
+	/* Omitting entityType means individual, which this provider does not verify. */
+	await expect(kycClient.createVerification({
+		countryCodes: ['CA'],
+		account: account
+	})).rejects.toThrow('No KYC endpoints found for the given criteria');
+
+	const businessProviders = await kycClient.createVerification({
+		countryCodes: ['CA'],
+		account: account,
+		entityType: 'business'
+	});
+	expect(businessProviders.length).toBeGreaterThan(0);
+
+	const individualCountries = (await kycClient.getSupportedCountries()).map(function(country) {
+		return(country.code);
+	});
+	expect(individualCountries).not.toContain('CA');
+
+	const businessCountries = (await kycClient.getSupportedCountries('business')).map(function(country) {
+		return(country.code);
+	});
+	expect(businessCountries).toContain('CA');
 }, 30000);

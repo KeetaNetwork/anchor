@@ -1645,6 +1645,24 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Log
 	return(valid);
 }
 
+/**
+ * A service with no usable `entityTypes` declaration is `individual`-only;
+ * otherwise a type is supported only when its key is explicitly `true`.
+ */
+async function kycServiceSupportsEntityType(kycService: ValuizableObject, entityType: KYCEntityType): Promise<boolean> {
+	const declared = await kycService.entityTypes?.('object');
+	if (declared === undefined) {
+		return(entityType === 'individual');
+	}
+
+	const declaredValue = declared[entityType];
+	if (declaredValue === undefined) {
+		return(false);
+	}
+
+	return(await declaredValue('boolean'));
+}
+
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -1854,29 +1872,8 @@ class Resolver {
 					}
 				}
 
-				/*
-				 * Filter by entity type when requested. A service that
-				 * does not declare `entityTypes` is treated as
-				 * `individual`-only, preserving the classic KYC
-				 * behavior for providers predating this field.
-				 */
 				if (criteria.entityType !== undefined) {
-					/*
-					 * A provider that does not declare `entityTypes`
-					 * is treated as `individual`-only. When it does,
-					 * a type is supported only if its key resolves to
-					 * an explicit `true` (mirroring how
-					 * `supportedAffinities` is read on FX) -- a `false`
-					 * or missing key means unsupported.
-					 */
-					let supported: boolean;
-					if ('entityTypes' in checkKYCService) {
-						const declared = await checkKYCService.entityTypes?.('object');
-						const declaredValue = declared?.[criteria.entityType];
-						supported = declaredValue !== undefined ? await declaredValue('boolean') : false;
-					} else {
-						supported = criteria.entityType === 'individual';
-					}
+					const supported = await kycServiceSupportsEntityType(checkKYCService, criteria.entityType);
 
 					this.#logger?.debug(`Resolver:${this.id}`, 'Checking entity type:', criteria.entityType, 'supported:', supported, 'for', checkKYCServiceID);
 
@@ -2653,7 +2650,11 @@ class Resolver {
 		return(retval);
 	}
 
-	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
+	/**
+	 * When `entityType` is omitted, countries are listed across every KYC
+	 * service regardless of the entity types it declares.
+	 */
+	async listSupportedKYCCountries(entityType?: KYCEntityType): Promise<CurrencyInfo.Country[]> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -2679,6 +2680,10 @@ class Resolver {
 			try {
 				const kycService = await kycServices[kycServiceID]?.('object');
 				if (kycService === undefined) {
+					continue;
+				}
+
+				if (entityType !== undefined && !await kycServiceSupportsEntityType(kycService, entityType)) {
 					continue;
 				}
 

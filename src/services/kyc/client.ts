@@ -26,7 +26,7 @@ import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData, type SignableAccount } from '../../lib/utils/signing.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { KYCEntityType, ServiceMetadata } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
 
@@ -135,7 +135,7 @@ const isKeetaKYCAnchorGetVerificationStatusResponse = createIs<KeetaKYCAnchorGet
 async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
 		countryCodes: request.countryCodes,
-		...(request.entityType !== undefined ? { entityType: request.entityType } : {})
+		entityType: request.entityType ?? 'individual'
 	});
 
 	if (response === undefined) {
@@ -297,7 +297,8 @@ class KeetaKYCVerification {
 		return(this.client.getVerificationStatus(this.providerID, {
 			id: this.id,
 			account: this.account,
-			countryCodes: this.request.countryCodes
+			countryCodes: this.request.countryCodes,
+			...(this.request.entityType !== undefined ? { entityType: this.request.entityType } : {})
 		}));
 	}
 }
@@ -519,12 +520,12 @@ class KeetaKYCAnchorClient {
 		});
 	}
 
-	async getSupportedCountries(): Promise<CurrencyInfo.Country[]> {
-		return(await this.resolver.listSupportedKYCCountries());
+	async getSupportedCountries(entityType: KYCEntityType = 'individual'): Promise<CurrencyInfo.Country[]> {
+		return(await this.resolver.listSupportedKYCCountries(entityType));
 	}
 
-	async getVerificationStatus(providerID: ProviderID, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes'> & { id: RequestID; account: SignableAccount; }): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
-		const endpoints = await getEndpoints(this.resolver, { countryCodes: request.countryCodes });
+	async getVerificationStatus(providerID: ProviderID, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'> & { id: RequestID; account: SignableAccount; }): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
+		const endpoints = await getEndpoints(this.resolver, request);
 		if (endpoints === null) {
 			throw(new Error('No KYC endpoints found for the given criteria'));
 		}

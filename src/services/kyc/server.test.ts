@@ -152,13 +152,7 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
 		kyc: {
 			countryCodes: ['US'],
 			entityTypes: ['individual', 'business'],
-			verificationStarted: async function(request) {
-				/*
-				 * The request advertises the entity type; the provider
-				 * would present the matching hosted form. Both return a
-				 * webURL (filled in by the server from kycProviderURL).
-				 */
-				expect(request.entityType === undefined || request.entityType === 'individual' || request.entityType === 'business').toBe(true);
+			verificationStarted: async function() {
 				return({
 					ok: true,
 					expectedCost: {
@@ -213,7 +207,8 @@ test('KYC Anchor HTTP Server - business (KYB) entity type', async function() {
 	}
 	const declaredEntityTypes = await businessMatch.Test.entityTypes?.('object');
 	expect(declaredEntityTypes).toBeDefined();
-	expect(declaredEntityTypes !== undefined && 'business' in declaredEntityTypes).toBe(true);
+	expect(await declaredEntityTypes?.business?.('boolean')).toBe(true);
+	expect(await declaredEntityTypes?.individual?.('boolean')).toBe(true);
 
 	const individualMatch = await resolver.lookup('kyc', {
 		countryCodes: ['US'],
@@ -309,7 +304,7 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 			return(match !== undefined && 'Test' in match);
 		}
 
-		return({ server, matches });
+		return({ server, matches, resolver });
 	}
 
 	/*
@@ -364,6 +359,18 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 			const result = await providers[testCase.provider].matches(testCase.requested, testCase.countryCodes);
 			expect(result, testCase.name).toBe(testCase.expected);
 		}
+
+		/* An unsupported type is published as an explicit false, not an absent key. */
+		const individualOnly = await providers.individualUS.resolver.lookup('kyc', {
+			countryCodes: ['US'],
+			entityType: 'individual'
+		});
+		if (individualOnly === undefined || !('Test' in individualOnly)) {
+			throw(new Error('internal error: individual-only KYC service not found'));
+		}
+		const individualOnlyEntityTypes = await individualOnly.Test.entityTypes?.('object');
+		expect(await individualOnlyEntityTypes?.individual?.('boolean')).toBe(true);
+		expect(await individualOnlyEntityTypes?.business?.('boolean')).toBe(false);
 	} finally {
 		for (const provider of Object.values(providers)) {
 			await provider.server[Symbol.asyncDispose]();
