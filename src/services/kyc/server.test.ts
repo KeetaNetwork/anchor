@@ -316,7 +316,7 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 		businessUS: await buildProvider(['business'], ['US']),
 		bothUS: await buildProvider(['individual', 'business'], ['US']),
 		undeclaredUS: await buildProvider(undefined, ['US']),
-		bothUSCA: await buildProvider(['individual', 'business'], ['US', 'CA'])
+		bothMultiCountry: await buildProvider(['individual', 'business'], ['US', 'CA'])
 	};
 
 	try {
@@ -350,9 +350,9 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 			 */
 			{ name: 'both US-only rejects business in CA', provider: 'bothUS', requested: 'business', countryCodes: ['CA'], expected: false },
 			{ name: 'both US-only rejects individual in CA', provider: 'bothUS', requested: 'individual', countryCodes: ['CA'], expected: false },
-			{ name: 'both US+CA matches business in CA', provider: 'bothUSCA', requested: 'business', countryCodes: ['CA'], expected: true },
-			{ name: 'both US+CA matches individual in CA', provider: 'bothUSCA', requested: 'individual', countryCodes: ['CA'], expected: true },
-			{ name: 'both US+CA matches business in US', provider: 'bothUSCA', requested: 'business', countryCodes: ['US'], expected: true }
+			{ name: 'both US+CA matches business in CA', provider: 'bothMultiCountry', requested: 'business', countryCodes: ['CA'], expected: true },
+			{ name: 'both US+CA matches individual in CA', provider: 'bothMultiCountry', requested: 'individual', countryCodes: ['CA'], expected: true },
+			{ name: 'both US+CA matches business in US', provider: 'bothMultiCountry', requested: 'business', countryCodes: ['US'], expected: true }
 		];
 
 		for (const testCase of cases) {
