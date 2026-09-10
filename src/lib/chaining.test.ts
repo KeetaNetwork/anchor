@@ -4409,7 +4409,7 @@ describe('getPlans forwardingOnly', function() {
 
 		expect(plan).toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
 		expect('execute' in plan).toBe(false);
-		expect(isForwardingPlan(plan)).toBe(true);
+		expect(isForwardingPlan(plan)).toEqual({ isForwardingOnly: true });
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
 		expect(plan.getDepositAddress()).toEqual(expect.any(String));
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
@@ -4601,7 +4601,7 @@ describe('getPlans forwardingOnly', function() {
 
 		expect(plan).toBeInstanceOf(AnchorChainingForwardingOnlyPlan);
 		expect('execute' in plan).toBe(false);
-		expect(isForwardingPlan(plan)).toBe(true);
+		expect(isForwardingPlan(plan)).toEqual({ isForwardingOnly: true });
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded', 'forwarded' ]);
 		expect(plan.getDepositAddress()).toEqual(expect.any(String));
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
@@ -4673,7 +4673,7 @@ describe('getPlans forwardingOnly', function() {
 		expect(isForwardingPath(path, { method: 'explicit', maxLegs: 0 })).toBe(false);
 
 		const plan = await AnchorChainingPlan.create(path);
-		expect(isForwardingPlan(plan)).toBe(true);
+		expect(isForwardingPlan(plan)).toEqual({ isForwardingOnly: true });
 
 		const managedWorld = await buildForwardingWorld('managed');
 		try {
@@ -4687,7 +4687,7 @@ describe('getPlans forwardingOnly', function() {
 			}
 
 			const managedPlan = await AnchorChainingPlan.create(managedPath);
-			expect(isForwardingPlan(managedPlan)).toBe(false);
+			expect(isForwardingPlan(managedPlan)).toEqual({ isForwardingOnly: false, providerID: 'AM2' });
 		} finally {
 			await managedWorld[Symbol.asyncDispose]?.();
 		}
@@ -4790,7 +4790,7 @@ describe('getPlans forwardingOnly', function() {
 				throw(new Error('Expected a forwarding plan'));
 			}
 			expect(forwardingPlan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
-			expect(isForwardingPlan(forwardingPlan)).toBe(true);
+			expect(isForwardingPlan(forwardingPlan)).toEqual({ isForwardingOnly: true });
 		} finally {
 			await am2[Symbol.asyncDispose]?.();
 		}
