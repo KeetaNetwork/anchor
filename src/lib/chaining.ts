@@ -23,6 +23,7 @@ import type { AnchorExternalInput } from './anchor-external.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { ClientRenderableContent } from './metadata.types.js';
 import { AnchorExternalBuilder } from './anchor-external.js';
+import { KeetaAnchorError } from './error.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -2001,14 +2002,22 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
  * Whether a resolved plan is anchor-to-anchor with no user intermediary steps.
  * The user may still fund the initial deposit address once.
  */
-export function isForwardingPlan(plan: { plan: AnchorChainingPathComputedPlan }): boolean {
+export function isForwardingPlan(plan: { plan: AnchorChainingPathComputedPlan }): { isForwardingOnly: true; } | { isForwardingOnly: false; providerID: string | null; } {
 	const steps = plan.plan.steps;
 
 	if (steps.length === 0) {
-		return(false);
+		return({ isForwardingOnly: false, providerID: null });
 	}
 
-	return(steps.every((step) => step.type === 'forwarded'));
+	for (const step of steps) {
+		if (step.type === 'forwarded') {
+			continue;
+		}
+
+		return({ isForwardingOnly: false, providerID: step.step?.providerID ?? null })
+	}
+
+	return({ isForwardingOnly: true });
 }
 
 /** Deposit address for the first forwarding leg of a forwarding-only plan. */
@@ -2161,6 +2170,56 @@ export class AnchorChainingPath {
 			this.logger?.debug(`AnchorChainingPath::getProviderLegalDisclaimers`, 'Error getting legal disclaimers for path', error);
 			return(null);
 		}
+	}
+}
+
+export class AnchorChainingPlanCreateError extends KeetaAnchorError {
+	static override readonly name: string = 'AnchorChainingPlanCreateError';
+	private readonly AnchorChainingPlanCreateErrorObjectTypeID!: string;
+	private static readonly AnchorChainingPlanCreateErrorObjectTypeID = '940e318b-a6d1-4f8e-be69-e6de9bc99948';
+
+	readonly failedAtStep: AnchorChainingStepLike;
+	readonly rootError: unknown;
+
+	constructor(input: {
+		rootError: unknown;
+		failedAtStep: AnchorChainingStepLike;
+	}) {
+		let message = 'Computing Plan Failed';
+		if (KeetaAnchorError.isInstance(input.rootError)) {
+			message = input.rootError.message;
+		}
+		super(message);
+
+		Object.defineProperty(this, 'AnchorChainingPlanCreateErrorObjectTypeID', {
+			value: AnchorChainingPlanCreateError.AnchorChainingPlanCreateErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.rootError = input.rootError;
+		this.failedAtStep = input.failedAtStep;
+	}
+
+	static isInstance(input: unknown): input is AnchorChainingPlanCreateError {
+		if (!this.hasPropWithValue(input, 'AnchorChainingPlanCreateErrorObjectTypeID', AnchorChainingPlanCreateError.AnchorChainingPlanCreateErrorObjectTypeID)) {
+			return(false);
+		}
+
+		return(true);
+	}
+
+	static resolveErrorResponse(input: unknown): AnchorPlanPathError {
+		let rootError;
+		let providerID = null;
+
+		if (input instanceof AnchorChainingPlanCreateError) {
+			rootError = input.rootError;
+			if (input.failedAtStep?.providerID) {
+				providerID = input.failedAtStep.providerID;
+			}
+		}
+
+		return({ success: false, error: rootError, failedAt: { providerID }})
 	}
 }
 
@@ -2433,356 +2492,367 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				resolvingSteps.add(index);
 
 				promise = (async (): Promise<ChainStepResolution> => {
-					if (step.type === 'fx') {
-						let amount;
+					try {
+						if (step.type === 'fx') {
+							let amount;
 
-						if (affinity === 'from') {
+							if (affinity === 'from') {
+								if (index === 0) {
+									amount = affinityAndAmount.amount;
+								} else {
+									const previous = await resolveStep(index - 1);
+									amount = previous.valueOut;
+								}
+							} else if (affinity === 'to') {
+								if (index === (this.path.length - 1)) {
+									// XXX:TODO Move this to destination
+									amount = affinityAndAmount.amount;
+								} else {
+									const next = await resolveStep(index + 1);
+									amount = next.valueIn;
+								}
+							} else {
+								assertNever(affinity);
+							}
+
+							const fxAccountOptions = await this.getAccountsForAction({
+								type: 'fx',
+								providerMethod: 'getAccountForAction'
+							}, this.#options?.overrides);
+
+							const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
+								{ from: step.from.asset, to: step.to.asset, amount, affinity },
+								fxAccountOptions,
+								{ providerIDs: [ step.providerID ] }
+							);
+
+							if (!quotesOrEstimates?.[0] || quotesOrEstimates.length === 0) {
+								throw(new Error(`Could not get FX quote/estimate for provider ${step.providerID}`));
+							}
+
+							const result = quotesOrEstimates[0];
+
+							if (!result.isQuote && result.estimate.canPerformExchange === false) {
+								throw(new Error(`FX estimate from provider ${step.providerID} indicates exchange cannot be performed`));
+							}
+
+							const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
+
+							let valueIn;
+							let valueOut;
+
+							if (affinity === 'to') {
+								valueOut = amount;
+								valueIn = convertedAmount;
+							} else if (affinity === 'from') {
+								valueOut = convertedAmount;
+								valueIn = amount;
+							} else {
+								assertNever(affinity);
+							}
+
+							return({ type: 'fx', step, valueIn, valueOut, result });
+						} else if (step.type === 'assetMovement') {
+							/*
+							 * Defense in depth: validatePathStructure rejects affinity 'to' on
+							 * asset-movement steps before any network call. This guard keeps the
+							 * check next to the operation in case the early pass is bypassed.
+							 */
+							if (affinity === 'to') {
+								throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
+							}
+
+							let depositValue: bigint;
 							if (index === 0) {
-								amount = affinityAndAmount.amount;
+								depositValue = affinityAndAmount.amount;
 							} else {
-								const previous = await resolveStep(index - 1);
-								amount = previous.valueOut;
+								const precomputedPrev = precomputedValueOuts.get(index - 1);
+								if (precomputedPrev !== undefined) {
+									depositValue = precomputedPrev;
+								} else {
+									const previous = await resolveStep(index - 1);
+									depositValue = previous.valueOut;
+								}
 							}
-						} else if (affinity === 'to') {
-							if (index === (this.path.length - 1)) {
-								// XXX:TODO Move this to destination
-								amount = affinityAndAmount.amount;
+
+							const assetPair = { from: step.from.asset, to: step.to.asset };
+
+							/*
+							 * Forwarded step: prior step deposits into a pre-resolved persistent address.
+							 */
+							const forwardedInfo = forwardedSteps.get(index);
+							if (forwardedInfo) {
+								const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
+
+								let estimatedValueOut = depositValue;
+								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
+								if (forwardingOnly) {
+									estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
+								} else if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
+									try {
+										const { signer: forwardedSigner } = await this.getAccountsForAction({
+											type: 'assetMovement',
+											providerMethod: 'initiateTransfer',
+											provider: forwardedProvider
+										}, this.#options?.overrides);
+										simulatedTransfer = await forwardedProvider.simulateTransfer({
+											account: forwardedSigner,
+											asset: assetPair,
+											from: { location: step.from.location },
+											to: { location: step.to.location },
+											value: depositValue
+										});
+
+										const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
+										let simulatedTotalReceive: string | undefined;
+										if (simulatedInstruction) {
+											simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
+											if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
+												simulatedTotalReceive = simulatedInstruction.value;
+											}
+										}
+										if (simulatedTotalReceive !== undefined) {
+											estimatedValueOut = BigInt(simulatedTotalReceive);
+										}
+									} catch (error) {
+										this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to depositValue`, error);
+									}
+								}
+
+								return({
+									type: 'forwarded',
+									step,
+									valueIn: depositValue,
+									valueOut: estimatedValueOut,
+									persistentAddress,
+									provider: forwardedProvider,
+									...(simulatedTransfer !== undefined ? { simulatedTransfer } : {})
+								});
+							}
+
+							if (this.#options?.forwardingOnly) {
+								throw(new Error(`Forwarding-only plan requires persistent forwarding for step at index ${index}, but none was resolved`));
+							}
+
+							const providers = await assetMovementClient.getProvidersForTransfer(
+								{ asset: assetPair, from: step.from.location, to: step.to.location },
+								{ providerIDs: [ step.providerID ] }
+							);
+
+							if (!providers?.[0] || providers.length === 0) {
+								throw(new Error(`Could not get asset movement provider ${step.providerID}`));
+							}
+							const provider = providers[0];
+
+							const { signer } = await this.getAccountsForAction({
+								type: 'assetMovement',
+								providerMethod: 'initiateTransfer',
+								provider
+							}, this.#options?.overrides);
+
+							let resolvedRecipient: RecipientResolved | GenericAccount;
+							let sendingToType: SendingToType;
+
+							if (index === this.path.length - 1) {
+								resolvedRecipient = this.request.destination.recipient;
+								sendingToType = 'FINAL_DESTINATION';
 							} else {
-								const next = await resolveStep(index + 1);
-								amount = next.valueIn;
-							}
-						} else {
-							assertNever(affinity);
-						}
+								sendingToType = 'NEXT_STEP';
 
-						const fxAccountOptions = await this.getAccountsForAction({
-							type: 'fx',
-							providerMethod: 'getAccountForAction'
-						}, this.#options?.overrides);
+								const nextPathStep = this.path[index + 1];
 
-						const quotesOrEstimates = await fxClient.getQuotesOrEstimates(
-							{ from: step.from.asset, to: step.to.asset, amount, affinity },
-							fxAccountOptions,
-							{ providerIDs: [ step.providerID ] }
-						);
+								if (!nextPathStep) {
+									throw(new Error(`Expected next step at index ${index + 1} for asset movement step at index ${index}`));
+								}
 
-						if (!quotesOrEstimates?.[0] || quotesOrEstimates.length === 0) {
-							throw(new Error(`Could not get FX quote/estimate for provider ${step.providerID}`));
-						}
+								/*
+								 * Next step is forwarded: recipient is its persistent address,
+								 * no need to resolve the next step's instructions.
+								 */
+								const nextForwardedInfo = forwardedSteps.get(index + 1);
+								if (nextForwardedInfo) {
+									const pfiAddress = nextForwardedInfo.persistentAddress.address;
+									if (typeof pfiAddress !== 'string') {
+										throw(new Error(`Persistent forwarding address for next step ${index + 1} is not a resolved string`));
+									}
 
-						const result = quotesOrEstimates[0];
-
-						if (!result.isQuote && result.estimate.canPerformExchange === false) {
-							throw(new Error(`FX estimate from provider ${step.providerID} indicates exchange cannot be performed`));
-						}
-
-						const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
-
-						let valueIn;
-						let valueOut;
-
-						if (affinity === 'to') {
-							valueOut = amount;
-							valueIn = convertedAmount;
-						} else if (affinity === 'from') {
-							valueOut = convertedAmount;
-							valueIn = amount;
-						} else {
-							assertNever(affinity);
-						}
-
-						return({ type: 'fx', step, valueIn, valueOut, result });
-					} else if (step.type === 'assetMovement') {
-						/*
-						 * Defense in depth: validatePathStructure rejects affinity 'to' on
-						 * asset-movement steps before any network call. This guard keeps the
-						 * check next to the operation in case the early pass is bypassed.
-						 */
-						if (affinity === 'to') {
-							throw(new Error(`Chaining with affinity 'to' is not currently supported for asset movement steps, as it requires looking up transfer quotes/estimates which is not currently implemented`));
-						}
-
-						let depositValue: bigint;
-						if (index === 0) {
-							depositValue = affinityAndAmount.amount;
-						} else {
-							const precomputedPrev = precomputedValueOuts.get(index - 1);
-							if (precomputedPrev !== undefined) {
-								depositValue = precomputedPrev;
-							} else {
-								const previous = await resolveStep(index - 1);
-								depositValue = previous.valueOut;
-							}
-						}
-
-						const assetPair = { from: step.from.asset, to: step.to.asset };
-
-						/*
-						 * Forwarded step: prior step deposits into a pre-resolved persistent address.
-						 */
-						const forwardedInfo = forwardedSteps.get(index);
-						if (forwardedInfo) {
-							const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
-
-							let estimatedValueOut = depositValue;
-							let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
-							if (forwardingOnly) {
-								estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
-							} else if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
-								try {
-									const { signer: forwardedSigner } = await this.getAccountsForAction({
+									resolvedRecipient = pfiAddress;
+								} else if (nextPathStep.from.location === this.keetaLocation) {
+									const { account } = await this.getAccountsForAction({
 										type: 'assetMovement',
-										providerMethod: 'initiateTransfer',
-										provider: forwardedProvider
+										providerMethod: 'initiateTransfer'
 									}, this.#options?.overrides);
-									simulatedTransfer = await forwardedProvider.simulateTransfer({
-										account: forwardedSigner,
+
+									// Store funds in-transit in the account instead of forwarding directly to provider.
+									resolvedRecipient = account;
+								} else {
+									/**
+									 * If the provider does not support simulateTransfer,
+									 * we cannot chain to this step.
+									 */
+									if (!await provider.isOperationSupported('simulateTransfer')) {
+										throw(new Error(`Asset movement provider ${step.providerID} does not support simulateTransfer, which is required for chaining at non-keeta intermediate location ${convertAssetLocationToString(nextPathStep.from.location)}`));
+									}
+
+									const simulated = await provider.simulateTransfer({
+										account: signer,
 										asset: assetPair,
 										from: { location: step.from.location },
 										to: { location: step.to.location },
 										value: depositValue
 									});
 
-									const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
-									let simulatedTotalReceive: string | undefined;
-									if (simulatedInstruction) {
-										simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
-										if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
-											simulatedTotalReceive = simulatedInstruction.value;
+									const simulatedInstruction = simulated.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
+									if (!simulatedInstruction) {
+										throw(new Error(`Simulated transfer for step ${index} did not return an instruction matching rail ${step.from.rail}`));
+									}
+
+									let simulatedTotalReceive: string | undefined = simulatedInstruction.totalReceiveAmount;
+									if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
+										simulatedTotalReceive = simulatedInstruction.value;
+									}
+									if (simulatedTotalReceive === undefined) {
+										throw(new Error(`totalReceiveAmount must be defined for simulated transfer when chaining`));
+									}
+
+									precomputedValueOuts.set(index, BigInt(simulatedTotalReceive));
+
+									const nextStep = await resolveStep(index + 1);
+
+									if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
+										if (nextStep.usingInstruction.type !== step.to.rail) {
+											throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
 										}
+
+										const foundInstruction = nextStep.usingInstruction;
+
+										const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
+											return(isFiatRail(input.type));
+										}
+
+										if (foundInstruction.type === 'KEETA_SEND') {
+											// Structurally unreachable now that validatePathStructure requires a keetaSend step to be the sole step; kept as a defensive invariant.
+											throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
+										} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
+											if (foundInstruction.depositMessage) {
+												throw(new Error(`Deposit message outbound is not currently supported for chaining`));
+											}
+											resolvedRecipient = foundInstruction.account;
+										} else if (foundInstruction.type === 'EVM_SEND' || foundInstruction.type === 'SOLANA_SEND') {
+											resolvedRecipient = foundInstruction.sendToAddress;
+										} else {
+											throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
+										}
+									} else if (nextStep.type === 'fx') {
+										throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
+									} else if (nextStep.type === 'forwarded') {
+										throw(new Error(`Internal invariant violation: forwarded step at index ${index + 1} reached simulate-cycle-break path; expected nextForwardedInfo branch to have handled it`));
+									} else {
+										assertNever(nextStep);
 									}
-									if (simulatedTotalReceive !== undefined) {
-										estimatedValueOut = BigInt(simulatedTotalReceive);
-									}
-								} catch (error) {
-									this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to depositValue`, error);
 								}
+							}
+
+							const recipientString = KeetaNet.lib.Account.isInstance(resolvedRecipient)
+								? resolvedRecipient.publicKeyString.get()
+								: resolvedRecipient;
+
+							const transfer = await provider.initiateTransfer({
+								account: signer,
+								asset: assetPair,
+								from: { location: step.from.location },
+								to: {
+									location: step.to.location,
+									recipient: recipientString
+								},
+								value: depositValue
+							});
+
+							const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
+
+							let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
+							if (totalReceiveAmount === undefined && 'value' in usingInstruction) {
+								totalReceiveAmount = usingInstruction.value;
+							}
+							if (totalReceiveAmount === undefined) {
+								throw(new Error(`totalReceiveAmount must be defined for chaining`));
+							}
+
+							const actualValueOut = BigInt(totalReceiveAmount);
+
+							// If we simulated to break a cycle, the next step's initiateTransfer was
+							// keyed off the simulated valueOut; a mismatch here means the next step
+							// is now misaligned, so fail at plan-time instead of letting execute() catch it.
+							const simulatedValueOut = precomputedValueOuts.get(index);
+							if (simulatedValueOut !== undefined && simulatedValueOut !== actualValueOut) {
+								throw(new Error(`Simulated valueOut ${simulatedValueOut} for step ${index} does not match actual ${actualValueOut} from initiateTransfer`));
 							}
 
 							return({
-								type: 'forwarded',
-								step,
+								type: 'assetMovement',
+								step: step,
 								valueIn: depositValue,
-								valueOut: estimatedValueOut,
-								persistentAddress,
-								provider: forwardedProvider,
-								...(simulatedTransfer !== undefined ? { simulatedTransfer } : {})
-							});
-						}
+								usingInstruction: usingInstruction,
+								transfer: transfer,
+								sendingTo: sendingToType,
+								valueOut: actualValueOut,
+								provider: provider
+							})
+						} else if (step.type === 'keetaSend') {
+							// Defense in depth: validatePathStructure also enforces this early.
+							if (this.path.length !== 1) {
+								throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
+							}
 
-						if (this.#options?.forwardingOnly) {
-							throw(new Error(`Forwarding-only plan requires persistent forwarding for step at index ${index}, but none was resolved`));
-						}
+							if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
+								throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
+							}
 
-						const providers = await assetMovementClient.getProvidersForTransfer(
-							{ asset: assetPair, from: step.from.location, to: step.to.location },
-							{ providerIDs: [ step.providerID ] }
-						);
+							if (!step.from.asset.comparePublicKey(step.to.asset)) {
+								throw(new Error(`For KEETA_SEND step, from and to asset must be the same account`));
+							}
 
-						if (!providers?.[0] || providers.length === 0) {
-							throw(new Error(`Could not get asset movement provider ${step.providerID}`));
-						}
-						const provider = providers[0];
+							let keetaRecipientDestination = null;
+							if (KeetaNet.lib.Account.isInstance(this.request.destination.recipient)) {
+								keetaRecipientDestination = this.request.destination.recipient;
+							} else if (typeof this.request.destination.recipient === 'string') {
+								try {
+									keetaRecipientDestination = KeetaNet.lib.Account.fromPublicKeyString(this.request.destination.recipient);
+								} catch {
+									/* ignore errors */
+								}
+							}
+							if (!keetaRecipientDestination) {
+								throw(new Error(`Expected destination recipient to be a public key string for KEETA_SEND step`));
+							}
 
-						const { signer } = await this.getAccountsForAction({
-							type: 'assetMovement',
-							providerMethod: 'initiateTransfer',
-							provider
-						}, this.#options?.overrides);
-
-						let resolvedRecipient: RecipientResolved | GenericAccount;
-						let sendingToType: SendingToType;
-
-						if (index === this.path.length - 1) {
-							resolvedRecipient = this.request.destination.recipient;
-							sendingToType = 'FINAL_DESTINATION';
+							return({
+								type: 'keetaSend',
+								step: null,
+								valueIn: affinityAndAmount.amount,
+								valueOut: affinityAndAmount.amount,
+								usingInstruction: {
+									type: 'KEETA_SEND',
+									tokenAddress: step.to.asset.publicKeyString.get(),
+									sendToAddress: keetaRecipientDestination.publicKeyString.get(),
+									totalReceiveAmount: affinityAndAmount.amount.toString(),
+									location: `chain:keeta:${this.parent['client'].network}`,
+									value: String(affinityAndAmount.amount),
+									assetFee: '0'
+								}
+							})
 						} else {
-							sendingToType = 'NEXT_STEP';
-
-							const nextPathStep = this.path[index + 1];
-
-							if (!nextPathStep) {
-								throw(new Error(`Expected next step at index ${index + 1} for asset movement step at index ${index}`));
-							}
-
-							/*
-							 * Next step is forwarded: recipient is its persistent address,
-							 * no need to resolve the next step's instructions.
-							 */
-							const nextForwardedInfo = forwardedSteps.get(index + 1);
-							if (nextForwardedInfo) {
-								const pfiAddress = nextForwardedInfo.persistentAddress.address;
-								if (typeof pfiAddress !== 'string') {
-									throw(new Error(`Persistent forwarding address for next step ${index + 1} is not a resolved string`));
-								}
-
-								resolvedRecipient = pfiAddress;
-							} else if (nextPathStep.from.location === this.keetaLocation) {
-								const { account } = await this.getAccountsForAction({
-									type: 'assetMovement',
-									providerMethod: 'initiateTransfer'
-								}, this.#options?.overrides);
-
-								// Store funds in-transit in the account instead of forwarding directly to provider.
-								resolvedRecipient = account;
-							} else {
-								/**
-								 * If the provider does not support simulateTransfer,
-								 * we cannot chain to this step.
-								 */
-								if (!await provider.isOperationSupported('simulateTransfer')) {
-									throw(new Error(`Asset movement provider ${step.providerID} does not support simulateTransfer, which is required for chaining at non-keeta intermediate location ${convertAssetLocationToString(nextPathStep.from.location)}`));
-								}
-
-								const simulated = await provider.simulateTransfer({
-									account: signer,
-									asset: assetPair,
-									from: { location: step.from.location },
-									to: { location: step.to.location },
-									value: depositValue
-								});
-
-								const simulatedInstruction = simulated.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
-								if (!simulatedInstruction) {
-									throw(new Error(`Simulated transfer for step ${index} did not return an instruction matching rail ${step.from.rail}`));
-								}
-
-								let simulatedTotalReceive: string | undefined = simulatedInstruction.totalReceiveAmount;
-								if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
-									simulatedTotalReceive = simulatedInstruction.value;
-								}
-								if (simulatedTotalReceive === undefined) {
-									throw(new Error(`totalReceiveAmount must be defined for simulated transfer when chaining`));
-								}
-
-								precomputedValueOuts.set(index, BigInt(simulatedTotalReceive));
-
-								const nextStep = await resolveStep(index + 1);
-
-								if (nextStep.type === 'assetMovement' || nextStep.type === 'keetaSend') {
-									if (nextStep.usingInstruction.type !== step.to.rail) {
-										throw(new Error(`Next step's usingInstruction type ${nextStep.usingInstruction.type} does not match expected ${step.to.rail} for recipient resolution`));
-									}
-
-									const foundInstruction = nextStep.usingInstruction;
-
-									const isFiatPushRailFoundInstruction = (input: AssetTransferInstructions | SimulatedAssetTransferInstructions): input is Extract<AssetTransferInstructions, { type: FiatPushRails; }> => {
-										return(isFiatRail(input.type));
-									}
-
-									if (foundInstruction.type === 'KEETA_SEND') {
-										// Structurally unreachable now that validatePathStructure requires a keetaSend step to be the sole step; kept as a defensive invariant.
-										throw(new Error(`Cannot currently chain from asset movement to KEETA_SEND step, as this implies multiple keeta locations in the path which is not currently supported`));
-									} else if (isFiatPushRailFoundInstruction(foundInstruction)) {
-										if (foundInstruction.depositMessage) {
-											throw(new Error(`Deposit message outbound is not currently supported for chaining`));
-										}
-										resolvedRecipient = foundInstruction.account;
-									} else if (foundInstruction.type === 'EVM_SEND' || foundInstruction.type === 'SOLANA_SEND') {
-										resolvedRecipient = foundInstruction.sendToAddress;
-									} else {
-										throw(new Error(`Unsupported rail for chaining: ${step.to.rail}`));
-									}
-								} else if (nextStep.type === 'fx') {
-									throw(new Error(`Cannot currently chain from asset movement to fx step, as fx step does not have recipient information`));
-								} else if (nextStep.type === 'forwarded') {
-									throw(new Error(`Internal invariant violation: forwarded step at index ${index + 1} reached simulate-cycle-break path; expected nextForwardedInfo branch to have handled it`));
-								} else {
-									assertNever(nextStep);
-								}
-							}
+							assertNever(step);
+						}
+					} catch (error) {
+						if (error instanceof AnchorChainingPlanCreateError) {
+							throw(error);
 						}
 
-						const recipientString = KeetaNet.lib.Account.isInstance(resolvedRecipient)
-							? resolvedRecipient.publicKeyString.get()
-							: resolvedRecipient;
-
-						const transfer = await provider.initiateTransfer({
-							account: signer,
-							asset: assetPair,
-							from: { location: step.from.location },
-							to: {
-								location: step.to.location,
-								recipient: recipientString
-							},
-							value: depositValue
-						});
-
-						const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
-
-						let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
-						if (totalReceiveAmount === undefined && 'value' in usingInstruction) {
-							totalReceiveAmount = usingInstruction.value;
-						}
-						if (totalReceiveAmount === undefined) {
-							throw(new Error(`totalReceiveAmount must be defined for chaining`));
-						}
-
-						const actualValueOut = BigInt(totalReceiveAmount);
-
-						// If we simulated to break a cycle, the next step's initiateTransfer was
-						// keyed off the simulated valueOut; a mismatch here means the next step
-						// is now misaligned, so fail at plan-time instead of letting execute() catch it.
-						const simulatedValueOut = precomputedValueOuts.get(index);
-						if (simulatedValueOut !== undefined && simulatedValueOut !== actualValueOut) {
-							throw(new Error(`Simulated valueOut ${simulatedValueOut} for step ${index} does not match actual ${actualValueOut} from initiateTransfer`));
-						}
-
-						return({
-							type: 'assetMovement',
-							step: step,
-							valueIn: depositValue,
-							usingInstruction: usingInstruction,
-							transfer: transfer,
-							sendingTo: sendingToType,
-							valueOut: actualValueOut,
-							provider: provider
-						})
-					} else if (step.type === 'keetaSend') {
-						// Defense in depth: validatePathStructure also enforces this early.
-						if (this.path.length !== 1) {
-							throw(new Error(`Direct same-location/same-asset send steps must be the only step in the path`));
-						}
-
-						if (!KeetaNet.lib.Account.isInstance(step.from.asset) || !KeetaNet.lib.Account.isInstance(step.to.asset)) {
-							throw(new Error(`Expected assets to be token accounts for KEETA_SEND rail`));
-						}
-
-						if (!step.from.asset.comparePublicKey(step.to.asset)) {
-							throw(new Error(`For KEETA_SEND step, from and to asset must be the same account`));
-						}
-
-						let keetaRecipientDestination = null;
-						if (KeetaNet.lib.Account.isInstance(this.request.destination.recipient)) {
-							keetaRecipientDestination = this.request.destination.recipient;
-						} else if (typeof this.request.destination.recipient === 'string') {
-							try {
-								keetaRecipientDestination = KeetaNet.lib.Account.fromPublicKeyString(this.request.destination.recipient);
-							} catch {
-								/* ignore errors */
-							}
-						}
-						if (!keetaRecipientDestination) {
-							throw(new Error(`Expected destination recipient to be a public key string for KEETA_SEND step`));
-						}
-
-						return({
-							type: 'keetaSend',
-							step: null,
-							valueIn: affinityAndAmount.amount,
-							valueOut: affinityAndAmount.amount,
-							usingInstruction: {
-								type: 'KEETA_SEND',
-								tokenAddress: step.to.asset.publicKeyString.get(),
-								sendToAddress: keetaRecipientDestination.publicKeyString.get(),
-								totalReceiveAmount: affinityAndAmount.amount.toString(),
-								location: `chain:keeta:${this.parent['client'].network}`,
-								value: String(affinityAndAmount.amount),
-								assetFee: '0'
-							}
-						})
-					} else {
-						assertNever(step);
+						throw(new AnchorChainingPlanCreateError({
+							rootError: error,
+							failedAtStep: step
+						}))
 					}
 				})();
 
@@ -3370,8 +3440,9 @@ export class AnchorChainingForwardingOnlyPlan extends AnchorChainingPath {
 	}
 }
 
-type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
-type AnchorChainingFullForwardingOnlyPlanResult = (({ success: true; plan: AnchorChainingForwardingOnlyPlan; } | { success: false; error: unknown; }) & { path: AnchorChainingPath; });
+type AnchorPlanPathError = { success: false; error: unknown; failedAt: { providerID: string | null; }};
+type AnchorChainingFullPlanResult = (({ success: true; plan: AnchorChainingPlan; } | AnchorPlanPathError) & { path: AnchorChainingPath; });
+type AnchorChainingFullForwardingOnlyPlanResult = (({ success: true; plan: AnchorChainingForwardingOnlyPlan; } | AnchorPlanPathError) & { path: AnchorChainingPath; });
 
 export class AnchorChaining {
 	private client: KeetaNet.UserClient;
@@ -3551,18 +3622,24 @@ export class AnchorChaining {
 
 			if (options?.includeAllOutput) {
 				if (plan.status === 'rejected') {
-					ret.push({ success: false, error: plan.reason, path });
-				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
-					ret.push({ success: false, error: new Error('Plan does not qualify as a forwarding-only route'), path });
-				} else if (plan.value instanceof AnchorChainingForwardingOnlyPlan) {
-					ret.push({ success: true, plan: plan.value, path });
-				} else if (plan.value instanceof AnchorChainingPlan) {
-					ret.push({ success: true, plan: plan.value, path });
+					ret.push({
+						...(AnchorChainingPlanCreateError.resolveErrorResponse(plan.reason)),
+						path
+					});
+				} else {
+					const isForwardingPlanResult = isForwardingPlan(plan.value);
+					if (forwardingOpts && !isForwardingPlanResult.isForwardingOnly) {
+						ret.push({ success: false, error: new Error('Plan does not qualify as a forwarding-only route'), path, failedAt: { providerID: isForwardingPlanResult.providerID }});
+					} else if (plan.value instanceof AnchorChainingForwardingOnlyPlan) {
+						ret.push({ success: true, plan: plan.value, path });
+					} else if (plan.value instanceof AnchorChainingPlan) {
+						ret.push({ success: true, plan: plan.value, path });
+					}
 				}
 			} else {
 				if (plan.status === 'rejected') {
 					this.logger?.debug(`AnchorChaining::getPlans`, `Error computing plan for a path:`, plan.reason);
-				} else if (forwardingOpts && !isForwardingPlan(plan.value)) {
+				} else if (forwardingOpts && !isForwardingPlan(plan.value).isForwardingOnly) {
 					this.logger?.debug(`AnchorChaining::getPlans`, `Skipping plan that does not qualify as forwarding-only`);
 				} else {
 					ret.push(plan.value);

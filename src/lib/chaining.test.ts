@@ -7,7 +7,7 @@ import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetCon
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
+import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, AnchorChainingPlanCreateError, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
 import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
@@ -2718,6 +2718,95 @@ test('AnchorChaining getPlans includeAllOutput', async function() {
 	expect(defaultResults).not.toBeNull();
 	expect(defaultResults).toHaveLength(1);
 	expect(defaultResults?.[0]?.plan.steps.some(s => s.type === 'fx' && s.step.providerID === 'FXTwo')).toBe(true);
+});
+
+describe('plan create error reports failedAt providerID', function() {
+	test('getPlans and create report FX providerID when quote fails', async function() {
+		await using h = await createChainingTestHarness();
+
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+
+		h.fxServerOne.setGetConversionRateAndFee(async () => {
+			throw(new Error('FXOne rate unavailable'));
+		});
+
+		const results = await h.anchorChaining.getPlans(input, { includeAllOutput: true });
+		const failed = results?.find(r => !r.success);
+		if (!failed || failed.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failed.failedAt.providerID).toEqual(h.fxOneProviderID);
+		expect(failed.error).toBeInstanceOf(Error);
+		if (failed.error instanceof Error) {
+			expect(failed.error.message).toEqual(`Could not get FX quote/estimate for provider ${h.fxOneProviderID}`);
+		} else {
+			throw(new Error('failed.error not instanceof Error'));
+		}
+
+		const path = await h.getPathVia('FXOne');
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		expect(AnchorChainingPlanCreateError.isInstance(error)).toBe(true);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(error.failedAtStep.providerID).toEqual(h.fxOneProviderID);
+		expect(error.rootError).toBeInstanceOf(Error);
+		if (error.rootError instanceof Error) {
+			expect(error.rootError.message).toEqual(`Could not get FX quote/estimate for provider ${h.fxOneProviderID}`);
+		} else {
+			throw(new Error('error.rootError not instanceof Error'));
+		}
+		expect(AnchorChainingPlanCreateError.resolveErrorResponse(error)).toEqual({
+			success: false,
+			error: error.rootError,
+			failedAt: { providerID: h.fxOneProviderID }
+		});
+	});
+
+	test('getPlans and create report AM providerID when initiateTransfer fails', async function() {
+		await using h = await createChainingTestHarness();
+
+		const input = {
+			source:      { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' as const },
+			destination: { asset: 'EUR' as const, location: 'bank-account:iban-swift' as const, recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' as const }
+		};
+
+		h.bankServerEU.failNextInitiate('Bank EU initiate failed');
+
+		const results = await h.anchorChaining.getPlans(input, { includeAllOutput: true });
+		const failed = results?.find(r => !r.success);
+		if (!failed || failed.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failed.failedAt.providerID).toEqual(h.euBankProviderID);
+		expect(failed.error).toBeInstanceOf(Error);
+		if (!(failed.error instanceof Error)) {
+			throw(new Error('expected failed.error to be instanceof Error'));
+		}
+		expect(failed.error.message).toEqual('Bank EU initiate failed');
+
+		h.bankServerEU.failNextInitiate('Bank EU initiate failed');
+		const path = await h.getPathVia('FXOne');
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		expect(AnchorChainingPlanCreateError.isInstance(error)).toBe(true);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(error.failedAtStep.providerID).toEqual(h.euBankProviderID);
+		expect(error.rootError).toBeInstanceOf(Error);
+		if (!(error.rootError instanceof Error)) {
+			throw(new Error('expected error.rootError to be instanceof Error'))
+		}
+		expect(error.rootError.message).toEqual('Bank EU initiate failed');
+		expect(AnchorChainingPlanCreateError.resolveErrorResponse(error)).toEqual({
+			success: false,
+			error: error.rootError,
+			failedAt: { providerID: h.euBankProviderID }
+		});
+	});
 });
 
 test('AnchorChaining resolveAssets', async function() {
