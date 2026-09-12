@@ -50,6 +50,18 @@ type CountrySearchCanonical = CurrencyInfo.ISOCountryCode; /* XXX:TODO */
 
 // #region Global Service Metadata
 /**
+ * The type of legal entity a KYC provider can verify.
+ *
+ * - `individual` is the classic Know Your Customer (KYC) flow.
+ * - `business` is the Know Your Business (KYB) flow.
+ *
+ * Both are hosted redirect flows: the provider returns a `webURL` to a
+ * hosted experience it owns, and the client polls for the certificate.
+ */
+const kycEntityTypes = ['individual', 'business'] as const;
+type KYCEntityType = typeof kycEntityTypes[number];
+
+/**
  * Service Metadata General Structure
  */
 type ServiceMetadata = {
@@ -108,6 +120,23 @@ type ServiceMetadata = {
 				 * validate accounts in any country.
 				 */
 				countryCodes?: string[];
+				/**
+				 * The entity types which this KYC provider can
+				 * verify, expressed as a map of explicit booleans
+				 * (mirroring `supportedOperations` on asset
+				 * movement). If omitted, the provider is assumed to
+				 * verify `individual` entities only, preserving the
+				 * classic KYC behavior.
+				 *
+				 * - `individual` is the classic KYC redirect flow.
+				 * - `business` is a Know Your Business (KYB) flow.
+				 *
+				 * Both are hosted redirect flows where the provider
+				 * returns a `webURL`. A type is supported only when
+				 * its key is explicitly `true`; `false` or a missing
+				 * key both mean unsupported.
+				 */
+				entityTypes?: { [entityType in KYCEntityType]?: boolean };
 				/**
 				 * The Certificate Authority (CA) Certificate
 				 * that this KYC provider uses to sign KYC
@@ -361,6 +390,13 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * of the following countries.
 		 */
 		countryCodes: CountrySearchInput[];
+		/**
+		 * Search for a KYC provider which can verify the given entity
+		 * type. If omitted, providers are matched without filtering on
+		 * entity type (a provider with no declared `entityTypes` is
+		 * treated as `individual`-only).
+		 */
+		entityType?: KYCEntityType;
 	};
 	'assetMovement': {
 		asset?: MovableAssetSearchInput | { from: MovableAssetSearchInput; to: MovableAssetSearchInput; };
@@ -1609,6 +1645,24 @@ async function verifyServiceEntrySignature(entry: ValuizableObject, logger?: Log
 	return(valid);
 }
 
+/**
+ * A service with no usable `entityTypes` declaration is `individual`-only;
+ * otherwise a type is supported only when its key is explicitly `true`.
+ */
+async function kycServiceSupportsEntityType(kycService: ValuizableObject, entityType: KYCEntityType): Promise<boolean> {
+	const declared = await kycService.entityTypes?.('object');
+	if (declared === undefined) {
+		return(entityType === 'individual');
+	}
+
+	const declaredValue = declared[entityType];
+	if (declaredValue === undefined) {
+		return(false);
+	}
+
+	return(await declaredValue('boolean'));
+}
+
 class Resolver {
 	readonly #roots: KeetaNetGenericAccount[];
 	readonly #trustedCAs: ResolverConfig['trustedCAs'];
@@ -1814,6 +1868,16 @@ class Resolver {
 					}
 
 					if (!acceptable) {
+						continue;
+					}
+				}
+
+				if (criteria.entityType !== undefined) {
+					const supported = await kycServiceSupportsEntityType(checkKYCService, criteria.entityType);
+
+					this.#logger?.debug(`Resolver:${this.id}`, 'Checking entity type:', criteria.entityType, 'supported:', supported, 'for', checkKYCServiceID);
+
+					if (!supported) {
 						continue;
 					}
 				}
@@ -2586,7 +2650,11 @@ class Resolver {
 		return(retval);
 	}
 
-	async listSupportedKYCCountries(): Promise<CurrencyInfo.Country[]> {
+	/**
+	 * When `entityType` is omitted, countries are listed across every KYC
+	 * service regardless of the entity types it declares.
+	 */
+	async listSupportedKYCCountries(entityType?: KYCEntityType): Promise<CurrencyInfo.Country[]> {
 		const rootMetadata = await this.#getRootMetadata();
 
 		/*
@@ -2612,6 +2680,10 @@ class Resolver {
 			try {
 				const kycService = await kycServices[kycServiceID]?.('object');
 				if (kycService === undefined) {
+					continue;
+				}
+
+				if (entityType !== undefined && !await kycServiceSupportsEntityType(kycService, entityType)) {
 					continue;
 				}
 
@@ -2900,7 +2972,9 @@ class Resolver {
 }
 
 export default Resolver;
+export { kycEntityTypes };
 export type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceMetadataExternalizable,
 	ServiceSearchCriteria,

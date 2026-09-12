@@ -21,7 +21,8 @@ import {
 } from './common.js';
 import type { Account } from '@keetanetwork/keetanet-client/lib/account.js';
 import type * as Signing from '../../lib/utils/signing.js';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { KYCEntityType, ServiceMetadata } from '../../lib/resolver.ts';
+import { kycEntityTypes } from '../../lib/resolver.js';
 import { parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 
@@ -130,6 +131,19 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		 * Country codes that this KYC provider can service (default is all country codes)
 		 */
 		countryCodes?: (CurrencyInfo.Country | CurrencyInfo.ISOCountryCode)[];
+
+		/**
+		 * Entity types that this KYC provider can verify.
+		 *
+		 * Defaults to `['individual']` (the classic KYC flow).
+		 * Add `'business'` to advertise Know Your Business (KYB)
+		 * support. Both are hosted redirect flows: the provider
+		 * returns a `webURL` to the hosted collection experience it
+		 * owns (individual KYC or KYB), and the client polls for the
+		 * certificate. A provider that does both lists both:
+		 * `['individual', 'business']`.
+		 */
+		entityTypes?: KYCEntityType[];
 	}
 
 	/**
@@ -168,6 +182,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
 	readonly routes: NonNullable<KeetaAnchorKYCServerConfig['routes']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
+	readonly #entityTypes: KYCEntityType[];
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
 		super(config);
@@ -179,6 +194,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		this.kyc = config.kyc;
 		this.routes = config.routes ?? {};
 		this.kycProviderURL = config.kycProviderURL ?? kycProviderURLUndefined;
+		if (config.kyc.entityTypes !== undefined && config.kyc.entityTypes.length === 0) {
+			throw(new Error('Expected "kyc.entityTypes" to declare at least one entity type'));
+		}
+
+		this.#entityTypes = [...config.kyc.entityTypes ?? ['individual']];
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
@@ -402,6 +422,9 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
+			entityTypes: Object.fromEntries(kycEntityTypes.map((entityType) => {
+				return([entityType, this.#entityTypes.includes(entityType)]);
+			})),
 			operations
 		});
 	}
