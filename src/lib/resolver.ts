@@ -2683,8 +2683,11 @@ class Resolver {
 					continue;
 				}
 
-				if (entityType !== undefined && !await kycServiceSupportsEntityType(kycService, entityType)) {
-					continue;
+				if (entityType !== undefined) {
+					const isSupportedType = await kycServiceSupportsEntityType(kycService, entityType)
+					if (!isSupportedType) {
+						continue;
+					}
 				}
 
 				/*
