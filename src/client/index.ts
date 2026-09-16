@@ -1,6 +1,7 @@
 import type {
 	KeetaKYCAnchorClientConfig
 } from '../services/kyc/client.ts';
+import type { KYCEntityType } from '../lib/resolver.ts';
 import type {
 	KeetaFXAnchorClientConfig
 } from '../services/fx/client.ts';
@@ -25,6 +26,7 @@ import type {
 // eslint-disable-next-line @typescript-eslint/no-namespace
 export namespace KYC {
 	export type ClientConfig = KeetaKYCAnchorClientConfig;
+	export type EntityType = KYCEntityType;
 	export const Client: typeof KeetaKYCAnchorClient = KeetaKYCAnchorClient;
 }
 // TODO: Determine how we want to export the client
