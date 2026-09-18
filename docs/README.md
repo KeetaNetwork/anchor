@@ -76,6 +76,8 @@ The package `README.md` MAY stay a thin pointer. It does not use this page shape
 | [Quickstart](QUICKSTART.md) | An engineer who installs the package and calls a client | Implementation |
 | [Resolver](concepts/resolver.md) | An engineer who traces service discovery | Concept |
 | [Certificates](concepts/certificates.md) | An engineer who shares KYC attributes | Concept |
+| [Encrypted containers](concepts/encrypted-containers.md) | An engineer who encrypts bytes to principals | Concept |
+| [Signed URLs](concepts/signed-urls.md) | An engineer who traces HTTP query signatures | Concept |
 | [Queue](concepts/queue.md) | An engineer who persists staged work | Concept |
 | [Status](concepts/status.md) | An engineer who reads transfer status | Concept |
 | [History](concepts/history.md) | An engineer who folds on-chain history | Concept |

@@ -11,9 +11,20 @@ Read this page when adding a service or calling one. After reading, an engineer 
 ## Related documents
 
 - [Resolver](resolver.md) for lookup and metadata signatures.
+- [Signed URLs](signed-urls.md) for query signatures and body auth.
 - [Certificates](certificates.md) for the KYC share path.
+- [Encrypted containers](encrypted-containers.md) for share buffers.
 - [Queue](queue.md) for staged server work.
 - [Quickstart](../QUICKSTART.md) for first client construction.
+
+```mermaid
+flowchart TD
+	common[common.ts signable and guards]
+	client[client.ts lookup and HTTP]
+	server[server.ts routes and metadata]
+	client --> common
+	server --> common
+```
 
 ## Three files, one contract
 
@@ -35,9 +46,16 @@ A published client constructor takes a KeetaNet `UserClient` and an optional con
 
 The client calls `Resolver.lookup` with the service kind. It then builds one provider object per matching id. Provider methods fetch the operation URL and apply the metadata authentication rule.
 
-`addSignatureToURL` in `src/lib/http-server/common.ts` writes `signed.nonce`, `signed.timestamp`, `signed.signature`, and `account`. A URL that already has those keys throws.
+Authenticated clients sign requests. [Signed URLs](signed-urls.md) is the home for `addSignatureToURL` and the query keys. A service `common.ts` owns the signable that those helpers cover.
 
 KYC is the exception that accepts a plain `Client` or a `UserClient`. The other published clients require a `UserClient`.
+
+```typescript
+const signable = getUsernameClaimSignable(request);
+const signed = await SignData(account, signable);
+```
+
+[`getUsernameClaimSignable`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/username/common.ts#L243-L256) in `src/services/username/common.ts` is one such signable. [`username/client.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/username/client.ts#L424-L424) signs it. [`kyc/client.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/kyc/client.ts#L542-L546) signs a GET with `SignData` and `addSignatureToURL`.
 
 ## Server path
 

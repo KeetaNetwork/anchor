@@ -12,7 +12,20 @@ Read this page when a client cannot find a provider, or when metadata lookup loo
 
 - [Architecture](../architecture.md) for the discovery sequence.
 - [Services](services.md) for how a client uses lookup results.
+- [Signed URLs](signed-urls.md) for signed external metadata fetches.
 - [Status](status.md) for transfer reads after a provider is known.
+
+```mermaid
+flowchart LR
+	client[Service client]
+	resolver[Resolver]
+	root[Root account metadata]
+	http[HTTP operations]
+	client --> resolver
+	resolver --> root
+	resolver --> http
+	client --> http
+```
 
 ## Root metadata
 
@@ -22,7 +35,7 @@ Each root URL is `keetanet://<publicKey>/metadata`. `Metadata.readKeetaNetURL` i
 
 Root metadata MUST carry `version` `1`. A missing version or any other version drops that root. If no root remains, lookup throws.
 
-`Resolver.Metadata.formatMetadata` in `src/lib/resolver.ts` JSON-encodes, deflates, and Base64-encodes the object that an account stores.
+[`Resolver.Metadata.formatMetadata`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/resolver.ts#L954-L954) in `src/lib/resolver.ts` JSON-encodes, deflates, and Base64-encodes the object that an account stores.
 
 ## Several roots
 
@@ -73,7 +86,19 @@ EVM asset ids in asset-movement metadata are checksummed through `checksumEVMAss
 
 ## Client construction
 
-Each published client accepts an optional `resolver`. When that field is omitted, the client calls `getDefaultResolver`. Pass `root` when the metadata lives on an account other than the network account.
+Each published client accepts an optional `resolver`. When that field is omitted, the client calls [`getDefaultResolver`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/config.ts#L51-L51) in `src/config.ts`. The caller supplies `root` when the metadata lives on an account other than the network account.
+
+## Call shape
+
+```typescript
+const metadata = Resolver.Metadata.formatMetadata({
+	version: 1,
+	services: { /* service map */ }
+});
+const providers = await resolver.lookup('kyc', { countryCodes: ['US'] });
+```
+
+[`lookup`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/resolver.ts#L2850-L2850) filters and verifies. [`kyc/client.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/kyc/client.test.ts#L152-L174) publishes that metadata and constructs `KYC.Client`. [`resolver.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/resolver.test.ts#L382-L382) looks up `banking`, `kyc`, and `fx`.
 
 ## Falsified by
 

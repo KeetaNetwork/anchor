@@ -85,15 +85,24 @@ In-repository tests publish metadata on a local account. They pass that account 
 
 The happy-path excerpts below use the published namespaces. Complete flows live in the cited tests.
 
+```mermaid
+flowchart LR
+	install[Install the package]
+	client[Construct a client]
+	lookup[Resolver lookup]
+	call[Signed HTTP call]
+	install --> client --> lookup --> call
+```
+
 ```typescript
 import { KYC, Username, lib, KeetaNet } from '@keetanetwork/anchor';
 ```
 
-`KeetaNet` is `@keetanetwork/keetanet-client`. `lib` is the published library barrel.
+`KeetaNet` is `@keetanetwork/keetanet-client`. `lib` is the published library barrel. Signed request query keys live on [Signed URLs](concepts/signed-urls.md). Encrypted share buffers live on [Encrypted containers](concepts/encrypted-containers.md).
 
 ## Resolve a username
 
-A globally identifiable username is `name$providerID`. `formatGloballyIdentifiableUsername` in `src/services/username/common.ts` builds that string.
+A globally identifiable username is `name$providerID`. [`formatGloballyIdentifiableUsername`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/username/common.ts#L193-L193) in `src/services/username/common.ts` builds that string.
 
 ```typescript
 const usernameClient = new Username.Client(userClient, {
@@ -101,39 +110,22 @@ const usernameClient = new Username.Client(userClient, {
 	signer: claimantAccount,
 	account: claimantAccount
 });
-
 const provider = await usernameClient.getProvider(providerID);
-if (provider === null) {
-	throw(new Error(`Username provider ${providerID} not found`));
-}
-
-const resolved = await usernameClient.resolve(`alice$${providerID}`);
 ```
 
-`src/services/username/client.test.ts` constructs the same client, publishes resolver metadata, and claims a name. Read that test for claim, release, transfer, and search.
+[`username/client.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/username/client.test.ts#L186-L193) constructs that client, publishes resolver metadata, and claims a name. Read that test for claim, release, transfer, and search.
 
 ## Start a KYC verification
 
 ```typescript
-const kycClient = new KYC.Client(userClient, {
-	root: account
-});
-
-const countries = await kycClient.getSupportedCountries();
+const kycClient = new KYC.Client(userClient, { root: account });
 const providers = await kycClient.createVerification({
 	countryCodes: ['US'],
 	account: account
 });
-
-const provider = providers[0];
-if (provider === undefined) {
-	throw(new Error('No KYC providers returned'));
-}
-
-const verification = await provider.startVerification();
 ```
 
-`src/services/kyc/client.test.ts` starts `KeetaNetKYCAnchorHTTPServer`, publishes metadata through `Resolver.Metadata.formatMetadata`, and reads certificates. Read that test for the server side.
+[`kyc/client.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/services/kyc/client.test.ts#L171-L195) starts `KeetaNetKYCAnchorHTTPServer`, publishes metadata through `Resolver.Metadata.formatMetadata`, and reads certificates. Read that test for the server side.
 
 ## Call FX or asset movement
 
@@ -152,7 +144,7 @@ const status = new lib.AnchorTransactionStatus(source);
 const result = await status.getStatus(anchor, transactionID);
 ```
 
-`UserHistory` in `src/lib/history.ts` folds blocks and optional enrichment. [Status](concepts/status.md) and [History](concepts/history.md) hold those contracts.
+[`getStatus`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/anchor-status.ts#L240-L240) caches only `COMPLETE`. [`anchor-status.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/anchor-status.test.ts#L51-L72) proves that rule. `UserHistory` in `src/lib/history.ts` folds blocks and optional enrichment. [Status](concepts/status.md) and [History](concepts/history.md) hold those contracts.
 
 ## Falsified by
 

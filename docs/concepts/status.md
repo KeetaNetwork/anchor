@@ -13,16 +13,34 @@ Read this page when a wallet and a provider disagree on whether a transfer settl
 - [History](history.md) for how status projects into logical transactions.
 - [Resolver](resolver.md) for finding the provider that serves an anchor.
 - [Services](services.md) for asset-movement and FX clients.
+- [Encrypted containers](encrypted-containers.md) for envelopes that wrap a container.
+
+```mermaid
+flowchart LR
+	get[getStatus]
+	source[AnchorStatusSource]
+	cache[Cache]
+	get --> source
+	get --> cache
+	cache -->|only COMPLETE| store[Stored result]
+```
 
 ## Standardized status
 
 `StandardizedTransferStatus` in `src/lib/anchor-status.ts` carries a provider status string, a `transactionID`, and the source record.
 
-`isCompletedTransferStatus` returns true only for the string `COMPLETE`. Other strings stay provider-specific.
+[`isCompletedTransferStatus`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/anchor-status.ts#L159-L159) returns true only for the string `COMPLETE`. Other strings stay provider-specific.
 
-`AnchorTransactionStatus.getStatus` reads through an `AnchorStatusSource`. A missing reader returns `null`.
+[`AnchorTransactionStatus.getStatus`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/anchor-status.ts#L240-L240) reads through an `AnchorStatusSource`. A missing reader returns `null`.
 
-When a cache is present, a `COMPLETE` result is stored under `anchorPublicKey:transactionID`. A non-complete result is not stored. `src/lib/anchor-status.test.ts` counts reader calls to prove that cache rule.
+When a cache is present, a `COMPLETE` result is stored under `anchorPublicKey:transactionID`. A non-complete result is not stored.
+
+```typescript
+const status = new lib.AnchorTransactionStatus(source);
+const result = await status.getStatus(anchor, transactionID);
+```
+
+[`anchor-status.test.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/anchor-status.test.ts#L51-L72) counts reader calls to prove that cache rule.
 
 `CompositeAnchorStatusSource` returns the first reader that serves the anchor.
 

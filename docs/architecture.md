@@ -14,6 +14,8 @@ This document serves the engineer who integrates a client, and the engineer who 
 - [Quickstart](QUICKSTART.md) for install and first client use.
 - [Resolver](concepts/resolver.md) for root metadata, lookup, and signatures.
 - [Certificates](concepts/certificates.md) for KYC attributes and share containers.
+- [Encrypted containers](concepts/encrypted-containers.md) for principal encryption and encoded buffers.
+- [Signed URLs](concepts/signed-urls.md) for HTTP query signatures.
 - [Queue](concepts/queue.md) for durable jobs and pipes.
 - [Status](concepts/status.md) for standardized transfer status.
 - [History](concepts/history.md) for classifiers and enrichment.
@@ -120,12 +122,14 @@ Each concept page is the single home for one body of invariant knowledge.
 | --- | --- |
 | [Resolver](concepts/resolver.md) | Root metadata, lazy values, signatures, and lookup. |
 | [Certificates](concepts/certificates.md) | KYC attributes, sensitive commitments, and share containers. |
+| [Encrypted containers](concepts/encrypted-containers.md) | Principal encryption, optional signing, and encoded buffers. |
+| [Signed URLs](concepts/signed-urls.md) | HTTP query signatures and the URL-versus-body split. |
 | [Queue](concepts/queue.md) | Driver contract, runner lifecycle, and pipes. |
 | [Status](concepts/status.md) | Standardized transfer status and on-chain envelopes. |
 | [History](concepts/history.md) | Classifiers, enrichment trust, and chain fold. |
 | [Services](concepts/services.md) | Client, server, and common ownership. |
 
-`parseKeetaURI` and `encodeKeetaURI` in `src/lib/uri.ts` own the `keeta://actions/send` form. That contract lives in one file, so this tree does not duplicate it.
+[`parseKeetaURI`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/uri.ts#L35-L124) and `encodeKeetaURI` in `src/lib/uri.ts` own the `keeta://actions/send` form. That contract lives in one file, so this tree does not duplicate it. [Signed URLs](concepts/signed-urls.md) is a different HTTP query contract.
 
 ## Falsified by
 

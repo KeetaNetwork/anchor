@@ -13,6 +13,8 @@ Read this guide in the first week on the package. After reading, an engineer can
 | What is always true, and where is it enforced? | [Architecture](architecture.md) |
 | How does a client find a service? | [Resolver](concepts/resolver.md) |
 | How do KYC attributes stay private until share? | [Certificates](concepts/certificates.md) |
+| How are bytes encrypted to principals? | [Encrypted containers](concepts/encrypted-containers.md) |
+| How does an HTTP request carry a URL signature? | [Signed URLs](concepts/signed-urls.md) |
 | How does staged work survive a crash? | [Queue](concepts/queue.md) |
 | Which transfer states are standardized? | [Status](concepts/status.md) |
 | How does a wallet fold on-chain history? | [History](concepts/history.md) |
@@ -29,8 +31,8 @@ This package is the reference Anchor SDK and the Anchor Client. The SDK is the s
 The product contract is the following set.
 
 - Service discovery through on-chain metadata. See [Resolver](concepts/resolver.md).
-- Signed HTTP calls from a client to a service. See [Services](concepts/services.md).
-- KYC certificates and encrypted share containers. See [Certificates](concepts/certificates.md).
+- Signed HTTP calls from a client to a service. See [Services](concepts/services.md) and [Signed URLs](concepts/signed-urls.md).
+- KYC certificates and encrypted share containers. See [Certificates](concepts/certificates.md) and [Encrypted containers](concepts/encrypted-containers.md).
 - Durable queue work for a service process. See [Queue](concepts/queue.md).
 - A provider-independent transfer status surface. See [Status](concepts/status.md).
 - Wallet history folded from blocks and anchor transfers. See [History](concepts/history.md).
@@ -108,9 +110,9 @@ An Anchor handles funds in motion. It also handles personal data and bank instru
 | Tactic | Example in this package |
 | --- | --- |
 | Exclusion | Debug logs record identifiers. They do not record raw certificate attribute values. |
-| Encapsulation | `EncryptedContainer` in `src/lib/encrypted-container.ts` shares bytes with named principals. |
+| Encapsulation | `EncryptedContainer` in `src/lib/encrypted-container.ts` shares bytes with named principals. See [Encrypted containers](concepts/encrypted-containers.md). |
 | Earmarking | `SensitiveAttribute` in `src/lib/sensitive-attribute.ts` marks a KYC field as a commitment. |
-| Encryption and authentication | Clients sign HTTP requests. Servers MAY require an on-chain certificate chain. |
+| Encryption and authentication | Clients sign HTTP requests. See [Signed URLs](concepts/signed-urls.md). Servers MAY require an on-chain certificate chain. |
 | Integrity | Queue compare-and-set and idempotent keys stop a crash retry from adding a second job. |
 | Availability trade-offs | Queue leases, retries, and stuck detection bound the work. |
 
@@ -122,8 +124,9 @@ Each surface below binds somebody outside the change. The owning page or source 
 | --- | --- | --- |
 | The client barrel namespaces | Every published consumer | `src/client/index.ts` |
 | Resolver metadata version and lookup | Every service client | [Resolver](concepts/resolver.md) |
-| Signed HTTP query fields | Every authenticated caller | [Services](concepts/services.md) |
+| Signed HTTP query fields | Every authenticated caller | [Signed URLs](concepts/signed-urls.md) |
 | KYC certificate attributes and share proofs | KYC providers and wallets | [Certificates](concepts/certificates.md) |
+| Encrypted container principals and factories | Callers that share private bytes | [Encrypted containers](concepts/encrypted-containers.md) |
 | Queue driver and pipe statuses | Service workers | [Queue](concepts/queue.md) |
 | `COMPLETE` as the only settled status | Wallets and history | [Status](concepts/status.md) |
 | History classifier order and trust rule | Wallet transaction lists | [History](concepts/history.md) |
@@ -153,6 +156,8 @@ Service implementations live under `src/services/`. Shared library code lives un
 | A new exported service client | `src/services/<name>/`, then `src/client/index.ts` |
 | A new resolver service kind | `src/lib/resolver.ts` and the service `common.ts` |
 | A KYC attribute or share rule | `src/lib/certificates.ts` and the KYC generated schema |
+| An encrypted container rule | `src/lib/encrypted-container.ts` |
+| A signed URL query field | `src/lib/http-server/common.ts` |
 | A queue driver or status | `src/lib/queue/` |
 | A status vocabulary | `src/lib/anchor-status.ts`. Treat the change as breaking. |
 | A history classifier | `src/lib/history.ts`. Treat the change as breaking. |
@@ -161,7 +166,7 @@ Service implementations live under `src/services/`. Shared library code lives un
 ### First-week reading order
 
 1. This guide.
-2. [Architecture](architecture.md), then [Resolver](concepts/resolver.md), [Services](concepts/services.md), [Certificates](concepts/certificates.md), [Queue](concepts/queue.md), [Status](concepts/status.md), and [History](concepts/history.md).
+2. [Architecture](architecture.md), then [Resolver](concepts/resolver.md), [Services](concepts/services.md), [Signed URLs](concepts/signed-urls.md), [Certificates](concepts/certificates.md), [Encrypted containers](concepts/encrypted-containers.md), [Queue](concepts/queue.md), [Status](concepts/status.md), and [History](concepts/history.md).
 3. [Quickstart](QUICKSTART.md).
 4. `src/client/index.ts` and `src/lib/index.ts`.
 5. One complete client test, such as `src/services/kyc/client.test.ts` or `src/services/username/client.test.ts`.
