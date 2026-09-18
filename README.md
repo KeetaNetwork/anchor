@@ -4,7 +4,7 @@
 
 TypeScript reference SDK and client for KeetaNetwork Anchors. An Anchor bridges the KeetaNet ledger and a banking or payment system.
 
-The documentation index is [docs/OVERVIEW.md](docs/OVERVIEW.md). To install the package and call a client, follow [docs/QUICKSTART.md](docs/QUICKSTART.md). How to write pages is [docs/README.md](docs/README.md).
+The documentation index is [docs/README.md](docs/README.md). To install the package and call a client, follow [docs/QUICKSTART.md](docs/QUICKSTART.md). How to write pages is [docs/STANDARD.md](docs/STANDARD.md). Architecture is [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 A longer internal write-up remains on [Notion](https://www.notion.so/keeta/Anchor-Project-7fbb6ec93cb24c1cb52526857402197d). In-repository knowledge lives under `docs/`.
 

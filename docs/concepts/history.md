@@ -11,7 +11,7 @@ Read this page when a wallet list splits one conversion, or trusts a foreign tra
 ## Related documents
 
 - [Status](status.md) for `COMPLETE` and external envelopes.
-- [Architecture](../architecture.md) for the invariant table.
+- [Architecture](../ARCHITECTURE.md) for the invariant table.
 
 ```mermaid
 flowchart LR

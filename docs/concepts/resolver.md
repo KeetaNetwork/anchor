@@ -10,7 +10,7 @@ Read this page when a client cannot find a provider, or when metadata lookup loo
 
 ## Related documents
 
-- [Architecture](../architecture.md) for the discovery sequence.
+- [Architecture](../ARCHITECTURE.md) for the discovery sequence.
 - [Services](services.md) for how a client uses lookup results.
 - [Signed URLs](signed-urls.md) for signed external metadata fetches.
 - [Status](status.md) for transfer reads after a provider is known.

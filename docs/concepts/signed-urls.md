@@ -71,7 +71,7 @@ The chain gate is `requireCertificateChain` on `KeetaAnchorHTTPServerConfig` in 
 
 ## Keeta action URIs
 
-`parseKeetaURI` and `encodeKeetaURI` in [`src/lib/uri.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/uri.ts#L35-L124) own the `keeta://actions/send` payment form. That form is a ledger action string. It is a different contract from these HTTP query keys. Architecture points at that file.
+`parseKeetaURI` and `encodeKeetaURI` in [`src/lib/uri.ts`](https://github.com/KeetaNetwork/anchor/blob/cursor/anchor-repository-docs-eff6/src/lib/uri.ts#L35-L124) own the `keeta://actions/send` payment form. That form is a ledger action string. It is a different contract from these HTTP query keys. [Architecture](../ARCHITECTURE.md) points at that file.
 
 ## Falsified by
 

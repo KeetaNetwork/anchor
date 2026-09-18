@@ -10,7 +10,7 @@ Read this page when a job is stuck, retried, or missing after a crash. After rea
 
 ## Related documents
 
-- [Architecture](../architecture.md) for the worker process split.
+- [Architecture](../ARCHITECTURE.md) for the worker process split.
 - [Quickstart](../QUICKSTART.md) for local backend scripts.
 - [Services](services.md) for servers that attach a runner.
 

@@ -10,7 +10,7 @@ This document serves the engineer who integrates a client, and the engineer who 
 
 ## Related documents
 
-- [Overview](OVERVIEW.md) for the cultural map and first-week reading order.
+- [Overview](README.md) for the cultural map and first-week reading order.
 - [Quickstart](QUICKSTART.md) for install and first client use.
 - [Resolver](concepts/resolver.md) for root metadata, lookup, and signatures.
 - [Certificates](concepts/certificates.md) for KYC attributes and share containers.
