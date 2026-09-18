@@ -75,7 +75,7 @@ The `lib` barrel in `src/lib/index.ts` re-exports certificates, the resolver, UR
 
 **The rule.** Each serialize pair has one owner.
 
-**In this package.** A service `common.ts` owns the request signable and the response guard. `AnchorExternal` in `src/lib/anchor-external.ts` owns the on-chain envelope. `URI` in `src/lib/uri.ts` owns the `keeta:` action string. Do not parse those forms in a route handler.
+**In this package.** A service `common.ts` owns the request signable and the response guard. `AnchorExternal` in `src/lib/anchor-external.ts` owns the on-chain envelope. `URI` in `src/lib/uri.ts` owns the `keeta:` action string. A route handler does not parse those forms.
 
 ### Persistent state is a contract with the future
 

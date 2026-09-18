@@ -25,7 +25,7 @@ A service directory under `src/services/` typically holds `client.ts`, `server.t
 | `client.ts` | Resolver lookup, HTTP calls, and caller-facing objects. |
 | `server.ts` | `KeetaAnchorMetadataServer` subclass, routes, and operator callbacks. |
 
-`common.generated.ts` holds client-safe validators. `common.server.generated.ts` holds server-only request validators. Do not move a signable into a route handler.
+`common.generated.ts` holds client-safe validators. `common.server.generated.ts` holds server-only request validators. A route handler does not own a signable.
 
 The published client barrel exports `KYC`, `FX`, `AssetMovement`, `Username`, and `Notification`. `Storage` follows the same three-file split and is not on that barrel. See `src/client/index.ts`.
 
