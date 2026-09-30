@@ -470,6 +470,13 @@ test('Queue Runner Basic Tests', async function() {
 			const callCount = processCallCountByKey.get(key) ?? 0;
 			processCallCountByKey.set(key, callCount + 1);
 
+			if (key.startsWith('throws')) {
+				throw(new KeetaAnchorQueueRunnerJSONConfigProc.Errors.KeetaAnchorQueueProcessorResult('As a throw', {
+					output: 'OK',
+					status: entry.request.newStatus
+				}));
+			}
+
 			if (key.startsWith('timedout_late')) {
 				await asleep(500);
 			}
@@ -639,6 +646,23 @@ test('Queue Runner Basic Tests', async function() {
 
 			expect(statuses).toEqual(['aborted', 'pending']);
 		}
+	}
+
+	{
+		vi.useRealTimers();
+		logger?.debug('basic', '> Test that throwing a processor result works the same as a return value');
+
+		const id_1 = await runner.add({ key: 'throws_1', newStatus: 'completed' });
+		const id_2 = await runner.add({ key: 'throws_2', newStatus: 'failed_permanently' });
+		await runner.run();
+		await runner.maintain();
+
+		const status_1 = await runner.get(id_1);
+		const status_2 = await runner.get(id_2);
+		expect(status_1?.status).toBe('completed');
+		expect(status_2?.status).toBe('failed_permanently');
+		expect(status_1?.output).toBe('OK');
+		expect(status_2?.output).toBe('OK');
 	}
 });
 
