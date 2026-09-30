@@ -504,7 +504,7 @@ class KeetaAnchorQueueProcessorResult<UserResult = unknown> extends Error implem
 	readonly status: KeetaAnchorQueueProcessorResultValue<UserResult>['status'];
 	readonly output: KeetaAnchorQueueProcessorResultValue<UserResult>['output'];
 	readonly error?: KeetaAnchorQueueProcessorResultValue<UserResult>['error'] | undefined;
-	readonly cause?: unknown | undefined;
+	readonly cause?: unknown;
 
 	private readonly keetaAnchorQueueProcessorResultObjectTypeID!: string;
 	private static readonly keetaAnchorQueueProcessorResultObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
@@ -530,7 +530,7 @@ class KeetaAnchorQueueProcessorResult<UserResult = unknown> extends Error implem
 		return(true);
 	}
 
-	constructor(message: string, result: KeetaAnchorQueueProcessorResultValue<UserResult>, cause?: unknown | undefined) {
+	constructor(message: string, result: KeetaAnchorQueueProcessorResultValue<UserResult>, cause?: unknown) {
 		super(message);
 
 		Object.defineProperty(this, 'keetaAnchorQueueProcessorResultObjectTypeID', {
