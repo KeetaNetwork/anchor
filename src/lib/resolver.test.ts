@@ -1085,7 +1085,16 @@ test('ignores unparsable anchor metadata', async function() {
 						createVerification: 'https://kyc.bad.com/createVerification'
 					},
 					countryCodes: ['US']
-				}
+				},
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				broken_kyc_entity_types: {
+					operations: {
+						createVerification: 'https://kyc.badentity.com/createVerification'
+					},
+					countryCodes: ['US'],
+					ca: 'TEST',
+					entityTypes: 'business'
+				} as unknown as NonNullable<ServiceMetadata['services']['kyc']>[string]
 			},
 			assetMovement: {
 				good_amp: {
@@ -1198,6 +1207,12 @@ test('ignores unparsable anchor metadata', async function() {
 			name: 'kyc ignores provider missing required ca field',
 			service: 'kyc',
 			criteria: { countryCodes: ['US'] },
+			expectedProviderIDs: ['broken_kyc_entity_types', 'good_kyc']
+		},
+		{
+			name: 'kyc ignores provider with unparsable entityTypes when filtering by entity type',
+			service: 'kyc',
+			criteria: { countryCodes: ['US'], entityType: 'individual' },
 			expectedProviderIDs: ['good_kyc']
 		},
 		{

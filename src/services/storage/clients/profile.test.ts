@@ -36,8 +36,8 @@ function publicPath(account: Account): string {
 
 // #region Test Fixtures
 
-const personalProfile: Profile = {
-	accountType: 'personal',
+const individualProfile: Profile = {
+	accountType: 'individual',
 	displayName: 'Alice',
 	firstName: 'Alice',
 	lastName: 'Smith'
@@ -54,24 +54,25 @@ const invalidProfiles: { name: string; profile: unknown }[] = [
 	{ name: 'business missing country', profile: { accountType: 'business', displayName: 'Acme', companyName: 'Acme Corporation Ltd' }},
 	{ name: 'business with invalid country code', profile: { accountType: 'business', displayName: 'Acme', companyName: 'Acme Corporation Ltd', country: 'XX' }},
 	{ name: 'unknown account type', profile: { accountType: 'enterprise', displayName: 'Acme' }},
-	{ name: 'personal missing name fields', profile: { accountType: 'personal', displayName: 'Alice' }},
-	{ name: 'personal missing lastName', profile: { accountType: 'personal', displayName: 'Alice', firstName: 'Alice' }}
+	{ name: 'legacy personal account type', profile: { accountType: 'personal', displayName: 'Alice', firstName: 'Alice', lastName: 'Smith' }},
+	{ name: 'individual missing name fields', profile: { accountType: 'individual', displayName: 'Alice' }},
+	{ name: 'individual missing lastName', profile: { accountType: 'individual', displayName: 'Alice', firstName: 'Alice' }}
 ];
 
 const privateFieldCases: { name: string; profile: Profile; expected: { [key: string]: unknown }}[] = [
-	{ name: 'personal', profile: personalProfile, expected: { firstName: 'Alice', lastName: 'Smith' }},
+	{ name: 'individual', profile: individualProfile, expected: { firstName: 'Alice', lastName: 'Smith' }},
 	{ name: 'business', profile: businessProfile, expected: { companyName: 'Acme Corporation Ltd', country: 'US' }}
 ];
 
 // #endregion
 
 describe('Storage Profile Client', function() {
-	test('set and get a personal profile', function() {
+	test('set and get an individual profile', function() {
 		return(withProfile(randomSeed(), async function({ profileClient }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 
 			const result = await profileClient.get();
-			expect(result).toEqual(personalProfile);
+			expect(result).toEqual(individualProfile);
 		}));
 	});
 
@@ -86,10 +87,10 @@ describe('Storage Profile Client', function() {
 
 	test('getPublic returns only the public projection', function() {
 		return(withProfile(randomSeed(), async function({ profileClient }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 
 			const result = await profileClient.getPublic();
-			expect(result).toEqual({ accountType: 'personal', displayName: 'Alice' });
+			expect(result).toEqual({ accountType: 'individual', displayName: 'Alice' });
 		}));
 	});
 
@@ -104,7 +105,7 @@ describe('Storage Profile Client', function() {
 
 	test('stores private and public objects', function() {
 		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 
 			const [ privateMeta, publicMeta ] = await Promise.all([
 				provider.getMetadata({ path: privatePath(account), account }),
@@ -118,7 +119,7 @@ describe('Storage Profile Client', function() {
 
 	test('the private object is not readable via a public URL', function() {
 		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 
 			const url = await provider.getPublicUrl({ path: privatePath(account), account });
 			const response = await fetch(url);
@@ -136,7 +137,7 @@ describe('Storage Profile Client', function() {
 
 	test('set overwrites an existing profile and can switch account type', function() {
 		return(withProfile(randomSeed(), async function({ profileClient }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 			await profileClient.set(businessProfile);
 
 			expect(await profileClient.get()).toEqual(businessProfile);
@@ -149,8 +150,8 @@ describe('Storage Profile Client', function() {
 			const pubkey = account.publicKeyString.get();
 			const profileClient = provider.getProfileClient({ account, basePath: `/user/${pubkey}/custom-profile/` });
 
-			await profileClient.set(personalProfile);
-			expect(await profileClient.get()).toEqual(personalProfile);
+			await profileClient.set(individualProfile);
+			expect(await profileClient.get()).toEqual(individualProfile);
 
 			const customMeta = await provider.getMetadata({ path: `/user/${pubkey}/custom-profile/private`, account });
 			expect(customMeta?.visibility).toBe('private');
@@ -162,7 +163,7 @@ describe('Storage Profile Client', function() {
 
 	test('delete removes both objects', function() {
 		return(withProfile(randomSeed(), async function({ profileClient }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 
 			expect(await profileClient.delete()).toBe(true);
 			expect(await profileClient.get()).toBeNull();
@@ -217,11 +218,11 @@ describe('Storage Profile Client', function() {
 
 	test('get returns null when either object is missing', function() {
 		return(withProfile(randomSeed(), async function({ profileClient, provider, account }) {
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 			await provider.delete({ path: publicPath(account), account });
 			expect(await profileClient.get()).toBeNull();
 
-			await profileClient.set(personalProfile);
+			await profileClient.set(individualProfile);
 			await provider.delete({ path: privatePath(account), account });
 			expect(await profileClient.get()).toBeNull();
 		}));

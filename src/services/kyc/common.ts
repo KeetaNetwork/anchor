@@ -1,4 +1,5 @@
 import type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceSearchCriteria
 } from '../../lib/resolver.ts';
@@ -29,6 +30,12 @@ export interface KeetaKYCAnchorCreateVerificationRequest {
 	 * {@link KYCRedirectStatus} query parameter indicating the outcome.
 	 */
 	redirectURL?: string;
+	/**
+	 * The type of entity being verified. Defaults to `individual` when
+	 * omitted, preserving the classic KYC behavior. The provider uses
+	 * this to choose which hosted collection experience to present.
+	 */
+	entityType?: KYCEntityType;
 }
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
@@ -53,7 +60,8 @@ export type KeetaKYCAnchorCreateVerificationResponse = ({
 	/**
 	 * The URL to the verification service where the user can complete the
 	 * verification process. This URL is expected to be a web URL that the
-	 * user can visit to complete the verification.
+	 * user can visit to complete the verification. The provider hosts the
+	 * collection experience for both individual and business entity types.
 	 */
 	webURL: string;
 } | {
