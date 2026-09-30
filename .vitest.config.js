@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config'
-import UnpluginTypia from '@ryoppippi/unplugin-typia/vite'
+import UnpluginTypia from '@typia/unplugin/vite';
 
 export default defineConfig({
 	plugins: [
@@ -9,6 +9,10 @@ export default defineConfig({
 		coverage: {
 			reporter: ['lcov'],
 			reportsDirectory: '.coverage',
+			include: [
+				'src/**/*.ts',
+				'src/**/*.js'
+			],
 			exclude: [
 				/*
 				 * This file only contains a single function that is used to
