@@ -1263,7 +1263,7 @@ class Metadata implements ValuizableInstance {
 		return(addSignatureToURL(input, { signedField: signed, account: this.#signing.account }));
 	}
 
-	private async readURL(url: URL, options?: ExternalURLOptions) {
+	private async readURL(url: URL, options?: ExternalURLOptions, fromValue = false) {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
@@ -1275,8 +1275,12 @@ class Metadata implements ValuizableInstance {
 		 * The URL is removed from the set in the `finally` below once
 		 * this resolution returns, so the set tracks only the active
 		 * recursion chain rather than the lifetime history.
+		 *
+		 * A read started by `value()` is not part of any chain, so a URL
+		 * already in the set is being read concurrently and shares the
+		 * cached read below.
 		 */
-		if (this.seenURLs.has(cacheKey)) {
+		if (this.seenURLs.has(cacheKey) && !fromValue) {
 			return(null);
 		}
 		this.seenURLs.add(cacheKey);
@@ -1500,7 +1504,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
-		const value = await this.readURL(this.#url, this.#urlOptions);
+		const value = await this.readURL(this.#url, this.#urlOptions, true);
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 

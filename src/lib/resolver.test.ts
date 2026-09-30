@@ -717,6 +717,128 @@ test('Concurrent Lookups', async function() {
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
 
+async function setupExternalMetadataResolver() {
+	const rootAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const externalAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const externalRefAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const cycleAccountA = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const cycleAccountB = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+
+	const { userClient, fees } = await createNodeAndClient(rootAccount);
+	fees.disable();
+
+	const externalLink = function(publicKey: string) {
+		return({
+			external: '2b828e33-2692-46e9-817e-9b93d63f28fd' as const,
+			url: `keetanet://${publicKey}/metadata`
+		});
+	};
+
+	await setInfo(externalAccount, userClient, {
+		operations: {
+			createAccount: 'https://banchor.external.com/api/v1/createAccount'
+		},
+		countryCodes: ['US'],
+		currencyCodes: ['USD'],
+		kycProviders: ['Keeta']
+	});
+	await setInfo(externalRefAccount, userClient, externalLink(externalAccount.publicKeyString.get()));
+	await setInfo(cycleAccountA, userClient, externalLink(cycleAccountB.publicKeyString.get()));
+	await setInfo(cycleAccountB, userClient, externalLink(cycleAccountA.publicKeyString.get()));
+
+	await userClient.setInfo({
+		name: '',
+		description: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: {
+				banking: {
+					keeta_external: externalLink(externalAccount.publicKeyString.get()),
+					keeta_external_ref: externalLink(externalRefAccount.publicKeyString.get()),
+					keeta_cycle_a: externalLink(cycleAccountA.publicKeyString.get()),
+					keeta_cycle_b: externalLink(cycleAccountB.publicKeyString.get())
+				}
+			}
+		} satisfies ServiceMetadataExternalizable)
+	});
+
+	const resolver = new Resolver({
+		root: rootAccount,
+		client: userClient,
+		trustedCAs: []
+	});
+
+	fees.enable();
+
+	return({ resolver });
+}
+
+async function getBankingEntry(rootMetadata: Awaited<ReturnType<Resolver['getRootMetadata']>>, id: string) {
+	const services = await rootMetadata.services?.('object');
+	const banking = await services?.banking?.('object');
+	const entry = banking?.[id];
+	if (entry === undefined) {
+		throw(new Error(`internal error: banking entry ${id} is missing`));
+	}
+
+	return(entry);
+}
+
+test('Concurrent reads of the same external metadata URL all resolve', async function() {
+	const { resolver } = await setupExternalMetadataResolver();
+	const rootMetadata = await resolver.getRootMetadata();
+	const entry = await getBankingEntry(rootMetadata, 'keeta_external_ref');
+
+	const createAccountURLs = await Promise.all(Array.from({ length: 10 }, async function() {
+		const service = await entry('object');
+		const operations = await service.operations?.('object');
+		return(await operations?.createAccount?.('string'));
+	}));
+
+	expect(createAccountURLs).toEqual(Array(10).fill('https://banchor.external.com/api/v1/createAccount'));
+});
+
+test('Metadata redirects resolve while their target URL is read concurrently', async function() {
+	const { resolver } = await setupExternalMetadataResolver();
+	const rootMetadata = await resolver.getRootMetadata();
+	const externalRefEntry = await getBankingEntry(rootMetadata, 'keeta_external_ref');
+	const externalEntry = await getBankingEntry(rootMetadata, 'keeta_external');
+
+	/* The redirect read starts first so it follows the redirect while the direct read of its target is still pending */
+	const reads = [externalRefEntry('object'), externalEntry('object')];
+	const createAccountURLs = await Promise.all(reads.map(async function(read) {
+		const service = await read;
+		const operations = await service.operations?.('object');
+		return(await operations?.createAccount?.('string'));
+	}));
+
+	expect(createAccountURLs).toEqual(Array(2).fill('https://banchor.external.com/api/v1/createAccount'));
+});
+
+test('Circular metadata references read concurrently within one metadata tree resolve to null', async function() {
+	const { resolver } = await setupExternalMetadataResolver();
+	const rootMetadata = await resolver.getRootMetadata();
+	const cycleEntryA = await getBankingEntry(rootMetadata, 'keeta_cycle_a');
+	const cycleEntryB = await getBankingEntry(rootMetadata, 'keeta_cycle_b');
+
+	const reads = [cycleEntryA('object'), cycleEntryB('object'), cycleEntryA('object'), cycleEntryB('object')];
+	await Promise.all(reads.map(async function(read) {
+		await expect(read).rejects.toThrow('expected an object, got null');
+	}));
+});
+
+test('Circular metadata references read concurrently across metadata trees resolve to null', async function() {
+	const { resolver } = await setupExternalMetadataResolver();
+	const cycleEntryA = await getBankingEntry(await resolver.getRootMetadata(), 'keeta_cycle_a');
+	const cycleEntryB = await getBankingEntry(await resolver.getRootMetadata(), 'keeta_cycle_b');
+
+	const reads = [cycleEntryA('object'), cycleEntryB('object')];
+	await Promise.all(reads.map(async function(read) {
+		await expect(read).rejects.toThrow('expected an object, got null');
+	}));
+});
+
 test('Multi-Root Resolver Tests', async function() {
 	// Create two separate root accounts with different metadata
 	const testAccountRoot1Seed = KeetaNetClient.lib.Account.generateRandomSeed();
