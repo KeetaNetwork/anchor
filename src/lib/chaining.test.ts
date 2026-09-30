@@ -1,4 +1,4 @@
-import { test, expect, describe } from 'vitest';
+import { test, expect, describe, vi } from 'vitest';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementServerConfig } from '../services/asset-movement/server.js';
@@ -14,7 +14,7 @@ import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
-import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
+import { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -4413,6 +4413,51 @@ describe('getPlans forwardingOnly', function() {
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
 		expect(plan.getDepositAddress()).toEqual(expect.any(String));
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
+	});
+
+	test('persistent forwarding failures report the failed step providerID', async function() {
+		await using w = await buildForwardingWorld('pfr');
+
+		const request = {
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+		};
+
+		const path = (await w.anchorChaining.getPaths(request, { forwardingOnly: { method: 'explicit', maxLegs: 1 }}))?.[0];
+		const step = path?.path[0];
+		if (!path || step?.type !== 'assetMovement') {
+			throw(new Error('Expected a single-leg forwarding path'));
+		}
+
+		const rootError = new KeetaAnchorUserError('Persistent forwarding refused');
+		const spy = vi.spyOn(KeetaAssetMovementAnchorProvider.prototype, 'createPersistentForwardingAddress').mockRejectedValue(rootError);
+		try {
+			const error = await AnchorChainingForwardingOnlyPlan.create(path, { forwardingOnly: true }).catch((err: unknown) => err);
+			if (!AnchorChainingPlanCreateError.isInstance(error)) {
+				throw(new Error('Expected AnchorChainingPlanCreateError'));
+			}
+			expect(error.rootError).toBe(rootError);
+			expect(error.failedAtStep.providerID).toEqual(step.providerID);
+
+			const results = await w.anchorChaining.getPlans(request, { includeAllOutput: true, forwardingOnly: { method: 'explicit', maxLegs: 1 }});
+			const failed = results?.find(r => !r.success);
+			if (!failed || failed.success) {
+				throw(new Error('Expected a failed result'));
+			}
+			expect(failed.error).toBe(rootError);
+			expect(failed.failedAt.providerID).toEqual(step.providerID);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test('resolveErrorResponse keeps an unwrapped error', function() {
+		const error = new Error('outside any step');
+		expect(AnchorChainingPlanCreateError.resolveErrorResponse(error)).toEqual({
+			success: false,
+			error,
+			failedAt: { providerID: null }
+		});
 	});
 
 	test('getPaths forwardingOnly filters like getPlans', async function() {
