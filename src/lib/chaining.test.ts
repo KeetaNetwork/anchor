@@ -1,4 +1,4 @@
-import { test, expect, describe, vi } from 'vitest';
+import { test, expect, describe } from 'vitest';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
 import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementServerConfig } from '../services/asset-movement/server.js';
@@ -14,7 +14,7 @@ import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
-import { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
+import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -765,6 +765,7 @@ type TestChainAnchorServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'a
 	>;
 	client: KeetaNet.UserClient;
 	convert: ChainAnchorConvert;
+	persistentForwardingError?: string;
 };
 
 function evmAssetToHex(assetId: string): `0x${string}` {
@@ -801,7 +802,7 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 
 	constructor(config: TestChainAnchorServerConfig) {
 
-		const { client: userClient, convert, ...serverConfig } = config;
+		const { client: userClient, convert, persistentForwardingError, ...serverConfig } = config;
 
 		const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const blockListener = new BlockListener({ client: userClient.client });
@@ -991,6 +992,9 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				},
 
 				async createPersistentForwarding(request) {
+					if (persistentForwardingError !== undefined) {
+						throw(new KeetaAnchorUserError(persistentForwardingError));
+					}
 					if (!('destinationLocation' in request) || !('destinationAddress' in request)) {
 						throw(new KeetaAnchorUserError('createPersistentForwarding via template is not supported in this test anchor'));
 					}
@@ -4255,7 +4259,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 	}
 
-	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean }) {
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4326,6 +4330,7 @@ describe('getPlans forwardingOnly', function() {
 			...(DEBUG ? { logger } : {}),
 			client,
 			convert,
+			...(opts?.am2PersistentForwardingError !== undefined ? { persistentForwardingError: opts.am2PersistentForwardingError } : {}),
 			assetMovement: {
 				supportedAssets: [ pairEntry(keetaSide(tokens.USDC), baseSide(EXTERNAL_IDS.USDC_BASE)) ]
 			}
@@ -4416,39 +4421,40 @@ describe('getPlans forwardingOnly', function() {
 	});
 
 	test('persistent forwarding failures report the failed step providerID', async function() {
-		await using w = await buildForwardingWorld('pfr');
+		const refusal = 'AM2 refused to create a persistent forwarding address';
+		await using forwardingSetup = await buildForwardingWorld('pfr', { am2PersistentForwardingError: refusal });
 
 		const request = {
 			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
-			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' as const }
+			destination: { asset: forwardingSetup.tokens.USDC, location: forwardingSetup.keetaLocation, recipient: forwardingSetup.recipient, rail: 'KEETA_SEND' as const }
 		};
+		const singleLeg = { forwardingOnly: { method: 'explicit' as const, maxLegs: 1 }};
 
-		const path = (await w.anchorChaining.getPaths(request, { forwardingOnly: { method: 'explicit', maxLegs: 1 }}))?.[0];
-		const step = path?.path[0];
-		if (!path || step?.type !== 'assetMovement') {
-			throw(new Error('Expected a single-leg forwarding path'));
+		const path = (await forwardingSetup.anchorChaining.getPaths(request, singleLeg))?.[0];
+		if (!path) {
+			throw(new Error('Expected a single-leg forwarding path through AM2'));
 		}
 
-		const rootError = new KeetaAnchorUserError('Persistent forwarding refused');
-		const spy = vi.spyOn(KeetaAssetMovementAnchorProvider.prototype, 'createPersistentForwardingAddress').mockRejectedValue(rootError);
-		try {
-			const error = await AnchorChainingForwardingOnlyPlan.create(path, { forwardingOnly: true }).catch((err: unknown) => err);
-			if (!AnchorChainingPlanCreateError.isInstance(error)) {
-				throw(new Error('Expected AnchorChainingPlanCreateError'));
-			}
-			expect(error.rootError).toBe(rootError);
-			expect(error.failedAtStep.providerID).toEqual(step.providerID);
-
-			const results = await w.anchorChaining.getPlans(request, { includeAllOutput: true, forwardingOnly: { method: 'explicit', maxLegs: 1 }});
-			const failed = results?.find(r => !r.success);
-			if (!failed || failed.success) {
-				throw(new Error('Expected a failed result'));
-			}
-			expect(failed.error).toBe(rootError);
-			expect(failed.failedAt.providerID).toEqual(step.providerID);
-		} finally {
-			spy.mockRestore();
+		const createError = await AnchorChainingForwardingOnlyPlan.create(path, { forwardingOnly: true }).catch((error: unknown) => error);
+		if (!AnchorChainingPlanCreateError.isInstance(createError)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
 		}
+		expect(createError.failedAtStep.providerID).toEqual('AM2');
+		if (!(createError.rootError instanceof Error)) {
+			throw(new Error('Expected rootError to be an Error'));
+		}
+		expect(createError.rootError.message).toEqual(refusal);
+
+		const results = await forwardingSetup.anchorChaining.getPlans(request, { includeAllOutput: true, ...singleLeg });
+		const failedResult = results?.find(result => !result.success);
+		if (!failedResult || failedResult.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failedResult.failedAt.providerID).toEqual('AM2');
+		if (!(failedResult.error instanceof Error)) {
+			throw(new Error('Expected the failed result to carry an Error'));
+		}
+		expect(failedResult.error.message).toEqual(refusal);
 	});
 
 	test('resolveErrorResponse keeps an unwrapped error', function() {
