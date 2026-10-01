@@ -26,7 +26,7 @@
 		"@cspell/cspell-types": "9.6.0",
 		"@cspell/dict-typescript": "3.2.3",
 		"@google-cloud/firestore": "8.2.0",
-		"@keetanetwork/eslint-config-typescript": "1.4.7",
+		"@keetanetwork/eslint-config-typescript": "1.4.8",
 		"@keetanetwork/keetanet-node": "0.18.7",
 		"@ryoppippi/unplugin-typia": "2.6.5",
 		"@types/asn1js": "2.0.2",
@@ -44,7 +44,7 @@
 		"vitest": "3.2.4"
 	},
 	"dependencies": {
-		"@keetanetwork/currency-info": "1.2.5",
+		"@keetanetwork/currency-info": "1.2.8",
 		"@keetanetwork/keetanet-client": "0.18.7",
 		"@noble/hashes": "1.5.0",
 		"typia": "9.5.0"
