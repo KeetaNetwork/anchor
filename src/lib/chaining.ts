@@ -2209,7 +2209,7 @@ export class AnchorChainingPlanCreateError extends KeetaAnchorError {
 	}
 
 	static resolveErrorResponse(input: unknown): AnchorPlanPathError {
-		let rootError;
+		let rootError = input;
 		let providerID = null;
 
 		if (input instanceof AnchorChainingPlanCreateError) {
@@ -2407,7 +2407,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					destinationAddress = nextAddress;
 				}
 
-				await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+				try {
+					await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+				} catch (error) {
+					throw(new AnchorChainingPlanCreateError({ rootError: error, failedAtStep: scanStep }));
+				}
 			}
 		}
 
@@ -2466,7 +2470,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
 			}
 
-			await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+			try {
+				await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+			} catch (error) {
+				throw(new AnchorChainingPlanCreateError({ rootError: error, failedAtStep: scanStep }));
+			}
 		}
 
 		const stepPromises: Promise<ChainStepResolution>[] = [];

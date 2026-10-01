@@ -765,6 +765,7 @@ type TestChainAnchorServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'a
 	>;
 	client: KeetaNet.UserClient;
 	convert: ChainAnchorConvert;
+	persistentForwardingError?: string;
 };
 
 function evmAssetToHex(assetId: string): `0x${string}` {
@@ -801,7 +802,7 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 
 	constructor(config: TestChainAnchorServerConfig) {
 
-		const { client: userClient, convert, ...serverConfig } = config;
+		const { client: userClient, convert, persistentForwardingError, ...serverConfig } = config;
 
 		const anchorAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const blockListener = new BlockListener({ client: userClient.client });
@@ -991,6 +992,9 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				},
 
 				async createPersistentForwarding(request) {
+					if (persistentForwardingError !== undefined) {
+						throw(new KeetaAnchorUserError(persistentForwardingError));
+					}
 					if (!('destinationLocation' in request) || !('destinationAddress' in request)) {
 						throw(new KeetaAnchorUserError('createPersistentForwarding via template is not supported in this test anchor'));
 					}
@@ -4255,7 +4259,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 	}
 
-	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean }) {
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4326,6 +4330,7 @@ describe('getPlans forwardingOnly', function() {
 			...(DEBUG ? { logger } : {}),
 			client,
 			convert,
+			...(opts?.am2PersistentForwardingError !== undefined ? { persistentForwardingError: opts.am2PersistentForwardingError } : {}),
 			assetMovement: {
 				supportedAssets: [ pairEntry(keetaSide(tokens.USDC), baseSide(EXTERNAL_IDS.USDC_BASE)) ]
 			}
@@ -4334,6 +4339,7 @@ describe('getPlans forwardingOnly', function() {
 			...(DEBUG ? { logger } : {}),
 			client,
 			convert,
+			...(opts?.am3PersistentForwardingError !== undefined ? { persistentForwardingError: opts.am3PersistentForwardingError } : {}),
 			assetMovement: {
 				supportedAssets: [ pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), ethSide(EXTERNAL_IDS.USDC_ETH)) ]
 			}
@@ -4413,6 +4419,104 @@ describe('getPlans forwardingOnly', function() {
 		expect(plan.plan.steps.map((s) => s.type)).toEqual([ 'forwarded' ]);
 		expect(plan.getDepositAddress()).toEqual(expect.any(String));
 		expect(getForwardingDepositAddress(plan)).toEqual(plan.getDepositAddress());
+	});
+
+	test('getPlans and create report AM providerID when forwarding-only createPersistentForwarding fails', async function() {
+		const refusal = 'AM2 refused to create a persistent forwarding address';
+		await using forwardingSetup = await buildForwardingWorld('pfr', { am2PersistentForwardingError: refusal });
+
+		const request = {
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' as const },
+			destination: { asset: forwardingSetup.tokens.USDC, location: forwardingSetup.keetaLocation, recipient: forwardingSetup.recipient, rail: 'KEETA_SEND' as const }
+		};
+		const singleLeg = { forwardingOnly: { method: 'explicit' as const, maxLegs: 1 }};
+
+		const results = await forwardingSetup.anchorChaining.getPlans(request, { includeAllOutput: true, ...singleLeg });
+		const failedResult = results?.find(result => !result.success);
+		if (!failedResult || failedResult.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failedResult.failedAt.providerID).toEqual('AM2');
+		if (!(failedResult.error instanceof Error)) {
+			throw(new Error('Expected the failed result to carry an Error'));
+		}
+		expect(failedResult.error.message).toEqual(refusal);
+
+		const path = (await forwardingSetup.anchorChaining.getPaths(request, singleLeg))?.[0];
+		if (!path) {
+			throw(new Error('Expected a single-leg forwarding path through AM2'));
+		}
+		const createError = await AnchorChainingForwardingOnlyPlan.create(path, { forwardingOnly: true }).catch((error: unknown) => error);
+		if (!AnchorChainingPlanCreateError.isInstance(createError)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(createError.failedAtStep.providerID).toEqual('AM2');
+		if (!(createError.rootError instanceof Error)) {
+			throw(new Error('Expected rootError to be an Error'));
+		}
+		expect(createError.rootError.message).toEqual(refusal);
+	});
+
+	test('getPlans and create report AM providerID when a persistent-forwarding last leg fails', async function() {
+		const refusal = 'AM3 refused to create a persistent forwarding address';
+		await using forwardingSetup = await buildForwardingWorld('pfr', { am3PersistentForwardingError: refusal });
+
+		/*
+		 * USDC@keeta -> USDC@eth routes as AM2 (keeta -> base) then AM3 (base ->
+		 * eth). AM3 follows another asset-movement leg from a non-keeta source,
+		 * so a managed plan resolves its address through persistent forwarding.
+		 */
+		const request = {
+			source: { asset: forwardingSetup.tokens.USDC, location: forwardingSetup.keetaLocation, value: 1000n, rail: 'KEETA_SEND' as const },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: forwardingSetup.recipient, rail: 'EVM_SEND' as const }
+		};
+
+		const results = await forwardingSetup.anchorChaining.getPlans(request, { includeAllOutput: true });
+		const failedResult = results?.find(result => !result.success);
+		if (!failedResult || failedResult.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failedResult.failedAt.providerID).toEqual('AM3');
+		if (!(failedResult.error instanceof Error)) {
+			throw(new Error('Expected the failed result to carry an Error'));
+		}
+		expect(failedResult.error.message).toEqual(refusal);
+
+		const path = (await forwardingSetup.anchorChaining.getPaths(request))?.find(candidate => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+		const createError = await AnchorChainingPlan.create(path).catch((error: unknown) => error);
+		if (!AnchorChainingPlanCreateError.isInstance(createError)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(createError.failedAtStep.providerID).toEqual('AM3');
+		if (!(createError.rootError instanceof Error)) {
+			throw(new Error('Expected rootError to be an Error'));
+		}
+		expect(createError.rootError.message).toEqual(refusal);
+	});
+
+	test('getPlans keeps an error raised before any step runs', async function() {
+		await using forwardingSetup = await buildForwardingWorld('managed', { am2WithoutSimulateTransfer: true });
+
+		/*
+		 * AM2 does not advertise simulateTransfer, so path validation rejects
+		 * the AM2 -> AM3 route before any step is resolved.
+		 */
+		const results = await forwardingSetup.anchorChaining.getPlans({
+			source: { asset: forwardingSetup.tokens.USDC, location: forwardingSetup.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: forwardingSetup.recipient, rail: 'EVM_SEND' }
+		}, { includeAllOutput: true });
+		const failedResult = results?.find(result => !result.success);
+		if (!failedResult || failedResult.success) {
+			throw(new Error('Expected a failed result'));
+		}
+		expect(failedResult.failedAt.providerID).toBeNull();
+		if (!(failedResult.error instanceof Error)) {
+			throw(new Error('Expected the failed result to carry an Error'));
+		}
+		expect(failedResult.error.message).toContain('does not support simulateTransfer');
 	});
 
 	test('getPaths forwardingOnly filters like getPlans', async function() {
