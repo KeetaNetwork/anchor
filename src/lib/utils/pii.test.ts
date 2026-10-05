@@ -6,6 +6,9 @@ import type { CertificateAttributeValue } from '../../services/kyc/iso20022.gene
 import { CertificateAttributeOIDDB, SENSITIVE_CERTIFICATE_ATTRIBUTES } from '../../services/kyc/iso20022.generated.js';
 import { createTestCertificate, testAttributeValues, testAccounts } from './tests/certificates.js';
 import { Certificate } from '../certificates.js';
+import { EncryptedContainer } from '../encrypted-container.js';
+import { ExternalReferenceBuilder } from './external.js';
+import { Buffer } from './buffer.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 
 // ============================================================================
@@ -298,6 +301,48 @@ const ORGANIZATION_TEST_ATTRIBUTES = [
 	attr('website', 'https://maplecreekventures.example'),
 	attr('entityType', {
 		organization: [{ id: '824531097', schemeName: 'TXID', issuer: 'US' }]
+	}),
+	attr('businessActivity', 'Selling online courses and related material'),
+	attr('sourceOfFunds', { source: 'other', description: 'Grant from a foundation' }),
+	attr('expectedAnnualVolume', 'from_1m_to_10m'),
+	attr('countriesOfOperation', { countries: ['US', 'BR'] }),
+	attr('address', {
+		addressLines: ['1 Broadway', 'Floor 3'],
+		townName: 'New York',
+		postalCode: '10001',
+		countrySubDivision: 'NY',
+		country: 'US'
+	}),
+	attr('publiclyTraded', true),
+	attr('operatesFromRegisteredAddress', false),
+	attr('ubos', {
+		owners: [
+			{
+				fullName: 'Ada Lovelace',
+				dateOfBirth: new Date('1970-03-04'),
+				countryOfBirth: 'GB',
+				nationalities: ['GB', 'US'],
+				address: { addressLines: ['742 Evergreen Terrace'], townName: 'Austin', postalCode: '78701', countrySubDivision: 'TX', country: 'US' },
+				email: 'ada@maplecreek.example',
+				phoneNumber: '+1 512 555 0142',
+				percentageHeld: '60',
+				ownershipType: 'direct',
+				isSigner: true,
+				position: 'Director',
+				identifications: [{ id: '123-45-6789', schemeName: 'TXID', issuer: 'US' }]
+			},
+			{
+				fullName: 'Alan Turing',
+				dateOfBirth: new Date('1972-06-23'),
+				countryOfBirth: 'GB',
+				nationalities: ['GB'],
+				address: { addressLines: ['1 Market Street'], townName: 'London', postalCode: 'SW1A 1AA', countrySubDivision: 'Greater London', country: 'GB' },
+				email: 'alan@maplecreek.example',
+				percentageHeld: '12.5',
+				ownershipType: 'indirect',
+				isSigner: false
+			}
+		]
 	})
 ];
 
@@ -319,7 +364,86 @@ test('organization attributes round-trip through Certificate.Builder', async fun
 	}
 });
 
-test('documentBusinessRegistration is registered as a sensitive certificate attribute', function() {
-	expect(SENSITIVE_CERTIFICATE_ATTRIBUTES).toContain('documentBusinessRegistration');
-	expect(CertificateAttributeOIDDB.documentBusinessRegistration).toBe('1.3.6.1.4.1.62675.1.11.7');
+test('organization attributes round-trip through toSensitiveAttribute', async function() {
+	const store = createStore();
+	for (const { name, value } of ORGANIZATION_TEST_ATTRIBUTES) {
+		store.setAttribute(name, value);
+		expect(await getValue(store, name), name).toEqual(value);
+	}
+});
+
+test('organization attributes are registered as sensitive certificate attributes', function() {
+	const expected = [
+		['documentBusinessRegistration', '1.3.6.1.4.1.62675.1.11.7'],
+		['documentRegisterOfDirectors', '1.3.6.1.4.1.62675.1.11.8'],
+		['documentFinancialStatement', '1.3.6.1.4.1.62675.1.11.9'],
+		['documentAdditional', '1.3.6.1.4.1.62675.1.11.10'],
+		['businessActivity', '1.3.6.1.4.1.62675.1.16'],
+		['sourceOfFunds', '1.3.6.1.4.1.62675.1.17'],
+		['expectedAnnualVolume', '1.3.6.1.4.1.62675.1.18'],
+		['countriesOfOperation', '1.3.6.1.4.1.62675.1.19'],
+		['operatingAddress', '1.3.6.1.4.1.62675.1.20'],
+		['publiclyTraded', '1.3.6.1.4.1.62675.1.21'],
+		['operatesFromRegisteredAddress', '1.3.6.1.4.1.62675.1.22'],
+		['ubos', '1.3.6.1.4.1.62675.1.23'],
+		['ubo', '1.3.6.1.4.1.62675.1.23.1']
+	] as const;
+
+	for (const [name, oid] of expected) {
+		expect(SENSITIVE_CERTIFICATE_ATTRIBUTES, name).toContain(name);
+		expect(CertificateAttributeOIDDB[name], name).toBe(oid);
+	}
+});
+
+async function documentReference(content: string, contentType: string) {
+	const bytes = Buffer.from(content);
+	const sealed = EncryptedContainer.fromPlaintext(bytes, [testAccounts.subject]);
+	const sealedBytes = Buffer.from(await sealed.getEncodedBuffer());
+	const builder = new ExternalReferenceBuilder(`data:application/octet-stream;base64,${sealedBytes.toString('base64')}`, contentType);
+
+	return(builder.build(bytes));
+}
+
+test('organization documents carry every file of a category, each readable back', async function() {
+	const extract = await documentReference('registration extract', 'application/pdf');
+	const amendment = await documentReference('registration amendment', 'image/png');
+	const passport = await documentReference('owner passport', 'image/jpeg');
+
+	const store = createStore();
+	store.setAttribute('documentBusinessRegistration', { documentNumber: '7654321', files: [extract, amendment] });
+	store.setAttribute('documentFinancialStatement', { files: [extract] });
+	store.setAttribute('ubos', {
+		owners: [{
+			fullName: 'Ada Lovelace',
+			dateOfBirth: new Date('1970-03-04'),
+			countryOfBirth: 'GB',
+			nationalities: ['GB'],
+			address: { addressLines: ['742 Evergreen Terrace'], country: 'US' },
+			email: 'ada@maplecreek.example',
+			percentageHeld: '100',
+			ownershipType: 'direct',
+			isSigner: true,
+			position: 'Director',
+			governmentIssuedID: [passport]
+		}]
+	});
+
+	const certificate = await (await store
+		.toCertificateBuilder(createBuilder(), testAccounts.subject))
+		.build({ serial: 1 });
+	const certificateWithKey = new Certificate(certificate, { subjectKey: testAccounts.subject });
+
+	const registration = await certificateWithKey.getAttributeValue('documentBusinessRegistration');
+	expect(registration.documentNumber).toBe('7654321');
+	expect(registration.files.map(function(file) { return(file.external.contentType); })).toEqual(['application/pdf', 'image/png']);
+	const amendmentBlob = await registration.files[1]?.$blob([testAccounts.subject]);
+	expect(Buffer.from(await amendmentBlob?.arrayBuffer() ?? new ArrayBuffer(0)).toString()).toBe('registration amendment');
+
+	const statement = await certificateWithKey.getAttributeValue('documentFinancialStatement');
+	expect(statement.documentNumber).toBeUndefined();
+	expect(statement.files).toHaveLength(1);
+
+	const owners = await certificateWithKey.getAttributeValue('ubos');
+	const passportBlob = await owners.owners[0]?.governmentIssuedID?.[0]?.$blob([testAccounts.subject]);
+	expect(Buffer.from(await passportBlob?.arrayBuffer() ?? new ArrayBuffer(0)).toString()).toBe('owner passport');
 });
