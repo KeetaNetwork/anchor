@@ -449,9 +449,30 @@
 		"documentBusinessRegistration": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 7 ],
 			"token": "DocumentBusinessRegistration",
-			"type": "Document",
-			"description": "Business registration document",
+			"type": "OrganizationDocuments",
+			"description": "Business registration documents",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.7"
+		},
+		"documentRegisterOfDirectors": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 8 ],
+			"token": "DocumentRegisterOfDirectors",
+			"type": "OrganizationDocuments",
+			"description": "Register of directors documents",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.8"
+		},
+		"documentFinancialStatement": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 9 ],
+			"token": "DocumentFinancialStatement",
+			"type": "OrganizationDocuments",
+			"description": "Financial statement documents",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.9"
+		},
+		"documentAdditional": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 10 ],
+			"token": "DocumentAdditional",
+			"type": "OrganizationDocuments",
+			"description": "Additional organization documents",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.10"
 		},
 		"organizationName": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 12 ],
@@ -506,6 +527,170 @@
 			"type": "UTF8String",
 			"description": "Organization's website",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.15"
+		},
+		"businessActivity": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 16 ],
+			"token": "BusinessActivity",
+			"type": "UTF8String",
+			"description": "Description of the organization's business activities",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.16"
+		},
+		"sourceOfFunds": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 17 ],
+			"token": "SourceOfFunds",
+			"type": "SEQUENCE",
+			"description": "Primary source of the organization's funds",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.17",
+			"fields": {
+				"source": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"description": {
+					"type": "UTF8String",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"source",
+				"description"
+			]
+		},
+		"expectedAnnualVolume": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 18 ],
+			"token": "ExpectedAnnualVolume",
+			"type": "UTF8String",
+			"description": "Organization's expected annual transaction volume band",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.18"
+		},
+		"countriesOfOperation": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 19 ],
+			"token": "CountriesOfOperation",
+			"type": "SEQUENCE",
+			"description": "Countries the organization operates in",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.19",
+			"fields": {
+				"countries": {
+					"type": "SEQUENCE OF Country",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"countries"
+			]
+		},
+		"operatingAddress": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 20 ],
+			"token": "OperatingAddress",
+			"type": "Address",
+			"description": "Address the organization operates from",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.20"
+		},
+		"publiclyTraded": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 21 ],
+			"token": "PubliclyTraded",
+			"type": "BOOLEAN",
+			"description": "Whether the organization's shares are publicly traded",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.21"
+		},
+		"operatesFromRegisteredAddress": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 22 ],
+			"token": "OperatesFromRegisteredAddress",
+			"type": "BOOLEAN",
+			"description": "Whether the organization operates from its registered address",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.22"
+		},
+		"ubo": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 23, 1 ],
+			"token": "Ubo",
+			"type": "SEQUENCE",
+			"description": "Ultimate beneficial owner of an organization",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.23.1",
+			"fields": {
+				"fullName": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"dateOfBirth": {
+					"type": "GeneralizedTime",
+					"optional": false
+				},
+				"countryOfBirth": {
+					"type": "Country",
+					"optional": false
+				},
+				"nationalities": {
+					"type": "SEQUENCE OF Country",
+					"optional": false
+				},
+				"address": {
+					"type": "Address",
+					"optional": false
+				},
+				"email": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"phoneNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"percentageHeld": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"ownershipType": {
+					"type": "UTF8String",
+					"optional": false
+				},
+				"isSigner": {
+					"type": "BOOLEAN",
+					"optional": false
+				},
+				"position": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"identifications": {
+					"type": "SEQUENCE OF GenericPersonIdentification",
+					"optional": true
+				},
+				"governmentIssuedID": {
+					"type": "SEQUENCE OF Reference",
+					"optional": true
+				}
+			},
+			"field_order": [
+				"fullName",
+				"dateOfBirth",
+				"countryOfBirth",
+				"nationalities",
+				"address",
+				"email",
+				"phoneNumber",
+				"percentageHeld",
+				"ownershipType",
+				"isSigner",
+				"position",
+				"identifications",
+				"governmentIssuedID"
+			]
+		},
+		"ubos": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 23 ],
+			"token": "Ubos",
+			"type": "SEQUENCE",
+			"description": "Organization's ultimate beneficial owners",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.23",
+			"fields": {
+				"owners": {
+					"type": "SEQUENCE OF Ubo",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"owners"
+			]
 		}
 	},
 	"iso20022_types": {
@@ -806,6 +991,23 @@
 				"external",
 				"digest",
 				"encryptionAlgorithm"
+			]
+		},
+		"OrganizationDocuments": {
+			"description": "Files an organization filed under one document category",
+			"fields": {
+				"documentNumber": {
+					"type": "UTF8String",
+					"optional": true
+				},
+				"files": {
+					"type": "SEQUENCE OF Reference",
+					"optional": false
+				}
+			},
+			"field_order": [
+				"documentNumber",
+				"files"
 			]
 		}
 	}
