@@ -1,0 +1,77 @@
+import { test, expect } from 'vitest';
+import * as Certificates from './certificates.js';
+import * as KeetaNetClient from '@keetanetwork/keetanet-client';
+
+/*
+ * Backward-compatibility regression: this certificate was signed before CHOICE
+ * fields gained the positional context-tag wrapper, so entityType's schemeName
+ * is encoded bare while its sibling id stays context-tagged. Signed with the
+ * seed below (ED25519) and
+ * entityType { person: [{ id: '123-45-6789', schemeName: 'SSN' }] }.
+ */
+const legacySeed = 'B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0B0';
+
+const legacyCertPEM = `-----BEGIN CERTIFICATE-----
+MIIJ3TCCCY+gAwIBAgIBBDAFBgMrZXAwTjFMMEoGA1UEAxZDa2VldGFfYWh1cGl0
+NHo0d2RuMnByM2JvbWZhcjRoaWxpaW1qMjNuNGs0bWtpcTNtaWtuNGE3NHZ6ZnJi
+MjVuYmh0bzAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaME4xTDBKBgNV
+BAMWQ2tlZXRhX2FlamRlYmNyMmJjenBja3hseG5kcmpseXN5dXhsdXAzZHB5ZGps
+dmhrNnhwMmxzdWRwNzZpMmFjZjJmc28wKjAFBgMrZXADIQASMgRR0EWXiVdd2jil
+eJYpddH7G/A0rqdXrv0uVBv/5KOCCJAwggiMMA4GA1UdDwEB/wQEAwIAwDAfBgNV
+HSMEGDAWgBQATRi3J0WgPgZxHajgVA7w885DqzAdBgNVHQ4EFgQU6ZrvJMGXTH2R
+co0ZvQl1omsnshYwggg4BgorBgEEAYPpUwAABIIIKDCCCCQwggE0BgorBgEEAYPp
+UwEAgYIBJDCCASACAQAwgZwGCWCGSAFlAwQBLgQMPcsA9tI3cbDKdDRaBIGAx7q4
+Zfj+33OxnPCVdyL79SGo+8DfOrBDay80I9zpyKcqP78NdeMGna8C32cOtpdkoJgX
+IneY+FhshkJu4umwZpD7oSPwHMSvYOyV8m+3bDx4pjvHctxUosgvD/wF5RTwV2K/
+UTlHT0fFFhbxaHQXAewbChKj+fzOa074FTDr524wXwQwLaXpzZhPFT3UqBf3AQlw
+PUrBh1bkHfvye2WvQr/KtXjbQHHlhTaQxgbDRC1ZzZ75BglghkgBZQMEAggEIERy
+mB0h7XcW2Lg26CyUDKdSFZmpDTrhS9Q+OL0oci0LBBu6mzPSD0LtzKwJ6cmI57LM
+04Ml8L2foPmMTq4wggE7BgorBgEEAYPpUwEDgYIBKzCCAScCAQAwgZwGCWCGSAFl
+AwQBLgQMHjPAWnrDeOh1n+vNBIGAlezgBU1dTKFOGt6Ivj2Q0q1Co+Wjov6MrR6+
+Uzf7tAQqysetVey6wJl4MYt2TMkR38dZ7LEWSBw0L0IK9qOQf8vwNmNyZ1HNVb/M
+XyDl44V0UXv9GDT50OYBQwBMfEh/jSOaorQbN6YtxVkBc7LdpTlBdbXuamGiiwyP
+yNVkFJIwXwQwvZOhWExSUzo7LCkVGOVwfK47evAXLZykevlMRQ666Pq7CmRbMwn1
+12uN2pEbmuFpBglghkgBZQMEAggEIKNY0Pp7sIR+kf06UQokeWCsL5nAgOLumQpA
+YhTAysLXBCJxMuLcvSJzedxcCYw++iTOnLH7QQi037y3KlvVhBZzLsFVMIIBOgYK
+KwYBBAGD6VMBAYGCASowggEmAgEAMIGcBglghkgBZQMEAS4EDCnMPGlw1ZCAos0f
+HQSBgIZAnUTwaYg5p2wBq/EnTPHpO6KqyBe81DznCbPXlqLOP8NM06SDVM1yWh8W
+/XZEBFjuBIWIU3BidDeZDt1pWb3GtBZ5snqBBZbi/G2+T/g35985NDtg7Aqmc5D4
+TOwnwDIOuHpjpvlq6RWnIj31cdy6ykSvJFDrpEaq7VKLTvQHMF8EMM4g8LjNoNTC
+pP++t8IibQt8vxuamFSYztyMV2xakgG9oEMy/84Gx0qJF7NjU6c0LgYJYIZIAWUD
+BAIIBCAKThehaqqnh6YCc4m/kwSMq8e/lnkLMU7YVQ/fjKeKbwQh5FQ9yxT9VZGi
+C4sPnP/NT2MxKRWWJe4koG2aGVtRa6MeMIIBRwYKKwYBBAGD6VMBCIGCATcwggEz
+AgEAMIGcBglghkgBZQMEAS4EDP6HQwmgUVxonBr/AQSBgC1kw0/3u2FWuWoQM8NG
+QdylNBx23/E+I73PTBAbKuMmivVg7praEEULhs7as0DfTjCOfNKn90DHD/vvZhsj
+w0+dedXpAGDwHiTUrDx4GMZW3OegBJKa0NAxee3Ppb97vLnMnUnelgIlK3Gz8GAE
+Alwlv+XqFjEDfYDyiQdSEf76MF8EMDsfr7Zh6798FehCx0LYX5nysgHB1WYgpLhC
+lsu19v08zYrgSb1IS7lKmCEQXRzZ+AYJYIZIAWUDBAIIBCBoNEZJxtieIXV1zgVZ
+nXw7vuQzsOf8SVXgQh7zsKq/LQQuAgR2xVblEUfMMIQOP5eMC8k4Nast5pQPUUVK
+2B+ZbOE8UA189l3LP7NRKzlLPzCCAyAGCysGAQQBg+lTAQsAgYIDDzCCAwsCAQAw
+gZwGCWCGSAFlAwQBLgQMor8EK5J8NBiRcUY5BIGA013puXZEjUwfv/HFs+Z47RQU
+uR1svVjoRP1Ehd5ap4r74u5rOMt+S7Pj11TFNqsMPLuIFdal1shGL8ZI/oFuyb3S
+JwZFVoT4VEYWVDuT+AavjNC/ff2hKO3EyPMKUhk1wPmNw5bNZEtE+5Kazu+Heb4p
+Af8VSi/ETdsmjLCVnZowXwQwKhYHfY6MTzz8DbyC9/PXLzhCTBW1N0NsbRfQs3qj
+v4VbQ2Ybqvz8xbr9bpVKUaApBglghkgBZQMEAggEIH2j2DJROZnZAVA28J6vn+2A
+YW+1HngNRcc1oW15AP8dBIICBDWrJXVlGSUSWutasseJdjrCXDleuTBtGhv5cLjD
+k82btiJE6oNX56FG3Rh88VDU9sCdTYNIY8pbOWUOds3y12l6XgMmJcvGRadAqpuP
+XR60WPNAgd9n4l2LTpU2Aeu+9mFqCSvBcHmGqjlFlXKKYZwujPl/ZmxNxKruNfvq
+bl/DMfbGEmKUkUZLsoLovdRJlb26LfsL84ovLJAR74oZ+lqs5LLxuOxeoea/uYFt
+d8QYQCYVk5sQvH49zSbEBILCJigDcvG9uX14zQgan/1N2OTzYsudBQ+dWSr49D4y
+CGsQoi3DN3WPp3NF0xY6YVAsB+wvva6L0HQbbyXqQL4PAQ1WjXi1cYWcjmaYSyal
+4/blP8pdxYgo0FhB9KtL/X/QUMo+uIfYwNOwSsnEaCO8yAQ8yQPFazyDerbzJLof
+ll7nWsrT3GABdHQb3V8pRFQ/1weJEkR7t6yNOlcoVWH+PIJhljgD359dR5Dc7X+E
+xxyjCjm6CeMXkROvnIS2a78KJP36B55k06lnR4Qc328QyWTOEMnXpWxNSeRdP1lW
+c4hNZ2bFaipkAjN7nQnEDtBacBRhDZXQVDOSxOYy1rtpfIpCj9snmA9OGA57NYTP
+wlMYr+BWHxiBJiW5BolC28akBXd5VVQbsOCVDZmYsrqSdDJZTRHu63Wt8Whi+ECl
+f4eyUUZp7jAFBgMrZXADQQB0q1tDwVq7XfJQe9lUUyT9IfKCN+dJX6VEiACDz/bz
+PBV5HyZCsk/dBIGozkUQtxeaKYQz+jVoGQroAy1J3OcH
+-----END CERTIFICATE-----`;
+
+test('legacy bare-CHOICE entityType still decodes', async function() {
+	const account = KeetaNetClient.lib.Account.fromSeed(legacySeed, 1, KeetaNetClient.lib.Account.AccountKeyAlgorithm.ED25519);
+	const certificate = new Certificates.Certificate(legacyCertPEM, { subjectKey: account, moment: null });
+
+	const entityType = await certificate.getAttributeValue('entityType');
+	expect(entityType.person?.[0]?.schemeName, 'bare CHOICE schemeName decodes').toBe('SSN');
+	expect(entityType.person?.[0]?.id, 'context-tagged sibling id decodes').toBe('123-45-6789');
+});
