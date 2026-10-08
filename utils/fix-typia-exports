@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 #
-# typia >=12 exports `./lib/internal/*` → `./lib/internal/*.{mjs,js}`.
+# typia >=12 exports `./lib/internal/*` -> `./lib/internal/*.{mjs,js}`.
 # Precompiled packages (NodeNext) import `typia/lib/internal/_assertGuard.js`,
 # so `*` captures `_assertGuard.js` and resolution looks for
 # `_assertGuard.js.mjs` / `_assertGuard.js.js`.
