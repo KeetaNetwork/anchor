@@ -16,7 +16,7 @@
 		"make:distclean": "make distclean",
 		"make:do-npm-pack": "make do-npm-pack",
 		"make:do-deploy": "make do-deploy",
-		"prepare": "ts-patch install && typia patch"
+		"prepare": "ts-patch install && typia patch && ./utils/fix-typia-exports"
 	},
 	"author": "LFG Payments, Inc",
 	"license": "SEE LICENSE IN LICENSE",

@@ -1,0 +1,54 @@
+#! /usr/bin/env bash
+#
+# typia >=12 exports `./lib/internal/*` → `./lib/internal/*.{mjs,js}`.
+# Precompiled packages (NodeNext) import `typia/lib/internal/_assertGuard.js`,
+# so `*` captures `_assertGuard.js` and resolution looks for
+# `_assertGuard.js.mjs` / `_assertGuard.js.js`.
+#
+# Add a more-specific `./lib/internal/*.js` export so the basename is correct.
+# Safe to re-run; no-ops when already patched or typia is absent.
+#
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
+typiaPackage='node_modules/typia/package.json'
+
+if [ ! -f "${typiaPackage}" ]; then
+	exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+	echo 'error: required command "jq" not found' >&2
+	exit 1
+fi
+
+if jq -e '.exports["./lib/internal/*.js"]' "${typiaPackage}" >/dev/null 2>&1; then
+	exit 0
+fi
+
+if ! jq -e '.exports["./lib/internal/*"]' "${typiaPackage}" >/dev/null 2>&1; then
+	exit 0
+fi
+
+tmp="$(mktemp)"
+jq '
+	.exports = (
+		(.exports | to_entries) as $entries
+		| reduce $entries[] as $e ({};
+			if $e.key == "./lib/internal/*" then
+				. + {
+					"./lib/internal/*.js": {
+						"types": "./lib/internal/*.d.ts",
+						"import": "./lib/internal/*.mjs",
+						"default": "./lib/internal/*.js"
+					},
+					($e.key): $e.value
+				}
+			else
+				. + { ($e.key): $e.value }
+			end
+		)
+	)
+' "${typiaPackage}" > "${tmp}" && mv "${tmp}" "${typiaPackage}"
+
+echo "patched ${typiaPackage}: added exports[\"./lib/internal/*.js\"]"
