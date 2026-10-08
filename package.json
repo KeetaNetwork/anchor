@@ -1,6 +1,6 @@
 {
 	"name": "@keetanetwork/anchor",
-	"version": "0.0.98",
+	"version": "0.0.101",
 	"description": "KeetaNetwork Network Anchor",
 	"main": "client/index.js",
 	"scripts": {
@@ -26,8 +26,8 @@
 		"@cspell/cspell-types": "9.6.0",
 		"@cspell/dict-typescript": "3.2.3",
 		"@google-cloud/firestore": "8.2.0",
-		"@keetanetwork/eslint-config-typescript": "1.4.7",
-		"@keetanetwork/keetanet-node": "0.18.3",
+		"@keetanetwork/eslint-config-typescript": "1.4.8",
+		"@keetanetwork/keetanet-node": "0.18.7",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "24.19.0",
 		"@types/pg": "8.15.6",
@@ -44,8 +44,8 @@
 		"vitest": "5.0.3"
 	},
 	"dependencies": {
-		"@keetanetwork/currency-info": "1.2.5",
-		"@keetanetwork/keetanet-client": "0.18.3",
+		"@keetanetwork/currency-info": "1.2.8",
+		"@keetanetwork/keetanet-client": "0.18.7",
 		"@noble/hashes": "1.5.0",
 		"typia": "12.2.1"
 	},

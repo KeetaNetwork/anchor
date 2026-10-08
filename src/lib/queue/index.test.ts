@@ -470,6 +470,13 @@ test('Queue Runner Basic Tests', async function() {
 			const callCount = processCallCountByKey.get(key) ?? 0;
 			processCallCountByKey.set(key, callCount + 1);
 
+			if (key.startsWith('throws')) {
+				throw(new KeetaAnchorQueueRunnerJSONConfigProc.Errors.KeetaAnchorQueueProcessorResult('As a throw', {
+					output: 'OK',
+					status: entry.request.newStatus
+				}));
+			}
+
 			if (key.startsWith('timedout_late')) {
 				await asleep(500);
 			}
@@ -639,6 +646,23 @@ test('Queue Runner Basic Tests', async function() {
 
 			expect(statuses).toEqual(['aborted', 'pending']);
 		}
+	}
+
+	{
+		vi.useRealTimers();
+		logger?.debug('basic', '> Test that throwing a processor result works the same as a return value');
+
+		const id_1 = await runner.add({ key: 'throws_1', newStatus: 'completed' });
+		const id_2 = await runner.add({ key: 'throws_2', newStatus: 'failed_permanently' });
+		await runner.run();
+		await runner.maintain();
+
+		const status_1 = await runner.get(id_1);
+		const status_2 = await runner.get(id_2);
+		expect(status_1?.status).toBe('completed');
+		expect(status_2?.status).toBe('failed_permanently');
+		expect(status_1?.output).toBe('OK');
+		expect(status_2?.output).toBe('OK');
 	}
 });
 
@@ -1721,7 +1745,13 @@ suite('Driver Tests', async function() {
 				});
 
 				testRunner('Delete Expired Completed', async function() {
-					const retentionMs = 100;
+					/*
+					 * Must exceed the time from setStatus(completed) through
+					 * deleteExpiredCompleted inside maintain() (init, lock,
+					 * stuck/retry queries, then retention cleanup). Slow
+					 * backends like Firestore can take hundreds of ms here.
+					 */
+					const retentionMs = 1000;
 					await using queueInfo = await driverConfig.create('delete-expired-completed');
 					const localQueue = queueInfo.queue;
 
@@ -1736,14 +1766,27 @@ suite('Driver Tests', async function() {
 
 					const expiredID = await localQueue.add({ key: 'old-completed' });
 					await localQueue.setStatus(expiredID, 'completed');
+					const completedEntry = await localQueue.get(expiredID);
+					if (completedEntry === null) {
+						throw(new Error('internal error: completed entry not found after setStatus'));
+					}
+					const completedAt = completedEntry.updated.getTime();
 
 					const pendingID = await localQueue.add({ key: 'pending' });
 
+					/*
+					 * maintain() before expiry must leave non-expired completed
+					 * entries and pending entries alone (pending is only handled
+					 * by run()). Fail clearly if setup already burned the
+					 * retention window so a flake is not mistaken for a
+					 * retention-logic bug.
+					 */
+					expect(Date.now() - completedAt).toBeLessThan(retentionMs);
 					await runner.maintain();
 					expect(await localQueue.get(expiredID)).not.toBeNull();
 					expect(await localQueue.get(pendingID)).not.toBeNull();
 
-					await asleep(retentionMs * 2);
+					await asleep(Math.max(0, (completedAt + retentionMs * 2) - Date.now()));
 
 					const recentID = await localQueue.add({ key: 'recent-completed' });
 					await localQueue.setStatus(recentID, 'completed');
