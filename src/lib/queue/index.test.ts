@@ -1457,7 +1457,7 @@ test('Errors', async function() {
 
 });
 
-suite.sequential('Driver Tests', async function() {
+suite('Driver Tests', async function() {
 	for (const driver in drivers) {
 		const driverConfig = drivers[driver];
 		if (driverConfig === undefined) {
