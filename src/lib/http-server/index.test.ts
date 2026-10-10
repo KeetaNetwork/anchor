@@ -692,16 +692,16 @@ test('Server-Timing: reports server and handler sections on every response', asy
 
 	await server.start();
 
-	expect(await requestServerTiming(server.url, '/timed')).toEqual({ status: 200, sections: ['handler-1', 'lookup-0'] });
+	expect(await requestServerTiming(server.url, '/timed')).toEqual({ status: 200, sections: ['http-handler-1', 'lookup-0'] });
 	expect(await requestServerTiming(server.url, '/echo', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ hello: 'world' })
-	})).toEqual({ status: 200, sections: ['body-0', 'handler-1'] });
-	expect(await requestServerTiming(server.url, '/fails')).toEqual({ status: 500, sections: ['handler-0'] });
-	expect(await requestServerTiming(server.url, '/user-error')).toEqual({ status: 400, sections: ['handler-0'] });
-	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toEqual({ status: 200, sections: ['handler-0'] });
-	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toEqual({ status: 200, sections: ['handler-0'] });
+	})).toEqual({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/fails')).toEqual({ status: 500, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/user-error')).toEqual({ status: 400, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toEqual({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toEqual({ status: 200, sections: ['http-handler-0'] });
 	expect(await requestServerTiming(server.url, '/missing')).toEqual({ status: 404, sections: null });
 }, 30000);
 
@@ -741,7 +741,7 @@ test('Server-Timing: parallel requests each get their own timing', async functio
 		requestServerTiming(server.url, '/work/a')
 	]);
 
-	expect(first).toEqual({ status: 200, sections: ['handler-1', 'work-a-0'] });
-	expect(second).toEqual({ status: 200, sections: ['handler-1', 'work-b-0'] });
-	expect(third).toEqual({ status: 200, sections: ['handler-1', 'work-a-0'] });
+	expect(first).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+	expect(second).toEqual({ status: 200, sections: ['http-handler-1', 'work-b-0'] });
+	expect(third).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
 }, 30000);
