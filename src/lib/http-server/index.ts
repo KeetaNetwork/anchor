@@ -552,7 +552,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						}
 					}
 
-					const data = await timing.runTimer('body', async function() {
+					const readBody = async function() {
 						return(await request.map(function(chunk) {
 							// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 							return(Buffer.from(chunk));
@@ -566,7 +566,19 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 							}
 							return(Buffer.concat([prev, curr]));
 						}, Buffer.from('')));
-					});
+					};
+
+					let hasBody = request.headers['transfer-encoding'] !== undefined;
+					if (contentLength !== undefined && parseInt(contentLength, 10) !== 0) {
+						hasBody = true;
+					}
+
+					let data: Buffer;
+					if (hasBody) {
+						data = await timing.runTimer('body', readBody);
+					} else {
+						data = await readBody();
+					}
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
