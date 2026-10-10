@@ -633,3 +633,115 @@ test('maxBodySize: rejects oversized requests', async function() {
 
 	await server.stop();
 }, 30000);
+
+async function requestServerTiming(serverURL: string, path: string, init?: RequestInit): Promise<{ status: number; sections: string[] | null; }> {
+	const response = await fetch(new URL(path, serverURL), init);
+	await response.arrayBuffer();
+
+	const header = response.headers.get('Server-Timing');
+	if (header === null) {
+		return({ status: response.status, sections: null });
+	}
+
+	const sections = header.split(', ').map(function(entry) {
+		const [section, duration] = entry.split(';dur=');
+		expect(duration).toMatch(/^\d+$/);
+
+		return(section ?? '');
+	});
+
+	return({ status: response.status, sections: sections });
+}
+
+test('Server-Timing: reports server and handler sections on every response', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+				await timing.runTimer('lookup', async function() {
+					return(true);
+				});
+
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			routes['POST /echo'] = async function(_ignore_params, body) {
+				return({ output: JSON.stringify(body) });
+			};
+
+			routes['GET /fails'] = async function() {
+				throw(new Error('internal failure'));
+			};
+
+			routes['POST /empty'] = async function() {
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			routes['DELETE /item'] = async function() {
+				return({ output: JSON.stringify({ deleted: true }) });
+			};
+
+			routes['GET /user-error'] = async function() {
+				throw(new KeetaAnchorUserError('bad input'));
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	expect(await requestServerTiming(server.url, '/timed')).toEqual({ status: 200, sections: ['http-handler-1', 'lookup-0'] });
+	expect(await requestServerTiming(server.url, '/echo', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ hello: 'world' })
+	})).toEqual({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/fails')).toEqual({ status: 500, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/user-error')).toEqual({ status: 400, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toEqual({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toEqual({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/missing')).toEqual({ status: 404, sections: null });
+}, 30000);
+
+test('Server-Timing: parallel requests each get their own timing', async function() {
+	let handlersStarted = 0;
+	let releaseHandlers: () => void = function() {};
+	const allHandlersStarted = new Promise<void>(function(resolve) {
+		releaseHandlers = resolve;
+	});
+
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /work/:name'] = async function(params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+				await timing.runTimer(`work-${params.get('name')}`, async function() {
+					handlersStarted++;
+					if (handlersStarted === 3) {
+						releaseHandlers();
+					}
+
+					await allHandlersStarted;
+				});
+
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const [first, second, third] = await Promise.all([
+		requestServerTiming(server.url, '/work/a'),
+		requestServerTiming(server.url, '/work/b'),
+		requestServerTiming(server.url, '/work/a')
+	]);
+
+	expect(first).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+	expect(second).toEqual({ status: 200, sections: ['http-handler-1', 'work-b-0'] });
+	expect(third).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+}, 30000);
