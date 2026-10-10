@@ -674,6 +674,14 @@ test('Server-Timing: reports server and handler sections on every response', asy
 				throw(new Error('internal failure'));
 			};
 
+			routes['POST /empty'] = async function() {
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			routes['DELETE /item'] = async function() {
+				return({ output: JSON.stringify({ deleted: true }) });
+			};
+
 			routes['GET /user-error'] = async function() {
 				throw(new KeetaAnchorUserError('bad input'));
 			};
@@ -692,6 +700,8 @@ test('Server-Timing: reports server and handler sections on every response', asy
 	})).toEqual({ status: 200, sections: ['body-0', 'handler-1'] });
 	expect(await requestServerTiming(server.url, '/fails')).toEqual({ status: 500, sections: ['handler-0'] });
 	expect(await requestServerTiming(server.url, '/user-error')).toEqual({ status: 400, sections: ['handler-0'] });
+	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toEqual({ status: 200, sections: ['handler-0'] });
+	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toEqual({ status: 200, sections: ['handler-0'] });
 	expect(await requestServerTiming(server.url, '/missing')).toEqual({ status: 404, sections: null });
 }, 30000);
 
