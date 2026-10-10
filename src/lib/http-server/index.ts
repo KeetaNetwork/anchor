@@ -575,7 +575,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					let data: Buffer;
 					if (hasBody) {
-						data = await timing.runTimer('body', readBody);
+						data = await timing.runTimer('http-request-body', readBody);
 					} else {
 						data = await readBody();
 					}
@@ -597,7 +597,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				/**
 				 * Call the route handler
 				 */
-				result = await timing.runTimer('handler', async function() {
+				result = await timing.runTimer('http-handler', async function() {
 					// @ts-ignore
 					return(await route.handler(params, bodyData, request.headers, url, timing));
 				});
