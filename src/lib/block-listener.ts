@@ -52,11 +52,6 @@ export class BlockListener {
 		return(this.#config.client);
 	}
 
-	get #historyAccount(): GenericAccount | null {
-		const account = this.#config.account ?? null;
-		return(account);
-	}
-
 	get logger(): Logger | undefined {
 		return(this.#config.logger);
 	}
@@ -126,7 +121,8 @@ export class BlockListener {
 
 				this.logger?.debug('BlockListener::poll', `Fetching history page ${pageCount}`, { ...historyOptions });
 
-				const history = await this.#client.getHistory(this.#historyAccount, historyOptions);
+				const historyAccount = this.#config.account ?? null;
+				const history = await this.#client.getHistory(historyAccount, historyOptions);
 
 				if (history.length === 0) {
 					this.logger?.debug('BlockListener::poll', `No more history found, ending discovery`);

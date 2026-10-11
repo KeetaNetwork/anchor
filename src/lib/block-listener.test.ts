@@ -1,4 +1,4 @@
-import { test, expect, vi } from 'vitest';
+import { test, expect } from 'vitest';
 import { BlockListener, BlockQueueRunner, OperationQueueRunner } from './block-listener.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
@@ -18,7 +18,7 @@ if (DEBUG) {
 
 test('BlockListener - registration, removal, scanning, and work status', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const { userClient: client } = await createNodeAndClient(account);
+	const { userClient: client, give } = await createNodeAndClient(account);
 
 	const listener = new BlockListener({
 		client: client.client,
@@ -125,12 +125,34 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	expect(resultWithWork.listenersHaveWork).toBe(true);
 
 	// Test error handling - errors in callbacks should not prevent other callbacks
+	const anotherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await give(anotherAccount, 100n);
+
+	const otherClient = new KeetaNet.UserClient({
+		client: client.client,
+		network: client.network,
+		networkAlias: 'test',
+		signer: anotherAccount,
+		usePublishAid: false
+	});
+
+	await otherClient.setInfo({
+		name: 'OTHER_ACCOUNT',
+		description: 'Other account block',
+		metadata: ''
+	});
+	const otherHead = await otherClient.head();
+	if (!otherHead) {
+		throw(new Error('Failed to retrieve head block hash after creating other account block'));
+	}
+
 	const listener2 = new BlockListener({
 		client: client.client,
 		account: client.account,
 		...(logger ? { logger } : {})
 	});
 
+	const scopedSeenHashes = new KeetaNet.lib.Block.Hash.Set();
 	let errorCallbackRan = false;
 	let successCallbackRan = false;
 
@@ -142,7 +164,8 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	});
 
 	listener2.on('block', {
-		callback: async function() {
+		callback: async function(data) {
+			scopedSeenHashes.add(data.block.hash);
 			successCallbackRan = true;
 			return({ requiresWork: false });
 		}
@@ -153,10 +176,14 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 		description: 'Testing error handling',
 		metadata: ''
 	});
+	const scopedHead = await client.head();
+	if (!scopedHead) {
+		throw(new Error('Failed to retrieve head block hash after creating scoped account block'));
+	}
 
-	const getHistorySpy = vi.spyOn(client.client, 'getHistory');
 	const errorResult = await listener2.scan();
-	expect(getHistorySpy.mock.calls[0]?.[0]).toBe(client.account);
+	expect(scopedSeenHashes.has(scopedHead)).toBe(true);
+	expect(scopedSeenHashes.has(otherHead)).toBe(false);
 	expect(errorCallbackRan).toBe(true);
 	expect(successCallbackRan).toBe(true);
 	expect(errorResult.listenersHaveWork).toBe(false);
