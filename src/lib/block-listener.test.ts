@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest';
+import { test, expect, vi } from 'vitest';
 import { BlockListener, BlockQueueRunner, OperationQueueRunner } from './block-listener.js';
 import { createNodeAndClient } from './utils/tests/node.js';
 import { KeetaNet } from '../client/index.js';
@@ -127,6 +127,7 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	// Test error handling - errors in callbacks should not prevent other callbacks
 	const listener2 = new BlockListener({
 		client: client.client,
+		account: client.account,
 		...(logger ? { logger } : {})
 	});
 
@@ -153,7 +154,9 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 		metadata: ''
 	});
 
+	const getHistorySpy = vi.spyOn(client.client, 'getHistory');
 	const errorResult = await listener2.scan();
+	expect(getHistorySpy.mock.calls[0]?.[0]).toBe(client.account);
 	expect(errorCallbackRan).toBe(true);
 	expect(successCallbackRan).toBe(true);
 	expect(errorResult.listenersHaveWork).toBe(false);
