@@ -780,6 +780,37 @@ test('Server-Timing: repeated sections are kept apart and unfinished ones are le
 	expect(await requestServerTiming(server.url, '/repeat')).toMatchObject({ status: 200, sections: ['http-handler-2', 'db-0', 'db-1'] });
 }, 30000);
 
+test('Server-Timing: sections with invalid names are left out', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /work'] = async function(_ignore_params, _ignore_body, _ignore_headers, url, timing) {
+				/*
+				 * There isn't an immediately obvious scenario where a user
+				 * modifiable field would go into a timer but it allows for
+				 * easy testing and gets ahead of the - admittedly unlikely -
+				 * case where a developer put in escape characters
+				 */
+				await timing.runTimer(`work-${url.searchParams.get('name')}`, async function() {
+					return(true);
+				});
+
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	expect(await requestServerTiming(server.url, '/work?name=a_1')).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a_1-0'] });
+	expect(await requestServerTiming(server.url, '/work?name=a%0Ab')).toMatchObject({ status: 200, sections: ['http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/work?name=a,%20b;dur=999')).toMatchObject({ status: 200, sections: ['http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/work?name=a/b')).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a/b-0'] });
+}, 30000);
+
 test('Server-Timing: parallel requests each get their own timing', async function() {
 	let handlersStarted = 0;
 	let releaseHandlers: () => void = function() {};

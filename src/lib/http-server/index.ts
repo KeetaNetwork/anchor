@@ -25,7 +25,9 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
 const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 
 function formatServerTimingHeader(timing: RequestTiming): string {
-	return(Object.entries(timing.getAllTiming()).map(function([section, { duration }]) {
+	return(Object.entries(timing.getAllTiming()).filter(function([section]) {
+		return(/^[A-Za-z0-9_/-]+$/.test(section));
+	}).map(function([section, { duration }]) {
 		return(`${section};dur=${duration}`);
 	}).join(', '));
 }
