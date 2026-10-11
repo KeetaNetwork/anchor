@@ -3,6 +3,7 @@ import * as HTTPServer from './index.js';
 import { KeetaAnchorUserError } from '../error.js';
 import crypto from 'crypto';
 import { Buffer } from '../utils/buffer.js';
+import { asleep } from '../utils/asleep.js';
 
 function hashData(data: Buffer): Buffer {
 	const hash = crypto.createHash('sha256');
@@ -634,23 +635,25 @@ test('maxBodySize: rejects oversized requests', async function() {
 	await server.stop();
 }, 30000);
 
-async function requestServerTiming(serverURL: string, path: string, init?: RequestInit): Promise<{ status: number; sections: string[] | null; }> {
+async function requestServerTiming(serverURL: string, path: string, init?: RequestInit): Promise<{ status: number; sections: string[] | null; durations: { [section: string]: number; } | null; }> {
 	const response = await fetch(new URL(path, serverURL), init);
 	await response.arrayBuffer();
 
 	const header = response.headers.get('Server-Timing');
 	if (header === null) {
-		return({ status: response.status, sections: null });
+		return({ status: response.status, sections: null, durations: null });
 	}
 
+	const durations: { [section: string]: number; } = {};
 	const sections = header.split(', ').map(function(entry) {
-		const [section, duration] = entry.split(';dur=');
+		const [section = '', duration = ''] = entry.split(';dur=');
 		expect(duration).toMatch(/^\d+$/);
+		durations[section] = parseInt(duration, 10);
 
-		return(section ?? '');
+		return(section);
 	});
 
-	return({ status: response.status, sections: sections });
+	return({ status: response.status, sections: sections, durations: durations });
 }
 
 test('Server-Timing: reports server and handler sections on every response', async function() {
@@ -692,17 +695,89 @@ test('Server-Timing: reports server and handler sections on every response', asy
 
 	await server.start();
 
-	expect(await requestServerTiming(server.url, '/timed')).toEqual({ status: 200, sections: ['http-handler-1', 'lookup-0'] });
+	expect(await requestServerTiming(server.url, '/timed')).toMatchObject({ status: 200, sections: ['http-handler-1', 'lookup-0'] });
 	expect(await requestServerTiming(server.url, '/echo', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ hello: 'world' })
-	})).toEqual({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
-	expect(await requestServerTiming(server.url, '/fails')).toEqual({ status: 500, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/user-error')).toEqual({ status: 400, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toEqual({ status: 200, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toEqual({ status: 200, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/missing')).toEqual({ status: 404, sections: null });
+	})).toMatchObject({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/fails')).toMatchObject({ status: 500, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/user-error')).toMatchObject({ status: 400, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toMatchObject({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toMatchObject({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/missing')).toMatchObject({ status: 404, sections: null });
+}, 30000);
+
+test('Server-Timing: duration is present and nested sections add up', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+				await timing.runTimer('lookup', async function() {
+					await timing.runTimer('read', async function() {
+						await asleep(5);
+					});
+					await timing.runTimer('parse', async function() {
+						await asleep(50);
+					});
+				});
+				await timing.runTimer('render', async function() {
+					await asleep(10);
+				});
+
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const timed = await requestServerTiming(server.url, '/timed');
+	expect(timed).toMatchObject({ status: 200, sections: ['http-handler-4', 'lookup-2', 'read-0', 'parse-1', 'render-3'] });
+
+	const duration = function(section: string): number {
+		const value = timed.durations?.[section];
+		if (value === undefined) {
+			throw(new Error(`internal error: section ${section} missing`));
+		}
+
+		return(value);
+	};
+
+	expect(duration('read-0')).toBeGreaterThanOrEqual(4);
+	expect(duration('parse-1')).toBeGreaterThanOrEqual(49);
+	expect(duration('render-3')).toBeGreaterThanOrEqual(9);
+	expect(duration('lookup-2')).toBeGreaterThanOrEqual(duration('read-0') + duration('parse-1'));
+	expect(duration('http-handler-4')).toBeGreaterThanOrEqual(duration('lookup-2') + duration('render-3'));
+}, 30000);
+
+test('Server-Timing: repeated sections are kept apart and unfinished ones are left out', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['GET /repeat'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+				await timing.runTimer('db', async function() {
+					return(true);
+				});
+				await timing.runTimer('db', async function() {
+					return(true);
+				});
+				timing.startTime('pending');
+
+				return({ output: JSON.stringify({ ok: true }) });
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	expect(await requestServerTiming(server.url, '/repeat')).toMatchObject({ status: 200, sections: ['http-handler-2', 'db-0', 'db-1'] });
 }, 30000);
 
 test('Server-Timing: parallel requests each get their own timing', async function() {
@@ -741,7 +816,7 @@ test('Server-Timing: parallel requests each get their own timing', async functio
 		requestServerTiming(server.url, '/work/a')
 	]);
 
-	expect(first).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
-	expect(second).toEqual({ status: 200, sections: ['http-handler-1', 'work-b-0'] });
-	expect(third).toEqual({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+	expect(first).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+	expect(second).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-b-0'] });
+	expect(third).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
 }, 30000);
