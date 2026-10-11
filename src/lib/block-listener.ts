@@ -1,4 +1,5 @@
 import type { Client } from "@keetanetwork/keetanet-client";
+import type { GenericAccount } from '@keetanetwork/keetanet-client/lib/account.js';
 import type { Logger } from "./log/index.js";
 import type { Block, BlockHash } from "@keetanetwork/keetanet-client/lib/block/index.js";
 import type { BlockOperations } from "@keetanetwork/keetanet-client/lib/block/operations.js";
@@ -12,6 +13,13 @@ import type { KeetaAnchorQueueRunOptions } from "./queue/common.js";
 
 interface BlockListenerConfig {
 	client: Client;
+
+	/**
+	 * `scan()` reads only this account's history.
+	 *
+	 * The same account scope applies to every callback registered on this listener.
+	 */
+	account?: GenericAccount;
 
 	logger?: Logger;
 }
@@ -106,14 +114,15 @@ export class BlockListener {
 				}
 			}
 
+			const historyAccount = this.#config.account ?? null;
+
 			while (!reachedEndOfTime) {
 				pageCount++;
 
 				const historyOptions = { depth: 20, ...(startBlocksHash ? { startBlocksHash } : {}) };
 
-				this.logger?.debug('BlockListener::poll', `Fetching history page ${pageCount}`, { ...historyOptions });
-
-				const history = await this.#client.getHistory(null, historyOptions);
+				this.logger?.debug('BlockListener::poll', `Fetching history page ${pageCount}`, { ...historyOptions, account: historyAccount });
+				const history = await this.#client.getHistory(historyAccount, historyOptions);
 
 				if (history.length === 0) {
 					this.logger?.debug('BlockListener::poll', `No more history found, ending discovery`);
