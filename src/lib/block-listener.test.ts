@@ -184,6 +184,18 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	const errorResult = await listener2.scan();
 	expect(scopedSeenHashes.has(scopedHead)).toBe(true);
 	expect(scopedSeenHashes.has(otherHead)).toBe(false);
+
+	const unscopedSeenHashes = new KeetaNet.lib.Block.Hash.Set();
+	listener.on('block', {
+		callback: async function(data) {
+			unscopedSeenHashes.add(data.block.hash);
+			return({ requiresWork: false });
+		}
+	});
+	await listener.scan();
+	expect(unscopedSeenHashes.has(scopedHead)).toBe(true);
+	expect(unscopedSeenHashes.has(otherHead)).toBe(true);
+
 	expect(errorCallbackRan).toBe(true);
 	expect(successCallbackRan).toBe(true);
 	expect(errorResult.listenersHaveWork).toBe(false);
