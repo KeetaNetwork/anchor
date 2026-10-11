@@ -760,7 +760,8 @@ test('Queue Runner Aborted and Stuck Jobs Tests', async function() {
 			 * from aborted to processing to completed in the same run
 			 */
 			vi.useRealTimers();
-			await runner.run({ timeoutMs: 50 });
+			// Keep the run budget well below the 50 ms processTimeout so the aborted job is never reprocessed in the same run().
+			await runner.run({ timeoutMs: 25 });
 			vi.useFakeTimers();
 
 			const status_aborted = await runner.get(id_aborted);
