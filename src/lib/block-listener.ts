@@ -114,13 +114,14 @@ export class BlockListener {
 				}
 			}
 
+			const historyAccount = this.#config.account ?? null;
+
 			while (!reachedEndOfTime) {
 				pageCount++;
 
 				const historyOptions = { depth: 20, ...(startBlocksHash ? { startBlocksHash } : {}) };
-				const historyAccount = this.#config.account ?? null;
 
-				this.logger?.debug('BlockListener::poll', `Fetching history page ${pageCount}`, { ...historyOptions });
+				this.logger?.debug('BlockListener::poll', `Fetching history page ${pageCount}`, { ...historyOptions, account: historyAccount });
 				const history = await this.#client.getHistory(historyAccount, historyOptions);
 
 				if (history.length === 0) {
