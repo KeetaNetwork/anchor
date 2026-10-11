@@ -196,6 +196,30 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	expect(unscopedSeenHashes.has(scopedHead)).toBe(true);
 	expect(unscopedSeenHashes.has(otherHead)).toBe(true);
 
+	await otherClient.send(client.account, 5n, otherClient.baseToken);
+	const sendHead = await otherClient.head();
+	if (!sendHead) {
+		throw(new Error('Failed to retrieve head block hash after send'));
+	}
+
+	await listener2.scan();
+	expect(scopedSeenHashes.has(sendHead)).toBe(true);
+
+	const senderSeenHashes = new KeetaNet.lib.Block.Hash.Set();
+	const senderListener = new BlockListener({
+		client: client.client,
+		account: anotherAccount,
+		...(logger ? { logger } : {})
+	});
+	senderListener.on('block', {
+		callback: async function(data) {
+			senderSeenHashes.add(data.block.hash);
+			return({ requiresWork: false });
+		}
+	});
+	await senderListener.scan();
+	expect(senderSeenHashes.has(sendHead)).toBe(true);
+
 	expect(errorCallbackRan).toBe(true);
 	expect(successCallbackRan).toBe(true);
 	expect(errorResult.listenersHaveWork).toBe(false);
