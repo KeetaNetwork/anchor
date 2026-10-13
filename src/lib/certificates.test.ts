@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import * as Certificates from './certificates.js';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
-import { bufferToArrayBuffer } from './utils/buffer.js';
+import { bufferToArrayBuffer, Buffer } from './utils/buffer.js';
 import type { Schema as ASN1Schema } from './utils/asn1.js';
 import type { CertificateAttributeValue, CertificateAttributeOIDDB } from '../services/kyc/iso20022.generated.ts';
 import { ExternalReferenceBuilder } from './utils/external.js';

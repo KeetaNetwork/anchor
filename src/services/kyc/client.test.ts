@@ -11,6 +11,7 @@ import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { KeetaNetKYCAnchorHTTPServer } from './server.js';
 import type { KeetaKYCAnchorCreateVerificationRequest } from './common.ts';
 import { Errors as KeetaAnchorKYCErrors } from './common.js';
+import { KYCVerificationStatus } from './status.js';
 import * as util from 'util';
 
 const DEBUG = false;
@@ -76,6 +77,7 @@ test('KYC Anchor Client Test', async function() {
 		client: client,
 		kyc: {
 			countryCodes: ['US'],
+			entityTypes: ['individual', 'business'],
 			verificationStarted: async function(request) {
 				const id = crypto.randomUUID();
 				verifications.set(id, request);
@@ -124,6 +126,16 @@ test('KYC Anchor Client Test', async function() {
 					certificate: certificate,
 					intermediates: [kycCA.toPEM()]
 				}]);
+			},
+			getVerificationStatus: async function(verificationID, _ignore_requester) {
+				const request = verifications.get(verificationID);
+				if (request === undefined) {
+					throw(new KeetaAnchorKYCErrors.VerificationNotFound(`Verification ID ${verificationID} not found`));
+				}
+
+				return({
+					status: KYCVerificationStatus.PASSED
+				});
 			}
 		},
 		kycProviderURL: function(verificationID: string) {
@@ -214,6 +226,31 @@ test('KYC Anchor Client Test', async function() {
 	expect(providerCountryCodes).toBeDefined();
 	expect(providerCountryCodes?.[0]?.code).toBe('US');
 
+	/*
+	 * Drive a business (KYB) createVerification through the client. The
+	 * provider advertises both entity types, so requesting `business`
+	 * resolves a provider and starts a redirect flow with a webURL, just
+	 * like individual. The provider hosts the business-details form, so the
+	 * request carries no entity-specific details.
+	 */
+	const businessProviders = await kycClient.createVerification({
+		countryCodes: ['US'],
+		account: account,
+		entityType: 'business'
+	});
+	expect(businessProviders.length).toBeGreaterThan(0);
+	const businessProvider = businessProviders[0];
+	if (businessProvider === undefined) {
+		throw(new Error('internal error: no business provider available'));
+	}
+	const businessVerification = await businessProvider.startVerification();
+	expect(businessVerification.webURL).toBeDefined();
+	expect(verifications.get(businessVerification.id)?.entityType).toBe('business');
+
+	/* The status poll must resolve the same provider, so it carries the entity type too. */
+	const businessStatus = await businessVerification.getVerificationStatus();
+	expect(businessStatus.status).toBe(KYCVerificationStatus.PASSED);
+
 	const verification = await provider.startVerification();
 	loggerBase?.log('Request ID:', verification.id, 'on provider', verification.providerID);
 
@@ -231,59 +268,167 @@ test('KYC Anchor Client Test', async function() {
 	expect(checkIssuerCert.subject).toEqual('commonName=Intermediate/KYC CA');
 
 	while (true) {
-		const results = await verification.getCertificates();
-		if (!results.ok) {
-			await KeetaNet.lib.Utils.Helper.asleep(results.retryAfter);
+		const { status } = await verification.getVerificationStatus();
+		if (status === KYCVerificationStatus.PENDING || status === KYCVerificationStatus.INCOMPLETE) {
+			await KeetaNet.lib.Utils.Helper.asleep(500);
 			continue;
 		}
+		if (status !== KYCVerificationStatus.PASSED) {
+			throw(new Error(`KYC verification did not pass: ${status}`));
+		}
 
-		loggerBase?.log('Certificates:');
-		const output = (await Promise.all(results.results.map(async function(certificateGroup) {
-			let intermediates = certificateGroup.intermediates;
-			if (intermediates === undefined) {
-				intermediates = new Set();
-			}
-			const trustedCertificate = new KYCCertificate(certificateGroup.certificate.toPEM(), {
-				store: {
-					root: new Set([rootCAObject]),
-					intermediate: intermediates
-				},
-				/* If you remove this, you will not be able to retrieve the sensitive attributes */
-				subjectKey: account
-			});
-
-			let fullName: string;
-			if ('fullName' in trustedCertificate.attributes) {
-				if (trustedCertificate.attributes['fullName'].sensitive) {
-					try {
-						const result = await trustedCertificate.attributes['fullName'].value.getValue();
-						fullName = 'SENSITIVE: ' + result;
-					} catch {
-						fullName = 'SENSITIVE (unable to retrieve)';
-					}
-				} else {
-					// XXX:TODO Fix depth issue
-					// @ts-ignore
-					fullName = await trustedCertificate.getAttributeValue('fullName');
-				}
-			} else {
-				fullName = 'Not provided';
-			}
-
-			return(util.inspect({
-				certificate: trustedCertificate.toPEM(),
-				certificateValue: trustedCertificate,
-				intermediates: [...certificateGroup.intermediates?.values() ?? []].map(function(intermediate) {
-					return(intermediate.toPEM());
-				}),
-				chain: trustedCertificate.chain,
-				attributes: trustedCertificate.attributes,
-				fullName: fullName,
-				valid: trustedCertificate.checkValid()
-			}, { depth: null, colors: true }));
-		}))).join('\n\n');
-
-		loggerBase?.log(output);
 		break;
 	}
+
+	const certificateResults = await verification.getCertificates();
+	if (!certificateResults.ok) {
+		throw(new Error(`Failed to fetch certificates after passing status: ${certificateResults.reason}`));
+	}
+
+	loggerBase?.log('Certificates:');
+	const output = (await Promise.all(certificateResults.results.map(async function(certificateGroup) {
+		let intermediates = certificateGroup.intermediates;
+		if (intermediates === undefined) {
+			intermediates = new Set();
+		}
+		const trustedCertificate = new KYCCertificate(certificateGroup.certificate.toPEM(), {
+			store: {
+				root: new Set([rootCAObject]),
+				intermediate: intermediates
+			},
+			/* If you remove this, you will not be able to retrieve the sensitive attributes */
+			subjectKey: account
+		});
+
+		let fullName: string;
+		if ('fullName' in trustedCertificate.attributes) {
+			if (trustedCertificate.attributes['fullName'].sensitive) {
+				try {
+					const result = await trustedCertificate.attributes['fullName'].value.getValue();
+					fullName = 'SENSITIVE: ' + result;
+				} catch {
+					fullName = 'SENSITIVE (unable to retrieve)';
+				}
+			} else {
+				// XXX:TODO Fix depth issue
+				// @ts-ignore
+				fullName = await trustedCertificate.getAttributeValue('fullName');
+			}
+		} else {
+			fullName = 'Not provided';
+		}
+
+		return(util.inspect({
+			certificate: trustedCertificate.toPEM(),
+			certificateValue: trustedCertificate,
+			intermediates: [...certificateGroup.intermediates?.values() ?? []].map(function(intermediate) {
+				return(intermediate.toPEM());
+			}),
+			chain: trustedCertificate.chain,
+			attributes: trustedCertificate.attributes,
+			fullName: fullName,
+			valid: trustedCertificate.checkValid()
+		}, { depth: null, colors: true }));
+	}))).join('\n\n');
+	loggerBase?.log(output);
+}, 30000);
+
+test('KYC Anchor Client Test - business-only provider and the individual default', async function() {
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { userClient: client } = await createNodeAndClient(account);
+
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCABuilder = new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuer: kycCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	});
+	const kycCA = await kycCABuilder.build();
+
+	await using server = new KeetaNetKYCAnchorHTTPServer({
+		signer: account,
+		ca: kycCA,
+		client: client,
+		kycProviderURL: 'https://example.com/journey/{id}',
+		kyc: {
+			countryCodes: ['CA'],
+			entityTypes: ['business'],
+			verificationStarted: async function() {
+				return({
+					ok: true,
+					id: crypto.randomUUID(),
+					expectedCost: {
+						min: '0',
+						max: '0',
+						token: client.baseToken.publicKeyString.get()
+					}
+				});
+			},
+			getCertificates: async function() {
+				return([{ certificate: '' }]);
+			},
+			getVerificationStatus: async function() {
+				return({ status: KYCVerificationStatus.PASSED });
+			}
+		}
+	});
+
+	await server.start();
+
+	await client.setInfo({
+		name: 'TEST',
+		description: 'KYC Anchor Test Root (business-only)',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			services: {
+				kyc: {
+					Test: await server.serviceMetadata()
+				}
+			}
+		})
+	});
+
+	const kycClient = new KeetaNetAnchor.KYC.Client(client, { root: account });
+
+	/* Omitting entityType means individual, which this provider does not verify. */
+	await expect(kycClient.createVerification({
+		countryCodes: ['CA'],
+		account: account
+	})).rejects.toThrow('No KYC endpoints found for the given criteria');
+
+	const businessProviders = await kycClient.createVerification({
+		countryCodes: ['CA'],
+		account: account,
+		entityType: 'business'
+	});
+	expect(businessProviders.length).toBeGreaterThan(0);
+
+	/*
+	 * A caller polling by provider ID must reach a business-only provider even
+	 * without repeating entityType: the ID already picked the provider, so the
+	 * lookup behind these two methods must not filter it back out.
+	 */
+	const businessProvider = businessProviders[0];
+	if (businessProvider === undefined) {
+		throw(new Error('internal error: no business provider available'));
+	}
+	const businessVerification = await businessProvider.startVerification();
+	const directStatus = await kycClient.getVerificationStatus(businessVerification.providerID, {
+		id: businessVerification.id,
+		account: account,
+		countryCodes: ['CA']
+	});
+	expect(directStatus.status).toBe(KYCVerificationStatus.PASSED);
+
+	const individualCountries = (await kycClient.getSupportedCountries()).map(function(country) {
+		return(country.code);
+	});
+	expect(individualCountries).not.toContain('CA');
+
+	const businessCountries = (await kycClient.getSupportedCountries('business')).map(function(country) {
+		return(country.code);
+	});
+	expect(businessCountries).toContain('CA');
 }, 30000);

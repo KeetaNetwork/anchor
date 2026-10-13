@@ -1,14 +1,23 @@
 import { defineConfig } from 'vitest/config'
-import UnpluginTypia from '@ryoppippi/unplugin-typia/vite'
+import UnpluginTypia from '@typia/unplugin/vite';
+
+function isCI() {
+	return(process.env.CI === 'true');
+}
 
 export default defineConfig({
 	plugins: [
 		UnpluginTypia()
 	],
 	test: {
+		fsModuleCache: !isCI(),
 		coverage: {
 			reporter: ['lcov'],
 			reportsDirectory: '.coverage',
+			include: [
+				'src/**/*.ts',
+				'src/**/*.js'
+			],
 			exclude: [
 				/*
 				 * This file only contains a single function that is used to

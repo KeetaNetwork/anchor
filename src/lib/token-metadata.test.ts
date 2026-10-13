@@ -16,12 +16,28 @@ test('Token metadata encoding / decoding', async function({ expect }) {
 		[ { decimalPlaces: '18' }, 'eyJkZWNpbWFsUGxhY2VzIjoxOH0=' ] // cspell:disable-line
 	] as const;
 
+	let testIndex = -1;
 	for (const test of tests) {
-		const decoded = decodeTokenMetadata(test[0]);
-		const encoded = encodeTokenMetadata(decoded);
+		testIndex++;
 
-		expect(decodeTokenMetadata(encoded)).toEqual(decodeTokenMetadata(test[1]));
-		expect(encoded).toEqual(test[1]);
+
+		let decoded;
+		let encoded;
+		try {
+			decoded = decodeTokenMetadata(test[0]);
+			encoded = encodeTokenMetadata(decoded);
+			expect(decodeTokenMetadata(encoded)).toEqual(decodeTokenMetadata(test[1]));
+		} catch (error) {
+			console.error(`Decoding failed for test #${testIndex}`, test);
+			throw(error);
+		}
+
+		try {
+			expect(encoded).toEqual(test[1]);
+		} catch (error) {
+			console.error(`Re-encoding failed for test #${testIndex}`, test);
+			throw(error);
+		}
 	}
 
 	const invalidTests: (TokenMetadataJSON | string)[] = [

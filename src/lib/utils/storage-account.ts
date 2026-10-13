@@ -1,4 +1,5 @@
-import type { KeetaNet } from '../../client/index.js';
+import type * as KeetaNet from '@keetanetwork/keetanet-client';
+import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 
 type KeetaNetClient = InstanceType<typeof KeetaNet.Client>;
 type KeetaNetAccount = InstanceType<typeof KeetaNet.lib.Account>;
@@ -11,13 +12,17 @@ type KeetaNetAccount = InstanceType<typeof KeetaNet.lib.Account>;
  * @param storageAccount - The storage account to resolve the owner for
  * @returns The owner (keyed) account
  */
-export async function resolveStorageAccountOwner(client: KeetaNetClient, storageAccount: KeetaNetAccount): Promise<ReturnType<KeetaNetAccount['assertAccount']>> {
+export async function resolveStorageAccountOwner(client: KeetaNetClient, storageAccount: KeetaNetAccount): Promise<Account.Account> {
 	if (!storageAccount.isStorage()) {
 		throw(new Error('resolveStorageAccountOwner requires a storage account'));
 	}
 
 	const acls = await client.listACLsByEntity(storageAccount);
 	for (const acl of acls) {
+		if (acl.principalType !== 'ACCOUNT') {
+			continue;
+		}
+
 		if (acl.permissions.has(['OWNER'])) {
 			return(acl.principal.assertAccount());
 		}

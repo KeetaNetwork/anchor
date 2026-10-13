@@ -2,7 +2,7 @@ import { test, expect, describe } from 'vitest';
 import * as EncryptedContainer from './encrypted-container.js';
 import { EncryptedContainerError } from './encrypted-container.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
-import { arrayBufferLikeToBuffer } from './utils/buffer.js';
+import { arrayBufferLikeToBuffer, Buffer } from './utils/buffer.js';
 
 const JStoASN1 = KeetaNetLib.Utils.ASN1.JStoASN1;
 const Account: typeof KeetaNetLib.Account = KeetaNetLib.Account;

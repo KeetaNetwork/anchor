@@ -1,4 +1,5 @@
 import type {
+	KYCEntityType,
 	ServiceMetadata,
 	ServiceSearchCriteria
 } from '../../lib/resolver.ts';
@@ -8,6 +9,7 @@ import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
+import type { KYCVerificationStatus } from './status.js';
 
 type KeetaNetToken = InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>;
 
@@ -28,6 +30,12 @@ export interface KeetaKYCAnchorCreateVerificationRequest {
 	 * {@link KYCRedirectStatus} query parameter indicating the outcome.
 	 */
 	redirectURL?: string;
+	/**
+	 * The type of entity being verified. Defaults to `individual` when
+	 * omitted, preserving the classic KYC behavior. The provider uses
+	 * this to choose which hosted collection experience to present.
+	 */
+	entityType?: KYCEntityType;
 }
 
 type KeetaNetTokenPublicKeyString = ReturnType<InstanceType<typeof KeetaNet.lib.Account<typeof KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN>>['publicKeyString']['get']>;
@@ -52,7 +60,8 @@ export type KeetaKYCAnchorCreateVerificationResponse = ({
 	/**
 	 * The URL to the verification service where the user can complete the
 	 * verification process. This URL is expected to be a web URL that the
-	 * user can visit to complete the verification.
+	 * user can visit to complete the verification. The provider hosts the
+	 * collection experience for both individual and business entity types.
 	 */
 	webURL: string;
 } | {
@@ -77,6 +86,22 @@ export type KeetaKYCAnchorGetCertificateResponse = ({
 		certificate: string;
 		intermediates?: string[];
 	})[];
+} | {
+	ok: false;
+	error: string;
+});
+
+export type KeetaKYCAnchorGetVerificationStatusResponse = ({
+	ok: true;
+	/**
+	 * The verification status reported by the KYC provider.
+	 */
+	status: KYCVerificationStatus;
+	/**
+	 * Whether the verification requires manual review by the
+	 * KYC provider before a final determination can be made.
+	 */
+	requiresManualVerification?: boolean;
 } | {
 	ok: false;
 	error: string;

@@ -1,5 +1,6 @@
 import type {
 	PathPolicy,
+	PathPolicyContext,
 	FullStorageBackend,
 	StorageObjectMetadata,
 	StoragePutMetadata,
@@ -87,10 +88,15 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 		return(KeetaNet.lib.Account.fromPublicKeyString(parsed.owner).assertAccount());
 	}
 
-	validateMetadata(parsed: TestParsedPath, metadata: StoragePutMetadata): void {
-		// Require public visibility for paths under public/
-		if (parsed.relativePath.startsWith('public/') && metadata.visibility !== 'public') {
-			throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+	getOwner(path: string): string {
+		return(this.validate(path).owner);
+	}
+
+	validateContext(parsed: TestParsedPath, context: PathPolicyContext): void {
+		if (context.operation === 'put' || context.operation === 'updateMetadata') {
+			if (parsed.relativePath.startsWith('public/') && context.metadata.visibility !== 'public') {
+				throw(new Errors.InvalidMetadata('Objects under /public/ must have public visibility'));
+			}
 		}
 	}
 
@@ -115,6 +121,19 @@ export class TestPathPolicy implements PathPolicy<TestParsedPath> {
 export const testPathPolicy: TestPathPolicy = new TestPathPolicy();
 
 /**
+ * Like {@link TestPathPolicy}, but lets any account sign a public read instead of
+ * only the owner. Returning `null` from `getAuthorizedSigner` makes the server trust
+ * the signer named in the URL, which matches how the deployed anchors behave.
+ */
+export class AnySignerTestPathPolicy extends TestPathPolicy {
+	getAuthorizedSigner(): InstanceType<typeof KeetaNet.lib.Account> | null {
+		return(null);
+	}
+}
+
+export const anySignerTestPathPolicy: AnySignerTestPathPolicy = new AnySignerTestPathPolicy();
+
+/**
  * Create test metadata with sensible defaults.
  */
 export function testMetadata(
@@ -125,6 +144,25 @@ export function testMetadata(
 		owner,
 		tags: [],
 		visibility: 'private',
+		...overrides
+	});
+}
+
+/**
+ * Create test object metadata with sensible defaults.
+ */
+export function testObjectMetadata(
+	path: string,
+	owner: string,
+	overrides?: Partial<StorageObjectMetadata>
+): StorageObjectMetadata {
+	return({
+		path,
+		owner,
+		tags: [],
+		visibility: 'private',
+		size: 0,
+		createdAt: new Date().toISOString(),
 		...overrides
 	});
 }
@@ -321,6 +359,24 @@ export class MemoryStorageBackend implements FullStorageBackend {
 		return(this.storage.delete(path));
 	}
 
+	async updateMetadata(path: string, metadata: Omit<StoragePutMetadata, 'owner'>): Promise<StorageObjectMetadata | null> {
+		const entry = this.storage.get(path);
+		if (!entry) {
+			return(null);
+		}
+
+		const now = new Date().toISOString();
+		const updated: StorageObjectMetadata = {
+			...entry.metadata,
+			tags: metadata.tags,
+			visibility: metadata.visibility,
+			updatedAt: now
+		};
+
+		this.storage.set(path, { data: entry.data, metadata: updated });
+		return(updated);
+	}
+
 	async search(criteria: SearchCriteria, pagination: SearchPagination): Promise<SearchResults> {
 		return(searchStorage(this.storage, criteria, pagination));
 	}
@@ -504,8 +560,9 @@ export interface StorageProviderTestContext {
  * Shared test harness that stands up a storage server, resolves a provider,
  * and passes the provider context to the test function.
  */
-export async function withStorageProvider(
+async function runWithStorageProvider(
 	seed: string | ArrayBuffer,
+	pathPolicies: PathPolicy<TestParsedPath>[],
 	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
 ): Promise<void> {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
@@ -521,7 +578,7 @@ export async function withStorageProvider(
 	await using server = new KeetaNetStorageAnchorHTTPServer({
 		backend,
 		anchorAccount,
-		pathPolicies: [testPathPolicy]
+		pathPolicies
 	});
 
 	await server.start();
@@ -552,6 +609,28 @@ export async function withStorageProvider(
 	}
 
 	await testFunction({ provider: maybeProvider, account, storageClient });
+}
+
+/**
+ * Test harness with the default owner-only policy.
+ */
+export async function withStorageProvider(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
+): Promise<void> {
+	return(await runWithStorageProvider(seed, [testPathPolicy], testFunction));
+}
+
+/**
+ * Test harness for cross-account public reads, where any account can read a public
+ * object. `ctx.account` is the reader doing the signing; spin up a separate owner
+ * account inside the test to play the other side.
+ */
+export async function withAnySignerStorageProvider(
+	seed: string | ArrayBuffer,
+	testFunction: (ctx: StorageProviderTestContext) => Promise<void>
+): Promise<void> {
+	return(await runWithStorageProvider(seed, [anySignerTestPathPolicy], testFunction));
 }
 
 // #endregion

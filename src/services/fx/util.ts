@@ -1,5 +1,5 @@
 import type { TokenAddress } from "@keetanetwork/keetanet-client/lib/account.js";
-import { KeetaNet } from "../../client/index.js";
+import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { KeetaAnchorUserError } from "../../lib/error.js";
 import type { ConversionInputCanonical, ConversionInputCanonicalJSON, KeetaNetToken } from "./common.js";
 import type { ValidateQuoteArguments } from "./server.js";
@@ -78,8 +78,6 @@ export function assertExchangeBlockParametersAndComputeRefund(args: {
 
 			if (!(userSent[tokenPub])) {
 				userSent[tokenPub] = 0n;
-			} else {
-				throw(new KeetaAnchorUserError(`Multiple send operations for token ${tokenPub} in exchange block are not allowed`));
 			}
 
 			userSent[tokenPub] += operation.amount;

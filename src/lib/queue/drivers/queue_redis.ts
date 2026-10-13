@@ -8,6 +8,7 @@ import type {
 	KeetaAnchorQueueEntryAncillaryData,
 	KeetaAnchorQueueStatus,
 	KeetaAnchorQueueFilter,
+	KeetaAnchorQueueDeleteInput,
 	KeetaAnchorQueueWorkerID
 } from '../index.ts';
 import {
@@ -410,6 +411,48 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');
 
 		return(entries);
+	}
+
+	async delete(input: KeetaAnchorQueueDeleteInput[]): Promise<void> {
+		if (input.length === 0) {
+			return;
+		}
+
+		const redis = await this.getRedis();
+		const logger = this.methodLogger('delete');
+		const multi = redis.multi();
+		let deleted = 0;
+
+		for (const target of input) {
+			const entryIDStr = String(target.id);
+			const entryJSON = await redis.get(this.queueKey(target.id));
+			if (!entryJSON) {
+				continue;
+			}
+
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			const entryData = JSON.parse(entryJSON) as QueueEntryData;
+			if (entryData.status !== target.status) {
+				continue;
+			}
+
+			if (entryData.idempotentKeys) {
+				for (const idempotentID of entryData.idempotentKeys) {
+					multi.del(this.idempotentKey(ConvertStringToRequestID(idempotentID)));
+				}
+			}
+			multi.zRem(this.indexKey(entryData.status), entryIDStr);
+			multi.del(this.queueKey(target.id));
+			multi.zRem(this.indexKey(), entryIDStr);
+			deleted++;
+		}
+
+		if (deleted === 0) {
+			return;
+		}
+
+		await multi.exec();
+		logger?.debug(`Deleted ${deleted} entries from queue ${this.id}`);
 	}
 
 	async partition(path: string): Promise<KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>> {

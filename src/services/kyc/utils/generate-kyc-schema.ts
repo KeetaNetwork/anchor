@@ -121,6 +121,8 @@ function resolveTypeReference(typeName: string): string {
 			return('string');
 		case 'GeneralizedTime':
 			return('Date');
+		case 'BOOLEAN':
+			return('boolean');
 		case 'ENUMERATED':
 			return('string');
 		case 'OBJECT IDENTIFIER':
@@ -136,7 +138,7 @@ function resolveToBaseType(typeName: string): string {
 	typeName = typeName.trim();
 
 	// Check if it's a primitive type first
-	if (/^(UTF8String|Utf8String|GeneralizedTime)$/i.test(typeName)) {
+	if (/^(UTF8String|Utf8String|GeneralizedTime|BOOLEAN)$/i.test(typeName)) {
 		return(typeName);
 	}
 
@@ -413,7 +415,9 @@ function genSequenceSchema(typeName: string, fields: { [key: string]: { type: st
 
 		// Check if field type is GeneralizedTime (date)
 		if (baseType === 'GeneralizedTime') {
-			fieldSchema = 'ASN1.ValidateASN1.IsDate';
+			fieldSchema = 'ASN1.ValidateASN1.IsAnyDate';
+		} else if (baseType === 'BOOLEAN') {
+			fieldSchema = 'ASN1.ValidateASN1.IsBoolean';
 		} else {
 			// Check if this is a SEQUENCE OF type directly or via type reference
 			let fieldType = baseType.trim();
@@ -635,6 +639,8 @@ function generateIso20022Types() {
 				baseType = 'string';
 			} else if (config.type === 'GeneralizedTime') {
 				baseType = 'Date';
+			} else if (config.type === 'BOOLEAN') {
+				baseType = 'boolean';
 			} else {
 				if (config.type === undefined) {
 					throw(new Error(`Sensitive attribute ${name} has no defined type.`));
@@ -854,7 +860,9 @@ function generateIso20022Types() {
 			} else if (isExtensionType) {
 				schemaRef = `${baseType}Schema`;
 			} else if (baseType === 'GeneralizedTime') {
-				schemaRef = 'ASN1.ValidateASN1.IsDate';
+				schemaRef = 'ASN1.ValidateASN1.IsAnyDate';
+			} else if (baseType === 'BOOLEAN') {
+				schemaRef = 'ASN1.ValidateASN1.IsBoolean';
 			} else if (baseType === 'OCTET STRING') {
 				schemaRef = 'ASN1.ValidateASN1.IsOctetString';
 			} else if (baseType === 'OBJECT IDENTIFIER') {

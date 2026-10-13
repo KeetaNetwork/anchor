@@ -6,6 +6,7 @@ import { asleep } from './utils/asleep.js';
 import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
 import type { Block } from '@keetanetwork/keetanet-client/lib/block/index.js';
 import type { BlockOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
+import type { VoteStaple } from "@keetanetwork/keetanet-client/lib/vote.js";
 import type { KeetaAnchorQueueEntry } from './queue/index.js';
 import type { Logger } from './log/index.js';
 
@@ -17,7 +18,7 @@ if (DEBUG) {
 
 test('BlockListener - registration, removal, scanning, and work status', async function() {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const { userClient: client } = await createNodeAndClient(account);
+	const { userClient: client, give } = await createNodeAndClient(account);
 
 	const listener = new BlockListener({
 		client: client.client,
@@ -124,11 +125,34 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	expect(resultWithWork.listenersHaveWork).toBe(true);
 
 	// Test error handling - errors in callbacks should not prevent other callbacks
+	const anotherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await give(anotherAccount, 100n);
+
+	const otherClient = new KeetaNet.UserClient({
+		client: client.client,
+		network: client.network,
+		networkAlias: 'test',
+		signer: anotherAccount,
+		usePublishAid: false
+	});
+
+	await otherClient.setInfo({
+		name: 'OTHER_ACCOUNT',
+		description: 'Other account block',
+		metadata: ''
+	});
+	const otherHead = await otherClient.head();
+	if (!otherHead) {
+		throw(new Error('Failed to retrieve head block hash after creating other account block'));
+	}
+
 	const listener2 = new BlockListener({
 		client: client.client,
+		account: client.account,
 		...(logger ? { logger } : {})
 	});
 
+	const scopedSeenHashes = new KeetaNet.lib.Block.Hash.Set();
 	let errorCallbackRan = false;
 	let successCallbackRan = false;
 
@@ -140,7 +164,8 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 	});
 
 	listener2.on('block', {
-		callback: async function() {
+		callback: async function(data) {
+			scopedSeenHashes.add(data.block.hash);
 			successCallbackRan = true;
 			return({ requiresWork: false });
 		}
@@ -151,8 +176,50 @@ test('BlockListener - registration, removal, scanning, and work status', async f
 		description: 'Testing error handling',
 		metadata: ''
 	});
+	const scopedHead = await client.head();
+	if (!scopedHead) {
+		throw(new Error('Failed to retrieve head block hash after creating scoped account block'));
+	}
 
 	const errorResult = await listener2.scan();
+	expect(scopedSeenHashes.has(scopedHead)).toBe(true);
+	expect(scopedSeenHashes.has(otherHead)).toBe(false);
+
+	const unscopedSeenHashes = new KeetaNet.lib.Block.Hash.Set();
+	listener.on('block', {
+		callback: async function(data) {
+			unscopedSeenHashes.add(data.block.hash);
+			return({ requiresWork: false });
+		}
+	});
+	await listener.scan();
+	expect(unscopedSeenHashes.has(scopedHead)).toBe(true);
+	expect(unscopedSeenHashes.has(otherHead)).toBe(true);
+
+	await otherClient.send(client.account, 5n, otherClient.baseToken);
+	const sendHead = await otherClient.head();
+	if (!sendHead) {
+		throw(new Error('Failed to retrieve head block hash after send'));
+	}
+
+	await listener2.scan();
+	expect(scopedSeenHashes.has(sendHead)).toBe(true);
+
+	const senderSeenHashes = new KeetaNet.lib.Block.Hash.Set();
+	const senderListener = new BlockListener({
+		client: client.client,
+		account: anotherAccount,
+		...(logger ? { logger } : {})
+	});
+	senderListener.on('block', {
+		callback: async function(data) {
+			senderSeenHashes.add(data.block.hash);
+			return({ requiresWork: false });
+		}
+	});
+	await senderListener.scan();
+	expect(senderSeenHashes.has(sendHead)).toBe(true);
+
 	expect(errorCallbackRan).toBe(true);
 	expect(successCallbackRan).toBe(true);
 	expect(errorResult.listenersHaveWork).toBe(false);
@@ -304,7 +371,7 @@ test('Block Operation Runner shared Listener', async function() {
 			return(context.block.hash.compareHexString(headBlockHash));
 		}
 
-		protected async processor(entry: KeetaAnchorQueueEntry<{ blockHash: InstanceType<typeof KeetaNet.lib.Block.Hash>; operationIndex: number }, null>): Promise<{ status: 'completed'; output: null }> {
+		protected async processor(entry: KeetaAnchorQueueEntry<{ voteStaple: VoteStaple; blockHash: InstanceType<typeof KeetaNet.lib.Block.Hash>; operationIndex: number }, null>): Promise<{ status: 'completed'; output: null }> {
 			operationHashes.add(`${entry.request.blockHash.toString()}:${entry.request.operationIndex}`);
 			return({ status: 'completed', output: null });
 		}

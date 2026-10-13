@@ -105,6 +105,8 @@ export default {
 		'toctou',
 		'TODOC',
 		'typia',
+		'ubos',
+		'Ubos',
 		'unenumerable',
 		'Ungreeted',
 		'unknownaction',
@@ -119,7 +121,8 @@ export default {
 		'wrongpath',
 		'refetched',
 		'pipeable',
-		'renderable'
+		'renderable',
+		'keccak'
 	],
 	flagWords: [
 		'recieve'
@@ -173,7 +176,18 @@ export default {
 				'sada',
 				'venmo',
 				'duit',
+				'Burkina',
+				'Faso',
+				'Rica',
+				'STANBIC',
+				'ZANACO',
 				'nric'
+			]
+		},
+		{
+			filename: [ 'src/lib/chaining-graph.cli.ts' ],
+			words: [
+				'rankdir', 'fontname', 'darkorange', 'steelblue'
 			]
 		},
 	],

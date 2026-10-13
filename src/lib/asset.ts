@@ -1,6 +1,9 @@
 import type { TokenAddress, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import * as CurrencyInfo from '@keetanetwork/currency-info';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import type { ChainLocationType } from '../services/asset-movement/common.js';
 
 export type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
 export type KeetaNetStorageAccount = InstanceType<typeof KeetaNetLib.Account<typeof KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE>>;
@@ -15,10 +18,22 @@ export type CurrencySearchInput = CurrencySearchCanonical | CurrencyInfo.Currenc
 export type TokenSearchInput = TokenAddress | TokenPublicKeyString;
 export type TokenSearchCanonical = TokenPublicKeyString;
 
-export type EVMAsset = `evm:${HexString}`;
-export type TronAsset = `tron:${string}`;
-export type SolanaAsset = `solana:${string}`;
-export type ChainAssetString = SolanaAsset | EVMAsset | TronAsset | TokenPublicKeyString;
+type ChainAssetType = {
+	evm: HexString;
+} & {
+	[K in 'solana' | 'bitcoin' | 'tron']: string;
+}
+
+export type ExternalChainLocationType = Exclude<ChainLocationType, 'keeta'>;
+export type ExternalChainAsset<T extends ExternalChainLocationType = ExternalChainLocationType> = {
+	[K in T]: `${K}:${ChainAssetType[K]}`
+}[T];
+
+export type EVMAsset = ExternalChainAsset<'evm'>;
+export type TronAsset = ExternalChainAsset<'tron'>;
+export type SolanaAsset = ExternalChainAsset<'solana'>;
+export type BitcoinAsset = ExternalChainAsset<'bitcoin'>;
+export type ChainAssetString = ExternalChainAsset | TokenPublicKeyString;
 export type MovableAssetSearchInput = CurrencySearchInput | TokenSearchInput | ChainAssetString;
 export type MovableAssetSearchCanonical = CurrencySearchCanonical | TokenSearchCanonical | ChainAssetString;
 export type MovableAsset = TokenAddress | TokenPublicKeyString | CurrencySearchInput | ChainAssetString;
@@ -51,6 +66,49 @@ export function parseEVMAsset(input: EVMAsset): HexString {
 
 export function isEVMAsset(input: unknown): input is EVMAsset {
 	return(typeof input === 'string' && input.startsWith('evm:0x'));
+}
+
+export function eip55ChecksumHexAddress(input: HexString): HexString {
+	const lower = input.slice(2).toLowerCase();
+	const hashHex = bytesToHex(keccak_256(utf8ToBytes(lower)));
+
+	let result = '0x';
+	for (let i = 0; i < lower.length; i++) {
+		const char = lower[i] ?? '';
+		const hashNibble = parseInt(hashHex[i] ?? '0', 16);
+		result += hashNibble >= 8 ? char.toUpperCase() : char;
+	}
+
+	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+	return(result as HexString);
+}
+
+export type EVMChecksumCache = Map<string, EVMAsset>;
+
+export function checksumEVMAsset(input: EVMAsset, cache?: EVMChecksumCache): EVMAsset {
+	if (cache) {
+		const cached = cache?.get(input);
+		if (cached !== undefined) {
+			return(cached);
+		}
+	}
+
+	const formatted = toEVMAsset(eip55ChecksumHexAddress(parseEVMAsset(input)));
+
+	if (cache) {
+		cache.set(input, formatted);
+	}
+
+	return(formatted);
+}
+
+export function normalizeChainAssetCasing<T extends string>(input: T, cache?: EVMChecksumCache): T {
+	if (isEVMAsset(input)) {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(checksumEVMAsset(input, cache) as T);
+	}
+
+	return(input);
 }
 
 export function toTronAsset(input: string): TronAsset {
@@ -97,7 +155,29 @@ export function isSolanaAsset(input: unknown): input is SolanaAsset {
 	return(typeof input === 'string' && input.startsWith('solana:'));
 }
 
-export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput): MovableAssetSearchCanonical {
+export function isBitcoinAsset(input: unknown): input is BitcoinAsset {
+	return(typeof input === 'string' && input.startsWith('bitcoin:'));
+}
+
+// XXX:TODO We should eventually refactor these to be shared between location and asset, so we can have one source of truth per location
+export function isExternalChainAsset<T extends ExternalChainLocationType = ExternalChainLocationType>(input: unknown, type?: T): input is ExternalChainAsset<T> {
+	const checks: {
+		[K in ExternalChainLocationType]: (input: unknown) => boolean;
+	} = {
+		evm: isEVMAsset,
+		solana: isSolanaAsset,
+		tron: isTronAsset,
+		bitcoin: isBitcoinAsset
+	};
+
+	if (type) {
+		return(checks[type](input));
+	} else {
+		return(Object.values(checks).some(check => check(input)));
+	}
+}
+
+export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInput, cache?: EVMChecksumCache): MovableAssetSearchCanonical {
 	if (input instanceof CurrencyInfo.Currency || CurrencyInfo.Currency.isCurrencyCode(input) || CurrencyInfo.Currency.isISOCurrencyNumber(input)) {
 		if (CurrencyInfo.Currency.isCurrencyCode(input)) {
 			return(input);
@@ -108,10 +188,15 @@ export function convertAssetSearchInputToCanonical(input: MovableAssetSearchInpu
 		return(input.code);
 	} else {
 		if (typeof input === 'string') {
-			return(input);
+			return(normalizeChainAssetCasing(input, cache));
 		}
 
 		input.assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN);
 		return(input.publicKeyString.get());
 	}
+}
+
+/** Compare movable assets after canonicalizing representation (EVM casing, token public keys, currency codes). */
+export function isMovableAssetEqual(a: MovableAsset, b: MovableAsset, cache?: EVMChecksumCache): boolean {
+	return(convertAssetSearchInputToCanonical(a, cache) === convertAssetSearchInputToCanonical(b, cache));
 }

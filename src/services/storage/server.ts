@@ -1,11 +1,9 @@
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
 import type { NamespaceValidator } from './lib/validators.js';
-import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
-import { KeetaNet } from '../../client/index.js';
-import {
-	KeetaAnchorUserError
-} from '../../lib/error.js';
+import type { ResolvedCertificateChainRequirement } from '../../lib/utils/certificate-network.js';
+import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
+import type * as KeetaNet from '@keetanetwork/keetanet-client';
 import type {
 	KeetaStorageAnchorDeleteResponse,
 	KeetaStorageAnchorPutResponse,
@@ -13,6 +11,8 @@ import type {
 	KeetaStorageAnchorQuotaResponse,
 	FullStorageBackend,
 	QuotaConfig,
+	QuotaLimits,
+	StorageOperation,
 	StorageObjectVisibility,
 	StorageObjectMetadata,
 	PathPolicy,
@@ -20,27 +20,31 @@ import type {
 	StorageGetResult,
 	SearchPagination
 } from './common.ts';
+import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import {
 	assertKeetaStorageAnchorDeleteResponse,
 	assertKeetaStorageAnchorPutResponse,
 	assertKeetaStorageAnchorGetRequest,
 	assertKeetaStorageAnchorSearchRequest,
 	assertKeetaStorageAnchorSearchResponse,
-	assertKeetaStorageAnchorQuotaResponse
-} from './common.generated.js';
+	assertKeetaStorageAnchorQuotaResponse,
+	assertKeetaStorageAnchorUpdateMetadataRequest
+} from './common.server.generated.js';
 import {
 	getKeetaStorageAnchorDeleteRequestSigningData,
 	getKeetaStorageAnchorPutRequestSigningData,
 	getKeetaStorageAnchorGetRequestSigningData,
 	getKeetaStorageAnchorSearchRequestSigningData,
 	getKeetaStorageAnchorQuotaRequestSigningData,
+	getKeetaStorageAnchorUpdateMetadataRequestSigningData,
 	parseContainerPayload,
 	Errors,
 	CONTENT_TYPE_OCTET_STREAM,
 	DEFAULT_SIGNED_URL_TTL_SECONDS
 } from './common.js';
+import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { VerifySignedData } from '../../lib/utils/signing.js';
-import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
+import { parseSignatureFromURL, verifyBodyAuth, verifyURLAuth } from '../../lib/http-server/common.js';
 import { arrayBufferLikeToBuffer, Buffer } from '../../lib/utils/buffer.js';
 import { requiresValidation, findMatchingValidators } from './lib/validators.js';
 import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
@@ -76,7 +80,7 @@ function assertPathAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	account: Account,
 	path: string,
-	operation: 'get' | 'put' | 'delete' | 'search' | 'metadata'
+	operation: StorageOperation
 ): { policy: PathPolicy<unknown>; parsed: unknown } {
 	for (const policy of pathPolicies) {
 		const parsed = policy.parse(path);
@@ -117,83 +121,6 @@ function parsePath(
 }
 
 /**
- * Verify a signed request from POST body.
- * Extracts account and signature from the request, verifies the signature,
- * and returns the authenticated account.
- *
- * @typeParam T - Request type containing optional account and signed fields
- *
- * @param request - The request object containing account and signed fields
- * @param getSigningData - Function to extract signable data from the request
- *
- * @returns The authenticated account
- *
- * @throws KeetaAnchorUserError if authentication is missing or invalid
- */
-async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
-	request: T,
-	getSigningData: (req: T) => Signable
-): Promise<Account> {
-	if (!request.account || !request.signed) {
-		throw(new KeetaAnchorUserError('Authentication required'));
-	}
-
-	const account = KeetaNet.lib.Account.fromPublicKeyString(request.account).assertAccount();
-	const signable = getSigningData(request);
-	const signed = assertHTTPSignedField(request.signed);
-
-	const valid = await VerifySignedData(account, signable, signed);
-	if (!valid) {
-		throw(new KeetaAnchorUserError('Invalid signature'));
-	}
-
-	return(account);
-}
-
-/**
- * Verify a signed request from URL query parameters.
- * Parses signature from URL, builds a request object, verifies the signature,
- * and returns the authenticated account.
- *
- * @typeParam T - Request type to build from the account public key
- *
- * @param url - The URL containing signature query parameters
- * @param getSigningData - Function to extract signable data from the request
- * @param buildRequest - Function to build a request object from the account public key
- *
- * @returns The authenticated account
- *
- * @throws KeetaAnchorUserError if authentication is missing or invalid
- */
-async function verifyURLAuth<T>(
-	url: URL | string,
-	getSigningData: (req: T) => Signable,
-	buildRequest: (accountPubKey: string) => T
-): Promise<Account> {
-	let urlString: string;
-	if (typeof url === 'string') {
-		urlString = url;
-	} else {
-		urlString = url.href;
-	}
-
-	const parsed = parseSignatureFromURL(urlString);
-	if (!parsed.account || !parsed.signedField) {
-		throw(new KeetaAnchorUserError('Authentication required'));
-	}
-
-	const request = buildRequest(parsed.account.publicKeyString.get());
-	const signable = getSigningData(request);
-
-	const valid = await VerifySignedData(parsed.account, signable, parsed.signedField);
-	if (!valid) {
-		throw(new KeetaAnchorUserError('Invalid signature'));
-	}
-
-	return(parsed.account);
-}
-
-/**
  * Extract object path from wildcard route parameter.
  * Prepends a leading slash to create a valid storage path.
  *
@@ -216,39 +143,30 @@ function extractObjectPath(params: Map<string, string>): string {
  * Authorize access to an object path via URL-signed request.
  * Combines path validation, signature verification, and access control.
  *
- * @typeParam T - Request type to build from path and account
- *
- * @param pathPolicies - Array of path policies to check against
- * @param params - Route parameters containing the wildcard path
- * @param url - The URL containing signature query parameters
- * @param operation - The operation being authorized
- * @param getSigningData - Function to extract signable data from the request
- * @param buildRequest - Function to build a request object from path and account
- *
- * @returns The authenticated account and validated object path
- *
  * @throws InvalidPath if path is invalid or doesn't match any policy
  * @throws AccessDenied if user doesn't have access to the path
  * @throws KeetaAnchorUserError if signature is invalid
  */
-async function authorizeURLAccess<T>(
+async function authorizeURLAccess(
 	pathPolicies: PathPolicy<unknown>[],
 	params: Map<string, string>,
 	url: URL | string,
-	operation: 'get' | 'put' | 'delete' | 'metadata',
-	getSigningData: (req: T) => Signable,
-	buildRequest: (path: string, accountPubKey: string) => T
-): Promise<{ account: Account; objectPath: string }> {
+	operation: StorageOperation,
+	getSignable: (objectPath: string, account: Account) => Signable,
+	certificateChain?: ResolvedCertificateChainRequirement
+): Promise<{ account: Account; objectPath: string; policy: PathPolicy<unknown>; parsed: unknown }> {
 	const objectPath = extractObjectPath(params);
-	parsePath(pathPolicies, objectPath);
+	const { policy, parsed } = parsePath(pathPolicies, objectPath);
 
-	const account = await verifyURLAuth(url, getSigningData, function(pubKey) {
-		return(buildRequest(objectPath, pubKey));
-	});
+	const account = await verifyURLAuth(url, function(account) {
+		return(getSignable(objectPath, account));
+	}, certificateChain);
 
-	assertPathAccess(pathPolicies, account, objectPath, operation);
+	if (!policy.checkAccess(account, parsed, operation)) {
+		throw(new Errors.AccessDenied('Can only access your own namespace'));
+	}
 
-	return({ account, objectPath });
+	return({ account, objectPath, policy, parsed });
 }
 
 // #endregion
@@ -307,7 +225,7 @@ async function authorizeURLAccess<T>(
  *         |                                   | get(), decrypt ----------------->|
  *         |<--------------------------------- | Plaintext content                |
  */
-export interface KeetaAnchorStorageServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
+export interface KeetaAnchorStorageServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
 	 */
@@ -390,7 +308,7 @@ const DEFAULT_TAG_VALIDATION = {
 	pattern: /^[a-zA-Z0-9_-]+$/
 };
 
-export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNetAnchorHTTPServer<KeetaAnchorStorageServerConfig> {
+export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNullable<ServiceMetadata['services']['storage']>[string], KeetaAnchorStorageServerConfig> {
 	readonly homepage: NonNullable<KeetaAnchorStorageServerConfig['homepage']>;
 	readonly backend: FullStorageBackend;
 	readonly anchorAccount: Account;
@@ -401,7 +319,6 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 	readonly authenticatedCorsOrigin: string;
 	readonly pathPolicies: PathPolicy<unknown>[];
 	readonly tagValidation: Required<NonNullable<KeetaAnchorStorageServerConfig['tagValidation']>>;
-
 	constructor(config: KeetaAnchorStorageServerConfig) {
 		super(config);
 
@@ -458,8 +375,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 	// Note: We use this.* properties instead of config.*.
 	// The config parameter is required by the abstract method signature but unused here.
-	protected async initRoutes(_ignoreConfig: KeetaAnchorStorageServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+	protected async initRoutes(config: KeetaAnchorStorageServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
+		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
 		const backend = this.backend;
 		const anchorAccount = this.anchorAccount;
 		const quotas = this.quotas;
@@ -467,8 +384,29 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		const publicCorsOrigin = this.publicCorsOrigin;
 		const authenticatedCorsOrigin = this.authenticatedCorsOrigin;
 		const pathPolicies = this.pathPolicies;
+		const requireCertificateChain = this.resolvedCertificateChainRequirement;
 		const tagValidation = this.tagValidation;
 		const logger = this.logger;
+
+		/**
+		 * Validate tags against configured limits.
+		 * @throws Errors.InvalidTag if any tag violates constraints
+		 */
+		function validateTags(tags: string[]): void {
+			const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
+			for (const tag of tags) {
+				if (tag.length > maxTagLength) {
+					throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
+				}
+				tagPattern.lastIndex = 0;
+				if (!tagPattern.test(tag)) {
+					throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
+				}
+			}
+			if (tags.length > maxTags) {
+				throw(new Errors.InvalidTag(`Too many tags: ${tags.length} exceeds maximum of ${maxTags}`));
+			}
+		}
 
 		/**
 		 * Build a JSON response with assertion.
@@ -568,40 +506,24 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 					});
 
 				// Verify signature
-				const account = await verifyURLAuth(url, getKeetaStorageAnchorPutRequestSigningData, function() {
-					return({ path: objectPath, visibility, tags: rawTags });
-				});
+				const account = await verifyURLAuth(url, function() {
+					return(getKeetaStorageAnchorPutRequestSigningData({ path: objectPath, visibility, tags: rawTags }));
+				}, requireCertificateChain);
 
-				// Validate tags
-				const { maxTags, maxTagLength, pattern: tagPattern } = tagValidation;
-				for (const tag of rawTags) {
-					if (tag.length > maxTagLength) {
-						throw(new Errors.InvalidTag(`Tag exceeds maximum length of ${maxTagLength}: "${tag}"`));
-					}
-					// Reset lastIndex in case the pattern has the global or sticky flag
-					tagPattern.lastIndex = 0;
-					if (!tagPattern.test(tag)) {
-						throw(new Errors.InvalidTag(`Tag contains invalid characters: "${tag}"`));
-					}
-				}
-				if (rawTags.length > maxTags) {
-					throw(new Errors.InvalidTag(`Too many tags: ${rawTags.length} exceeds maximum of ${maxTags}`));
-				}
+				validateTags(rawTags);
 				const tags = rawTags;
 
 				// Validate path format, metadata, and ownership
 				const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'put');
-				const owner = account.publicKeyString.get();
-				if (policy.validateMetadata) {
-					policy.validateMetadata(parsed, { owner, tags, visibility });
-				}
+				const owner = policy.getOwner(objectPath);
 
 				// Resolve per-user quota limits, falling back to global config
-				const userLimits = backend.getQuotaLimits
-					? await backend.getQuotaLimits(owner)
-					: null;
-				const effectiveLimits = userLimits ?? quotas;
+				let userLimits: QuotaLimits | null = null;
+				if (backend.getQuotaLimits) {
+					userLimits = await backend.getQuotaLimits(owner);
+				}
 
+				const effectiveLimits = userLimits ?? quotas;
 				// Body is raw binary (EncryptedContainer)
 				const data = arrayBufferLikeToBuffer(postData);
 				const objectSize = data.byteLength;
@@ -614,24 +536,34 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				}
 
 				const needsValidation = requiresValidation(objectPath, validators);
+				const needsContextValidation = !!policy.validateContext;
 				const needsAnchorDecryption = needsValidation || visibility === 'public';
-				if (needsAnchorDecryption) {
+				if (needsContextValidation || needsAnchorDecryption) {
 					try {
 						const container = EncryptedContainer.fromEncryptedBuffer(data, [anchorAccount]);
-						const plaintext = await container.getPlaintext();
 
-						if (needsValidation) {
-							// Extract content and mimeType from encrypted payload
-							const { content, mimeType } = parseContainerPayload(plaintext);
-							const matchingValidators = findMatchingValidators(objectPath, validators);
-							for (const validator of matchingValidators) {
-								const result = await validator.validate(objectPath, content, mimeType);
-								if (!result.valid) {
-									throw(new Errors.ValidationFailed(result.error));
+						if (policy.validateContext) {
+							policy.validateContext(parsed, { operation: 'put', account, metadata: { owner, tags, visibility }, container });
+						}
+
+						if (needsAnchorDecryption) {
+							const plaintext = await container.getPlaintext();
+							if (needsValidation) {
+								// Extract content and mimeType from encrypted payload
+								const { content, mimeType } = parseContainerPayload(plaintext);
+								const matchingValidators = findMatchingValidators(objectPath, validators);
+								for (const validator of matchingValidators) {
+									const result = await validator.validate(objectPath, content, mimeType);
+									if (!result.valid) {
+										throw(new Errors.ValidationFailed(result.error));
+									}
 								}
 							}
 						}
 					} catch (e) {
+						if (Errors.InvalidMetadata.isInstance(e)) {
+							throw(e);
+						}
 						if (Errors.ValidationFailed.isInstance(e)) {
 							throw(e);
 						}
@@ -687,16 +619,20 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/object/* - Retrieve an object
 		routes['GET /api/object/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
 				'get',
-				getKeetaStorageAnchorGetRequestSigningData,
-				function(path, pubKey) {
-					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorGetRequestSigningData(assertKeetaStorageAnchorGetRequest({ path, account: signingAccount.publicKeyString.get() })));
+				},
+				requireCertificateChain
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'get', account });
+			}
 
 			const headers: { [key: string]: string } = {};
 			if (authenticatedCorsOrigin) {
@@ -713,16 +649,20 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// DELETE /api/object/* - Delete an object
 		routes['DELETE /api/object/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
 				'delete',
-				getKeetaStorageAnchorDeleteRequestSigningData,
-				function(path, pubKey) {
-					return({ path, account: pubKey });
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorDeleteRequestSigningData({ path, account: signingAccount.publicKeyString.get() }));
+				},
+				requireCertificateChain
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'delete', account });
+			}
 
 			const deleted = await backend.delete(objectPath);
 			const response: KeetaStorageAnchorDeleteResponse = {
@@ -735,25 +675,68 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 
 		// GET /api/metadata/* - Get object metadata
 		routes['GET /api/metadata/**'] = async function(params, _postData, _headers, url) {
-			const { objectPath } = await authorizeURLAccess(
+			const { objectPath, policy, parsed, account } = await authorizeURLAccess(
 				pathPolicies,
 				params,
 				url,
 				'metadata',
-				getKeetaStorageAnchorGetRequestSigningData,
-				function(path, pubKey) {
-					return(assertKeetaStorageAnchorGetRequest({ path, account: pubKey }));
-				}
+				function(path, signingAccount) {
+					return(getKeetaStorageAnchorGetRequestSigningData(assertKeetaStorageAnchorGetRequest({ path, account: signingAccount.publicKeyString.get() })));
+				},
+				requireCertificateChain
 			);
+
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'metadata', account });
+			}
 
 			const result = await requireObject(objectPath);
 			return(jsonResponse({ ok: true, object: result.metadata }, assertKeetaStorageAnchorPutResponse));
 		};
 
+		// PUT /api/metadata/* - Update object metadata without re-uploading data
+		routes['PUT /api/metadata/**'] = async function(params, postData) {
+			const objectPath = extractObjectPath(params);
+			const request = assertKeetaStorageAnchorUpdateMetadataRequest(postData);
+
+			const signable = getKeetaStorageAnchorUpdateMetadataRequestSigningData({
+				path: objectPath,
+				visibility: request.visibility,
+				tags: request.tags
+			});
+			const account = await verifyBodyAuth(request, function() {
+				return(signable);
+			}, requireCertificateChain);
+
+			const { policy, parsed } = assertPathAccess(pathPolicies, account, objectPath, 'updateMetadata');
+
+			validateTags(request.tags);
+
+			const visibility = assertVisibility(request.visibility);
+			const tags = request.tags;
+
+			// Confirm object exists and preserve existing owner
+			const existing = await requireObject(objectPath);
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'updateMetadata', account, metadata: { owner: existing.metadata.owner, tags, visibility }, current: existing.metadata });
+			}
+
+			if (!backend.updateMetadata) {
+				throw(new Errors.OperationNotSupported('updateMetadata'));
+			}
+
+			const updated = await backend.updateMetadata(objectPath, { tags, visibility });
+			if (!updated) {
+				throw(new Errors.DocumentNotFound());
+			}
+
+			return(jsonResponse({ ok: true, object: updated }, assertKeetaStorageAnchorPutResponse));
+		};
+
 		// POST /api/search - Search for objects
 		routes['POST /api/search'] = async function(_params, postData) {
 			const request = assertKeetaStorageAnchorSearchRequest(postData);
-			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData);
+			const account = await verifyBodyAuth(request, getKeetaStorageAnchorSearchRequestSigningData, requireCertificateChain);
 			const accountPubKey = account.publicKeyString.get();
 
 			// Check if searching for public objects outside namespace
@@ -796,17 +779,18 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		routes['GET /api/quota'] = async function(_params, _postData, _headers, url) {
 			const account = await verifyURLAuth(
 				url,
-				getKeetaStorageAnchorQuotaRequestSigningData,
-				function() { return({}); }
+				function() { return(getKeetaStorageAnchorQuotaRequestSigningData({})); },
+				requireCertificateChain
 			);
 
 			// Get current usage from backend and compute remaining using per-user or global limits
 			const owner = account.publicKeyString.get();
-			const userLimits = backend.getQuotaLimits
-				? await backend.getQuotaLimits(owner)
-				: null;
-			const effectiveLimits = userLimits ?? quotas;
+			let userLimits: QuotaLimits | null = null;
+			if (backend.getQuotaLimits) {
+				userLimits = await backend.getQuotaLimits(owner);
+			}
 
+			const effectiveLimits = userLimits ?? quotas;
 			const backendStatus = await backend.getQuotaStatus(owner);
 
 			// Compute remaining from config limits
@@ -894,6 +878,10 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 				throw(new Errors.SignatureInvalid('Signature verification failed'));
 			}
 
+			if (policy.validateContext) {
+				policy.validateContext(parsed, { operation: 'get', account: signerAccount });
+			}
+
 			const result = await requireObject(objectPath);
 			if (result.metadata.visibility !== 'public') {
 				throw(new Errors.AccessDenied('Object is not public'));
@@ -922,13 +910,15 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 		return(routes);
 	}
 
-	async serviceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
+	protected async buildServiceMetadata(): Promise<NonNullable<ServiceMetadata['services']['storage']>[string]> {
 		const authRequired = { options: { authentication: { type: 'required' as const, method: 'keeta-account' as const }}};
+		const acceptedIssuerDNs = this.acceptedIssuerDNs();
 		const operations: NonNullable<ServiceMetadata['services']['storage']>[string]['operations'] = {
 			put: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			get: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			delete: { url: (new URL('/api/object', this.url)).toString(), ...authRequired },
 			metadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
+			updateMetadata: { url: (new URL('/api/metadata', this.url)).toString(), ...authRequired },
 			search: { url: (new URL('/api/search', this.url)).toString(), ...authRequired },
 			public: (new URL('/api/public', this.url)).toString(),
 			quota: { url: (new URL('/api/quota', this.url)).toString(), ...authRequired }
@@ -939,7 +929,8 @@ export class KeetaNetStorageAnchorHTTPServer extends KeetaAnchorHTTPServer.Keeta
 			anchorAccount: this.anchorAccount.publicKeyString.get(),
 			quotas: this.quotas,
 			signedUrlDefaultTTL: this.signedUrlDefaultTTL,
-			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix']
+			searchableFields: ['owner', 'tags', 'visibility', 'pathPrefix'],
+			...(acceptedIssuerDNs !== undefined && { acceptedIssuerDNs })
 		});
 	}
 }

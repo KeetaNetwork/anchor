@@ -1,6 +1,7 @@
 import { assertNever } from "../../../lib/utils/never.js";
 import type { BankAccountAddressObfuscated, MobileWalletAddressObfuscated } from "../common.js";
 import { assertBankAccountType, assertMobileWalletAccountType, isTronNetworkAlias } from "./location.generated.js";
+import { Buffer } from '../../../lib/utils/buffer.js';
 
 interface BaseLocation<Type extends 'chain' | 'bank-account' | 'mobile-wallet'> {
 	type: Type;
@@ -81,8 +82,18 @@ export type AssetLocation = ChainLocation | BankLocation | MobileWalletLocation;
 export type BankAccountType = BankAccountAddressObfuscated['accountType'];
 export type MobileWalletAccountType = MobileWalletAddressObfuscated['accountType'];
 
+type ChainLocationIDType = {
+	[K in 'keeta' | 'evm']: bigint;
+} & {
+	[K in 'solana' | 'bitcoin' | 'tron']: string;
+};
+
+export type ChainLocationString<T extends ChainLocationType = ChainLocationType> = {
+	[K in T]: `chain:${K}:${ChainLocationIDType[K]}`
+}[T];
+
 export type AssetLocationString =
-	`chain:${'keeta' | 'evm'}:${bigint}` | `chain:${'solana' | 'bitcoin' | 'tron'}:${string}` |
+	ChainLocationString |
 	`bank-account:${BankAccountType}` |
 	`mobile-wallet:${MobileWalletAccountType}`;
 
@@ -249,4 +260,8 @@ export function toAssetLocation(input: AssetLocationInput): AssetLocation {
 	} else {
 		return(input);
 	}
+}
+
+export function isAssetLocationEqual(a: AssetLocationInput, b: AssetLocationInput): boolean {
+	return(convertAssetLocationInputToCanonical(a) === convertAssetLocationInputToCanonical(b));
 }
