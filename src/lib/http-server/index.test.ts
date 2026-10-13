@@ -754,6 +754,47 @@ test('Server-Timing: duration is present and nested sections add up', async func
 	expect(duration('http-handler-4')).toBeGreaterThanOrEqual(duration('lookup-2') + duration('render-3'));
 }, 30000);
 
+test('Server-Timing: a streamed request body is timed', async function() {
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			const routes: HTTPServer.Routes = {};
+
+			routes['POST /echo'] = async function(_ignore_params, body) {
+				return({ output: JSON.stringify(body) });
+			};
+
+			return(routes);
+		}
+	})({ port: 0 });
+
+	await server.start();
+
+	const chunks = ['{"hello":', '"world"}'];
+	const body = new ReadableStream({
+		pull: async function(controller) {
+			const chunk = chunks.shift();
+			if (chunk === undefined) {
+				controller.close();
+				return;
+			}
+
+			controller.enqueue(new TextEncoder().encode(chunk));
+			await asleep(50);
+		}
+	});
+
+	const init: RequestInit & { duplex: 'half'; } = {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: body,
+		duplex: 'half'
+	};
+
+	const streamed = await requestServerTiming(server.url, '/echo', init);
+	expect(streamed).toMatchObject({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
+	expect(streamed.durations?.['http-request-body-0']).toBeGreaterThanOrEqual(49);
+}, 30000);
+
 test('Server-Timing: repeated sections are kept apart and unfinished ones are left out', async function() {
 	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
