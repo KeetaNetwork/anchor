@@ -282,7 +282,7 @@ test('setSensitiveAttribute rejects wrong subject key', async function() {
 	const wrongKeyAttr = await wrongKeyStore.toSensitiveAttribute('email', testAccounts.other);
 	expect(function() {
 		createBuilder().setSensitiveAttribute('email', wrongKeyAttr);
-	}).toThrowError('SensitiveAttribute was encrypted for a different subject');
+	}).toThrow('SensitiveAttribute was encrypted for a different subject');
 });
 
 // ============================================================================

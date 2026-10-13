@@ -66,7 +66,7 @@ src/services/asset-movement/lib/data/addresses/types.generated.ts: utils/run-ts 
 # This target creates the distribution directory.
 dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
 	mkdir -p dist
-	jq '. | del(.devDependencies)' < package.json > dist/package.json
+	jq '. | del(.devDependencies) | del(.scripts.prepare)' < package.json > dist/package.json
 	cp package-lock.json dist/
 	test -e .npmrc && cp .npmrc dist/ || :
 	cd dist && npm shrinkwrap
