@@ -15,7 +15,9 @@ import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 import { Buffer } from '../utils/buffer.js';
-import { RequestTiming } from '../utils/timing.js';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+
+type RequestTiming = InstanceType<typeof KeetaNetLib.Timing.RequestTiming>;
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -23,14 +25,6 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
  * The maximum size of a request (128MiB)
  */
 const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
-
-function formatServerTimingHeader(timing: RequestTiming): string {
-	return(Object.entries(timing.getAllTiming()).filter(function([section]) {
-		return(/^[A-Za-z0-9_/-]+$/.test(section));
-	}).map(function([section, { duration }]) {
-		return(`${section};dur=${duration}`);
-	}).join(', '));
-}
 
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL, timing: RequestTiming) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {
@@ -411,11 +405,11 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
-			const timing = new RequestTiming();
+			const timing = new KeetaNetLib.Timing.RequestTiming();
 			timing.log = this.logger;
 
 			const setServerTimingHeader = function() {
-				const serverTiming = formatServerTimingHeader(timing);
+				const serverTiming = timing.toServerTimingHeader();
 				if (serverTiming === '') {
 					return;
 				}

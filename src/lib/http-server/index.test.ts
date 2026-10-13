@@ -780,7 +780,7 @@ test('Server-Timing: repeated sections are kept apart and unfinished ones are le
 	expect(await requestServerTiming(server.url, '/repeat')).toMatchObject({ status: 200, sections: ['http-handler-2', 'db-0', 'db-1'] });
 }, 30000);
 
-test('Server-Timing: sections with invalid names are left out', async function() {
+test('Server-Timing: sections with invalid names fail the request', async function() {
 	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
@@ -806,9 +806,9 @@ test('Server-Timing: sections with invalid names are left out', async function()
 	await server.start();
 
 	expect(await requestServerTiming(server.url, '/work?name=a_1')).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a_1-0'] });
-	expect(await requestServerTiming(server.url, '/work?name=a%0Ab')).toMatchObject({ status: 200, sections: ['http-handler-1'] });
-	expect(await requestServerTiming(server.url, '/work?name=a,%20b;dur=999')).toMatchObject({ status: 200, sections: ['http-handler-1'] });
-	expect(await requestServerTiming(server.url, '/work?name=a/b')).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a/b-0'] });
+	expect(await requestServerTiming(server.url, '/work?name=a%0Ab')).toMatchObject({ status: 500, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/work?name=a,%20b;dur=999')).toMatchObject({ status: 500, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/work?name=a/b')).toMatchObject({ status: 500, sections: ['http-handler-0'] });
 }, 30000);
 
 test('Server-Timing: parallel requests each get their own timing', async function() {
