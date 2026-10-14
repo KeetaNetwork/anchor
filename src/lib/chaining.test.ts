@@ -459,7 +459,7 @@ type PersistentForwardingBridgeAddressMeta = {
 /** Flat rail fee on the test anchor's default persistent address. */
 const TEST_PERSISTENT_ADDRESS_RAIL_FEE = 15n;
 
-/** Floor applied when a fee-netted persistent-forwarding estimate would be below 1. */
+/** Floor for a fee-netted persistent-forwarding estimate. */
 const TEST_FORWARDING_VALUE_OUT_FLOOR = 1n;
 
 const TEST_PERSISTENT_ADDRESS_RAIL_FEE_QUOTE = {
