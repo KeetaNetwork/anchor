@@ -458,12 +458,11 @@ function validateRequest(request: AnchorChainingPathInput): { affinity: 'to' | '
 }
 
 /**
- * Whether a forwarded step needs simulateTransfer.
- * False only when the source rail sets initiateTransfer to false.
+ * Whether the source rail sets initiateTransfer to false.
  */
-function forwardedStepNeedsSimulate(step: AssetMovementGraphNode): boolean {
-	const sourceRailAllowsInitiate = step.from.supportedOperations?.initiateTransfer !== false;
-	return(sourceRailAllowsInitiate);
+function sourceRailForbidsInitiate(step: AssetMovementGraphNode): boolean {
+	const forbidsInitiate = step.from.supportedOperations?.initiateTransfer === false;
+	return(forbidsInitiate);
 }
 
 /**
@@ -483,7 +482,7 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
 	const priorStep = index > 0 ? path[index - 1] : null;
 	const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 	const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
-	const initiateForbidden = !forwardedStepNeedsSimulate(step);
+	const initiateForbidden = sourceRailForbidsInitiate(step);
 	const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
 
 	return(!sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported)));
@@ -2389,7 +2388,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
 			}
-			const needsSimulate = forwardedStepNeedsSimulate(scanStep);
+			const needsSimulate = !sourceRailForbidsInitiate(scanStep);
 			if (!forwardingOnly && needsSimulate && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
 			}
@@ -2529,7 +2528,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
 			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
-			const initiateForbidden = !forwardedStepNeedsSimulate(scanStep);
+			const initiateForbidden = sourceRailForbidsInitiate(scanStep);
 			const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
 			const shouldUsePFR = !sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported));
@@ -2679,8 +2678,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
-								const needsSimulate = forwardedStepNeedsSimulate(step);
-								if (needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
+								const needsSimulate = !sourceRailForbidsInitiate(step);
+								if (!forwardingOnly && needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
 										const { signer: forwardedSigner } = await this.getAccountsForAction({
 											type: 'assetMovement',

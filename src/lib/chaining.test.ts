@@ -5279,26 +5279,39 @@ describe('getPlans forwardingOnly', function() {
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 	});
 
-	test('forwarded step simulates when the source rail omits supportedOperations', async function() {
-		await using w = await buildForwardingWorld('omitted');
+	test('source rail with no supportedOperations still simulates on a normal plan', async function() {
+		await using w = await buildForwardingWorld('omitted', {
+			railsWithoutSupportedOperations: true,
+			convert: ({ value }) => value - 25n
+		});
 
-		const plans = await w.anchorChaining.getPlans({
-			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
-			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
-		}, { limit: 1, forwardingOnly: { method: 'implied' }});
-		const plan = plans?.[0];
-		if (!plan) {
-			throw(new Error('Expected a forwarding plan'));
+		/*
+		 * USDC@keeta -> USDC@eth routes as AM2 then AM3 through a non-keeta base intermediate.
+		 * The first leg simulates that deposit.
+		 * No rail publishes supportedOperations.
+		 */
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
 		}
-		const step = plan.plan.steps[0];
-		if (step?.type !== 'forwarded') {
-			throw(new Error('Expected a forwarded step'));
+		const sourceLeg = path.path[0];
+		if (!sourceLeg || sourceLeg.type !== 'assetMovement') {
+			throw(new Error('Expected the first leg to be asset movement'));
 		}
+		expect(sourceLeg.from.supportedOperations).toBeUndefined();
 
-		expect(step.step.from.supportedOperations).toBeUndefined();
-		expect(step.simulatedTransfer).toBeDefined();
-		expect(step.simulatedTransfer?.isSimulation).toBe(true);
-		expect(step.valueOut).toEqual(step.valueIn);
+		const plan = await AnchorChainingPlan.create(path);
+		expect(isForwardingPlan(plan)).toEqual({ isForwardingOnly: false, providerID: 'AM2' });
+		const first = plan.plan.steps[0];
+		if (first?.type !== 'assetMovement') {
+			throw(new Error('Expected a managed first step'));
+		}
+		expect(first.valueOut).toEqual(975n);
+		expect(plan.plan.steps[1]?.valueIn).toEqual(975n);
 	});
 
 	test('forwarded step simulates when the source rail allows initiateTransfer', async function() {
