@@ -1832,13 +1832,69 @@ function computeFeeTotalFromBreakdown(valueIn: bigint, fees: AssetFeeBreakdown |
 	return(feeTotal);
 }
 
+/**
+ * Basis points copied from the asset-movement SDK constant
+ * FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS.
+ * One VALUE_VARIABLE line item at this rate, with no fee value and no total,
+ * is an unavailable fee quote.
+ */
+const FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS = 10_000;
+
+function isForwardingFeeQuoteUnavailable(fees?: PersistentAddressAssetFeeBreakdown): boolean {
+	if (fees === undefined) {
+		return(false);
+	}
+
+	if ('total' in fees && fees.total !== undefined && fees.total !== '') {
+		return(false);
+	}
+
+	const lineItem = fees.lineItems[0];
+	if (lineItem === undefined || fees.lineItems.length !== 1) {
+		return(false);
+	}
+
+	if ('value' in lineItem && lineItem.value !== '') {
+		return(false);
+	}
+
+	if (lineItem.purpose !== 'VALUE_VARIABLE' || lineItem.basisPoints !== FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS) {
+		return(false);
+	}
+
+	return(true);
+}
+
 function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
-	if (!fees) {
+	if (fees === undefined || isForwardingFeeQuoteUnavailable(fees)) {
 		return(valueIn);
 	}
 
 	const valueOut = valueIn - computeFeeTotalFromBreakdown(valueIn, fees);
 	return(valueOut < 1n ? 1n : valueOut);
+}
+
+function getSimulatedReceiveAmount(
+	simulatedTransfer: Awaited<ReturnType<AssetMovementProvider['simulateTransfer']>>,
+	rail: SimulatedAssetTransferInstructions['type']
+): bigint | undefined {
+	const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof rail }> => {
+		return(instr.type === rail);
+	});
+	if (!simulatedInstruction) {
+		return(undefined);
+	}
+
+	let simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
+	if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
+		simulatedTotalReceive = simulatedInstruction.value;
+	}
+	if (simulatedTotalReceive === undefined) {
+		return(undefined);
+	}
+
+	const receiveAmount = BigInt(simulatedTotalReceive);
+	return(receiveAmount);
 }
 
 /** @internal Exported for unit tests. */
@@ -2592,11 +2648,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							if (forwardedInfo) {
 								const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
 
-								let estimatedValueOut = depositValue;
+								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
-								if (forwardingOnly) {
-									estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
-								} else if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
+								if (!forwardingOnly && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
 										const { signer: forwardedSigner } = await this.getAccountsForAction({
 											type: 'assetMovement',
@@ -2611,19 +2665,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 											value: depositValue
 										});
 
-										const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
-										let simulatedTotalReceive: string | undefined;
-										if (simulatedInstruction) {
-											simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
-											if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
-												simulatedTotalReceive = simulatedInstruction.value;
-											}
-										}
-										if (simulatedTotalReceive !== undefined) {
-											estimatedValueOut = BigInt(simulatedTotalReceive);
+										const simulatedReceiveAmount = getSimulatedReceiveAmount(simulatedTransfer, step.from.rail);
+										if (simulatedReceiveAmount !== undefined) {
+											estimatedValueOut = simulatedReceiveAmount;
 										}
 									} catch (error) {
-										this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to depositValue`, error);
+										this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to the fee-netted estimate`, error);
 									}
 								}
 

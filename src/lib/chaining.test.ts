@@ -4196,11 +4196,9 @@ describe('getPlans forwardingOnly', function() {
 		};
 		expect(estimateForwardingValueOut(1_000_000n, unavailableFeeQuote)).toEqual(1_000_000n);
 
-		const quotedFullRate = {
-			lineItems: [{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000, value: '100' }]
-		};
-		/* eslint-disable-next-line @typescript-eslint/consistent-type-assertions */
-		expect(estimateForwardingValueOut(1000n, quotedFullRate as PersistentAddressAssetFeeBreakdown)).toEqual(900n);
+		const quotedLineItem = { purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000, value: '100' };
+		const quotedFullRate = { lineItems: [ quotedLineItem ] };
+		expect(estimateForwardingValueOut(1000n, quotedFullRate)).toEqual(900n);
 	});
 
 	const EXTERNAL_IDS = {
