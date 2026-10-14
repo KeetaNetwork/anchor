@@ -3681,23 +3681,11 @@ describe('Generic Test Cases', function() {
 
 	type ExpectedLeg = { provider: string; from: Sym; to: Sym };
 
-	function computeExpectedOutput(legs: ExpectedLeg[], input: bigint, fee: FeeProfile, finalLegRailFee?: bigint): bigint {
+	function computeExpectedOutput(legs: ExpectedLeg[], input: bigint, fee: FeeProfile): bigint {
 		let value = input;
-		for (let index = 0; index < legs.length; index++) {
-			const leg = legs[index];
-			if (!leg) {
-				continue;
-			}
-
-			const isFinalLeg = index === legs.length - 1;
+		for (const leg of legs) {
 			if (leg.provider === 'FX1') {
 				value = fxConvert(value);
-			} else if (isFinalLeg && finalLegRailFee !== undefined) {
-				let netted = value - finalLegRailFee;
-				if (netted < 1n) {
-					netted = 1n;
-				}
-				value = netted;
 			} else {
 				value = convertLeg(leg.from, leg.to, value, fee);
 			}
@@ -4164,11 +4152,16 @@ describe('Generic Test Cases', function() {
 		 * An initiate-forbidden final leg quotes the test anchor's persistent address.
 		 * That address charges a flat rail fee of 15.
 		 */
-		let finalLegRailFee: bigint | undefined;
+		let expectedValueOut = computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee);
 		if (tc.pfrEligibleFinalLeg === true && wc.legMode === 'pfr') {
-			finalLegRailFee = 15n;
+			const deposited = computeExpectedOutput(tc.expectedLegs.slice(0, -1), tc.inputAmount, wc.fee);
+			let netted = deposited - 15n;
+			if (netted < 1n) {
+				netted = 1n;
+			}
+			expectedValueOut = netted;
 		}
-		expect(plan.plan.totalValueOut).toEqual(computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee, finalLegRailFee));
+		expect(plan.plan.totalValueOut).toEqual(expectedValueOut);
 		expect(plan.plan.totalValueOut > 0n).toBe(true);
 	}
 
