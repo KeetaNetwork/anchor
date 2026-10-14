@@ -1874,8 +1874,12 @@ function isForwardingFeeQuoteUnavailable(fees?: PersistentAddressAssetFeeBreakdo
 }
 
 function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
-	if (fees === undefined || isForwardingFeeQuoteUnavailable(fees)) {
+	if (fees === undefined) {
 		return(valueIn);
+	}
+
+	if (isForwardingFeeQuoteUnavailable(fees)) {
+		return(0n);
 	}
 
 	const valueOut = valueIn - computeFeeTotalFromBreakdown(valueIn, fees);
@@ -2051,21 +2055,19 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 
 		if (step.persistentAddress.fees) {
 			/*
-			 * An unavailable persistent-forwarding quote has no fee amount.
-			 * The list marks that quote unknown.
+			 * An unavailable persistent-forwarding quote lists the full deposit at 10000 basis points.
+			 * That line is marked unknown.
 			 */
-			if (isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
-				const unknownFee: AnchorChainingFeeLineItem = {
-					purpose: 'VALUE_VARIABLE',
-					asset: defaultFeeAsset(step),
-					unknown: true,
-					metadata: { stepIndex, step, source: 'persistentAddress' }
-				};
-				lineItems.push(unknownFee);
-				continue;
-			}
-
+			const quotedFeeCount = lineItems.length;
 			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
+			if (isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
+				for (let lineIndex = quotedFeeCount; lineIndex < lineItems.length; lineIndex++) {
+					const feeLine = lineItems[lineIndex];
+					if (feeLine) {
+						feeLine.unknown = true;
+					}
+				}
+			}
 			continue;
 		}
 
@@ -2979,8 +2981,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 		}
 
-		if (lastStep.valueOut <= 0n) {
-			throw(new Error(`Computed valueOut for last step must be greater than 0, got ${lastStep.valueOut}`));
+		if (lastStep.valueOut < 0n) {
+			throw(new Error(`Computed valueOut for last step must be greater than or equal to 0, got ${lastStep.valueOut}`));
 		}
 
 		return({

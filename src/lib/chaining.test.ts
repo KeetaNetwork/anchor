@@ -4216,7 +4216,7 @@ describe('getPlans forwardingOnly', function() {
 		const unavailableFeeQuote = {
 			lineItems: [{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000 }]
 		};
-		expect(estimateForwardingValueOut(1_000_000n, unavailableFeeQuote)).toEqual(1_000_000n);
+		expect(estimateForwardingValueOut(1_000_000n, unavailableFeeQuote)).toEqual(0n);
 
 		const quotedLineItem = { purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000, value: '100' };
 		const quotedFullRate = { lineItems: [ quotedLineItem ] };
@@ -5218,21 +5218,25 @@ describe('getPlans forwardingOnly', function() {
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
-	test('sentinel fee breakdown without a usable simulate holds the deposit value', async function() {
+	test('unavailable fee quote lists the full fee and a zero valueOut', async function() {
 		await using w = await buildForwardingWorld('pfr', {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
 		const { step, plan } = await baseToKeetaPlan(w, 1_000_000n, true);
-		expect(step.valueOut).toEqual(1_000_000n);
+		expect(step.valueOut).toEqual(0n);
 		const fees = plan.listFees();
 		expect(fees.lineItems).toHaveLength(1);
-		expect(fees.lineItems[0]?.unknown).toEqual(true);
-		expect(fees.lineItems[0]?.value).toBeUndefined();
-		expect(fees.lineItems[0]?.basisPoints).toBeUndefined();
+		expect(fees.lineItems[0]).toMatchObject({
+			purpose: 'VALUE_VARIABLE',
+			basisPoints: 10000,
+			value: '1000000',
+			unknown: true,
+			metadata: { source: 'persistentAddress' }
+		});
 	});
 
-	test('initiate-forbidden forwarded step holds the deposit when the fee quote is unavailable', async function() {
+	test('initiate-forbidden forwarded step quotes zero when the fee quote is unavailable', async function() {
 		await using w = await buildForwardingWorld('pfr', {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
@@ -5250,13 +5254,13 @@ describe('getPlans forwardingOnly', function() {
 			throw(new Error('Expected a forwarded step'));
 		}
 
-		expect(step.valueOut).toEqual(1_000_000n);
+		expect(step.valueOut).toEqual(0n);
 		expect(step.simulatedTransfer).toBeUndefined();
 
 		const fees = plan.listFees();
 		expect(fees.lineItems).toHaveLength(1);
-		expect(fees.lineItems[0]?.value).toBeUndefined();
-		expect(fees.lineItems[0]?.basisPoints).toBeUndefined();
+		expect(fees.lineItems[0]?.value).toEqual('1000000');
+		expect(fees.lineItems[0]?.basisPoints).toEqual(10000);
 		expect(fees.lineItems[0]?.unknown).toEqual(true);
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 	});
