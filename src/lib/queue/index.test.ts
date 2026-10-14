@@ -1854,7 +1854,13 @@ suite('Driver Tests', async function() {
 				 * surviving entries in the same partition.
 				 */
 				testRunner('Delete Expired Completed Cleans Idempotent Keys Without Over/Under Delete', async function() {
-					const retentionMs = 100;
+					/*
+					 * Must exceed the time from setStatus(completed) on the
+					 * kept entry through deleteExpiredCompleted inside
+					 * maintain(). Slow backends like Firestore can take
+					 * hundreds of ms here.
+					 */
+					const retentionMs = 1000;
 					await using queueInfo = await driverConfig.create('delete-expired-completed-idempotent');
 					const localQueue = queueInfo.queue;
 
