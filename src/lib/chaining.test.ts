@@ -4295,7 +4295,9 @@ describe('getPlans forwardingOnly', function() {
 		}
 	}
 
-	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am3PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert; baseRailAllowsInitiate?: boolean }) {
+	type BaseRailSupportedOperations = { initiateTransfer?: boolean; createPersistentForwarding?: boolean };
+
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am3PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert; baseRailAllowsInitiate?: boolean; baseSupportedOperations?: BaseRailSupportedOperations }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4314,7 +4316,8 @@ describe('getPlans forwardingOnly', function() {
 			: legMode === 'omitted' ? undefined
 				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
 					: MANAGED_OPS;
-		const baseEvmOps = opts?.baseRailAllowsInitiate === true ? DUAL_OPS : baseEvmOpsForLeg;
+		const baseEvmOpsForMode = opts?.baseRailAllowsInitiate === true ? DUAL_OPS : baseEvmOpsForLeg;
+		const baseEvmOps = opts?.baseSupportedOperations ?? baseEvmOpsForMode;
 		const ethEvmOps = legMode === 'pfr' ? DUAL_OPS
 			: legMode === 'omitted' ? undefined
 				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
@@ -5336,6 +5339,31 @@ describe('getPlans forwardingOnly', function() {
 		expect(forwarded.simulatedTransfer).toBeDefined();
 		expect(forwarded.simulatedTransfer?.isSimulation).toBe(true);
 		expect(forwarded.valueOut).toEqual(forwarded.valueIn);
+	});
+
+	test('forwarded step skips simulate when the source rail omits initiateTransfer', async function() {
+		await using w = await buildForwardingWorld('pfr', {
+			baseSupportedOperations: { createPersistentForwarding: true }
+		});
+
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+
+		const plan = await AnchorChainingPlan.create(path);
+		const forwarded = plan.plan.steps[1];
+		if (forwarded?.type !== 'forwarded') {
+			throw(new Error('Expected the last step to be forwarded'));
+		}
+
+		expect(forwarded.step.from.supportedOperations?.createPersistentForwarding).toBe(true);
+		expect(forwarded.simulatedTransfer).toBeUndefined();
+		expect(forwarded.valueOut).toEqual(forwarded.valueIn - TEST_PERSISTENT_ADDRESS_RAIL_FEE);
 	});
 
 	test('usable simulate amount beats an unavailable fee quote when initiateTransfer is allowed', async function() {
