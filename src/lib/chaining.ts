@@ -2037,7 +2037,9 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		if (step.persistentAddress.fees) {
-			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
+			if (!isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
+				appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
+			}
 			continue;
 		}
 

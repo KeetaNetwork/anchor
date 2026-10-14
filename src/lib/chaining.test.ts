@@ -5168,7 +5168,7 @@ describe('getPlans forwardingOnly', function() {
 		if (step?.type !== 'forwarded') {
 			throw(new Error('Expected a forwarded step'));
 		}
-		return(step);
+		return({ plan, step });
 	}
 
 	test('forwarded step nets persistent address fees when simulateTransfer rejects', async function() {
@@ -5177,7 +5177,7 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: fifteenBasisPointFees
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, false);
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
@@ -5187,7 +5187,7 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: fifteenBasisPointFees
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, true);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, true);
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
@@ -5196,8 +5196,9 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, true);
+		const { step, plan } = await baseToKeetaPlan(w, 1_000_000n, true);
 		expect(step.valueOut).toEqual(1_000_000n);
+		expect(plan.listFees().lineItems).toEqual([]);
 	});
 
 	test('usable simulate amount wins over a sentinel fee breakdown', async function() {
@@ -5206,7 +5207,7 @@ describe('getPlans forwardingOnly', function() {
 			convert: ({ value }) => value - 25n
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, false);
 		expect(step.valueOut).toEqual(999_975n);
 	});
 });
