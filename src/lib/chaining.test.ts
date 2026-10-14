@@ -456,12 +456,24 @@ type PersistentForwardingBridgeAddressMeta = {
 	fees?: KeetaPersistentForwardingAddressDetails['fees'];
 };
 
+/** Flat rail fee on the test anchor's default persistent address. */
+const TEST_PERSISTENT_ADDRESS_RAIL_FEE = 15n;
+
+/** Floor applied when a fee-netted persistent-forwarding estimate would be below 1. */
+const TEST_FORWARDING_VALUE_OUT_FLOOR = 1n;
+
+const TEST_PERSISTENT_ADDRESS_RAIL_FEE_QUOTE = {
+	lineItems: [ { purpose: 'RAIL' as const, value: TEST_PERSISTENT_ADDRESS_RAIL_FEE.toString() } ],
+	total: TEST_PERSISTENT_ADDRESS_RAIL_FEE.toString()
+};
+
 type TestPersistentForwardingBridgeServerConfig = Omit<KeetaAnchorAssetMovementServerConfig, 'assetMovement'> & {
 	assetMovement: Omit<
 		KeetaAnchorAssetMovementServerConfig['assetMovement'],
 		'initiateTransfer' | 'getTransferStatus' | 'simulateTransfer' | 'createPersistentForwarding' | 'listPersistentForwarding' | 'listTransactions'
 	>;
 	client: KeetaNet.UserClient;
+	persistentForwardingFees?: PersistentAddressAssetFeeBreakdown;
 };
 
 /**
@@ -474,7 +486,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 	readonly transferStatuses: Map<string, KeetaAssetMovementTransaction>;
 
 	constructor(config: TestPersistentForwardingBridgeServerConfig) {
-		const { client: userClient, ...serverConfig } = config;
+		const { client: userClient, persistentForwardingFees, ...serverConfig } = config;
 
 		const bridgeAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const blockListener = new BlockListener({ client: userClient.client });
@@ -658,7 +670,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 						sourceLocation: request.sourceLocation,
 						destinationLocation: request.destinationLocation,
 						destinationAddress: request.destinationAddress,
-						asset: request.asset
+						asset: request.asset,
+						...(persistentForwardingFees !== undefined ? { fees: persistentForwardingFees } : {})
 					};
 
 					addresses.set(address, meta);
@@ -668,7 +681,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 						asset: meta.asset,
 						sourceLocation: meta.sourceLocation,
 						destinationLocation: meta.destinationLocation,
-						destinationAddress: meta.destinationAddress
+						destinationAddress: meta.destinationAddress,
+						...(meta.fees !== undefined ? { fees: meta.fees } : {})
 					});
 				},
 
@@ -1007,10 +1021,7 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 						throw(new KeetaAnchorUserError('Test anchor only supports string destinationAddress for persistent forwarding'));
 					}
 					const address = `persistentForwarding-${Math.random().toString(36).slice(2)}`;
-					const fees = persistentForwardingFees ?? {
-						lineItems: [ { purpose: 'RAIL' as const, value: '15' } ],
-						total: '15'
-					};
+					const fees = persistentForwardingFees ?? TEST_PERSISTENT_ADDRESS_RAIL_FEE_QUOTE;
 					const meta: PersistentForwardingBridgeAddressMeta = {
 						sourceLocation: request.sourceLocation,
 						destinationLocation: request.destinationLocation,
@@ -3373,6 +3384,7 @@ describe('Persistent Forwarding chaining', function() {
 		const bridgeServer = new TestPersistentForwardingBridgeServer({
 			...(DEBUG ? { logger } : {}),
 			client,
+			persistentForwardingFees: TEST_PERSISTENT_ADDRESS_RAIL_FEE_QUOTE,
 			assetMovement: {
 				supportedAssets: [
 					makeAssetEntry(tokens.USDC),
@@ -3479,12 +3491,14 @@ describe('Persistent Forwarding chaining', function() {
 
 		expect(forwardedResolved.persistentAddress.address).toEqual(persistentAddress);
 		expect(forwardedResolved.valueIn).toEqual(1000n);
-		expect(forwardedResolved.valueOut).toEqual(1000n);
+		expect(forwardedResolved.valueOut).toEqual(1000n - TEST_PERSISTENT_ADDRESS_RAIL_FEE);
 		expect(forwardedResolved.simulatedTransfer).toBeUndefined();
 
 		const fees = plan.listFees();
 		const forwardedFees = fees.lineItems.filter((item) => item.metadata.stepIndex === 1);
-		expect(forwardedFees).toHaveLength(0);
+		expect(forwardedFees).toHaveLength(1);
+		expect(forwardedFees[0]?.value).toEqual(TEST_PERSISTENT_ADDRESS_RAIL_FEE.toString());
+		expect(forwardedFees[0]?.metadata.source).toEqual('persistentAddress');
 		expect('total' in fees).toBe(false);
 	});
 
@@ -4149,15 +4163,14 @@ describe('Generic Test Cases', function() {
 		expect(plan.state.status).toEqual('completed');
 		expect(result.steps.length).toEqual(tc.expectedLegs.length);
 		/*
-		 * An initiate-forbidden final leg quotes the test anchor's persistent address.
-		 * That address charges a flat rail fee of 15.
+		 * An initiate-forbidden final leg quotes the test anchor's persistent address rail fee.
 		 */
 		let expectedValueOut = computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee);
 		if (tc.pfrEligibleFinalLeg === true && wc.legMode === 'pfr') {
 			const deposited = computeExpectedOutput(tc.expectedLegs.slice(0, -1), tc.inputAmount, wc.fee);
-			let netted = deposited - 15n;
-			if (netted < 1n) {
-				netted = 1n;
+			let netted = deposited - TEST_PERSISTENT_ADDRESS_RAIL_FEE;
+			if (netted < TEST_FORWARDING_VALUE_OUT_FLOOR) {
+				netted = TEST_FORWARDING_VALUE_OUT_FLOOR;
 			}
 			expectedValueOut = netted;
 		}
@@ -4282,7 +4295,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 	}
 
-	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert; baseRailAllowsInitiate?: boolean }) {
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am3PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert; baseRailAllowsInitiate?: boolean }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4369,6 +4382,7 @@ describe('getPlans forwardingOnly', function() {
 			client,
 			convert,
 			...(opts?.am3PersistentForwardingError !== undefined ? { persistentForwardingError: opts.am3PersistentForwardingError } : {}),
+			...(opts?.am3PersistentForwardingFees !== undefined ? { persistentForwardingFees: opts.am3PersistentForwardingFees } : {}),
 			assetMovement: {
 				supportedAssets: [ pairEntry(baseSide(EXTERNAL_IDS.USDC_BASE), ethSide(EXTERNAL_IDS.USDC_ETH)) ]
 			}
@@ -4710,12 +4724,12 @@ describe('getPlans forwardingOnly', function() {
 
 		const fees = plan.listFees();
 		expect(fees.lineItems).toHaveLength(1);
-		expect(fees.lineItems[0]?.value).toEqual('15');
+		expect(fees.lineItems[0]?.value).toEqual(TEST_PERSISTENT_ADDRESS_RAIL_FEE.toString());
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 		expect(fees.lineItems[0]?.metadata.step.type).toEqual('forwarded');
 		expect(fees.lineItems[0]?.asset).toEqual({ id: EXTERNAL_IDS.USDC_BASE, location: LOC.base });
 		expect('total' in fees).toBe(false);
-		expect(plan.plan.steps[0]?.valueOut).toEqual(985n);
+		expect(plan.plan.steps[0]?.valueOut).toEqual(1000n - TEST_PERSISTENT_ADDRESS_RAIL_FEE);
 	});
 
 	test('returns a two-leg forwarding plan from ethereum to keeta', async function() {
@@ -5265,6 +5279,28 @@ describe('getPlans forwardingOnly', function() {
 		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 	});
 
+	test('forwarded step simulates when the source rail omits supportedOperations', async function() {
+		await using w = await buildForwardingWorld('omitted');
+
+		const plans = await w.anchorChaining.getPlans({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		}, { limit: 1, forwardingOnly: { method: 'implied' } });
+		const plan = plans?.[0];
+		if (!plan) {
+			throw(new Error('Expected a forwarding plan'));
+		}
+		const step = plan.plan.steps[0];
+		if (step?.type !== 'forwarded') {
+			throw(new Error('Expected a forwarded step'));
+		}
+
+		expect(step.step.from.supportedOperations).toBeUndefined();
+		expect(step.simulatedTransfer).toBeDefined();
+		expect(step.simulatedTransfer?.isSimulation).toBe(true);
+		expect(step.valueOut).toEqual(step.valueIn);
+	});
+
 	test('forwarded step simulates when the source rail allows initiateTransfer', async function() {
 		await using w = await buildForwardingWorld('pfr', { baseRailAllowsInitiate: true });
 
@@ -5287,6 +5323,33 @@ describe('getPlans forwardingOnly', function() {
 		expect(forwarded.simulatedTransfer).toBeDefined();
 		expect(forwarded.simulatedTransfer?.isSimulation).toBe(true);
 		expect(forwarded.valueOut).toEqual(forwarded.valueIn);
+	});
+
+	test('usable simulate amount beats an unavailable fee quote when initiateTransfer is allowed', async function() {
+		await using w = await buildForwardingWorld('pfr', {
+			baseRailAllowsInitiate: true,
+			am3PersistentForwardingFees: unavailableFeeQuote,
+			convert: ({ value }) => value - 25n
+		});
+
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1_000_000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+
+		const plan = await AnchorChainingPlan.create(path);
+		const forwarded = plan.plan.steps[1];
+		if (forwarded?.type !== 'forwarded') {
+			throw(new Error('Expected the last step to be forwarded'));
+		}
+
+		expect(forwarded.step.from.supportedOperations?.initiateTransfer).toBe(true);
+		expect(forwarded.simulatedTransfer).toBeDefined();
+		expect(forwarded.valueOut).toEqual(forwarded.valueIn - 25n);
 	});
 
 	test('initiate-forbidden route plans when the provider does not advertise simulateTransfer', async function() {

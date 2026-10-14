@@ -458,6 +458,15 @@ function validateRequest(request: AnchorChainingPathInput): { affinity: 'to' | '
 }
 
 /**
+ * Whether a forwarded step needs simulateTransfer.
+ * False only when the source rail sets initiateTransfer to false.
+ */
+function forwardedStepNeedsSimulate(step: AssetMovementGraphNode): boolean {
+	const sourceRailAllowsInitiate = step.from.supportedOperations?.initiateTransfer !== false;
+	return(sourceRailAllowsInitiate);
+}
+
+/**
  * Whether #computePlan's default-mode scan would select persistent forwarding
  * for this step. Mirrors that selection exactly, including the non-Keeta
  * restriction: a Keeta-source leg is always a user-initiated send, never PFR,
@@ -474,19 +483,10 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
 	const priorStep = index > 0 ? path[index - 1] : null;
 	const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 	const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
-	const initiateForbidden = step.from.supportedOperations?.initiateTransfer === false;
+	const initiateForbidden = !forwardedStepNeedsSimulate(step);
 	const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
 
 	return(!sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported)));
-}
-
-/**
- * Whether a forwarded step needs simulateTransfer.
- * False only when the source rail sets initiateTransfer to false.
- */
-function forwardedStepNeedsSimulate(step: AssetMovementGraphNode): boolean {
-	const sourceRailAllowsInitiate = step.from.supportedOperations?.initiateTransfer !== false;
-	return(sourceRailAllowsInitiate);
 }
 
 /**
@@ -2529,7 +2529,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
 			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
-			const initiateForbidden = scanStep.from.supportedOperations?.initiateTransfer === false;
+			const initiateForbidden = !forwardedStepNeedsSimulate(scanStep);
 			const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
 			const shouldUsePFR = !sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported));
@@ -2680,7 +2680,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
 								const needsSimulate = forwardedStepNeedsSimulate(step);
-								if (!forwardingOnly && needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
+								if (needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
 										const { signer: forwardedSigner } = await this.getAccountsForAction({
 											type: 'assetMovement',
