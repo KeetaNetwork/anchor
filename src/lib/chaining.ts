@@ -2052,6 +2052,7 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		if (step.persistentAddress.fees) {
 			/*
 			 * An unavailable persistent-forwarding quote has no fee amount.
+			 * The list marks that quote unknown.
 			 */
 			if (isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
 				const unknownFee: AnchorChainingFeeLineItem = {

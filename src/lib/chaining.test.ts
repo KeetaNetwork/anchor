@@ -5195,7 +5195,7 @@ describe('getPlans forwardingOnly', function() {
 		if (step?.type !== 'forwarded') {
 			throw(new Error('Expected a forwarded step'));
 		}
-		return(step);
+		return({ plan, step });
 	}
 
 	test('forwarded step nets persistent address fees when simulateTransfer rejects', async function() {
@@ -5204,7 +5204,7 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: fifteenBasisPointFees
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, false);
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
@@ -5214,7 +5214,7 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: fifteenBasisPointFees
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, true);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, true);
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
@@ -5223,8 +5223,13 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, true);
+		const { step, plan } = await baseToKeetaPlan(w, 1_000_000n, true);
 		expect(step.valueOut).toEqual(1_000_000n);
+		const fees = plan.listFees();
+		expect(fees.lineItems).toHaveLength(1);
+		expect(fees.lineItems[0]?.unknown).toEqual(true);
+		expect(fees.lineItems[0]?.value).toBeUndefined();
+		expect(fees.lineItems[0]?.basisPoints).toBeUndefined();
 	});
 
 	test('initiate-forbidden forwarded step holds the deposit when the fee quote is unavailable', async function() {
@@ -5399,7 +5404,7 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: fifteenBasisPointFees
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		const { step } = await baseToKeetaPlan(w, 1_000_000n, false);
 		expect(step.valueOut).toEqual(998_500n);
 		expect(step.simulatedTransfer).toBeUndefined();
 	});
