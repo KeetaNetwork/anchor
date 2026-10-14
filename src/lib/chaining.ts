@@ -481,6 +481,15 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
 }
 
 /**
+ * Whether a forwarded step needs simulateTransfer.
+ * False only when the source rail sets initiateTransfer to false.
+ */
+function forwardedStepNeedsSimulate(step: AssetMovementGraphNode): boolean {
+	const sourceRailAllowsInitiate = step.from.supportedOperations?.initiateTransfer !== false;
+	return(sourceRailAllowsInitiate);
+}
+
+/**
  * Validate structural invariants of a resolved path before any network call,
  * so a structurally-invalid plan fails fast instead of after wasted provider
  * round-trips. Pure: hoists the structural throws that live inline in
@@ -2361,7 +2370,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
 			}
-			if (!forwardingOnly && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
+			const needsSimulate = forwardedStepNeedsSimulate(scanStep);
+			if (!forwardingOnly && needsSimulate && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
 			}
 
@@ -2650,7 +2660,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
-								if (!forwardingOnly && await forwardedProvider.isOperationSupported('simulateTransfer')) {
+								const needsSimulate = forwardedStepNeedsSimulate(step);
+								if (!forwardingOnly && needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
 										const { signer: forwardedSigner } = await this.getAccountsForAction({
 											type: 'assetMovement',

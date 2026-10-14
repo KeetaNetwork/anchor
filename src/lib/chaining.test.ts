@@ -3479,16 +3479,12 @@ describe('Persistent Forwarding chaining', function() {
 
 		expect(forwardedResolved.persistentAddress.address).toEqual(persistentAddress);
 		expect(forwardedResolved.valueIn).toEqual(1000n);
-		expect(forwardedResolved.valueOut).toEqual(975n);
-		expect(forwardedResolved.simulatedTransfer).toBeDefined();
-		expect(forwardedResolved.simulatedTransfer?.isSimulation).toBe(true);
+		expect(forwardedResolved.valueOut).toEqual(1000n);
+		expect(forwardedResolved.simulatedTransfer).toBeUndefined();
 
 		const fees = plan.listFees();
 		const forwardedFees = fees.lineItems.filter((item) => item.metadata.stepIndex === 1);
-		expect(forwardedFees).toHaveLength(1);
-		expect(forwardedFees[0]?.value).toEqual('25');
-		expect(forwardedFees[0]?.metadata.source).toEqual('simulatedTransfer');
-		expect(forwardedFees[0]?.asset).toBeDefined();
+		expect(forwardedFees).toHaveLength(0);
 		expect('total' in fees).toBe(false);
 	});
 
@@ -3685,11 +3681,23 @@ describe('Generic Test Cases', function() {
 
 	type ExpectedLeg = { provider: string; from: Sym; to: Sym };
 
-	function computeExpectedOutput(legs: ExpectedLeg[], input: bigint, fee: FeeProfile): bigint {
+	function computeExpectedOutput(legs: ExpectedLeg[], input: bigint, fee: FeeProfile, finalLegRailFee?: bigint): bigint {
 		let value = input;
-		for (const leg of legs) {
+		for (let index = 0; index < legs.length; index++) {
+			const leg = legs[index];
+			if (!leg) {
+				continue;
+			}
+
+			const isFinalLeg = index === legs.length - 1;
 			if (leg.provider === 'FX1') {
 				value = fxConvert(value);
+			} else if (isFinalLeg && finalLegRailFee !== undefined) {
+				let netted = value - finalLegRailFee;
+				if (netted < 1n) {
+					netted = 1n;
+				}
+				value = netted;
 			} else {
 				value = convertLeg(leg.from, leg.to, value, fee);
 			}
@@ -4152,7 +4160,15 @@ describe('Generic Test Cases', function() {
 		// 4. Both legs executed and value threaded correctly (fees applied).
 		expect(plan.state.status).toEqual('completed');
 		expect(result.steps.length).toEqual(tc.expectedLegs.length);
-		expect(plan.plan.totalValueOut).toEqual(computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee));
+		/*
+		 * An initiate-forbidden final leg quotes the test anchor's persistent address.
+		 * That address charges a flat rail fee of 15.
+		 */
+		let finalLegRailFee: bigint | undefined;
+		if (tc.pfrEligibleFinalLeg === true && wc.legMode === 'pfr') {
+			finalLegRailFee = 15n;
+		}
+		expect(plan.plan.totalValueOut).toEqual(computeExpectedOutput(tc.expectedLegs, tc.inputAmount, wc.fee, finalLegRailFee));
 		expect(plan.plan.totalValueOut > 0n).toBe(true);
 	}
 
@@ -4273,7 +4289,7 @@ describe('getPlans forwardingOnly', function() {
 		}
 	}
 
-	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert }) {
+	async function buildForwardingWorld(legMode: LegMode, opts?: { am2WithoutSimulateTransfer?: boolean; railsWithoutSupportedOperations?: boolean; am2PersistentForwardingError?: string; am3PersistentForwardingError?: string; am2PersistentForwardingFees?: PersistentAddressAssetFeeBreakdown; am2SimulateTransferError?: string; convert?: ChainAnchorConvert; baseRailAllowsInitiate?: boolean }) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -4288,10 +4304,11 @@ describe('getPlans forwardingOnly', function() {
 
 		const keetaLocation = `chain:keeta:${client.network}` satisfies AssetLocationLike;
 		const tokens = { USDC: await makeToken(), USD: await makeToken(), EUR: await makeToken(), KTA: await makeToken() };
-		const baseEvmOps = legMode === 'pfr' ? PFR_OPS
+		const baseEvmOpsForLeg = legMode === 'pfr' ? PFR_OPS
 			: legMode === 'omitted' ? undefined
 				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
 					: MANAGED_OPS;
+		const baseEvmOps = opts?.baseRailAllowsInitiate === true ? DUAL_OPS : baseEvmOpsForLeg;
 		const ethEvmOps = legMode === 'pfr' ? DUAL_OPS
 			: legMode === 'omitted' ? undefined
 				: legMode === 'initiateOnly' ? INITIATE_ONLY_OPS
@@ -5200,14 +5217,75 @@ describe('getPlans forwardingOnly', function() {
 		expect(step.valueOut).toEqual(1_000_000n);
 	});
 
-	test('usable simulate amount wins over a sentinel fee breakdown', async function() {
+	test('initiate-forbidden forwarded step holds the deposit when the fee quote is unavailable', async function() {
 		await using w = await buildForwardingWorld('pfr', {
-			am2PersistentForwardingFees: unavailableFeeQuote,
-			convert: ({ value }) => value - 25n
+			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
 		const step = await baseToKeetaPlan(w, 1_000_000n, false);
-		expect(step.valueOut).toEqual(999_975n);
+		expect(step.valueOut).toEqual(1_000_000n);
+		expect(step.simulatedTransfer).toBeUndefined();
+	});
+
+	test('initiate-forbidden rail quotes persistent address fees without simulateTransfer', async function() {
+		await using w = await buildForwardingWorld('pfr', {
+			am2PersistentForwardingFees: fifteenBasisPointFees
+		});
+
+		const plans = await w.anchorChaining.getPlans({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1_000_000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		}, { limit: 1 });
+		const plan = plans?.[0];
+		if (!plan) {
+			throw(new Error('Expected a plan'));
+		}
+		const step = plan.plan.steps[0];
+		if (step?.type !== 'forwarded') {
+			throw(new Error('Expected a forwarded step'));
+		}
+
+		expect(step.valueOut).toEqual(998_500n);
+		expect(step.simulatedTransfer).toBeUndefined();
+		const fees = plan.listFees();
+		expect(fees.lineItems).toHaveLength(1);
+		expect(fees.lineItems[0]?.value).toEqual('1500');
+		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
+	});
+
+	test('forwarded step simulates when the source rail allows initiateTransfer', async function() {
+		await using w = await buildForwardingWorld('pfr', { baseRailAllowsInitiate: true });
+
+		const paths = await w.anchorChaining.getPaths({
+			source: { asset: w.tokens.USDC, location: w.keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: EXTERNAL_IDS.USDC_ETH, location: LOC.eth, recipient: w.recipient, rail: 'EVM_SEND' }
+		});
+		const path = paths?.find((candidate) => candidate.path.length === 2);
+		if (!path) {
+			throw(new Error('Expected a two-leg path through the base intermediate'));
+		}
+
+		const plan = await AnchorChainingPlan.create(path);
+		const forwarded = plan.plan.steps[1];
+		if (forwarded?.type !== 'forwarded') {
+			throw(new Error('Expected the last step to be forwarded'));
+		}
+
+		expect(forwarded.step.from.supportedOperations?.initiateTransfer).toBe(true);
+		expect(forwarded.simulatedTransfer).toBeDefined();
+		expect(forwarded.simulatedTransfer?.isSimulation).toBe(true);
+		expect(forwarded.valueOut).toEqual(forwarded.valueIn);
+	});
+
+	test('initiate-forbidden route plans when the provider does not advertise simulateTransfer', async function() {
+		await using w = await buildForwardingWorld('pfr', {
+			am2WithoutSimulateTransfer: true,
+			am2PersistentForwardingFees: fifteenBasisPointFees
+		});
+
+		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		expect(step.valueOut).toEqual(998_500n);
+		expect(step.simulatedTransfer).toBeUndefined();
 	});
 });
 
