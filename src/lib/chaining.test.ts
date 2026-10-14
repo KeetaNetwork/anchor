@@ -5285,7 +5285,7 @@ describe('getPlans forwardingOnly', function() {
 		const plans = await w.anchorChaining.getPlans({
 			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1000n, rail: 'EVM_SEND' },
 			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
-		}, { limit: 1, forwardingOnly: { method: 'implied' } });
+		}, { limit: 1, forwardingOnly: { method: 'implied' }});
 		const plan = plans?.[0];
 		if (!plan) {
 			throw(new Error('Expected a forwarding plan'));
