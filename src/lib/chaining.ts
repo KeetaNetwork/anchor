@@ -1930,6 +1930,11 @@ export type AnchorChainingFeeLineItem = {
 	value?: string;
 	basisPoints?: number;
 	details?: ClientRenderableContent;
+	/**
+	 * The persistent-forwarding fee quote for this line is unavailable.
+	 * The line carries no amount.
+	 */
+	unknown?: true;
 	metadata: AnchorChainingFeeLineItemMetadata;
 };
 
@@ -2046,6 +2051,20 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		if (step.persistentAddress.fees) {
+			/*
+			 * An unavailable persistent-forwarding quote has no fee amount.
+			 */
+			if (isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
+				const unknownFee: AnchorChainingFeeLineItem = {
+					purpose: 'VALUE_VARIABLE',
+					asset: defaultFeeAsset(step),
+					unknown: true,
+					metadata: { stepIndex, step, source: 'persistentAddress' }
+				};
+				lineItems.push(unknownFee);
+				continue;
+			}
+
 			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
 			continue;
 		}

@@ -5215,9 +5215,28 @@ describe('getPlans forwardingOnly', function() {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
-		const step = await baseToKeetaPlan(w, 1_000_000n, false);
+		const plans = await w.anchorChaining.getPlans({
+			source: { asset: EXTERNAL_IDS.USDC_BASE, location: LOC.base, value: 1_000_000n, rail: 'EVM_SEND' },
+			destination: { asset: w.tokens.USDC, location: w.keetaLocation, recipient: w.recipient, rail: 'KEETA_SEND' }
+		}, { limit: 1 });
+		const plan = plans?.[0];
+		if (!plan) {
+			throw(new Error('Expected a plan'));
+		}
+		const step = plan.plan.steps[0];
+		if (step?.type !== 'forwarded') {
+			throw(new Error('Expected a forwarded step'));
+		}
+
 		expect(step.valueOut).toEqual(1_000_000n);
 		expect(step.simulatedTransfer).toBeUndefined();
+
+		const fees = plan.listFees();
+		expect(fees.lineItems).toHaveLength(1);
+		expect(fees.lineItems[0]?.value).toBeUndefined();
+		expect(fees.lineItems[0]?.basisPoints).toBeUndefined();
+		expect(fees.lineItems[0]?.unknown).toEqual(true);
+		expect(fees.lineItems[0]?.metadata.source).toEqual('persistentAddress');
 	});
 
 	test('initiate-forbidden rail quotes persistent address fees without simulateTransfer', async function() {
