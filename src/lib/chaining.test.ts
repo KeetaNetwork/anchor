@@ -4194,7 +4194,7 @@ describe('getPlans forwardingOnly', function() {
 		const unavailableFeeQuote = {
 			lineItems: [{ purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000 }]
 		};
-		expect(estimateForwardingValueOut(1_000_000n, unavailableFeeQuote)).toEqual(1_000_000n);
+		expect(estimateForwardingValueOut(1_000_000n, unavailableFeeQuote)).toEqual(0n);
 
 		const quotedLineItem = { purpose: 'VALUE_VARIABLE' as const, basisPoints: 10000, value: '100' };
 		const quotedFullRate = { lineItems: [ quotedLineItem ] };
@@ -5191,14 +5191,21 @@ describe('getPlans forwardingOnly', function() {
 		expect(step.valueOut).toEqual(998_500n);
 	});
 
-	test('sentinel fee breakdown without a usable simulate holds the deposit value', async function() {
+	test('unavailable fee quote lists the full fee and a zero valueOut', async function() {
 		await using w = await buildForwardingWorld('pfr', {
 			am2PersistentForwardingFees: unavailableFeeQuote
 		});
 
 		const { step, plan } = await baseToKeetaPlan(w, 1_000_000n, true);
-		expect(step.valueOut).toEqual(1_000_000n);
-		expect(plan.listFees().lineItems).toEqual([]);
+		expect(step.valueOut).toEqual(0n);
+		const fees = plan.listFees();
+		expect(fees.lineItems).toHaveLength(1);
+		expect(fees.lineItems[0]).toMatchObject({
+			purpose: 'VALUE_VARIABLE',
+			basisPoints: 10000,
+			value: '1000000',
+			metadata: { source: 'persistentAddress' }
+		});
 	});
 
 	test('usable simulate amount wins over a sentinel fee breakdown', async function() {

@@ -1866,8 +1866,12 @@ function isForwardingFeeQuoteUnavailable(fees?: PersistentAddressAssetFeeBreakdo
 }
 
 function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
-	if (fees === undefined || isForwardingFeeQuoteUnavailable(fees)) {
+	if (fees === undefined) {
 		return(valueIn);
+	}
+
+	if (isForwardingFeeQuoteUnavailable(fees)) {
+		return(0n);
 	}
 
 	const valueOut = valueIn - computeFeeTotalFromBreakdown(valueIn, fees);
@@ -2037,9 +2041,7 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		if (step.persistentAddress.fees) {
-			if (!isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
-				appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
-			}
+			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
 			continue;
 		}
 
@@ -2951,8 +2953,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 		}
 
-		if (lastStep.valueOut <= 0n) {
-			throw(new Error(`Computed valueOut for last step must be greater than 0, got ${lastStep.valueOut}`));
+		if (lastStep.valueOut < 0n) {
+			throw(new Error(`Computed valueOut for last step must be greater than or equal to 0, got ${lastStep.valueOut}`));
 		}
 
 		return({
