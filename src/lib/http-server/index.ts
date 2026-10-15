@@ -26,7 +26,30 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
  */
 const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 
-type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL, timing: RequestTiming) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+type RouteHandlerContext = {
+	timing: RequestTiming;
+};
+
+/*
+ * Positional parameters are getting too numerous, so starting
+ * with `timing` new parameters go into `RouteHandlerContext`
+ *
+ * TODO: Migrate the existing positional parameters into
+ * `RouteHandlerContext` as well
+ */
+type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (
+	urlParams: Map<string, string>,
+	postData: BodyDataType,
+	requestHeaders: http.IncomingHttpHeaders,
+	requestUrl: URL,
+	context: RouteHandlerContext
+) => Promise<{
+	output: string | Buffer;
+	statusCode?: number;
+	contentType?: string;
+	headers?: { [headerName: string]: string; };
+}>;
+
 type RouteHandlerWithConfig = {
 	bodyType: 'raw';
 	maxBodySize?: number;
@@ -595,7 +618,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				 */
 				result = await timing.runTimer('http-handler', async function() {
 					// @ts-ignore
-					return(await route.handler(params, bodyData, request.headers, url, timing));
+					return(await route.handler(params, bodyData, request.headers, url, { timing }));
 				});
 
 				generatedResult = true;
@@ -632,7 +655,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					}
 
 					// @ts-ignore
-					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url, timing);
+					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url, { timing });
 					generatedResult = true;
 				}
 

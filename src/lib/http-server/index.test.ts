@@ -661,7 +661,7 @@ test('Server-Timing: reports server and handler sections on every response', asy
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
 
-			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, { timing }) {
 				await timing.runTimer('lookup', async function() {
 					return(true);
 				});
@@ -713,7 +713,7 @@ test('Server-Timing: duration is present and nested sections add up', async func
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
 
-			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+			routes['GET /timed'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, { timing }) {
 				await timing.runTimer('lookup', async function() {
 					await timing.runTimer('read', async function() {
 						await asleep(5);
@@ -800,7 +800,7 @@ test('Server-Timing: repeated sections are kept apart and unfinished ones are le
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
 
-			routes['GET /repeat'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+			routes['GET /repeat'] = async function(_ignore_params, _ignore_body, _ignore_headers, _ignore_url, { timing }) {
 				await timing.runTimer('db', async function() {
 					return(true);
 				});
@@ -826,7 +826,7 @@ test('Server-Timing: sections with invalid names fail the request', async functi
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
 
-			routes['GET /work'] = async function(_ignore_params, _ignore_body, _ignore_headers, url, timing) {
+			routes['GET /work'] = async function(_ignore_params, _ignore_body, _ignore_headers, url, { timing }) {
 				/*
 				 * There isn't an immediately obvious scenario where a user
 				 * modifiable field would go into a timer but it allows for
@@ -863,7 +863,7 @@ test('Server-Timing: parallel requests each get their own timing', async functio
 		protected async initRoutes(): Promise<HTTPServer.Routes> {
 			const routes: HTTPServer.Routes = {};
 
-			routes['GET /work/:name'] = async function(params, _ignore_body, _ignore_headers, _ignore_url, timing) {
+			routes['GET /work/:name'] = async function(params, _ignore_body, _ignore_headers, _ignore_url, { timing }) {
 				await timing.runTimer(`work-${params.get('name')}`, async function() {
 					handlersStarted++;
 					if (handlersStarted === 3) {
