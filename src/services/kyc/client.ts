@@ -13,7 +13,8 @@ import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse,
-	KeetaKYCAnchorGetVerificationStatusResponse
+	KeetaKYCAnchorGetVerificationStatusResponse,
+	KeetaKYCAnchorGetVerificationURLResponse
 } from './common.ts';
 import type {
 	KYCVerificationStatus
@@ -131,6 +132,7 @@ type GetEndpointsResult = {
 const isKeetaKYCAnchorCreateVerificationResponse = createIs<KeetaKYCAnchorCreateVerificationResponse>();
 const isKeetaKYCAnchorGetCertificateResponse = createIs<KeetaKYCAnchorGetCertificateResponse>();
 const isKeetaKYCAnchorGetVerificationStatusResponse = createIs<KeetaKYCAnchorGetVerificationStatusResponse>();
+const isKeetaKYCAnchorGetVerificationURLResponse = createIs<KeetaKYCAnchorGetVerificationURLResponse>();
 
 async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'>): Promise<GetEndpointsResult | null> {
 	const response = await resolver.lookup('kyc', {
@@ -295,6 +297,15 @@ class KeetaKYCVerification {
 
 	getVerificationStatus(): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
 		return(this.client.getVerificationStatus(this.providerID, {
+			id: this.id,
+			account: this.account,
+			countryCodes: this.request.countryCodes,
+			...(this.request.entityType !== undefined ? { entityType: this.request.entityType } : {})
+		}));
+	}
+
+	getVerificationURL(): Promise<URL | null> {
+		return(this.client.getVerificationURL(this.providerID, {
 			id: this.id,
 			account: this.account,
 			countryCodes: this.request.countryCodes,
@@ -577,6 +588,52 @@ class KeetaKYCAnchorClient {
 		}
 
 		return(result);
+	}
+
+	/**
+	 * Get a new link to continue an existing verification, or null if the provider does not offer one
+	 */
+	async getVerificationURL(providerID: ProviderID, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'> & { id: RequestID; account: SignableAccount; }): Promise<URL | null> {
+		const endpoints = await getEndpoints(this.resolver, request);
+		if (endpoints === null) {
+			throw(new Error('No KYC endpoints found for the given criteria'));
+		}
+
+		const providerEndpoints = endpoints[providerID];
+		if (providerEndpoints === undefined) {
+			throw(new Error(`No KYC endpoints found for provider ID: ${providerID}`));
+		}
+
+		const getVerificationURL = (await providerEndpoints.operations.getVerificationURL)?.({ id: request.id });
+		if (getVerificationURL === undefined) {
+			return(null);
+		}
+
+		const signed = await SignData(request.account, []);
+		const signedURL = addSignatureToURL(getVerificationURL, {
+			signedField: signed,
+			account: request.account
+		});
+
+		const response = await fetch(signedURL, {
+			method: 'GET',
+			headers: {
+				'Accept': 'application/json'
+			}
+		});
+		if (!response.ok) {
+			throw(new Error(`Failed to get verification URL: ${response.statusText}`));
+		}
+
+		const responseJSON: unknown = await response.json();
+		if (!isKeetaKYCAnchorGetVerificationURLResponse(responseJSON)) {
+			throw(new Error(`Invalid response from KYC verification URL service: ${JSON.stringify(responseJSON)}`));
+		}
+		if (!responseJSON.ok) {
+			throw(new Error(`KYC verification URL request failed: ${responseJSON.error}`));
+		}
+
+		return(validateURL(responseJSON.webURL));
 	}
 
 	async getEstimate(..._ignore_args: unknown[]): Promise<never> {

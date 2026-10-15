@@ -107,6 +107,17 @@ export type KeetaKYCAnchorGetVerificationStatusResponse = ({
 	error: string;
 });
 
+export type KeetaKYCAnchorGetVerificationURLResponse = ({
+	ok: true;
+	/**
+	 * A web URL where the user can continue the verification
+	 */
+	webURL: string;
+} | {
+	ok: false;
+	error: string;
+});
+
 class KeetaKYCAnchorVerificationNotFoundError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaKYCAnchorVerificationNotFoundError';
 	private readonly KeetaKYCAnchorVerificationNotFoundErrorObjectTypeID!: string;
