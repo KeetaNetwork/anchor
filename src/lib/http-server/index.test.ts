@@ -703,8 +703,8 @@ test('Server-Timing: reports server and handler sections on every response', asy
 	})).toMatchObject({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
 	expect(await requestServerTiming(server.url, '/fails')).toMatchObject({ status: 500, sections: ['http-handler-0'] });
 	expect(await requestServerTiming(server.url, '/user-error')).toMatchObject({ status: 400, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toMatchObject({ status: 200, sections: ['http-handler-0'] });
-	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toMatchObject({ status: 200, sections: ['http-handler-0'] });
+	expect(await requestServerTiming(server.url, '/empty', { method: 'POST' })).toMatchObject({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
+	expect(await requestServerTiming(server.url, '/item', { method: 'DELETE' })).toMatchObject({ status: 200, sections: ['http-request-body-0', 'http-handler-1'] });
 	expect(await requestServerTiming(server.url, '/missing')).toMatchObject({ status: 404, sections: null });
 }, 30000);
 
