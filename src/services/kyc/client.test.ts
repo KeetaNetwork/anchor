@@ -136,6 +136,16 @@ test('KYC Anchor Client Test', async function() {
 				return({
 					status: KYCVerificationStatus.PASSED
 				});
+			},
+			getVerificationURL: async function(verificationID, requester) {
+				const request = verifications.get(verificationID);
+				if (request === undefined || request.account !== requester.account.publicKeyString.get()) {
+					throw(new KeetaAnchorKYCErrors.VerificationNotFound(`Verification ID ${verificationID} not found`));
+				}
+
+				return({
+					webURL: new URL(`/provider/${verificationID}?resume=1`, serverURL).toString()
+				});
 			}
 		},
 		kycProviderURL: function(verificationID: string) {
@@ -256,6 +266,20 @@ test('KYC Anchor Client Test', async function() {
 
 	/* Direct the user to the WebURL */
 	loggerBase?.log('Web URL:', verification.webURL);
+
+	/*
+	 * Reopen the same verification through a new link, which only
+	 * the account that started it can get
+	 */
+	const resumedURL = await verification.getVerificationURL();
+	expect(resumedURL?.toString()).toBe(new URL(`/provider/${verification.id}?resume=1`, serverURL).toString());
+
+	const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await expect(kycClient.getVerificationURL(verification.providerID, {
+		id: verification.id,
+		account: otherAccount,
+		countryCodes: ['US']
+	})).rejects.toThrow('Failed to get verification URL: Bad Request');
 
 	/**
 	 * Poll for the verification status
@@ -421,6 +445,9 @@ test('KYC Anchor Client Test - business-only provider and the individual default
 		countryCodes: ['CA']
 	});
 	expect(directStatus.status).toBe(KYCVerificationStatus.PASSED);
+
+	/* This provider does not publish getVerificationURL, so the caller keeps the link it already has. */
+	expect(await businessVerification.getVerificationURL()).toBeNull();
 
 	const individualCountries = (await kycClient.getSupportedCountries()).map(function(country) {
 		return(country.code);

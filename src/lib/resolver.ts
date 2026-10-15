@@ -112,6 +112,11 @@ type ServiceMetadata = {
 					 * Get the verification status
 					 */
 					getVerificationStatus?: string;
+					/**
+					 * Get a new link to continue an
+					 * existing verification (optional)
+					 */
+					getVerificationURL?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
