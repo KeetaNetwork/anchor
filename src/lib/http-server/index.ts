@@ -431,15 +431,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const timing = new KeetaNetLib.Timing.RequestTiming();
 			timing.log = this.logger;
 
-			const setServerTimingHeader = function() {
-				const serverTiming = timing.toServerTimingHeader();
-				if (serverTiming === '') {
-					return;
-				}
-
-				response.setHeader('Server-Timing', serverTiming);
-			};
-
 			const forwardedProtoHeader = request.headers['x-forwarded-proto'];
 			let forwardedProto: string | undefined;
 			if (Array.isArray(forwardedProtoHeader)) {
@@ -483,10 +474,18 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const method = request.method ?? 'GET';
 
 			/*
-			 * Finalize the response by syncing the logger and ending
-			 * the response.
+			 * Finalize the response by adding the Server-Timing
+			 * header, **writing the output**, syncing the logger and
+			 * ending the response.
 			 */
-			const responseFinalize = async () => {
+			const responseFinalize = async (output: string | Buffer) => {
+				const serverTiming = timing.toServerTimingHeader();
+				if (serverTiming !== '') {
+					response.setHeader('Server-Timing', serverTiming);
+				}
+
+				response.write(output);
+
 				if ('sync' in this.logger && typeof this.logger.sync === 'function') {
 					try {
 						await this.logger.sync();
@@ -504,9 +503,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (inputURLRaw.at(0) !== '/') {
 				response.statusCode = 400;
 				response.setHeader('Content-Type', 'text/plain');
-				setServerTimingHeader();
-				response.write('Bad Request');
-				await responseFinalize();
+				await responseFinalize('Bad Request');
 				return;
 			}
 
@@ -517,9 +514,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (requestedRouteAndParams === null) {
 				response.statusCode = 404;
 				response.setHeader('Content-Type', 'text/plain');
-				setServerTimingHeader();
-				response.write('Not Found');
-				await responseFinalize();
+				await responseFinalize('Not Found');
 				return;
 			}
 
@@ -562,10 +557,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 							response.statusCode = 413;
 							response.setHeader('Content-Type', 'text/plain');
-							setServerTimingHeader();
-							response.write('Payload Too Large');
-
-							await responseFinalize();
+							await responseFinalize('Payload Too Large');
 
 							return;
 						}
@@ -665,9 +657,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					 */
 					response.statusCode = 500;
 					response.setHeader('Content-Type', 'text/plain');
-					setServerTimingHeader();
-					response.write('Internal Server Error');
-					await responseFinalize();
+					await responseFinalize('Internal Server Error');
 					return;
 				}
 			}
@@ -689,9 +679,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			response.setHeader('Content-Type', result.contentType ?? 'application/json');
-			setServerTimingHeader();
-			response.write(result.output);
-			await responseFinalize();
+			await responseFinalize(result.output);
 		});
 		this.#server = server;
 
