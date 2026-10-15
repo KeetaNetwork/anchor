@@ -563,33 +563,31 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						}
 					}
 
-					const readBody = async function() {
-						return(await request.map(function(chunk) {
-							// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-							return(Buffer.from(chunk));
-						}).reduce(function(prev, curr) {
-							if (prev.length > bodySizeLimit) {
-								throw(new Error('Request too large'));
-							}
-
-							if (!Buffer.isBuffer(curr)) {
-								throw(new Error(`internal error: Current item is not a buffer -- ${typeof curr}`));
-							}
-							return(Buffer.concat([prev, curr]));
-						}, Buffer.from('')));
-					};
-
 					let hasBody = request.headers['transfer-encoding'] !== undefined;
 					if (contentLength !== undefined && parseInt(contentLength, 10) !== 0) {
 						hasBody = true;
 					}
 
-					let data: Buffer;
+					let bodyTimer: ReturnType<RequestTiming['startTime']> | undefined;
 					if (hasBody) {
-						data = await timing.runTimer('http-request-body', readBody);
-					} else {
-						data = await readBody();
+						bodyTimer = timing.startTime('http-request-body');
 					}
+
+					const data = await request.map(function(chunk) {
+						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+						return(Buffer.from(chunk));
+					}).reduce(function(prev, curr) {
+						if (prev.length > bodySizeLimit) {
+							throw(new Error('Request too large'));
+						}
+
+						if (!Buffer.isBuffer(curr)) {
+							throw(new Error(`internal error: Current item is not a buffer -- ${typeof curr}`));
+						}
+						return(Buffer.concat([prev, curr]));
+					}, Buffer.from(''));
+
+					bodyTimer?.end();
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
