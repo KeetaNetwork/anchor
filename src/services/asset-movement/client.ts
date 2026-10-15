@@ -546,6 +546,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
 	private readonly parent: KeetaAssetMovementAnchorClient;
+	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #evmChecksumCache: EVMChecksumCache = new Map();
 	readonly #canonicalAssetsByLocation = new Map<string, Map<string, AnchorTokenLocationMetadata>>();
 
@@ -556,6 +557,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
 		this.parent = parent;
+		this.#signer = parentPrivate.signer;
 	}
 
 	async #getOperationData(operationName: keyof KeetaAssetMovementAnchorOperations, params?: { [key: string]: string; }) {
@@ -656,9 +658,14 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 			// We need this assertion because TypeScript cannot infer that the type is correct here, it is correct in the arguments.
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const signable = input.getSignedData(serializedRequest as SerializedRequest);
+			let signable = input.getSignedData(serializedRequest as SerializedRequest);
 
-			signed = await SignData(input.account.assertAccount(), signable);
+			if (input.account.isStorage()) {
+				signable = [input.account, ...signable];
+				signed = await SignData(this.#signer.assertAccount(), signable);
+			} else {
+				signed = await SignData(input.account.assertAccount(), signable);
+			}
 		}
 
 		let usingUrl = url;
@@ -675,7 +682,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					throw(new Error('invariant: Account information is required for this operation, which should exist at this point'));
 				}
 
-				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account.assertAccount() });
+				usingUrl = addSignatureToURL(usingUrl, { signedField: signed, account: input.account });
 			}
 
 			if (input.body) {
@@ -706,30 +713,65 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	async #initiateOrSimulateTransfer(simulate: boolean, request: KeetaAssetMovementAnchorSimulateTransferClientRequest | KeetaAssetMovementAnchorInitiateTransferClientRequest): Promise<KeetaAssetMovementTransfer | KeetaAssetMovementSimulatedTransfer> {
 		this.logger?.debug(`Starting Asset Movement Transfer for provider ID: ${String(this.providerID)}`);
 
+		let endpoint: 'simulateTransfer' | 'initiateTransfer';
+		if (simulate) {
+			endpoint = 'simulateTransfer';
+		} else {
+			endpoint = 'initiateTransfer';
+		}
+
 		const requestInformationJSON = await this.#makeRequest({
 			method: 'POST',
-			endpoint: simulate ? 'simulateTransfer' : 'initiateTransfer',
+			endpoint,
 			account: request.account,
 			serializeRequest(body): KeetaAssetMovementAnchorInitiateTransferRequest | KeetaAssetMovementAnchorSimulateTransferRequest {
 				const { account, ...rest } = body;
-				return({
+
+				const from: KeetaAssetMovementAnchorSimulateTransferRequest['from'] = {
+					location: convertAssetLocationToString(body.from.location)
+				};
+
+				if (request.from.source) {
+					from.source = request.from.source;
+				}
+
+				const to = {
+					location: convertAssetLocationToString(body.to.location)
+				} as KeetaAssetMovementAnchorSimulateTransferRequest['to'];
+
+				if (body.to.recipient) {
+					to.recipient = body.to.recipient;
+				}
+
+				if (body.to.depositMessage) {
+					to.depositMessage = body.to.depositMessage;
+				}
+
+				const serialized = {
 					...rest,
 					value: String(body.value),
-					from: {
-						location: convertAssetLocationToString(body.from.location),
-						...(request.from.source ? { source: request.from.source } : {})
-					},
-					to: {
-						location: convertAssetLocationToString(body.to.location),
-						...(body.to.recipient ? { recipient: body.to.recipient } : {}),
-						...(body.to.depositMessage ? { depositMessage: body.to.depositMessage } : {})
-					},
-					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
-				})
+					from,
+					to,
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset)
+				};
+
+				if (account) {
+					return({
+						...serialized,
+						account: account.publicKeyString.get()
+					});
+				}
+
+				return(serialized);
 			},
 			body: request,
-			getSignedData: simulate ? getKeetaAssetMovementAnchorSimulateTransferRequestSigningData : getKeetaAssetMovementAnchorInitiateTransferRequestSigningData,
+			getSignedData(serializedRequest) {
+				if (simulate) {
+					return(getKeetaAssetMovementAnchorSimulateTransferRequestSigningData(serializedRequest));
+				}
+
+				return(getKeetaAssetMovementAnchorInitiateTransferRequestSigningData(serializedRequest));
+			},
 			isResponse(data): data is KeetaAssetMovementAnchorSimulateTransferResponse | KeetaAssetMovementAnchorInitiateTransferResponse {
 				if (simulate) {
 					return(isKeetaAssetMovementAnchorSimulateTransferResponse(data));
@@ -846,7 +888,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				endpoint: 'getAccountStatus',
 				account,
 				body: {},
-				serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+				serializeRequest: () => {
+					if (account) {
+						return({ account: account.publicKeyString.get() });
+					}
+
+					return({});
+				},
 				getSignedData: () => getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData(),
 				isResponse: isKeetaAssetMovementAnchorGetAccountStatusResponse
 			});
@@ -886,7 +934,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			params: { id },
 			account,
 			body: {},
-			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			serializeRequest: () => {
+				if (account) {
+					return({ account: account.publicKeyString.get() });
+				}
+
+				return({});
+			},
 			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateRequestSigningData({ id }),
 			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingTemplateResponse
 		});
@@ -911,7 +965,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			params: { id },
 			account,
 			body: {},
-			serializeRequest: () => (account ? { account: account.assertAccount().publicKeyString.get() } : {}),
+			serializeRequest: () => {
+				if (account) {
+					return({ account: account.publicKeyString.get() });
+				}
+
+				return({});
+			},
 			getSignedData: () => getKeetaAssetMovementAnchorDeactivatePersistentForwardingRequestSigningData({ id }),
 			isResponse: isKeetaAssetMovementAnchorDeactivatePersistentForwardingResponse
 		});
@@ -934,12 +994,20 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			account: request.account,
 			serializeRequest(body) {
 				const { account, ...rest } = body;
-				return({
+				const serialized = {
 					...rest,
 					location: convertAssetLocationToString(body.location),
-					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
-				});
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset)
+				};
+
+				if (account) {
+					return({
+						...serialized,
+						account: account.publicKeyString.get()
+					});
+				}
+
+				return(serialized);
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateRequestSigningData,
@@ -965,23 +1033,35 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			serializeRequest(body) {
 				const { account, ...rest }	= body;
 
-				const sharedFields = {
-					...rest,
-					...(account ? { account: account.assertAccount().publicKeyString.get() } : {})
-				}
-
 				if ('data' in body) {
+					if (account) {
+						return({
+							...rest,
+							account: account.publicKeyString.get(),
+							data: body.data
+						});
+					}
+
 					return({
-						...sharedFields,
+						...rest,
 						data: body.data
 					});
-				} else {
+				}
+
+				if (account) {
 					return({
-						...sharedFields,
+						...rest,
+						account: account.publicKeyString.get(),
 						location: convertAssetLocationToString(body.location),
 						asset: convertAssetOrPairSearchInputToCanonical(body.asset)
 					});
 				}
+
+				return({
+					...rest,
+					location: convertAssetLocationToString(body.location),
+					asset: convertAssetOrPairSearchInputToCanonical(body.asset)
+				});
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingAddressTemplateRequestSigningData,
@@ -1008,23 +1088,36 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				const base = {
 					sourceLocation: convertAssetLocationToString(body.sourceLocation),
 					asset: convertAssetOrPairSearchInputToCanonical(body.asset),
-					account: body.account?.assertAccount().publicKeyString.get(),
-					...(body.incomingRail ? { incomingRail: body.incomingRail } : {}),
-					...(body.outgoingRail ? { outgoingRail: body.outgoingRail } : {})
-				} as const;
+					account: body.account?.publicKeyString.get()
+				};
+
+				const railFields: {
+					incomingRail?: typeof body.incomingRail;
+					outgoingRail?: typeof body.outgoingRail;
+				} = {};
+
+				if (body.incomingRail) {
+					railFields.incomingRail = body.incomingRail;
+				}
+
+				if (body.outgoingRail) {
+					railFields.outgoingRail = body.outgoingRail;
+				}
 
 				if ('persistentAddressTemplateId' in body) {
 					return({
 						...base,
+						...railFields,
 						persistentAddressTemplateId: body.persistentAddressTemplateId
 					});
-				} else {
-					return({
-						...base,
-						destinationAddress: body.destinationAddress,
-						destinationLocation: convertAssetLocationToString(body.destinationLocation)
-					});
 				}
+
+				return({
+					...base,
+					...railFields,
+					destinationAddress: body.destinationAddress,
+					destinationLocation: convertAssetLocationToString(body.destinationLocation)
+				});
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorCreatePersistentForwardingRequestSigningData,
@@ -1045,11 +1138,19 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			account: request.account,
 			body: request,
 			serializeRequest(body) {
-				return({
-					...(body.account ? { account: body.account.assertAccount().publicKeyString.get() } : {}),
+				const serialized = {
 					asset: body.asset?.map(a => convertAssetSearchInputToCanonical(a)),
 					location: body.location?.map(l => convertAssetLocationToString(l))
-				});
+				};
+
+				if (body.account) {
+					return({
+						...serialized,
+						account: body.account.publicKeyString.get()
+					});
+				}
+
+				return(serialized);
 			},
 			getSignedData: getKeetaAssetMovementAnchorListForwardingAddressTemplateRequestSigningData,
 			isResponse: isKeetaAssetMovementAnchorListForwardingAddressTemplateResponse
@@ -1074,7 +1175,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			serializeRequest(body) {
 				return({
 					...body,
-					account: body.account?.assertAccount().publicKeyString.get(),
+					account: body.account?.publicKeyString.get(),
 					search: body.search ? body.search.map(function(searchItem) {
 						return({
 							...searchItem,
@@ -1110,7 +1211,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			account: request.account,
 			serializeRequest(body) {
 				return({
-					account: body.account?.assertAccount().publicKeyString.get(),
+					account: body.account?.publicKeyString.get(),
 					pagination: body.pagination,
 					persistentAddresses: body.persistentAddresses?.map(pa => ({
 						location: convertAssetLocationToString(pa.location),
@@ -1223,11 +1324,19 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					attributes = await body.attributes.export({ format: 'string' });
 				}
 
-				return({
-					account: body.account.assertAccount().publicKeyString.get(),
-					attributes: attributes,
-					...(body.tosAgreement ? { tosAgreement: body.tosAgreement } : {})
-				});
+				const serialized = {
+					account: body.account.publicKeyString.get(),
+					attributes: attributes
+				};
+
+				if (body.tosAgreement) {
+					return({
+						...serialized,
+						tosAgreement: body.tosAgreement
+					});
+				}
+
+				return(serialized);
 			},
 			body: request,
 			getSignedData: getKeetaAssetMovementAnchorShareKYCRequestSigningData,
@@ -1330,7 +1439,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 	readonly resolver: Resolver;
 	readonly id: string;
-	// eslint-disable-next-line no-unused-private-class-members
+
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	// eslint-disable-next-line no-unused-private-class-members
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
@@ -1409,7 +1518,8 @@ class KeetaAssetMovementAnchorClient extends KeetaAssetMovementAnchorBase {
 		return({
 			resolver: this.resolver,
 			logger: this.logger,
-			client: this.client
+			client: this.client,
+			signer: this.#signer
 		});
 	}
 }

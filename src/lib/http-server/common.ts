@@ -1,4 +1,4 @@
-import type { Account } from "@keetanetwork/keetanet-client/lib/account.js";
+import type { Account, GenericAccount } from "@keetanetwork/keetanet-client/lib/account.js";
 import type { ResolvedCertificateChainRequirement } from "../utils/certificate-network.js";
 import type { Signable } from "../utils/signing.js";
 import { KeetaAnchorUserError } from "../error.js";
@@ -25,7 +25,12 @@ export interface HTTPSignedFieldURLParameters {
 	account: Account;
 }
 
-export function addSignatureToURL(input: URL | string, data: HTTPSignedFieldURLParameters): URL {
+export interface HTTPSignedFieldURLParametersGenericAccount {
+	signedField: HTTPSignedField;
+	account: GenericAccount;
+}
+
+export function addSignatureToURL(input: URL | string, data: HTTPSignedFieldURLParametersGenericAccount): URL {
 	let url: URL;
 
 	if (typeof input === 'string') {
@@ -49,7 +54,9 @@ export function addSignatureToURL(input: URL | string, data: HTTPSignedFieldURLP
 	return(url);
 }
 
-export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFieldURLParameters> {
+export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFieldURLParameters>;
+export function parseSignatureFromURL(input: URL | string, options: { assertKeyed: false }): Partial<HTTPSignedFieldURLParametersGenericAccount>;
+export function parseSignatureFromURL(input: URL | string, options?: { assertKeyed?: boolean }): Partial<HTTPSignedFieldURLParametersGenericAccount> {
 	let url: URL;
 
 	if (typeof input === 'string') {
@@ -58,7 +65,7 @@ export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFi
 		url = new URL(input.toString());
 	}
 
-	const retVal: Partial<HTTPSignedFieldURLParameters> = {};
+	const retVal: Partial<HTTPSignedFieldURLParametersGenericAccount> = {};
 
 	const signedField = ((): HTTPSignedField | undefined => {
 		const nonce = url.searchParams.get('signed.nonce');
@@ -80,17 +87,14 @@ export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFi
 		retVal.signedField = signedField;
 	}
 
-	const account = ((): Account | undefined => {
-		const accountParam = url.searchParams.get('account');
-		if (!accountParam) {
-			return(undefined);
+	const accountParam = url.searchParams.get('account');
+	if (accountParam) {
+		const parsed = KeetaNet.lib.Account.fromPublicKeyString(accountParam);
+		if (options?.assertKeyed === false) {
+			retVal.account = parsed;
+		} else {
+			retVal.account = parsed.assertAccount();
 		}
-
-		return(KeetaNet.lib.Account.fromPublicKeyString(accountParam).assertAccount());
-	})();
-
-	if (account) {
-		retVal.account = account;
 	}
 
 	return(retVal);
