@@ -1494,9 +1494,6 @@ export type KeetaAssetMovementAnchorUserAction = ({
 } | {
 	type: 'grant-permission';
 	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
-} | {
-	type: 'provider-kyc-flow';
-	flow: KeetaAssetMovementAnchorKYCExternalURLFlow;
 }) & {
 	details?: ClientRenderableContent;
 }
@@ -1566,12 +1563,6 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 						...(action.permissionToGrant.target ? { target: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.target) } : {}),
 						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
 					}
-				});
-			} else if (action.type === 'provider-kyc-flow') {
-				return({
-					...shared,
-					type: action.type,
-					flow: action.flow
 				});
 			} else {
 				assertNever(action);
@@ -1648,12 +1639,6 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 							...(action.permissionToGrant.target ? { target: action.permissionToGrant.target.publicKeyString.get() } : {}),
 							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
 						}
-					});
-				} else if (action.type === 'provider-kyc-flow') {
-					return({
-						...shared,
-						type: action.type,
-						flow: action.flow
 					});
 				} else {
 					assertNever(action);
