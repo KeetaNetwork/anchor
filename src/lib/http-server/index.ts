@@ -563,7 +563,6 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						}
 					}
 
-					// eslint-disable-next-line @typescript-eslint/no-unused-vars
 					using bodyTimer = timing.startTime('http-request-body');
 
 					const data = await request.map(function(chunk) {
@@ -579,6 +578,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						}
 						return(Buffer.concat([prev, curr]));
 					}, Buffer.from(''));
+
+					bodyTimer.end();
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
