@@ -2609,9 +2609,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Expected asset movement step at index ${scanIndex} for persistent forwarding`));
 			}
 
-			const destinationAddress = await resolveForwardingDestination(scanIndex, placement.destination);
-
 			try {
+				const destinationAddress = await resolveForwardingDestination(scanIndex, placement.destination);
 				await resolvePersistentForwardingForStep(scanIndex, destinationAddress, placement.funding);
 			} catch (error) {
 				throw(new AnchorChainingPlanCreateError({ rootError: error, failedAtStep: scanStep }));

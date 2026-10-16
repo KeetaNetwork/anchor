@@ -5218,6 +5218,35 @@ describe('getPlans forwardingOnly', function() {
 			expect(plan.plan.steps[1]?.valueIn).toEqual(forwardedAt(plan, 0).valueOut);
 		});
 
+		test('a failure to resolve the own Keeta account names the forwarding step', async function() {
+			await using w = await buildForwardingWorld('pfr');
+
+			const paths = await w.anchorChaining.getPaths(baseUsdcToKeetaRequest({ asset: w.tokens.KTA, location: w.keetaLocation, rail: 'KEETA_SEND' }, w.recipient));
+			const path = paths?.find((candidate) => candidate.path.length === 2 && candidate.path[1]?.type === 'fx');
+			if (!path) {
+				throw(new Error('Expected a two-step path from base USDC to the Keeta KTA that ends in an fx step'));
+			}
+
+			const rootError = new Error('fx account is unavailable');
+			const failure = await AnchorChainingPlan.create(path, {
+				overrides: {
+					account: function(action) {
+						if (action.type === 'fx') {
+							throw(rootError);
+						}
+						return(newRecipient());
+					}
+				}
+			}).catch((error: unknown) => error);
+
+			expect(AnchorChainingPlanCreateError.isInstance(failure)).toBe(true);
+			expect(AnchorChainingPlanCreateError.resolveErrorResponse(failure)).toEqual({
+				success: false,
+				error: rootError,
+				failedAt: { providerID: path.path[0]?.providerID }
+			});
+		});
+
 		test('applies the same rule to a three-step path with two Keeta legs', async function() {
 			await using w = await buildForwardingWorld('pfr');
 
