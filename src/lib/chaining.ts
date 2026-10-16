@@ -57,9 +57,18 @@ interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSen
 	usingInstruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>;
 };
 
+/**
+ * What funds a forwarded step. `priorStepWithdraw` is the withdraw of the
+ * prior step. `userDeposit` is a deposit that the user makes to the persistent
+ * address, which only the first step uses.
+ */
+export type ForwardedStepFunding = 'priorStepWithdraw' | 'userDeposit';
+
 interface ChainStepResolutionForwarded extends ChainStepResolutionBase<'forwarded'> {
 	persistentAddress: KeetaPersistentForwardingAddressDetails;
 	provider: AssetMovementProvider;
+	/** What funds this step, which decides how execute waits for the forward. */
+	fundedBy: ForwardedStepFunding;
 	/** Present when simulateTransfer succeeded during plan computation (non-forwardingOnly). */
 	simulatedTransfer?: Awaited<ReturnType<AssetMovementProvider['simulateTransfer']>>;
 };
@@ -140,7 +149,29 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
 	external?: string;
 }, [ { sent: boolean | BlockHash; }]> {}
 
-type StepNeededActionEventPayload = StepNeededActionEventKeetaSend | StepNeededActionEventAssetMovement;
+/**
+ * The user must deposit `value` of `asset` to `depositAddress` on `location`.
+ * The wallet calls `markCompleted()` after it sends the deposit.
+ *
+ * Wallets should pass `depositTransactionId`, the source-chain transaction of
+ * this deposit. The plan then follows that deposit. A forward from before
+ * this prompt counts only when the provider names that deposit on it.
+ *
+ * Without the id, the plan accepts the first forward that is new since this
+ * prompt and delivers the planned value. It ignores smaller forwards, so a
+ * short deposit makes the plan wait until it times out.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface StepNeededActionEventPersistentForwardingDeposit extends StepNeededActionEventPayloadBase<'persistentForwardingDepositRequired', {
+	persistentAddress: KeetaPersistentForwardingAddressDetails;
+	depositAddress: string;
+	location: AssetLocationLike;
+	rail: Rail;
+	asset: AnchorChainingAsset;
+	value: bigint;
+}, [ { depositTransactionId?: string; }? ]> {}
+
+type StepNeededActionEventPayload = StepNeededActionEventKeetaSend | StepNeededActionEventAssetMovement | StepNeededActionEventPersistentForwardingDeposit;
 
 type AnchorChainingPathEventMap = {
 	stateChange: [state: AnchorChainingPathState];
@@ -440,6 +471,22 @@ export function supportsPersistentForwarding(
 }
 
 /**
+ * The Keeta chain location of this client. Persistent-forwarding placement and
+ * the hand-off out of an asset-movement step compare locations against it.
+ */
+function keetaLocationOf(client: KeetaNet.UserClient): `chain:keeta:${bigint}` {
+	return(`chain:keeta:${client.network}`);
+}
+
+/**
+ * Whether a location is this network's Keeta chain location, whichever form
+ * the location is written in.
+ */
+function isThisKeetaLocation(location: AssetLocationLike, keetaLocation: string): boolean {
+	return(convertAssetLocationToString(location) === keetaLocation);
+}
+
+/**
  * Validate request-level invariants (value affinity) before any network call.
  * Pure: derives the amount/affinity and throws the same messages the inline
  * affinity block in #computePlan used to throw, so observable behavior is
@@ -466,55 +513,62 @@ function sourceRailForbidsInitiate(step: AssetMovementGraphNode): boolean {
 }
 
 /**
- * Whether #computePlan's default-mode scan would select persistent forwarding
- * for this step. Mirrors that selection exactly, including the non-Keeta
- * restriction: a Keeta-source leg is always a user-initiated send, never PFR,
- * even when the provider advertises createPersistentForwarding.
- *
- * Only meaningful outside forwarding-only mode, where every leg is forwarded.
+ * Where the funds of a persistent-forwarding step go:
+ * - `finalRecipient`: the request recipient (the last step).
+ * - `nextStepAddress`: the next step's persistent address (forwarding-only).
+ * - `ownKeetaAccount`: the Keeta account the next step debits (a step that
+ *   ends on this network's Keeta location and is not the last).
  */
-function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
-	const step = path[index];
-	if (!step || step.type !== 'assetMovement') {
-		return(false);
-	}
-
-	const priorStep = index > 0 ? path[index - 1] : null;
-	const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
-	const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
-	const initiateForbidden = sourceRailForbidsInitiate(step);
-	const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
-
-	return(!sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported)));
-}
+type PersistentForwardingDestination = 'finalRecipient' | 'nextStepAddress' | 'ownKeetaAccount';
 
 /**
- * Validate structural invariants of a resolved path before any network call,
- * so a structurally-invalid plan fails fast instead of after wasted provider
- * round-trips. Pure: hoists the structural throws that live inline in
- * #computePlan's forwarding-only scan, PFR scan and resolveStep branches,
- * preserving each message verbatim.
- *
- * The three scans run in the same order as #computePlan (forwarding-only, then
- * PFR, then per-step), and each mirrors its selection logic exactly, so the
- * first error thrown here is the same one #computePlan would have thrown.
- *
- * Persistent-forwarding selection depends on the plan options, so callers that
- * intend to compute a forwarding-only plan must pass forwardingOnly:true to get
- * the matching rules. The two modes are mutually exclusive in #computePlan:
- * forwarding-only applies PFR to every leg (chaining each into the next leg's
- * persistent address), while the default mode allows PFR only as the final step.
+ * How one step of a path uses persistent forwarding. Only
+ * {@link layoutPersistentForwarding} constructs it, so `funding` follows the
+ * step index and `destination` follows the step position and plan mode.
  */
-function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string): void {
-	/*
-	 * Forwarding-only requires every asset-movement leg to qualify for
-	 * persistent forwarding. #computePlan walks backwards here because each leg
-	 * forwards into the next leg's address; the checks below are the
-	 * order-independent subset, so a forward walk would report the same first
-	 * failure for a single-issue path. The backwards walk is kept to match.
-	 */
+interface PersistentForwardingPlacement {
+	destination: PersistentForwardingDestination;
+	funding: ForwardedStepFunding;
+}
+
+type PathForwardingLayout =
+	| { ok: true; placements: ReadonlyMap<number, PersistentForwardingPlacement>; }
+	| { ok: false; reason: string; };
+
+/**
+ * Decide which steps of a path use persistent forwarding (PFR), where each
+ * one forwards, and what funds it. This function is the only home of the
+ * decision. Validation, planning and route discovery use its result, so they
+ * agree. The result is independent of the request value and recipient.
+ *
+ * Outside forwarding-only mode, a step uses PFR when it is an asset-movement
+ * step with a non-Keeta source. In addition, either its source rail forbids
+ * initiateTransfer, or the prior step is also an asset-movement step and the
+ * rail supports PFR.
+ *
+ * A Keeta-source leg (KEETA_SEND) is always a user-initiated send, even when
+ * the provider advertises createPersistentForwarding. PFR on an on-Keeta swap
+ * would skip the required second send.
+ *
+ * A PFR step that is the last step forwards to the request recipient. A PFR
+ * step that is not last ends on this network's Keeta location, and the next
+ * step starts there. The funds then wait in the account that the next step
+ * debits.
+ *
+ * In forwarding-only mode every asset-movement leg qualifies for PFR and
+ * forwards into the persistent address of the next leg. The walk goes from
+ * the last leg back, because #computePlan resolves the address of each leg
+ * from the next leg.
+ */
+function layoutPersistentForwarding(path: AnchorChainingStepLike[], forwardingOnly: boolean, keetaLocation: string): PathForwardingLayout {
+	const lastIndex = path.length - 1;
+	const fundingOf = (index: number): ForwardedStepFunding => {
+		return(index === 0 ? 'userDeposit' : 'priorStepWithdraw');
+	};
+	const entries: [number, PersistentForwardingPlacement][] = [];
+
 	if (forwardingOnly) {
-		for (let index = path.length - 1; index >= 0; index--) {
+		for (let index = lastIndex; index >= 0; index--) {
 			const step = path[index];
 			if (!step || step.type !== 'assetMovement') {
 				continue;
@@ -524,45 +578,86 @@ function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorCh
 			const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
 
 			if (sourceIsKeeta || !pfrEligible) {
-				throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${index} at ${convertAssetLocationToString(step.from.location)} does not qualify`));
+				return({ ok: false, reason: `Forwarding-only plan requires persistent forwarding support on every leg, but step ${index} at ${convertAssetLocationToString(step.from.location)} does not qualify` });
 			}
 
-			/*
-			 * Only the final leg forwards to the request recipient; earlier legs
-			 * forward to the next leg's persistent address, which is not known
-			 * until the plan is computed.
-			 */
-			if (index === path.length - 1 && typeof request.destination.recipient !== 'string') {
-				throw(new Error(`Forwarding-only plan requires the destination recipient to be a resolved address string`));
-			}
+			entries.push([ index, { destination: index === lastIndex ? 'finalRecipient' : 'nextStepAddress', funding: fundingOf(index) } ]);
 		}
+
+		return({ ok: true, placements: new Map(entries.reverse()) });
 	}
 
-	if (!forwardingOnly) {
-		for (let index = 0; index < path.length; index++) {
-			const step = path[index];
-			if (!step || step.type !== 'assetMovement') {
-				continue;
-			}
-
-			const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
-
-			if (!stepUsesPFR(path, index)) {
-				continue;
-			}
-
-			if (!pfrSupported) {
-				throw(new Error(`Asset movement provider ${step.providerID} source rail ${step.from.rail} at ${convertAssetLocationToString(step.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
-			}
-
-			if (index !== path.length - 1) {
-				throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${index} of ${path.length})`));
-			}
-
-			if (typeof request.destination.recipient !== 'string') {
-				throw(new Error(`Persistent-forwarding step at index ${index} requires the chain's destination recipient to be a resolved address string`));
-			}
+	for (let index = 0; index <= lastIndex; index++) {
+		const step = path[index];
+		if (!step || step.type !== 'assetMovement') {
+			continue;
 		}
+
+		const priorStep = index > 0 ? path[index - 1] : null;
+		const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
+		const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
+		const initiateForbidden = sourceRailForbidsInitiate(step);
+		const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
+
+		if (sourceIsKeeta || !(initiateForbidden || (isAmpToAmpTransition && pfrSupported))) {
+			continue;
+		}
+
+		if (!pfrSupported) {
+			return({ ok: false, reason: `Asset movement provider ${step.providerID} source rail ${step.from.rail} at ${convertAssetLocationToString(step.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding` });
+		}
+
+		if (index === lastIndex) {
+			entries.push([ index, { destination: 'finalRecipient', funding: fundingOf(index) } ]);
+			continue;
+		}
+
+		const nextStep = path[index + 1];
+		const endsOnKeeta = isThisKeetaLocation(step.to.location, keetaLocation);
+		const nextStartsOnKeeta = nextStep !== undefined && isThisKeetaLocation(nextStep.from.location, keetaLocation);
+		if (!endsOnKeeta || !nextStartsOnKeeta) {
+			return({ ok: false, reason: `Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are only supported as the last step in a chain or when they end on ${keetaLocation} and the next step starts there (step ${index} of ${path.length})` });
+		}
+
+		entries.push([ index, { destination: 'ownKeetaAccount', funding: fundingOf(index) } ]);
+	}
+
+	return({ ok: true, placements: new Map(entries) });
+}
+
+/**
+ * Validate structural invariants of a resolved path before any network call,
+ * so a structurally-invalid plan fails fast instead of after wasted provider
+ * round-trips.
+ *
+ * {@link layoutPersistentForwarding} decides the persistent-forwarding
+ * placement once. This function returns the placements, so #computePlan uses
+ * the same placements that it validated.
+ *
+ * The placement depends on the plan options. A caller that computes a
+ * forwarding-only plan passes forwardingOnly:true to get the matching rules.
+ * Forwarding-only mode applies PFR to every leg. The default mode applies PFR
+ * to the legs that the layout selects.
+ */
+function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string): ReadonlyMap<number, PersistentForwardingPlacement> {
+	const layout = layoutPersistentForwarding(path, forwardingOnly, keetaLocation);
+	if (!layout.ok) {
+		throw(new Error(layout.reason));
+	}
+
+	const { placements } = layout;
+	const lastIndex = path.length - 1;
+
+	/*
+	 * Only the final leg forwards to the request recipient. Earlier legs
+	 * forward to the next leg's persistent address or to the own Keeta account,
+	 * and neither address depends on the request.
+	 */
+	if (placements.get(lastIndex)?.destination === 'finalRecipient' && typeof request.destination.recipient !== 'string') {
+		throw(new Error(forwardingOnly ?
+			`Forwarding-only plan requires the destination recipient to be a resolved address string` :
+			`Persistent-forwarding step at index ${lastIndex} requires the chain's destination recipient to be a resolved address string`
+		));
 	}
 
 	for (let index = 0; index < path.length; index++) {
@@ -596,8 +691,8 @@ function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorCh
 			if (
 				!forwardingOnly &&
 				nextPathStep !== undefined &&
-				!stepUsesPFR(path, index + 1) &&
-				nextPathStep.from.location !== keetaLocation &&
+				!placements.has(index + 1) &&
+				!isThisKeetaLocation(nextPathStep.from.location, keetaLocation) &&
 				cannotSimulateTransfer
 			) {
 				throw(new Error(`Asset movement provider ${step.providerID} does not support simulateTransfer, which is required for chaining at non-keeta intermediate location ${convertAssetLocationToString(nextPathStep.from.location)}`));
@@ -628,6 +723,8 @@ function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorCh
 			}
 		}
 	}
+
+	return(placements);
 }
 
 /**
@@ -814,7 +911,7 @@ class AnchorGraph {
 			return([]);
 		}
 
-		const networkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
+		const networkLocation = keetaLocationOf(this.client);
 
 		const providerLookupResult = await Promise.all(Object.entries(fxServices).map(async ([ providerID, service ]) => {
 			try {
@@ -994,7 +1091,7 @@ class AnchorGraph {
 
 			location = locationRaw;
 		} else {
-			location = `chain:keeta:${this.client.network}`;
+			location = keetaLocationOf(this.client);
 		}
 
 		const railsResolved = await pairSideResolved.rails('object');
@@ -1381,7 +1478,7 @@ class AnchorGraph {
 			? (maxStepCount ?? forwardingOpts.maxLegs ?? DEFAULT_FORWARDING_MAX_LEGS)
 			: maxStepCount;
 
-		const keetaNetworkLocation = `chain:keeta:${this.client.network}` satisfies AssetLocationLike;
+		const keetaNetworkLocation = keetaLocationOf(this.client);
 
 		// When onlyAllowFXLike, default omitted locations to the Keeta network location
 		const fromFilter = (onlyAllowFXLike && fromFilterInput !== undefined && fromFilterInput.location === undefined)
@@ -2174,8 +2271,8 @@ export class AnchorChainingPath {
 	}
 
 	/** This client's Keeta chain location, as compared against in #computePlan. */
-	protected get keetaLocation(): string {
-		return(`chain:keeta:${this.parent['client'].network}`);
+	protected get keetaLocation(): `chain:keeta:${bigint}` {
+		return(keetaLocationOf(this.parent['client']));
 	}
 
 	protected async getAccountLike(action: GetAccountForActionPayload, override?: AccountLike): Promise<InstanceType<typeof KeetaNetLib.Account>> {
@@ -2259,6 +2356,50 @@ export class AnchorChainingPath {
 	}
 }
 
+/**
+ * Which forward counts for a forwarded step.
+ *
+ * - `sourceTransaction`: the forward tied to a source transaction. A forward
+ *   whose id is in `knownIds` existed before the step started. It counts only
+ *   when the row itself names the source transaction as its deposit.
+ * - `newSince`: the first forward whose id is not in `knownIds` and that
+ *   delivers at least `minimumValue`. A smaller forward is someone else's
+ *   deposit, so the poll keeps waiting.
+ */
+type ForwardedCorrelation =
+	| { type: 'sourceTransaction'; sourceTransaction: { location: AssetLocationLike; transaction: { id: string }}; knownIds?: ReadonlySet<string> }
+	| { type: 'newSince'; knownIds: ReadonlySet<string>; minimumValue: bigint };
+
+/**
+ * Compare transaction ids the way the asset movement providers do: a `0x` id
+ * ignores case.
+ */
+function transactionIdsMatch(wanted: string, actual: string): boolean {
+	if (wanted.startsWith('0x') || wanted.startsWith('0X')) {
+		return(wanted.toLowerCase() === actual.toLowerCase());
+	}
+	return(wanted === actual);
+}
+
+/**
+ * Decide if a listed forward is the one the correlation is waiting for.
+ */
+function forwardMatchesCorrelation(tx: KeetaAssetMovementTransaction, correlation: ForwardedCorrelation): boolean {
+	if (correlation.type === 'newSince') {
+		return(!correlation.knownIds.has(tx.id) && BigInt(tx.to.value) >= correlation.minimumValue);
+	}
+
+	if (!correlation.knownIds?.has(tx.id)) {
+		return(true);
+	}
+
+	const rowDepositId = tx.from.transactions.deposit?.id;
+	return(rowDepositId !== undefined && transactionIdsMatch(correlation.sourceTransaction.transaction.id, rowDepositId));
+}
+
+const FORWARDED_TRANSACTIONS_PAGE_SIZE = 100;
+const DEFAULT_POLL_TIMEOUT_MS = 300_000;
+
 export class AnchorChainingPlanCreateError extends KeetaAnchorError {
 	static override readonly name: string = 'AnchorChainingPlanCreateError';
 	private readonly AnchorChainingPlanCreateErrorObjectTypeID!: string;
@@ -2341,7 +2482,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		const affinityAndAmount = validateRequest(this.request);
 		const { affinity } = affinityAndAmount;
-		validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation);
+		const placements = validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation);
 
 		const sharedClientOptions = {
 			resolver: this.parent['resolver'],
@@ -2368,11 +2509,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 * Resolve persistent forwarding addresses for path steps whose source rail
 		 * cannot accept an initiated transfer.
 		 */
-		type ForwardedStepInfo = { provider: AssetMovementProvider; persistentAddress: KeetaPersistentForwardingAddressDetails };
+		type ForwardedStepInfo = { provider: AssetMovementProvider; persistentAddress: KeetaPersistentForwardingAddressDetails; fundedBy: ForwardedStepFunding };
 		const forwardedSteps = new Map<number, ForwardedStepInfo>();
 		const forwardingOnly = this.#options?.forwardingOnly === true;
 
-		const resolvePersistentForwardingForStep = async (scanIndex: number, destinationAddress: string): Promise<void> => {
+		const resolvePersistentForwardingForStep = async (scanIndex: number, destinationAddress: string, fundedBy: ForwardedStepFunding): Promise<void> => {
 			const scanStep = this.path[scanIndex];
 			if (!scanStep || scanStep.type !== 'assetMovement') {
 				throw(new Error(`Expected asset movement step at index ${scanIndex} for persistent forwarding`));
@@ -2396,48 +2537,40 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
 			}
 
-			const { signer: forwardedSigner } = await this.getAccountsForAction({
-				type: 'assetMovement',
-				providerMethod: 'initiateTransfer',
-				provider: forwardedProvider
-			}, this.#options?.overrides);
+			const forwardedSigner = await this.#forwardingOwner(forwardedProvider);
 
 			let persistentAddress: KeetaPersistentForwardingAddressDetails | undefined;
 			if (await forwardedProvider.isOperationSupported('listPersistentForwarding')) {
-				try {
-					const existing = await forwardedProvider.listForwardingAddresses({
-						account: forwardedSigner,
-						search: [{
-							sourceLocation: scanStep.from.location,
-							destinationLocation: scanStep.to.location,
-							asset: forwardedAssetPair,
-							destinationAddress
-						}]
-					});
+				const existing = await forwardedProvider.listForwardingAddresses({
+					account: forwardedSigner,
+					search: [{
+						sourceLocation: scanStep.from.location,
+						destinationLocation: scanStep.to.location,
+						asset: forwardedAssetPair,
+						destinationAddress
+					}]
+				});
 
-					const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
-					const destLocationString = convertAssetLocationToString(scanStep.to.location);
-					const match = existing.addresses.find(addr => {
-						if (addr.destinationAddress !== destinationAddress) {
-							return(false);
-						}
-						if (!addr.sourceLocation || convertAssetLocationToString(addr.sourceLocation) !== sourceLocationString) {
-							return(false);
-						}
-						if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
-							return(false);
-						}
-						if (addr.asset && !doesAssetOrPairMatch(addr.asset, forwardedAssetPair)) {
-							return(false);
-						}
-
-						return(true);
-					});
-					if (match) {
-						persistentAddress = match;
+				const sourceLocationString = convertAssetLocationToString(scanStep.from.location);
+				const destLocationString = convertAssetLocationToString(scanStep.to.location);
+				const match = existing.addresses.find(addr => {
+					if (addr.destinationAddress !== destinationAddress) {
+						return(false);
 					}
-				} catch (error) {
-					this.logger?.debug('AnchorChainingPlan::computePlan', `listForwardingAddresses lookup failed for step ${scanIndex}, will create a new address`, error);
+					if (!addr.sourceLocation || convertAssetLocationToString(addr.sourceLocation) !== sourceLocationString) {
+						return(false);
+					}
+					if (!addr.destinationLocation || convertAssetLocationToString(addr.destinationLocation) !== destLocationString) {
+						return(false);
+					}
+					if (addr.asset && !doesAssetOrPairMatch(addr.asset, forwardedAssetPair)) {
+						return(false);
+					}
+
+					return(true);
+				});
+				if (match) {
+					persistentAddress = match;
 				}
 			}
 
@@ -2455,110 +2588,63 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Persistent forwarding address for step ${scanIndex} is not a resolved string (got ${typeof persistentAddress.address})`));
 			}
 
-			forwardedSteps.set(scanIndex, { provider: forwardedProvider, persistentAddress });
+			forwardedSteps.set(scanIndex, { provider: forwardedProvider, persistentAddress, fundedBy });
 		};
 
-		if (forwardingOnly) {
-			for (let scanIndex = this.path.length - 1; scanIndex >= 0; scanIndex--) {
-				const scanStep = this.path[scanIndex];
-				if (!scanStep || scanStep.type !== 'assetMovement') {
-					continue;
+		/**
+		 * The address a persistent-forwarding step forwards to, by the kind of
+		 * destination the layout placed.
+		 */
+		const resolveForwardingDestination = async (scanIndex: number, destination: PersistentForwardingDestination): Promise<string> => {
+			if (destination === 'finalRecipient') {
+				const finalRecipient = this.request.destination.recipient;
+				if (typeof finalRecipient !== 'string') {
+					throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
 				}
-
-				// Accept explicit createPersistentForwarding:true or omitted supportedOperations
-				// (implied). Reject partial ops that omit the flag - those imply false.
-				const pfrEligible = supportsPersistentForwarding(scanStep.from.supportedOperations, 'implied');
-				const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
-
-				// Defense in depth: validatePathStructure enforces this before any network call.
-				if (sourceIsKeeta || !pfrEligible) {
-					throw(new Error(`Forwarding-only plan requires persistent forwarding support on every leg, but step ${scanIndex} at ${convertAssetLocationToString(scanStep.from.location)} does not qualify`));
+				return(finalRecipient);
+			} else if (destination === 'nextStepAddress') {
+				const nextForwarded = forwardedSteps.get(scanIndex + 1);
+				if (!nextForwarded) {
+					throw(new Error(`Forwarding-only plan expected persistent forwarding to be resolved for next step ${scanIndex + 1}`));
 				}
-
-				let destinationAddress: string;
-				if (scanIndex === this.path.length - 1) {
-					const finalRecipient = this.request.destination.recipient;
-					if (typeof finalRecipient !== 'string') {
-						throw(new Error(`Forwarding-only plan requires the destination recipient to be a resolved address string`));
-					}
-					destinationAddress = finalRecipient;
-				} else {
-					const nextForwarded = forwardedSteps.get(scanIndex + 1);
-					if (!nextForwarded) {
-						throw(new Error(`Forwarding-only plan expected persistent forwarding to be resolved for next step ${scanIndex + 1}`));
-					}
-					const nextAddress = nextForwarded.persistentAddress.address;
-					if (typeof nextAddress !== 'string') {
-						throw(new Error(`Forwarding-only plan requires the next step persistent forwarding address to be a resolved string at index ${scanIndex + 1}`));
-					}
-					destinationAddress = nextAddress;
+				const nextAddress = nextForwarded.persistentAddress.address;
+				if (typeof nextAddress !== 'string') {
+					throw(new Error(`Forwarding-only plan requires the next step persistent forwarding address to be a resolved string at index ${scanIndex + 1}`));
 				}
-
-				try {
-					await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
-				} catch (error) {
-					throw(new AnchorChainingPlanCreateError({ rootError: error, failedAtStep: scanStep }));
+				return(nextAddress);
+			} else if (destination === 'ownKeetaAccount') {
+				/*
+				 * The funds must land in the account the next step debits, which
+				 * depends on how the next step spends them.
+				 */
+				const nextStep = this.path[scanIndex + 1];
+				if (nextStep?.type === 'assetMovement') {
+					const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
+					return(account.publicKeyString.get());
+				} else if (nextStep?.type === 'fx') {
+					const { account } = await this.getAccountsForAction({ type: 'fx', providerMethod: 'getAccountForAction' }, this.#options?.overrides);
+					return(account.publicKeyString.get());
 				}
-			}
-		}
-
-		for (let scanIndex = 0; scanIndex < this.path.length; scanIndex++) {
-			if (forwardingOnly) {
-				continue;
+				throw(new Error(`Persistent-forwarding step at index ${scanIndex} cannot forward to the own Keeta account because step ${scanIndex + 1} does not spend from it`));
 			}
 
+			return(assertNever(destination));
+		};
+
+		/*
+		 * Highest index first: a step that forwards to the next step's persistent
+		 * address needs that address resolved before its own.
+		 */
+		const orderedPlacements = [...placements].sort(([ a ], [ b ]) => b - a);
+		for (const [ scanIndex, placement ] of orderedPlacements) {
 			const scanStep = this.path[scanIndex];
 			if (!scanStep || scanStep.type !== 'assetMovement') {
-				continue;
-			}
-
-			/**
-			 * PFR is selected in two cases:
-			 *   (a) the source rail explicitly cannot accept a managed transfer.
-			 *   (b) the prior step is also an asset-movement step (AMP -> AMP
-			 *       transition) and the source rail supports PFR.
-			 *
-			 * Persistent forwarding only applies to non-Keeta (external chain)
-			 * source rails: the model is that the prior step deposits into a chain
-			 * address the bridge observes and auto-forwards. A Keeta-source leg
-			 * (KEETA_SEND) is always a user-initiated send -- the prior step routes
-			 * its output back to the user, who then sends again -- so it is never
-			 * PFR, even when the provider advertises createPersistentForwarding at
-			 * the provider level (which its bare KEETA_SEND rails would otherwise
-			 * inherit). Treating an on-Keeta swap as PFR skips the required second
-			 * send.
-			 */
-			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
-			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
-			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
-			const initiateForbidden = sourceRailForbidsInitiate(scanStep);
-			const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
-
-			const shouldUsePFR = !sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported));
-			if (!shouldUsePFR) {
-				continue;
-			}
-			/*
-			 * Defense in depth: validatePathStructure enforces these PFR rules before
-			 * any network call. They are kept here next to the operation so the
-			 * guarantee holds even if the early pass is bypassed. The typeof check
-			 * also narrows destinationAddress to string for the call below.
-			 */
-			if (!pfrSupported) {
-				throw(new Error(`Asset movement provider ${scanStep.providerID} source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} declares initiateTransfer:false but does not support createPersistentForwarding`));
-			}
-
-			if (scanIndex !== this.path.length - 1) {
-				throw(new Error(`Persistent-forwarding (PersistentForwardingRelay-only) asset movement steps are currently only supported as the last step in a chain (step ${scanIndex} of ${this.path.length})`));
-			}
-
-			const destinationAddress = this.request.destination.recipient;
-			if (typeof destinationAddress !== 'string') {
-				throw(new Error(`Persistent-forwarding step at index ${scanIndex} requires the chain's destination recipient to be a resolved address string`));
+				throw(new Error(`Expected asset movement step at index ${scanIndex} for persistent forwarding`));
 			}
 
 			try {
-				await resolvePersistentForwardingForStep(scanIndex, destinationAddress);
+				const destinationAddress = await resolveForwardingDestination(scanIndex, placement.destination);
+				await resolvePersistentForwardingForStep(scanIndex, destinationAddress, placement.funding);
 			} catch (error) {
 				throw(new AnchorChainingPlanCreateError({ rootError: error, failedAtStep: scanStep }));
 			}
@@ -2677,18 +2763,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							 */
 							const forwardedInfo = forwardedSteps.get(index);
 							if (forwardedInfo) {
-								const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
+								const { provider: forwardedProvider, persistentAddress, fundedBy } = forwardedInfo;
 
 								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
 								const needsSimulate = !sourceRailForbidsInitiate(step);
 								if (!forwardingOnly && needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
-										const { signer: forwardedSigner } = await this.getAccountsForAction({
-											type: 'assetMovement',
-											providerMethod: 'initiateTransfer',
-											provider: forwardedProvider
-										}, this.#options?.overrides);
+										const forwardedSigner = await this.#forwardingOwner(forwardedProvider);
 										simulatedTransfer = await forwardedProvider.simulateTransfer({
 											account: forwardedSigner,
 											asset: assetPair,
@@ -2713,6 +2795,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 									valueOut: estimatedValueOut,
 									persistentAddress,
 									provider: forwardedProvider,
+									fundedBy,
 									...(simulatedTransfer !== undefined ? { simulatedTransfer } : {})
 								});
 							}
@@ -2764,7 +2847,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 									}
 
 									resolvedRecipient = pfiAddress;
-								} else if (nextPathStep.from.location === this.keetaLocation) {
+								} else if (isThisKeetaLocation(nextPathStep.from.location, this.keetaLocation)) {
 									const { account } = await this.getAccountsForAction({
 										type: 'assetMovement',
 										providerMethod: 'initiateTransfer'
@@ -2923,7 +3006,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 									tokenAddress: step.to.asset.publicKeyString.get(),
 									sendToAddress: keetaRecipientDestination.publicKeyString.get(),
 									totalReceiveAmount: affinityAndAmount.amount.toString(),
-									location: `chain:keeta:${this.parent['client'].network}`,
+									location: this.keetaLocation,
 									value: String(affinityAndAmount.amount),
 									assetFee: '0'
 								}
@@ -3039,10 +3122,18 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return({ sendCount });
 	}
 
+	/**
+	 * Emit a step that needs the user and wait until the listener marks it
+	 * completed or failed, or until `abortSignal` aborts.
+	 */
 	async #awaitStepCompletion<
 		Type extends StepNeededActionEventPayload['type'],
-		Ret extends Parameters<Extract<StepNeededActionEventPayload, { action: { type: Type }}>['markCompleted']>
-	>(step: Pick<Extract<StepNeededActionEventPayload, { type: Type }>, 'action' | 'type'>): Promise<Ret> {
+		Ret extends Parameters<Extract<StepNeededActionEventPayload, { type: Type }>['markCompleted']>
+	>(step: { type: Type; action: Extract<StepNeededActionEventPayload, { type: Type }>['action']; }, abortSignal?: AbortSignal): Promise<Ret> {
+		if (abortSignal?.aborted) {
+			throw(new Error(`Execution aborted`));
+		}
+
 		let didComplete = false;
 
 		function assertDidNotComplete() {
@@ -3055,6 +3146,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		let resolveFn: undefined | StepNeededActionEventPayload['markCompleted'];
 		let rejectFn: undefined | StepNeededActionEventPayload['markFailed'];
+		let abortFn: undefined | (() => void);
 
 		const promise = new Promise<Ret>(function(resolve, reject) {
 			resolveFn = (...args: Ret) => {
@@ -3073,28 +3165,44 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				// eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
 				reject(usingErr);
 			}
+
+			abortFn = () => {
+				if (didComplete) {
+					return;
+				}
+
+				didComplete = true;
+				reject(new Error(`Execution aborted`));
+			}
 		});
 
-		if (!resolveFn || !rejectFn) {
+		if (!resolveFn || !rejectFn || !abortFn) {
 			throw(new Error(`Failed to create step completion promise`));
 		}
 
-		// Typescript Cannot infer the correct payload type for the stepNeedsAction event, so we have to assert it here. We ensure type safety by constraining the step parameter to the correct action type, which guarantees that the payload will match the expected structure for that action type.
+		abortSignal?.addEventListener('abort', abortFn, { once: true });
+
+		// TypeScript cannot relate the generic action type to one member of the payload union. The step parameter is constrained to that action type, so the assertion is sound.
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		const { sendCount } = this.#emit('stepNeedsAction', {
+		const payload: StepNeededActionEventPayload = {
 			...step,
 			markCompleted: resolveFn,
 			markFailed: rejectFn
-		} as Extract<StepNeededActionEventPayload, { action: { type: Type }}>);
+		} as StepNeededActionEventPayload;
+		const { sendCount } = this.#emit('stepNeedsAction', payload);
 
-		if (sendCount === 0) {
-			throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.type}) is awaiting completion`));
+		try {
+			if (sendCount === 0) {
+				throw(new Error(`No listeners for stepNeedsAction event, but a step (actionType=${step.type}) is awaiting completion`));
+			}
+
+			return(await promise);
+		} finally {
+			abortSignal?.removeEventListener('abort', abortFn);
 		}
-
-		return(await promise);
 	}
 
-	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<string | undefined> {
+	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth' | 'abortSignal'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<string | undefined> {
 		if (options?.requireSendAuth) {
 			await this.#awaitStepCompletion({
 				type: 'keetaSendAuthRequired',
@@ -3104,7 +3212,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					token: KeetaNet.lib.Account.toAccount(token).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN),
 					...(external !== undefined ? { external } : {})
 				}
-			});
+			}, options.abortSignal);
 		}
 
 		const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
@@ -3169,7 +3277,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3199,51 +3307,139 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * Wait for the forwarded transfer the bridge creates after observing the
-	 * prior step's withdraw deposit in the persistent-forwarding address.
+	 * The signer is the account that owns a persistent-forwarding binding. The
+	 * provider matches a forward to its binding through this account, so
+	 * creating, listing and listing transactions all use the same account.
 	 */
-	async #pollForwardedTransaction(
-		step: ChainStepResolutionForwarded,
-		sourceTransaction: { location: AssetLocationLike; transaction: { id: string }},
-		context: { stepIndex: number; planStep: ChainStepResolution },
-		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
-	): Promise<KeetaAssetMovementTransaction> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
-		const deadline = Date.now() + timeoutMs;
-
-		const { provider, persistentAddress } = step;
-		const pfiAddress = persistentAddress.address;
-		if (typeof pfiAddress !== 'string') {
-			throw(new Error(`Persistent forwarding address must be a resolved string`));
-		}
-
-		const { account } = await this.getAccountsForAction({
+	async #forwardingOwner(provider: AssetMovementProvider): Promise<InstanceType<typeof KeetaNetLib.Account>> {
+		const { signer } = await this.getAccountsForAction({
 			type: 'assetMovement',
 			providerMethod: 'initiateTransfer',
 			provider
 		}, this.#options?.overrides);
 
+		return(signer);
+	}
+
+	/**
+	 * Returns the persistent address of a forwarded step. Throws when the
+	 * address is not a resolved string.
+	 */
+	static #forwardedAddress(step: ChainStepResolutionForwarded): string {
+		const pfiAddress = step.persistentAddress.address;
+		if (typeof pfiAddress !== 'string') {
+			throw(new Error(`Persistent forwarding address must be a resolved string`));
+		}
+
+		return(pfiAddress);
+	}
+
+	/**
+	 * List every transaction on the step's persistent address that matches
+	 * `filter`, page by page, until a page is empty or all `total` rows are
+	 * collected. Each page goes through the poll retry policy.
+	 *
+	 * The function throws when a page holds nothing new, because the provider
+	 * then ignores the offset. It also throws when `deadline` passes. In both
+	 * cases the caller receives an error and no partial result.
+	 */
+	async #listForwardedTransactions(
+		step: ChainStepResolutionForwarded,
+		filter: Pick<Parameters<AssetMovementProvider['listTransactions']>[0], 'transactions'>,
+		deadline: number,
+		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
+	): Promise<KeetaAssetMovementTransaction[]> {
+		const { provider } = step;
+		const pfiAddress = AnchorChainingPlan.#forwardedAddress(step);
+		const account = await this.#forwardingOwner(provider);
+		const transactions: KeetaAssetMovementTransaction[] = [];
+		const seenIds = new Set<string>();
+		let offset = 0;
+
 		while (true) {
-			if (options?.abortSignal?.aborted) {
-				throw(new Error(`Aborted while waiting for forwarded transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
+			if (Date.now() >= deadline) {
+				throw(new Error(`Timed out listing persistent-forwarding transactions at ${pfiAddress}`));
 			}
 
-			let transactions: KeetaAssetMovementTransaction[] = [];
-			try {
-				const response = await provider.listTransactions({
+			const page = await withRetry(async function() {
+				return(await provider.listTransactions({
 					account,
 					persistentAddresses: [{
 						location: step.step.from.location,
 						persistentAddress: pfiAddress
 					}],
-					transactions: [ sourceTransaction ]
-				});
+					pagination: { limit: FORWARDED_TRANSACTIONS_PAGE_SIZE, offset },
+					...filter
+				}));
+			}, this.#pollRetryOptions('AnchorChainingPlan::listForwardedTransactions', deadline, options));
 
-				transactions = response.transactions;
-			} catch (error) {
-				this.logger?.debug('AnchorChainingPlan::pollForwardedTransaction', `listTransactions failed for PersistentForwardingRelay address ${pfiAddress}`, error);
+			if (page.transactions.length === 0) {
+				return(transactions);
 			}
+
+			const unseen = page.transactions.filter((tx) => !seenIds.has(tx.id));
+			if (unseen.length === 0) {
+				throw(new Error(`Provider ${step.step.providerID} returned a repeated page of transactions for ${pfiAddress} (offset ${offset} ignored)`));
+			}
+
+			for (const tx of unseen) {
+				seenIds.add(tx.id);
+			}
+			transactions.push(...unseen);
+			offset += page.transactions.length;
+
+			if (offset >= Number(page.total)) {
+				return(transactions);
+			}
+		}
+	}
+
+	/**
+	 * Wait for the forwarded transfer the bridge creates once funds reach the
+	 * step's persistent-forwarding address. The correlation says which forward
+	 * counts: the one tied to a source transaction (the prior step's withdraw, or
+	 * the user's deposit), or the first one that did not exist before.
+	 */
+	async #pollForwardedTransaction(
+		step: ChainStepResolutionForwarded,
+		correlation: ForwardedCorrelation,
+		context: { stepIndex: number; planStep: ChainStepResolution },
+		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
+	): Promise<KeetaAssetMovementTransaction> {
+		const intervalMs = options?.intervalMs ?? 2000;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
+		const deadline = Date.now() + timeoutMs;
+
+		const pfiAddress = AnchorChainingPlan.#forwardedAddress(step);
+		const correlatedTo = (correlation.type === 'sourceTransaction' ?
+			`source tx ${correlation.sourceTransaction.transaction.id}` :
+			`a deposit made after the deposit prompt`
+		) + (step.fundedBy === 'userDeposit' ? `. A deposit already sent to ${pfiAddress} still forwards to ${step.persistentAddress.destinationAddress} and is not lost` : '');
+		const stepFrom = convertAssetLocationToString(step.step.from.location);
+		const stepTo = convertAssetLocationToString(step.step.to.location);
+
+		while (true) {
+			if (options?.abortSignal?.aborted) {
+				throw(new Error(`Aborted while waiting for forwarded transaction at ${pfiAddress} correlated to ${correlatedTo}`));
+			}
+
+			if (Date.now() >= deadline) {
+				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to ${correlatedTo}`));
+			}
+
+			const listed = await this.#listForwardedTransactions(
+				step,
+				correlation.type === 'sourceTransaction' ? { transactions: [ correlation.sourceTransaction ] } : {},
+				deadline,
+				options
+			);
+
+			/*
+			 * Only a forward along this step counts. A forward on the same address
+			 * between other locations belongs to another step.
+			 */
+			const onStep = listed.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
+			const transactions = onStep.filter((tx) => forwardMatchesCorrelation(tx, correlation));
 
 			for (const transaction of transactions) {
 				this.#emit('transactionObserved', {
@@ -3259,12 +3455,53 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				return(candidate);
 			}
 
-			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
-			}
-
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
+	}
+
+	/**
+	 * Run a forwarded step that the user funds. The function records the
+	 * forwards that exist on the address, asks the wallet to deposit, and waits
+	 * for the forward of that deposit. A forward from before the prompt is
+	 * ignored, because plans reuse the address.
+	 *
+	 * Without a `depositTransactionId`, the first forward that is new since the
+	 * prompt and delivers the planned value counts. Smaller forwards come from
+	 * other senders or a short deposit, and the poll keeps waiting. Wallets
+	 * should pass the id.
+	 */
+	async #executeUserDepositStep(
+		step: ChainStepResolutionForwarded,
+		context: { stepIndex: number; planStep: ChainStepResolution },
+		options?: AnchorChainingPathExecuteOptions
+	): Promise<KeetaAssetMovementTransaction> {
+		const depositAddress = AnchorChainingPlan.#forwardedAddress(step);
+
+		const baseline = await this.#listForwardedTransactions(step, {}, Date.now() + DEFAULT_POLL_TIMEOUT_MS, options);
+
+		const [ deposit ] = await this.#awaitStepCompletion({
+			type: 'persistentForwardingDepositRequired',
+			action: {
+				persistentAddress: step.persistentAddress,
+				depositAddress,
+				location: step.step.from.location,
+				rail: step.step.from.rail,
+				asset: step.step.from.asset,
+				value: step.valueIn
+			}
+		}, options?.abortSignal);
+
+		/*
+		 * A forward from before the prompt counts only when its row names the
+		 * reported deposit, so a retry can still finish a deposit that already
+		 * landed.
+		 */
+		const knownIds = new Set(baseline.map((tx) => tx.id));
+		const correlation: ForwardedCorrelation = deposit?.depositTransactionId !== undefined ?
+			{ type: 'sourceTransaction', sourceTransaction: { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }}, knownIds } :
+			{ type: 'newSince', knownIds, minimumValue: step.valueOut };
+
+		return(await this.#pollForwardedTransaction(step, correlation, context, options));
 	}
 
 	async #pollExchangeStatus(
@@ -3272,7 +3509,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3374,11 +3611,27 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'fx', plan: step, exchange });
 				} else if (step.type === 'forwarded') {
-					if (!prevWithdrawTx) {
-						throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
-					}
+					let observed: KeetaAssetMovementTransaction;
+					if (step.fundedBy === 'priorStepWithdraw') {
+						if (!prevWithdrawTx) {
+							throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
+						}
 
-					const observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, options);
+						observed = await this.#pollForwardedTransaction(step, { type: 'sourceTransaction', sourceTransaction: prevWithdrawTx }, pollContext, options);
+					} else if (step.fundedBy === 'userDeposit') {
+						observed = await this.#executeUserDepositStep(step, pollContext, options);
+
+						/*
+						 * A later step checks the forwarded value before it spends it. The
+						 * last step has no later step, so it checks the value here.
+						 */
+						const delivered = BigInt(observed.to.value);
+						if (index === this.plan.steps.length - 1 && delivered < step.valueOut) {
+							throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${step.valueOut} but the forward delivered ${delivered}`));
+						}
+					} else {
+						return(assertNever(step.fundedBy));
+					}
 					prevActualValueOut = BigInt(observed.to.value);
 					prevWithdrawTx = null;
 					onStepCompleted({ type: 'forwarded', plan: step, observedTransaction: observed });
@@ -3414,7 +3667,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							action: {
 								assetMovementTransfer: step.transfer
 							}
-						});
+						}, options?.abortSignal);
 					} else if (step.usingInstruction.type === 'EVM_SEND') {
 						/* For EVM Sends for now we assume the last step sent to this address */
 						this.logger?.debug(`AnchorChainingPlan::execute`, `Executing EVM_SEND instruction for step ${index} by sending to address ${step.usingInstruction.sendToAddress} with value ${step.usingInstruction.value} and token ${step.usingInstruction.tokenAddress}`);
@@ -3519,7 +3772,7 @@ export class AnchorChainingForwardingOnlyPlan extends AnchorChainingPath {
 
 	static async create(path: AnchorChainingPath, options?: ComputePlanOptions): Promise<AnchorChainingForwardingOnlyPlan> {
 		const computed = await AnchorChainingPlan.create(path, { ...options, forwardingOnly: true });
-		if (!isForwardingPlan(computed)) {
+		if (!isForwardingPlan(computed).isForwardingOnly) {
 			throw(new Error('Computed plan does not qualify as a forwarding-only route'));
 		}
 
@@ -3604,6 +3857,16 @@ export class AnchorChaining {
 
 			return(true);
 		});
+
+		/*
+		 * A path whose persistent-forwarding placement is rejected fails every
+		 * plan attempt, so discovery omits it. Forwarding-only discovery has its
+		 * own filter below.
+		 */
+		if (!forwardingOpts) {
+			const keetaLocation = keetaLocationOf(this.client);
+			foundPaths = foundPaths.filter((path) => layoutPersistentForwarding(path, false, keetaLocation).ok);
+		}
 
 		if (foundPaths.length === 0) {
 			return(null);
