@@ -2362,7 +2362,7 @@ type ForwardedCorrelation =
 	| { type: 'newSince'; knownIds: ReadonlySet<string> };
 
 const FORWARDED_TRANSACTIONS_PAGE_SIZE = 100;
-const FORWARDED_POLL_TIMEOUT_MS = 300_000;
+const DEFAULT_POLL_TIMEOUT_MS = 300_000;
 
 export class AnchorChainingPlanCreateError extends KeetaAnchorError {
 	static override readonly name: string = 'AnchorChainingPlanCreateError';
@@ -3147,7 +3147,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		abortSignal?.addEventListener('abort', abortFn, { once: true });
 
-		// Typescript Cannot infer the correct payload type for the stepNeedsAction event, so we have to assert it here. We ensure type safety by constraining the step parameter to the correct action type, which guarantees that the payload will match the expected structure for that action type.
+		// TypeScript cannot relate the generic action type to one member of the payload union, so the payload is asserted here. The step parameter is constrained to that action type, so the payload has its structure.
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const payload: StepNeededActionEventPayload = {
 			...step,
@@ -3242,7 +3242,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
 		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3369,7 +3369,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<KeetaAssetMovementTransaction> {
 		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? FORWARDED_POLL_TIMEOUT_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		const pfiAddress = AnchorChainingPlan.#forwardedAddress(step);
@@ -3383,6 +3383,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		while (true) {
 			if (options?.abortSignal?.aborted) {
 				throw(new Error(`Aborted while waiting for forwarded transaction at ${pfiAddress} correlated to ${correlatedTo}`));
+			}
+
+			if (Date.now() >= deadline) {
+				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to ${correlatedTo}`));
 			}
 
 			const listed = await this.#listForwardedTransactions(
@@ -3413,10 +3417,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				return(candidate);
 			}
 
-			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to ${correlatedTo}`));
-			}
-
 			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
 		}
 	}
@@ -3439,7 +3439,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	): Promise<KeetaAssetMovementTransaction> {
 		const depositAddress = AnchorChainingPlan.#forwardedAddress(step);
 
-		const baseline = await this.#listForwardedTransactions(step, {}, Date.now() + FORWARDED_POLL_TIMEOUT_MS, options);
+		const baseline = await this.#listForwardedTransactions(step, {}, Date.now() + DEFAULT_POLL_TIMEOUT_MS, options);
 
 		const [ deposit ] = await this.#awaitStepCompletion({
 			type: 'persistentForwardingDepositRequired',
@@ -3465,7 +3465,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
 		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_POLL_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {

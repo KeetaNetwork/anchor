@@ -516,6 +516,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 	readonly #listTransactionsFailure: { error: KeetaAnchorError | null; remaining: number };
 	readonly #listTransactionsPaging: { pageCap: number; ignoreOffset: boolean };
 	readonly #listPersistentForwardingFailure: { error: KeetaAnchorError | null };
+	readonly #listTransactionsHook: { run: (() => void) | null };
 
 	constructor(config: TestPersistentForwardingBridgeServerConfig) {
 		const { client: userClient, persistentForwardingFees, ...serverConfig } = config;
@@ -531,6 +532,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		const listTransactionsFailure: { error: KeetaAnchorError | null; remaining: number } = { error: null, remaining: 0 };
 		const listTransactionsPaging = { pageCap: Number.POSITIVE_INFINITY, ignoreOffset: false };
 		const listPersistentForwardingFailure: { error: KeetaAnchorError | null } = { error: null };
+		const listTransactionsHook: { run: (() => void) | null } = { run: null };
 
 		super({
 			...serverConfig,
@@ -762,6 +764,9 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 
 				async listTransactions(request) {
 					listTransactionsAccounts.push(typeof request.account === 'string' ? request.account : undefined);
+					const hook = listTransactionsHook.run;
+					listTransactionsHook.run = null;
+					hook?.();
 					if (listTransactionsFailure.error !== null && listTransactionsFailure.remaining > 0) {
 						listTransactionsFailure.remaining--;
 						throw(listTransactionsFailure.error);
@@ -819,6 +824,15 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		this.#listTransactionsFailure = listTransactionsFailure;
 		this.#listTransactionsPaging = listTransactionsPaging;
 		this.#listPersistentForwardingFailure = listPersistentForwardingFailure;
+		this.#listTransactionsHook = listTransactionsHook;
+	}
+
+	/**
+	 * Run `hook` once, inside the next listTransactions call, before it answers.
+	 */
+	onNextListTransactions(hook: () => void): this {
+		this.#listTransactionsHook.run = hook;
+		return(this);
 	}
 
 	/**
@@ -4204,7 +4218,9 @@ describe('Persistent Forwarding chaining', function() {
 			const prompts = recordPrompts(plan);
 
 			// The signal fires while the existing forwards are being listed.
-			abortSoon(controller);
+			h.bridgeServer.onNextListTransactions(function() {
+				controller.abort();
+			});
 
 			await expect(plan.execute({ requireSendAuth: true, abortSignal: controller.signal })).rejects.toThrow('Execution aborted');
 
