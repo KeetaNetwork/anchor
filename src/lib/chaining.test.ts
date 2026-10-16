@@ -4033,28 +4033,65 @@ describe('Persistent Forwarding chaining', function() {
 			expect(executedForward.observedTransaction.id).not.toEqual(forwards.other?.id);
 		});
 
-		test('execute does not accept a forward of the reported deposit that existed before the prompt', async function() {
+		test('execute accepts the forward of the reported deposit that landed before the prompt', async function() {
 			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
 
 			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
 			const address = depositAddressOf(forwardedStepAt(plan, 0));
-			const depositTransactionId = '0xa11ce00000000000000000000000000000000000000000000000000000000002';
-			await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT, depositTransactionId });
 
-			const controller = new AbortController();
-			const prompts = recordPrompts(plan);
+			// A retry after a timeout: the deposit already landed, and an older forward sits next to it.
+			const stale = await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT });
+			const depositTransactionId = '0xa11ce00000000000000000000000000000000000000000000000000000000002';
+			const deposit = await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT, depositTransactionId });
+
 			plan.on('stepNeedsAction', (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
 					payload.markCompleted({ depositTransactionId });
-					abortSoon(controller);
+				} else if (payload.type === 'keetaSendAuthRequired') {
+					payload.markCompleted({ sent: true });
 				}
 			});
 
-			await expect(plan.execute({ requireSendAuth: true, abortSignal: controller.signal })).rejects.toThrow(address);
+			const result = await plan.execute({ requireSendAuth: true });
 
-			expect(plan.state).toMatchObject({ status: 'failed', failedAtStepIndex: 0 });
-			expect(prompts).toEqual([ DEPOSIT_PROMPT ]);
+			const executedForward = result.steps[0];
+			if (executedForward?.type !== 'forwarded') {
+				throw(new Error('Expected the first executed step to be forwarded'));
+			}
+			expect(executedForward.observedTransaction.id).toEqual(deposit.id);
+			expect(executedForward.observedTransaction.id).not.toEqual(stale.id);
 		});
+
+		test('execute waits past a smaller forward from another sender for the user deposit', async function() {
+			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
+
+			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
+			const forwards: { dust?: KeetaAssetMovementTransaction; deposit?: KeetaAssetMovementTransaction } = {};
+			plan.on('stepNeedsAction', async (payload) => {
+				if (payload.type === DEPOSIT_PROMPT) {
+					// Another sender pays a small amount to the same address first.
+					forwards.dust = await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value / 2n });
+					payload.markCompleted();
+					setTimeout(function() {
+						void h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value }).then(function(forward) {
+							forwards.deposit = forward;
+						});
+					}, 0);
+				} else if (payload.type === 'keetaSendAuthRequired') {
+					payload.markCompleted({ sent: true });
+				}
+			});
+
+			const result = await plan.execute({ requireSendAuth: true });
+
+			const executedForward = result.steps[0];
+			if (executedForward?.type !== 'forwarded') {
+				throw(new Error('Expected the first executed step to be forwarded'));
+			}
+			expect(executedForward.observedTransaction.id).toEqual(forwards.deposit?.id);
+			expect(executedForward.observedTransaction.id).not.toEqual(forwards.dust?.id);
+			expect(plan.state.status).toEqual('completed');
+		}, 30_000);
 
 		test('execute fails before the prompt when the existing forwards cannot be listed', async function() {
 			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
@@ -4193,8 +4230,9 @@ describe('Persistent Forwarding chaining', function() {
 			const prompts = recordPrompts(plan);
 			plan.on('stepNeedsAction', async (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
-					await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value - 100n });
-					payload.markCompleted();
+					const depositTransactionId = '0x5407000000000000000000000000000000000000000000000000000000000001';
+					await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value - 100n, depositTransactionId });
+					payload.markCompleted({ depositTransactionId });
 				}
 			});
 
@@ -4216,8 +4254,9 @@ describe('Persistent Forwarding chaining', function() {
 			const prompts = recordPrompts(plan);
 			plan.on('stepNeedsAction', async (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
-					await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value - 100n });
-					payload.markCompleted();
+					const depositTransactionId = '0x5407000000000000000000000000000000000000000000000000000000000001';
+					await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value - 100n, depositTransactionId });
+					payload.markCompleted({ depositTransactionId });
 				}
 			});
 

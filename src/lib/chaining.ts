@@ -154,12 +154,12 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
  * The wallet calls `markCompleted()` after it sends the deposit.
  *
  * Wallets should pass `depositTransactionId`, the source-chain transaction of
- * this deposit. The plan then follows that deposit. A forward that existed
- * before this prompt never counts, even for that id.
+ * this deposit. The plan then follows that deposit. A forward from before
+ * this prompt counts only when the provider names that deposit on it.
  *
  * Without the id, the plan accepts the first forward that is new since this
- * prompt. A small deposit that someone else sends to the same address while
- * the plan waits can then be taken for the user's deposit.
+ * prompt and delivers the planned value. It ignores smaller forwards, so a
+ * short deposit makes the plan wait until it times out.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface StepNeededActionEventPersistentForwardingDeposit extends StepNeededActionEventPayloadBase<'persistentForwardingDepositRequired', {
@@ -2357,13 +2357,45 @@ export class AnchorChainingPath {
 }
 
 /**
- * Which forward counts for a forwarded step: the one tied to a source
- * transaction, or the first new one. A forward whose id is in `knownIds`
- * existed before the step started and never counts.
+ * Which forward counts for a forwarded step.
+ *
+ * - `sourceTransaction`: the forward tied to a source transaction. A forward
+ *   whose id is in `knownIds` existed before the step started. It counts only
+ *   when the row itself names the source transaction as its deposit.
+ * - `newSince`: the first forward whose id is not in `knownIds` and that
+ *   delivers at least `minimumValue`. A smaller forward is someone else's
+ *   deposit, so the poll keeps waiting.
  */
 type ForwardedCorrelation =
 	| { type: 'sourceTransaction'; sourceTransaction: { location: AssetLocationLike; transaction: { id: string }}; knownIds?: ReadonlySet<string> }
-	| { type: 'newSince'; knownIds: ReadonlySet<string> };
+	| { type: 'newSince'; knownIds: ReadonlySet<string>; minimumValue: bigint };
+
+/**
+ * Compare transaction ids the way the asset movement providers do: a `0x` id
+ * ignores case.
+ */
+function transactionIdsMatch(wanted: string, actual: string): boolean {
+	if (wanted.startsWith('0x') || wanted.startsWith('0X')) {
+		return(wanted.toLowerCase() === actual.toLowerCase());
+	}
+	return(wanted === actual);
+}
+
+/**
+ * Decide if a listed forward is the one the correlation is waiting for.
+ */
+function forwardMatchesCorrelation(tx: KeetaAssetMovementTransaction, correlation: ForwardedCorrelation): boolean {
+	if (correlation.type === 'newSince') {
+		return(!correlation.knownIds.has(tx.id) && BigInt(tx.to.value) >= correlation.minimumValue);
+	}
+
+	if (!correlation.knownIds?.has(tx.id)) {
+		return(true);
+	}
+
+	const rowDepositId = tx.from.transactions.deposit?.id;
+	return(rowDepositId !== undefined && transactionIdsMatch(correlation.sourceTransaction.transaction.id, rowDepositId));
+}
 
 const FORWARDED_TRANSACTIONS_PAGE_SIZE = 100;
 const DEFAULT_POLL_TIMEOUT_MS = 300_000;
@@ -3407,8 +3439,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			 * between other locations belongs to another step.
 			 */
 			const onStep = listed.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
-			const knownIds = correlation.knownIds;
-			const transactions = knownIds === undefined ? onStep : onStep.filter((tx) => !knownIds.has(tx.id));
+			const transactions = onStep.filter((tx) => forwardMatchesCorrelation(tx, correlation));
 
 			for (const transaction of transactions) {
 				this.#emit('transactionObserved', {
@@ -3435,9 +3466,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	 * ignored, because plans reuse the address.
 	 *
 	 * Without a `depositTransactionId`, the first forward that is new since the
-	 * prompt counts. A small deposit from another sender can then be taken for
-	 * the user's deposit, and the value check stops the plan. Wallets should
-	 * pass the id.
+	 * prompt and delivers the planned value counts. Smaller forwards come from
+	 * other senders or a short deposit, and the poll keeps waiting. Wallets
+	 * should pass the id.
 	 */
 	async #executeUserDepositStep(
 		step: ChainStepResolutionForwarded,
@@ -3461,13 +3492,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}, options?.abortSignal);
 
 		/*
-		 * A forward that existed before the prompt is never this deposit, even
-		 * when the provider lists it for the reported id.
+		 * A forward from before the prompt counts only when its row names the
+		 * reported deposit, so a retry can still finish a deposit that already
+		 * landed.
 		 */
 		const knownIds = new Set(baseline.map((tx) => tx.id));
 		const correlation: ForwardedCorrelation = deposit?.depositTransactionId !== undefined ?
 			{ type: 'sourceTransaction', sourceTransaction: { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }}, knownIds } :
-			{ type: 'newSince', knownIds };
+			{ type: 'newSince', knownIds, minimumValue: step.valueOut };
 
 		return(await this.#pollForwardedTransaction(step, correlation, context, options));
 	}
