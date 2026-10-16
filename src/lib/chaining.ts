@@ -58,8 +58,9 @@ interface ChainStepResolutionKeetaSend extends ChainStepResolutionBase<'keetaSen
 };
 
 /**
- * What funds a forwarded step: the withdraw of the prior step, or a deposit
- * the user makes to the persistent address (only for the first step).
+ * What funds a forwarded step. `priorStepWithdraw` is the withdraw of the
+ * prior step. `userDeposit` is a deposit that the user makes to the persistent
+ * address, which only the first step uses.
  */
 export type ForwardedStepFunding = 'priorStepWithdraw' | 'userDeposit';
 
@@ -150,13 +151,15 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
 
 /**
  * The user must deposit `value` of `asset` to `depositAddress` on `location`.
- * Call `markCompleted()` once the deposit is sent; pass `depositTransactionId`
- * (the source-chain transaction) to have the plan follow that deposit
- * rather than any forward that is new since this prompt. The id must be the
- * transaction of this deposit: a forward that already exists for that id is
- * accepted at once. Without the id, a small deposit that someone else sends to
- * the same address while the plan waits can be taken for the user's, so wallets
- * should pass it.
+ * The wallet calls `markCompleted()` after it sends the deposit.
+ *
+ * Wallets should pass `depositTransactionId`, the source-chain transaction of
+ * this deposit. The plan then follows that deposit, and it accepts at once a
+ * forward that already exists for that id.
+ *
+ * Without the id, the plan accepts the first forward that is new since this
+ * prompt. A small deposit that someone else sends to the same address while
+ * the plan waits can then be taken for the user's deposit.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface StepNeededActionEventPersistentForwardingDeposit extends StepNeededActionEventPayloadBase<'persistentForwardingDepositRequired', {
@@ -468,8 +471,8 @@ export function supportsPersistentForwarding(
 }
 
 /**
- * This client's Keeta chain location, as compared against when placing
- * persistent forwarding and when chaining out of an asset-movement step.
+ * The Keeta chain location of this client. Persistent-forwarding placement and
+ * the hand-off out of an asset-movement step compare locations against it.
  */
 function keetaLocationOf(client: KeetaNet.UserClient): `chain:keeta:${bigint}` {
 	return(`chain:keeta:${client.network}`);
@@ -534,26 +537,28 @@ type PathForwardingLayout =
 
 /**
  * Decide which steps of a path use persistent forwarding (PFR), where each
- * one forwards, and what funds it. The only home of this decision: validation,
- * planning and route discovery all use its result, so they cannot disagree.
- * Pure and independent of the request value and recipient.
+ * one forwards, and what funds it. This function is the only home of the
+ * decision. Validation, planning and route discovery use its result, so they
+ * agree. The result is independent of the request value and recipient.
  *
- * Outside forwarding-only mode a step uses PFR when it is an asset-movement
- * step with a non-Keeta source and either its source rail forbids
+ * Outside forwarding-only mode, a step uses PFR when it is an asset-movement
+ * step with a non-Keeta source. In addition, either its source rail forbids
  * initiateTransfer, or the prior step is also an asset-movement step and the
- * rail supports PFR. A Keeta-source leg (KEETA_SEND) is always a user-initiated
- * send, never PFR, even when the provider advertises createPersistentForwarding,
- * because treating an on-Keeta swap as PFR would skip the required second send.
+ * rail supports PFR.
+ *
+ * A Keeta-source leg (KEETA_SEND) is always a user-initiated send, even when
+ * the provider advertises createPersistentForwarding. PFR on an on-Keeta swap
+ * would skip the required second send.
  *
  * A PFR step that is the last step forwards to the request recipient. A PFR
- * step that is not last must end on this network's Keeta location with the next
- * step starting there: the funds then wait in the account that the next step
+ * step that is not last ends on this network's Keeta location, and the next
+ * step starts there. The funds then wait in the account that the next step
  * debits.
  *
- * In forwarding-only mode every asset-movement leg must qualify for PFR (the
- * walk goes from the last leg back, as #computePlan resolves each leg's
- * address from the next leg's), and each leg forwards into the next leg's
- * persistent address.
+ * In forwarding-only mode every asset-movement leg qualifies for PFR and
+ * forwards into the persistent address of the next leg. The walk goes from
+ * the last leg back, because #computePlan resolves the address of each leg
+ * from the next leg.
  */
 function layoutPersistentForwarding(path: AnchorChainingStepLike[], forwardingOnly: boolean, keetaLocation: string): PathForwardingLayout {
 	const lastIndex = path.length - 1;
@@ -623,18 +628,16 @@ function layoutPersistentForwarding(path: AnchorChainingStepLike[], forwardingOn
 /**
  * Validate structural invariants of a resolved path before any network call,
  * so a structurally-invalid plan fails fast instead of after wasted provider
- * round-trips. Pure: hoists the structural throws that live inline in
- * #computePlan's persistent-forwarding scan and resolveStep branches,
- * preserving each message verbatim.
+ * round-trips.
  *
- * Persistent-forwarding placement is decided once, by
- * {@link layoutPersistentForwarding}, and returned so that #computePlan uses
- * the same placements it validated. The placement depends on the plan options,
- * so callers that intend to compute a forwarding-only plan must pass
- * forwardingOnly:true to get the matching rules. The two modes are mutually
- * exclusive in #computePlan: forwarding-only applies PFR to every leg
- * (chaining each into the next leg's persistent address), while the default
- * mode applies it to the legs the layout selects.
+ * {@link layoutPersistentForwarding} decides the persistent-forwarding
+ * placement once. This function returns the placements, so #computePlan uses
+ * the same placements that it validated.
+ *
+ * The placement depends on the plan options. A caller that computes a
+ * forwarding-only plan passes forwardingOnly:true to get the matching rules.
+ * Forwarding-only mode applies PFR to every leg. The default mode applies PFR
+ * to the legs that the layout selects.
  */
 function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string): ReadonlyMap<number, PersistentForwardingPlacement> {
 	const layout = layoutPersistentForwarding(path, forwardingOnly, keetaLocation);
@@ -646,9 +649,9 @@ function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorCh
 	const lastIndex = path.length - 1;
 
 	/*
-	 * Only the final leg forwards to the request recipient; earlier legs
-	 * forward to the next leg's persistent address or the own Keeta account,
-	 * neither of which depends on the request.
+	 * Only the final leg forwards to the request recipient. Earlier legs
+	 * forward to the next leg's persistent address or to the own Keeta account,
+	 * and neither address depends on the request.
 	 */
 	if (placements.get(lastIndex)?.destination === 'finalRecipient' && typeof request.destination.recipient !== 'string') {
 		throw(new Error(forwardingOnly ?
@@ -3147,7 +3150,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		abortSignal?.addEventListener('abort', abortFn, { once: true });
 
-		// TypeScript cannot relate the generic action type to one member of the payload union, so the payload is asserted here. The step parameter is constrained to that action type, so the payload has its structure.
+		// TypeScript cannot relate the generic action type to one member of the payload union. The step parameter is constrained to that action type, so the assertion is sound.
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const payload: StepNeededActionEventPayload = {
 			...step,
@@ -3272,9 +3275,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * The account that owns a persistent-forwarding binding: the signer. The
+	 * The signer is the account that owns a persistent-forwarding binding. The
 	 * provider matches a forward to its binding through this account, so
-	 * creating, listing and listing transactions must all use the same one.
+	 * creating, listing and listing transactions all use the same account.
 	 */
 	async #forwardingOwner(provider: AssetMovementProvider): Promise<InstanceType<typeof KeetaNetLib.Account>> {
 		const { signer } = await this.getAccountsForAction({
@@ -3287,7 +3290,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * The resolved persistent address of a forwarded step.
+	 * Returns the persistent address of a forwarded step. Throws when the
+	 * address is not a resolved string.
 	 */
 	static #forwardedAddress(step: ChainStepResolutionForwarded): string {
 		const pfiAddress = step.persistentAddress.address;
@@ -3301,9 +3305,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	/**
 	 * List every transaction on the step's persistent address that matches
 	 * `filter`, page by page, until a page is empty or all `total` rows are
-	 * collected. Each page goes through the poll retry policy. A provider that
-	 * returns a page with nothing new (it ignores the offset) is an error, not a
-	 * partial result, and so is running past `deadline`.
+	 * collected. Each page goes through the poll retry policy.
+	 *
+	 * The function throws when a page holds nothing new, because the provider
+	 * then ignores the offset. It also throws when `deadline` passes. In both
+	 * cases the caller receives an error and no partial result.
 	 */
 	async #listForwardedTransactions(
 		step: ChainStepResolutionForwarded,
@@ -3397,8 +3403,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			);
 
 			/*
-			 * Only a forward along this step counts: one on the same address that
-			 * moves between other locations is not the step's forward.
+			 * Only a forward along this step counts. A forward on the same address
+			 * between other locations belongs to another step.
 			 */
 			const onStep = listed.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
 			const transactions = correlation.type === 'newSince' ? onStep.filter((tx) => !correlation.knownIds.has(tx.id)) : onStep;
@@ -3422,15 +3428,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * Run a forwarded step that the user funds: record the forwards that exist
-	 * on the address, ask the wallet to deposit, then wait for the forward of
-	 * that deposit. A forward from before the prompt must not count, because the
-	 * address is reused across plans.
+	 * Run a forwarded step that the user funds. The function records the
+	 * forwards that exist on the address, asks the wallet to deposit, and waits
+	 * for the forward of that deposit. A forward from before the prompt is
+	 * ignored, because plans reuse the address.
 	 *
-	 * Without a `depositTransactionId` the first forward that is new since the
-	 * prompt counts, so anyone who sends a small deposit to the same address while
-	 * the plan waits can have their forward taken for the user's, and the value
-	 * check of the next step then stops the plan. Wallets should pass the id.
+	 * Without a `depositTransactionId`, the first forward that is new since the
+	 * prompt counts. A small deposit from another sender can then be taken for
+	 * the user's deposit, and the value check of the next step stops the plan.
+	 * Wallets should pass the id.
 	 */
 	async #executeUserDepositStep(
 		step: ChainStepResolutionForwarded,
@@ -3806,8 +3812,9 @@ export class AnchorChaining {
 		});
 
 		/*
-		 * A path whose persistent-forwarding placement is rejected can never plan,
-		 * so it is not offered. Forwarding-only discovery has its own filter below.
+		 * A path whose persistent-forwarding placement is rejected fails every
+		 * plan attempt, so discovery omits it. Forwarding-only discovery has its
+		 * own filter below.
 		 */
 		if (!forwardingOpts) {
 			const keetaLocation = keetaLocationOf(this.client);
