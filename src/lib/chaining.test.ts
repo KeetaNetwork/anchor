@@ -5073,7 +5073,8 @@ describe('getPlans forwardingOnly', function() {
 				throw(new Error('Expected paths from base USDC to the Keeta USDC'));
 			}
 			expect(usdcPaths.length).toBeGreaterThan(0);
-			expect(usdcPaths.flatMap((path) => path.path.map((step) => convertAssetLocationToString(step.to.location)))).not.toContain(LOC.sol);
+			// A later managed leg may pass through Solana (Keeta to Solana to Keeta); only the forwarding leg must not end there.
+			expect(usdcPaths.flatMap((path) => path.path.slice(0, 1).map((step) => convertAssetLocationToString(step.to.location)))).not.toContain(LOC.sol);
 			expect(usdcPaths.map((path) => path.validate())).toEqual(usdcPaths.map(() => ({ valid: true })));
 		});
 
