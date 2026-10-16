@@ -154,8 +154,8 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
  * The wallet calls `markCompleted()` after it sends the deposit.
  *
  * Wallets should pass `depositTransactionId`, the source-chain transaction of
- * this deposit. The plan then follows that deposit, and it accepts at once a
- * forward that already exists for that id.
+ * this deposit. The plan then follows that deposit. A forward that existed
+ * before this prompt never counts, even for that id.
  *
  * Without the id, the plan accepts the first forward that is new since this
  * prompt. A small deposit that someone else sends to the same address while
@@ -2358,10 +2358,11 @@ export class AnchorChainingPath {
 
 /**
  * Which forward counts for a forwarded step: the one tied to a source
- * transaction, or the first one whose id is not among those already known.
+ * transaction, or the first new one. A forward whose id is in `knownIds`
+ * existed before the step started and never counts.
  */
 type ForwardedCorrelation =
-	| { type: 'sourceTransaction'; sourceTransaction: { location: AssetLocationLike; transaction: { id: string }}}
+	| { type: 'sourceTransaction'; sourceTransaction: { location: AssetLocationLike; transaction: { id: string }}; knownIds?: ReadonlySet<string> }
 	| { type: 'newSince'; knownIds: ReadonlySet<string> };
 
 const FORWARDED_TRANSACTIONS_PAGE_SIZE = 100;
@@ -3406,7 +3407,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			 * between other locations belongs to another step.
 			 */
 			const onStep = listed.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
-			const transactions = correlation.type === 'newSince' ? onStep.filter((tx) => !correlation.knownIds.has(tx.id)) : onStep;
+			const knownIds = correlation.knownIds;
+			const transactions = knownIds === undefined ? onStep : onStep.filter((tx) => !knownIds.has(tx.id));
 
 			for (const transaction of transactions) {
 				this.#emit('transactionObserved', {
@@ -3434,8 +3436,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	 *
 	 * Without a `depositTransactionId`, the first forward that is new since the
 	 * prompt counts. A small deposit from another sender can then be taken for
-	 * the user's deposit, and the value check of the next step stops the plan.
-	 * Wallets should pass the id.
+	 * the user's deposit, and the value check stops the plan. Wallets should
+	 * pass the id.
 	 */
 	async #executeUserDepositStep(
 		step: ChainStepResolutionForwarded,
@@ -3458,9 +3460,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 		}, options?.abortSignal);
 
+		/*
+		 * A forward that existed before the prompt is never this deposit, even
+		 * when the provider lists it for the reported id.
+		 */
+		const knownIds = new Set(baseline.map((tx) => tx.id));
 		const correlation: ForwardedCorrelation = deposit?.depositTransactionId !== undefined ?
-			{ type: 'sourceTransaction', sourceTransaction: { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }}} :
-			{ type: 'newSince', knownIds: new Set(baseline.map((tx) => tx.id)) };
+			{ type: 'sourceTransaction', sourceTransaction: { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }}, knownIds } :
+			{ type: 'newSince', knownIds };
 
 		return(await this.#pollForwardedTransaction(step, correlation, context, options));
 	}
@@ -3581,6 +3588,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						observed = await this.#pollForwardedTransaction(step, { type: 'sourceTransaction', sourceTransaction: prevWithdrawTx }, pollContext, options);
 					} else if (step.fundedBy === 'userDeposit') {
 						observed = await this.#executeUserDepositStep(step, pollContext, options);
+
+						/*
+						 * A later step checks the forwarded value before it spends it. The
+						 * last step has no later step, so it checks the value here.
+						 */
+						const delivered = BigInt(observed.to.value);
+						if (index === this.plan.steps.length - 1 && delivered < step.valueOut) {
+							throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${step.valueOut} but the forward delivered ${delivered}`));
+						}
 					} else {
 						return(assertNever(step.fundedBy));
 					}
