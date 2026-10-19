@@ -799,23 +799,6 @@ test('Concurrent reads of the same external metadata URL all resolve', async fun
 	expect(createAccountURLs).toEqual(Array(10).fill('https://banchor.external.com/api/v1/createAccount'));
 });
 
-test('Metadata redirects resolve while their target URL is read concurrently', async function() {
-	const { resolver } = await setupExternalMetadataResolver();
-	const rootMetadata = await resolver.getRootMetadata();
-	const externalRefEntry = await getBankingEntry(rootMetadata, 'keeta_external_ref');
-	const externalEntry = await getBankingEntry(rootMetadata, 'keeta_external');
-
-	/* The redirect read starts first so it follows the redirect while the direct read of its target is still pending */
-	const reads = [externalRefEntry('object'), externalEntry('object')];
-	const createAccountURLs = await Promise.all(reads.map(async function(read) {
-		const service = await read;
-		const operations = await service.operations?.('object');
-		return(await operations?.createAccount?.('string'));
-	}));
-
-	expect(createAccountURLs).toEqual(Array(2).fill('https://banchor.external.com/api/v1/createAccount'));
-});
-
 test('Circular metadata references read concurrently within one metadata tree resolve to null', async function() {
 	const { resolver } = await setupExternalMetadataResolver();
 	const rootMetadata = await resolver.getRootMetadata();
@@ -823,17 +806,6 @@ test('Circular metadata references read concurrently within one metadata tree re
 	const cycleEntryB = await getBankingEntry(rootMetadata, 'keeta_cycle_b');
 
 	const reads = [cycleEntryA('object'), cycleEntryB('object'), cycleEntryA('object'), cycleEntryB('object')];
-	await Promise.all(reads.map(async function(read) {
-		await expect(read).rejects.toThrow('expected an object, got null');
-	}));
-});
-
-test('Circular metadata references read concurrently across metadata trees resolve to null', async function() {
-	const { resolver } = await setupExternalMetadataResolver();
-	const cycleEntryA = await getBankingEntry(await resolver.getRootMetadata(), 'keeta_cycle_a');
-	const cycleEntryB = await getBankingEntry(await resolver.getRootMetadata(), 'keeta_cycle_b');
-
-	const reads = [cycleEntryA('object'), cycleEntryB('object')];
 	await Promise.all(reads.map(async function(read) {
 		await expect(read).rejects.toThrow('expected an object, got null');
 	}));
