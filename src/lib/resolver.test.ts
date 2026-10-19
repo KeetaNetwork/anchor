@@ -754,7 +754,6 @@ async function setupExternalMetadataResolver() {
 			currencyMap: {},
 			services: {
 				banking: {
-					keeta_external: externalLink(externalAccount.publicKeyString.get()),
 					keeta_external_ref: externalLink(externalRefAccount.publicKeyString.get()),
 					keeta_cycle_a: externalLink(cycleAccountA.publicKeyString.get()),
 					keeta_cycle_b: externalLink(cycleAccountB.publicKeyString.get())
