@@ -394,7 +394,7 @@ async function decodeAttribute<NAME extends CertificateAttributeNames>(name: NAM
 		}
 	}
 
-	if (!decodedASN1) {
+	if (decodedASN1 === undefined) {
 		throw(new Error('Failed to decode ASN1 data'));
 	}
 

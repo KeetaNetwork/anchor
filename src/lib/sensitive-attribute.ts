@@ -168,6 +168,11 @@ export function encodeForSensitive(
 		return(arrayBufferToBuffer(asn1.toBER(false)));
 	}
 
+	if (typeof value === 'boolean') {
+		if (!name) { throw(new Error('attributeName required for boolean types')); }
+		return(arrayBufferToBuffer(encodeAttribute(name, value)));
+	}
+
 	if (typeof value === 'object' && value !== null) {
 		if (!name) { throw(new Error('attributeName required for complex types')); }
 		const encoded = encodeAttribute(name, value);

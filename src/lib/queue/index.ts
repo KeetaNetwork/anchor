@@ -482,12 +482,91 @@ export interface KeetaAnchorQueueRunnerConfigurationObject {
 	completedRetentionLimitPerRun: number;
 }
 
+type KeetaAnchorQueueProcessorResultValue<UserResult> = {
+	/**
+	 *
+	 */
+	status: KeetaAnchorQueueStatus;
+	output: UserResult | null;
+	error?: string | undefined;
+}
+
+/**
+ * An exception which can be thrown by a processor to indicate its results.
+ *
+ * This is identical to the processor return value, but allows the processor
+ * to throw it instead of returning it.
+ *
+ * This is useful in nested code run from a processor which may need to abort
+ * the normal flow control and return a result to the queue runner
+ */
+class KeetaAnchorQueueProcessorResult<UserResult = unknown> extends Error implements KeetaAnchorQueueProcessorResultValue<UserResult> {
+	readonly status: KeetaAnchorQueueProcessorResultValue<UserResult>['status'];
+	readonly output: KeetaAnchorQueueProcessorResultValue<UserResult>['output'];
+	readonly error?: KeetaAnchorQueueProcessorResultValue<UserResult>['error'] | undefined;
+	readonly cause?: unknown;
+
+	private readonly keetaAnchorQueueProcessorResultObjectTypeID!: string;
+	private static readonly keetaAnchorQueueProcessorResultObjectTypeID = '5d7f1578-e887-4104-bab0-4115ae33b08f';
+
+	static isInstance<UserResult = unknown>(obj: unknown): obj is KeetaAnchorQueueProcessorResult<UserResult> {
+		if (typeof obj !== 'object' || obj === null) {
+			return(false);
+		}
+
+		if (!('keetaAnchorQueueProcessorResultObjectTypeID' in obj)) {
+			return(false);
+		}
+
+		const checkID = obj['keetaAnchorQueueProcessorResultObjectTypeID'];
+		if (typeof checkID !== 'string') {
+			return(false);
+		}
+
+		if (checkID !== KeetaAnchorQueueProcessorResult.keetaAnchorQueueProcessorResultObjectTypeID) {
+			return(false);
+		}
+
+		return(true);
+	}
+
+	constructor(message: string, result: KeetaAnchorQueueProcessorResultValue<UserResult>, cause?: unknown) {
+		super(message);
+
+		Object.defineProperty(this, 'keetaAnchorQueueProcessorResultObjectTypeID', {
+			value: KeetaAnchorQueueProcessorResult.keetaAnchorQueueProcessorResultObjectTypeID,
+			enumerable: false
+		});
+
+		this.status = result.status;
+		this.output = result.output;
+		this.error = result.error;
+		this.cause = cause;
+	}
+}
+
 // Ensure that KeetaAnchorQueueRunnerConfigurationObject has all the required properties of KeetaAnchorQueueRunner, and no extra properties
 // if this assertion fails, it means that KeetaAnchorQueueRunnerConfigurationObject is missing a property from KeetaAnchorQueueRunner or has an extra property
 // @ts-ignore
 type __check_KeetaAnchorQueueRunnerConfigurationObject = Required<Pick<KeetaAnchorQueueRunner, 'maxRetries' | 'retryDelay' | 'stuckMultiplier' | 'batchSize' | 'processTimeout' | 'completedRetentionDays' | 'completedRetentionLimitPerRun'>>;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 type __check = AssertNever<__check_KeetaAnchorQueueRunnerConfigurationObject extends KeetaAnchorQueueRunnerConfigurationObject ? (KeetaAnchorQueueRunnerConfigurationObject extends __check_KeetaAnchorQueueRunnerConfigurationObject ? never : false) : false>;
+
+/*
+ * Export all the error-typed classes as a single object so that they can
+ * be imported.
+ *
+ * The KeetaAnchorQueueProcessorResult class is included here so downstream
+ * code can use it to throw errors from the processor function and have them
+ * handled correctly by the queue runner -- but it's not strictly an error
+ * (hence not living in ./errors.ts)
+ */
+const AllErrors: typeof Errors & {
+	KeetaAnchorQueueProcessorResult: typeof KeetaAnchorQueueProcessorResult;
+} = {
+	KeetaAnchorQueueProcessorResult,
+	...Errors
+}
 
 /**
  * A Queue Runner and Request Translator for processing entries in a queue
@@ -504,6 +583,11 @@ type __check = AssertNever<__check_KeetaAnchorQueueRunnerConfigurationObject ext
  */
 export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult = unknown, QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> {
 	/**
+	 * Errors which may be thrown by the queue runner or processor
+	 */
+	static readonly Errors: typeof AllErrors = AllErrors;
+
+	/**
 	 * The queue this runner is responsible for running
 	 */
 	private readonly queue: KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
@@ -514,17 +598,17 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * The processor function to use for processing entries
 	 */
-	protected abstract processor(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
+	protected abstract processor(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<KeetaAnchorQueueProcessorResultValue<UserResult>>;
 
 	/**
 	 * The processor for stuck jobs (optional)
 	 */
-	protected processorStuck?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
+	protected processorStuck?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<KeetaAnchorQueueProcessorResultValue<UserResult>>;
 
 	/**
 	 * The processor for aborted jobs (optional)
 	 */
-	protected processorAborted?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
+	protected processorAborted?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<KeetaAnchorQueueProcessorResultValue<UserResult>>;
 
 	/**
 	 * Worker configuration
@@ -1081,6 +1165,16 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					(async () => {
 						try {
 							return(await processor(this.decodeEntry(entry)));
+						} catch (error: unknown) {
+							if (KeetaAnchorQueueProcessorResult.isInstance<UserResult>(error)) {
+								return({
+									status: error.status,
+									output: error.output,
+									error: error.error
+								});
+							}
+
+							throw(error);
 						} finally {
 							if (timeoutTimer) {
 								clearTimeout(timeoutTimer);
@@ -1700,6 +1794,8 @@ export class KeetaAnchorQueueRunnerJSONConfigProc<UserRequest extends JSONSerial
 		this.setConfiguration(parameters);
 	}
 }
+
+export { AllErrors as Errors };
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _ignore_static_assert_memory = AssertNever<typeof KeetaAnchorQueueStorageDriverMemory<{ a: string; }, number> extends KeetaAnchorQueueStorageDriverConstructor<{ a: string; }, number> ? never : false>;

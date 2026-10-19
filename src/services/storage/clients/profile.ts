@@ -19,7 +19,7 @@ interface BaseProfile<Type extends string> {
 /**
  * The private fields of an individual account, stored on their own in the private object.
  */
-export interface PersonalPrivateProfile {
+export interface IndividualPrivateProfile {
 	firstName: string;
 	lastName: string;
 }
@@ -37,13 +37,13 @@ export interface BusinessPrivateProfile {
  * A non-discriminated union, but its members have disjoint required keys, so typia
  * validates it structurally.
  */
-export type PrivateProfile = PersonalPrivateProfile | BusinessPrivateProfile;
+export type PrivateProfile = IndividualPrivateProfile | BusinessPrivateProfile;
 
 /**
  * A profile for an individual account.
  * `firstName` and `lastName` are private; `displayName` and `accountType` are public.
  */
-export type PersonalProfile = BaseProfile<'personal'> & PersonalPrivateProfile;
+export type IndividualProfile = BaseProfile<'individual'> & IndividualPrivateProfile;
 
 /**
  * A profile for a business account.
@@ -54,7 +54,7 @@ export type BusinessProfile = BaseProfile<'business'> & BusinessPrivateProfile;
 /**
  * A full account profile, discriminated on `accountType`.
  */
-export type Profile = PersonalProfile | BusinessProfile;
+export type Profile = IndividualProfile | BusinessProfile;
 
 /**
  * The set of account types a profile can have.
@@ -125,7 +125,7 @@ export class StorageProfileClient implements ProfileClient {
 	}
 
 	#toPrivate(profile: Profile): PrivateProfile {
-		if (profile.accountType === 'personal') {
+		if (profile.accountType === 'individual') {
 			return({
 				firstName: profile.firstName,
 				lastName: profile.lastName

@@ -105,6 +105,8 @@ export default {
 		'toctou',
 		'TODOC',
 		'typia',
+		'ubos',
+		'Ubos',
 		'unenumerable',
 		'Ungreeted',
 		'unknownaction',

@@ -10,7 +10,8 @@ import type {
 	KeetaKYCAnchorCreateVerificationRequest,
 	KeetaKYCAnchorCreateVerificationResponse,
 	KeetaKYCAnchorGetCertificateResponse,
-	KeetaKYCAnchorGetVerificationStatusResponse
+	KeetaKYCAnchorGetVerificationStatusResponse,
+	KeetaKYCAnchorGetVerificationURLResponse
 } from './common.ts';
 import {
 	assertCreateVerificationRequest,
@@ -21,11 +22,37 @@ import {
 } from './common.js';
 import type { Account } from '@keetanetwork/keetanet-client/lib/account.js';
 import type * as Signing from '../../lib/utils/signing.js';
-import type { ServiceMetadata } from '../../lib/resolver.ts';
+import type { KYCEntityType, ServiceMetadata } from '../../lib/resolver.ts';
+import { kycEntityTypes } from '../../lib/resolver.js';
 import { parseSignatureFromURL } from '../../lib/http-server/common.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 
 const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
+
+async function assertSignedRequester(requestUrl: URL): Promise<Account> {
+	const parsed = parseSignatureFromURL(requestUrl);
+	const signedField = parsed.signedField;
+	const account = parsed.account;
+	if (!signedField || !account) {
+		throw(new KeetaAnchorUserError('Missing signature'));
+	}
+
+	let valid: boolean;
+	try {
+		valid = await verifySignedData({
+			account: account.publicKeyString.get(),
+			signed: signedField
+		});
+	} catch {
+		valid = false;
+	}
+
+	if (!valid) {
+		throw(new KeetaAnchorUserError('Invalid signature'));
+	}
+
+	return(account);
+}
 
 /**
  * The Base certificate type, from the KeetaNet Client
@@ -127,9 +154,31 @@ export interface KeetaAnchorKYCServerConfig extends KeetaAnchorMetadataServerCon
 		getVerificationStatus: (verificationID: string, requester: { account: Account }) => Promise<Pick<Extract<KeetaKYCAnchorGetVerificationStatusResponse, { ok: true; }>, 'status' | 'requiresManualVerification'>>;
 
 		/**
+		 * Issue a new link to continue an existing verification (optional)
+		 *
+		 * Links handed out earlier should keep working. If the
+		 * verification ID is unknown or belongs to another account,
+		 * the implementation should throw a `VerificationNotFound` error.
+		 */
+		getVerificationURL?: (verificationID: string, requester: { account: Account }) => Promise<Pick<Extract<KeetaKYCAnchorGetVerificationURLResponse, { ok: true; }>, 'webURL'>>;
+
+		/**
 		 * Country codes that this KYC provider can service (default is all country codes)
 		 */
 		countryCodes?: (CurrencyInfo.Country | CurrencyInfo.ISOCountryCode)[];
+
+		/**
+		 * Entity types that this KYC provider can verify.
+		 *
+		 * Defaults to `['individual']` (the classic KYC flow).
+		 * Add `'business'` to advertise Know Your Business (KYB)
+		 * support. Both are hosted redirect flows: the provider
+		 * returns a `webURL` to the hosted collection experience it
+		 * owns (individual KYC or KYB), and the client polls for the
+		 * certificate. A provider that does both lists both:
+		 * `['individual', 'business']`.
+		 */
+		entityTypes?: KYCEntityType[];
 	}
 
 	/**
@@ -168,6 +217,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 	readonly kycProviderURL: NonNullable<KeetaAnchorKYCServerConfig['kycProviderURL']>;
 	readonly routes: NonNullable<KeetaAnchorKYCServerConfig['routes']>;
 	readonly #countryCodes?: CurrencyInfo.Country[] | undefined;
+	readonly #entityTypes: KYCEntityType[];
 
 	constructor(config: KeetaAnchorKYCServerConfig) {
 		super(config);
@@ -179,6 +229,11 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 		this.kyc = config.kyc;
 		this.routes = config.routes ?? {};
 		this.kycProviderURL = config.kycProviderURL ?? kycProviderURLUndefined;
+		if (config.kyc.entityTypes !== undefined && config.kyc.entityTypes.length === 0) {
+			throw(new Error('Expected "kyc.entityTypes" to declare at least one entity type'));
+		}
+
+		this.#entityTypes = [...config.kyc.entityTypes ?? ['individual']];
 
 		if (config.kyc.countryCodes) {
 			this.#countryCodes = config.kyc.countryCodes.map(function(inputCode) {
@@ -322,26 +377,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 				throw(new KeetaAnchorUserError('No verification ID provided'));
 			}
 
-			const parsed = parseSignatureFromURL(requestUrl);
-			const signedField = parsed.signedField;
-			const account = parsed.account;
-			if (!signedField || !account) {
-				throw(new KeetaAnchorUserError('Missing signature'));
-			}
-
-			let valid: boolean;
-			try {
-				valid = await verifySignedData({
-					account: account.publicKeyString.get(),
-					signed: signedField
-				});
-			} catch {
-				valid = false;
-			}
-
-			if (!valid) {
-				throw(new KeetaAnchorUserError('Invalid signature'));
-			}
+			const account = await assertSignedRequester(requestUrl);
 
 			const result = await config.kyc.getVerificationStatus(verificationID, { account });
 			const response: KeetaKYCAnchorGetVerificationStatusResponse = {
@@ -356,6 +392,31 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 				output: JSON.stringify(response)
 			});
 		};
+
+		/**
+		 * Get a new link to continue an existing verification (optional)
+		 */
+		const getVerificationURL = config.kyc.getVerificationURL;
+		if (getVerificationURL !== undefined) {
+			routes['GET /api/getVerificationURL/:verificationID'] = async function(params, _ignore_body, _ignore_headers, requestUrl) {
+				const verificationID = params.get('verificationID');
+				if (verificationID === undefined) {
+					throw(new KeetaAnchorUserError('No verification ID provided'));
+				}
+
+				const account = await assertSignedRequester(requestUrl);
+
+				const result = await getVerificationURL(verificationID, { account });
+				const response: KeetaKYCAnchorGetVerificationURLResponse = {
+					ok: true,
+					webURL: result.webURL
+				};
+
+				return({
+					output: JSON.stringify(response)
+				});
+			};
+		}
 
 		/**
 		 * Check if the KYC provider can
@@ -396,12 +457,18 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			getCertificates: (new URL('/api/getCertificates', this.url)).toString() + '/{id}',
 			getVerificationStatus: (new URL('/api/getVerificationStatus', this.url)).toString() + '/{id}'
 		};
+		if (this.kyc.getVerificationURL !== undefined) {
+			operations.getVerificationURL = (new URL('/api/getVerificationURL', this.url)).toString() + '/{id}';
+		}
 
 		return({
 			ca: this.ca.toPEM(),
 			countryCodes: this.#countryCodes?.map(function(country) {
 				return(country.code);
 			}) ?? [],
+			entityTypes: Object.fromEntries(kycEntityTypes.map((entityType) => {
+				return([entityType, this.#entityTypes.includes(entityType)]);
+			})),
 			operations
 		});
 	}
