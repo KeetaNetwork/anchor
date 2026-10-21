@@ -542,6 +542,14 @@ export interface AwaitPromiseURLOptions {
 	abortSignal?: AbortSignal;
 }
 
+export interface ShareKYCAttributesOptions extends AwaitPromiseURLOptions {
+	/**
+	 * Return as soon as the provider accepts the share, without waiting on
+	 * its `promiseURL`; the caller can wait later with `awaitPromiseURL`
+	 */
+	skipWaitForPending?: boolean;
+}
+
 export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBase {
 	readonly serviceInfo: KeetaAssetMovementServiceInfo;
 	readonly providerID: ProviderID;
@@ -1155,9 +1163,18 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	}
 
 	/**
-	 * Resolves `true` once the promise completes and `false` if aborted first.
+	 * Poll a `promiseURL` supplied by the provider (e.g. from
+	 * `shareKYCAttributes` or an `Errors.KYCPendingReview`) until it
+	 * completes. A root-relative URL resolves against the provider's
+	 * `shareKYC` operation. Resolves `true` once the promise completes and
+	 * `false` if aborted first; rejects with the provider's error if the
+	 * promise fails.
 	 */
-	async #awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<boolean> {
+	async awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<boolean> {
+		return(await this.#pollPromiseURL(await this.#resolvePromiseURL(promiseURL), options));
+	}
+
+	async #pollPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<boolean> {
 		const startTime = Date.now();
 
 		const timeout = options?.timeoutMs ?? (5 * 60 * 1000);
@@ -1219,10 +1236,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	/**
 	 * Share KYC attributes with the provider. When the provider accepts the
 	 * share but verifies it asynchronously and supplies a `promiseURL`, this
-	 * waits for it; `isPending` is `true` if the share is still pending when
-	 * this resolves (no `promiseURL` was supplied, or the wait was aborted).
+	 * waits for it unless `skipWaitForPending` is set. Resolves with the
+	 * provider's response: `isPending` is `true` (with the provider's
+	 * `promiseURL`, if any) if the share is still pending when this resolves,
+	 * i.e. no `promiseURL` was supplied, waiting was skipped, or the wait was
+	 * aborted.
 	 */
-	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, awaitOptions?: AwaitPromiseURLOptions): Promise<{ isPending: boolean }> {
+	async shareKYCAttributes(request: KeetaAssetMovementAnchorShareKYCClientRequest, options?: ShareKYCAttributesOptions): Promise<ExtractOk<KeetaAssetMovementAnchorShareKYCResponse>> {
 		this.logger?.debug('Sharing KYC attributes');
 
 		const response = await this.#makeRequest<
@@ -1252,18 +1272,32 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			isResponse: isKeetaAssetMovementAnchorShareKYCResponse
 		});
 
-		let isPending = response.isPending === true;
-		if (response.isPending && response.promiseURL) {
-			this.logger?.debug('KYC attribute sharing is pending, awaiting promise URL');
-
-			const promiseURL = await this.#resolvePromiseURL(response.promiseURL);
-			const completed = await this.#awaitPromiseURL(promiseURL, { ...awaitOptions });
-			isPending = !completed;
+		if (!response.isPending) {
+			this.logger?.debug('done sharing KYC attributes');
+			return({ isPending: false });
 		}
 
-		this.logger?.debug(`done sharing KYC attributes, pending: ${isPending}`);
+		const pending = {
+			isPending: true as const,
+			...(response.promiseURL !== undefined ? { promiseURL: response.promiseURL } : {})
+		};
 
-		return({ isPending });
+		if (response.promiseURL === undefined || options?.skipWaitForPending) {
+			this.logger?.debug('done sharing KYC attributes, pending without waiting');
+			return(pending);
+		}
+
+		this.logger?.debug('KYC attribute sharing is pending, awaiting promise URL');
+
+		const completed = await this.awaitPromiseURL(response.promiseURL, options);
+
+		this.logger?.debug(`done sharing KYC attributes, pending: ${!completed}`);
+
+		if (!completed) {
+			return(pending);
+		}
+
+		return({ isPending: false });
 	}
 
 	/**
@@ -1279,8 +1313,7 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 		this.logger?.debug('Awaiting KYC pending review');
 
-		const promiseURL = await this.#resolvePromiseURL(error.promiseURL);
-		const completed = await this.#awaitPromiseURL(promiseURL, { ...awaitOptions });
+		const completed = await this.awaitPromiseURL(error.promiseURL, awaitOptions);
 
 		this.logger?.debug(`done awaiting KYC pending review, completed: ${completed}`);
 

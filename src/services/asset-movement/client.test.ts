@@ -1280,7 +1280,27 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		});
 
 		expect(promisePolling['testpromiseabort'] ?? 0).toEqual(0);
-		expect(shareResult).toEqual({ isPending: true });
+		expect(shareResult).toEqual({ isPending: true, promiseURL: '/_promises/testpromiseabort' });
+	}
+
+	{
+		const hasPromiseCert = await makeCertificate('testpromise-skip');
+		const shareResult = await usdcProvider.shareKYCAttributes({
+			account: account,
+			attributes: hasPromiseCert.sharable
+		}, {
+			skipWaitForPending: true
+		});
+
+		expect(promisePolling['testpromise-skip'] ?? 0).toEqual(0);
+		expect(shareResult).toEqual({ isPending: true, promiseURL: '/_promises/testpromise-skip' });
+
+		if (!shareResult.isPending || shareResult.promiseURL === undefined) {
+			throw(new Error('Expected a pending share with a promiseURL'));
+		}
+
+		expect(await usdcProvider.awaitPromiseURL(shareResult.promiseURL)).toBe(true);
+		expect(promisePolling['testpromise-skip']).toEqual(3);
 	}
 
 
