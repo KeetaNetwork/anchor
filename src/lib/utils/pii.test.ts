@@ -378,6 +378,7 @@ test('organization attributes are registered as sensitive certificate attributes
 		['documentRegisterOfDirectors', '1.3.6.1.4.1.62675.1.11.8'],
 		['documentFinancialStatement', '1.3.6.1.4.1.62675.1.11.9'],
 		['documentAdditional', '1.3.6.1.4.1.62675.1.11.10'],
+		['documentRegisterOfUBOs', '1.3.6.1.4.1.62675.1.11.11'],
 		['businessActivity', '1.3.6.1.4.1.62675.1.16'],
 		['sourceOfFunds', '1.3.6.1.4.1.62675.1.17'],
 		['expectedAnnualVolume', '1.3.6.1.4.1.62675.1.18'],
@@ -412,6 +413,7 @@ test('organization documents carry every file of a category, each readable back'
 	const store = createStore();
 	store.setAttribute('documentBusinessRegistration', { documentNumber: '7654321', files: [extract, amendment] });
 	store.setAttribute('documentFinancialStatement', { files: [extract] });
+	store.setAttribute('documentRegisterOfUBOs', { files: [amendment] });
 	store.setAttribute('ubos', {
 		owners: [{
 			fullName: 'Ada Lovelace',
@@ -442,6 +444,9 @@ test('organization documents carry every file of a category, each readable back'
 	const statement = await certificateWithKey.getAttributeValue('documentFinancialStatement');
 	expect(statement.documentNumber).toBeUndefined();
 	expect(statement.files).toHaveLength(1);
+
+	const registerOfUBOs = await certificateWithKey.getAttributeValue('documentRegisterOfUBOs');
+	expect(registerOfUBOs.files.map(function(file) { return(file.external.contentType); })).toEqual(['image/png']);
 
 	const owners = await certificateWithKey.getAttributeValue('ubos');
 	const passportBlob = await owners.owners[0]?.governmentIssuedID?.[0]?.$blob([testAccounts.subject]);

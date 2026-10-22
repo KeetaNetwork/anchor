@@ -474,6 +474,13 @@
 			"description": "Additional organization documents",
 			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.10"
 		},
+		"documentRegisterOfUBOs": {
+			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 11, 11 ],
+			"token": "DocumentRegisterOfUBOs",
+			"type": "OrganizationDocuments",
+			"description": "Register of ultimate beneficial owners documents",
+			"reference": "https://oid-base.com/get/1.3.6.1.4.1.62675.1.11.11"
+		},
 		"organizationName": {
 			"oid": [ 1, 3, 6, 1, 4, 1, 62675, 1, 12 ],
 			"token": "OrganizationName",
