@@ -329,8 +329,7 @@ const ORGANIZATION_TEST_ATTRIBUTES = [
 				ownershipType: 'direct',
 				isSigner: true,
 				position: 'Director',
-				identifications: [{ id: '123-45-6789', schemeName: 'TXID', issuer: 'US' }],
-				estimatedYearlyIncome: 'from_100k_to_250k'
+				identifications: [{ id: '123-45-6789', schemeName: 'TXID', issuer: 'US' }]
 			},
 			{
 				fullName: 'Alan Turing',
