@@ -665,6 +665,10 @@
 				"governmentIssuedID": {
 					"type": "SEQUENCE OF Reference",
 					"optional": true
+				},
+				"estimatedYearlyIncome": {
+					"type": "UTF8String",
+					"optional": true
 				}
 			},
 			"field_order": [
@@ -680,7 +684,8 @@
 				"isSigner",
 				"position",
 				"identifications",
-				"governmentIssuedID"
+				"governmentIssuedID",
+				"estimatedYearlyIncome"
 			]
 		},
 		"ubos": {
