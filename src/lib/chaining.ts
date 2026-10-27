@@ -112,6 +112,9 @@ export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
 	abortSignal?: AbortSignal;
 	poll?: PublicRetryOptions;
+	/** Timeout for each polled step (not the whole plan), default 10 minutes; `Infinity` disables it. */
+	timeoutMs?: number;
+	intervalMs?: number;
 };
 
 export type AnchorChainingPathState =
@@ -284,6 +287,8 @@ export type ForwardingOnlyOptions = {
 };
 
 const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const DEFAULT_STEP_TIMEOUT_MS = 600_000;
+const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
@@ -3152,7 +3157,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		deadline: number,
 		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): RetryOptions {
-		const remainingMs = Math.max(0, deadline - Date.now());
+		const remainingMs = Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : Number.MAX_SAFE_INTEGER;
 
 		return({
 			...options?.poll,
@@ -3168,8 +3173,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3208,8 +3213,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<KeetaAssetMovementTransaction> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		const { provider, persistentAddress } = step;
@@ -3271,8 +3276,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		exchange: FXExchange,
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3305,6 +3310,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
+		}
+
+		if (options?.timeoutMs !== undefined && !(options.timeoutMs === Infinity || (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0))) {
+			throw(new Error(`Invalid timeoutMs: ${options.timeoutMs} (expected a positive finite number or Infinity)`));
+		}
+		if (options?.intervalMs !== undefined && !(Number.isFinite(options.intervalMs) && options.intervalMs >= 0)) {
+			throw(new Error(`Invalid intervalMs: ${options.intervalMs} (expected a finite number >= 0)`));
 		}
 
 		const executedSteps: ExecutedStep[] = [];

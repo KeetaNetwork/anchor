@@ -2242,14 +2242,25 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		await using h = await createChainingTestHarness();
 		const path = await getBankUSPath(h);
 
+		let stepNeedsActionCount = 0;
 		path.on('stepNeedsAction', (payload) => {
+			stepNeedsActionCount++;
 			if (payload.type === 'keetaSendAuthRequired') {
 				payload.markCompleted({ sent: true });
 			} else {
 				payload.markCompleted()
 			}
 		});
-		const result = await path.execute();
+
+		/* Invalid poll options are rejected before any step runs */
+		await expect(path.execute({ timeoutMs: 0 })).rejects.toThrow('Invalid timeoutMs: 0 (expected a positive finite number or Infinity)');
+		await expect(path.execute({ timeoutMs: Number.NaN })).rejects.toThrow('Invalid timeoutMs: NaN (expected a positive finite number or Infinity)');
+		await expect(path.execute({ intervalMs: -1 })).rejects.toThrow('Invalid intervalMs: -1 (expected a finite number >= 0)');
+		expect(path.state.status).toEqual('idle');
+		expect(stepNeedsActionCount).toEqual(0);
+
+		const result = await path.execute({ timeoutMs: Infinity });
+		expect(stepNeedsActionCount).toEqual(1);
 
 		expect(result.steps).toHaveLength(1);
 		expect(result.steps[0]?.type).toEqual('assetMovement');
@@ -2259,6 +2270,30 @@ describe('AnchorChainingPath ACH fiat path', function() {
 			expect(transferStatus.transaction.status).toEqual('COMPLETE');
 			expect(transferStatus.transaction.to.value).toEqual('90');
 		}
+	});
+
+	test('transfer that stays PENDING fails with the step timeoutMs', async function() {
+		await using h = await createChainingTestHarness();
+		const path = await getBankUSPath(h);
+
+		let pendingTransferID: string | null = null;
+		path.on('stepNeedsAction', (payload) => {
+			if (payload.type === 'assetMovementUserExecutionRequired') {
+				pendingTransferID = payload.action.assetMovementTransfer.transferID;
+				h.bankServerUS.setTransferStatus(pendingTransferID, { status: 'PENDING' });
+				payload.markCompleted();
+			} else {
+				payload.markFailed(new Error(`Unexpected action ${payload.type}`));
+			}
+		});
+
+		await expect(path.execute({ timeoutMs: 50, intervalMs: 10 })).rejects.toThrow(/^Timed out waiting for transfer tx-\S+ to complete$/);
+		expect(pendingTransferID).not.toBeNull();
+		if (path.state.status !== 'failed') {
+			throw(new Error(`Expected failed state, got ${path.state.status}`));
+		}
+		expect(path.state.error.message).toEqual(`Timed out waiting for transfer ${pendingTransferID} to complete`);
+		expect(path.state.failedAtStepIndex).toEqual(0);
 	});
 
 	test('transfer status polling failure emits failed event at step 0', async function() {
