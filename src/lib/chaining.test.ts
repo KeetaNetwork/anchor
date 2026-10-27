@@ -15,6 +15,7 @@ import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
+import type * as KeetaAnchorHTTPServer from './http-server/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -316,8 +317,9 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	}
 
 	/** Arm the server so the next getTransferStatus call throws (then restores). */
-	failNextTransferStatus(message = 'Transfer status check failed'): this {
-		this._getStatusRef.interceptor = () => { throw(new KeetaAnchorUserError(message)); };
+	failNextTransferStatus(failure: string | Error = 'Transfer status check failed'): this {
+		const error = typeof failure === 'string' ? new KeetaAnchorUserError(failure) : failure;
+		this._getStatusRef.interceptor = () => { throw(error); };
 		return(this);
 	}
 
@@ -342,6 +344,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	private readonly _giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
 	private readonly _keetaClient: KeetaNet.UserClient;
 	private readonly _lp: InstanceType<typeof KeetaNet.lib.Account>;
+	private readonly _exchangeStatusRef: { interceptor: (() => void) | null } = { interceptor: null };
 
 	constructor(config: TestFXServerConfig) {
 		// Resolve the LP from the accounts set
@@ -445,6 +448,31 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 			return(await saved(request, context));
 		};
 		return(this);
+	}
+
+	failNextExchangeStatus(error: Error): this {
+		this._exchangeStatusRef.interceptor = () => { throw(error); };
+		return(this);
+	}
+
+	protected override async initRoutes(config: KeetaAnchorFXServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
+		const routes = await super.initRoutes(config);
+		const statusRoute = routes['GET /api/getExchangeStatus/:id'];
+		if (typeof statusRoute !== 'function') {
+			throw(new Error('Expected a getExchangeStatus route handler'));
+		}
+
+		const exchangeStatusRef = this._exchangeStatusRef;
+		routes['GET /api/getExchangeStatus/:id'] = async function(...args) {
+			const interceptor = exchangeStatusRef.interceptor;
+			if (interceptor) {
+				exchangeStatusRef.interceptor = null;
+				interceptor();
+			}
+			return(await statusRoute(...args));
+		};
+
+		return(routes);
 	}
 }
 
@@ -1889,6 +1917,9 @@ describe('AnchorChainingPath execute', function() {
 		const path = await h.getPlanVia('FXOne');
 		expect(path.state.status).toEqual('idle');
 
+		h.fxServerOne.failNextExchangeStatus(new Error('Exchange status store unavailable'));
+		h.bankServerEU.failNextTransferStatus(new Error('Transfer status store unavailable'));
+
 		const stateHistory: AnchorChainingPathState['status'][] = [];
 		path.on('stateChange', (state: AnchorChainingPathState) => stateHistory.push(state.status));
 
@@ -1912,6 +1943,7 @@ describe('AnchorChainingPath execute', function() {
 		expect(step0?.type).toEqual('fx');
 		if (step0?.type === 'fx') {
 			expect(step0.exchange.exchange.exchangeID).toBeTruthy();
+			/* The armed 500 was consumed and retried by the poll inside execute(), so this read succeeds */
 			const exchangeStatus = await step0.exchange.getExchangeStatus();
 			expect(exchangeStatus.status).toEqual('completed');
 			if (exchangeStatus.status === 'completed') {
@@ -1923,6 +1955,7 @@ describe('AnchorChainingPath execute', function() {
 		if (step1?.type === 'assetMovement') {
 			expect(step1.plan.transfer.transferID).toBeTruthy();
 			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
+			/* The armed 500 was consumed and retried by the poll inside execute(), so this read succeeds */
 			const transferStatus = await step1.plan.transfer.getTransferStatus();
 			expect(transferStatus.transaction.status).toEqual('COMPLETE');
 			expect(transferStatus.transaction.to.value).toEqual('78');
@@ -2090,8 +2123,8 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		// One attempt per poll, so the single armed failure is fatal.
-		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('AM step 1 poll failed');
+		// A 4xx user error from the status poll is fatal without a retry.
+		await expect(path.execute()).rejects.toThrow('AM step 1 poll failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);

@@ -23,7 +23,7 @@ import type { AnchorExternalInput } from './anchor-external.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { ClientRenderableContent } from './metadata.types.js';
 import { AnchorExternalBuilder } from './anchor-external.js';
-import { KeetaAnchorError } from './error.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from './error.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -2259,6 +2259,15 @@ export class AnchorChainingPath {
 	}
 }
 
+/* Status reads are safe to repeat */
+function isStatusPollRetryable(error: unknown): boolean {
+	if (!KeetaAnchorUserError.isInstance(error)) {
+		return(true);
+	}
+
+	return(error.retryable || error.statusCode >= 500);
+}
+
 export class AnchorChainingPlanCreateError extends KeetaAnchorError {
 	static override readonly name: string = 'AnchorChainingPlanCreateError';
 	private readonly AnchorChainingPlanCreateErrorObjectTypeID!: string;
@@ -3157,6 +3166,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return({
 			...options?.poll,
 			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
+			isRetryable: isStatusPollRetryable,
 			loggerContext: scope,
 			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
 			...(this.logger ? { logger: this.logger } : {})
