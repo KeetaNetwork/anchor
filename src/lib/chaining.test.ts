@@ -2255,7 +2255,11 @@ describe('AnchorChainingPath ACH fiat path', function() {
 		/* Invalid poll options are rejected before any step runs */
 		await expect(path.execute({ timeoutMs: 0 })).rejects.toThrow('Invalid timeoutMs: 0 (expected a positive finite number or Infinity)');
 		await expect(path.execute({ timeoutMs: Number.NaN })).rejects.toThrow('Invalid timeoutMs: NaN (expected a positive finite number or Infinity)');
+		await expect(path.execute({ timeoutMs: -1 })).rejects.toThrow('Invalid timeoutMs: -1 (expected a positive finite number or Infinity)');
+		await expect(path.execute({ timeoutMs: -Infinity })).rejects.toThrow('Invalid timeoutMs: -Infinity (expected a positive finite number or Infinity)');
 		await expect(path.execute({ intervalMs: -1 })).rejects.toThrow('Invalid intervalMs: -1 (expected a finite number >= 0)');
+		await expect(path.execute({ intervalMs: Number.NaN })).rejects.toThrow('Invalid intervalMs: NaN (expected a finite number >= 0)');
+		await expect(path.execute({ intervalMs: Infinity })).rejects.toThrow('Invalid intervalMs: Infinity (expected a finite number >= 0)');
 		expect(path.state.status).toEqual('idle');
 		expect(stepNeedsActionCount).toEqual(0);
 
