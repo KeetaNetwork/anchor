@@ -112,6 +112,17 @@ export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
 	abortSignal?: AbortSignal;
 	poll?: PublicRetryOptions;
+	/**
+	 * Maximum time in milliseconds to wait for each polled step, not for the whole plan.
+	 * The default is 10 minutes. If the value is `Infinity`, the step polls until it
+	 * completes or `abortSignal` aborts, and retryable provider errors retry without a limit.
+	 */
+	timeoutMs?: number;
+	/**
+	 * Delay in milliseconds between status polls of each polled step. The default is 2 seconds.
+	 * The delay never goes past the step timeout.
+	 */
+	intervalMs?: number;
 };
 
 export type AnchorChainingPathState =
@@ -284,6 +295,10 @@ export type ForwardingOnlyOptions = {
 };
 
 const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const DEFAULT_STEP_TIMEOUT_MS = 600_000;
+const DEFAULT_POLL_INTERVAL_MS = 2000;
+/* withRetry rejects a non-finite maxTotalMs, so an unlimited step timeout uses this budget */
+const UNLIMITED_RETRY_BUDGET_MS = Number.MAX_SAFE_INTEGER;
 
 function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
@@ -3152,7 +3167,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		deadline: number,
 		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): RetryOptions {
-		const remainingMs = Math.max(0, deadline - Date.now());
+		let remainingMs = UNLIMITED_RETRY_BUDGET_MS;
+		if (Number.isFinite(deadline)) {
+			remainingMs = Math.max(0, deadline - Date.now());
+		}
 
 		return({
 			...options?.poll,
@@ -3168,8 +3186,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3194,7 +3212,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (Date.now() >= deadline) {
 				throw(new Error(`Timed out waiting for transfer ${transfer.transferID} to complete`));
 			}
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3208,8 +3226,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<KeetaAssetMovementTransaction> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		const { provider, persistentAddress } = step;
@@ -3263,7 +3281,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
 			}
 
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3271,8 +3289,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		exchange: FXExchange,
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3294,7 +3312,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3305,6 +3323,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
+		}
+
+		if (options?.timeoutMs !== undefined && !(options.timeoutMs === Infinity || (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0))) {
+			throw(new Error(`Invalid timeoutMs: ${options.timeoutMs} (expected a positive finite number or Infinity)`));
+		}
+		if (options?.intervalMs !== undefined && !(Number.isFinite(options.intervalMs) && options.intervalMs >= 0)) {
+			throw(new Error(`Invalid intervalMs: ${options.intervalMs} (expected a finite number >= 0)`));
 		}
 
 		const executedSteps: ExecutedStep[] = [];
