@@ -15,7 +15,8 @@ import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
-import type * as KeetaAnchorHTTPServer from './http-server/index.js';
+import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
+import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueStorageOptions } from './queue/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -332,6 +333,42 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	}
 }
 
+class FailingReadQueueStorage extends KeetaAnchorQueueStorageDriverMemory {
+	readonly #failure: { error: Error | null };
+
+	constructor(options?: KeetaAnchorQueueStorageOptions, failure: { error: Error | null } = { error: null }) {
+		super(options);
+		this.#failure = failure;
+	}
+
+	failNextCompletedRead(error: Error): void {
+		this.#failure.error = error;
+	}
+
+	protected override clone(options?: Partial<KeetaAnchorQueueStorageOptions>): FailingReadQueueStorage {
+		const cloned = new FailingReadQueueStorage({
+			logger: this.logger,
+			id: `${this.id}::${this.partitionCounter++}`,
+			path: [...this.path],
+			...options
+		}, this.#failure);
+		cloned.queueStorage = this.queueStorage;
+
+		return(cloned);
+	}
+
+	override async get(id: KeetaAnchorQueueRequestID): ReturnType<KeetaAnchorQueueStorageDriverMemory['get']> {
+		const entry = await super.get(id);
+		const error = this.#failure.error;
+		if (error !== null && entry?.status === 'completed') {
+			this.#failure.error = null;
+			throw(error);
+		}
+
+		return(entry);
+	}
+}
+
 type TestFXServerConfig = Omit<KeetaAnchorFXServerConfig, 'fx'> & {
 	fx: Pick<KeetaAnchorFXServerConfig['fx'], 'from' | 'legal'>;
 	giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
@@ -344,7 +381,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	private readonly _giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
 	private readonly _keetaClient: KeetaNet.UserClient;
 	private readonly _lp: InstanceType<typeof KeetaNet.lib.Account>;
-	private readonly _exchangeStatusRef: { interceptor: (() => void) | null } = { interceptor: null };
+	private readonly _statusStore: FailingReadQueueStorage;
 
 	constructor(config: TestFXServerConfig) {
 		// Resolve the LP from the accounts set
@@ -385,8 +422,11 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 			networkAlias: keetaClient.config.networkAlias
 		};
 
+		const statusStore = new FailingReadQueueStorage();
+
 		super({
 			...baseConfig,
+			storage: { queue: statusStore, autoRun: true },
 			quoteSigner: null,
 			quoteConfiguration: { requiresQuote: false, validateQuoteBeforeExchange: false, issueQuotes: false },
 			client: rawClient,
@@ -400,6 +440,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 		this._giveTokens   = giveTokens;
 		this._keetaClient  = keetaClient;
 		this._lp           = lp;
+		this._statusStore  = statusStore;
 	}
 
 	/** Set a fixed exchange rate (forward direction; reverse is 1/rate). */
@@ -451,28 +492,9 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	}
 
 	failNextExchangeStatus(error: Error): this {
-		this._exchangeStatusRef.interceptor = () => { throw(error); };
+		/* Only the status route reads a completed exchange back from the store */
+		this._statusStore.failNextCompletedRead(error);
 		return(this);
-	}
-
-	protected override async initRoutes(config: KeetaAnchorFXServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes = await super.initRoutes(config);
-		const statusRoute = routes['GET /api/getExchangeStatus/:id'];
-		if (typeof statusRoute !== 'function') {
-			throw(new Error('Expected a getExchangeStatus route handler'));
-		}
-
-		const exchangeStatusRef = this._exchangeStatusRef;
-		routes['GET /api/getExchangeStatus/:id'] = async function(...args) {
-			const interceptor = exchangeStatusRef.interceptor;
-			if (interceptor) {
-				exchangeStatusRef.interceptor = null;
-				interceptor();
-			}
-			return(await statusRoute(...args));
-		};
-
-		return(routes);
 	}
 }
 
