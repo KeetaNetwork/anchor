@@ -12,7 +12,7 @@ import { convertAssetLocationInputToCanonical } from './lib/location.js';
 import type { BankAccountAddressObfuscated, BankAccountAddressResolved, MobileWalletAddressObfuscated, MobileWalletAddressResolved } from './lib/data/addresses/types.generated.js';
 import type { HexString, KeetaNetAccount, MovableAsset, MovableAssetSearchCanonical, CurrencySearchCanonical, ExternalChainLocationType, ExternalChainAsset, EVMChecksumCache } from '../../lib/asset.js';
 import { convertAssetSearchInputToCanonical, isMovableAssetEqual } from '../../lib/asset.js';
-import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
+import { assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties, assertKeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties, assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties, assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties, assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties, assertKeetaAssetMovementAnchorAccountStatusEntry } from './common.generated.js';
 import type { ClientRenderableContent } from '../../lib/metadata.types.js';
 import type { TokenMetadata } from '../../lib/token-metadata.js';
 import type { DistributiveOmit } from '@keetanetwork/keetanet-client/lib/utils/helper.js';
@@ -1400,6 +1400,91 @@ class KeetaAssetMovementAnchorAdditionalKYCNeededError extends KeetaAnchorUserEr
 	}
 }
 
+export interface KeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties {
+	/**
+	 * URL the client may poll to learn when the review completes: HTTP 202
+	 * while pending, 200 once approved, an error response otherwise. A
+	 * root-relative URL resolves against the provider's `shareKYC` operation.
+	 */
+	promiseURL: string | undefined;
+}
+
+
+type KeetaAssetMovementAnchorKYCPendingReviewErrorJSON = ReturnType<KeetaAnchorUserError['toJSON']> & KeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties;
+
+class KeetaAssetMovementAnchorKYCPendingReviewError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaAssetMovementAnchorKYCPendingReviewError';
+	private readonly KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID!: string;
+	private static readonly KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID = 'c1f0a4e7-5b8d-4a2f-9e63-7d14b9a8f2c6';
+
+	readonly promiseURL: string | undefined;
+
+	constructor(args?: Partial<KeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties>, message?: string) {
+		super(message ?? 'User KYC is pending review by the asset movement provider');
+		this.statusCode = 403;
+
+		Object.defineProperty(this, 'KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID', {
+			value: KeetaAssetMovementAnchorKYCPendingReviewError.KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID,
+			enumerable: false
+		});
+
+		this.promiseURL = args?.promiseURL;
+	}
+
+	static isInstance(input: unknown): input is KeetaAssetMovementAnchorKYCPendingReviewError {
+		return(this.hasPropWithValue(input, 'KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID', KeetaAssetMovementAnchorKYCPendingReviewError.KeetaAssetMovementAnchorKYCPendingReviewErrorObjectTypeID));
+	}
+
+
+	asErrorResponse(contentType: 'text/plain' | 'application/json'): { error: string; statusCode: number; contentType: string } {
+		const { promiseURL } = this.toJSON();
+
+		let message = this.message;
+		if (contentType === 'application/json') {
+			message = JSON.stringify({
+				ok: false,
+				name: this.name,
+				code: 'KEETA_ANCHOR_ASSET_MOVEMENT_KYC_PENDING_REVIEW',
+				data: { promiseURL },
+				error: this.message
+			});
+		}
+
+		return({
+			error: message,
+			statusCode: this.statusCode,
+			contentType: contentType
+		});
+	}
+
+	toJSON(): KeetaAssetMovementAnchorKYCPendingReviewErrorJSON {
+		return({
+			...super.toJSON(),
+			promiseURL: this.promiseURL
+		});
+	}
+
+	static async fromJSON(input: unknown): Promise<KeetaAssetMovementAnchorKYCPendingReviewError> {
+		const { message, other } = this.extractErrorProperties(input, this);
+
+		if (!('data' in other)) {
+			throw(new Error('Invalid KeetaAssetMovementAnchorKYCPendingReviewError JSON: missing data property'));
+		}
+
+		const parsed = assertKeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties(other.data);
+
+		const error = new this(
+			{
+				promiseURL: parsed.promiseURL
+			},
+			message
+		);
+
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 
 export interface KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties {
 	forAsset?: AssetOrPair | undefined;
@@ -1494,9 +1579,6 @@ export type KeetaAssetMovementAnchorUserAction = ({
 } | {
 	type: 'grant-permission';
 	permissionToGrant: Omit<ACLPermissionRequirement, 'method' | 'entity'> & { entity?: GenericAccount };
-} | {
-	type: 'provider-kyc-flow';
-	flow: KeetaAssetMovementAnchorKYCExternalURLFlow;
 }) & {
 	details?: ClientRenderableContent;
 }
@@ -1566,12 +1648,6 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 						...(action.permissionToGrant.target ? { target: KeetaNet.lib.Account.fromPublicKeyString(action.permissionToGrant.target) } : {}),
 						permissions: new KeetaNet.lib.Permissions(BigInt(action.permissionToGrant.permissions[0]), BigInt(action.permissionToGrant.permissions[1]))
 					}
-				});
-			} else if (action.type === 'provider-kyc-flow') {
-				return({
-					...shared,
-					type: action.type,
-					flow: action.flow
 				});
 			} else {
 				assertNever(action);
@@ -1649,12 +1725,6 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 							permissions: [ String(action.permissionToGrant.permissions.base.bigint), String(action.permissionToGrant.permissions.external.bigint) ]
 						}
 					});
-				} else if (action.type === 'provider-kyc-flow') {
-					return({
-						...shared,
-						type: action.type,
-						flow: action.flow
-					});
 				} else {
 					assertNever(action);
 				}
@@ -1683,6 +1753,7 @@ class KeetaAssetMovementAnchorUserActionNeededError extends KeetaAnchorUserError
 export const Errors: {
 	KYCShareNeeded: typeof KeetaAssetMovementAnchorKYCShareNeededError;
 	AdditionalKYCNeeded: typeof KeetaAssetMovementAnchorAdditionalKYCNeededError;
+	KYCPendingReview: typeof KeetaAssetMovementAnchorKYCPendingReviewError;
 	OperationNotSupported: typeof KeetaAssetMovementAnchorOperationNotSupportedError;
 	UserActionNeeded: typeof KeetaAssetMovementAnchorUserActionNeededError;
 } = {
@@ -1695,6 +1766,12 @@ export const Errors: {
 	 * The user is required to complete additional KYC steps
 	 */
 	AdditionalKYCNeeded: KeetaAssetMovementAnchorAdditionalKYCNeededError,
+
+	/**
+	 * The user has supplied everything required and is waiting on the
+	 * provider to finish reviewing it
+	 */
+	KYCPendingReview: KeetaAssetMovementAnchorKYCPendingReviewError,
 
 	/**
 	 * The requested operation is not supported

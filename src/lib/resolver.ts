@@ -112,6 +112,11 @@ type ServiceMetadata = {
 					 * Get the verification status
 					 */
 					getVerificationStatus?: string;
+					/**
+					 * Get a new link to continue an
+					 * existing verification (optional)
+					 */
+					getVerificationURL?: string;
 				};
 				/**
 				 * Country codes which this KYC provider can
@@ -964,7 +969,7 @@ class Metadata implements ValuizableInstance {
 	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
 	readonly #urlOptions: ExternalURLOptions | undefined;
 
-	private readonly seenURLs: Set<string>;
+	private readonly seenURLs: Map<string, number>;
 
 	private static readonly instanceTypeID = 'Metadata:c85b3d67-9548-4042-9862-f6e6677690ac';
 
@@ -1157,7 +1162,7 @@ class Metadata implements ValuizableInstance {
 		if (config.parent !== undefined) {
 			this.seenURLs = config.parent.seenURLs;
 		} else {
-			this.seenURLs = new Set();
+			this.seenURLs = new Map();
 		}
 	}
 
@@ -1299,7 +1304,7 @@ class Metadata implements ValuizableInstance {
 		return(addSignatureToURL(input, { signedField: signed, account: this.#signing.account }));
 	}
 
-	private async readURL(url: URL, options?: ExternalURLOptions) {
+	private async readURL(url: URL, options?: ExternalURLOptions, fromValue = false) {
 		this.#stats.reads++;
 
 		const cacheKey = url.toString();
@@ -1308,14 +1313,20 @@ class Metadata implements ValuizableInstance {
 		 * keep track of a chain of accessed URLs.  If we see the same
 		 * URL twice, then we have a circular reference.
 		 *
-		 * The URL is removed from the set in the `finally` below once
-		 * this resolution returns, so the set tracks only the active
-		 * recursion chain rather than the lifetime history.
+		 * The map counts the active reads of each URL, and the `finally`
+		 * below removes the URL once the last of them returns, so the
+		 * map tracks only the active recursion chain rather than the
+		 * lifetime history.
+		 *
+		 * A read started by `value()` is not part of any chain, so a URL
+		 * already in the map is being read concurrently and shares the
+		 * cached read below.
 		 */
-		if (this.seenURLs.has(cacheKey)) {
+		const seenCount = this.seenURLs.get(cacheKey) ?? 0;
+		if (seenCount > 0 && !fromValue) {
 			return(null);
 		}
-		this.seenURLs.add(cacheKey);
+		this.seenURLs.set(cacheKey, seenCount + 1);
 
 		try {
 			/*
@@ -1385,7 +1396,12 @@ class Metadata implements ValuizableInstance {
 				throw(resolvedValue.error);
 			}
 		} finally {
-			this.seenURLs.delete(cacheKey);
+			const remainingCount = (this.seenURLs.get(cacheKey) ?? 1) - 1;
+			if (remainingCount > 0) {
+				this.seenURLs.set(cacheKey, remainingCount);
+			} else {
+				this.seenURLs.delete(cacheKey);
+			}
 		}
 	}
 
@@ -1536,7 +1552,7 @@ class Metadata implements ValuizableInstance {
 	async value(expect: 'any'): Promise<ValuizeInput>;
 	async value(expect?: ValuizableKind): Promise<ValuizeInput>;
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
-		const value = await this.readURL(this.#url, this.#urlOptions);
+		const value = await this.readURL(this.#url, this.#urlOptions, true);
 
 		const retval = this.assertValuizableKind(await this.valuize(value), expect);
 

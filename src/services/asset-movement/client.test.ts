@@ -870,6 +870,7 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	const userAdditionalKYCNeeded = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userActionNeededAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const userGetAccountStatusError = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userKYCPendingReview = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 	const promisePolling: { [key: string]: number } = {};
 
@@ -1051,6 +1052,12 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 					}));
 				}
 
+				if (userKYCPendingReview.comparePublicKey(account)) {
+					throw(new Errors.KYCPendingReview({
+						promiseURL: '/_promises/test-pending-review'
+					}, 'Your account is pending review.'));
+				}
+
 				return({
 					transaction: testTransaction
 				})
@@ -1080,6 +1087,13 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 							}),
 							new Errors.UserActionNeeded({ actionsNeeded: [] })
 						]
+					});
+				}
+
+				if (userKYCPendingReview.comparePublicKey(account)) {
+					return({
+						actionRequired: true,
+						errors: [ new Errors.KYCPendingReview({ promiseURL: '/_promises/status-pending-review' }) ]
 					});
 				}
 
@@ -1245,19 +1259,20 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 
 	{
 		const hasPromiseCert = await makeCertificate('testpromise');
-		await usdcProvider.shareKYCAttributes({
+		const shareResult = await usdcProvider.shareKYCAttributes({
 			account: account,
 			attributes: hasPromiseCert.sharable
 		});
 
 		expect(promisePolling['testpromise']).toEqual(3);
+		expect(shareResult).toEqual({ isPending: false });
 	}
 
 	{
 		const abortSignal = AbortSignal.abort();
 
 		const hasPromiseCert = await makeCertificate('testpromiseabort');
-		await usdcProvider.shareKYCAttributes({
+		const shareResult = await usdcProvider.shareKYCAttributes({
 			account: account,
 			attributes: hasPromiseCert.sharable
 		}, {
@@ -1265,6 +1280,27 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 		});
 
 		expect(promisePolling['testpromiseabort'] ?? 0).toEqual(0);
+		expect(shareResult).toEqual({ isPending: true, promiseURL: '/_promises/testpromiseabort' });
+	}
+
+	{
+		const hasPromiseCert = await makeCertificate('testpromise-skip');
+		const shareResult = await usdcProvider.shareKYCAttributes({
+			account: account,
+			attributes: hasPromiseCert.sharable
+		}, {
+			skipWaitForPending: true
+		});
+
+		expect(promisePolling['testpromise-skip'] ?? 0).toEqual(0);
+		expect(shareResult).toEqual({ isPending: true, promiseURL: '/_promises/testpromise-skip' });
+
+		if (!shareResult.isPending || shareResult.promiseURL === undefined) {
+			throw(new Error('Expected a pending share with a promiseURL'));
+		}
+
+		expect(await usdcProvider.awaitPromiseURL(shareResult.promiseURL)).toBe(true);
+		expect(promisePolling['testpromise-skip']).toEqual(3);
 	}
 
 
@@ -1290,10 +1326,47 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 	}
 
 	const validNameCert = await makeCertificate('Alice');
-	await usdcProvider.shareKYCAttributes({
+	expect(await usdcProvider.shareKYCAttributes({
 		account: account,
 		attributes: validNameCert.sharable
-	});
+	})).toEqual({ isPending: false });
+
+	{
+		let pendingReviewError;
+		try {
+			await usdcProvider.getTransferStatus({ id: '555', account: userKYCPendingReview });
+		} catch (error) {
+			pendingReviewError = error;
+		}
+
+		if (!Errors.KYCPendingReview.isInstance(pendingReviewError)) {
+			throw(new Error('Expected KYCPendingReview error'));
+		}
+
+		expect(Errors.AdditionalKYCNeeded.isInstance(pendingReviewError)).toBe(false);
+		expect(pendingReviewError.message).toEqual('Your account is pending review.');
+		expect(pendingReviewError.promiseURL).toEqual('/_promises/test-pending-review');
+
+		expect(await usdcProvider.awaitKYCPendingReview(pendingReviewError)).toBe(true);
+		expect(promisePolling['test-pending-review']).toEqual(3);
+
+		expect(await usdcProvider.awaitKYCPendingReview(pendingReviewError, { abortSignal: AbortSignal.abort() })).toBe(false);
+		expect(promisePolling['test-pending-review']).toEqual(3);
+
+		await expect(usdcProvider.awaitKYCPendingReview(new Errors.KYCPendingReview({ promiseURL: '/_promises/pending-review-error' }))).rejects.toBeInstanceOf(KeetaAnchorUserValidationError);
+		await expect(usdcProvider.awaitKYCPendingReview(new Errors.KYCPendingReview())).rejects.toThrow('no promiseURL');
+
+		const status = await usdcProvider.getAccountStatus({ account: userKYCPendingReview });
+		if (!status.actionRequired) {
+			throw(new Error('Expected actionRequired status for an account pending review'));
+		}
+
+		const statusError = status.errors[0];
+		if (!Errors.KYCPendingReview.isInstance(statusError)) {
+			throw(new Error('Expected the account status blocker to rehydrate as KYCPendingReview'));
+		}
+		expect(statusError.promiseURL).toEqual('/_promises/status-pending-review');
+	}
 
 	{
 		let kycNeededError;
@@ -1501,14 +1574,6 @@ test('Asset Movement Anchor Authenticated Client Test', async function() {
 			},
 			{
 				actions: []
-			},
-			{
-				actions: [
-					{
-						type: 'provider-kyc-flow',
-						flow: { type: 'url-flow', url: 'https://example.com/external-flow' }
-					}
-				]
 			}
 		];
 

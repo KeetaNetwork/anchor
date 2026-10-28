@@ -31,6 +31,7 @@ export const isKeetaAssetMovementAnchorGetAccountStatusResponse: (input: unknown
 
 export const assertKeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorKYCShareNeededErrorJSONProperties>();
 export const assertKeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorAdditionalKYCNeededErrorJSONProperties>();
+export const assertKeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorKYCPendingReviewErrorJSONProperties>();
 export const assertKeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorOperationNotSupportedErrorJSONProperties>();
 export const assertKeetaAssetMovementAnchorUserActionNeededErrorJSONProperties: (input: unknown) => Common.KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties = createAssertEquals<Common.KeetaAssetMovementAnchorUserActionNeededErrorJSONProperties>();
 
