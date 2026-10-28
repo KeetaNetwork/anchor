@@ -324,6 +324,10 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		return(this);
 	}
 
+	get hasPendingStatusFailure(): boolean {
+		return(this._getStatusRef.interceptor !== null);
+	}
+
 	/** Manually update the status of an in-flight transfer. */
 	setTransferStatus(id: string, update: Partial<Pick<KeetaAssetMovementTransaction, 'status'>>): this {
 		const existing = this._statusMap.get(id);
@@ -343,6 +347,10 @@ class FailingReadQueueStorage extends KeetaAnchorQueueStorageDriverMemory {
 
 	failNextCompletedRead(error: Error): void {
 		this.#failure.error = error;
+	}
+
+	get hasPendingFailure(): boolean {
+		return(this.#failure.error !== null);
 	}
 
 	protected override clone(options?: Partial<KeetaAnchorQueueStorageOptions>): FailingReadQueueStorage {
@@ -495,6 +503,10 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 		/* Only the status route reads a completed exchange back from the store */
 		this._statusStore.failNextCompletedRead(error);
 		return(this);
+	}
+
+	get hasPendingStatusFailure(): boolean {
+		return(this._statusStore.hasPendingFailure);
 	}
 }
 
@@ -1959,13 +1971,16 @@ describe('AnchorChainingPath execute', function() {
 
 		const result = await path.execute();
 
+		/* Each armed 500 is cleared only when it is thrown, so both polls failed once and retried */
+		expect(h.fxServerOne.hasPendingStatusFailure).toBe(false);
+		expect(h.bankServerEU.hasPendingStatusFailure).toBe(false);
+
 		// Step structure and server-side verification
 		expect(result.steps).toHaveLength(2);
 		const [step0, step1] = result.steps;
 		expect(step0?.type).toEqual('fx');
 		if (step0?.type === 'fx') {
 			expect(step0.exchange.exchange.exchangeID).toBeTruthy();
-			/* The armed 500 was consumed and retried by the poll inside execute(), so this read succeeds */
 			const exchangeStatus = await step0.exchange.getExchangeStatus();
 			expect(exchangeStatus.status).toEqual('completed');
 			if (exchangeStatus.status === 'completed') {
@@ -1977,7 +1992,6 @@ describe('AnchorChainingPath execute', function() {
 		if (step1?.type === 'assetMovement') {
 			expect(step1.plan.transfer.transferID).toBeTruthy();
 			expect(step1.plan.usingInstruction.type).toEqual('KEETA_SEND');
-			/* The armed 500 was consumed and retried by the poll inside execute(), so this read succeeds */
 			const transferStatus = await step1.plan.transfer.getTransferStatus();
 			expect(transferStatus.transaction.status).toEqual('COMPLETE');
 			expect(transferStatus.transaction.to.value).toEqual('78');
