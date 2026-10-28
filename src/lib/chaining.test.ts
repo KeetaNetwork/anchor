@@ -499,7 +499,8 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 		return(this);
 	}
 
-	failNextExchangeStatus(error: Error): this {
+	failNextExchangeStatus(failure: string | Error = 'Exchange status check failed'): this {
+		const error = typeof failure === 'string' ? new KeetaAnchorUserError(failure) : failure;
 		/* Only the status route reads a completed exchange back from the store */
 		this._statusStore.failNextCompletedRead(error);
 		return(this);
@@ -2115,12 +2116,20 @@ describe('AnchorChainingPath execute', function() {
 		await expect(path.execute()).rejects.toThrow('Cannot execute');
 	});
 
-	test('FX step failure: failed event, state, and double-execute guard', async function() {
+	test.each([
+		{ failedCall: 'createExchange' as const },
+		{ failedCall: 'getExchangeStatus' as const }
+	])('FX step failure in $failedCall: failed event, state, and double-execute guard', async function({ failedCall }) {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
 		const path = await h.getPlanVia('FXOne');
 
-		h.fxServerOne.failNextExchange('FX step 0 failed');
+		if (failedCall === 'createExchange') {
+			h.fxServerOne.failNextExchange('FX step 0 failed');
+		} else {
+			/* A 4xx user error from the status poll is fatal without a retry */
+			h.fxServerOne.failNextExchangeStatus('FX step 0 failed');
+		}
 
 		const failedEvents: { error: Error; completedSteps: ExecutedStep[]; index: number }[] = [];
 		path.on('failed', (error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number) => {
@@ -2348,8 +2357,8 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		// One attempt per poll, so the single armed failure is fatal.
-		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('ACH poll failed');
+		// A 4xx user error from the status poll is fatal without a retry.
+		await expect(path.execute()).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
