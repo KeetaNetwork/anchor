@@ -15,6 +15,8 @@ import { AnchorExternal } from './anchor-external.js';
 import { BlockListener } from './block-listener.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { KeetaAssetMovementAnchorProvider } from '../services/asset-movement/client.js';
+import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
+import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueStorageOptions } from './queue/index.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -316,9 +318,14 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	}
 
 	/** Arm the server so the next getTransferStatus call throws (then restores). */
-	failNextTransferStatus(message = 'Transfer status check failed'): this {
-		this._getStatusRef.interceptor = () => { throw(new KeetaAnchorUserError(message)); };
+	failNextTransferStatus(failure: string | Error = 'Transfer status check failed'): this {
+		const error = typeof failure === 'string' ? new KeetaAnchorUserError(failure) : failure;
+		this._getStatusRef.interceptor = () => { throw(error); };
 		return(this);
+	}
+
+	get hasPendingStatusFailure(): boolean {
+		return(this._getStatusRef.interceptor !== null);
 	}
 
 	/** Manually update the status of an in-flight transfer. */
@@ -327,6 +334,46 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		if (!existing) {throw(new Error(`Unknown transfer ID: ${id}`));}
 		this._statusMap.set(id, { ...existing, ...update, updatedAt: new Date().toISOString() });
 		return(this);
+	}
+}
+
+class FailingReadQueueStorage extends KeetaAnchorQueueStorageDriverMemory {
+	readonly #failure: { error: Error | null };
+
+	constructor(options?: KeetaAnchorQueueStorageOptions, failure: { error: Error | null } = { error: null }) {
+		super(options);
+		this.#failure = failure;
+	}
+
+	failNextCompletedRead(error: Error): void {
+		this.#failure.error = error;
+	}
+
+	get hasPendingFailure(): boolean {
+		return(this.#failure.error !== null);
+	}
+
+	protected override clone(options?: Partial<KeetaAnchorQueueStorageOptions>): FailingReadQueueStorage {
+		const cloned = new FailingReadQueueStorage({
+			logger: this.logger,
+			id: `${this.id}::${this.partitionCounter++}`,
+			path: [...this.path],
+			...options
+		}, this.#failure);
+		cloned.queueStorage = this.queueStorage;
+
+		return(cloned);
+	}
+
+	override async get(id: KeetaAnchorQueueRequestID): ReturnType<KeetaAnchorQueueStorageDriverMemory['get']> {
+		const entry = await super.get(id);
+		const error = this.#failure.error;
+		if (error !== null && entry?.status === 'completed') {
+			this.#failure.error = null;
+			throw(error);
+		}
+
+		return(entry);
 	}
 }
 
@@ -342,6 +389,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 	private readonly _giveTokens: (to: GenericAccount, amount: bigint, token: TokenAddress) => Promise<void>;
 	private readonly _keetaClient: KeetaNet.UserClient;
 	private readonly _lp: InstanceType<typeof KeetaNet.lib.Account>;
+	private readonly _statusStore: FailingReadQueueStorage;
 
 	constructor(config: TestFXServerConfig) {
 		// Resolve the LP from the accounts set
@@ -382,8 +430,11 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 			networkAlias: keetaClient.config.networkAlias
 		};
 
+		const statusStore = new FailingReadQueueStorage();
+
 		super({
 			...baseConfig,
+			storage: { queue: statusStore, autoRun: true },
 			quoteSigner: null,
 			quoteConfiguration: { requiresQuote: false, validateQuoteBeforeExchange: false, issueQuotes: false },
 			client: rawClient,
@@ -397,6 +448,7 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 		this._giveTokens   = giveTokens;
 		this._keetaClient  = keetaClient;
 		this._lp           = lp;
+		this._statusStore  = statusStore;
 	}
 
 	/** Set a fixed exchange rate (forward direction; reverse is 1/rate). */
@@ -445,6 +497,17 @@ class TestFXServer extends KeetaNetFXAnchorHTTPServer {
 			return(await saved(request, context));
 		};
 		return(this);
+	}
+
+	failNextExchangeStatus(failure: string | Error = 'Exchange status check failed'): this {
+		const error = typeof failure === 'string' ? new KeetaAnchorUserError(failure) : failure;
+		/* Only the status route reads a completed exchange back from the store */
+		this._statusStore.failNextCompletedRead(error);
+		return(this);
+	}
+
+	get hasPendingStatusFailure(): boolean {
+		return(this._statusStore.hasPendingFailure);
 	}
 }
 
@@ -1889,6 +1952,9 @@ describe('AnchorChainingPath execute', function() {
 		const path = await h.getPlanVia('FXOne');
 		expect(path.state.status).toEqual('idle');
 
+		h.fxServerOne.failNextExchangeStatus(new Error('Exchange status store unavailable'));
+		h.bankServerEU.failNextTransferStatus(new Error('Transfer status store unavailable'));
+
 		const stateHistory: AnchorChainingPathState['status'][] = [];
 		path.on('stateChange', (state: AnchorChainingPathState) => stateHistory.push(state.status));
 
@@ -1905,6 +1971,10 @@ describe('AnchorChainingPath execute', function() {
 		path.off('stepExecuted', removedListener);
 
 		const result = await path.execute();
+
+		/* Each armed 500 is cleared only when it is thrown, so both polls failed once and retried */
+		expect(h.fxServerOne.hasPendingStatusFailure).toBe(false);
+		expect(h.bankServerEU.hasPendingStatusFailure).toBe(false);
 
 		// Step structure and server-side verification
 		expect(result.steps).toHaveLength(2);
@@ -2046,12 +2116,20 @@ describe('AnchorChainingPath execute', function() {
 		await expect(path.execute()).rejects.toThrow('Cannot execute');
 	});
 
-	test('FX step failure: failed event, state, and double-execute guard', async function() {
+	test.each([
+		{ failedCall: 'createExchange' as const },
+		{ failedCall: 'getExchangeStatus' as const }
+	])('FX step failure in $failedCall: failed event, state, and double-execute guard', async function({ failedCall }) {
 		await using h = await createChainingTestHarness();
 		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
 		const path = await h.getPlanVia('FXOne');
 
-		h.fxServerOne.failNextExchange('FX step 0 failed');
+		if (failedCall === 'createExchange') {
+			h.fxServerOne.failNextExchange('FX step 0 failed');
+		} else {
+			/* A 4xx user error from the status poll is fatal without a retry */
+			h.fxServerOne.failNextExchangeStatus('FX step 0 failed');
+		}
 
 		const failedEvents: { error: Error; completedSteps: ExecutedStep[]; index: number }[] = [];
 		path.on('failed', (error: Error, completedSteps: ExecutedStep[], failedAtStepIndex: number) => {
@@ -2090,8 +2168,8 @@ describe('AnchorChainingPath execute', function() {
 			failedEvents.push({ error, completedSteps, index: failedAtStepIndex });
 		});
 
-		// One attempt per poll, so the single armed failure is fatal.
-		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('AM step 1 poll failed');
+		// A 4xx user error from the status poll is fatal without a retry.
+		await expect(path.execute()).rejects.toThrow('AM step 1 poll failed');
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
 			expect(path.state.failedAtStepIndex).toEqual(1);
@@ -2318,8 +2396,8 @@ describe('AnchorChainingPath ACH fiat path', function() {
 				payload.markCompleted()
 			}
 		});
-		// One attempt per poll, so the single armed failure is fatal.
-		await expect(path.execute({ poll: { maxAttempts: 1 }})).rejects.toThrow('ACH poll failed');
+		// A 4xx user error from the status poll is fatal without a retry.
+		await expect(path.execute()).rejects.toThrow('ACH poll failed');
 
 		expect(path.state.status).toEqual('failed');
 		if (path.state.status === 'failed') {
