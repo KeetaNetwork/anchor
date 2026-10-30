@@ -547,6 +547,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 	readonly addresses: Map<string, PersistentForwardingBridgeAddressMeta>;
 	readonly transactionsByAddress: Map<string, KeetaAssetMovementTransaction[]>;
 	readonly transferStatuses: Map<string, KeetaAssetMovementTransaction>;
+	/** Amount a completed Keeta-source transfer delivers below its quote, like a bridge re-quote that moved down. */
+	readonly delivery: { shortfall: bigint };
 
 	constructor(config: TestPersistentForwardingBridgeServerConfig) {
 		const { client: userClient, persistentForwardingFees, ...serverConfig } = config;
@@ -557,6 +559,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		const addresses = new Map<string, PersistentForwardingBridgeAddressMeta>();
 		const transactionsByAddress = new Map<string, KeetaAssetMovementTransaction[]>();
 		const transferStatuses = new Map<string, KeetaAssetMovementTransaction>();
+		const delivery = { shortfall: 0n };
 
 		super({
 			...serverConfig,
@@ -602,6 +605,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 											additionalTransferDetails: { type: 'markdown', content: 'Bridge withdraw complete' },
 											to: {
 												...existing.to,
+												value: (value - delivery.shortfall).toString(),
 												transactions: { withdraw: { id: withdrawTxId, nonce: '0' }}
 											}
 										});
@@ -824,6 +828,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		this.addresses = addresses;
 		this.transactionsByAddress = transactionsByAddress;
 		this.transferStatuses = transferStatuses;
+		this.delivery = delivery;
 	}
 }
 
@@ -3657,6 +3662,36 @@ describe('Persistent Forwarding chaining', function() {
 		const retryPath = await getKeetaUsdcToUsdc2Path(h, 500n, destinationAccount);
 		await AnchorChainingPlan.create(retryPath);
 		expect(h.bridgeServer.addresses.size).toEqual(1);
+	});
+
+	test('a delivery shortfall within slippageBps proceeds and a larger one fails', async function() {
+		await using h = await createPersistentForwardingHarness();
+
+		await h.client.modTokenSupplyAndBalance(10000n, h.tokens.USDC);
+
+		/* 3 of 1000 is a 30 bps shortfall */
+		h.bridgeServer.delivery.shortfall = 3n;
+
+		const strictPlan = await AnchorChainingPlan.create(await getKeetaUsdcToUsdc2Path(h, 1000n, newDestinationAccount()));
+		await expect(strictPlan.execute()).rejects.toThrow('Execution failed at step 1 due to value mismatch: expected at least 1000 but previous step produced 997');
+
+		const narrowPlan = await AnchorChainingPlan.create(await getKeetaUsdcToUsdc2Path(h, 1000n, newDestinationAccount()));
+		await expect(narrowPlan.execute({ slippageBps: 29 })).rejects.toThrow('Execution failed at step 1 due to value mismatch: expected at least 998 but previous step produced 997 (slippage tolerance 29 bps of 1000)');
+
+		const tolerantPlan = await AnchorChainingPlan.create(await getKeetaUsdcToUsdc2Path(h, 1000n, newDestinationAccount()));
+		const result = await tolerantPlan.execute({ slippageBps: 30 });
+		expect(result.steps.map((step) => step.type)).toEqual([ 'assetMovement', 'forwarded' ]);
+	});
+
+	test('execute rejects an invalid slippageBps before any step runs', async function() {
+		await using h = await createPersistentForwardingHarness();
+
+		const plan = await AnchorChainingPlan.create(await getKeetaUsdcToUsdc2Path(h, 1000n, newDestinationAccount()));
+		await expect(plan.execute({ slippageBps: -1 })).rejects.toThrow('Invalid slippageBps: -1 (expected an integer from 0 to 10000)');
+		await expect(plan.execute({ slippageBps: 10001 })).rejects.toThrow('Invalid slippageBps: 10001 (expected an integer from 0 to 10000)');
+		await expect(plan.execute({ slippageBps: 1.5 })).rejects.toThrow('Invalid slippageBps: 1.5 (expected an integer from 0 to 10000)');
+		await expect(plan.execute({ slippageBps: Number.NaN })).rejects.toThrow('Invalid slippageBps: NaN (expected an integer from 0 to 10000)');
+		expect(plan.state.status).toEqual('idle');
 	});
 
 	test('executes the chain through the persistent forwarding step end-to-end', async function() {
