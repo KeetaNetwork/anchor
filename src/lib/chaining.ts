@@ -3418,7 +3418,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 						if (prevActualValueOut < step.valueIn) {
 							const minimumValueIn = minimumValueAfterSlippage(step.valueIn, slippageBps);
 							if (prevActualValueOut < minimumValueIn) {
-								const tolerance = slippageBps > 0 ? ` (slippage tolerance ${slippageBps} bps of ${step.valueIn})` : '';
+								let tolerance = '';
+								if (slippageBps > 0) {
+									tolerance = ` (slippage tolerance ${slippageBps} bps of ${step.valueIn})`;
+								}
 								throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${minimumValueIn} but previous step produced ${prevActualValueOut}${tolerance}`));
 							}
 							this.logger?.debug(`AnchorChainingPlan::execute`, `Value shortfall at step ${index} is within the ${slippageBps} bps slippage tolerance (expected ${step.valueIn}, previous step produced ${prevActualValueOut}), proceeding with execution`);
