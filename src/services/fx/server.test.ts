@@ -13,6 +13,9 @@ import { Buffer } from '../../lib/utils/buffer.js';
 const DEBUG = false;
 const TestLogger = DEBUG ? console : undefined;
 
+/* Key for the queue runners' testing-only interface */
+const TestingKey = 'bc81abf8-e43b-490b-b486-744fb49a5082';
+
 type KeetaNetUserClient = InstanceType<typeof KeetaNet.UserClient>;
 
 /**
@@ -86,6 +89,7 @@ async function createFXTestHarness(userAccountCount = 1) {
 	}
 
 	return({
+		fees: nodeAndClient.fees,
 		serverAccount,
 		serverClient,
 		token1,
@@ -1361,3 +1365,592 @@ test('getMarketPrices omits or throws failed quote assets based on onQuoteError'
 	});
 	expect(throwResponse.status).toBe(500);
 }, 30000);
+
+test('FX Server publishes a swap left voted but unpublished before swapping again', async function() {
+	await using harness = await createFXTestHarness(2);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ firstUser, secondUser ] = userClients;
+	if (firstUser === undefined || secondUser === undefined) {
+		throw(new Error('Missing user clients'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	/*
+	 * Fail the first publish after its votes are cast, as a representative
+	 * refusing the staple does: the swap's blocks stay voted on the side
+	 * ledger, and no other block can follow the server account's head.
+	 */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let failPublish = true;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		if (failPublish) {
+			failPublish = false;
+			throw(new Error('could not serialize access due to read/write dependencies among transactions'));
+		}
+
+		return(await transmitStaple(...args));
+	};
+
+	const firstQuote = await getQuoteFromServer(url, token1String, token2String, '100');
+	if (typeof firstQuote !== 'object' || firstQuote === null || !('account' in firstQuote) || typeof firstQuote.account !== 'string') {
+		throw(new Error('Invalid quote'));
+	}
+	const firstBuilder = firstUser.initBuilder();
+	firstBuilder.send(KeetaNet.lib.Account.fromPublicKeyString(firstQuote.account), 100n, token1);
+	const firstBlock = (await firstBuilder.computeBlocks()).blocks[0];
+	if (firstBlock === undefined) {
+		throw(new Error('No block computed'));
+	}
+
+	const firstResponse = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({ request: { quote: firstQuote, block: Buffer.from(firstBlock.toBytes()).toString('base64') }})
+	});
+	expect(firstResponse.status).toBe(200);
+	expect(failPublish).toBe(false);
+	expect(await network.getBlock(firstBlock.hash)).toBeNull();
+	expect(await network.getPendingBlock(serverAccount)).not.toBeNull();
+
+	/*
+	 * The next exchange publishes the stranded swap before its own, so both
+	 * land instead of every later swap failing on the existing votes.
+	 */
+	const secondQuote = await getQuoteFromServer(url, token1String, token2String, '100');
+	const secondExchange = await createExchangeOnServer(url, secondQuote, secondUser, token1, 100n);
+	await waitForExchangeCompletion(url, extractExchangeID(secondExchange));
+
+	expect(await network.getBlock(firstBlock.hash)).not.toBeNull();
+	expect(await network.getPendingBlock(serverAccount)).toBeNull();
+	expect(await firstUser.balance(token2)).toBe(500n);
+	expect(await secondUser.balance(token2)).toBe(500n);
+}, 60000);
+
+test('FX Server waits for a swap staple the representatives deferred instead of rebuilding it', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ user ] = userClients;
+	if (user === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/*
+	 * Report the first publish as deferred, as representatives that queue
+	 * a staple do, without adding it: its blocks stay voted on.
+	 */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let deferred = 0;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		if (deferred === 0) {
+			deferred++;
+			return({ voteStaple: args[0], publish: false, from: 'direct' });
+		}
+
+		return(await transmitStaple(...args));
+	};
+
+	const quote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+	const exchange = await createExchangeOnServer(url, quote, user, token1, 100n);
+	await waitForExchangeCompletion(url, extractExchangeID(exchange));
+
+	expect(deferred).toBe(1);
+	expect(await network.getPendingBlock(serverAccount)).toBeNull();
+	expect(await user.balance(token2)).toBe(500n);
+}, 60000);
+
+test('FX Server waits rather than swapping when the representatives do not publish a recovered staple', async function() {
+	await using harness = await createFXTestHarness(2);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ firstUser, secondUser ] = userClients;
+	if (firstUser === undefined || secondUser === undefined) {
+		throw(new Error('Missing user clients'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	/* Strand the first swap: its votes are cast, but the publish fails */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let failPublish = true;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		if (failPublish) {
+			failPublish = false;
+			throw(new Error('could not serialize access due to read/write dependencies among transactions'));
+		}
+
+		return(await transmitStaple(...args));
+	};
+
+	const firstQuote = await getQuoteFromServer(url, token1String, token2String, '100');
+	await createExchangeOnServer(url, firstQuote, firstUser, token1, 100n);
+	const stranded = await network.getPendingBlock(serverAccount);
+	expect(stranded).not.toBeNull();
+
+	/* Recovery finds the staple, but no representative adds it yet */
+	let recoveries = 0;
+	network.recoverAccount = async function() {
+		recoveries++;
+		throw(KeetaNet.lib.Error.fromJSON({ type: 'CLIENT', code: 'CLIENT_RECOVER_PUBLISH_FAILED', message: 'no representative has added it to its ledger yet' }));
+	};
+
+	const transmit = network.transmit.bind(network);
+	let transmits = 0;
+	network.transmit = async function(...args: Parameters<typeof transmit>) {
+		transmits++;
+		return(await transmit(...args));
+	};
+
+	const secondQuote = await getQuoteFromServer(url, token1String, token2String, '100');
+	const secondExchange = await createExchangeOnServer(url, secondQuote, secondUser, token1, 100n);
+
+	/*
+	 * The second exchange waits: it is neither failed nor swapped, and the
+	 * stranded staple is still the one pending, not displaced by new blocks.
+	 */
+	expect(recoveries).toBeGreaterThan(0);
+	expect(transmits).toBe(0);
+	expect(await getExchangeStatus(url, extractExchangeID(secondExchange))).toHaveProperty('status', 'pending');
+	expect((await network.getPendingBlock(serverAccount))?.hash.toString()).toBe(stranded?.hash.toString());
+	expect(await secondUser.balance(token2)).toBe(0n);
+}, 60000);
+
+test('FX Server does not publish a staple left pending on the user account', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { fees, serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ user ] = userClients;
+	if (user === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	fees.enable();
+	const baseToken = serverClient.baseToken;
+	const serverBalance = await serverClient.balance(baseToken);
+
+	/*
+	 * The user stops a transaction of their own once it has temporary
+	 * votes, which require a fee: publishing it would need a fee block
+	 */
+	const otherAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const userBuilder = user.initBuilder();
+	userBuilder.send(otherAccount, 1n, token1);
+	const userBlock = (await userBuilder.computeBlocks()).blocks[0];
+	if (userBlock === undefined) {
+		throw(new Error('No block computed'));
+	}
+	await expect(user.client.transmit([ userBlock ], {
+		generateFeeBlock: async function() {
+			throw(new Error('Stopped after temporary votes'));
+		}
+	})).rejects.toThrow();
+	expect(await user.client.getPendingBlock(user.account)).not.toBeNull();
+
+	const network = serverClient.client;
+	const transmit = network.transmit.bind(network);
+	let transmits = 0;
+	network.transmit = async function(...args: Parameters<typeof transmit>) {
+		try {
+			return(await transmit(...args));
+		} finally {
+			transmits++;
+		}
+	};
+
+	const quote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+	const exchange = await createExchangeOnServer(url, quote, user, token1, 100n);
+	for (const startTime = Date.now(); transmits === 0 && Date.now() - startTime < 30000;) {
+		await asleep(100);
+	}
+
+	/*
+	 * The swap conflicts with the user's pending transaction and waits,
+	 * but the server does not publish that transaction or pay its fee
+	 */
+	expect(await network.getBlock(userBlock.hash)).toBeNull();
+	expect(await serverClient.balance(baseToken)).toBe(serverBalance);
+	expect(transmits).toBeGreaterThan(0);
+	expect(await getExchangeStatus(url, extractExchangeID(exchange))).toHaveProperty('status', 'pending');
+}, 60000);
+
+test('FX Server completes an exchange whose deferred staple is added while it checks the head', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ user ] = userClients;
+	if (user === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	const quote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+	if (typeof quote !== 'object' || quote === null || !('account' in quote) || typeof quote.account !== 'string') {
+		throw(new Error('Invalid quote'));
+	}
+	const builder = user.initBuilder();
+	builder.send(KeetaNet.lib.Account.fromPublicKeyString(quote.account), 100n, token1);
+	const block = (await builder.computeBlocks()).blocks[0];
+	if (block === undefined) {
+		throw(new Error('No block computed'));
+	}
+
+	/*
+	 * The representatives report the staple as deferred and add it just
+	 * after the next check for the block: by the head check the block is
+	 * the account head instead of its previous
+	 */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let published = false;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		const result = await transmitStaple(...args);
+		published = true;
+
+		return({ ...result, publish: false });
+	};
+	const getBlock = network.getBlock.bind(network);
+	let hidden = false;
+	network.getBlock = async function(...args: Parameters<typeof getBlock>) {
+		if (published && !hidden && args[0].toString() === block.hash.toString()) {
+			hidden = true;
+			return(null);
+		}
+
+		return(await getBlock(...args));
+	};
+
+	const response = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({ request: { quote: quote, block: Buffer.from(block.toBytes()).toString('base64') }})
+	});
+	expect(response.status).toBe(200);
+	await waitForExchangeCompletion(url, extractExchangeID(await response.json()));
+
+	expect(hidden).toBe(true);
+	expect(await user.balance(token2)).toBe(500n);
+}, 60000);
+
+test('FX Server keeps retrying an exchange whose swap staple is voted on but not yet published', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ user ] = userClients;
+	if (user === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	/* Retry quickly, and fail permanently after a single retry */
+	await server.pipeline.maintain();
+	for (const runner of Object.values(server.pipeline['runners'])) {
+		runner._Testing(TestingKey).setParams({ retryDelay: 50, maxRetries: 1 });
+	}
+
+	/* Strand the swap: its votes are cast, but the publish fails */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let failPublish = true;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		if (failPublish) {
+			failPublish = false;
+			throw(new Error('could not serialize access due to read/write dependencies among transactions'));
+		}
+
+		return(await transmitStaple(...args));
+	};
+
+	/* The representatives defer the stranded staple until released */
+	const recoverAccount = network.recoverAccount.bind(network);
+	let deferRecovery = true;
+	let recoveries = 0;
+	network.recoverAccount = async function(...args: Parameters<typeof recoverAccount>) {
+		if (deferRecovery) {
+			recoveries++;
+			throw(KeetaNet.lib.Error.fromJSON({ type: 'CLIENT', code: 'CLIENT_RECOVER_PUBLISH_FAILED', message: 'no representative has added it to its ledger yet' }));
+		}
+
+		return(await recoverAccount(...args));
+	};
+
+	/*
+	 * Exchange without a quote, so the conversion it reports can only
+	 * come from the swap the server recorded when it built it
+	 */
+	const builder = user.initBuilder();
+	builder.send(serverAccount, 100n, token1);
+	const block = (await builder.computeBlocks()).blocks[0];
+	if (block === undefined) {
+		throw(new Error('No block computed'));
+	}
+	const response = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				request: { from: token1.publicKeyString.get(), to: token2.publicKeyString.get(), amount: '100', affinity: 'from' },
+				block: Buffer.from(block.toBytes()).toString('base64')
+			}
+		})
+	});
+	expect(response.status).toBe(200);
+	const exchangeID = extractExchangeID(await response.json());
+
+	/* Retries are requeued by maintenance, which runs alongside the queue */
+	const runQueue = async function() {
+		await server.pipeline.maintain();
+		await server.pipeline.run();
+		await asleep(60);
+	};
+
+	/* Well past its retries, the exchange still waits rather than failing */
+	for (const startTime = Date.now(); recoveries < 4 && Date.now() - startTime < 30000;) {
+		await runQueue();
+	}
+	expect(recoveries).toBeGreaterThanOrEqual(4);
+	expect(await getExchangeStatus(url, exchangeID)).toHaveProperty('status', 'pending');
+	expect(await user.balance(token2)).toBe(0n);
+
+	/* Once the staple is published, the exchange completes with its conversion */
+	deferRecovery = false;
+	let status = await getExchangeStatus(url, exchangeID);
+	for (const startTime = Date.now(); !(typeof status === 'object' && status !== null && 'status' in status && status.status === 'completed') && Date.now() - startTime < 30000;) {
+		await runQueue();
+		status = await getExchangeStatus(url, exchangeID);
+	}
+	expect(status).toHaveProperty('status', 'completed');
+	expect(status).toHaveProperty('conversion');
+	expect(await user.balance(token2)).toBe(500n);
+}, 60000);
+
+test('FX Server keeps the swap it recorded when a rebuilt swap conflicts with its staple', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, serverClient, token1, token2, userClients } = harness;
+	const [ user ] = userClients;
+	if (user === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	let convertedAmount = 500n;
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: convertedAmount,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	await server.pipeline.maintain();
+	for (const runner of Object.values(server.pipeline['runners'])) {
+		runner._Testing(TestingKey).setParams({ retryDelay: 50, maxRetries: 100 });
+	}
+
+	/*
+	 * Strand the swap: its votes are cast, but the publish fails.  The
+	 * rate then changes, so a rebuilt swap would convert a different
+	 * amount.
+	 */
+	const network = serverClient.client;
+	const transmitStaple = network.transmitStaple.bind(network);
+	let failPublish = true;
+	network.transmitStaple = async function(...args: Parameters<typeof transmitStaple>) {
+		if (failPublish) {
+			failPublish = false;
+			convertedAmount = 600n;
+			throw(new Error('could not serialize access due to read/write dependencies among transactions'));
+		}
+
+		return(await transmitStaple(...args));
+	};
+
+	/*
+	 * The stranded staple cannot be seen as pending, so the server
+	 * rebuilds the swap, which conflicts with the stranded staple's votes
+	 */
+	const getPendingBlock = network.getPendingBlock.bind(network);
+	let hidePending = true;
+	network.getPendingBlock = async function(...args: Parameters<typeof getPendingBlock>) {
+		if (hidePending) {
+			return(null);
+		}
+
+		return(await getPendingBlock(...args));
+	};
+	const transmit = network.transmit.bind(network);
+	let conflicts = 0;
+	network.transmit = async function(...args: Parameters<typeof transmit>) {
+		try {
+			return(await transmit(...args));
+		} catch (error) {
+			if (KeetaNet.lib.Error.isInstance(error) && error.code === 'LEDGER_SUCCESSOR_VOTE_EXISTS') {
+				conflicts++;
+			}
+
+			throw(error);
+		}
+	};
+
+	const builder = user.initBuilder();
+	builder.send(serverAccount, 100n, token1);
+	const block = (await builder.computeBlocks()).blocks[0];
+	if (block === undefined) {
+		throw(new Error('No block computed'));
+	}
+	const response = await fetch(`${url}/api/createExchange`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({
+			request: {
+				request: { from: token1.publicKeyString.get(), to: token2.publicKeyString.get(), amount: '100', affinity: 'from' },
+				block: Buffer.from(block.toBytes()).toString('base64')
+			}
+		})
+	});
+	expect(response.status).toBe(200);
+	const exchangeID = extractExchangeID(await response.json());
+
+	const runQueue = async function() {
+		await server.pipeline.maintain();
+		await server.pipeline.run();
+		await asleep(60);
+	};
+
+	for (const startTime = Date.now(); conflicts < 1 && Date.now() - startTime < 30000;) {
+		await runQueue();
+	}
+	expect(failPublish).toBe(false);
+	expect(conflicts).toBeGreaterThanOrEqual(1);
+
+	/* Once the stranded staple is seen and published, it is what settles */
+	hidePending = false;
+	let status = await getExchangeStatus(url, exchangeID);
+	for (const startTime = Date.now(); !(typeof status === 'object' && status !== null && 'status' in status && status.status === 'completed') && Date.now() - startTime < 30000;) {
+		await runQueue();
+		status = await getExchangeStatus(url, exchangeID);
+	}
+	expect(status).toHaveProperty('status', 'completed');
+	expect(status).toHaveProperty('conversion.to', { token: token2.publicKeyString.get(), amount: '500' });
+	expect(await user.balance(token2)).toBe(500n);
+}, 60000);
