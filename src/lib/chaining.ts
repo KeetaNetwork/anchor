@@ -123,6 +123,18 @@ export type AnchorChainingPathExecuteOptions = {
 	 * The delay never goes past the step timeout.
 	 */
 	intervalMs?: number;
+	/**
+	 * How far, in basis points, a step's actual output may fall below the next step's
+	 * planned input before execution fails. Quotes can move between planning and
+	 * execution (for example a cross-asset bridge re-quotes when it delivers), so a
+	 * small shortfall is not always a provider error. The default is 0, which requires
+	 * the full planned amount. The value must be an integer from 0 to 10000.
+	 *
+	 * Steps that send from the user's account (FX and `KEETA_SEND` steps) still send
+	 * their planned amount, so a shortfall before one of those comes from the user's
+	 * balance.
+	 */
+	slippageBps?: number;
 };
 
 export type AnchorChainingPathState =
@@ -1924,6 +1936,14 @@ function getSimulatedReceiveAmount(
 	return(receiveAmount);
 }
 
+/**
+ * The least of `value` that a step may receive when `slippageBps` basis points
+ * of shortfall are allowed. Rounds up, so the shortfall never exceeds the tolerance.
+ */
+export function minimumValueAfterSlippage(value: bigint, slippageBps: number): bigint {
+	return((value * BigInt(10000 - slippageBps) + 9999n) / 10000n);
+}
+
 /** @internal Exported for unit tests. */
 export function estimateForwardingValueOut(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
 	return(estimateValueOutFromPersistentForwardingFees(valueIn, fees));
@@ -3341,6 +3361,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		if (options?.intervalMs !== undefined && !(Number.isFinite(options.intervalMs) && options.intervalMs >= 0)) {
 			throw(new Error(`Invalid intervalMs: ${options.intervalMs} (expected a finite number >= 0)`));
 		}
+		const slippageBps = options?.slippageBps ?? 0;
+		if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10000) {
+			throw(new Error(`Invalid slippageBps: ${slippageBps} (expected an integer from 0 to 10000)`));
+		}
 
 		const executedSteps: ExecutedStep[] = [];
 		this.#setState({ status: 'executing', completedSteps: [], currentStepIndex: 0 });
@@ -3386,13 +3410,21 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				const pollContext = { stepIndex: index, planStep: step };
 
-				// Verify the actual output from the previous step matches the expected
-				// input for this step. A mismatch indicates a provider delivered a
-				// different amount than was negotiated in computeSteps.
+				// Verify the actual output from the previous step covers the expected
+				// input for this step, less the allowed slippage. A larger shortfall
+				// indicates a provider delivered less than was negotiated in computeSteps.
 				if (index > 0 && prevActualValueOut !== null) {
 					if (prevActualValueOut !== step.valueIn) {
 						if (prevActualValueOut < step.valueIn) {
-							throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${step.valueIn} but previous step produced ${prevActualValueOut}`));
+							const minimumValueIn = minimumValueAfterSlippage(step.valueIn, slippageBps);
+							if (prevActualValueOut < minimumValueIn) {
+								let tolerance = '';
+								if (slippageBps > 0) {
+									tolerance = ` (slippage tolerance ${slippageBps} bps of ${step.valueIn})`;
+								}
+								throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${minimumValueIn} but previous step produced ${prevActualValueOut}${tolerance}`));
+							}
+							this.logger?.debug(`AnchorChainingPlan::execute`, `Value shortfall at step ${index} is within the ${slippageBps} bps slippage tolerance (expected ${step.valueIn}, previous step produced ${prevActualValueOut}), proceeding with execution`);
 						} else {
 							this.logger?.debug(`AnchorChainingPlan::execute`, `Value mismatch at step ${index} is non-critical since previous step produced more (${prevActualValueOut}) than expected (${step.valueIn}), proceeding with execution`);
 						}
