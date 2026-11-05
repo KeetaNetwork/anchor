@@ -968,6 +968,7 @@ class Metadata implements ValuizableInstance {
 	readonly #allowInsecureProtocols: boolean;
 	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
 	readonly #urlOptions: ExternalURLOptions | undefined;
+	readonly #valuizeResults = new WeakMap<object, Promise<ValuizeInput>>();
 
 	private readonly seenURLs: Map<string, number>;
 
@@ -1554,7 +1555,21 @@ class Metadata implements ValuizableInstance {
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
 		const value = await this.readURL(this.#url, this.#urlOptions, true);
 
-		const retval = this.assertValuizableKind(await this.valuize(value), expect);
+		/*
+		 * Reads served from the cache return the same object, so reuse
+		 * its Valuizable tree to keep the nested Valuizable methods stable
+		 */
+		if (typeof value !== 'object' || value === null) {
+			return(this.assertValuizableKind(await this.valuize(value), expect));
+		}
+
+		let valuizeResult = this.#valuizeResults.get(value);
+		if (valuizeResult === undefined) {
+			valuizeResult = this.valuize(value);
+			this.#valuizeResults.set(value, valuizeResult);
+		}
+
+		const retval = this.assertValuizableKind(await valuizeResult, expect);
 
 		return(retval);
 	}
@@ -1691,6 +1706,7 @@ class Resolver {
 	/** EVM asset ids already warned about, to avoid repeating the info log. */
 	readonly #warnedNonCanonicalizedAssets = new Set<string>();
 	readonly #evmChecksumCache: EVMChecksumCache = new Map();
+	readonly #resolvedSupportedAssets = new WeakMap<ValuizableMethod, Promise<JSONSerializable>>();
 
 	readonly id: string;
 
@@ -2136,12 +2152,29 @@ class Resolver {
 		return(canonicalized);
 	}
 
+	async #resolveSupportedAssets(supportedAssets: ValuizableMethod | undefined): Promise<JSONSerializable> {
+		if (supportedAssets === undefined) {
+			return(await Metadata.fullyResolveValuizable(supportedAssets));
+		}
+
+		let resolved = this.#resolvedSupportedAssets.get(supportedAssets);
+		if (resolved === undefined) {
+			resolved = Metadata.fullyResolveValuizable(supportedAssets);
+			this.#resolvedSupportedAssets.set(supportedAssets, resolved);
+			resolved.catch(() => {
+				this.#resolvedSupportedAssets.delete(supportedAssets);
+			});
+		}
+
+		return(await resolved);
+	}
+
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
-		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
+		const resolvedService = await this.#resolveSupportedAssets(assetService.supportedAssets);
 		if (!Array.isArray(resolvedService)) {
 			throw(new Error('Expected "supportedAssets" to be an array'));
 		}
