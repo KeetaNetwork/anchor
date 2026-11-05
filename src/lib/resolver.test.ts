@@ -717,8 +717,11 @@ test('Concurrent Lookups', async function() {
 	expect(resolver.stats.keetanet.reads + resolver.stats.https.reads + resolver.stats.unsupported.reads).toBe(resolver.stats.cache.miss);
 }, 30000);
 
-async function setupExternalMetadataResolver() {
+async function setupExternalMetadataResolver(cache?: ConstructorParameters<typeof Resolver>[0]['cache']) {
 	const rootAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const ampServiceAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const supportedAssetsAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
+	const ampToken = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0, KeetaNetClient.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const externalAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const externalRefAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
 	const cycleAccountA = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
@@ -745,6 +748,31 @@ async function setupExternalMetadataResolver() {
 	await setInfo(externalRefAccount, userClient, externalLink(externalAccount.publicKeyString.get()));
 	await setInfo(cycleAccountA, userClient, externalLink(cycleAccountB.publicKeyString.get()));
 	await setInfo(cycleAccountB, userClient, externalLink(cycleAccountA.publicKeyString.get()));
+	await setInfo(ampServiceAccount, userClient, {
+		operations: {
+			initiateTransfer: 'https://amp.external.com/initiateTransfer'
+		},
+		supportedAssets: externalLink(supportedAssetsAccount.publicKeyString.get())
+	});
+	await new KeetaNetClient.UserClient({
+		client: userClient.client,
+		signer: supportedAssetsAccount,
+		usePublishAid: false,
+		network: userClient.network,
+		networkAlias: 'test'
+	}).setInfo({ name: '', description: '', metadata: 'not-valid-supported-assets' });
+
+	const supportedAssetsEntry = function(currency: string) {
+		return({
+			asset: [ampToken.publicKeyString.get(), currency],
+			paths: [{
+				pair: [
+					{ id: ampToken.publicKeyString.get(), location: `chain:keeta:${userClient.network}`, rails: { common: ['KEETA_SEND'], outbound: ['KEETA_SEND'] }},
+					{ id: currency, location: 'bank-account:us', rails: { common: ['ACH'], inbound: ['ACH'] }}
+				]
+			}]
+		});
+	};
 
 	await userClient.setInfo({
 		name: '',
@@ -757,6 +785,9 @@ async function setupExternalMetadataResolver() {
 					keeta_external_ref: externalLink(externalRefAccount.publicKeyString.get()),
 					keeta_cycle_a: externalLink(cycleAccountA.publicKeyString.get()),
 					keeta_cycle_b: externalLink(cycleAccountB.publicKeyString.get())
+				},
+				assetMovement: {
+					keeta_external_amp: externalLink(ampServiceAccount.publicKeyString.get())
 				}
 			}
 		} satisfies ServiceMetadataExternalizable)
@@ -765,12 +796,13 @@ async function setupExternalMetadataResolver() {
 	const resolver = new Resolver({
 		root: rootAccount,
 		client: userClient,
-		trustedCAs: []
+		trustedCAs: [],
+		...(cache === undefined ? {} : { cache })
 	});
 
 	fees.enable();
 
-	return({ resolver });
+	return({ resolver, userClient, fees, supportedAssetsAccount, supportedAssetsEntry });
 }
 
 async function getBankingEntry(rootMetadata: Awaited<ReturnType<Resolver['getRootMetadata']>>, id: string) {
@@ -800,6 +832,43 @@ test('Concurrent reads of the same external metadata URL all resolve', async fun
 	/* A cached read reuses the same Valuizable tree */
 	const [firstService, secondService] = await Promise.all([entry('object'), entry('object')]);
 	expect(secondService).toBe(firstService);
+});
+
+test('filterSupportedAssets reuses one resolution until a read fails or the cache is cleared', async function() {
+	const { resolver, userClient, fees, supportedAssetsAccount, supportedAssetsEntry } = await setupExternalMetadataResolver({ negativeTTL: 0 });
+	const rootMetadata = await resolver.getRootMetadata();
+	const assetMovementServices = await (await rootMetadata.services?.('object'))?.assetMovement?.('object');
+	const ampEntry = assetMovementServices?.keeta_external_amp;
+	if (ampEntry === undefined) {
+		throw(new Error('internal error: keeta_external_amp entry is missing'));
+	}
+	const readAMPService = async function() {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(await ampEntry('object') as unknown as Parameters<Resolver['filterSupportedAssets']>[0]);
+	};
+
+	const publishSupportedAssets = async function(currency: string) {
+		fees.disable();
+		await setInfo(supportedAssetsAccount, userClient, toJSONSerializable([supportedAssetsEntry(currency)]));
+		fees.enable();
+	};
+
+	await expect(resolver.filterSupportedAssets(await readAMPService())).rejects.toThrow('Expected "supportedAssets" to be an array');
+
+	/* The failed read is not kept, so the same service object recovers once the metadata is valid */
+	await publishSupportedAssets('USD');
+	expect(await resolver.filterSupportedAssets(await readAMPService())).toEqual([supportedAssetsEntry('USD')]);
+
+	/* A new read of the external service reuses its Valuizable tree, so the filter reuses the resolution */
+	const ampServiceReadAgain = await readAMPService();
+	const readsBeforeSecondFilter = resolver.stats.reads;
+	expect(await resolver.filterSupportedAssets(ampServiceReadAgain, { from: 'bank-account:us' })).toEqual([supportedAssetsEntry('USD')]);
+	expect(resolver.stats.reads).toBe(readsBeforeSecondFilter);
+
+	await publishSupportedAssets('EUR');
+	expect(await resolver.filterSupportedAssets(await readAMPService())).toEqual([supportedAssetsEntry('USD')]);
+	resolver.clearCache();
+	expect(await resolver.filterSupportedAssets(await readAMPService())).toEqual([supportedAssetsEntry('EUR')]);
 });
 
 test('Circular metadata references read concurrently within one metadata tree resolve to null', async function() {
@@ -1126,14 +1195,6 @@ test('ignores unparsable anchor metadata', async function() {
 		paths: [ampGoodPath]
 	};
 
-	const externalAMPAccount = KeetaNetClient.lib.Account.fromSeed(KeetaNetClient.lib.Account.generateRandomSeed(), 0);
-	await setInfo(externalAMPAccount, userClient, toJSONSerializable({
-		operations: {
-			initiateTransfer: 'https://amp.external.com/initiateTransfer'
-		},
-		supportedAssets: [ampSupportedAssetsEntry]
-	}));
-
 	const malformedRootMetadata = toJSONSerializable({
 		version: 1,
 		currencyMap: {},
@@ -1244,10 +1305,6 @@ test('ignores unparsable anchor metadata', async function() {
 				broken_amp_keeta: {
 					external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
 					url: `keetanet://${brokenKeetaAnchor.publicKeyString.get()}/metadata`
-				},
-				good_amp_external: {
-					external: '2b828e33-2692-46e9-817e-9b93d63f28fd',
-					url: `keetanet://${externalAMPAccount.publicKeyString.get()}/metadata`
 				}
 			}
 		}
@@ -1328,19 +1385,19 @@ test('ignores unparsable anchor metadata', async function() {
 			name: 'assetMovement keeps provider when another path has no usable rails',
 			service: 'assetMovement',
 			criteria: {},
-			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries', 'good_amp_external']
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
 		},
 		{
 			name: 'assetMovement ignores provider with unparsable supportedAssets',
 			service: 'assetMovement',
 			criteria: {},
-			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries', 'good_amp_external']
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
 		},
 		{
 			name: 'assetMovement ignores keetanet external anchor with unparsable metadata',
 			service: 'assetMovement',
 			criteria: {},
-			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries', 'good_amp_external']
+			expectedProviderIDs: ['good_amp', 'good_amp_partial_paths', 'good_amp_partial_entries']
 		}
 	] satisfies {
 		name: string;
@@ -1353,23 +1410,6 @@ test('ignores unparsable anchor metadata', async function() {
 		const result = await resolver.lookup(testCase.service, testCase.criteria);
 		expect(Object.keys(result ?? {}).sort(), testCase.name).toEqual([...testCase.expectedProviderIDs].sort());
 	}
-
-	/* Filters over the same provider share one resolution of its supportedAssets */
-	const assetMovementServices = await (await (await resolver.getRootMetadata()).services?.('object'))?.assetMovement?.('object');
-	const externalAMPEntry = assetMovementServices?.good_amp_external;
-	if (externalAMPEntry === undefined) {
-		throw(new Error('internal error: good_amp_external entry is missing'));
-	}
-	const readExternalAMP = async function() {
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(await externalAMPEntry('object') as unknown as Parameters<Resolver['filterSupportedAssets']>[0]);
-	};
-	const [fromBankAssets, toBankAssets] = await Promise.all([
-		resolver.filterSupportedAssets(await readExternalAMP(), { from: 'bank-account:us' }),
-		resolver.filterSupportedAssets(await readExternalAMP(), { to: 'bank-account:us' })
-	]);
-	expect(fromBankAssets).toEqual([ampSupportedAssetsEntry]);
-	expect(toBankAssets[0]).toBe(fromBankAssets[0]);
 
 	expect(warnLogs.length).toBeGreaterThan(0);
 });
