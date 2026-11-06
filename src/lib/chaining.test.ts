@@ -577,9 +577,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 	readonly listTransactionsAccounts: (string | undefined)[];
 	readonly #client: KeetaNet.UserClient;
 	readonly #listTransactionsFailure: { error: KeetaAnchorError | null; remaining: number };
-	readonly #listTransactionsPaging: { pageCap: number; ignoreOffset: boolean };
 	readonly #listPersistentForwardingFailure: { error: KeetaAnchorError | null };
-	readonly #listTransactionsHook: { run: (() => void) | null };
 	/** Amount a completed Keeta-source transfer delivers below its quote, like a bridge re-quote that moved down. */
 	readonly delivery: { shortfall: bigint };
 
@@ -595,9 +593,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		const addressOwners = new Map<string, string>();
 		const listTransactionsAccounts: (string | undefined)[] = [];
 		const listTransactionsFailure: { error: KeetaAnchorError | null; remaining: number } = { error: null, remaining: 0 };
-		const listTransactionsPaging = { pageCap: Number.POSITIVE_INFINITY, ignoreOffset: false };
 		const listPersistentForwardingFailure: { error: KeetaAnchorError | null } = { error: null };
-		const listTransactionsHook: { run: (() => void) | null } = { run: null };
 		const delivery = { shortfall: 0n };
 
 		super({
@@ -831,9 +827,6 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 
 				async listTransactions(request) {
 					listTransactionsAccounts.push(typeof request.account === 'string' ? request.account : undefined);
-					const hook = listTransactionsHook.run;
-					listTransactionsHook.run = null;
-					hook?.();
 					if (listTransactionsFailure.error !== null && listTransactionsFailure.remaining > 0) {
 						listTransactionsFailure.remaining--;
 						throw(listTransactionsFailure.error);
@@ -871,10 +864,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 						});
 					}
 
-					const offset = listTransactionsPaging.ignoreOffset ? 0 : (request.pagination?.offset ?? 0);
-					const limit = Math.min(request.pagination?.limit ?? filtered.length, listTransactionsPaging.pageCap);
 					return({
-						transactions: filtered.slice(offset, offset + limit),
+						transactions: filtered,
 						total: filtered.length.toString()
 					});
 				}
@@ -889,29 +880,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		this.listTransactionsAccounts = listTransactionsAccounts;
 		this.#client = userClient;
 		this.#listTransactionsFailure = listTransactionsFailure;
-		this.#listTransactionsPaging = listTransactionsPaging;
 		this.#listPersistentForwardingFailure = listPersistentForwardingFailure;
-		this.#listTransactionsHook = listTransactionsHook;
 		this.delivery = delivery;
-	}
-
-	/**
-	 * Run `hook` once, inside the next listTransactions call, before it answers.
-	 */
-	onNextListTransactions(hook: () => void): this {
-		this.#listTransactionsHook.run = hook;
-		return(this);
-	}
-
-	/**
-	 * Cap the rows of each listTransactions page below the requested limit and
-	 * optionally ignore the requested offset, like a provider that pages badly.
-	 * `total` still counts every row.
-	 */
-	limitListTransactionsPages(args: { pageCap: number; ignoreOffset?: boolean }): this {
-		this.#listTransactionsPaging.pageCap = args.pageCap;
-		this.#listTransactionsPaging.ignoreOffset = args.ignoreOffset === true;
-		return(this);
 	}
 
 	/**
@@ -4074,8 +4044,9 @@ describe('Persistent Forwarding chaining', function() {
 		function depositOnPrompt(h: PersistentForwardingHarness, plan: AnchorChainingPlan, deposits: KeetaAssetMovementTransaction[]) {
 			plan.on('stepNeedsAction', async (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
-					deposits.push(await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value }));
-					payload.markCompleted();
+					const depositTransactionId = `0x${(deposits.length + 1).toString(16).padStart(64, '0')}`;
+					deposits.push(await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value, depositTransactionId }));
+					payload.markCompleted({ depositTransactionId });
 				} else if (payload.type === 'keetaSendAuthRequired') {
 					payload.markCompleted({ sent: true });
 				}
@@ -4214,48 +4185,17 @@ describe('Persistent Forwarding chaining', function() {
 			expect(executedForward.observedTransaction.id).not.toEqual(stale.id);
 		});
 
-		test('execute waits past a smaller forward from another sender for the user deposit', async function() {
+		test('execute fails at the deposit step when the wallet reports no deposit transaction', async function() {
 			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
 
 			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
-			const forwards: { dust?: KeetaAssetMovementTransaction; deposit?: KeetaAssetMovementTransaction } = {};
-			plan.on('stepNeedsAction', async (payload) => {
-				if (payload.type === DEPOSIT_PROMPT) {
-					// Another sender pays a small amount to the same address first.
-					forwards.dust = await h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value / 2n });
-					payload.markCompleted();
-					setTimeout(function() {
-						void h.bridgeServer.recordUserDeposit({ persistentAddress: payload.action.depositAddress, value: payload.action.value }).then(function(forward) {
-							forwards.deposit = forward;
-						});
-					}, 0);
-				} else if (payload.type === 'keetaSendAuthRequired') {
-					payload.markCompleted({ sent: true });
-				}
+			plan.on('stepNeedsAction', (payload) => {
+				payload.markCompleted();
 			});
 
-			const result = await plan.execute({ requireSendAuth: true });
-
-			const executedForward = result.steps[0];
-			if (executedForward?.type !== 'forwarded') {
-				throw(new Error('Expected the first executed step to be forwarded'));
-			}
-			expect(executedForward.observedTransaction.id).toEqual(forwards.deposit?.id);
-			expect(executedForward.observedTransaction.id).not.toEqual(forwards.dust?.id);
-			expect(plan.state.status).toEqual('completed');
-		}, 30_000);
-
-		test('execute fails before the prompt when the existing forwards cannot be listed', async function() {
-			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
-
-			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
-			const prompts = recordPrompts(plan);
-			h.bridgeServer.failListTransactions(new KeetaAnchorUserError('listing is unavailable'), Number.POSITIVE_INFINITY);
-
-			await expect(plan.execute({ requireSendAuth: true })).rejects.toThrow('listing is unavailable');
+			await expect(plan.execute({ requireSendAuth: true })).rejects.toThrow('without a depositTransactionId');
 
 			expect(plan.state).toMatchObject({ status: 'failed', failedAtStepIndex: 0 });
-			expect(prompts).toEqual([]);
 		});
 
 		test('execute fails at the deposit step when the wallet cannot deposit', async function() {
@@ -4283,7 +4223,7 @@ describe('Persistent Forwarding chaining', function() {
 			plan.on('stepNeedsAction', (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
 					// The wallet reports the deposit, but no forward appears at the bridge.
-					payload.markCompleted();
+					payload.markCompleted({ depositTransactionId: '0xbeef000000000000000000000000000000000000000000000000000000000001' });
 					abortSoon(controller);
 				}
 			});
@@ -4310,50 +4250,6 @@ describe('Persistent Forwarding chaining', function() {
 			expect(prompts).toEqual([ DEPOSIT_PROMPT ]);
 		});
 
-		test('execute fails before the prompt when the provider repeats a page of forwards', async function() {
-			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
-
-			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
-			const address = depositAddressOf(forwardedStepAt(plan, 0));
-			await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT });
-			await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT });
-			const prompts = recordPrompts(plan);
-
-			// Each page holds one row and starts at the first row. The total counts both forwards.
-			h.bridgeServer.limitListTransactionsPages({ pageCap: 1, ignoreOffset: true });
-
-			await expect(plan.execute({ requireSendAuth: true })).rejects.toThrow(/repeated page/);
-
-			expect(plan.state).toMatchObject({ status: 'failed', failedAtStepIndex: 0 });
-			expect(prompts).toEqual([]);
-		});
-
-		test('execute ignores every forward that predates the prompt when the provider pages them', async function() {
-			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
-
-			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
-			const address = depositAddressOf(forwardedStepAt(plan, 0));
-			const stale: KeetaAssetMovementTransaction[] = [];
-			for (let count = 0; count < 5; count++) {
-				stale.push(await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: DEPOSIT }));
-			}
-
-			// Two rows per page, so the history takes three pages.
-			h.bridgeServer.limitListTransactionsPages({ pageCap: 2 });
-
-			const deposits: KeetaAssetMovementTransaction[] = [];
-			depositOnPrompt(h, plan, deposits);
-
-			const result = await plan.execute({ requireSendAuth: true });
-
-			const executedForward = result.steps[0];
-			if (executedForward?.type !== 'forwarded') {
-				throw(new Error('Expected the first executed step to be forwarded'));
-			}
-			expect(stale.map((transaction) => transaction.id)).not.toContain(executedForward.observedTransaction.id);
-			expect(executedForward.observedTransaction.id).toEqual(deposits[0]?.id);
-		});
-
 		test('execute ignores a forward that does not land on the Keeta location', async function() {
 			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
 
@@ -4363,8 +4259,9 @@ describe('Persistent Forwarding chaining', function() {
 			const prompts = recordPrompts(plan);
 			plan.on('stepNeedsAction', async (payload) => {
 				if (payload.type === DEPOSIT_PROMPT) {
-					await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: payload.action.value, toLocation: h.evmChainLocation });
-					payload.markCompleted();
+					const depositTransactionId = '0xbeef000000000000000000000000000000000000000000000000000000000002';
+					await h.bridgeServer.recordUserDeposit({ persistentAddress: address, value: payload.action.value, toLocation: h.evmChainLocation, depositTransactionId });
+					payload.markCompleted({ depositTransactionId });
 					abortSoon(controller);
 				}
 			});
@@ -4442,24 +4339,6 @@ describe('Persistent Forwarding chaining', function() {
 			expect(plan.state).toMatchObject({ status: 'failed', failedAtStepIndex: 0 });
 			expect(prompts).toEqual([ DEPOSIT_PROMPT ]);
 		}, 30_000);
-
-		test('execute aborted before the deposit prompt is sent fails without prompting', async function() {
-			await using h = await createPersistentForwardingHarness({ keetaConvert: true });
-
-			const plan = await AnchorChainingPlan.create(await getEvmUsdcToEurPath(h));
-			const controller = new AbortController();
-			const prompts = recordPrompts(plan);
-
-			// The signal fires while the existing forwards are being listed.
-			h.bridgeServer.onNextListTransactions(function() {
-				controller.abort();
-			});
-
-			await expect(plan.execute({ requireSendAuth: true, abortSignal: controller.signal })).rejects.toThrow('Execution aborted');
-
-			expect(plan.state).toMatchObject({ status: 'failed', failedAtStepIndex: 0 });
-			expect(prompts).toEqual([]);
-		});
 
 		test('a single-leg plan executes: deposit prompt, forward observed, completed', async function() {
 			await using h = await createPersistentForwardingHarness({ keetaConvert: true });

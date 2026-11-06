@@ -176,13 +176,9 @@ interface StepNeededActionEventKeetaSend extends StepNeededActionEventPayloadBas
  * The user must deposit `value` of `asset` to `depositAddress` on `location`.
  * The wallet calls `markCompleted()` after it sends the deposit.
  *
- * Wallets should pass `depositTransactionId`, the source-chain transaction of
- * this deposit. The plan then follows that deposit. A forward from before
- * this prompt counts only when the provider names that deposit on it.
- *
- * Without the id, the plan accepts the first forward that is new since this
- * prompt and delivers the planned value. It ignores smaller forwards, so a
- * short deposit makes the plan wait until it times out.
+ * The wallet must pass `depositTransactionId`, the source-chain transaction of
+ * this deposit, because plans can share the address. The type keeps it
+ * optional so a generic `markCompleted()` handler still compiles.
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface StepNeededActionEventPersistentForwardingDeposit extends StepNeededActionEventPayloadBase<'persistentForwardingDepositRequired', {
@@ -2391,49 +2387,6 @@ export class AnchorChainingPath {
 	}
 }
 
-/**
- * Which forward counts for a forwarded step.
- *
- * - `sourceTransaction`: the forward tied to a source transaction. A forward
- *   whose id is in `knownIds` existed before the step started. It counts only
- *   when the row itself names the source transaction as its deposit.
- * - `newSince`: the first forward whose id is not in `knownIds` and that
- *   delivers at least `minimumValue`. A smaller forward is someone else's
- *   deposit, so the poll keeps waiting.
- */
-type ForwardedCorrelation =
-	| { type: 'sourceTransaction'; sourceTransaction: { location: AssetLocationLike; transaction: { id: string }}; knownIds?: ReadonlySet<string> }
-	| { type: 'newSince'; knownIds: ReadonlySet<string>; minimumValue: bigint };
-
-/**
- * Compare transaction ids the way the asset movement providers do: a `0x` id
- * ignores case.
- */
-function transactionIdsMatch(wanted: string, actual: string): boolean {
-	if (wanted.startsWith('0x') || wanted.startsWith('0X')) {
-		return(wanted.toLowerCase() === actual.toLowerCase());
-	}
-	return(wanted === actual);
-}
-
-/**
- * Decide if a listed forward is the one the correlation is waiting for.
- */
-function forwardMatchesCorrelation(tx: KeetaAssetMovementTransaction, correlation: ForwardedCorrelation): boolean {
-	if (correlation.type === 'newSince') {
-		return(!correlation.knownIds.has(tx.id) && BigInt(tx.to.value) >= correlation.minimumValue);
-	}
-
-	if (!correlation.knownIds?.has(tx.id)) {
-		return(true);
-	}
-
-	const rowDepositId = tx.from.transactions.deposit?.id;
-	return(rowDepositId !== undefined && transactionIdsMatch(correlation.sourceTransaction.transaction.id, rowDepositId));
-}
-
-const FORWARDED_TRANSACTIONS_PAGE_SIZE = 100;
-
 /* Status reads are safe to repeat */
 function isStatusPollRetryable(error: unknown): boolean {
 	if (!KeetaAnchorUserError.isInstance(error)) {
@@ -3382,74 +3335,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * List every transaction on the step's persistent address that matches
-	 * `filter`, page by page, until a page is empty or all `total` rows are
-	 * collected. Each page goes through the poll retry policy.
-	 *
-	 * The function throws when a page holds nothing new, because the provider
-	 * then ignores the offset. It also throws when `deadline` passes. In both
-	 * cases the caller receives an error and no partial result.
-	 */
-	async #listForwardedTransactions(
-		step: ChainStepResolutionForwarded,
-		filter: Pick<Parameters<AssetMovementProvider['listTransactions']>[0], 'transactions'>,
-		deadline: number,
-		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
-	): Promise<KeetaAssetMovementTransaction[]> {
-		const { provider } = step;
-		const pfiAddress = AnchorChainingPlan.#forwardedAddress(step);
-		const account = await this.#forwardingOwner(provider);
-		const transactions: KeetaAssetMovementTransaction[] = [];
-		const seenIds = new Set<string>();
-		let offset = 0;
-
-		while (true) {
-			if (Date.now() >= deadline) {
-				throw(new Error(`Timed out listing persistent-forwarding transactions at ${pfiAddress}`));
-			}
-
-			const page = await withRetry(async function() {
-				return(await provider.listTransactions({
-					account,
-					persistentAddresses: [{
-						location: step.step.from.location,
-						persistentAddress: pfiAddress
-					}],
-					pagination: { limit: FORWARDED_TRANSACTIONS_PAGE_SIZE, offset },
-					...filter
-				}));
-			}, this.#pollRetryOptions('AnchorChainingPlan::listForwardedTransactions', deadline, options));
-
-			if (page.transactions.length === 0) {
-				return(transactions);
-			}
-
-			const unseen = page.transactions.filter((tx) => !seenIds.has(tx.id));
-			if (unseen.length === 0) {
-				throw(new Error(`Provider ${step.step.providerID} returned a repeated page of transactions for ${pfiAddress} (offset ${offset} ignored)`));
-			}
-
-			for (const tx of unseen) {
-				seenIds.add(tx.id);
-			}
-			transactions.push(...unseen);
-			offset += page.transactions.length;
-
-			if (offset >= Number(page.total)) {
-				return(transactions);
-			}
-		}
-	}
-
-	/**
 	 * Wait for the forwarded transfer the bridge creates once funds reach the
-	 * step's persistent-forwarding address. The correlation says which forward
-	 * counts: the one tied to a source transaction (the prior step's withdraw, or
-	 * the user's deposit), or the first one that did not exist before.
+	 * step's persistent-forwarding address from `sourceTransaction`: the prior
+	 * step's withdraw, or the user's deposit.
 	 */
 	async #pollForwardedTransaction(
 		step: ChainStepResolutionForwarded,
-		correlation: ForwardedCorrelation,
+		sourceTransaction: { location: AssetLocationLike; transaction: { id: string }},
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<KeetaAssetMovementTransaction> {
@@ -3458,15 +3350,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const deadline = Date.now() + timeoutMs;
 
 		const pfiAddress = AnchorChainingPlan.#forwardedAddress(step);
-		let correlatedTo = 'a deposit made after the deposit prompt';
-		let filter: Pick<Parameters<AssetMovementProvider['listTransactions']>[0], 'transactions'> = {};
-		if (correlation.type === 'sourceTransaction') {
-			correlatedTo = `source tx ${correlation.sourceTransaction.transaction.id}`;
-			filter = { transactions: [ correlation.sourceTransaction ] };
-		}
+		let correlatedTo = `source tx ${sourceTransaction.transaction.id}`;
 		if (step.fundedBy === 'userDeposit') {
 			correlatedTo += `. A deposit already sent to ${pfiAddress} still forwards to ${step.persistentAddress.destinationAddress} and is not lost`;
 		}
+		const { provider } = step;
+		const account = await this.#forwardingOwner(provider);
 		const stepFrom = convertAssetLocationToString(step.step.from.location);
 		const stepTo = convertAssetLocationToString(step.step.to.location);
 
@@ -3479,14 +3368,22 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to ${correlatedTo}`));
 			}
 
-			const listed = await this.#listForwardedTransactions(step, filter, deadline, options);
+			const listed = await withRetry(async function() {
+				return(await provider.listTransactions({
+					account,
+					persistentAddresses: [{
+						location: step.step.from.location,
+						persistentAddress: pfiAddress
+					}],
+					transactions: [ sourceTransaction ]
+				}));
+			}, this.#pollRetryOptions('AnchorChainingPlan::pollForwardedTransaction', deadline, options));
 
 			/*
 			 * Only a forward along this step counts. A forward on the same address
 			 * between other locations belongs to another step.
 			 */
-			const onStep = listed.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
-			const transactions = onStep.filter((tx) => forwardMatchesCorrelation(tx, correlation));
+			const transactions = listed.transactions.filter((tx) => convertAssetLocationToString(tx.from.location) === stepFrom && convertAssetLocationToString(tx.to.location) === stepTo);
 
 			for (const transaction of transactions) {
 				this.#emit('transactionObserved', {
@@ -3507,15 +3404,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
-	 * Run a forwarded step that the user funds. The function records the
-	 * forwards that exist on the address, asks the wallet to deposit, and waits
-	 * for the forward of that deposit. A forward from before the prompt is
-	 * ignored, because plans reuse the address.
-	 *
-	 * Without a `depositTransactionId`, the first forward that is new since the
-	 * prompt and delivers the planned value counts. Smaller forwards come from
-	 * other senders or a short deposit, and the poll keeps waiting. Wallets
-	 * should pass the id.
+	 * Run a forwarded step that the user funds: ask the wallet to deposit, then
+	 * wait for the forward of the deposit the wallet reports.
 	 */
 	async #executeUserDepositStep(
 		step: ChainStepResolutionForwarded,
@@ -3523,8 +3413,6 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		options?: AnchorChainingPathExecuteOptions
 	): Promise<KeetaAssetMovementTransaction> {
 		const depositAddress = AnchorChainingPlan.#forwardedAddress(step);
-
-		const baseline = await this.#listForwardedTransactions(step, {}, Date.now() + (options?.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS), options);
 
 		const [ deposit ] = await this.#awaitStepCompletion({
 			type: 'persistentForwardingDepositRequired',
@@ -3538,18 +3426,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 		}, options?.abortSignal);
 
-		/*
-		 * A forward from before the prompt counts only when its row names the
-		 * reported deposit, so a retry can still finish a deposit that already
-		 * landed.
-		 */
-		const knownIds = new Set(baseline.map((tx) => tx.id));
-		let correlation: ForwardedCorrelation = { type: 'newSince', knownIds, minimumValue: step.valueOut };
-		if (deposit?.depositTransactionId !== undefined) {
-			correlation = { type: 'sourceTransaction', sourceTransaction: { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }}, knownIds };
+		if (deposit?.depositTransactionId === undefined) {
+			throw(new Error(`The deposit to ${depositAddress} completed without a depositTransactionId`));
 		}
 
-		return(await this.#pollForwardedTransaction(step, correlation, context, options));
+		const sourceTransaction = { location: step.step.from.location, transaction: { id: deposit.depositTransactionId }};
+		return(await this.#pollForwardedTransaction(step, sourceTransaction, context, options));
 	}
 
 	async #pollExchangeStatus(
@@ -3684,7 +3566,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							throw(new Error(`Forwarded step at index ${index} requires the prior step to produce a withdraw transaction on its destination chain`));
 						}
 
-						observed = await this.#pollForwardedTransaction(step, { type: 'sourceTransaction', sourceTransaction: prevWithdrawTx }, pollContext, options);
+						observed = await this.#pollForwardedTransaction(step, prevWithdrawTx, pollContext, options);
 					} else if (step.fundedBy === 'userDeposit') {
 						observed = await this.#executeUserDepositStep(step, pollContext, options);
 
