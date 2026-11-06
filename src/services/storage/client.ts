@@ -833,7 +833,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			response = await fetch(signedUrl, {
 				method: 'PUT',
 				headers: { 'Content-Type': CONTENT_TYPE_OCTET_STREAM, 'Accept': CONTENT_TYPE_JSON },
-				body: input.data
+				body: new Uint8Array(input.data)
 			});
 		} catch (e) {
 			throw(new Errors.ServiceUnavailable(`Network error: ${e instanceof Error ? e.message : String(e)}`));
