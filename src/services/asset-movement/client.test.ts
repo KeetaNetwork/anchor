@@ -2031,10 +2031,64 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 		await expect(strangerProvider.getTransferStatus({ id: '555', account: agentStorage.storage })).rejects.toThrow(/Invalid signature/);
 	}
 
+	/*
+	 * By default an agent can only move money and follow transfers.  The
+	 * owner keeps everything else: history, forwarding addresses, KYC.
+	 */
+	{
+		await expect(agentProvider.listTransactions({ account: agentStorage.storage })).rejects.toThrow(/not available to storage account delegates/);
+		await expect(agentProvider.createPersistentForwardingAddress({
+			asset: testCurrencyUSDC,
+			destinationLocation: `chain:keeta:${ownerClient.network}`,
+			destinationAddress: agentAccount.publicKeyString.get(),
+			sourceLocation: 'bank-account:us',
+			account: agentStorage.storage
+		})).rejects.toThrow(/not available to storage account delegates/);
+
+		const ownerProvider = await providerFor(agentStorage.storage, ownerAccount);
+		const listed = await ownerProvider.listTransactions({ account: agentStorage.storage });
+		expect(listed.transactions).toHaveLength(1);
+	}
+
 	/* An agent of one storage account cannot sign for another */
 	{
 		const crossProvider = await providerFor(otherStorage.storage, agentAccount);
 		await expect(crossProvider.initiateTransfer(transferFrom(otherStorage.storage))).rejects.toThrow(/Invalid signature/);
+	}
+
+	/* The anchor operator can widen or narrow what agents may do */
+	{
+		await using narrowServer = new KeetaNetAssetMovementAnchorHTTPServer({
+			...(logger ? { logger: logger } : {}),
+			client: { client: ownerClient.client },
+			storageAccountDelegateOperations: [ 'listTransactions' ],
+			assetMovement: {
+				authenticationRequired: true,
+				supportedAssets: server.assetMovement.supportedAssets,
+				...baseHandlers
+			}
+		});
+		await narrowServer.start();
+
+		await ownerClient.setInfo({
+			description: 'Asset Movement Anchor Storage Account Agent Narrow Test Root',
+			name: 'TEST_NARROW',
+			metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+				version: 1,
+				currencyMap: {},
+				services: {
+					assetMovement: {
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-assignment
+						NarrowTest: await narrowServer.serviceMetadata() as any
+					}
+				}
+			} satisfies ServiceMetadataExternalizable)
+		});
+
+		const narrowProvider = await providerFor(agentStorage.storage, agentAccount);
+		const listed = await narrowProvider.listTransactions({ account: agentStorage.storage });
+		expect(listed.transactions).toHaveLength(1);
+		await expect(narrowProvider.initiateTransfer(transferFrom(agentStorage.storage))).rejects.toThrow(/not available to storage account delegates/);
 	}
 
 	/* After revoke, the agent's requests are refused */

@@ -90,6 +90,21 @@ import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.type
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
 
+type AssetMovementHandlers = KeetaAnchorAssetMovementServerConfig['assetMovement'];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AssetMovementOperationName = { [K in keyof AssetMovementHandlers]-?: NonNullable<AssetMovementHandlers[K]> extends (...args: any[]) => any ? K : never }[keyof AssetMovementHandlers];
+
+/**
+ * What a storage account delegate (an agent) may do by default: simulate,
+ * start and complete a transfer, and check on it.
+ */
+export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([
+	'simulateTransfer',
+	'initiateTransfer',
+	'executeTransfer',
+	'getTransferStatus'
+]);
+
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -101,6 +116,18 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 	 * Required when accepting requests from storage accounts.
 	 */
 	client?: { client: InstanceType<typeof KeetaNet.Client>; } | InstanceType<typeof KeetaNet.UserClient>;
+
+	/**
+	 * Operations that an account holding SEND_ON_BEHALF on a storage
+	 * account (for example an agent) may call for that storage account.
+	 * The storage account's owner can always call every operation.
+	 *
+	 * Defaults to {@link DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS}:
+	 * moving money and following a transfer, but not sharing KYC,
+	 * reading account status or history, or managing forwarding
+	 * addresses.  Pass an empty list to refuse delegates entirely.
+	 */
+	storageAccountDelegateOperations?: readonly AssetMovementOperationName[];
 
 	/**
 	 * Configuration for asset movement operations
@@ -207,6 +234,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 	readonly homepage: NonNullable<KeetaAnchorAssetMovementServerConfig['homepage']>;
 	readonly assetMovement: NonNullable<KeetaAnchorAssetMovementServerConfig['assetMovement']>;
 	readonly client: KeetaAnchorAssetMovementServerConfig['client'];
+	readonly storageAccountDelegateOperations: readonly AssetMovementOperationName[];
 
 	constructor(config: KeetaAnchorAssetMovementServerConfig) {
 		super(config);
@@ -214,6 +242,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		this.homepage = config.homepage ?? '';
 		this.assetMovement = config.assetMovement;
 		this.client = config.client;
+		this.storageAccountDelegateOperations = config.storageAccountDelegateOperations ?? DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS;
 	}
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
@@ -333,6 +362,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						const verified = await verifyStorageAccountSignature(config.client.client, requestAccount, signable, signed);
 						if (verified === null) {
 							throw(new KeetaAnchorUserError('Invalid signature'));
+						}
+
+						if (!verified.signer.comparePublicKey(verified.owner)) {
+							const allowed: readonly string[] = config.storageAccountDelegateOperations ?? DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS;
+							if (!allowed.includes(input.handlerName)) {
+								throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
+							}
 						}
 
 						account = verified.owner;
