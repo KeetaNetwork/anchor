@@ -611,6 +611,14 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	protected processorAborted?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<KeetaAnchorQueueProcessorResultValue<UserResult>>;
 
 	/**
+	 * Whether a job that has exceeded {@link maxRetries} may be moved to
+	 * "failed_permanently" (optional).  Return false to keep retrying it,
+	 * such as while work it already started may still complete.  Without
+	 * this method, every such job fails permanently.
+	 */
+	protected canFailPermanently?(entry: KeetaAnchorQueueEntry<UserRequest, UserResult>): Promise<boolean>;
+
+	/**
 	 * Worker configuration
 	 */
 	private readonly workers: NonNullable<KeetaAnchorQueueRunnerOptions['workers']>;
@@ -1332,10 +1340,15 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		for (const request of requests) {
 			try {
 				if (request.failures >= maxRetries) {
-					logger?.info(`Request with id ${String(request.id)} has exceeded maximum retries, not requeuing -- moving to failed_permanently`);
-					await this.queue.setStatus(request.id, 'failed_permanently', { oldStatus: 'failed_temporarily', by: this.workerID });
+					const canFail = this.canFailPermanently === undefined || await this.canFailPermanently(this.decodeEntry(request));
+					if (canFail) {
+						logger?.info(`Request with id ${String(request.id)} has exceeded maximum retries, not requeuing -- moving to failed_permanently`);
+						await this.queue.setStatus(request.id, 'failed_permanently', { oldStatus: 'failed_temporarily', by: this.workerID });
 
-					continue;
+						continue;
+					}
+
+					logger?.info(`Request with id ${String(request.id)} has exceeded maximum retries but may not fail permanently yet, requeuing`);
 				}
 
 				logger?.debug(`Requeuing failed request with id ${String(request.id)}`);

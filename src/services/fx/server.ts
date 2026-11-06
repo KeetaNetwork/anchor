@@ -690,9 +690,7 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			});
 		}
 
-		/* Check for the block already being on the network, if so we can mark this job as completed */
-		const blockExists = await userClient.block(block.hash);
-		if (blockExists !== null) {
+		const completed = function(): Awaited<ReturnType<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['processor']>> {
 			const existingOutput = entry.output;
 			const blocks = existingOutput?.blocks ?? [Buffer.from(block.toBytes()).toString('base64')];
 
@@ -710,6 +708,51 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 			return({
 				status: 'completed',
 				output: completedOutput
+			});
+		};
+
+		const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
+		if (userClient.config.generateFeeBlock !== undefined) {
+			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
+		}
+
+		/* Check for the block already being on the network, if so we can mark this job as completed */
+		if (await userClient.block(block.hash) !== null) {
+			return(completed());
+		}
+
+		/*
+		 * A swap whose votes were cast but whose staple was never published
+		 * (the publish failed, or the process stopped in between) leaves its
+		 * blocks voted on the side ledger. Representatives vote for no other
+		 * successor of the liquidity account's head, so no new swap can
+		 * publish until that staple does: publish it first. It may be this
+		 * exchange's own.
+		 *
+		 * Only the liquidity account is recovered. A staple pending on it
+		 * holds a block the liquidity account signed, while one pending on
+		 * the user's account may be any transaction of theirs, which
+		 * recovering would publish with a fee block the liquidity account
+		 * pays for.
+		 */
+		const recovery = await this.recoverPendingStaple(userClient, userClient.account, publishOptions);
+		if (recovery.recovered) {
+			if (await userClient.block(block.hash) !== null) {
+				return(completed());
+			}
+		}
+
+		/*
+		 * A staple is still pending on the liquidity account, for example
+		 * one the representatives deferred until they have its previous
+		 * block. No swap can follow its head until it is published: try
+		 * again later, keeping any swap this exchange already recorded.
+		 */
+		if (recovery.pending) {
+			return({
+				status: 'failed_temporarily',
+				output: entry.output,
+				error: 'A staple left voted on the liquidity account has not been published yet'
 			});
 		}
 
@@ -744,6 +787,15 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 			/* If block.previous exists on the network, and it's not the account head block we can mark this job as failed_permanently */
 			if (previousBlockOnNetwork) {
+				/*
+				 * This exchange's own staple may have been added since the
+				 * check above, such as one the representatives deferred,
+				 * making the block itself the account head
+				 */
+				if (await userClient.block(block.hash) !== null) {
+					return(completed());
+				}
+
 				/* Block's previous exists on the network, but is not the account head -- mark as failed_permanently */
 				return({
 					status: 'failed_permanently',
@@ -824,17 +876,49 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 		const swapBlocks = [ ...sendBlock.blocks, block ];
 
-		const publishOptions: Parameters<typeof userClient.client.transmit>[1] = {};
-		if (userClient.config.generateFeeBlock !== undefined) {
-			publishOptions.generateFeeBlock = userClient.config.generateFeeBlock;
-		}
+		/*
+		 * Record the swap whatever the outcome of publishing it: its staple
+		 * may be voted on even when publishing fails, and published later
+		 */
+		const swapOutput: KeetaFXAnchorQueueStage1Response = {
+			blockhash: block.hash.toString(),
+			blocks: swapBlocks.map(function(block) {
+				return(Buffer.from(block.toBytes()).toString('base64'));
+			}),
+			conversion: buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account, refunds)
+		};
 
 		try {
 			const publishResult = await userClient.client.transmit(swapBlocks, publishOptions);
+
+			/*
+			 * The representatives queued the staple rather than adding it,
+			 * such as while they wait for a previous block, and add it once
+			 * that arrives. Wait for it like a published swap: rebuilding the
+			 * swap would only conflict with the staple already voted on.
+			 */
 			if (!publishResult.publish) {
-				throw(new Error('Exchange Publish Failed'));
+				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Representatives deferred the swap staple; waiting for it to be added:', block.hash.toString());
 			}
 		} catch (error) {
+			/*
+			 * Another staple was voted for these accounts' heads after the
+			 * check above. The next attempt publishes it before swapping.
+			 *
+			 * When this exchange already recorded a swap, that staple is
+			 * most likely its own, which may still be published: keep
+			 * that swap, not this one, which never will be.
+			 */
+			if (KeetaNet.lib.Error.isInstance(error) && error.code === 'LEDGER_SUCCESSOR_VOTE_EXISTS') {
+				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Swap blocks conflict with an unpublished staple; retrying after publishing it:', error);
+
+				return({
+					status: 'failed_temporarily',
+					output: entry.output ?? swapOutput,
+					error: `${error.code} ${error.message}`
+				});
+			}
+
 			if (
 				KeetaNet.lib.Error.isInstance(error) &&
 				'shouldRetry' in error &&
@@ -842,6 +926,21 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				// eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
 				error.shouldRetry === false
 			) {
+				/*
+				 * The staple may have been voted on before it was rejected,
+				 * and a voted staple may still be published: retry rather
+				 * than report an exchange as failed that could still settle
+				 */
+				if (await this.isSwapStaplePending(userClient.account, swapOutput)) {
+					this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Non-retryable error publishing swap blocks, but their staple is voted on; retrying:', error);
+
+					return({
+						status: 'failed_temporarily',
+						output: swapOutput,
+						error: `${error.code} ${error.message}`
+					});
+				}
+
 				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::processor', 'Non-retryable error publishing swap blocks:', error);
 
 				return({
@@ -851,22 +950,93 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				});
 			}
 
-			throw(error);
-		}
+			this.serverConfig.logger?.error('KeetaFXAnchorQueuePipelineStage1::processor', 'Error publishing swap blocks:', error);
 
-		const conversion = buildKeetaFXAnchorConversionSummary(expected, block, entry.request.account, refunds);
+			return({
+				status: 'failed_temporarily',
+				output: swapOutput,
+				error: String(error)
+			});
+		}
 
 		/* Set the output and mark the job as pending so we can run the queue again and check for completion */
 		return({
 			status: 'pending',
-			output: {
-				blockhash: block.hash.toString(),
-				blocks: swapBlocks.map(function(block) {
-					return(Buffer.from(block.toBytes()).toString('base64'));
-				}),
-				conversion: conversion
-			}
+			output: swapOutput
 		});
+	}
+
+	/**
+	 * Publish a staple left voted but unpublished on `account`, and report
+	 * whether one was published (`recovered`) and whether one may still be
+	 * pending (`pending`): the representatives did not publish it, or it
+	 * could not be recovered. A staple still pending is logged and left
+	 * for the next attempt.
+	 */
+	protected async recoverPendingStaple(userClient: KeetaNet.UserClient, account: KeetaNetAccount, publishOptions: Parameters<KeetaNet.UserClient['client']['recoverAccount']>[2]): Promise<{ recovered: boolean; pending: boolean }> {
+		try {
+			if (await userClient.client.getPendingBlock(account) === null) {
+				return({ recovered: false, pending: false });
+			}
+
+			const staple = await userClient.client.recoverAccount(account, true, publishOptions);
+			if (staple === null) {
+				return({ recovered: false, pending: false });
+			}
+
+			this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::recoverPendingStaple', `Published a staple left voted but unpublished on ${account.publicKeyString.get()}:`, staple.blocks.map(function(stapleBlock) {
+				return(stapleBlock.hash.toString());
+			}));
+
+			return({ recovered: true, pending: false });
+		} catch (error) {
+			if (KeetaNet.lib.Error.isInstance(error) && error.code === 'CLIENT_RECOVER_PUBLISH_FAILED') {
+				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::recoverPendingStaple', `Representatives did not publish the staple pending on ${account.publicKeyString.get()}:`, error);
+			} else {
+				this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::recoverPendingStaple', `Could not publish the staple pending on ${account.publicKeyString.get()}:`, error);
+			}
+
+			/*
+			 * Whatever failed, a staple may still be pending, and a new
+			 * swap would conflict with it
+			 */
+			return({ recovered: false, pending: true });
+		}
+	}
+
+	/**
+	 * Whether the staple of the swap recorded in `output` is voted on but
+	 * not yet published: the block pending on the liquidity account is
+	 * one of the swap's.  Such a staple may still be published, moving
+	 * the user's funds.
+	 */
+	protected async isSwapStaplePending(account: KeetaNetAccount, output: KeetaFXAnchorQueueStage1Response | null): Promise<boolean> {
+		if (output === null) {
+			return(false);
+		}
+
+		const pendingBlock = await this.serverConfig.client.client.getPendingBlock(account);
+		if (pendingBlock === null) {
+			return(false);
+		}
+
+		return(output.blocks.some(function(swapBlock) {
+			return(new KeetaNet.lib.Block(swapBlock).hash.compare(pendingBlock.hash));
+		}));
+	}
+
+	/**
+	 * An exchange whose swap staple is voted on but not yet published may
+	 * still settle, so keep retrying it rather than report it as failed
+	 */
+	protected async canFailPermanently(entry: Parameters<NonNullable<KeetaAnchorQueueRunner<KeetaFXAnchorQueueStage1Request, KeetaFXAnchorQueueStage1Response>['canFailPermanently']>>[0]): Promise<boolean> {
+		if (await this.isSwapStaplePending(entry.request.account, entry.output)) {
+			this.serverConfig.logger?.warn('KeetaFXAnchorQueuePipelineStage1::canFailPermanently', `The swap staple for ${String(entry.id)} is voted on but not yet published; retrying instead of failing permanently`);
+
+			return(false);
+		}
+
+		return(true);
 	}
 
 	protected encodeRequest(request: KeetaFXAnchorQueueStage1Request): JSONSerializable {

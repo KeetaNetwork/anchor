@@ -2824,3 +2824,62 @@ suite('Driver Tests', async function() {
 		});
 	}
 });
+
+test('Queue Runner keeps retrying jobs that may not fail permanently', async function() {
+	await using cleanup = new AsyncDisposableStack();
+	vi.useFakeTimers();
+	cleanup.defer(function() {
+		vi.useRealTimers();
+	});
+
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'can-fail-permanently-tests',
+		logger: logger
+	});
+
+	/* Jobs whose work may still complete, and so may not fail permanently */
+	const mayStillComplete = new Set<string>();
+	await using runner = new (class extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
+		protected async canFailPermanently(entry: KeetaAnchorQueueEntry<string, string>): Promise<boolean> {
+			return(!mayStillComplete.has(entry.request));
+		}
+	})({
+		id: 'can-fail-permanently-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function() {
+			return({ status: 'failed_temporarily', output: 'started' });
+		}
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 100, processTimeout: 100, maxRetries: 2 });
+
+	mayStillComplete.add('held');
+	const id_held = await runner.add('held');
+	const id_released = await runner.add('released');
+
+	const runWithMaintenance = async function(count: number) {
+		for (let retries = 0; retries < count; retries++) {
+			vi.advanceTimersByTime(1000);
+			await runner.maintain();
+			await runner.run();
+		}
+	};
+
+	/* Past its retries, the held job is retried while the other fails */
+	await runWithMaintenance(10);
+	{
+		const held = await runner.get(id_held);
+		const released = await runner.get(id_released);
+		expect(held?.status).toBe('failed_temporarily');
+		expect(held?.failures).toBeGreaterThan(2);
+		expect(held?.output).toBe('started');
+		expect(released?.status).toBe('failed_permanently');
+		expect(released?.failures).toBe(2);
+	}
+
+	/* Once its work can no longer complete, it fails permanently */
+	mayStillComplete.delete('held');
+	await runWithMaintenance(2);
+	expect((await runner.get(id_held))?.status).toBe('failed_permanently');
+});

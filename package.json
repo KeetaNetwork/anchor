@@ -45,7 +45,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.2.8",
-		"@keetanetwork/keetanet-client": "0.18.8",
+		"@keetanetwork/keetanet-client": "file:vendor/dynamic/keetanetwork-keetanet-client-e68c4e7358b8165d416bea1fc5ac2597a6c29bfe.tgz",
 		"@noble/hashes": "1.5.0",
 		"typia": "12.2.1"
 	},
