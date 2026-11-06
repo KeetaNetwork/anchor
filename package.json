@@ -50,7 +50,7 @@
 		"typia": "12.2.1"
 	},
 	"engines": {
-		"node": "24.14.1"
+		"node": "24.22.2"
 	},
 	"overrides": {
 		"protobufjs": "7.6.5",
