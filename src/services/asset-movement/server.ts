@@ -85,7 +85,7 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedField, HTTPSignedFieldURLParametersGenericAccount } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import { resolveStorageAccountOwner } from '../../lib/utils/storage-account.js';
+import { verifyStorageAccountSignature } from '../../lib/utils/storage-account.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
@@ -323,16 +323,26 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 							throw(new KeetaAnchorUserError('Storage accounts are not supported without a network client configuration'));
 						}
 
-						account = await resolveStorageAccountOwner(config.client.client, requestAccount);
+						/*
+						 * The owner, or an account it granted SEND_ON_BEHALF
+						 * (an agent), may sign.  Either way the request carries
+						 * the owner's identity, so handlers and KYC lookups see
+						 * the owner.
+						 */
 						signable = [requestAccount, ...signable];
+						const verified = await verifyStorageAccountSignature(config.client.client, requestAccount, signable, signed);
+						if (verified === null) {
+							throw(new KeetaAnchorUserError('Invalid signature'));
+						}
+
+						account = verified.owner;
 					} else {
 						account = requestAccount.assertAccount();
-					}
 
-					const valid = await VerifySignedData(account, signable, signed);
-
-					if (!valid) {
-						throw(new KeetaAnchorUserError('Invalid signature'));
+						const valid = await VerifySignedData(account, signable, signed);
+						if (!valid) {
+							throw(new KeetaAnchorUserError('Invalid signature'));
+						}
 					}
 				}
 

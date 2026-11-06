@@ -13,6 +13,7 @@ import type { Routes } from '../../lib/http-server/index.js';
 import { KeetaAnchorUserValidationError } from '../../lib/error.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import type { ExtractOk } from '../../lib/http-server/common.js';
+import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } from '../../lib/agent-spending.js';
 
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
@@ -1901,4 +1902,145 @@ test('Asset Movement Anchor Client with Storage Account', async function() {
 			'Storage accounts are not supported without a network client configuration'
 		);
 	}
+}, 60_000);
+
+/*
+ * An agent holding SEND_ON_BEHALF on an owner's storage account signs anchor
+ * requests with its own key.  The anchor sees the owner (whose KYC the
+ * request carries), and refuses strangers, agents of other storage accounts,
+ * and the agent once its grant is revoked.
+ */
+test('Asset Movement Anchor accepts requests signed by a storage account agent', async function() {
+	const ownerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const agentAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const otherAgentAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const strangerAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	await using nodeAndClient = await createNodeAndClient(ownerAccount);
+	const ownerClient = nodeAndClient.userClient;
+	const baseToken = ownerClient.baseToken;
+
+	const { account: testCurrencyUSDC } = await ownerClient.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	if (!testCurrencyUSDC.isToken()) {
+		throw(new Error('USDC is not a token'));
+	}
+
+	await ownerClient.setInfo({ name: '', description: '', metadata: '', defaultPermission: new KeetaNet.lib.Permissions(['ACCESS'], []) }, { account: testCurrencyUSDC });
+	await ownerClient.modTokenSupplyAndBalance(10000n, testCurrencyUSDC);
+
+	const agentStorage = await openAgentSpendingAccount(ownerClient, {
+		agent: agentAccount,
+		funding: [{ token: testCurrencyUSDC, amount: 1000n }]
+	});
+	const otherStorage = await openAgentSpendingAccount(ownerClient, {
+		agent: otherAgentAccount,
+		funding: [{ token: testCurrencyUSDC, amount: 1000n }]
+	});
+
+	const currentDateString = (new Date()).toISOString();
+	const testTransaction = createTestTransaction(baseToken.publicKeyString.get(), currentDateString);
+	const sendToAddress = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 100);
+
+	const seenAccounts: (InstanceType<typeof KeetaNet.lib.Account> | null)[] = [];
+	const baseHandlers = createBaseServerHandlers(baseToken, testTransaction, sendToAddress);
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+		...(logger ? { logger: logger } : {}),
+		client: { client: ownerClient.client },
+		assetMovement: {
+			authenticationRequired: true,
+			supportedAssets: createAuthenticatedSupportedAssets(testCurrencyUSDC.publicKeyString.get(), ownerClient.network),
+			...baseHandlers,
+			getTransferStatus: async function(_ignored_id: string, account): Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>> {
+				seenAccounts.push(account);
+				return({ transaction: testTransaction });
+			}
+		}
+	});
+
+	await server.start();
+
+	await ownerClient.setInfo({
+		description: 'Asset Movement Anchor Storage Account Agent Test Root',
+		name: 'TEST',
+		metadata: KeetaAnchorResolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: {
+				assetMovement: {
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unsafe-assignment
+					AgentTest: await server.serviceMetadata() as any
+				}
+			}
+		} satisfies ServiceMetadataExternalizable)
+	});
+
+	async function providerFor(storage: InstanceType<typeof KeetaNet.lib.Account>, signer: InstanceType<typeof KeetaNet.lib.Account>) {
+		const assetMovementClient = new KeetaNetAnchor.AssetMovement.Client(agentSpendingClient(ownerClient, storage, signer), {
+			root: ownerAccount,
+			...(logger ? { logger: logger } : {})
+		});
+
+		const providers = await assetMovementClient.getProvidersForTransfer({
+			from: { type: 'chain', chain: { type: 'keeta', networkId: ownerClient.network }},
+			to: { type: 'bank-account', account: { type: 'us' }},
+			asset: testCurrencyUSDC
+		});
+
+		const provider = providers?.[0];
+		if (providers?.length !== 1 || !provider) {
+			throw(new Error('Did not find any matching asset movement providers'));
+		}
+
+		return(provider);
+	}
+
+	function transferFrom(storage: InstanceType<typeof KeetaNet.lib.Account>): KeetaAssetMovementAnchorInitiateTransferClientRequest {
+		return({
+			asset: testCurrencyUSDC,
+			from: { location: `chain:keeta:${ownerClient.network}` },
+			to: { location: 'bank-account:us', recipient: 'account-123' },
+			value: '100',
+			account: storage
+		});
+	}
+
+	/* The agent signs with its own key; the anchor sees the owner */
+	const agentProvider = await providerFor(agentStorage.storage, agentAccount);
+	{
+		const transfer = await agentProvider.initiateTransfer(transferFrom(agentStorage.storage));
+		expect(transfer.transferID).toEqual('123');
+
+		const transferStatus = await agentProvider.getTransferStatus({ id: '555', account: agentStorage.storage });
+		expect(transferStatus).toEqual({ ok: true, transaction: testTransaction });
+
+		expect(seenAccounts).toHaveLength(1);
+		expect(seenAccounts[0]?.comparePublicKey(ownerAccount)).toBe(true);
+	}
+
+	/* The owner can still sign for its own storage account */
+	{
+		const ownerProvider = await providerFor(agentStorage.storage, ownerAccount);
+		const transfer = await ownerProvider.initiateTransfer(transferFrom(agentStorage.storage));
+		expect(transfer.transferID).toEqual('123');
+	}
+
+	/* A key with no grant cannot sign for the storage account */
+	{
+		const strangerProvider = await providerFor(agentStorage.storage, strangerAccount);
+		await expect(strangerProvider.initiateTransfer(transferFrom(agentStorage.storage))).rejects.toThrow(/Invalid signature/);
+		await expect(strangerProvider.getTransferStatus({ id: '555', account: agentStorage.storage })).rejects.toThrow(/Invalid signature/);
+	}
+
+	/* An agent of one storage account cannot sign for another */
+	{
+		const crossProvider = await providerFor(otherStorage.storage, agentAccount);
+		await expect(crossProvider.initiateTransfer(transferFrom(otherStorage.storage))).rejects.toThrow(/Invalid signature/);
+	}
+
+	/* After revoke, the agent's requests are refused */
+	await revokeAgentSpending(ownerClient, { agent: agentAccount, storage: agentStorage.storage, tokens: [ testCurrencyUSDC ] });
+	await expect(agentProvider.initiateTransfer(transferFrom(agentStorage.storage))).rejects.toThrow(/Invalid signature/);
+	await expect(agentProvider.getTransferStatus({ id: '555', account: agentStorage.storage })).rejects.toThrow(/Invalid signature/);
+
+	expect(seenAccounts).toHaveLength(1);
 }, 60_000);
