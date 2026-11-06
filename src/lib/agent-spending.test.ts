@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest';
 import { KeetaNet } from '../client/index.js';
 import { createNodeAndClient } from './utils/tests/node.js';
-import { addAgentSpendingFunds, agentPay, agentSpendingClient, buildOpenAgentSpendingAccount, getAgentSpendingAccount, listAgentSpendingAccounts, listAgentSpendingActivity, openAgentSpendingAccount, resolveAgentSpendingOwner, revokeAgentSpending } from './agent-spending.js';
+import { addAgentSpendingFunds, agentPay, agentSpendingClient, buildOpenAgentSpendingAccount, encodeAgentSpendingMetadata, getAgentSpendingAccount, listAgentSpendingAccounts, listAgentSpendingActivity, openAgentSpendingAccount, resolveAgentSpendingOwner, revokeAgentSpending } from './agent-spending.js';
 
 function newAccount() {
 	return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
@@ -29,11 +29,18 @@ test('agent spends from an owner-funded storage account until revoked', async fu
 	await nodeAndClient.give(owner, 200n);
 	const funded = await openAgentSpendingAccount(ownerClient, {
 		agent,
-		funding: [ { token: usd, amount: 500n }, { token: ownerClient.baseToken, amount: 100n } ]
+		funding: [ { token: usd, amount: 500n }, { token: ownerClient.baseToken, amount: 100n } ],
+		name: 'Shopping agent'
 	});
 
 	expect(funded.storage.isStorage()).toBe(true);
 	expect(await ownerClient.balance(usdToken, { account: funded.storage })).toBe(500n);
+
+	/* Created like a Keeta Wallet pocket, so the wallet can show it */
+	const { info } = await ownerClient.client.getAccountInfo(funded.storage);
+	expect(info.name).toBe('');
+	expect(info.description).toBe('Shopping agent');
+	expect(atob(info.metadata)).toMatch(/^\{"createdAt":\d+\}$/);
 
 	/* Payments from storage carry the owner's identity */
 	const resolvedOwner = await resolveAgentSpendingOwner(ownerClient, funded.storage);
@@ -89,6 +96,14 @@ test('owner lists, funds, reads and revokes agent spending accounts', async func
 
 	expect(await listAgentSpendingAccounts(ownerClient, owner)).toHaveLength(0);
 
+	/* A plain pocket, never granted to an agent, is not an agent */
+	const pocketBuilder = ownerClient.initBuilder();
+	const pocket = pocketBuilder.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+	await pocketBuilder.computeBlocks();
+	pocketBuilder.setInfo({ name: '', description: 'Savings', metadata: encodeAgentSpendingMetadata({ createdAt: new Date() }), defaultPermission: new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT']) }, { account: pocket.account });
+	await ownerClient.publishBuilder(pocketBuilder);
+	expect(await listAgentSpendingAccounts(ownerClient, owner)).toHaveLength(0);
+
 	const builder = ownerClient.initBuilder();
 	const { storage } = await buildOpenAgentSpendingAccount(builder, {
 		agent,
@@ -110,14 +125,15 @@ test('owner lists, funds, reads and revokes agent spending accounts', async func
 	expect(first?.agent.comparePublicKey(agent)).toBe(true);
 	expect(first?.name).toBe('Shopping agent');
 	expect(first?.active).toBe(true);
-	expect(first?.metadata.funded[usd.publicKeyString.get()]).toBe('500');
+	expect(first?.funded.find(function(entry) { return(entry.token.comparePublicKey(usd)); })?.amount).toBe(500n);
 
 	const agentClient = agentSpendingClient(ownerClient, storage, agent);
 	await agentPay(agentClient, merchant, 120n, usd, 'order-1');
 
 	await addAgentSpendingFunds(ownerClient, { storage, funding: [ { token: usd, amount: 250n } ] });
 	const afterFunds = await getAgentSpendingAccount(ownerClient, storage);
-	expect(afterFunds?.metadata.funded[usd.publicKeyString.get()]).toBe('750');
+	expect(afterFunds?.funded.find(function(entry) { return(entry.token.comparePublicKey(usd)); })?.amount).toBe(750n);
+	expect(afterFunds?.revokedAt).toBeUndefined();
 	expect(await ownerClient.balance(usdToken, { account: storage })).toBe(630n);
 
 	const activity = await listAgentSpendingActivity(ownerClient, storage);
@@ -141,8 +157,10 @@ test('owner lists, funds, reads and revokes agent spending accounts', async func
 
 	const revoked = await getAgentSpendingAccount(ownerClient, storage);
 	expect(revoked?.active).toBe(false);
-	expect(revoked?.metadata.revokedAt).toBeTypeOf('number');
-	expect(revoked?.metadata.returned?.[usd.publicKeyString.get()]).toBe('630');
+	expect(revoked?.revokedAt).toBeInstanceOf(Date);
+	expect(revoked?.returned.find(function(entry) { return(entry.token.comparePublicKey(usd)); })?.amount).toBe(630n);
+	expect(revoked?.agent.comparePublicKey(agent)).toBe(true);
+	expect(await listAgentSpendingAccounts(ownerClient, owner)).toHaveLength(1);
 	await expect(addAgentSpendingFunds(ownerClient, { storage, funding: [ { token: usd, amount: 1n } ] })).rejects.toThrow(/revoked/);
 
 	const afterRevoke = await listAgentSpendingActivity(ownerClient, storage);

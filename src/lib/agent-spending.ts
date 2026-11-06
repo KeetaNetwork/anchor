@@ -37,24 +37,6 @@ export type AgentSpendingFunding = {
 	amount: bigint;
 };
 
-/**
- * What the owner's wallet remembers about an agent spending account.  It is
- * stored in the storage account's metadata so any client of the owner (a
- * wallet, an agent tool) can list and describe the owner's agents.
- *
- * `funded` is the total the owner moved in; it is bookkeeping, not a limit the
- * network enforces.  The balance is the only enforced cap.
- */
-export type AgentSpendingMetadata = {
-	kind: 'agent-spending';
-	version: 1;
-	agent: string;
-	createdAt: number;
-	funded: { [token: string]: string; };
-	revokedAt?: number;
-	returned?: { [token: string]: string; };
-};
-
 export type OpenAgentSpendingAccountOptions = {
 	/**
 	 * The agent's own account.  Only its public key is needed; the owner
@@ -63,14 +45,14 @@ export type OpenAgentSpendingAccountOptions = {
 	agent: Account;
 
 	/**
-	 * Tokens to fund the storage account with.  Each token is also
-	 * allowed to be held by the storage account.
+	 * Tokens to fund the storage account with.
 	 */
 	funding: AgentSpendingFunding[];
 
 	/**
-	 * A label for the owner's own use.  It is public on the network, so it
-	 * should not contain anything private.
+	 * Name shown for the account in Keeta Wallet.  Stored the way the
+	 * wallet stores a pocket's name (the storage account's description).
+	 * It is public on the network.
 	 */
 	name?: string;
 
@@ -84,97 +66,35 @@ export type AgentSpendingAccount = {
 	agent: Account;
 };
 
-const AGENT_SPENDING_DEFAULT_PERMISSION = ['STORAGE_DEPOSIT'] as const;
+/**
+ * The default permission Keeta Wallet gives a pocket: it can hold any token
+ * and anyone can deposit into it.
+ */
+const POCKET_DEFAULT_PERMISSION = ['STORAGE_CAN_HOLD', 'STORAGE_DEPOSIT'] as const;
 
-function toUnixSeconds(date: Date): number {
-	return(Math.floor(date.getTime() / 1000));
-}
-
-export function encodeAgentSpendingMetadata(metadata: AgentSpendingMetadata): string {
-	const bytes = new TextEncoder().encode(JSON.stringify(metadata));
-	return(btoa(String.fromCharCode(...bytes)));
-}
-
-function isStringRecord(value: unknown): value is { [key: string]: string; } {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		return(false);
-	}
-
-	return(Object.values(value).every(function(entry) {
-		return(typeof entry === 'string');
-	}));
+/**
+ * Encode storage account metadata the way Keeta Wallet encodes a pocket's
+ * (web-wallet shared/fetches/pocket.ts): base64 JSON, seconds since epoch.
+ */
+export function encodeAgentSpendingMetadata(info: { createdAt: Date; }): string {
+	return(btoa(JSON.stringify({ createdAt: Math.floor(info.createdAt.getTime() / 1000) })));
 }
 
 /**
- * Decode the metadata of a storage account, or return null when it is not an
- * agent spending account.
+ * Read the creation date from pocket metadata, or the epoch when there is
+ * none (the wallet does the same).
  */
-export function decodeAgentSpendingMetadata(metadata: string): AgentSpendingMetadata | null {
-	if (metadata === '') {
-		return(null);
-	}
-
-	let parsed: unknown;
+function decodeCreatedAt(metadata: string): Date {
 	try {
-		const bytes = Uint8Array.from(atob(metadata), function(char) {
-			return(char.charCodeAt(0));
-		});
-		parsed = JSON.parse(new TextDecoder().decode(bytes));
+		const parsed: unknown = JSON.parse(atob(metadata));
+		if (typeof parsed === 'object' && parsed !== null && 'createdAt' in parsed && typeof parsed.createdAt === 'number') {
+			return(new Date(parsed.createdAt * 1000));
+		}
 	} catch {
-		return(null);
+		/* Not pocket metadata */
 	}
 
-	if (typeof parsed !== 'object' || parsed === null) {
-		return(null);
-	}
-
-	if (!('kind' in parsed) || parsed.kind !== 'agent-spending') {
-		return(null);
-	}
-
-	if (!('version' in parsed) || parsed.version !== 1) {
-		return(null);
-	}
-
-	if (!('agent' in parsed) || typeof parsed.agent !== 'string') {
-		return(null);
-	}
-
-	if (!('createdAt' in parsed) || typeof parsed.createdAt !== 'number') {
-		return(null);
-	}
-
-	if (!('funded' in parsed) || !isStringRecord(parsed.funded)) {
-		return(null);
-	}
-
-	const retval: AgentSpendingMetadata = {
-		kind: 'agent-spending',
-		version: 1,
-		agent: parsed.agent,
-		createdAt: parsed.createdAt,
-		funded: parsed.funded
-	};
-
-	if ('revokedAt' in parsed && typeof parsed.revokedAt === 'number') {
-		retval.revokedAt = parsed.revokedAt;
-	}
-
-	if ('returned' in parsed && isStringRecord(parsed.returned)) {
-		retval.returned = parsed.returned;
-	}
-
-	return(retval);
-}
-
-function addAmounts(base: { [token: string]: string; }, funding: AgentSpendingFunding[]): { [token: string]: string; } {
-	const retval = { ...base };
-	for (const { token, amount } of funding) {
-		const key = token.publicKeyString.get();
-		retval[key] = (BigInt(retval[key] ?? '0') + amount).toString();
-	}
-
-	return(retval);
+	return(new Date(0));
 }
 
 function assertFunding(funding: AgentSpendingFunding[]): void {
@@ -193,9 +113,15 @@ function assertFunding(funding: AgentSpendingFunding[]): void {
  * Add the operations that open, fund and grant an agent spending account to
  * `builder`.  The builder's account is the owner.  Everything lands in one
  * publish, so a wallet asks for a single signature.
+ *
+ * The account is created exactly like a Keeta Wallet pocket (web-wallet
+ * useCreatePocket): created in the same builder, name in the description,
+ * pocket metadata, and a default permission of STORAGE_CAN_HOLD and
+ * STORAGE_DEPOSIT.  The only additions are the agent's SEND_ON_BEHALF grant
+ * and the funding sends.
  */
 export async function buildOpenAgentSpendingAccount(builder: Builder, options: OpenAgentSpendingAccountOptions): Promise<{ storage: StorageAccount; }> {
-	const { agent, funding } = options;
+	const { agent, funding, name = 'Agent' } = options;
 
 	if (!agent.isAccount()) {
 		throw(new Error('Agent must be a keyed account'));
@@ -207,23 +133,11 @@ export async function buildOpenAgentSpendingAccount(builder: Builder, options: O
 	await builder.computeBlocks();
 	const storage = pending.account;
 
-	for (const { token } of funding) {
-		builder.updatePermissions(token, new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD']), undefined, undefined, { account: storage });
-	}
-
-	const metadata: AgentSpendingMetadata = {
-		kind: 'agent-spending',
-		version: 1,
-		agent: agent.publicKeyString.get(),
-		createdAt: toUnixSeconds(options.createdAt ?? new Date()),
-		funded: addAmounts({}, funding)
-	};
-
 	builder.setInfo({
 		name: '',
-		description: options.name ?? '',
-		metadata: encodeAgentSpendingMetadata(metadata),
-		defaultPermission: new KeetaNet.lib.Permissions([...AGENT_SPENDING_DEFAULT_PERMISSION])
+		description: name,
+		metadata: encodeAgentSpendingMetadata({ createdAt: options.createdAt ?? new Date() }),
+		defaultPermission: new KeetaNet.lib.Permissions([...POCKET_DEFAULT_PERMISSION])
 	}, { account: storage });
 
 	builder.updatePermissions(agent, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), undefined, undefined, { account: storage });
@@ -238,7 +152,7 @@ export async function buildOpenAgentSpendingAccount(builder: Builder, options: O
 
 /**
  * Open and fund a storage account owned by `ownerClient`'s account and grant
- * `agent` the right to spend from it, in one publish.
+ * `agent` the right to spend from it, in one publish (one wallet signature).
  */
 export async function openAgentSpendingAccount(ownerClient: UserClient, options: OpenAgentSpendingAccountOptions): Promise<AgentSpendingAccount> {
 	const builder = ownerClient.initBuilder();
@@ -252,36 +166,147 @@ export async function openAgentSpendingAccount(ownerClient: UserClient, options:
 	});
 }
 
+export type AgentSpendingTokenAmount = { token: Account; amount: bigint; };
+
 /**
- * The agent spending account as the owner sees it on the network.
+ * An agent spending account as the owner sees it.  Everything except the
+ * name and creation date is read from the network itself: the grant from the
+ * account's ACLs and history, the totals from its sends.
  */
 export type AgentSpendingAccountState = {
 	storage: StorageAccount;
 	agent: Account;
+	/** The pocket name (the storage account's description) */
 	name: string;
-	metadata: AgentSpendingMetadata;
+	createdAt: Date;
 	/** True while the agent still holds SEND_ON_BEHALF on the storage account */
 	active: boolean;
+	/** When the grant was removed, for a revoked account */
+	revokedAt?: Date;
+	/** Total the owner moved in, per token */
+	funded: AgentSpendingTokenAmount[];
+	/** Total moved back to the owner, per token */
+	returned: AgentSpendingTokenAmount[];
 	balances: { token: Account; balance: bigint; }[];
 };
 
-function readAgentSpendingState(storage: StorageAccount, info: { description: string; metadata: string; }, acls: Awaited<ReturnType<Client['listACLsByEntity']>>, balances: { token: Account; balance: bigint; }[]): AgentSpendingAccountState | null {
-	const metadata = decodeAgentSpendingMetadata(info.metadata);
-	if (metadata === null) {
+const HISTORY_PAGE_SIZE = 50;
+const HISTORY_PAGE_LIMIT = 20;
+
+function addTo(totals: AgentSpendingTokenAmount[], token: Account, amount: bigint): void {
+	const existing = totals.find(function(entry) {
+		return(entry.token.comparePublicKey(token));
+	});
+
+	if (existing) {
+		existing.amount += amount;
+	} else {
+		totals.push({ token, amount });
+	}
+}
+
+function grantsSendOnBehalf(permissions: InstanceType<typeof KeetaNet.lib.Permissions> | null): boolean {
+	return(permissions?.has(['SEND_ON_BEHALF']) === true);
+}
+
+/**
+ * Walk a storage account's history and pull out what makes it an agent
+ * spending account.  Returns null when no agent was ever granted
+ * SEND_ON_BEHALF on it (a plain pocket).
+ */
+async function readAgentSpendingHistory(base: Client, storage: StorageAccount, owner: Account): Promise<{ agent: Account; revokedAt?: Date; funded: AgentSpendingTokenAmount[]; returned: AgentSpendingTokenAmount[]; } | null> {
+	let agent: Account | undefined;
+	let revokedAt: Date | undefined;
+	const funded: AgentSpendingTokenAmount[] = [];
+	const returned: AgentSpendingTokenAmount[] = [];
+
+	let startBlocksHash: string | undefined;
+	for (let page = 0; page < HISTORY_PAGE_LIMIT; page++) {
+		const history = await base.getHistory(storage, {
+			...(startBlocksHash !== undefined ? { startBlocksHash } : {}),
+			pageSize: HISTORY_PAGE_SIZE
+		});
+
+		/* Newest first, so the first grant change seen is the latest one */
+		for (const { voteStaple } of history) {
+			for (const block of voteStaple.blocks) {
+				for (const operation of block.operations) {
+					if (operation.type === KeetaNet.lib.Block.OperationType.MODIFY_PERMISSIONS) {
+						if (!block.account.comparePublicKey(storage) || !grantsSendOnBehalf(operation.permissions)) {
+							continue;
+						}
+
+						const principal = operation.principal;
+						if (!(principal instanceof KeetaNet.lib.Account)) {
+							continue;
+						}
+
+						if (agent === undefined) {
+							agent = principal;
+							if (operation.method === KeetaNet.lib.Block.AdjustMethod.SUBTRACT) {
+								revokedAt = voteStaple.timestamp();
+							}
+						}
+
+						continue;
+					}
+
+					if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+						continue;
+					}
+
+					if (operation.to.comparePublicKey(storage) && block.account.comparePublicKey(owner)) {
+						addTo(funded, operation.token, operation.amount);
+					} else if (block.account.comparePublicKey(storage) && operation.to.comparePublicKey(owner)) {
+						addTo(returned, operation.token, operation.amount);
+					}
+				}
+			}
+		}
+
+		const last = history.at(-1);
+		if (history.length < HISTORY_PAGE_SIZE || last === undefined) {
+			break;
+		}
+
+		startBlocksHash = last.voteStaple.blocksHash.toString();
+	}
+
+	if (agent === undefined) {
 		return(null);
 	}
 
-	const agent = KeetaNet.lib.Account.fromPublicKeyString(metadata.agent);
+	return({
+		agent,
+		...(revokedAt !== undefined ? { revokedAt } : {}),
+		funded,
+		returned
+	});
+}
+
+async function readAgentSpendingState(base: Client, storage: StorageAccount, owner: Account, info: { description: string; metadata: string; }, balances: { token: Account; balance: bigint; }[]): Promise<AgentSpendingAccountState | null> {
+	const [ history, acls ] = await Promise.all([
+		readAgentSpendingHistory(base, storage, owner),
+		base.listACLsByEntity(storage)
+	]);
+
+	if (history === null) {
+		return(null);
+	}
+
 	const active = acls.some(function(acl) {
-		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(agent) && acl.permissions.has(['SEND_ON_BEHALF']));
+		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(history.agent) && acl.permissions.has(['SEND_ON_BEHALF']));
 	});
 
 	return({
 		storage,
-		agent,
+		agent: history.agent,
 		name: info.description,
-		metadata,
+		createdAt: decodeCreatedAt(info.metadata),
 		active,
+		...(!active && history.revokedAt !== undefined ? { revokedAt: history.revokedAt } : {}),
+		funded: history.funded,
+		returned: history.returned,
 		balances
 	});
 }
@@ -296,17 +321,17 @@ export async function getAgentSpendingAccount(client: UserClient | Client, stora
 	}
 
 	const storageAccount = storage.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
-	const [ state, acls ] = await Promise.all([
+	const [ state, owner ] = await Promise.all([
 		base.getAccountInfo(storageAccount),
-		base.listACLsByEntity(storageAccount)
+		resolveStorageAccountOwner(base, storageAccount)
 	]);
 
-	return(readAgentSpendingState(storageAccount, state.info, acls, state.balances));
+	return(await readAgentSpendingState(base, storageAccount, owner, state.info, state.balances));
 }
 
 /**
  * List every agent spending account `owner` owns, active and revoked, newest
- * first.
+ * first.  Pockets the owner never granted to an agent are left out.
  */
 export async function listAgentSpendingAccounts(client: UserClient | Client, owner: Account): Promise<AgentSpendingAccountState[]> {
 	const base = 'client' in client ? client.client : client;
@@ -320,20 +345,17 @@ export async function listAgentSpendingAccounts(client: UserClient | Client, own
 		return(row.principals.some(function(acl) {
 			return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(owner) && acl.permissions.has(['OWNER']));
 		}));
-	}).filter(function(row) {
-		return(decodeAgentSpendingMetadata(row.info.metadata) !== null);
 	});
 
 	const states = await Promise.all(owned.map(async function(row) {
 		const storage = row.entity.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
-		const acls = await base.listACLsByEntity(storage);
-		return(readAgentSpendingState(storage, row.info, acls, row.balances));
+		return(await readAgentSpendingState(base, storage, owner, row.info, row.balances));
 	}));
 
 	return(states.filter(function(state): state is AgentSpendingAccountState {
 		return(state !== null);
 	}).sort(function(a, b) {
-		return(b.metadata.createdAt - a.metadata.createdAt);
+		return(b.createdAt.getTime() - a.createdAt.getTime());
 	}));
 }
 
@@ -343,9 +365,9 @@ export type AddAgentSpendingFundsOptions = {
 };
 
 /**
- * Add the operations that move more funds into an agent spending account.
- * Tokens the account cannot hold yet are allowed first, and the funded total
- * in the metadata is raised in the same publish.
+ * Add the sends that move more funds into an agent spending account.  This
+ * is the same as moving funds into a wallet pocket; it only refuses an
+ * account whose agent has been revoked.
  */
 export async function buildAddAgentSpendingFunds(builder: Builder, client: UserClient | Client, options: AddAgentSpendingFundsOptions): Promise<void> {
 	const { storage, funding } = options;
@@ -359,26 +381,6 @@ export async function buildAddAgentSpendingFunds(builder: Builder, client: UserC
 	if (!state.active) {
 		throw(new Error('Agent spending account has been revoked'));
 	}
-
-	const base = 'client' in client ? client.client : client;
-	const acls = await base.listACLsByEntity(state.storage);
-
-	for (const { token } of funding) {
-		const canHold = acls.some(function(acl) {
-			return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(token) && acl.permissions.has(['STORAGE_CAN_HOLD']));
-		});
-
-		if (!canHold) {
-			builder.updatePermissions(token, new KeetaNet.lib.Permissions(['STORAGE_CAN_HOLD']), undefined, undefined, { account: state.storage });
-		}
-	}
-
-	builder.setInfo({
-		name: '',
-		description: state.name,
-		metadata: encodeAgentSpendingMetadata({ ...state.metadata, funded: addAmounts(state.metadata.funded, funding) }),
-		defaultPermission: new KeetaNet.lib.Permissions([...AGENT_SPENDING_DEFAULT_PERMISSION])
-	}, { account: state.storage });
 
 	for (const { token, amount } of funding) {
 		const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -427,8 +429,6 @@ export type RevokeAgentSpendingOptions = {
 	storage: Account;
 	/** Tokens to sweep back to the owner.  Defaults to every token with a balance. */
 	tokens?: Account[];
-	/** Defaults to now */
-	revokedAt?: Date;
 };
 
 export type RevokeAgentSpendingResult = {
@@ -438,8 +438,8 @@ export type RevokeAgentSpendingResult = {
 /**
  * Add the operations that remove the agent's grant and return the leftover
  * balance to the owner.  They land in one publish so the agent cannot race a
- * payment in between.  When the account carries agent spending metadata, it
- * is marked revoked in the same publish.
+ * payment in between.  The account stays a pocket of the owner's; the
+ * revoke itself is the record of when the agent lost access.
  */
 export async function buildRevokeAgentSpending(builder: Builder, ownerClient: UserClient, options: RevokeAgentSpendingOptions): Promise<RevokeAgentSpendingResult> {
 	const { agent, storage } = options;
@@ -469,25 +469,6 @@ export async function buildRevokeAgentSpending(builder: Builder, ownerClient: Us
 		const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 		builder.send(ownerClient.account, amount, tokenAccount, undefined, { account: storage });
 		returned.push({ token, amount });
-	}
-
-	const state = await getAgentSpendingAccount(ownerClient, storage);
-	if (state !== null) {
-		const returnedMetadata: { [token: string]: string; } = {};
-		for (const { token, amount } of returned) {
-			returnedMetadata[token.publicKeyString.get()] = amount.toString();
-		}
-
-		builder.setInfo({
-			name: '',
-			description: state.name,
-			metadata: encodeAgentSpendingMetadata({
-				...state.metadata,
-				revokedAt: toUnixSeconds(options.revokedAt ?? new Date()),
-				returned: returnedMetadata
-			}),
-			defaultPermission: new KeetaNet.lib.Permissions([...AGENT_SPENDING_DEFAULT_PERMISSION])
-		}, { account: storage });
 	}
 
 	return({ returned });
