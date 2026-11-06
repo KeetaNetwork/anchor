@@ -41,6 +41,12 @@ export default {
 	words: [
 		...keetanetNodeWords,
 		// Anchor-specific words
+		'Cosm',
+		'cosmwasm',
+		'RUSTFLAGS',
+		'rustflags',
+		'merkle',
+		'subdenom',
 		'Anchor',
 		'Anchorlist',
 		'ACCOUNTOWNERS',

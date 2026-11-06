@@ -1,0 +1,18 @@
+import { createAssertEquals } from 'typia';
+import type {
+	KeetaContractsAnchorUploadRequestJSON,
+	KeetaContractsAnchorInstantiateRequestJSON,
+	KeetaContractsAnchorExecuteRequestJSON,
+	KeetaContractsAnchorMigrateRequestJSON,
+	KeetaContractsAnchorQueryRequestJSON,
+	KeetaContractsAnchorProveRequestJSON,
+	KeetaContractsAnchorSimulateRequestJSON
+} from './common.ts';
+
+export const assertKeetaContractsAnchorUploadRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorUploadRequestJSON>> = createAssertEquals<KeetaContractsAnchorUploadRequestJSON>();
+export const assertKeetaContractsAnchorInstantiateRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorInstantiateRequestJSON>> = createAssertEquals<KeetaContractsAnchorInstantiateRequestJSON>();
+export const assertKeetaContractsAnchorExecuteRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorExecuteRequestJSON>> = createAssertEquals<KeetaContractsAnchorExecuteRequestJSON>();
+export const assertKeetaContractsAnchorMigrateRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorMigrateRequestJSON>> = createAssertEquals<KeetaContractsAnchorMigrateRequestJSON>();
+export const assertKeetaContractsAnchorQueryRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorQueryRequestJSON>> = createAssertEquals<KeetaContractsAnchorQueryRequestJSON>();
+export const assertKeetaContractsAnchorProveRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorProveRequestJSON>> = createAssertEquals<KeetaContractsAnchorProveRequestJSON>();
+export const assertKeetaContractsAnchorSimulateRequestJSON: ReturnType<typeof createAssertEquals<KeetaContractsAnchorSimulateRequestJSON>> = createAssertEquals<KeetaContractsAnchorSimulateRequestJSON>();
