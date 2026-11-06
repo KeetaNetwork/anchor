@@ -956,6 +956,10 @@ type ValuizableInstance = { value: ValuizableMethod };
  * Instance type ID for anonymous Valuizable methods created dynamically
  */
 const ANONYMOUS_VALUIZABLE_INSTANCE_TYPE_ID = 'Anonymous:6e69d6db-9263-466d-9c96-4b92ced498bd';
+/** Default milliseconds to keep a successful read and its resolved supportedAssets in the cache */
+const DEFAULT_POSITIVE_TTL = 60 * 1000;
+/** Default milliseconds to keep a failed read in the cache before the next read tries the URL again */
+const DEFAULT_NEGATIVE_TTL = 5 * 1000;
 
 class Metadata implements ValuizableInstance {
 	readonly #cache: Required<NonNullable<MetadataConfig['cache']>>;
@@ -968,6 +972,7 @@ class Metadata implements ValuizableInstance {
 	readonly #allowInsecureProtocols: boolean;
 	readonly #signing: NonNullable<MetadataConfig['signing']> | null;
 	readonly #urlOptions: ExternalURLOptions | undefined;
+	readonly #valuizeResults = new WeakMap<object, Promise<ValuizeInput>>();
 
 	private readonly seenURLs: Map<string, number>;
 
@@ -1057,17 +1062,17 @@ class Metadata implements ValuizableInstance {
 	 * structure needs to be fully realized, as it
 	 * can be quite expensive.
 	 */
-	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement?: JSONSerializable, onInvalid?: () => void): Promise<JSONSerializable>;
 	// eslint-disable-next-line @typescript-eslint/unified-signatures,@typescript-eslint/no-explicit-any
-	static async fullyResolveValuizable(value: any, invalidReplacement?: JSONSerializable): Promise<JSONSerializable>;
-	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement: JSONSerializable = null): Promise<JSONSerializable> {
+	static async fullyResolveValuizable(value: any, invalidReplacement?: JSONSerializable, onInvalid?: () => void): Promise<JSONSerializable>;
+	static async fullyResolveValuizable(value: ValuizeResolvable, invalidReplacement: JSONSerializable = null, onInvalid?: () => void): Promise<JSONSerializable> {
 		if (typeof value === 'object' && value !== null) {
 			if (Array.isArray(value)) {
 				const newArray: JSONSerializable[] = [];
 				for (let i = 0; i < value.length; i++) {
 					const entry = value[i];
 					if (Metadata.isValuizable(entry)) {
-						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						const newEntry = await Metadata.fullyResolveValuizable(entry, undefined, onInvalid);
 						newArray.push(newEntry);
 					} else if (entry === undefined) {
 						throw(new Error(`Array entry ${i} is undefined, which is not valid in JSON`));
@@ -1088,7 +1093,7 @@ class Metadata implements ValuizableInstance {
 					// @ts-ignore
 					const entry = value[key];
 					if (Metadata.isValuizable(entry)) {
-						const newEntry = await Metadata.fullyResolveValuizable(entry);
+						const newEntry = await Metadata.fullyResolveValuizable(entry, undefined, onInvalid);
 						newObject[key] = newEntry;
 					} else if (entry === undefined) {
 						throw(new Error(`Object key "${key}" is undefined, which is not valid in JSON`));
@@ -1104,8 +1109,9 @@ class Metadata implements ValuizableInstance {
 		if (Metadata.isValuizable(value)) {
 			try {
 				const retval = await value('any');
-				return(await Metadata.fullyResolveValuizable(retval));
+				return(await Metadata.fullyResolveValuizable(retval, undefined, onInvalid));
 			} catch {
+				onInvalid?.();
 				return(invalidReplacement);
 			}
 		}
@@ -1148,8 +1154,8 @@ class Metadata implements ValuizableInstance {
 		this.#cache = {
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			instance: config.cache?.instance ?? new Map() satisfies URLCacheObject as URLCacheObject,
-			positiveTTL: config.cache?.positiveTTL ?? 60 * 1000,
-			negativeTTL: config.cache?.negativeTTL ?? 5 * 1000
+			positiveTTL: config.cache?.positiveTTL ?? DEFAULT_POSITIVE_TTL,
+			negativeTTL: config.cache?.negativeTTL ?? DEFAULT_NEGATIVE_TTL
 		};
 		this.#trustedCAs = config.trustedCAs;
 		this.#client = config.client;
@@ -1554,7 +1560,21 @@ class Metadata implements ValuizableInstance {
 	async value(expect: ValuizableKind = 'any'): Promise<ValuizeInput> {
 		const value = await this.readURL(this.#url, this.#urlOptions, true);
 
-		const retval = this.assertValuizableKind(await this.valuize(value), expect);
+		/*
+		 * Reads served from the cache return the same object, so reuse
+		 * its Valuizable tree to keep the nested Valuizable methods stable
+		 */
+		if (typeof value !== 'object' || value === null) {
+			return(this.assertValuizableKind(await this.valuize(value), expect));
+		}
+
+		let valuizeResult = this.#valuizeResults.get(value);
+		if (valuizeResult === undefined) {
+			valuizeResult = this.valuize(value);
+			this.#valuizeResults.set(value, valuizeResult);
+		}
+
+		const retval = this.assertValuizableKind(await valuizeResult, expect);
 
 		return(retval);
 	}
@@ -1691,6 +1711,7 @@ class Resolver {
 	/** EVM asset ids already warned about, to avoid repeating the info log. */
 	readonly #warnedNonCanonicalizedAssets = new Set<string>();
 	readonly #evmChecksumCache: EVMChecksumCache = new Map();
+	#resolvedSupportedAssets = new WeakMap<ValuizableMethod, { resolved: Promise<JSONSerializable>; expires: Date; }>();
 
 	readonly id: string;
 
@@ -2136,12 +2157,45 @@ class Resolver {
 		return(canonicalized);
 	}
 
+	async #resolveSupportedAssets(supportedAssets: ValuizableMethod | undefined): Promise<JSONSerializable> {
+		if (supportedAssets === undefined) {
+			return(await Metadata.fullyResolveValuizable(supportedAssets));
+		}
+
+		const cached = this.#resolvedSupportedAssets.get(supportedAssets);
+		if (cached !== undefined && cached.expires >= new Date()) {
+			return(await cached.resolved);
+		}
+
+		const resolvedSupportedAssets = this.#resolvedSupportedAssets;
+		let readFailed = false;
+		const entry = {
+			resolved: Metadata.fullyResolveValuizable(supportedAssets, null, function() {
+				readFailed = true;
+			}),
+			expires: new Date(Date.now() + (this.#metadataCache.positiveTTL ?? DEFAULT_POSITIVE_TTL))
+		};
+		resolvedSupportedAssets.set(supportedAssets, entry);
+
+		let keepEntry = false;
+		try {
+			const resolved = await entry.resolved;
+			/* A failed read resolves to null instead of a rejection, so keep only a result with no failed reads */
+			keepEntry = !readFailed;
+			return(resolved);
+		} finally {
+			if (!keepEntry && resolvedSupportedAssets.get(supportedAssets) === entry) {
+				resolvedSupportedAssets.delete(supportedAssets);
+			}
+		}
+	}
+
 	async filterSupportedAssets(assetService: ValuizableObject, criteria: ServiceSearchCriteria<'assetMovement'> = {}): Promise<SupportedAssetsMetadata[]> {
 		const assetCanonical = criteria.asset ? convertAssetOrPairSearchInputToCanonical(criteria.asset) : undefined;
 		const fromCanonical = criteria.from ? convertAssetLocationInputToCanonical(criteria.from) : undefined;
 		const toCanonical = criteria.to ? convertAssetLocationInputToCanonical(criteria.to) : undefined;
 
-		const resolvedService = await Metadata.fullyResolveValuizable(assetService.supportedAssets);
+		const resolvedService = await this.#resolveSupportedAssets(assetService.supportedAssets);
 		if (!Array.isArray(resolvedService)) {
 			throw(new Error('Expected "supportedAssets" to be an array'));
 		}
@@ -2981,6 +3035,7 @@ class Resolver {
 
 	clearCache(): void {
 		this.#metadataCache.instance.clear();
+		this.#resolvedSupportedAssets = new WeakMap();
 		this.#stats.cache.hit = 0;
 		this.#stats.cache.miss = 0;
 		this.#stats.https.reads = 0;
