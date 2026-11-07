@@ -12,7 +12,7 @@
  *
  * USDC amounts use 6 decimals, so one cent is 10,000 base units.
  */
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardMerchant, CardRevealToken } from './common.js';
 import type { CardProvider, CardProviderCard, CardProviderCreateInput } from './provider.js';
 
@@ -122,8 +122,8 @@ export class MockCardProvider implements CardProvider {
 			throw(new Error('The owner has no approved card customer with the issuer'));
 		}
 
-		const providerCardID = `ic_mock_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
-		const last4 = String(1000 + Math.floor(Math.random() * 9000));
+		const providerCardID = `ic_mock_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+		const last4 = String(randomInt(1000, 10000));
 		const expiryDate = new Date();
 		expiryDate.setUTCFullYear(expiryDate.getUTCFullYear() + 3);
 		const expiry = `${String(expiryDate.getUTCMonth() + 1).padStart(2, '0')}/${String(expiryDate.getUTCFullYear()).slice(2)}`;

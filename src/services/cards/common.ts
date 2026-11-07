@@ -183,12 +183,28 @@ export const DEFAULT_CARD_DELEGATE_OPERATIONS: readonly CardsOperationName[] = O
 ]);
 
 /**
+ * Orders strings by UTF-16 code unit, like the default sort, but explicit.
+ * Not localeCompare: the signed bytes must not depend on the locale.
+ */
+function compareCodeUnits(a: unknown, b: unknown): number {
+	const left = String(a);
+	const right = String(b);
+	if (left < right) {
+		return(-1);
+	}
+	if (left > right) {
+		return(1);
+	}
+	return(0);
+}
+
+/**
  * A stable string for a controls object, so the client and server sign the
  * same bytes whatever order the fields arrive in.
  */
 export function canonicalControls(controls: CardControls): string {
 	const ordered: { [key: string]: unknown } = {};
-	for (const key of Object.keys(controls).sort()) {
+	for (const key of Object.keys(controls).sort(compareCodeUnits)) {
 		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 		const value = controls[key as keyof CardControls];
 		if (value === undefined) {
@@ -196,7 +212,7 @@ export function canonicalControls(controls: CardControls): string {
 		}
 
 		if (Array.isArray(value)) {
-			ordered[key] = [...value].sort();
+			ordered[key] = [...value].sort(compareCodeUnits);
 		} else {
 			ordered[key] = value;
 		}

@@ -28,6 +28,14 @@ import type { CardProvider, CardProviderCard, CardProviderCreateInput } from './
 export const LITHIC_SANDBOX_URL = 'https://sandbox.lithic.com';
 export const LITHIC_PRODUCTION_URL = 'https://api.lithic.com';
 
+function trimTrailingSlashes(url: string): string {
+	let end = url.length;
+	while (end > 0 && url[end - 1] === '/') {
+		end--;
+	}
+	return(url.slice(0, end));
+}
+
 /** Lithic's names for the chains a deposit address can be on */
 export type LithicNetwork = 'BASE' | 'ETHEREUM' | 'SOLANA';
 
@@ -240,7 +248,7 @@ export class LithicCardProvider implements CardProvider {
 	#authorizer: ((request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>) | null = null;
 
 	constructor(options: LithicCardProviderOptions) {
-		this.baseURL = (options.baseURL ?? LITHIC_SANDBOX_URL).replace(/\/+$/, '');
+		this.baseURL = trimTrailingSlashes(options.baseURL ?? LITHIC_SANDBOX_URL);
 		this.depositNetwork = options.depositNetwork ?? 'BASE';
 		this.#apiKey = options.apiKey;
 		this.#asaSecret = options.asaSecret;
