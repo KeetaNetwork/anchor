@@ -23,7 +23,7 @@ import type { AnchorExternalInput } from './anchor-external.js';
 import type { AnchorMetadataLegalField } from './metadata.types.js';
 import type { ClientRenderableContent } from './metadata.types.js';
 import { AnchorExternalBuilder } from './anchor-external.js';
-import { KeetaAnchorError } from './error.js';
+import { KeetaAnchorError, KeetaAnchorUserError } from './error.js';
 
 type FXQuoteOrEstimate = NonNullable<Awaited<ReturnType<KeetaFXAnchorClient['getQuotesOrEstimates']>>>[number];
 type AssetMovementProvider = NonNullable<Awaited<ReturnType<KeetaAssetMovementAnchorClient['getProvidersForTransfer']>>>[number];
@@ -112,6 +112,29 @@ export type AnchorChainingPathExecuteOptions = {
 	requireSendAuth?: boolean;
 	abortSignal?: AbortSignal;
 	poll?: PublicRetryOptions;
+	/**
+	 * Maximum time in milliseconds to wait for each polled step, not for the whole plan.
+	 * The default is 10 minutes. If the value is `Infinity`, the step polls until it
+	 * completes or `abortSignal` aborts, and retryable provider errors retry without a limit.
+	 */
+	timeoutMs?: number;
+	/**
+	 * Delay in milliseconds between status polls of each polled step. The default is 2 seconds.
+	 * The delay never goes past the step timeout.
+	 */
+	intervalMs?: number;
+	/**
+	 * How far, in basis points, a step's actual output may fall below the next step's
+	 * planned input before execution fails. Quotes can move between planning and
+	 * execution (for example a cross-asset bridge re-quotes when it delivers), so a
+	 * small shortfall is not always a provider error. The default is 0, which requires
+	 * the full planned amount. The value must be an integer from 0 to 10000.
+	 *
+	 * Steps that send from the user's account (FX and `KEETA_SEND` steps) still send
+	 * their planned amount, so a shortfall before one of those comes from the user's
+	 * balance.
+	 */
+	slippageBps?: number;
 };
 
 export type AnchorChainingPathState =
@@ -284,6 +307,10 @@ export type ForwardingOnlyOptions = {
 };
 
 const DEFAULT_FORWARDING_MAX_LEGS = 2;
+const DEFAULT_STEP_TIMEOUT_MS = 600_000;
+const DEFAULT_POLL_INTERVAL_MS = 2000;
+/* withRetry rejects a non-finite maxTotalMs, so an unlimited step timeout uses this budget */
+const UNLIMITED_RETRY_BUDGET_MS = Number.MAX_SAFE_INTEGER;
 
 function normalizeForwardingOnlyOptions(forwardingOnly: boolean | ForwardingOnlyOptions | undefined): ForwardingOnlyOptions | undefined {
 	if (!forwardingOnly) {
@@ -458,6 +485,14 @@ function validateRequest(request: AnchorChainingPathInput): { affinity: 'to' | '
 }
 
 /**
+ * Whether the source rail sets initiateTransfer to false.
+ */
+function sourceRailForbidsInitiate(step: AssetMovementGraphNode): boolean {
+	const forbidsInitiate = step.from.supportedOperations?.initiateTransfer === false;
+	return(forbidsInitiate);
+}
+
+/**
  * Whether #computePlan's default-mode scan would select persistent forwarding
  * for this step. Mirrors that selection exactly, including the non-Keeta
  * restriction: a Keeta-source leg is always a user-initiated send, never PFR,
@@ -474,7 +509,7 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
 	const priorStep = index > 0 ? path[index - 1] : null;
 	const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 	const pfrSupported = step.from.supportedOperations?.createPersistentForwarding === true;
-	const initiateForbidden = step.from.supportedOperations?.initiateTransfer === false;
+	const initiateForbidden = sourceRailForbidsInitiate(step);
 	const sourceIsKeeta = isChainLocation(toAssetLocation(step.from.location), 'keeta');
 
 	return(!sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported)));
@@ -1832,13 +1867,81 @@ function computeFeeTotalFromBreakdown(valueIn: bigint, fees: AssetFeeBreakdown |
 	return(feeTotal);
 }
 
+/**
+ * Basis points copied from the asset-movement SDK constant
+ * FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS.
+ * One VALUE_VARIABLE line item at this rate, with no fee value and no total,
+ * is an unavailable fee quote.
+ */
+const FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS = 10_000;
+
+function isForwardingFeeQuoteUnavailable(fees?: PersistentAddressAssetFeeBreakdown): boolean {
+	if (fees === undefined) {
+		return(false);
+	}
+
+	if ('total' in fees && fees.total !== undefined && fees.total !== '') {
+		return(false);
+	}
+
+	const lineItem = fees.lineItems[0];
+	if (lineItem === undefined || fees.lineItems.length !== 1) {
+		return(false);
+	}
+
+	if ('value' in lineItem && lineItem.value !== '') {
+		return(false);
+	}
+
+	if (lineItem.purpose !== 'VALUE_VARIABLE' || lineItem.basisPoints !== FORWARDING_FEE_QUOTE_ERROR_BASIS_POINTS) {
+		return(false);
+	}
+
+	return(true);
+}
+
 function estimateValueOutFromPersistentForwardingFees(valueIn: bigint, fees?: PersistentAddressAssetFeeBreakdown): bigint {
-	if (!fees) {
+	if (fees === undefined) {
 		return(valueIn);
+	}
+
+	if (isForwardingFeeQuoteUnavailable(fees)) {
+		return(0n);
 	}
 
 	const valueOut = valueIn - computeFeeTotalFromBreakdown(valueIn, fees);
 	return(valueOut < 1n ? 1n : valueOut);
+}
+
+function getSimulatedReceiveAmount(
+	simulatedTransfer: Awaited<ReturnType<AssetMovementProvider['simulateTransfer']>>,
+	rail: SimulatedAssetTransferInstructions['type']
+): bigint | undefined {
+	const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof rail }> => {
+		return(instr.type === rail);
+	});
+	if (!simulatedInstruction) {
+		return(undefined);
+	}
+
+	let simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
+	if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
+		simulatedTotalReceive = simulatedInstruction.value;
+	}
+	if (simulatedTotalReceive === undefined) {
+		return(undefined);
+	}
+
+	const receiveAmount = BigInt(simulatedTotalReceive);
+	return(receiveAmount);
+}
+
+/**
+ * The least of `value` that a step may receive when `slippageBps` basis points
+ * of shortfall are allowed. Rounds up, so the shortfall never exceeds the tolerance.
+ */
+export function minimumValueAfterSlippage(value: bigint, slippageBps: number): bigint {
+	return((value * BigInt(10000 - slippageBps) + 9999n) / 10000n);
 }
 
 /** @internal Exported for unit tests. */
@@ -1865,6 +1968,11 @@ export type AnchorChainingFeeLineItem = {
 	value?: string;
 	basisPoints?: number;
 	details?: ClientRenderableContent;
+	/**
+	 * The persistent-forwarding fee quote for this line is unavailable.
+	 * The line carries no amount.
+	 */
+	unknown?: true;
 	metadata: AnchorChainingFeeLineItemMetadata;
 };
 
@@ -1981,7 +2089,20 @@ export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPla
 		}
 
 		if (step.persistentAddress.fees) {
+			/*
+			 * An unavailable persistent-forwarding quote lists the full deposit at 10000 basis points.
+			 * That line is marked unknown.
+			 */
+			const quotedFeeCount = lineItems.length;
 			appendBreakdown(step.persistentAddress.fees, 'persistentAddress');
+			if (isForwardingFeeQuoteUnavailable(step.persistentAddress.fees)) {
+				for (let lineIndex = quotedFeeCount; lineIndex < lineItems.length; lineIndex++) {
+					const feeLine = lineItems[lineIndex];
+					if (feeLine) {
+						feeLine.unknown = true;
+					}
+				}
+			}
 			continue;
 		}
 
@@ -2173,6 +2294,15 @@ export class AnchorChainingPath {
 	}
 }
 
+/* Status reads are safe to repeat */
+function isStatusPollRetryable(error: unknown): boolean {
+	if (!KeetaAnchorUserError.isInstance(error)) {
+		return(true);
+	}
+
+	return(error.retryable || error.statusCode >= 500);
+}
+
 export class AnchorChainingPlanCreateError extends KeetaAnchorError {
 	static override readonly name: string = 'AnchorChainingPlanCreateError';
 	private readonly AnchorChainingPlanCreateErrorObjectTypeID!: string;
@@ -2305,7 +2435,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (!await forwardedProvider.isOperationSupported('createPersistentForwarding')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support createPersistentForwarding, but the source rail ${scanStep.from.rail} at ${convertAssetLocationToString(scanStep.from.location)} requires it (initiateTransfer is unsupported)`));
 			}
-			if (!forwardingOnly && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
+			const needsSimulate = !sourceRailForbidsInitiate(scanStep);
+			if (!forwardingOnly && needsSimulate && !await forwardedProvider.isOperationSupported('simulateTransfer')) {
 				throw(new Error(`Asset movement provider ${scanStep.providerID} does not support simulateTransfer, which is required to compute valueOut for a persistent-forwarding step at ${convertAssetLocationToString(scanStep.from.location)}`));
 			}
 
@@ -2444,7 +2575,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			const priorStep = scanIndex > 0 ? this.path[scanIndex - 1] : null;
 			const isAmpToAmpTransition = priorStep?.type === 'assetMovement';
 			const pfrSupported = scanStep.from.supportedOperations?.createPersistentForwarding === true;
-			const initiateForbidden = scanStep.from.supportedOperations?.initiateTransfer === false;
+			const initiateForbidden = sourceRailForbidsInitiate(scanStep);
 			const sourceIsKeeta = isChainLocation(toAssetLocation(scanStep.from.location), 'keeta');
 
 			const shouldUsePFR = !sourceIsKeeta && (initiateForbidden || (isAmpToAmpTransition && pfrSupported));
@@ -2592,11 +2723,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							if (forwardedInfo) {
 								const { provider: forwardedProvider, persistentAddress } = forwardedInfo;
 
-								let estimatedValueOut = depositValue;
+								let estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
 								let simulatedTransfer: Awaited<ReturnType<typeof forwardedProvider.simulateTransfer>> | undefined;
-								if (forwardingOnly) {
-									estimatedValueOut = estimateValueOutFromPersistentForwardingFees(depositValue, persistentAddress.fees);
-								} else if (await forwardedProvider.isOperationSupported('simulateTransfer')) {
+								const needsSimulate = !sourceRailForbidsInitiate(step);
+								if (!forwardingOnly && needsSimulate && await forwardedProvider.isOperationSupported('simulateTransfer')) {
 									try {
 										const { signer: forwardedSigner } = await this.getAccountsForAction({
 											type: 'assetMovement',
@@ -2611,19 +2741,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 											value: depositValue
 										});
 
-										const simulatedInstruction = simulatedTransfer.instructions.find((instr): instr is Extract<SimulatedAssetTransferInstructions, { type: typeof step.from.rail }> => instr.type === step.from.rail);
-										let simulatedTotalReceive: string | undefined;
-										if (simulatedInstruction) {
-											simulatedTotalReceive = simulatedInstruction.totalReceiveAmount;
-											if (simulatedTotalReceive === undefined && 'value' in simulatedInstruction) {
-												simulatedTotalReceive = simulatedInstruction.value;
-											}
-										}
-										if (simulatedTotalReceive !== undefined) {
-											estimatedValueOut = BigInt(simulatedTotalReceive);
+										const simulatedReceiveAmount = getSimulatedReceiveAmount(simulatedTransfer, step.from.rail);
+										if (simulatedReceiveAmount !== undefined) {
+											estimatedValueOut = simulatedReceiveAmount;
 										}
 									} catch (error) {
-										this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to depositValue`, error);
+										this.logger?.debug('AnchorChainingPlan::resolveStep', `simulateTransfer for forwarded step ${index} valueOut estimation failed; falling back to the fee-netted estimate`, error);
 									}
 								}
 
@@ -2902,8 +3025,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			}
 		}
 
-		if (lastStep.valueOut <= 0n) {
-			throw(new Error(`Computed valueOut for last step must be greater than 0, got ${lastStep.valueOut}`));
+		if (lastStep.valueOut < 0n) {
+			throw(new Error(`Computed valueOut for last step must be greater than or equal to 0, got ${lastStep.valueOut}`));
 		}
 
 		return({
@@ -3073,11 +3196,15 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		deadline: number,
 		options?: { abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): RetryOptions {
-		const remainingMs = Math.max(0, deadline - Date.now());
+		let remainingMs = UNLIMITED_RETRY_BUDGET_MS;
+		if (Number.isFinite(deadline)) {
+			remainingMs = Math.max(0, deadline - Date.now());
+		}
 
 		return({
 			...options?.poll,
 			maxTotalMs: Math.min(options?.poll?.maxTotalMs ?? remainingMs, remainingMs),
+			isRetryable: isStatusPollRetryable,
 			loggerContext: scope,
 			...(options?.abortSignal ? { abortSignal: options.abortSignal } : {}),
 			...(this.logger ? { logger: this.logger } : {})
@@ -3089,8 +3216,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Awaited<ReturnType<AssetMovementTransfer['getTransferStatus']>>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3115,7 +3242,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			if (Date.now() >= deadline) {
 				throw(new Error(`Timed out waiting for transfer ${transfer.transferID} to complete`));
 			}
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3129,8 +3256,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		context: { stepIndex: number; planStep: ChainStepResolution },
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; }
 	): Promise<KeetaAssetMovementTransaction> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		const { provider, persistentAddress } = step;
@@ -3184,7 +3311,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Timed out waiting for persistent-forwarding transaction at ${pfiAddress} correlated to source tx ${sourceTransaction.transaction.id}`));
 			}
 
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3192,8 +3319,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		exchange: FXExchange,
 		options?: { intervalMs?: number; timeoutMs?: number; abortSignal?: AbortSignal; poll?: PublicRetryOptions; }
 	): Promise<Extract<Awaited<ReturnType<FXExchange['getExchangeStatus']>>, { status: 'completed' }>> {
-		const intervalMs = options?.intervalMs ?? 2000;
-		const timeoutMs  = options?.timeoutMs  ?? 300_000;
+		const intervalMs = options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+		const timeoutMs  = options?.timeoutMs  ?? DEFAULT_STEP_TIMEOUT_MS;
 		const deadline = Date.now() + timeoutMs;
 
 		while (true) {
@@ -3215,7 +3342,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				throw(new Error(`Timed out waiting for FX exchange ${exchange.exchange.exchangeID} to complete`));
 			}
 
-			await KeetaNet.lib.Utils.Helper.asleep(intervalMs);
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(intervalMs, deadline - Date.now()));
 		}
 	}
 
@@ -3226,6 +3353,17 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		if (this.#state.status !== 'idle') {
 			throw(new Error(`Cannot execute: path is already in state "${this.#state.status}"`));
+		}
+
+		if (options?.timeoutMs !== undefined && !(options.timeoutMs === Infinity || (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0))) {
+			throw(new Error(`Invalid timeoutMs: ${options.timeoutMs} (expected a positive finite number or Infinity)`));
+		}
+		if (options?.intervalMs !== undefined && !(Number.isFinite(options.intervalMs) && options.intervalMs >= 0)) {
+			throw(new Error(`Invalid intervalMs: ${options.intervalMs} (expected a finite number >= 0)`));
+		}
+		const slippageBps = options?.slippageBps ?? 0;
+		if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 10000) {
+			throw(new Error(`Invalid slippageBps: ${slippageBps} (expected an integer from 0 to 10000)`));
 		}
 
 		const executedSteps: ExecutedStep[] = [];
@@ -3272,13 +3410,21 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				const pollContext = { stepIndex: index, planStep: step };
 
-				// Verify the actual output from the previous step matches the expected
-				// input for this step. A mismatch indicates a provider delivered a
-				// different amount than was negotiated in computeSteps.
+				// Verify the actual output from the previous step covers the expected
+				// input for this step, less the allowed slippage. A larger shortfall
+				// indicates a provider delivered less than was negotiated in computeSteps.
 				if (index > 0 && prevActualValueOut !== null) {
 					if (prevActualValueOut !== step.valueIn) {
 						if (prevActualValueOut < step.valueIn) {
-							throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${step.valueIn} but previous step produced ${prevActualValueOut}`));
+							const minimumValueIn = minimumValueAfterSlippage(step.valueIn, slippageBps);
+							if (prevActualValueOut < minimumValueIn) {
+								let tolerance = '';
+								if (slippageBps > 0) {
+									tolerance = ` (slippage tolerance ${slippageBps} bps of ${step.valueIn})`;
+								}
+								throw(new Error(`Execution failed at step ${index} due to value mismatch: expected at least ${minimumValueIn} but previous step produced ${prevActualValueOut}${tolerance}`));
+							}
+							this.logger?.debug(`AnchorChainingPlan::execute`, `Value shortfall at step ${index} is within the ${slippageBps} bps slippage tolerance (expected ${step.valueIn}, previous step produced ${prevActualValueOut}), proceeding with execution`);
 						} else {
 							this.logger?.debug(`AnchorChainingPlan::execute`, `Value mismatch at step ${index} is non-critical since previous step produced more (${prevActualValueOut}) than expected (${step.valueIn}), proceeding with execution`);
 						}
