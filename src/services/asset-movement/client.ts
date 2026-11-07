@@ -735,9 +735,9 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 					from.source = request.from.source;
 				}
 
-				const to = {
+				const to: KeetaAssetMovementAnchorSimulateTransferRequest['to'] = {
 					location: convertAssetLocationToString(body.to.location)
-				} as KeetaAssetMovementAnchorSimulateTransferRequest['to'];
+				};
 
 				if (body.to.recipient) {
 					to.recipient = body.to.recipient;
