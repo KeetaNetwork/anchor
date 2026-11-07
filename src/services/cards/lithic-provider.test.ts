@@ -21,7 +21,8 @@ const wallet = { chain: 'base', currency: 'usdc', address: '0x' + 'ab'.repeat(20
  * follow docs.lithic.com (Create card, Update card, List financial
  * accounts, Create card embed session).
  */
-function fakeLithic() {
+function fakeLithic(options: { ledger?: boolean; rateLimitWrites?: number; } = {}) {
+	let rateLimited = options.rateLimitWrites ?? 0;
 	const calls: { method: string; path: string; body: unknown; authorization: string | null; }[] = [];
 	const cards = new Map<string, { [key: string]: unknown }>();
 
@@ -35,6 +36,12 @@ function fakeLithic() {
 		const reply = function(status: number, value: unknown) {
 			return(new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' }}));
 		};
+
+		/* The sandbox allows about one write a second */
+		if (method !== 'GET' && rateLimited > 0) {
+			rateLimited--;
+			return(new Response(JSON.stringify({ message: 'Rate limit exceeded.' }), { status: 429, headers: { 'Retry-After': '0.01' }}));
+		}
 
 		if (method === 'POST' && url.pathname === '/v1/cards') {
 			const token = randomUUID();
@@ -56,11 +63,20 @@ function fakeLithic() {
 			}
 
 			if (method === 'POST' && cardPath[2] === '/embed') {
+				if (typeof body !== 'object' || body === null || !('type' in body) || !('target_origin' in body)) {
+					return(reply(400, { message: 'Failed to deserialize the JSON body into the target type: missing field `type`' }));
+				}
+
 				return(reply(200, { session: `embed_${cardPath[1]}` }));
 			}
 		}
 
 		if (method === 'GET' && url.pathname === '/v1/financial_accounts') {
+			/* What the sandbox answers for an account outside a ledger program */
+			if (options.ledger === false) {
+				return(reply(400, { message: 'Account does not support this operation' }));
+			}
+
 			return(reply(200, { data: [
 				{ token: 'fa_reserve', type: 'RESERVE', blockchain_addresses: null },
 				{ token: 'fa_issuing', type: 'ISSUING', blockchain_addresses: { BASE: DEPOSIT, ETHEREUM: '0x' + 'ee'.repeat(20) }}
@@ -131,6 +147,7 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 		apiKey: 'test-lithic-key',
 		baseURL: 'https://sandbox.lithic.test',
 		asaSecret: SECRET,
+		embedOrigin: 'https://wallet.keeta.test/agents',
 		fetch: lithic.fetcher,
 		accountFor: async function(input) {
 			accountsAsked.push(input.storage.publicKeyString.get());
@@ -214,4 +231,36 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 	} finally {
 		await server.stop();
 	}
+});
+
+test('Lithic accounts without a ledger, rate limits and reveal sessions (found against the sandbox)', async function() {
+	const lithic = fakeLithic({ ledger: false, rateLimitWrites: 2 });
+	const provider = new LithicCardProvider({
+		baseURL: 'https://sandbox.lithic.test',
+		embedOrigin: 'https://wallet.keeta.test/agents',
+		fetch: lithic.fetcher,
+		accountFor: async function() { return('acct_no_ledger'); }
+	});
+
+	const card = await provider.createCard({ owner: newAccount(), storage: newAccount(), wallet, controls: { perPurchaseLimitCents: 25_00 }, label: 'No ledger' });
+	expect(card.deposit).toBeUndefined();
+	expect(lithic.cards.get(card.providerCardID)?.spend_limit).toBe(25_00);
+
+	/* The deposit lookup runs first, so a failing one never leaves a card behind; two 429s were retried */
+	expect(lithic.calls.map(function(call) { return(`${call.method} ${call.path.split('?')[0]}`); })).toEqual([
+		'GET /v1/financial_accounts', 'POST /v1/cards', 'POST /v1/cards', 'POST /v1/cards'
+	]);
+
+	/* No key is configured, so none is sent: the proxy in front adds it */
+	expect(lithic.calls[0]?.authorization).toBeNull();
+
+	await provider.createRevealToken(card.providerCardID, 'nonce');
+	expect(lithic.calls.at(-1)?.body).toMatchObject({ type: 'CARD_EMBED', target_origin: 'https://wallet.keeta.test' });
+
+	const noOrigin = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: lithic.fetcher, accountFor: async function() { return('acct_no_ledger'); } });
+	await expect(noOrigin.createRevealToken(card.providerCardID, 'nonce')).rejects.toThrow(/embedOrigin/);
+
+	const failing = fakeLithic({ rateLimitWrites: 10 });
+	const limited = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: failing.fetcher, accountFor: async function() { return('acct'); } });
+	await expect(limited.createCard({ owner: newAccount(), storage: newAccount(), wallet, controls: {}})).rejects.toMatchObject({ status: 429 });
 });

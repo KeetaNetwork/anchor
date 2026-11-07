@@ -40,6 +40,10 @@ const NETWORK_CHAINS: { [network in LithicNetwork]: string } = {
 /** How far a webhook timestamp may be from now, in seconds */
 const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
+/** Retries of a request Lithic rate-limited (429), and the longest wait between them */
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_MAX_WAIT_MS = 5000;
+
 /** Embed sessions last at most ten minutes */
 const REVEAL_SECONDS = 5 * 60;
 
@@ -55,6 +59,12 @@ export type LithicCardProviderOptions = {
 	 * requests are accepted, which is only for local tests.
 	 */
 	asaSecret?: string;
+	/**
+	 * The HTTPS origin of the page that shows revealed card details (the
+	 * wallet).  Lithic's embed iframe only renders inside this origin, and
+	 * reveal tokens cannot be made without it.
+	 */
+	embedOrigin?: string;
 	/** Which deposit address to report.  Defaults to Base. */
 	depositNetwork?: LithicNetwork;
 	fetch?: typeof fetch;
@@ -193,6 +203,17 @@ export function verifyLithicWebhook(secret: string, headers: { id: string | unde
 	return(false);
 }
 
+/** A Lithic API call that did not succeed */
+export class LithicAPIError extends Error {
+	readonly status: number;
+
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = 'LithicAPIError';
+		this.status = status;
+	}
+}
+
 function header(headers: { [name: string]: string | string[] | undefined }, name: string): string | undefined {
 	const value = headers[name];
 	return(Array.isArray(value) ? value[0] : value);
@@ -205,6 +226,7 @@ export class LithicCardProvider implements CardProvider {
 
 	readonly #apiKey: string | undefined;
 	readonly #asaSecret: string | undefined;
+	readonly #embedOrigin: string | undefined;
 	readonly #accountFor: LithicCardProviderOptions['accountFor'];
 	readonly #fetch: typeof fetch;
 	#authorizer: ((request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>) | null = null;
@@ -214,6 +236,7 @@ export class LithicCardProvider implements CardProvider {
 		this.depositNetwork = options.depositNetwork ?? 'BASE';
 		this.#apiKey = options.apiKey;
 		this.#asaSecret = options.asaSecret;
+		this.#embedOrigin = options.embedOrigin !== undefined ? new URL(options.embedOrigin).origin : undefined;
 		this.#accountFor = options.accountFor;
 		this.#fetch = options.fetch ?? fetch;
 	}
@@ -233,23 +256,51 @@ export class LithicCardProvider implements CardProvider {
 			headers['Content-Type'] = 'application/json';
 		}
 
-		const response = await this.#fetch(`${this.baseURL}${path}`, {
-			method,
-			headers,
-			...(body !== undefined ? { body: JSON.stringify(body) } : {})
-		});
+		let response: Response;
+		for (let attempt = 0; ; attempt++) {
+			response = await this.#fetch(`${this.baseURL}${path}`, {
+				method,
+				headers,
+				...(body !== undefined ? { body: JSON.stringify(body) } : {})
+			});
+
+			/* The sandbox allows about one write a second; wait as Lithic asks */
+			if (response.status !== 429 || attempt >= RATE_LIMIT_RETRIES) {
+				break;
+			}
+
+			const retryAfter = Number(response.headers.get('retry-after'));
+			const waitMS = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, RATE_LIMIT_MAX_WAIT_MS) : 1000;
+			await response.body?.cancel();
+			await new Promise(function(resolve) { setTimeout(resolve, waitMS); });
+		}
 
 		const text = await response.text();
 		if (!response.ok) {
-			throw(new Error(`Lithic ${method} ${path} failed with ${response.status}: ${text.slice(0, 300)}`));
+			throw(new LithicAPIError(`Lithic ${method} ${path} failed with ${response.status}: ${text.slice(0, 300)}`, response.status));
 		}
 
 		const parsed: unknown = text.length > 0 ? JSON.parse(text) : undefined;
 		return(parsed);
 	}
 
+	/**
+	 * The account's USDC deposit address.  Accounts outside a
+	 * program-managed (ledger) program have no financial accounts, and
+	 * Lithic answers 400 for them; those cards have no deposit address.
+	 */
 	async #deposit(accountToken: string): Promise<CardFundingWallet | undefined> {
-		const listing = await this.#call('GET', `/v1/financial_accounts?account_token=${encodeURIComponent(accountToken)}&type=ISSUING`);
+		let listing: unknown;
+		try {
+			listing = await this.#call('GET', `/v1/financial_accounts?account_token=${encodeURIComponent(accountToken)}&type=ISSUING`);
+		} catch (error) {
+			if (error instanceof LithicAPIError && error.status === 400) {
+				return(undefined);
+			}
+
+			throw(error);
+		}
+
 		if (!isRecord(listing) || !Array.isArray(listing.data)) {
 			return(undefined);
 		}
@@ -270,6 +321,8 @@ export class LithicCardProvider implements CardProvider {
 
 	async createCard(input: CardProviderCreateInput): Promise<CardProviderCard> {
 		const accountToken = await this.#accountFor({ owner: input.owner, storage: input.storage });
+		/* Before the card exists, so a failed lookup leaves no card behind */
+		const deposit = await this.#deposit(accountToken);
 		const created = await this.#call('POST', '/v1/cards', {
 			type: input.controls.singleUse ? 'SINGLE_USE' : 'VIRTUAL',
 			account_token: accountToken,
@@ -288,7 +341,6 @@ export class LithicCardProvider implements CardProvider {
 		const month = stringField(created, 'exp_month') ?? '--';
 		const year = (stringField(created, 'exp_year') ?? '--').slice(-2);
 
-		const deposit = await this.#deposit(accountToken);
 		return({
 			providerCardID: token,
 			last4,
@@ -322,8 +374,16 @@ export class LithicCardProvider implements CardProvider {
 	 * mounts it in an iframe), so the card number never passes through us.
 	 */
 	async createRevealToken(providerCardID: string, _ignore_clientNonce: string): Promise<CardRevealToken> {
+		if (this.#embedOrigin === undefined) {
+			throw(new Error('The Lithic card provider needs embedOrigin to reveal cards'));
+		}
+
 		const expiration = Math.floor(Date.now() / 1000) + REVEAL_SECONDS;
-		const session = await this.#call('POST', `/v1/cards/${encodeURIComponent(providerCardID)}/embed`, { expiration });
+		const session = await this.#call('POST', `/v1/cards/${encodeURIComponent(providerCardID)}/embed`, {
+			type: 'CARD_EMBED',
+			target_origin: this.#embedOrigin,
+			expiration
+		});
 		const token = isRecord(session) ? stringField(session, 'session') : undefined;
 		if (!token) {
 			throw(new Error('Lithic returned no embed session'));
