@@ -12,6 +12,7 @@
  */
 import type { CardControls, CardFundingWallet, CardRevealToken } from './common.js';
 import type * as KeetaNet from '@keetanetwork/keetanet-client';
+import type { Routes } from '../../lib/http-server/index.js';
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
 
@@ -29,6 +30,12 @@ export type CardProviderCard = {
 	providerCardID: string;
 	last4: string;
 	expiry: string;
+	/**
+	 * For prepaid issuers (such as Lithic), the issuer's deposit address the
+	 * card's balance is funded at.  Issuers that pull from the owner's
+	 * wallet at authorization (Bridge and Stripe) leave it out.
+	 */
+	deposit?: CardFundingWallet;
 };
 
 export interface CardProvider {
@@ -56,4 +63,10 @@ export interface CardProvider {
 
 	/** A short-lived token for the issuer's secure card display */
 	createRevealToken(providerCardID: string, clientNonce: string): Promise<CardRevealToken>;
+
+	/**
+	 * HTTP routes the issuer calls, such as its real-time authorization
+	 * webhook.  The cards anchor serves them next to its own.
+	 */
+	routes?(): Routes;
 }

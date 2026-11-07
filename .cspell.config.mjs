@@ -39,6 +39,7 @@ export default {
 	language: 'en',
 	dictionaries: ['english', 'typescript', 'softwareTerms'],
 	words: [
+		'whsec',
 		...keetanetNodeWords,
 		// Anchor-specific words
 		'Anchor',

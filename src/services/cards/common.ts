@@ -66,6 +66,8 @@ export type CardDetails = {
 	last4: string;
 	expiry: string;
 	wallet: CardFundingWallet;
+	/** For prepaid issuers: where to send funds before the card can spend them */
+	deposit?: CardFundingWallet;
 	controls: CardControls;
 	spentCents: number;
 	createdAt: string;

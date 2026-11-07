@@ -248,7 +248,7 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 	}
 
 	protected async initRoutes(_ignore_config: KeetaAnchorCardsServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
-		const routes: KeetaAnchorHTTPServer.Routes = {};
+		const routes: KeetaAnchorHTTPServer.Routes = { ...(this.provider.routes?.() ?? {}) };
 
 		routes['POST /api/cards'] = async (_ignore_params, body) => {
 			const request = parseBody(assertKeetaCardsCreateRequestJSON, body);
@@ -281,7 +281,8 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				controls,
 				spentCents: 0,
 				createdAt: new Date().toISOString(),
-				...(request.label !== undefined ? { label: request.label } : {})
+				...(request.label !== undefined ? { label: request.label } : {}),
+				...(issued.deposit !== undefined ? { deposit: issued.deposit } : {})
 			};
 			await this.store.put(card);
 
