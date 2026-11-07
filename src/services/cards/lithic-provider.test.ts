@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
@@ -12,7 +12,9 @@ function newAccount() {
 	return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
 }
 
-const SECRET = 'whsec_' + Buffer.from('lithic-test-secret-0123456789abcdef').toString('base64');
+/* Generated per run so no credential-like literal is checked in */
+const SECRET = 'whsec_' + randomBytes(32).toString('base64');
+const API_KEY = randomUUID();
 const DEPOSIT = '0x' + 'cd'.repeat(20);
 const wallet = { chain: 'base', currency: 'usdc', address: '0x' + 'ab'.repeat(20) };
 
@@ -122,7 +124,7 @@ test('Lithic helpers: one issuer limit, webhook signatures and ASA parsing', fun
 	const signed = { id: headers['webhook-id'], timestamp: headers['webhook-timestamp'], signature: headers['webhook-signature'] };
 	expect(verifyLithicWebhook(SECRET, signed, Buffer.from(body))).toBe(true);
 	expect(verifyLithicWebhook(SECRET, signed, Buffer.from(body + ' '))).toBe(false);
-	expect(verifyLithicWebhook('whsec_' + Buffer.from('another-secret').toString('base64'), signed, Buffer.from(body))).toBe(false);
+	expect(verifyLithicWebhook('whsec_' + randomBytes(32).toString('base64'), signed, Buffer.from(body))).toBe(false);
 	expect(verifyLithicWebhook(SECRET, { ...signed, signature: `v1,bm9wZQ== ${signed.signature}` }, Buffer.from(body))).toBe(true);
 	expect(verifyLithicWebhook(SECRET, signed, Buffer.from(body), new Date(Date.now() + 10 * 60 * 1000))).toBe(false);
 	expect(verifyLithicWebhook(SECRET, { ...signed, id: undefined }, Buffer.from(body))).toBe(false);
@@ -152,7 +154,7 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 	const lithic = fakeLithic();
 	const accountsAsked: string[] = [];
 	const provider = new LithicCardProvider({
-		apiKey: 'test-lithic-key',
+		apiKey: API_KEY,
 		baseURL: 'https://sandbox.lithic.test',
 		asaSecret: SECRET,
 		embedOrigin: 'https://wallet.keeta.test/agents',
@@ -176,7 +178,7 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 		expect(card.deposit).toEqual({ chain: 'base', currency: 'usdc', address: DEPOSIT });
 
 		const created = lithic.calls.find(function(call) { return(call.method === 'POST' && call.path === '/v1/cards'); });
-		expect(created?.authorization).toBe('test-lithic-key');
+		expect(created?.authorization).toBe(API_KEY);
 		expect(created?.body).toEqual({
 			type: 'VIRTUAL',
 			account_token: 'acct_owner_verified',
