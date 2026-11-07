@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, "releases/**" ]
+    branches: [ main, "releases/**", "agent-accounts/**" ]
   pull_request:
     branches: [ main, "releases/**" ]
 
