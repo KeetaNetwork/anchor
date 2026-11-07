@@ -142,6 +142,24 @@ export type KeetaCardsRevealRequest = {
 export type KeetaCardsRevealRequestJSON = KeetaCardsRevealRequest & SignedRequest;
 
 /**
+ * Freeze every card an agent made for the storage account.  The owner's
+ * wallet sends this right after revoking the agent on the network, so its
+ * cards stop at the issuer at once rather than at their next purchase.
+ */
+export type KeetaCardsFreezeAgentCardsRequest = {
+	/** The agent's public key */
+	agent: string;
+};
+export type KeetaCardsFreezeAgentCardsRequestJSON = KeetaCardsFreezeAgentCardsRequest & SignedRequest;
+
+export type KeetaCardsFreezeAgentCardsResult = {
+	/** The agent's cards that are now frozen, including any that already were */
+	cards: CardDetails[];
+	/** Cards the issuer could not freeze; retrying the request tries them again */
+	failed: string[];
+};
+
+/**
  * A short-lived token for the issuer's secure card display (for Stripe
  * Issuing, an ephemeral key used with Issuing Elements).  The anchor never
  * sees or returns the card number.
@@ -165,13 +183,14 @@ export type CardsOperationName =
 	'unfreezeCard' |
 	'closeCard' |
 	'updateControls' |
-	'revealCard';
+	'revealCard' |
+	'freezeAgentCards';
 
 /**
  * What an agent may do with its own storage account's cards by default:
  * create and close cards, freeze one it suspects is compromised, read them,
- * and open the issuer's secure display to pay.  Unfreezing and changing
- * limits stay with the owner.
+ * and open the issuer's secure display to pay.  Unfreezing, changing
+ * limits and freezing an agent's cards stay with the owner.
  */
 export const DEFAULT_CARD_DELEGATE_OPERATIONS: readonly CardsOperationName[] = Object.freeze([
 	'createCard',
@@ -234,6 +253,10 @@ export function getCreateCardSignable(request: KeetaCardsCreateRequest): Signabl
 
 export function getCardActionSignable(action: 'get' | 'freeze' | 'unfreeze' | 'close', request: KeetaCardsCardActionRequest): Signable {
 	return([`cards:${action}`, request.id]);
+}
+
+export function getFreezeAgentCardsSignable(request: KeetaCardsFreezeAgentCardsRequest): Signable {
+	return(['cards:freeze-agent', request.agent]);
 }
 
 export function getListCardsSignable(): Signable {

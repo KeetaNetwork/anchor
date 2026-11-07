@@ -8,9 +8,13 @@
  * movement anchor treats storage accounts.  Agents get a narrower set of
  * operations by default ({@link DEFAULT_CARD_DELEGATE_OPERATIONS}).
  *
- * Revoking an agent on the network stops its cards: every authorization
- * re-reads the storage account's grants, and declines (and freezes the card)
- * once the agent that created it can no longer act for the account.
+ * Revoking an agent on the network stops its cards.  The owner's wallet
+ * asks the anchor to freeze all of the agent's cards right after the revoke
+ * (POST /api/cards/agents/:agent/freeze).  As a backstop, listing cards and
+ * every authorization re-read the storage account's grants and freeze any
+ * card whose creator can no longer act for the account.  Such a card stays
+ * frozen: the revoked agent may still hold its number, so it can only be
+ * closed.
  */
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
@@ -25,7 +29,8 @@ import type {
 	CardAuthorizationRequest,
 	CardControls,
 	CardDetails,
-	CardsOperationName
+	CardsOperationName,
+	KeetaCardsFreezeAgentCardsResult
 } from './common.js';
 import {
 	DEFAULT_CARD_DELEGATE_OPERATIONS,
@@ -33,6 +38,7 @@ import {
 	assertValidFundingWallet,
 	getCardActionSignable,
 	getCreateCardSignable,
+	getFreezeAgentCardsSignable,
 	getListCardsSignable,
 	getRevealCardSignable,
 	getUpdateControlsSignable
@@ -40,6 +46,7 @@ import {
 import {
 	assertKeetaCardsCardActionRequestJSON,
 	assertKeetaCardsCreateRequestJSON,
+	assertKeetaCardsFreezeAgentCardsRequestJSON,
 	assertKeetaCardsRevealRequestJSON,
 	assertKeetaCardsUpdateControlsRequestJSON
 } from './common.server.generated.js';
@@ -188,6 +195,74 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 	}
 
 	/**
+	 * Who can act for a storage account right now: a check that answers
+	 * whether an account (the owner or a delegate) still can.  Fails closed:
+	 * if the network can't be read, nobody is authorized.
+	 */
+	async #authorityFor(account: string): Promise<(creator: string) => boolean> {
+		try {
+			const storage = KeetaNet.lib.Account.fromPublicKeyString(account);
+			const authority = await resolveStorageAccountAuthority(this.#client, storage);
+			return(function(creator) {
+				const key = KeetaNet.lib.Account.fromPublicKeyString(creator);
+				return(authority.owner.comparePublicKey(key) || authority.delegates.some(function(delegate) {
+					return(delegate.comparePublicKey(key));
+				}));
+			});
+		} catch (error) {
+			this.logger.debug('KeetaNetCardsAnchorHTTPServer', 'could not resolve storage account authority', error);
+			return(function() {
+				return(false);
+			});
+		}
+	}
+
+	/**
+	 * Stop a card at the issuer because the agent that made it was revoked.
+	 * A card the agent or owner had already frozen is relabeled, so it too
+	 * can't be unfrozen while the agent may still hold its number.
+	 */
+	async #freezeForRevokedAgent(card: CardDetails): Promise<void> {
+		if (card.status === 'closed' || (card.status === 'frozen' && card.statusReason === 'delegate_revoked')) {
+			return;
+		}
+
+		if (card.status === 'active') {
+			await this.provider.freezeCard(card.id);
+		}
+
+		card.status = 'frozen';
+		card.statusReason = 'delegate_revoked';
+		await this.store.put(card);
+	}
+
+	/**
+	 * Freeze every card on the list whose creator can no longer act for the
+	 * account.  Issuer failures are logged and left for the next pass.
+	 */
+	async #freezeCardsOfRevokedAgents(account: string, cards: CardDetails[]): Promise<void> {
+		const open = cards.filter(function(card) {
+			return(card.status !== 'closed' && card.statusReason !== 'delegate_revoked');
+		});
+		if (open.length === 0) {
+			return;
+		}
+
+		const isAuthorized = await this.#authorityFor(account);
+		for (const card of open) {
+			if (isAuthorized(card.createdBy)) {
+				continue;
+			}
+
+			try {
+				await this.#freezeForRevokedAgent(card);
+			} catch (error) {
+				this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze a revoked agent\'s card', card.id, error);
+			}
+		}
+	}
+
+	/**
 	 * The real-time decision for a purchase.  A provider's webhook route
 	 * calls this and answers the issuer with the result.
 	 */
@@ -196,17 +271,8 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 		let creatorStillAuthorized = false;
 		if (card !== null) {
-			try {
-				const storage = KeetaNet.lib.Account.fromPublicKeyString(card.account);
-				const authority = await resolveStorageAccountAuthority(this.#client, storage);
-				const creator = KeetaNet.lib.Account.fromPublicKeyString(card.createdBy);
-				creatorStillAuthorized = authority.owner.comparePublicKey(creator) || authority.delegates.some(function(delegate) {
-					return(delegate.comparePublicKey(creator));
-				});
-			} catch (error) {
-				this.logger.debug('KeetaNetCardsAnchorHTTPServer', 'could not resolve storage account authority', error);
-				creatorStillAuthorized = false;
-			}
+			const isAuthorized = await this.#authorityFor(card.account);
+			creatorStillAuthorized = isAuthorized(card.createdBy);
 		}
 
 		const decision = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date() });
@@ -214,12 +280,9 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			return(decision);
 		}
 
-		if (!decision.approved && decision.reason === 'delegate_revoked' && card.status === 'active') {
+		if (!creatorStillAuthorized && card.status !== 'closed') {
 			/* The agent lost access: stop the card at the issuer too */
-			await this.provider.freezeCard(card.id);
-			card.status = 'frozen';
-			card.statusReason = 'delegate_revoked';
-			await this.store.put(card);
+			await this.#freezeForRevokedAgent(card);
 		}
 
 		if (decision.approved) {
@@ -292,8 +355,59 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		routes['GET /api/cards'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
 			const parsed = parseSignatureFromURL(url, { assertKeyed: false });
 			const caller = await this.#authenticate(parsed.account?.publicKeyString.get(), parsed.signedField, getListCardsSignable(), 'listCards');
-			const cards = await this.store.listByAccount(caller.storage.publicKeyString.get());
+			const account = caller.storage.publicKeyString.get();
+			const cards = await this.store.listByAccount(account);
+			/* Catch cards of an agent revoked without the wallet's follow-up freeze */
+			await this.#freezeCardsOfRevokedAgents(account, cards);
 			return(json({ ok: true, cards }));
+		};
+
+		routes['POST /api/cards/agents/:agent/freeze'] = async (params, body) => {
+			const request = parseBody(assertKeetaCardsFreezeAgentCardsRequestJSON, body);
+			if (request.agent !== params.get('agent')) {
+				throw(new KeetaAnchorUserError('Agent does not match the URL'));
+			}
+
+			const caller = await this.#authenticate(request.account, assertHTTPSignedField(request.signed), getFreezeAgentCardsSignable(request), 'freezeAgentCards');
+			if (!caller.isOwner) {
+				throw(new KeetaAnchorUserError('Only the owner can freeze an agent\'s cards'));
+			}
+
+			if (request.agent === caller.owner.publicKeyString.get()) {
+				throw(new KeetaAnchorUserError('Name the agent, not the owner'));
+			}
+
+			const isAuthorized = await this.#authorityFor(caller.storage.publicKeyString.get());
+			const stillAuthorized = isAuthorized(request.agent);
+
+			const result: KeetaCardsFreezeAgentCardsResult = { cards: [], failed: [] };
+			const cards = await this.store.listByAccount(caller.storage.publicKeyString.get());
+			for (const card of cards) {
+				if (card.createdBy !== request.agent || card.status === 'closed') {
+					continue;
+				}
+
+				try {
+					if (stillAuthorized) {
+						/* The owner is pausing an agent it has not revoked: an ordinary freeze */
+						if (card.status === 'active') {
+							await this.provider.freezeCard(card.id);
+							card.status = 'frozen';
+							card.statusReason = 'requested';
+							await this.store.put(card);
+						}
+					} else {
+						await this.#freezeForRevokedAgent(card);
+					}
+
+					result.cards.push(card);
+				} catch (error) {
+					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze an agent card', card.id, error);
+					result.failed.push(card.id);
+				}
+			}
+
+			return(json({ ok: true, ...result }));
 		};
 
 		routes['GET /api/cards/:id'] = async (params, _ignore_body, _ignore_headers, url) => {
@@ -330,6 +444,12 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		});
 
 		action('unfreeze', 'unfreezeCard', async (card) => {
+			const isAuthorized = await this.#authorityFor(card.account);
+			if (card.statusReason === 'delegate_revoked' || !isAuthorized(card.createdBy)) {
+				/* The revoked agent may still hold the number, so this card only closes */
+				throw(new KeetaAnchorUserError('This card\'s agent was revoked, so the card can only be closed'));
+			}
+
 			await this.provider.unfreezeCard(card.id);
 			card.status = 'active';
 			delete card.statusReason;

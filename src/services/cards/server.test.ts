@@ -146,6 +146,68 @@ test('revoking the agent declines and freezes its cards', async function() {
 	expect(ownerView).toMatchObject({ status: 'frozen', statusReason: 'delegate_revoked' });
 });
 
+test('revoking the agent freezes all of its cards at once', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+	const agentKey = env.agent.publicKeyString.get();
+
+	const first = await agentCards.createCard({ wallet, label: 'Office' });
+	const second = await agentCards.createCard({ wallet, label: 'Cloud' });
+	const pausedByAgent = await agentCards.createCard({ wallet, label: 'Paused' });
+	await agentCards.freezeCard(pausedByAgent.id);
+	const closed = await agentCards.createCard({ wallet, label: 'Done' });
+	await agentCards.closeCard(closed.id);
+	const ownersOwn = await ownerCards.createCard({ wallet, label: 'Owner' });
+
+	/* Only the owner may ask */
+	await expect(agentCards.freezeAgentCards(agentKey)).rejects.toThrow(/not available to storage account delegates/);
+
+	await revokeAgentSpending(env.ownerClient, { agent: env.agent, storage: env.spending.storage });
+
+	const result = await ownerCards.freezeAgentCards(env.agent);
+	expect(result.failed).toEqual([]);
+	expect(result.cards.map(function(card) { return(card.id); }).sort()).toEqual([first.id, second.id, pausedByAgent.id].sort());
+	for (const card of result.cards) {
+		expect(card).toMatchObject({ status: 'frozen', statusReason: 'delegate_revoked' });
+		expect(env.provider.issuerStatus(card.id)).toBe('frozen');
+	}
+
+	/* Closed cards and the owner's own cards are left as they were */
+	expect(env.provider.issuerStatus(closed.id)).toBe('closed');
+	expect((await ownerCards.getCard(ownersOwn.id)).status).toBe('active');
+
+	/* The agent may still hold the numbers, so these cards only close */
+	await expect(ownerCards.unfreezeCard(first.id)).rejects.toThrow(/can only be closed/);
+	expect(env.provider.issuerStatus(first.id)).toBe('frozen');
+	expect((await ownerCards.closeCard(first.id)).status).toBe('closed');
+
+	/* Asking again is harmless */
+	const again = await ownerCards.freezeAgentCards(agentKey);
+	expect(again.cards.map(function(card) { return(card.id); }).sort()).toEqual([second.id, pausedByAgent.id].sort());
+
+	/* The owner is not an agent */
+	await expect(ownerCards.freezeAgentCards(env.owner)).rejects.toThrow(/not the owner/);
+});
+
+test('listing cards freezes a revoked agent\'s cards the wallet missed', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+	const card = await agentCards.createCard({ wallet });
+	const other = await agentCards.createCard({ wallet });
+
+	/* Still granted: listing changes nothing */
+	expect((await ownerCards.listCards()).map(function(c) { return(c.status); })).toEqual(['active', 'active']);
+
+	await revokeAgentSpending(env.ownerClient, { agent: env.agent, storage: env.spending.storage });
+
+	const listed = await ownerCards.listCards();
+	expect(listed.map(function(c) { return([c.status, c.statusReason]); })).toEqual([['frozen', 'delegate_revoked'], ['frozen', 'delegate_revoked']]);
+	expect(env.provider.issuerStatus(card.id)).toBe('frozen');
+	expect(env.provider.issuerStatus(other.id)).toBe('frozen');
+});
+
 test('cards stay within their storage account', async function() {
 	await using env = await setup();
 	const card = await env.cardsFor(env.spending.storage, env.agent).createCard({ wallet });

@@ -16,11 +16,13 @@ import type {
 	CardDetails,
 	CardRevealToken,
 	KeetaCardsCreateRequest,
+	KeetaCardsFreezeAgentCardsResult,
 	KeetaCardsResponse
 } from './common.js';
 import {
 	getCardActionSignable,
 	getCreateCardSignable,
+	getFreezeAgentCardsSignable,
 	getListCardsSignable,
 	getRevealCardSignable,
 	getUpdateControlsSignable
@@ -134,6 +136,17 @@ export class KeetaCardsAnchorClient {
 
 	closeCard(id: string): Promise<CardDetails> {
 		return(this.#action('close', id));
+	}
+
+	/**
+	 * Owner only.  Freeze every card the agent made for this account, at
+	 * the issuer, right after revoking it.  Cards the issuer could not
+	 * freeze come back in `failed`; calling again retries them.
+	 */
+	async freezeAgentCards(agent: Account | string): Promise<KeetaCardsFreezeAgentCardsResult> {
+		const request = { agent: typeof agent === 'string' ? agent : agent.publicKeyString.get() };
+		const { cards, failed } = await this.#post<KeetaCardsFreezeAgentCardsResult>(`/api/cards/agents/${encodeURIComponent(request.agent)}/freeze`, request, getFreezeAgentCardsSignable(request));
+		return({ cards, failed });
 	}
 
 	/** Owner only by default */
