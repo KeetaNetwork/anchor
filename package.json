@@ -27,7 +27,7 @@
 		"@cspell/dict-typescript": "3.2.3",
 		"@google-cloud/firestore": "8.2.0",
 		"@keetanetwork/eslint-config-typescript": "1.4.9",
-		"@keetanetwork/keetanet-node": "0.19.1",
+		"@keetanetwork/keetanet-node": "0.19.2",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "24.19.0",
 		"@types/pg": "8.15.6",
