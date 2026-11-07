@@ -145,10 +145,18 @@ export function lithicAuthorizationRequest(body: unknown): { token: string; requ
 		return({ token, request: undefined });
 	}
 
-	/* What the cardholder is charged, in cents of their (USD) currency */
+	/*
+	 * What the cardholder is charged, in cents of their (USD) currency.
+	 * Where Lithic holds more than that (tips, fuel pumps), the hold is
+	 * what the card can end up paying, so the larger one is checked.
+	 */
 	let amountCents: number | undefined;
 	if (isRecord(body.amounts) && isRecord(body.amounts.cardholder)) {
 		amountCents = numberField(body.amounts.cardholder, 'amount');
+		const hold = isRecord(body.amounts.hold) ? numberField(body.amounts.hold, 'amount') : undefined;
+		if (amountCents !== undefined && hold !== undefined && Math.abs(hold) > amountCents) {
+			amountCents = Math.abs(hold);
+		}
 	}
 
 	amountCents ??= numberField(body, 'authorization_amount') ?? numberField(body, 'amount');
@@ -361,8 +369,20 @@ export class LithicCardProvider implements CardProvider {
 		await this.#setState(providerCardID, 'OPEN');
 	}
 
+	/**
+	 * Lithic closes a single-use card itself once used, and answers 405
+	 * to any change to a closed card, so closing one is not an error.
+	 */
 	async closeCard(providerCardID: string): Promise<void> {
-		await this.#setState(providerCardID, 'CLOSED');
+		try {
+			await this.#setState(providerCardID, 'CLOSED');
+		} catch (error) {
+			if (error instanceof LithicAPIError && error.status === 405 && /closed card/i.test(error.message)) {
+				return;
+			}
+
+			throw(error);
+		}
 	}
 
 	async updateControls(providerCardID: string, controls: CardControls): Promise<void> {

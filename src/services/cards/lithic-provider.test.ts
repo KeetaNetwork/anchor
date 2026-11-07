@@ -58,6 +58,10 @@ function fakeLithic(options: { ledger?: boolean; rateLimitWrites?: number; } = {
 			}
 
 			if (method === 'PATCH') {
+				if (card['state'] === 'CLOSED') {
+					return(reply(405, { message: 'Card not active', error_data: { message: 'Sorry, you cannot modify a closed card' }}));
+				}
+
 				Object.assign(card, body);
 				return(reply(200, card));
 			}
@@ -126,6 +130,10 @@ test('Lithic helpers: one issuer limit, webhook signatures and ASA parsing', fun
 	const parsed = lithicAuthorizationRequest(JSON.parse(body));
 	expect(parsed.request).toEqual({ cardID: 'card_1', amountCents: 12_00, merchant: { name: 'CLOUD HOSTING CO', categoryCode: '5734', country: 'USA' }});
 	expect(lithicAuthorizationRequest(asaRequest('card_1', 5_00, '5734', 'CREDIT_AUTHORIZATION')).request).toBeUndefined();
+
+	/* A fuel pump asks for 1.00 and Lithic holds 150.00: the hold is checked */
+	const fuel = { ...asaRequest('card_1', 1_00, '5542'), amounts: { cardholder: { amount: 1_00, currency: 'USD', conversion_rate: '1' }, hold: { amount: 150_00, currency: 'USD' }}};
+	expect(lithicAuthorizationRequest(fuel).request?.amountCents).toBe(150_00);
 	expect(function() { lithicAuthorizationRequest({ token: 'x' }); }).toThrow(/Not a Lithic ASA request/);
 });
 
@@ -259,6 +267,11 @@ test('Lithic accounts without a ledger, rate limits and reveal sessions (found a
 
 	const noOrigin = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: lithic.fetcher, accountFor: async function() { return('acct_no_ledger'); } });
 	await expect(noOrigin.createRevealToken(card.providerCardID, 'nonce')).rejects.toThrow(/embedOrigin/);
+
+	/* Closing twice (Lithic closes used single-use cards itself) is fine; other changes to a closed card are not */
+	await provider.closeCard(card.providerCardID);
+	await provider.closeCard(card.providerCardID);
+	await expect(provider.freezeCard(card.providerCardID)).rejects.toMatchObject({ status: 405 });
 
 	const failing = fakeLithic({ rateLimitWrites: 10 });
 	const limited = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: failing.fetcher, accountFor: async function() { return('acct'); } });
