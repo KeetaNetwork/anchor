@@ -95,15 +95,23 @@ type AssetMovementHandlers = KeetaAnchorAssetMovementServerConfig['assetMovement
 export type AssetMovementOperationName = { [K in keyof AssetMovementHandlers]-?: NonNullable<AssetMovementHandlers[K]> extends (...args: any[]) => any ? K : never }[keyof AssetMovementHandlers];
 
 /**
- * What a storage account delegate (an agent) may do by default: simulate,
- * start and complete a transfer, and check on it.
+ * The operations an agent needs to pay through an anchor: simulate, start
+ * and complete a transfer, and check on it.  Pass this as
+ * `storageAccountDelegateOperations` to switch agent signing on.
  */
-export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([
+export const STORAGE_ACCOUNT_AGENT_TRANSFER_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([
 	'simulateTransfer',
 	'initiateTransfer',
 	'executeTransfer',
 	'getTransferStatus'
 ]);
+
+/**
+ * By default no operation is open to storage account delegates: only the
+ * owner can sign for a storage account until the operator switches agent
+ * signing on.
+ */
+export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([]);
 
 /**
  * Who authorized a request.  `account` is the identity the request carries
@@ -148,10 +156,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 	 * account (for example an agent) may call for that storage account.
 	 * The storage account's owner can always call every operation.
 	 *
-	 * Defaults to {@link DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS}:
-	 * moving money and following a transfer, but not sharing KYC,
-	 * reading account status or history, or managing forwarding
-	 * addresses.  Pass an empty list to refuse delegates entirely.
+	 * Defaults to none, so agent signing is off until the operator
+	 * switches it on.  {@link STORAGE_ACCOUNT_AGENT_TRANSFER_OPERATIONS}
+	 * is the usual set: moving money and following a transfer, but not
+	 * sharing KYC, reading account status or history, or managing
+	 * forwarding addresses.
 	 */
 	storageAccountDelegateOperations?: readonly AssetMovementOperationName[];
 
