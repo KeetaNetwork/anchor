@@ -247,6 +247,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const server = this;
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -365,7 +367,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						}
 
 						if (!verified.signer.comparePublicKey(verified.owner)) {
-							const allowed: readonly string[] = config.storageAccountDelegateOperations ?? DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS;
+							const allowed: readonly string[] = server.storageAccountDelegateOperations;
 							if (!allowed.includes(input.handlerName)) {
 								throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
 							}

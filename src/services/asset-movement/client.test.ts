@@ -2032,6 +2032,18 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 	}
 
 	/*
+	 * A SEND_ON_BEHALF grant scoped to one token does not make a delegate:
+	 * it lets the principal send that token, not act for the whole account.
+	 */
+	{
+		const scopedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		await ownerClient.updatePermissions(scopedAccount, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), testCurrencyUSDC, undefined, { account: agentStorage.storage });
+
+		const scopedProvider = await providerFor(agentStorage.storage, scopedAccount);
+		await expect(scopedProvider.initiateTransfer(transferFrom(agentStorage.storage))).rejects.toThrow(/Invalid signature/);
+	}
+
+	/*
 	 * By default an agent can only move money and follow transfers.  The
 	 * owner keeps everything else: history, forwarding addresses, KYC.
 	 */

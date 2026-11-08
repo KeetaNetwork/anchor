@@ -136,6 +136,13 @@ test('owner lists, funds, reads and revokes agent spending accounts', async func
 	expect(afterFunds?.revokedAt).toBeUndefined();
 	expect(await ownerClient.balance(usdToken, { account: storage })).toBe(630n);
 
+	/* A grant scoped to one token is not the agent's grant */
+	const scoped = newAccount();
+	await ownerClient.updatePermissions(scoped, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), usd, undefined, { account: storage });
+	const afterScopedGrant = await getAgentSpendingAccount(ownerClient, storage);
+	expect(afterScopedGrant?.agent.comparePublicKey(agent)).toBe(true);
+	expect(afterScopedGrant?.active).toBe(true);
+
 	const activity = await listAgentSpendingActivity(ownerClient, storage);
 	const payments = activity.entries.filter(function(entry) {
 		return(entry.kind === 'payment');

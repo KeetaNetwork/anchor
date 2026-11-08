@@ -17,8 +17,22 @@ export type StorageAccountAuthority = {
 };
 
 /**
+ * Whether an ACL row applies to the whole storage account rather than to
+ * one target within it.  The network treats an unset target, or a target
+ * equal to the entity itself, as the whole account.
+ */
+export function isWholeAccountGrant(target: Pick<KeetaNetAccount, 'comparePublicKey'> | undefined | null, storageAccount: KeetaNetAccount): boolean {
+	if (target === undefined || target === null) {
+		return(true);
+	}
+
+	return(target.comparePublicKey(storageAccount));
+}
+
+/**
  * Resolve who may act for a storage account by reading its ACLs: the
- * OWNER, plus each keyed account holding SEND_ON_BEHALF.
+ * OWNER, plus each keyed account holding SEND_ON_BEHALF on the whole
+ * account (not scoped to a target).
  *
  * Grants whose principal is not a keyed account (for example a
  * certificate principal) are not delegates here, because a request
@@ -42,11 +56,25 @@ export async function resolveStorageAccountAuthority(client: KeetaNetClient, sto
 		}
 
 		if (acl.permissions.has(['OWNER'])) {
+			if (owner !== null) {
+				throw(new Error('Storage account has more than one owner'));
+			}
+
 			owner = acl.principal.assertAccount();
 			continue;
 		}
 
 		if (!acl.principal.isAccount()) {
+			continue;
+		}
+
+		/*
+		 * Only a grant on the whole storage account makes a delegate.  A
+		 * grant scoped to a target (for example one token) lets the
+		 * principal send only that, so it must not let it sign anchor
+		 * requests for the account as a whole.
+		 */
+		if (!isWholeAccountGrant(acl.target, storageAccount)) {
 			continue;
 		}
 
