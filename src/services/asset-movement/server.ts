@@ -105,6 +105,32 @@ export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovement
 	'getTransferStatus'
 ]);
 
+/**
+ * Who authorized a request.  `account` is the identity the request carries
+ * and the one KYC is looked up for.  For a storage account that is its
+ * owner, while `signer` may be an agent holding SEND_ON_BEHALF on it.
+ */
+export type AssetMovementRequestAuthority = {
+	/** The account the request acts as: the owner, for a storage account */
+	account: Account.Account;
+	/** The key that signed the request */
+	signer: Account.Account;
+	/** The storage account the request was made for, if any */
+	storageAccount?: InstanceType<typeof KeetaNet.lib.Account>;
+	/** True when the signer is a storage account delegate, not the owner */
+	delegate: boolean;
+};
+
+/**
+ * Passed to every handler as the argument after its declared ones.  Use it
+ * to record who actually authorized an operation, and to scope lookups
+ * such as transfer status to the storage account a delegate acts for.
+ */
+export type AssetMovementRequestContext = {
+	/** Null for an unauthenticated request */
+	authority: AssetMovementRequestAuthority | null;
+};
+
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -165,17 +191,17 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		/**
 		 * Method to initiate a transfer
 		 */
-		initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
+		initiateTransfer?: (request: KeetaAssetMovementAnchorInitiateTransferRequest, account?: Account.Account | null, context?: AssetMovementRequestContext) => Promise<ExtractOk<KeetaAssetMovementAnchorInitiateTransferResponse>>;
 
 		/**
 		 * Method to initiate a transfer
 		 */
-		simulateTransfer?: (request: KeetaAssetMovementAnchorSimulateTransferRequest) => Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
+		simulateTransfer?: (request: KeetaAssetMovementAnchorSimulateTransferRequest, account?: Account.Account | null, context?: AssetMovementRequestContext) => Promise<ExtractOk<KeetaAssetMovementAnchorSimulateTransferResponse>>;
 
 		/**
 		 * Method to get the status of a transfer
 		 */
-		getTransferStatus?: (id: string, account: Account.Account | null) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
+		getTransferStatus?: (id: string, account: Account.Account | null, context?: AssetMovementRequestContext) => Promise<ExtractOk<KeetaAssetMovementAnchorGetTransferStatusResponse>>;
 
 		/**
 		 * Method to get the authenticated account's readiness/status for asset movement.
@@ -195,7 +221,7 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 		/**
 		 * Method to execute a transfer instruction, used for pull based transactions
 		 */
-		executeTransfer?: (request: KeetaAssetMovementAnchorExecuteTransferRequest & { id: string; }) => Promise<ExtractOk<KeetaAssetMovementAnchorExecuteTransferResponse>>;
+		executeTransfer?: (request: KeetaAssetMovementAnchorExecuteTransferRequest & { id: string; }, account?: Account.Account | null, context?: AssetMovementRequestContext) => Promise<ExtractOk<KeetaAssetMovementAnchorExecuteTransferResponse>>;
 
 		/**
 		 * Method to deactivate a persistent forwarding address template
@@ -320,6 +346,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				}
 
 				let account: Account.Account | null = null;
+				let authority: AssetMovementRequestAuthority | null = null;
 				if (authenticationRequired || (request !== undefined && 'signed' in request)) {
 					let signed: HTTPSignedField;
 					let requestAccount: InstanceType<typeof KeetaNet.lib.Account>;
@@ -357,8 +384,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						/*
 						 * The owner, or an account it granted SEND_ON_BEHALF
 						 * (an agent), may sign.  Either way the request carries
-						 * the owner's identity, so handlers and KYC lookups see
-						 * the owner.
+						 * the owner's identity, so KYC lookups see the owner;
+						 * the context tells handlers who signed.
 						 */
 						signable = [requestAccount, ...signable];
 						const verified = await verifyStorageAccountSignature(config.client.client, requestAccount, signable, signed);
@@ -366,7 +393,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 							throw(new KeetaAnchorUserError('Invalid signature'));
 						}
 
-						if (!verified.signer.comparePublicKey(verified.owner)) {
+						const delegate = !verified.signer.comparePublicKey(verified.owner);
+						if (delegate) {
 							const allowed: readonly string[] = server.storageAccountDelegateOperations;
 							if (!allowed.includes(input.handlerName)) {
 								throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
@@ -374,6 +402,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						}
 
 						account = verified.owner;
+						authority = { account, signer: verified.signer, storageAccount: requestAccount, delegate };
 					} else {
 						account = requestAccount.assertAccount();
 
@@ -381,6 +410,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						if (!valid) {
 							throw(new KeetaAnchorUserError('Invalid signature'));
 						}
+
+						authority = { account, signer: account, delegate: false };
 					}
 				}
 
@@ -392,9 +423,11 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					parsedRequest = [ request, account ];
 				}
 
+				const context: AssetMovementRequestContext = { authority };
+
 				// @ts-ignore
 				// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-				const result = await handler(...parsedRequest);
+				const result = await handler(...parsedRequest, context);
 
 				if ('ok' in result && (result.ok !== undefined && result.ok !== true)) {
 					throw(new Error('internal error: response serialization must not have ok field'));
@@ -506,7 +539,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					...data
 				}));
 			},
-			parseRequestToArgs: ({ body, params }) => {
+			parseRequestToArgs: ({ body, params, account }) => {
 				const id = params.get('id');
 				if (typeof id !== 'string' || id.length === 0) {
 					throw(new KeetaAnchorUserError('Missing or invalid id parameter'));
@@ -516,7 +549,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					throw(new KeetaAnchorUserError('Missing or invalid request body'));
 				}
 
-				return([ { id, ...body } ] as const);
+				return([ { id, ...body }, account ] as const);
 			},
 			assertRequest: assertKeetaAssetMovementAnchorExecuteTransferRequest,
 			assertResponse: assertKeetaAssetMovementAnchorExecuteTransferResponse,
