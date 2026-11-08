@@ -209,6 +209,14 @@ function grantsSendOnBehalf(permissions: InstanceType<typeof KeetaNet.lib.Permis
 	return(permissions?.has(['SEND_ON_BEHALF']) === true);
 }
 
+/*
+ * The agent's grant covers the whole storage account.  A grant scoped to
+ * a target (for example one token) is something else and is not the agent.
+ */
+function coversWholeAccount(target: { comparePublicKey(other: StorageAccount): boolean; } | undefined | null, storage: StorageAccount): boolean {
+	return(target === undefined || target === null || target.comparePublicKey(storage));
+}
+
 /**
  * Walk a storage account's history and pull out what makes it an agent
  * spending account.  Returns null when no agent was ever granted
@@ -232,7 +240,7 @@ async function readAgentSpendingHistory(base: Client, storage: StorageAccount, o
 			for (const block of voteStaple.blocks) {
 				for (const operation of block.operations) {
 					if (operation.type === KeetaNet.lib.Block.OperationType.MODIFY_PERMISSIONS) {
-						if (!block.account.comparePublicKey(storage) || !grantsSendOnBehalf(operation.permissions)) {
+						if (!block.account.comparePublicKey(storage) || !grantsSendOnBehalf(operation.permissions) || !coversWholeAccount(operation.target, storage)) {
 							continue;
 						}
 
@@ -295,7 +303,7 @@ async function readAgentSpendingState(base: Client, storage: StorageAccount, own
 	}
 
 	const active = acls.some(function(acl) {
-		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(history.agent) && acl.permissions.has(['SEND_ON_BEHALF']));
+		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(history.agent) && acl.permissions.has(['SEND_ON_BEHALF']) && coversWholeAccount(acl.target, storage));
 	});
 
 	return({
