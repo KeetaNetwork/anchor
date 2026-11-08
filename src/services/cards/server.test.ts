@@ -4,6 +4,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } from '../../lib/agent-spending.js';
 import { KeetaCardsAnchorClient } from './client.js';
 import { MockCardProvider, centsToUSDCUnits } from './mock-provider.js';
+import { CARD_AGENT_OPERATIONS } from './common.js';
 import { KeetaNetCardsAnchorHTTPServer } from './server.js';
 
 function newAccount() {
@@ -13,6 +14,7 @@ function newAccount() {
 const groceries = { name: 'Corner Grocer', categoryCode: '5411' };
 const casino = { name: 'Lucky Casino', categoryCode: '7995' };
 const walletAddress = '0x' + 'ab'.repeat(20);
+const wallet = { chain: 'base', currency: 'usdc', address: walletAddress };
 
 async function setup() {
 	const owner = newAccount();
@@ -37,12 +39,16 @@ async function setup() {
 	provider.ledger.mint(walletAddress, centsToUSDCUnits(200_00));
 	provider.ledger.approve(walletAddress, provider.spender, centsToUSDCUnits(150_00));
 
-	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider });
+	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider, delegateOperations: CARD_AGENT_OPERATIONS });
 	await server.start();
 
 	const cardsFor = function(storage: InstanceType<typeof KeetaNet.lib.Account>, signer: InstanceType<typeof KeetaNet.lib.Account>) {
 		return(new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(ownerClient, storage, signer) }));
 	};
+
+	/* The owner approves the Base wallet for both accounts' agents */
+	await cardsFor(spending.storage, owner).registerWallet(wallet);
+	await cardsFor(otherSpending.storage, owner).registerWallet(wallet);
 
 	return({
 		owner, agent, otherAgent, ownerClient, usd, spending, otherSpending, provider, server, cardsFor,
@@ -52,8 +58,6 @@ async function setup() {
 		}
 	});
 }
-
-const wallet = { chain: 'base', currency: 'usdc', address: walletAddress };
 
 /* Issuer calls made after answering an authorization land a moment later */
 async function eventually(check: () => void | Promise<void>): Promise<void> {
@@ -207,11 +211,12 @@ test('concurrent purchases cannot overspend the lifetime limit or reuse a single
 test('an agent can only tighten the operator\'s default controls', async function() {
 	await using env = await setup();
 	const ceiling = { perPurchaseLimitCents: 50_00, lifetimeLimitCents: 200_00, blockedCategories: ['7995'] };
-	await using server = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: env.provider, defaultControls: ceiling });
+	await using server = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: env.provider, defaultControls: ceiling, delegateOperations: CARD_AGENT_OPERATIONS });
 	await server.start();
 	const client = function(signer: InstanceType<typeof KeetaNet.lib.Account>) {
 		return(new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(env.ownerClient, env.spending.storage, signer) }));
 	};
+	await client(env.owner).registerWallet(wallet);
 
 	const loose = await client(env.agent).createCard({ wallet, controls: { perPurchaseLimitCents: 999_00, lifetimeLimitCents: 100_00, blockedCategories: ['5813'] }});
 	expect(loose.controls).toEqual({ perPurchaseLimitCents: 50_00, lifetimeLimitCents: 100_00, blockedCategories: ['7995', '5813'] });
@@ -274,8 +279,10 @@ test('revoking the agent freezes all of its cards at once', async function() {
 	expect(env.provider.issuerStatus(closed.id)).toBe('closed');
 	expect((await ownerCards.getCard(ownersOwn.id)).status).toBe('active');
 
-	/* The agent may still hold the numbers, so these cards only close */
-	await expect(ownerCards.unfreezeCard(first.id)).rejects.toThrow(/can only be closed/);
+	/* The revoked agent may still hold the numbers: no purchase goes through, and the owner can't unfreeze */
+	expect(await env.provider.simulatePurchase(first.id, 1_00, groceries)).toMatchObject({ approved: false });
+	expect(await env.server.authorize({ cardID: first.id, amountCents: 1_00, merchant: groceries })).toEqual({ approved: false, reason: 'card_not_active' });
+	await expect(ownerCards.unfreezeCard(first.id)).rejects.toThrow(/Grant the agent access again/);
 	expect(env.provider.issuerStatus(first.id)).toBe('frozen');
 	expect((await ownerCards.closeCard(first.id)).status).toBe('closed');
 
@@ -340,8 +347,73 @@ test('a card needs an approved issuer customer and a valid wallet', async functi
 	await expect(agentCards.createCard({ wallet, controls: { perPurchaseLimitCents: -1 }})).rejects.toThrow(/positive/);
 
 	const unapproved = new MockCardProvider();
-	await using server = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: unapproved });
+	await using server = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: unapproved, delegateOperations: CARD_AGENT_OPERATIONS });
 	await server.start();
 	const cards = new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(env.ownerClient, env.spending.storage, env.agent) });
 	await expect(cards.createCard({ wallet })).rejects.toThrow();
+});
+
+test('agents only fund cards from wallets the owner registered', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+	const other = { chain: 'base', currency: 'usdc', address: '0x' + 'ef'.repeat(20) };
+	const ownersPick = { chain: 'base', currency: 'usdc', address: '0x' + '12'.repeat(20) };
+
+	await expect(agentCards.createCard({ wallet: other })).rejects.toThrow(/wallet the owner registered/);
+	await expect(agentCards.registerWallet(other)).rejects.toThrow(/not available to storage account delegates/);
+
+	/* Registered by the owner: the agent can use it, in any letter case */
+	await ownerCards.registerWallet(other);
+	const card = await agentCards.createCard({ wallet: { ...other, address: other.address.toUpperCase().replace('0X', '0x') }});
+	expect(card.walletSource).toBe('registered');
+
+	/* A wallet the owner names on its own card is approved by that, and listed for the agent */
+	expect((await ownerCards.createCard({ wallet: ownersPick })).walletSource).toBe('owner');
+	const listed = await agentCards.listWallets();
+	expect(listed.map(function(entry) { return(entry.address); })).toEqual([walletAddress, other.address, ownersPick.address]);
+	expect(listed[0]?.registeredBy).toBe(env.owner.publicKeyString.get());
+
+	/* Without delegateOperations, agents can sign nothing */
+	await using closedServer = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: env.provider });
+	await closedServer.start();
+	const viaClosed = new KeetaCardsAnchorClient({ baseURL: closedServer.url, client: agentSpendingClient(env.ownerClient, env.spending.storage, env.agent) });
+	await expect(viaClosed.listCards()).rejects.toThrow(/not available to storage account delegates/);
+});
+
+test('a revoke-frozen card comes back only with a new number or a new grant', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+
+	const kept = await agentCards.createCard({ wallet, label: 'Office', controls: { lifetimeLimitCents: 50_00 }});
+	const granted = await agentCards.createCard({ wallet, label: 'Cloud' });
+	expect(await env.provider.simulatePurchase(kept.id, 20_00, groceries)).toEqual({ approved: true });
+
+	await revokeAgentSpending(env.ownerClient, { agent: env.agent, storage: env.spending.storage });
+	await ownerCards.freezeAgentCards(env.agent);
+
+	/* Only to someone who can act for the account now */
+	await expect(ownerCards.replaceCard(kept.id, env.agent)).rejects.toThrow(/no grant/);
+	await expect(agentCards.replaceCard(kept.id)).rejects.toThrow();
+
+	/* A new number for the owner: the old one is dead, the limits and spend carry over */
+	const replacement = await ownerCards.replaceCard(kept.id);
+	expect(replacement).toMatchObject({ status: 'active', label: 'Office', replaces: kept.id, spentCents: 20_00, controls: { lifetimeLimitCents: 50_00 }, createdBy: env.owner.publicKeyString.get() });
+	expect(replacement.id).not.toBe(kept.id);
+	expect(await ownerCards.getCard(kept.id)).toMatchObject({ status: 'closed', statusReason: 'replaced' });
+	expect(env.provider.issuerStatus(kept.id)).toBe('closed');
+	expect(await env.provider.simulatePurchase(kept.id, 1_00, groceries)).toMatchObject({ approved: false });
+	expect(await env.provider.simulatePurchase(replacement.id, 40_00, groceries)).toEqual({ approved: false, reason: 'over_lifetime_limit' });
+	expect(await env.provider.simulatePurchase(replacement.id, 30_00, groceries)).toEqual({ approved: true });
+
+	/* Granting the agent access again lets the owner unfreeze its other card */
+	await expect(ownerCards.unfreezeCard(granted.id)).rejects.toThrow(/Grant the agent access again/);
+	const builder = env.ownerClient.initBuilder();
+	builder.updatePermissions(env.agent, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), undefined, undefined, { account: env.spending.storage });
+	await env.ownerClient.publishBuilder(builder);
+
+	expect(await ownerCards.unfreezeCard(granted.id)).toMatchObject({ status: 'active' });
+	expect(env.provider.issuerStatus(granted.id)).toBe('active');
+	expect(await env.provider.simulatePurchase(granted.id, 5_00, groceries)).toEqual({ approved: true });
 });

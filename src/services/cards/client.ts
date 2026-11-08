@@ -14,16 +14,21 @@ import { SignData } from '../../lib/utils/signing.js';
 import type {
 	CardControls,
 	CardDetails,
+	CardFundingWallet,
 	CardRevealToken,
 	KeetaCardsCreateRequest,
 	KeetaCardsFreezeAgentCardsResult,
-	KeetaCardsResponse
+	KeetaCardsResponse,
+	RegisteredCardWallet
 } from './common.js';
 import {
 	getCardActionSignable,
 	getCreateCardSignable,
 	getFreezeAgentCardsSignable,
 	getListCardsSignable,
+	getListWalletsSignable,
+	getRegisterWalletSignable,
+	getReplaceCardSignable,
 	getRevealCardSignable,
 	getUpdateControlsSignable
 } from './common.js';
@@ -147,6 +152,32 @@ export class KeetaCardsAnchorClient {
 		const request = { agent: typeof agent === 'string' ? agent : agent.publicKeyString.get() };
 		const { cards, failed } = await this.#post<KeetaCardsFreezeAgentCardsResult>(`/api/cards/agents/${encodeURIComponent(request.agent)}/freeze`, request, getFreezeAgentCardsSignable(request));
 		return({ cards, failed });
+	}
+
+	/**
+	 * Owner only.  Register a funding wallet agents may create cards on.
+	 * Returns every registered wallet.
+	 */
+	async registerWallet(wallet: CardFundingWallet): Promise<RegisteredCardWallet[]> {
+		const request = { wallet };
+		const { wallets } = await this.#post<{ wallets: RegisteredCardWallet[]; }>('/api/cards/wallets', request, getRegisterWalletSignable(request));
+		return(wallets);
+	}
+
+	/** The funding wallets the owner registered for this account */
+	async listWallets(): Promise<RegisteredCardWallet[]> {
+		const { wallets } = await this.#get<{ wallets: RegisteredCardWallet[]; }>('/api/cards/wallets', getListWalletsSignable());
+		return(wallets);
+	}
+
+	/**
+	 * Owner only.  Close the card and issue a new number with the same
+	 * limits, for `agent` (which must hold a grant now) or for the owner.
+	 */
+	async replaceCard(id: string, agent?: Account | string): Promise<CardDetails> {
+		const request = { id, ...(agent !== undefined ? { agent: typeof agent === 'string' ? agent : agent.publicKeyString.get() } : {}) };
+		const { card } = await this.#post<{ card: CardDetails; }>(`/api/cards/${encodeURIComponent(id)}/replace`, request, getReplaceCardSignable(request));
+		return(card);
 	}
 
 	/** Owner only by default */

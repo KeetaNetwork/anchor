@@ -5,16 +5,20 @@
  *
  * Requests are signed for a storage account by its owner or by an agent
  * holding SEND_ON_BEHALF, and resolve to the owner, the same way the asset
- * movement anchor treats storage accounts.  Agents get a narrower set of
- * operations by default ({@link DEFAULT_CARD_DELEGATE_OPERATIONS}).
+ * movement anchor treats storage accounts.  Agents can sign nothing until
+ * the operator passes `delegateOperations` (usually
+ * {@link CARD_AGENT_OPERATIONS}).  An agent's cards only draw on wallets
+ * the owner registered.
  *
  * Revoking an agent on the network stops its cards.  The owner's wallet
  * asks the anchor to freeze all of the agent's cards right after the revoke
  * (POST /api/cards/agents/:agent/freeze).  As a backstop, listing cards and
  * every authorization re-read the storage account's grants and freeze any
  * card whose creator can no longer act for the account.  Such a card stays
- * frozen: the revoked agent may still hold its number, so it can only be
- * closed.
+ * frozen while the agent is revoked, because the agent may still hold its
+ * number.  The owner can close it, replace it with a new number
+ * (POST /api/cards/:id/replace), or grant the agent access again and then
+ * unfreeze it.
  */
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
@@ -23,14 +27,15 @@ import { KeetaAnchorUserError } from '../../lib/error.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { resolveStorageAccountAuthority, verifyStorageAccountSignature } from '../../lib/utils/storage-account.js';
+import { authenticateStorageAccountRequest, resolveStorageAccountAuthority } from '../../lib/utils/storage-account.js';
 import type {
 	CardAuthorizationDecision,
 	CardAuthorizationRequest,
 	CardControls,
 	CardDetails,
 	CardsOperationName,
-	KeetaCardsFreezeAgentCardsResult
+	KeetaCardsFreezeAgentCardsResult,
+	RegisteredCardWallet
 } from './common.js';
 import {
 	DEFAULT_CARD_DELEGATE_OPERATIONS,
@@ -40,13 +45,19 @@ import {
 	getCreateCardSignable,
 	getFreezeAgentCardsSignable,
 	getListCardsSignable,
+	getListWalletsSignable,
+	getRegisterWalletSignable,
+	getReplaceCardSignable,
 	getRevealCardSignable,
-	getUpdateControlsSignable
+	getUpdateControlsSignable,
+	isSameFundingWallet
 } from './common.js';
 import {
 	assertKeetaCardsCardActionRequestJSON,
 	assertKeetaCardsCreateRequestJSON,
 	assertKeetaCardsFreezeAgentCardsRequestJSON,
+	assertKeetaCardsRegisterWalletRequestJSON,
+	assertKeetaCardsReplaceCardRequestJSON,
 	assertKeetaCardsRevealRequestJSON,
 	assertKeetaCardsUpdateControlsRequestJSON
 } from './common.server.generated.js';
@@ -90,11 +101,16 @@ export interface CardStore {
 	 * authorization.  Returns the saved card, or null if there is none.
 	 */
 	update(id: string, change: (card: CardDetails) => void): Promise<CardDetails | null>;
+
+	/** Record a funding wallet the owner registered; registering it again changes nothing */
+	addWallet(account: string, wallet: RegisteredCardWallet): Promise<void>;
+	listWallets(account: string): Promise<RegisteredCardWallet[]>;
 }
 
 export class InMemoryCardStore implements CardStore {
 	readonly #cards = new Map<string, CardDetails>();
 	readonly #decisions = new Map<string, CardAuthorizationDecision>();
+	readonly #wallets = new Map<string, RegisteredCardWallet[]>();
 	/* The tail of each card's queue of writes, so writes to a card don't interleave */
 	readonly #queues = new Map<string, Promise<unknown>>();
 
@@ -171,6 +187,18 @@ export class InMemoryCardStore implements CardStore {
 			return(structuredClone(card));
 		}));
 	}
+
+	async addWallet(account: string, wallet: RegisteredCardWallet): Promise<void> {
+		const wallets = this.#wallets.get(account) ?? [];
+		if (!wallets.some(function(known) { return(isSameFundingWallet(known, wallet)); })) {
+			wallets.push(structuredClone(wallet));
+			this.#wallets.set(account, wallets);
+		}
+	}
+
+	async listWallets(account: string): Promise<RegisteredCardWallet[]> {
+		return(structuredClone(this.#wallets.get(account) ?? []));
+	}
 }
 
 export interface KeetaAnchorCardsServerConfig extends KeetaAnchorHTTPServer.KeetaAnchorHTTPServerConfig {
@@ -223,6 +251,12 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 	readonly delegateOperations: readonly CardsOperationName[];
 	readonly defaultControls: CardControls;
 	readonly #client: KeetaNetClient;
+	/*
+	 * Revoke freezes running now, by storage account, so an unfreeze waits
+	 * for them.  This is per process: anchors run as several instances
+	 * need a shared lock instead.
+	 */
+	readonly #revokeFreezes = new Map<string, Set<Promise<unknown>>>();
 
 	constructor(config: KeetaAnchorCardsServerConfig) {
 		super(config);
@@ -258,17 +292,12 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			throw(new KeetaAnchorUserError('Cards belong to agent spending (storage) accounts'));
 		}
 
-		const verified = await verifyStorageAccountSignature(this.#client, storage, [storage, ...signable], signed);
-		if (verified === null) {
-			throw(new KeetaAnchorUserError('Invalid signature'));
-		}
+		const { owner, signer, isOwner } = await authenticateStorageAccountRequest(this.#client, storage, signable, signed, {
+			operation,
+			delegateOperations: this.delegateOperations
+		});
 
-		const isOwner = verified.signer.comparePublicKey(verified.owner);
-		if (!isOwner && !this.delegateOperations.includes(operation)) {
-			throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
-		}
-
-		return({ storage, owner: verified.owner, signer: verified.signer, isOwner });
+		return({ storage, owner, signer, isOwner });
 	}
 
 	/* An agent only sees and acts on the cards it made; the owner sees all */
@@ -308,6 +337,55 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		}
 	}
 
+	async #trackRevokeFreeze<T>(account: string, work: () => Promise<T>): Promise<T> {
+		const running = work();
+		const set = this.#revokeFreezes.get(account) ?? new Set();
+		this.#revokeFreezes.set(account, set);
+		set.add(running);
+		try {
+			return(await running);
+		} finally {
+			set.delete(running);
+			if (set.size === 0) {
+				this.#revokeFreezes.delete(account);
+			}
+		}
+	}
+
+	async #revokeFreezesSettled(account: string): Promise<void> {
+		await Promise.allSettled([...(this.#revokeFreezes.get(account) ?? [])]);
+	}
+
+	async #registerWallet(caller: Caller, wallet: CardDetails['wallet']): Promise<void> {
+		await this.store.addWallet(caller.storage.publicKeyString.get(), {
+			chain: wallet.chain,
+			currency: wallet.currency,
+			address: wallet.address,
+			registeredBy: caller.owner.publicKeyString.get(),
+			registeredAt: new Date().toISOString()
+		});
+	}
+
+	/**
+	 * The account a public key names, in canonical form, if it can act for
+	 * the storage account as an agent right now.  Throws otherwise.
+	 */
+	async #activeAgent(caller: Caller, agentString: string): Promise<string> {
+		let agent: string;
+		try {
+			agent = KeetaNet.lib.Account.fromPublicKeyString(agentString).publicKeyString.get();
+		} catch {
+			throw(new KeetaAnchorUserError('Invalid agent public key'));
+		}
+
+		const isAuthorized = await this.#authorityFor(caller.storage.publicKeyString.get());
+		if (agent === caller.owner.publicKeyString.get() || !isAuthorized(agent)) {
+			throw(new KeetaAnchorUserError('That agent has no grant on this account'));
+		}
+
+		return(agent);
+	}
+
 	/**
 	 * Stop a card at the issuer because the agent that made it was revoked.
 	 * A card the agent or owner had already frozen is relabeled, so it too
@@ -343,18 +421,20 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			return;
 		}
 
-		const isAuthorized = await this.#authorityFor(account);
-		for (const card of open) {
-			if (isAuthorized(card.createdBy)) {
-				continue;
-			}
+		await this.#trackRevokeFreeze(account, async () => {
+			const isAuthorized = await this.#authorityFor(account);
+			for (const card of open) {
+				if (isAuthorized(card.createdBy)) {
+					continue;
+				}
 
-			try {
-				await this.#freezeForRevokedAgent(card);
-			} catch (error) {
-				this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze a revoked agent\'s card', card.id, error);
+				try {
+					await this.#freezeForRevokedAgent(card);
+				} catch (error) {
+					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze a revoked agent\'s card', card.id, error);
+				}
 			}
-		}
+		});
 	}
 
 	/**
@@ -408,8 +488,11 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		const cardID = request.cardID;
 		if (after === 'freeze') {
 			setImmediate(() => {
-				this.store.get(cardID).then((card) => {
-					return(card === null ? undefined : this.#freezeForRevokedAgent(card));
+				this.#trackRevokeFreeze(known.account, async () => {
+					const card = await this.store.get(cardID);
+					if (card !== null) {
+						await this.#freezeForRevokedAgent(card);
+					}
 				}).catch((error: unknown) => {
 					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze a revoked agent\'s card', cardID, error);
 				});
@@ -445,6 +528,15 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				throw(new KeetaAnchorUserError(error instanceof Error ? error.message : 'Invalid request'));
 			}
 
+			/* An agent may only use a wallet the owner approved */
+			const account = caller.storage.publicKeyString.get();
+			if (!caller.isOwner) {
+				const registered = await this.store.listWallets(account);
+				if (!registered.some(function(known) { return(isSameFundingWallet(known, request.wallet)); })) {
+					throw(new KeetaAnchorUserError('Agents can only fund cards from a wallet the owner registered'));
+				}
+			}
+
 			const issued = await this.provider.createCard({
 				owner: caller.owner,
 				storage: caller.storage,
@@ -455,12 +547,13 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 			const card: CardDetails = {
 				id: issued.providerCardID,
-				account: caller.storage.publicKeyString.get(),
+				account,
 				createdBy: caller.signer.publicKeyString.get(),
 				status: 'active',
 				last4: issued.last4,
 				expiry: issued.expiry,
 				wallet: request.wallet,
+				walletSource: caller.isOwner ? 'owner' : 'registered',
 				controls,
 				spentCents: 0,
 				createdAt: new Date().toISOString(),
@@ -468,8 +561,34 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				...(issued.deposit !== undefined ? { deposit: issued.deposit } : {})
 			};
 			await this.store.put(card);
+			if (caller.isOwner) {
+				await this.#registerWallet(caller, request.wallet);
+			}
 
 			return(json({ ok: true, card }));
+		};
+
+		routes['POST /api/cards/wallets'] = async (_ignore_params, body) => {
+			const request = parseBody(assertKeetaCardsRegisterWalletRequestJSON, body);
+			const caller = await this.#authenticate(request.account, assertHTTPSignedField(request.signed), getRegisterWalletSignable(request), 'registerWallet');
+			if (!caller.isOwner) {
+				throw(new KeetaAnchorUserError('Only the owner can register a funding wallet'));
+			}
+
+			try {
+				assertValidFundingWallet(request.wallet);
+			} catch (error) {
+				throw(new KeetaAnchorUserError(error instanceof Error ? error.message : 'Invalid wallet'));
+			}
+
+			await this.#registerWallet(caller, request.wallet);
+			return(json({ ok: true, wallets: await this.store.listWallets(caller.storage.publicKeyString.get()) }));
+		};
+
+		routes['GET /api/cards/wallets'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
+			const parsed = parseSignatureFromURL(url, { assertKeyed: false });
+			const caller = await this.#authenticate(parsed.account?.publicKeyString.get(), parsed.signedField, getListWalletsSignable(), 'listWallets');
+			return(json({ ok: true, wallets: await this.store.listWallets(caller.storage.publicKeyString.get()) }));
 		};
 
 		routes['GET /api/cards'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
@@ -507,38 +626,41 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				throw(new KeetaAnchorUserError('Name the agent, not the owner'));
 			}
 
-			const isAuthorized = await this.#authorityFor(caller.storage.publicKeyString.get());
+			const account = caller.storage.publicKeyString.get();
+			const isAuthorized = await this.#authorityFor(account);
 			const stillAuthorized = isAuthorized(agent);
 
 			const result: KeetaCardsFreezeAgentCardsResult = { cards: [], failed: [] };
-			const cards = await this.store.listByAccount(caller.storage.publicKeyString.get());
-			for (const card of cards) {
-				if (card.createdBy !== agent || card.status === 'closed') {
-					continue;
-				}
-
-				try {
-					if (stillAuthorized) {
-						/* The owner is pausing an agent it has not revoked: an ordinary freeze */
-						if (card.status === 'active') {
-							await this.provider.freezeCard(card.id);
-							Object.assign(card, await this.store.update(card.id, function(fresh) {
-								if (fresh.status === 'active') {
-									fresh.status = 'frozen';
-									fresh.statusReason = 'requested';
-								}
-							}));
-						}
-					} else {
-						await this.#freezeForRevokedAgent(card);
+			const cards = await this.store.listByAccount(account);
+			await this.#trackRevokeFreeze(account, async () => {
+				for (const card of cards) {
+					if (card.createdBy !== agent || card.status === 'closed') {
+						continue;
 					}
 
-					result.cards.push(card);
-				} catch (error) {
-					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze an agent card', card.id, error);
-					result.failed.push(card.id);
+					try {
+						if (stillAuthorized) {
+							/* The owner is pausing an agent it has not revoked: an ordinary freeze */
+							if (card.status === 'active') {
+								await this.provider.freezeCard(card.id);
+								Object.assign(card, await this.store.update(card.id, function(fresh) {
+									if (fresh.status === 'active') {
+										fresh.status = 'frozen';
+										fresh.statusReason = 'requested';
+									}
+								}));
+							}
+						} else {
+							await this.#freezeForRevokedAgent(card);
+						}
+
+						result.cards.push(card);
+					} catch (error) {
+						this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze an agent card', card.id, error);
+						result.failed.push(card.id);
+					}
 				}
-			}
+			});
 
 			return(json({ ok: true, ...result }));
 		};
@@ -588,10 +710,15 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		});
 
 		action('unfreeze', 'unfreezeCard', async (card) => {
+			/*
+			 * Let a revoke finish freezing the agent's cards first, then read
+			 * the grants fresh: the card spends again only if the agent that
+			 * holds its number may act for the account again.
+			 */
+			await this.#revokeFreezesSettled(card.account);
 			const isAuthorized = await this.#authorityFor(card.account);
-			if (card.statusReason === 'delegate_revoked' || !isAuthorized(card.createdBy)) {
-				/* The revoked agent may still hold the number, so this card only closes */
-				throw(new KeetaAnchorUserError('This card\'s agent was revoked, so the card can only be closed'));
+			if (!isAuthorized(card.createdBy)) {
+				throw(new KeetaAnchorUserError('This card\'s agent was revoked.  Grant the agent access again to unfreeze it, or replace the card with a new number'));
 			}
 
 			await this.provider.unfreezeCard(card.id);
@@ -612,6 +739,62 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				}
 			});
 		});
+
+		routes['POST /api/cards/:id/replace'] = async (params, body) => {
+			const request = parseBody(assertKeetaCardsReplaceCardRequestJSON, body);
+			if (request.id !== params.get('id')) {
+				throw(new KeetaAnchorUserError('Card ID does not match the URL'));
+			}
+
+			const caller = await this.#authenticate(request.account, assertHTTPSignedField(request.signed), getReplaceCardSignable(request), 'replaceCard');
+			if (!caller.isOwner) {
+				throw(new KeetaAnchorUserError('Only the owner can replace a card'));
+			}
+
+			const old = await this.#cardFor(caller, request.id);
+			if (old.status === 'closed') {
+				throw(new KeetaAnchorUserError('The card is closed'));
+			}
+
+			const holder = request.agent === undefined ? caller.owner.publicKeyString.get() : await this.#activeAgent(caller, request.agent);
+
+			/* Close the old number first, so a failure never leaves it working */
+			await this.provider.closeCard(old.id);
+			const closed = await this.store.update(old.id, function(fresh) {
+				fresh.status = 'closed';
+				fresh.statusReason = 'replaced';
+			});
+
+			const issued = await this.provider.createCard({
+				owner: caller.owner,
+				storage: caller.storage,
+				wallet: old.wallet,
+				controls: old.controls,
+				...(old.label !== undefined ? { label: old.label } : {})
+			});
+
+			const card: CardDetails = {
+				id: issued.providerCardID,
+				account: old.account,
+				createdBy: holder,
+				status: 'active',
+				last4: issued.last4,
+				expiry: issued.expiry,
+				wallet: old.wallet,
+				walletSource: 'owner',
+				controls: old.controls,
+				/* Carried over, so the lifetime limit still counts the old card's spend */
+				spentCents: closed?.spentCents ?? old.spentCents,
+				replaces: old.id,
+				createdAt: new Date().toISOString(),
+				...(old.label !== undefined ? { label: old.label } : {}),
+				...(issued.deposit !== undefined ? { deposit: issued.deposit } : {})
+			};
+			await this.store.put(card);
+			await this.#registerWallet(caller, old.wallet);
+
+			return(json({ ok: true, card }));
+		};
 
 		routes['POST /api/cards/:id/controls'] = async (params, body) => {
 			const request = parseBody(assertKeetaCardsUpdateControlsRequestJSON, body);

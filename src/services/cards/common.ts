@@ -29,6 +29,25 @@ export type CardFundingWallet = {
 };
 
 /**
+ * A funding wallet the owner registered for a storage account's cards.
+ * Agents may only create cards that draw on one of these, so an agent can't
+ * attach a card in the owner's name to a wallet the owner never approved.
+ */
+export type RegisteredCardWallet = CardFundingWallet & {
+	/** The owner's public key */
+	registeredBy: string;
+	registeredAt: string;
+};
+
+/**
+ * Whether two funding wallets are the same.  EVM addresses are compared
+ * without regard to case, since the checksum casing is optional.
+ */
+export function isSameFundingWallet(a: CardFundingWallet, b: CardFundingWallet): boolean {
+	return(a.chain === b.chain && a.currency === b.currency && a.address.toLowerCase() === b.address.toLowerCase());
+}
+
+/**
  * Limits the anchor enforces when the card issuer asks whether to approve a
  * purchase.  Every field is optional; an empty object approves any purchase
  * the wallet can cover.
@@ -66,6 +85,14 @@ export type CardDetails = {
 	last4: string;
 	expiry: string;
 	wallet: CardFundingWallet;
+	/**
+	 * Who approved the funding wallet: the owner named it on a card they
+	 * made or replaced (`owner`), or an agent picked a wallet the owner
+	 * registered (`registered`).  Agents can't name any other wallet.
+	 */
+	walletSource?: 'owner' | 'registered';
+	/** The card this one replaced, when the owner reissued a card with a new number */
+	replaces?: string;
 	/** For prepaid issuers: where to send funds before the card can spend them */
 	deposit?: CardFundingWallet;
 	controls: CardControls;
@@ -157,6 +184,30 @@ export type KeetaCardsRevealRequest = {
 export type KeetaCardsRevealRequestJSON = KeetaCardsRevealRequest & SignedRequest;
 
 /**
+ * Register a funding wallet agents may use for the storage account's cards.
+ * Only the owner can.  A card the owner creates registers its wallet too.
+ */
+export type KeetaCardsRegisterWalletRequest = {
+	wallet: CardFundingWallet;
+};
+export type KeetaCardsRegisterWalletRequestJSON = KeetaCardsRegisterWalletRequest & SignedRequest;
+
+/**
+ * Reissue a card with a new number: the old card closes at the issuer and a
+ * new one takes its limits, label, wallet and spend so far.  Only the owner
+ * can.  The new card goes to `agent` (which must hold a grant on the storage
+ * account now) or, without one, to the owner.  This is how a card frozen by
+ * a revoke goes back into use without the revoked agent's copy of the
+ * number working.
+ */
+export type KeetaCardsReplaceCardRequest = {
+	id: string;
+	/** The agent's public key; omit to give the new card to the owner */
+	agent?: string;
+};
+export type KeetaCardsReplaceCardRequestJSON = KeetaCardsReplaceCardRequest & SignedRequest;
+
+/**
  * Freeze every card an agent made for the storage account.  The owner's
  * wallet sends this right after revoking the agent on the network, so its
  * cards stop at the issuer at once rather than at their next purchase.
@@ -199,22 +250,35 @@ export type CardsOperationName =
 	'closeCard' |
 	'updateControls' |
 	'revealCard' |
-	'freezeAgentCards';
+	'freezeAgentCards' |
+	'registerWallet' |
+	'listWallets' |
+	'replaceCard';
 
 /**
- * What an agent may do with its own storage account's cards by default:
- * create and close cards, freeze one it suspects is compromised, read them,
- * and open the issuer's secure display to pay.  Unfreezing, changing
- * limits and freezing an agent's cards stay with the owner.
+ * What an agent needs to pay by card: create and close cards, freeze one it
+ * suspects is compromised, read them and the owner's registered wallets,
+ * and open the issuer's secure display.  Unfreezing, changing limits,
+ * registering wallets, replacing cards and freezing an agent's cards stay
+ * with the owner.  Pass this as `delegateOperations` to switch agent
+ * signing on.
  */
-export const DEFAULT_CARD_DELEGATE_OPERATIONS: readonly CardsOperationName[] = Object.freeze([
+export const CARD_AGENT_OPERATIONS: readonly CardsOperationName[] = Object.freeze([
 	'createCard',
 	'listCards',
 	'getCard',
 	'freezeCard',
 	'closeCard',
-	'revealCard'
+	'revealCard',
+	'listWallets'
 ]);
+
+/**
+ * By default no operation is open to agents, as for asset movement: only
+ * the owner can sign for a storage account until the operator switches
+ * agent signing on.
+ */
+export const DEFAULT_CARD_DELEGATE_OPERATIONS: readonly CardsOperationName[] = Object.freeze([]);
 
 /**
  * Orders strings by UTF-16 code unit, like the default sort, but explicit.
@@ -272,6 +336,18 @@ export function getCardActionSignable(action: 'get' | 'freeze' | 'unfreeze' | 'c
 
 export function getFreezeAgentCardsSignable(request: KeetaCardsFreezeAgentCardsRequest): Signable {
 	return(['cards:freeze-agent', request.agent]);
+}
+
+export function getRegisterWalletSignable(request: KeetaCardsRegisterWalletRequest): Signable {
+	return(['cards:register-wallet', request.wallet.chain, request.wallet.currency, request.wallet.address]);
+}
+
+export function getListWalletsSignable(): Signable {
+	return(['cards:list-wallets']);
+}
+
+export function getReplaceCardSignable(request: KeetaCardsReplaceCardRequest): Signable {
+	return(['cards:replace', request.id, request.agent ?? '']);
 }
 
 export function getListCardsSignable(): Signable {

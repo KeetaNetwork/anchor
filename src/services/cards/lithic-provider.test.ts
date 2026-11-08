@@ -6,6 +6,7 @@ import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } fr
 import { Buffer } from '../../lib/utils/buffer.js';
 import { KeetaCardsAnchorClient } from './client.js';
 import { LITHIC_PRODUCTION_URL, LithicCardProvider, lithicAuthorizationRequest, lithicSpendLimit, verifyLithicWebhook } from './lithic-provider.js';
+import { CARD_AGENT_OPERATIONS } from './common.js';
 import { KeetaNetCardsAnchorHTTPServer } from './server.js';
 
 function newAccount() {
@@ -168,11 +169,12 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 		}
 	});
 
-	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider });
+	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider, delegateOperations: CARD_AGENT_OPERATIONS });
 	await server.start();
 	try {
 		const agentCards = new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(ownerClient, spending.storage, agent) });
 		const ownerCards = new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(ownerClient, spending.storage, owner) });
+		await ownerCards.registerWallet(wallet);
 
 		const card = await agentCards.createCard({ wallet, label: 'Cloud credits', controls: { perPurchaseLimitCents: 25_00, lifetimeLimitCents: 100_00, blockedCategories: ['7995'] }});
 		expect(accountsAsked).toEqual([spending.storage.publicKeyString.get()]);
