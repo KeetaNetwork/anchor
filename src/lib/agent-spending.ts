@@ -187,11 +187,30 @@ export type AgentSpendingAccountState = {
 	funded: AgentSpendingTokenAmount[];
 	/** Total moved back to the owner, per token */
 	returned: AgentSpendingTokenAmount[];
+	/**
+	 * True when the history read stopped at its bound before reaching the
+	 * start of the account.  `funded`, `returned` and `revokedAt` then cover
+	 * only the newest part of the history.  `agent` and `active` never
+	 * depend on it while the grant is in place.
+	 */
+	truncated: boolean;
 	balances: { token: Account; balance: bigint; }[];
+};
+
+/**
+ * How much history a state read walks: up to `pageLimit` pages of
+ * `pageSize` vote staples, newest first.
+ */
+export type AgentSpendingHistoryBounds = {
+	pageSize?: number;
+	pageLimit?: number;
 };
 
 const HISTORY_PAGE_SIZE = 50;
 const HISTORY_PAGE_LIMIT = 20;
+
+/* How many storage accounts listAgentSpendingAccounts reads at once */
+const LIST_CONCURRENCY = 4;
 
 function addTo(totals: AgentSpendingTokenAmount[], token: Account, amount: bigint): void {
 	const existing = totals.find(function(entry) {
@@ -217,112 +236,187 @@ function coversWholeAccount(target: { comparePublicKey(other: StorageAccount): b
 	return(target === undefined || target === null || target.comparePublicKey(storage));
 }
 
+type AgentSpendingHistory = {
+	/** The principal of the latest whole-account SEND_ON_BEHALF change, if one was seen */
+	agent?: Account;
+	revokedAt?: Date;
+	funded: AgentSpendingTokenAmount[];
+	returned: AgentSpendingTokenAmount[];
+	truncated: boolean;
+};
+
 /**
- * Walk a storage account's history and pull out what makes it an agent
- * spending account.  Returns null when no agent was ever granted
- * SEND_ON_BEHALF on it (a plain pocket).
+ * The blocks of a vote staple and their operations, newest first.  A staple
+ * holds its blocks, and a block its operations, oldest first.
  */
-async function readAgentSpendingHistory(base: Client, storage: StorageAccount, owner: Account): Promise<{ agent: Account; revokedAt?: Date; funded: AgentSpendingTokenAmount[]; returned: AgentSpendingTokenAmount[]; } | null> {
+function* newestFirst(blocks: InstanceType<typeof KeetaNet.lib.Block>[]): Generator<{ block: InstanceType<typeof KeetaNet.lib.Block>; operation: InstanceType<typeof KeetaNet.lib.Block>['operations'][number]; }> {
+	for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+		const block = blocks[blockIndex];
+		if (block === undefined) {
+			continue;
+		}
+
+		for (let operationIndex = block.operations.length - 1; operationIndex >= 0; operationIndex--) {
+			const operation = block.operations[operationIndex];
+			if (operation !== undefined) {
+				yield({ block, operation });
+			}
+		}
+	}
+}
+
+/**
+ * Walk a storage account's history, newest first and within the bounds, for
+ * the funding and return totals and the latest change to an agent's grant.
+ */
+async function readAgentSpendingHistory(base: Client, storage: StorageAccount, owner: Account, bounds?: AgentSpendingHistoryBounds): Promise<AgentSpendingHistory> {
+	const pageSize = bounds?.pageSize ?? HISTORY_PAGE_SIZE;
+	const pageLimit = bounds?.pageLimit ?? HISTORY_PAGE_LIMIT;
+
 	let agent: Account | undefined;
 	let revokedAt: Date | undefined;
+	let truncated = false;
 	const funded: AgentSpendingTokenAmount[] = [];
 	const returned: AgentSpendingTokenAmount[] = [];
 
 	let startBlocksHash: string | undefined;
-	for (let page = 0; page < HISTORY_PAGE_LIMIT; page++) {
+	for (let page = 0; ; page++) {
+		if (page >= pageLimit) {
+			truncated = true;
+			break;
+		}
+
 		const history = await base.getHistory(storage, {
 			...(startBlocksHash !== undefined ? { startBlocksHash } : {}),
-			pageSize: HISTORY_PAGE_SIZE
+			/* Without depth, getHistory keeps paging to the start of the chain */
+			depth: pageSize,
+			pageSize
 		});
 
-		/* Newest first, so the first grant change seen is the latest one */
 		for (const { voteStaple } of history) {
-			for (const block of voteStaple.blocks) {
-				for (const operation of block.operations) {
-					if (operation.type === KeetaNet.lib.Block.OperationType.MODIFY_PERMISSIONS) {
-						if (!block.account.comparePublicKey(storage) || !grantsSendOnBehalf(operation.permissions) || !coversWholeAccount(operation.target, storage)) {
-							continue;
-						}
-
-						const principal = operation.principal;
-						if (!(principal instanceof KeetaNet.lib.Account)) {
-							continue;
-						}
-
-						if (agent === undefined) {
-							agent = principal;
-							if (operation.method === KeetaNet.lib.Block.AdjustMethod.SUBTRACT) {
-								revokedAt = voteStaple.timestamp();
-							}
-						}
-
+			for (const { block, operation } of newestFirst(voteStaple.blocks)) {
+				if (operation.type === KeetaNet.lib.Block.OperationType.MODIFY_PERMISSIONS) {
+					if (agent !== undefined || !block.account.comparePublicKey(storage) || !grantsSendOnBehalf(operation.permissions) || !coversWholeAccount(operation.target, storage)) {
 						continue;
 					}
 
-					if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+					const principal = operation.principal;
+					if (!(principal instanceof KeetaNet.lib.Account)) {
 						continue;
 					}
 
-					if (operation.to.comparePublicKey(storage) && block.account.comparePublicKey(owner)) {
-						addTo(funded, operation.token, operation.amount);
-					} else if (block.account.comparePublicKey(storage) && operation.to.comparePublicKey(owner)) {
-						addTo(returned, operation.token, operation.amount);
+					agent = principal;
+					if (operation.method === KeetaNet.lib.Block.AdjustMethod.SUBTRACT) {
+						revokedAt = voteStaple.timestamp();
 					}
+
+					continue;
+				}
+
+				if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+					continue;
+				}
+
+				if (operation.to.comparePublicKey(storage) && block.account.comparePublicKey(owner)) {
+					addTo(funded, operation.token, operation.amount);
+				} else if (block.account.comparePublicKey(storage) && operation.to.comparePublicKey(owner)) {
+					addTo(returned, operation.token, operation.amount);
 				}
 			}
 		}
 
 		const last = history.at(-1);
-		if (history.length < HISTORY_PAGE_SIZE || last === undefined) {
+		if (history.length < pageSize || last === undefined) {
 			break;
 		}
 
 		startBlocksHash = last.voteStaple.blocksHash.toString();
 	}
 
+	return({
+		...(agent !== undefined ? { agent } : {}),
+		...(revokedAt !== undefined ? { revokedAt } : {}),
+		funded,
+		returned,
+		truncated
+	});
+}
+
+/**
+ * The agent currently granted SEND_ON_BEHALF over the whole storage account,
+ * read from its ACLs.  The owner is never the agent.
+ */
+function currentAgent(acls: Awaited<ReturnType<Client['listACLsByEntity']>>, storage: StorageAccount, owner: Account): Account | undefined {
+	for (const acl of acls) {
+		if (acl.principalType !== 'ACCOUNT' || acl.principal.comparePublicKey(owner)) {
+			continue;
+		}
+
+		if (acl.permissions.has(['SEND_ON_BEHALF']) && coversWholeAccount(acl.target, storage)) {
+			return(acl.principal);
+		}
+	}
+
+	return(undefined);
+}
+
+/**
+ * The grant itself is read from the ACLs, which are authoritative and cost
+ * one call however busy the account is.  History supplies the totals, and,
+ * for an account whose grant is gone, which agent it was and when it was
+ * revoked.  Returns null for a pocket that never had an agent within the
+ * history bounds.
+ */
+async function readAgentSpendingState(base: Client, storage: StorageAccount, owner: Account, info: { description: string; metadata: string; }, balances: { token: Account; balance: bigint; }[], bounds?: AgentSpendingHistoryBounds): Promise<AgentSpendingAccountState | null> {
+	const [ history, acls ] = await Promise.all([
+		readAgentSpendingHistory(base, storage, owner, bounds),
+		base.listACLsByEntity(storage)
+	]);
+
+	const granted = currentAgent(acls, storage, owner);
+	const agent = granted ?? history.agent;
 	if (agent === undefined) {
 		return(null);
 	}
 
-	return({
-		agent,
-		...(revokedAt !== undefined ? { revokedAt } : {}),
-		funded,
-		returned
-	});
-}
-
-async function readAgentSpendingState(base: Client, storage: StorageAccount, owner: Account, info: { description: string; metadata: string; }, balances: { token: Account; balance: bigint; }[]): Promise<AgentSpendingAccountState | null> {
-	const [ history, acls ] = await Promise.all([
-		readAgentSpendingHistory(base, storage, owner),
-		base.listACLsByEntity(storage)
-	]);
-
-	if (history === null) {
-		return(null);
-	}
-
-	const active = acls.some(function(acl) {
-		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(history.agent) && acl.permissions.has(['SEND_ON_BEHALF']) && coversWholeAccount(acl.target, storage));
-	});
+	const active = granted !== undefined;
 
 	return({
 		storage,
-		agent: history.agent,
+		agent,
 		name: info.description,
 		createdAt: decodeCreatedAt(info.metadata),
 		active,
 		...(!active && history.revokedAt !== undefined ? { revokedAt: history.revokedAt } : {}),
 		funded: history.funded,
 		returned: history.returned,
+		truncated: history.truncated,
 		balances
 	});
+}
+
+/* Run `task` over `items` with at most `limit` running at once, keeping order */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+	const results: R[] = new Array<R>(items.length);
+	let next = 0;
+	async function worker(): Promise<void> {
+		while (next < items.length) {
+			const index = next++;
+			const item = items[index];
+			if (item !== undefined) {
+				results[index] = await task(item);
+			}
+		}
+	}
+
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	return(results);
 }
 
 /**
  * Read one agent spending account.  Returns null when `storage` is not one.
  */
-export async function getAgentSpendingAccount(client: UserClient | Client, storage: Account): Promise<AgentSpendingAccountState | null> {
+export async function getAgentSpendingAccount(client: UserClient | Client, storage: Account, bounds?: AgentSpendingHistoryBounds): Promise<AgentSpendingAccountState | null> {
 	const base = 'client' in client ? client.client : client;
 	if (!storage.isStorage()) {
 		return(null);
@@ -334,14 +428,14 @@ export async function getAgentSpendingAccount(client: UserClient | Client, stora
 		resolveStorageAccountOwner(base, storageAccount)
 	]);
 
-	return(await readAgentSpendingState(base, storageAccount, owner, state.info, state.balances));
+	return(await readAgentSpendingState(base, storageAccount, owner, state.info, state.balances, bounds));
 }
 
 /**
  * List every agent spending account `owner` owns, active and revoked, newest
  * first.  Pockets the owner never granted to an agent are left out.
  */
-export async function listAgentSpendingAccounts(client: UserClient | Client, owner: Account): Promise<AgentSpendingAccountState[]> {
+export async function listAgentSpendingAccounts(client: UserClient | Client, owner: Account, bounds?: AgentSpendingHistoryBounds): Promise<AgentSpendingAccountState[]> {
 	const base = 'client' in client ? client.client : client;
 	const rows = await base.listACLsByPrincipalWithInfo(owner);
 
@@ -355,10 +449,10 @@ export async function listAgentSpendingAccounts(client: UserClient | Client, own
 		}));
 	});
 
-	const states = await Promise.all(owned.map(async function(row) {
+	const states = await mapWithConcurrency(owned, LIST_CONCURRENCY, async function(row) {
 		const storage = row.entity.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
-		return(await readAgentSpendingState(base, storage, owner, row.info, row.balances));
-	}));
+		return(await readAgentSpendingState(base, storage, owner, row.info, row.balances, bounds));
+	});
 
 	return(states.filter(function(state): state is AgentSpendingAccountState {
 		return(state !== null);
@@ -435,64 +529,180 @@ export async function agentPay(agentClient: UserClient, to: Account, amount: big
 export type RevokeAgentSpendingOptions = {
 	agent: Account;
 	storage: Account;
-	/** Tokens to sweep back to the owner.  Defaults to every token with a balance. */
+	/**
+	 * Tokens to sweep back to the owner.  Defaults to every token with a
+	 * balance that the owner can receive; see `unswept` for the rest.
+	 */
 	tokens?: Account[];
+	/** Sweep the leftover back to the owner.  Default true. */
+	sweep?: boolean;
+};
+
+export type AgentSpendingUnswept = {
+	token: Account;
+	amount: bigint;
+	reason: string;
 };
 
 export type RevokeAgentSpendingResult = {
-	returned: { token: Account; amount: bigint; }[];
+	/** What was swept back to the owner */
+	returned: AgentSpendingTokenAmount[];
+	/** Balances left in the storage account, and why */
+	unswept: AgentSpendingUnswept[];
 };
 
+function errorReason(error: unknown): string {
+	return(error instanceof Error ? error.message : String(error));
+}
+
 /**
- * Add the operations that remove the agent's grant and return the leftover
- * balance to the owner.  They land in one publish so the agent cannot race a
- * payment in between.  The account stays a pocket of the owner's; the
- * revoke itself is the record of when the agent lost access.
+ * Whether the owner holds ACCESS on `token`, from an ACL of their own on it
+ * or from its default permission.  Anyone can deposit into the storage
+ * account, so a token the owner cannot receive must not reach the sweep.
+ */
+async function ownerCanReceive(base: Client, owner: Account, token: Account): Promise<boolean> {
+	const [ tokenState, ownerACLs ] = await Promise.all([
+		base.getAccountInfo(token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN)),
+		base.listACLsByPrincipal(owner, [ token ])
+	]);
+
+	const explicit = ownerACLs.filter(function(acl) {
+		return(acl.entity.comparePublicKey(token));
+	});
+
+	if (explicit.length > 0) {
+		return(explicit.some(function(acl) {
+			return(acl.permissions.has(['ACCESS']));
+		}));
+	}
+
+	const info = tokenState.info;
+	return('defaultPermission' in info && info.defaultPermission.has(['ACCESS']));
+}
+
+async function sweepPlan(ownerClient: UserClient, storage: Account, tokens?: Account[]): Promise<{ sweep: AgentSpendingTokenAmount[]; unswept: AgentSpendingUnswept[]; }> {
+	const base = ownerClient.client;
+	if (tokens !== undefined) {
+		const balances = await Promise.all(tokens.map(async function(token) {
+			const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			return({ token, amount: await ownerClient.balance(tokenAccount, { account: storage }) });
+		}));
+
+		return({
+			sweep: balances.filter(function({ amount }) {
+				return(amount > 0n);
+			}),
+			unswept: []
+		});
+	}
+
+	const all = await ownerClient.allBalances({ account: storage });
+	const checked = await Promise.all(all.filter(function({ balance }) {
+		return(balance > 0n);
+	}).map(async function({ token, balance }) {
+		const receivable = await ownerCanReceive(base, ownerClient.account, token).catch(function() {
+			return(false);
+		});
+
+		return({ token, amount: balance, receivable });
+	}));
+
+	const sweep: AgentSpendingTokenAmount[] = [];
+	const unswept: AgentSpendingUnswept[] = [];
+	for (const { token, amount, receivable } of checked) {
+		if (receivable) {
+			sweep.push({ token, amount });
+		} else {
+			unswept.push({ token, amount, reason: 'Owner cannot receive this token' });
+		}
+	}
+
+	return({ sweep, unswept });
+}
+
+function addSweep(builder: Builder, ownerClient: UserClient, storage: Account, sweep: AgentSpendingTokenAmount[]): void {
+	for (const { token, amount } of sweep) {
+		const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		builder.send(ownerClient.account, amount, tokenAccount, undefined, { account: storage });
+	}
+}
+
+/**
+ * Add the operations that remove the agent's grant and, unless `sweep` is
+ * false, return the leftover balance to the owner, for one signature.
+ *
+ * The grant removal comes first and is what stops the agent; the sweep only
+ * tidies up.  Because they share a publish, a sweep send that fails (the
+ * agent paid after the balances were read, or a token refuses the owner)
+ * fails the revoke with it.  When the publish fails, publish again with
+ * `sweep: false`: revokeAgentSpending does this for you.
  */
 export async function buildRevokeAgentSpending(builder: Builder, ownerClient: UserClient, options: RevokeAgentSpendingOptions): Promise<RevokeAgentSpendingResult> {
 	const { agent, storage } = options;
 
 	builder.updatePermissions(agent, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), undefined, KeetaNet.lib.Block.AdjustMethod.SUBTRACT, { account: storage });
 
-	const balances = await (async function() {
-		if (options.tokens === undefined) {
-			const all = await ownerClient.allBalances({ account: storage });
-			return(all.map(function({ token, balance }) {
-				return({ token, amount: balance });
-			}));
-		}
-
-		return(await Promise.all(options.tokens.map(async function(token) {
-			const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-			return({ token, amount: await ownerClient.balance(tokenAccount, { account: storage }) });
-		})));
-	})();
-
-	const returned: { token: Account; amount: bigint; }[] = [];
-	for (const { token, amount } of balances) {
-		if (amount <= 0n) {
-			continue;
-		}
-
-		const tokenAccount = token.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-		builder.send(ownerClient.account, amount, tokenAccount, undefined, { account: storage });
-		returned.push({ token, amount });
+	if (options.sweep === false) {
+		return({ returned: [], unswept: [] });
 	}
 
-	return({ returned });
+	const { sweep, unswept } = await sweepPlan(ownerClient, storage, options.tokens);
+	addSweep(builder, ownerClient, storage, sweep);
+
+	return({ returned: sweep, unswept });
 }
 
+/**
+ * Remove the agent's grant, then return the leftover to the owner.
+ *
+ * The revoke never depends on the sweep.  It is tried as one publish first;
+ * if that fails, the grant is removed on its own and the sweep is retried
+ * from fresh balances, one token at a time, after the agent can no longer
+ * pay.  Whatever could not be swept is reported in `unswept`.  Only a
+ * failure to remove the grant throws.
+ */
 export async function revokeAgentSpending(ownerClient: UserClient, options: RevokeAgentSpendingOptions): Promise<RevokeAgentSpendingResult> {
-	const builder = ownerClient.initBuilder();
-	const result = await buildRevokeAgentSpending(builder, ownerClient, options);
-	await ownerClient.publishBuilder(builder);
+	const combined = ownerClient.initBuilder();
+	const planned = await buildRevokeAgentSpending(combined, ownerClient, options);
+	try {
+		await ownerClient.publishBuilder(combined);
+		return(planned);
+	} catch {
+		/* Fall through: remove the grant on its own, then sweep */
+	}
 
-	return(result);
+	const revokeOnly = ownerClient.initBuilder();
+	await buildRevokeAgentSpending(revokeOnly, ownerClient, { ...options, sweep: false });
+	await ownerClient.publishBuilder(revokeOnly);
+
+	if (options.sweep === false) {
+		return({ returned: [], unswept: [] });
+	}
+
+	/* The agent cannot pay any more, so these balances are final */
+	const { sweep, unswept } = await sweepPlan(ownerClient, options.storage, options.tokens);
+	const returned: AgentSpendingTokenAmount[] = [];
+	for (const entry of sweep) {
+		const builder = ownerClient.initBuilder();
+		addSweep(builder, ownerClient, options.storage, [ entry ]);
+		try {
+			await ownerClient.publishBuilder(builder);
+			returned.push(entry);
+		} catch (error: unknown) {
+			unswept.push({ ...entry, reason: errorReason(error) });
+		}
+	}
+
+	return({ returned, unswept });
 }
 
 export type AgentSpendingActivityEntry = {
-	kind: 'payment' | 'funded' | 'returned' | 'fee';
-	/** The merchant for a payment, the fee collector for a fee, the owner otherwise */
+	/**
+	 * `funded` is a send in from the owner, the same sends the state's
+	 * `funded` total counts; `deposit` is a send in from anyone else.
+	 */
+	kind: 'payment' | 'funded' | 'deposit' | 'returned' | 'fee';
+	/** The merchant for a payment, the fee collector for a fee, the sender for a deposit, the owner otherwise */
 	counterparty: Account;
 	token: Account;
 	amount: bigint;
@@ -518,48 +728,47 @@ export async function listAgentSpendingActivity(client: UserClient | Client, sto
 
 	const history = await base.getHistory(storage, {
 		...(options?.startBlocksHash !== undefined ? { startBlocksHash: options.startBlocksHash } : {}),
+		depth: pageSize,
 		pageSize
 	});
 
 	const entries: AgentSpendingActivityEntry[] = [];
 	for (const { voteStaple } of history) {
 		const date = voteStaple.timestamp();
-		for (const block of voteStaple.blocks) {
+		for (const { block, operation } of newestFirst(voteStaple.blocks)) {
 			const fromStorage = block.account.comparePublicKey(storage);
 			const isFee = block.purpose === KeetaNet.lib.Block.Purpose.FEE;
-			for (const operation of block.operations) {
-				if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
-					continue;
-				}
-
-				const toStorage = operation.to.comparePublicKey(storage);
-				if (!fromStorage && !toStorage) {
-					continue;
-				}
-
-				let kind: AgentSpendingActivityEntry['kind'];
-				let counterparty: Account;
-				if (fromStorage && isFee) {
-					kind = 'fee';
-					counterparty = operation.to;
-				} else if (fromStorage) {
-					kind = operation.to.comparePublicKey(owner) ? 'returned' : 'payment';
-					counterparty = operation.to;
-				} else {
-					kind = 'funded';
-					counterparty = block.account;
-				}
-
-				entries.push({
-					kind,
-					counterparty,
-					token: operation.token,
-					amount: operation.amount,
-					date,
-					blockHash: block.hash.toString(),
-					...(operation.external !== undefined ? { external: operation.external } : {})
-				});
+			if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+				continue;
 			}
+
+			const toStorage = operation.to.comparePublicKey(storage);
+			if (!fromStorage && !toStorage) {
+				continue;
+			}
+
+			let kind: AgentSpendingActivityEntry['kind'];
+			let counterparty: Account;
+			if (fromStorage && isFee) {
+				kind = 'fee';
+				counterparty = operation.to;
+			} else if (fromStorage) {
+				kind = operation.to.comparePublicKey(owner) ? 'returned' : 'payment';
+				counterparty = operation.to;
+			} else {
+				kind = block.account.comparePublicKey(owner) ? 'funded' : 'deposit';
+				counterparty = block.account;
+			}
+
+			entries.push({
+				kind,
+				counterparty,
+				token: operation.token,
+				amount: operation.amount,
+				date,
+				blockHash: block.hash.toString(),
+				...(operation.external !== undefined ? { external: operation.external } : {})
+			});
 		}
 	}
 
