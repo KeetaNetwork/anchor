@@ -4,7 +4,7 @@ import * as KeetaNetAnchor from '../../client/index.js';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import type { ServiceMetadataExternalizable } from '../../lib/resolver.js';
 import KeetaAnchorResolver from '../../lib/resolver.js';
-import { type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
+import { type AssetMovementRequestAuthority, type KeetaAnchorAssetMovementServerConfig, KeetaNetAssetMovementAnchorHTTPServer } from './server.js';
 import { Errors, toAssetPair, isMovableAssetEqual, doesAssetOrPairMatch } from './common.js';
 import type { AssetOrPair, AssetMetadataTargetValue, AssetPair, EVMAsset, RailWithExtendedDetails, KeetaAssetMovementAnchorCreatePersistentForwardingRequest, KeetaAssetMovementAnchorCreatePersistentForwardingResponse, KeetaAssetMovementAnchorGetTransferStatusResponse, KeetaAssetMovementAnchorInitiateTransferClientRequest, KeetaAssetMovementAnchorInitiateTransferRequest, KeetaAssetMovementAnchorInitiateTransferResponse, KeetaAssetMovementAnchorlistPersistentForwardingTransactionsResponse, KeetaAssetMovementAnchorlistTransactionsRequest, KeetaAssetMovementTransaction, ProviderSearchInput, KeetaPersistentForwardingAddressDetails, PersistentAddressTemplateData, PersistentAddressOrTemplateReference, KeetaAssetMovementAnchorInitiatePersistentForwardingAddressTemplateResponse, PersistentForwardingTemplateSessionData, AnchorCustomLocationMetadata, SolanaAsset, KeetaAssetMovementAnchorSimulateTransferRequest, KeetaAssetMovementAnchorSimulateTransferResponse, KeetaAssetMovementAnchorUserAction, PersistentAddressAssetFeeBreakdown, SupportedAssetsMetadata } from './common.js';
 import type { AccountKeyAlgorithm, GenericAccount, IdentifierKeyAlgorithm, TokenPublicKeyString } from '@keetanetwork/keetanet-client/lib/account.js';
@@ -1942,6 +1942,7 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 	const sendToAddress = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 100);
 
 	const seenAccounts: (InstanceType<typeof KeetaNet.lib.Account> | null)[] = [];
+	const seenAuthorities: (AssetMovementRequestAuthority | null)[] = [];
 	const baseHandlers = createBaseServerHandlers(baseToken, testTransaction, sendToAddress);
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
 		...(logger ? { logger: logger } : {}),
@@ -1950,8 +1951,9 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 			authenticationRequired: true,
 			supportedAssets: createAuthenticatedSupportedAssets(testCurrencyUSDC.publicKeyString.get(), ownerClient.network),
 			...baseHandlers,
-			getTransferStatus: async function(_ignored_id: string, account): Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>> {
+			getTransferStatus: async function(_ignored_id: string, account, context): Promise<Omit<Extract<KeetaAssetMovementAnchorGetTransferStatusResponse, { ok: true }>, 'ok'>> {
 				seenAccounts.push(account);
+				seenAuthorities.push(context?.authority ?? null);
 				return({ transaction: testTransaction });
 			}
 		}
@@ -2015,6 +2017,13 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 
 		expect(seenAccounts).toHaveLength(1);
 		expect(seenAccounts[0]?.comparePublicKey(ownerAccount)).toBe(true);
+
+		/* The handler also learns who signed, and for which storage account */
+		const authority = seenAuthorities[0];
+		expect(authority?.account.comparePublicKey(ownerAccount)).toBe(true);
+		expect(authority?.signer.comparePublicKey(agentAccount)).toBe(true);
+		expect(authority?.storageAccount?.comparePublicKey(agentStorage.storage)).toBe(true);
+		expect(authority?.delegate).toBe(true);
 	}
 
 	/* The owner can still sign for its own storage account */
@@ -2022,6 +2031,12 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 		const ownerProvider = await providerFor(agentStorage.storage, ownerAccount);
 		const transfer = await ownerProvider.initiateTransfer(transferFrom(agentStorage.storage));
 		expect(transfer.transferID).toEqual('123');
+
+		await ownerProvider.getTransferStatus({ id: '555', account: agentStorage.storage });
+		const authority = seenAuthorities[1];
+		expect(authority?.signer.comparePublicKey(ownerAccount)).toBe(true);
+		expect(authority?.delegate).toBe(false);
+		expect(authority?.storageAccount?.comparePublicKey(agentStorage.storage)).toBe(true);
 	}
 
 	/* A key with no grant cannot sign for the storage account */
@@ -2108,5 +2123,5 @@ test('Asset Movement Anchor accepts requests signed by a storage account agent',
 	await expect(agentProvider.initiateTransfer(transferFrom(agentStorage.storage))).rejects.toThrow(/Invalid signature/);
 	await expect(agentProvider.getTransferStatus({ id: '555', account: agentStorage.storage })).rejects.toThrow(/Invalid signature/);
 
-	expect(seenAccounts).toHaveLength(1);
+	expect(seenAccounts).toHaveLength(2);
 }, 60_000);
