@@ -423,6 +423,14 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					parsedRequest = [ request, account ];
 				}
 
+				/*
+				 * The context goes after whatever parseRequestToArgs
+				 * returns, so its position follows each route's arguments.
+				 * The handlers that declare it (initiate, simulate, execute
+				 * and transfer status) all take two arguments before it;
+				 * keep a route's parseRequestToArgs in step with its
+				 * handler's declared parameters, or the context shifts.
+				 */
 				const context: AssetMovementRequestContext = { authority };
 
 				// @ts-ignore
