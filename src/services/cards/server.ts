@@ -20,6 +20,7 @@
  * (POST /api/cards/:id/replace), or grant the agent access again and then
  * unfreeze it.
  */
+import { randomUUID } from 'node:crypto';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
 import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
@@ -34,6 +35,8 @@ import type {
 	CardAuthorizationRequest,
 	CardControls,
 	CardDetails,
+	CardHold,
+	CardTransactionUpdate,
 	CardsOperationName,
 	KeetaCardsFreezeAgentCardsResult,
 	RegisteredCardWallet
@@ -72,7 +75,7 @@ type KeetaNetClient = InstanceType<typeof KeetaNet.Client>;
  * What {@link CardStore.recordAuthorization} asks of its caller: given the
  * card as stored right now, the decision and the card to save (if changed).
  */
-export type CardAuthorizationStep = (card: CardDetails | null) => { decision: CardAuthorizationDecision; card?: CardDetails; };
+export type CardAuthorizationStep = (card: CardDetails | null, account: { outstandingCents: number; }) => { decision: CardAuthorizationDecision; card?: CardDetails; };
 
 /**
  * Where the anchor keeps its cards.  The in-memory store is for tests and
@@ -93,8 +96,24 @@ export interface CardStore {
 	 * `key` is the issuer's ID for the authorization.  When a decision for
 	 * that key is already recorded (an issuer retry or a replay), it is
 	 * returned again and `step` is not run, so a purchase is counted once.
+	 *
+	 * Calls for cards of one storage account also run one at a time, and
+	 * `step` gets the account's outstanding holds (see {@link CardHold}),
+	 * so two purchases can't both pass a balance check for the same money.
+	 * An approved decision records a hold of `amountCents` under `key`.
 	 */
-	recordAuthorization(id: string, key: string | undefined, step: CardAuthorizationStep): Promise<CardAuthorizationDecision>;
+	recordAuthorization(id: string, key: string | undefined, amountCents: number, step: CardAuthorizationStep): Promise<CardAuthorizationDecision>;
+
+	/**
+	 * Apply the issuer's latest amounts to the hold of an approved purchase,
+	 * and move the card's spend by the difference.  An update for an
+	 * authorization with no hold, or older than the hold, changes nothing
+	 * and returns null.
+	 */
+	applyTransactionUpdate(update: CardTransactionUpdate): Promise<CardHold | null>;
+
+	/** The holds of a storage account that still take from its balance */
+	listHolds(account: string): Promise<CardHold[]>;
 
 	/**
 	 * Change a stored card atomically, against its latest version, so a
@@ -112,10 +131,34 @@ export class InMemoryCardStore implements CardStore {
 	readonly #cards = new Map<string, CardDetails>();
 	readonly #decisions = new Map<string, CardAuthorizationDecision>();
 	readonly #wallets = new Map<string, RegisteredCardWallet[]>();
-	/* The tail of each card's queue of writes, so writes to a card don't interleave */
+	readonly #holds = new Map<string, CardHold>();
+	/* The tail of each card's (and account's) queue of writes, so writes don't interleave */
 	readonly #queues = new Map<string, Promise<unknown>>();
 
-	#serialize<T>(id: string, work: () => T): Promise<T> {
+	/* Run `work` under the card's lock, inside its storage account's lock */
+	#serializeAccount<T>(id: string, work: () => T | Promise<T>): Promise<T> {
+		const account = this.#cards.get(id)?.account;
+		if (account === undefined) {
+			return(this.#serialize(id, work));
+		}
+
+		return(this.#serialize(`account:${account}`, () => {
+			return(this.#serialize(id, work));
+		}));
+	}
+
+	#outstandingCents(account: string): number {
+		let total = 0;
+		for (const hold of this.#holds.values()) {
+			if (hold.account === account) {
+				total += hold.pendingCents + hold.settledCents;
+			}
+		}
+
+		return(total);
+	}
+
+	#serialize<T>(id: string, work: () => T | Promise<T>): Promise<T> {
 		const previous = this.#queues.get(id) ?? Promise.resolve();
 		const next = previous.then(work, work);
 		const tail = next.catch(function() { return(undefined); });
@@ -150,8 +193,8 @@ export class InMemoryCardStore implements CardStore {
 		}));
 	}
 
-	async recordAuthorization(id: string, key: string | undefined, step: CardAuthorizationStep): Promise<CardAuthorizationDecision> {
-		return(await this.#serialize(id, () => {
+	async recordAuthorization(id: string, key: string | undefined, amountCents: number, step: CardAuthorizationStep): Promise<CardAuthorizationDecision> {
+		return(await this.#serializeAccount(id, () => {
 			const recordKey = key === undefined ? undefined : `${id}:${key}`;
 			const recorded = recordKey === undefined ? undefined : this.#decisions.get(recordKey);
 			if (recorded !== undefined) {
@@ -159,9 +202,19 @@ export class InMemoryCardStore implements CardStore {
 			}
 
 			const stored = this.#cards.get(id);
-			const { decision, card } = step(stored ? structuredClone(stored) : null);
+			const outstandingCents = stored ? this.#outstandingCents(stored.account) : 0;
+			const { decision, card } = step(stored ? structuredClone(stored) : null, { outstandingCents });
 			if (card !== undefined) {
 				this.#cards.set(id, structuredClone(card));
+			}
+
+			if (decision.approved && stored) {
+				/*
+				 * Dated before any issuer update, so the issuer's first update
+				 * applies even when its timestamp has coarser precision
+				 */
+				const authorizationID = key ?? `local_${randomUUID()}`;
+				this.#holds.set(authorizationID, { authorizationID, cardID: id, account: stored.account, pendingCents: amountCents, settledCents: 0, updatedAt: new Date(0).toISOString() });
 			}
 
 			if (recordKey !== undefined) {
@@ -169,6 +222,41 @@ export class InMemoryCardStore implements CardStore {
 			}
 
 			return(decision);
+		}));
+	}
+
+	async applyTransactionUpdate(update: CardTransactionUpdate): Promise<CardHold | null> {
+		const cardID = this.#holds.get(update.authorizationID)?.cardID;
+		if (cardID === undefined) {
+			return(null);
+		}
+
+		return(await this.#serializeAccount(cardID, () => {
+			const hold = this.#holds.get(update.authorizationID);
+			if (hold === undefined || Date.parse(update.updatedAt) < Date.parse(hold.updatedAt)) {
+				return(null);
+			}
+
+			const pendingCents = Math.max(0, update.pendingCents);
+			const settledCents = Math.max(0, update.settledCents);
+			const change = (pendingCents + settledCents) - (hold.pendingCents + hold.settledCents);
+			const next: CardHold = { ...hold, pendingCents, settledCents, updatedAt: update.updatedAt };
+			this.#holds.set(hold.authorizationID, next);
+
+			const card = this.#cards.get(cardID);
+			if (card !== undefined && change !== 0) {
+				this.#cards.set(cardID, { ...structuredClone(card), spentCents: Math.max(0, card.spentCents + change) });
+			}
+
+			return(structuredClone(next));
+		}));
+	}
+
+	async listHolds(account: string): Promise<CardHold[]> {
+		return([...this.#holds.values()].filter(function(hold) {
+			return(hold.account === account && hold.pendingCents + hold.settledCents > 0);
+		}).map(function(hold) {
+			return(structuredClone(hold));
 		}));
 	}
 
@@ -209,6 +297,8 @@ export interface KeetaAnchorCardsServerConfig extends KeetaAnchorHTTPServer.Keet
 	/** The card issuer integration */
 	provider: CardProvider & {
 		setAuthorizer?: (authorizer: (request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>) => void;
+		/* Where the provider sends the issuer's later changes to an authorization (settled, reversed, expired) */
+		setTransactionListener?: (listener: (update: CardTransactionUpdate) => Promise<void>) => void;
 	};
 
 	store?: CardStore;
@@ -311,6 +401,9 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 		this.provider.setAuthorizer?.((request) => {
 			return(this.authorize(request));
+		});
+		this.provider.setTransactionListener?.(async (update) => {
+			await this.store.applyTransactionUpdate(update);
 		});
 	}
 
@@ -481,11 +574,12 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 	/**
 	 * What a storage account holds in the funding tokens, in US cents, or
-	 * undefined when the anchor has none configured.  A balance that can't
+	 * undefined when the anchor has none configured.  Purchases still held
+	 * against it are taken off under the store's lock (see authorize).  A balance that can't
 	 * be read counts as zero, so the purchase is declined rather than
 	 * approved blind.
 	 */
-	async #availableCents(account: string): Promise<number | undefined> {
+	async #fundingBalanceCents(account: string): Promise<number | undefined> {
 		if (this.fundingTokens === undefined) {
 			return(undefined);
 		}
@@ -515,15 +609,17 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		}
 
 		/* Read the grants and balance before taking the card's lock, so the lock is short */
-		const [isAuthorized, availableCents] = await Promise.all([
+		const [isAuthorized, balanceCents] = await Promise.all([
 			this.#authorityFor(known.account),
-			this.#availableCents(known.account)
+			this.#fundingBalanceCents(known.account)
 		]);
 		const creatorStillAuthorized = isAuthorized(known.createdBy);
 
 		let after: 'freeze' | 'close' | undefined;
-		const decision = await this.store.recordAuthorization(request.cardID, request.authorizationID, function(card) {
+		const decision = await this.store.recordAuthorization(request.cardID, request.authorizationID, request.amountCents, function(card, account) {
 			after = undefined;
+			/* The balance less purchases approved before this one and still held against it */
+			const availableCents = balanceCents === undefined ? undefined : Math.max(0, balanceCents - account.outstandingCents);
 			const decided = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date(), ...(availableCents !== undefined ? { availableCents } : {}) });
 			if (card === null) {
 				return({ decision: decided });

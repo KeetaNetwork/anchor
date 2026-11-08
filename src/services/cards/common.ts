@@ -126,6 +126,36 @@ export type CardAuthorizationRequest = {
 	authorizationID?: string;
 };
 
+/**
+ * The issuer's latest amounts for one authorization the anchor approved.
+ * They are totals, not changes, so a repeated or late update is harmless.
+ */
+export type CardTransactionUpdate = {
+	/** The issuer's ID for the authorization (Lithic's transaction token) */
+	authorizationID: string;
+	/** Still held at the issuer and not yet settled */
+	pendingCents: number;
+	/** Settled with the merchant */
+	settledCents: number;
+	/** When the issuer last changed the transaction; an older update is ignored */
+	updatedAt: string;
+};
+
+/**
+ * What one approved purchase still takes from its storage account's
+ * balance: the pending amount until it settles, reverses or expires, and
+ * the settled amount until the funding step moves that money out of the
+ * account (not built yet, so today settled spend keeps counting).
+ */
+export type CardHold = {
+	authorizationID: string;
+	cardID: string;
+	account: string;
+	pendingCents: number;
+	settledCents: number;
+	updatedAt: string;
+};
+
 export type CardAuthorizationDecision = {
 	approved: true;
 } | {

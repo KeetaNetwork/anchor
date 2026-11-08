@@ -13,7 +13,7 @@
  * USDC amounts use 6 decimals, so one cent is 10,000 base units.
  */
 import { randomInt, randomUUID } from 'node:crypto';
-import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardMerchant, CardRevealToken } from './common.js';
+import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardMerchant, CardRevealToken, CardTransactionUpdate } from './common.js';
 import type { CardProvider, CardProviderCard, CardProviderCreateInput } from './provider.js';
 
 import { centsToUSDCUnits } from './wallet.js';
@@ -75,7 +75,7 @@ type MockCard = {
 	walletAddress: string;
 	status: 'active' | 'frozen' | 'closed';
 	controls: CardControls;
-	purchases: { amountCents: number; merchant: CardMerchant; }[];
+	purchases: { amountCents: number; merchant: CardMerchant; authorizationID: string; }[];
 };
 
 export type MockPurchaseResult = CardAuthorizationDecision | { approved: false; reason: 'issuer_declined'; detail: string; };
@@ -91,6 +91,7 @@ export class MockCardProvider implements CardProvider {
 	readonly #cards = new Map<string, MockCard>();
 	readonly #customers = new Set<string>();
 	#authorizer: ((request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>) | null = null;
+	#transactionListener: ((update: CardTransactionUpdate) => Promise<void>) | null = null;
 
 	constructor(options?: { ledger?: MockStablecoinLedger; spender?: string; settlementAddress?: string; }) {
 		this.ledger = options?.ledger ?? new MockStablecoinLedger();
@@ -112,6 +113,22 @@ export class MockCardProvider implements CardProvider {
 	 */
 	setAuthorizer(authorizer: (request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>): void {
 		this.#authorizer = authorizer;
+	}
+
+	setTransactionListener(listener: (update: CardTransactionUpdate) => Promise<void>): void {
+		this.#transactionListener = listener;
+	}
+
+	/**
+	 * Simulate the issuer reporting a later state of an approved purchase:
+	 * settled (in full or for less), reversed or expired (nothing pending).
+	 */
+	async simulateTransactionUpdate(authorizationID: string, amounts: { pendingCents: number; settledCents: number; }): Promise<void> {
+		if (!this.#transactionListener) {
+			throw(new Error('No transaction listener registered with the mock card provider'));
+		}
+
+		await this.#transactionListener({ authorizationID, ...amounts, updatedAt: new Date().toISOString() });
 	}
 
 	async createCard(input: CardProviderCreateInput): Promise<CardProviderCard> {
@@ -216,13 +233,14 @@ export class MockCardProvider implements CardProvider {
 			throw(new Error('No authorizer registered with the mock card provider'));
 		}
 
-		const decision = await this.#authorizer({ cardID: providerCardID, amountCents, merchant });
+		const authorizationID = `auth_mock_${randomUUID()}`;
+		const decision = await this.#authorizer({ cardID: providerCardID, amountCents, merchant, authorizationID });
 		if (!decision.approved) {
 			return(decision);
 		}
 
 		this.ledger.transferFrom(this.spender, card.walletAddress, this.settlementAddress, units);
-		card.purchases.push({ amountCents, merchant });
+		card.purchases.push({ amountCents, merchant, authorizationID });
 
 		return(decision);
 	}

@@ -5,7 +5,8 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } from '../../lib/agent-spending.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 import { KeetaCardsAnchorClient } from './client.js';
-import { LITHIC_PRODUCTION_URL, LithicCardProvider, lithicAuthorizationRequest, lithicSpendLimit, verifyLithicWebhook } from './lithic-provider.js';
+import { LITHIC_PRODUCTION_URL, LithicCardProvider, lithicAuthorizationRequest, lithicSpendLimit, lithicTransactionUpdate, verifyLithicWebhook } from './lithic-provider.js';
+import type { CardTransactionUpdate } from './common.js';
 import { CARD_AGENT_OPERATIONS } from './common.js';
 import { KeetaNetCardsAnchorHTTPServer } from './server.js';
 
@@ -310,4 +311,64 @@ test('the Lithic ASA route fails closed without its secret', async function() {
 	expect(function() {
 		return(new LithicCardProvider({ baseURL: LITHIC_PRODUCTION_URL, allowUnsignedWebhooks: true, accountFor }));
 	}).toThrow(/production/);
+});
+
+function transactionEvent(token: string, status: string, hold: number, settlement: number, updated = '2026-11-08T03:30:00Z') {
+	return({
+		event_type: 'card_transaction.updated',
+		token,
+		status,
+		updated,
+		amounts: { hold: { amount: hold, currency: 'USD' }, settlement: { amount: settlement, currency: 'USD' }, cardholder: { amount: settlement, currency: 'USD' }}
+	});
+}
+
+test('Lithic transaction events become hold updates', function() {
+	expect(lithicTransactionUpdate(transactionEvent('tx_1', 'PENDING', 12_00, 0))).toEqual({ authorizationID: 'tx_1', pendingCents: 12_00, settledCents: 0, updatedAt: '2026-11-08T03:30:00Z' });
+	expect(lithicTransactionUpdate(transactionEvent('tx_1', 'SETTLED', 0, 11_50))).toMatchObject({ pendingCents: 0, settledCents: 11_50 });
+	/* A reversed, expired or declined authorization holds nothing, whatever amounts it still shows */
+	for (const status of ['VOIDED', 'EXPIRED', 'DECLINED']) {
+		expect(lithicTransactionUpdate(transactionEvent('tx_1', status, 12_00, 0))).toMatchObject({ pendingCents: 0, settledCents: 0 });
+	}
+
+	/* The event wrapper Lithic's Events API uses */
+	const transaction = transactionEvent('tx_2', 'PENDING', 5_00, 0);
+	expect(lithicTransactionUpdate({ token: 'msg_1', event_type: 'card_transaction.updated', payload: transaction, created: '2026-11-08T03:31:00Z' })).toMatchObject({ authorizationID: 'tx_2', pendingCents: 5_00 });
+	expect(lithicTransactionUpdate({ event_type: 'card.created', token: 'card_1' })).toBeUndefined();
+	expect(function() { return(lithicTransactionUpdate({ event_type: 'card_transaction.updated' })); }).toThrow(/token/);
+});
+
+test('the Lithic events route checks its own secret and hands updates to the anchor', async function() {
+	const lithic = fakeLithic();
+	const accountFor = async function() { return('acct'); };
+	const eventsSecret = `whsec_${randomBytes(24).toString('base64')}`;
+	const provider = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: lithic.fetcher, asaSecret: SECRET, eventsSecret, accountFor });
+	const updates: CardTransactionUpdate[] = [];
+	provider.setTransactionListener(async function(update) { updates.push(update); });
+
+	const route = provider.routes()['POST /api/cards/lithic/events'];
+	if (typeof route !== 'object' || route.bodyType !== 'raw') {
+		throw(new Error('Events route missing'));
+	}
+
+	const url = new URL('http://localhost/api/cards/lithic/events');
+	const text = JSON.stringify(transactionEvent('tx_9', 'VOIDED', 0, 0));
+	/* Signed with the ASA secret instead of the events secret: refused */
+	expect(await route.handler(new Map(), Buffer.from(text), sign(text), url)).toMatchObject({ statusCode: 401 });
+	expect(updates).toEqual([]);
+
+	expect(await route.handler(new Map(), Buffer.from(text), sign(text, eventsSecret), url)).toMatchObject({ output: JSON.stringify({ applied: true }) });
+	expect(updates).toMatchObject([{ authorizationID: 'tx_9', pendingCents: 0, settledCents: 0 }]);
+
+	const other = JSON.stringify({ event_type: 'card.created', token: 'card_1' });
+	expect(await route.handler(new Map(), Buffer.from(other), sign(other, eventsSecret), url)).toMatchObject({ output: JSON.stringify({ applied: false }) });
+
+	/* No events secret: fails closed like the ASA route */
+	const unsigned = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: lithic.fetcher, asaSecret: SECRET, accountFor });
+	const closed = unsigned.routes()['POST /api/cards/lithic/events'];
+	if (typeof closed !== 'object' || closed.bodyType !== 'raw') {
+		throw(new Error('Events route missing'));
+	}
+
+	expect(await closed.handler(new Map(), Buffer.from(text), sign(text, eventsSecret), url)).toMatchObject({ statusCode: 503 });
 });

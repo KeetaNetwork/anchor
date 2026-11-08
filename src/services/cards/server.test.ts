@@ -142,6 +142,63 @@ test('with funding tokens, purchases cannot spend past the storage account balan
 	expect(await env.provider.simulatePurchase(card.id, 1, groceries)).toEqual({ approved: false, reason: 'delegate_revoked' });
 });
 
+test('holds keep two purchases at once from spending the same balance', async function() {
+	/* 500 units of a 2-decimal token: 5.00 to spend */
+	await using env = await setup(function(usd) { return({ fundingTokens: [{ token: usd.publicKeyString.get(), decimals: 2 }] }); });
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const card = await agentCards.createCard({ wallet });
+	const account = env.spending.storage.publicKeyString.get();
+
+	const both = await Promise.all([
+		env.provider.simulatePurchase(card.id, 3_00, groceries),
+		env.provider.simulatePurchase(card.id, 3_00, groceries)
+	]);
+	expect(both).toContainEqual({ approved: true });
+	expect(both).toContainEqual({ approved: false, reason: 'insufficient_funds' });
+
+	const [first] = env.provider.purchases(card.id);
+	if (first === undefined) {
+		throw(new Error('No approved purchase'));
+	}
+
+	expect(await env.server.store.listHolds(account)).toMatchObject([{ authorizationID: first.authorizationID, pendingCents: 3_00, settledCents: 0 }]);
+	expect(await env.provider.simulatePurchase(card.id, 2_01, groceries)).toEqual({ approved: false, reason: 'insufficient_funds' });
+
+	/* The issuer's first update applies even with a whole-second timestamp from just before */
+	expect(await env.server.store.applyTransactionUpdate({ authorizationID: first.authorizationID, pendingCents: 3_00, settledCents: 0, updatedAt: new Date(Math.floor(Date.now() / 1000) * 1000 - 1000).toISOString() })).not.toBeNull();
+
+	/* The merchant reverses it: the hold and the card's spend are released */
+	await env.provider.simulateTransactionUpdate(first.authorizationID, { pendingCents: 0, settledCents: 0 });
+	expect(await env.server.store.listHolds(account)).toEqual([]);
+	expect((await agentCards.getCard(card.id)).spentCents).toBe(0);
+	expect(await env.provider.simulatePurchase(card.id, 4_00, groceries)).toEqual({ approved: true });
+});
+
+test('a settled purchase keeps counting against the balance at its settled amount', async function() {
+	await using env = await setup(function(usd) { return({ fundingTokens: [{ token: usd.publicKeyString.get(), decimals: 2 }] }); });
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const card = await agentCards.createCard({ wallet });
+	const account = env.spending.storage.publicKeyString.get();
+
+	expect(await env.provider.simulatePurchase(card.id, 4_00, groceries)).toEqual({ approved: true });
+	const [purchase] = env.provider.purchases(card.id);
+	if (purchase === undefined) {
+		throw(new Error('No approved purchase'));
+	}
+
+	/* It settles for less than was held: 1.50 is free again, the 2.50 settled stays taken */
+	await env.provider.simulateTransactionUpdate(purchase.authorizationID, { pendingCents: 0, settledCents: 2_50 });
+	expect(await env.server.store.listHolds(account)).toMatchObject([{ pendingCents: 0, settledCents: 2_50 }]);
+	expect((await agentCards.getCard(card.id)).spentCents).toBe(2_50);
+	expect(await env.provider.simulatePurchase(card.id, 2_51, groceries)).toEqual({ approved: false, reason: 'insufficient_funds' });
+	expect(await env.provider.simulatePurchase(card.id, 2_50, groceries)).toEqual({ approved: true });
+
+	/* An older update arriving late, or one for an authorization the anchor never approved, changes nothing */
+	expect(await env.server.store.applyTransactionUpdate({ authorizationID: purchase.authorizationID, pendingCents: 4_00, settledCents: 0, updatedAt: '2000-01-01T00:00:00Z' })).toBeNull();
+	expect(await env.server.store.applyTransactionUpdate({ authorizationID: 'tx_unknown', pendingCents: 0, settledCents: 0, updatedAt: new Date().toISOString() })).toBeNull();
+	expect((await agentCards.getCard(card.id)).spentCents).toBe(5_00);
+});
+
 test('token balances convert to whole cents, rounded down', function() {
 	expect(tokenUnitsToCents(12_345_678n, 6)).toBe(1234);
 	expect(tokenUnitsToCents(500n, 2)).toBe(500);

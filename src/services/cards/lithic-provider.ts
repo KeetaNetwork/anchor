@@ -22,7 +22,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Routes } from '../../lib/http-server/index.js';
 import { Buffer } from '../../lib/utils/buffer.js';
-import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardDeclineReason, CardFundingWallet, CardRevealToken } from './common.js';
+import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardDeclineReason, CardFundingWallet, CardRevealToken, CardTransactionUpdate } from './common.js';
 import type { CardProvider, CardProviderCard, CardProviderCreateInput } from './provider.js';
 
 export const LITHIC_SANDBOX_URL = 'https://sandbox.lithic.com';
@@ -79,8 +79,16 @@ export type LithicCardProviderOptions = {
 	 */
 	asaSecret?: string;
 	/**
-	 * Accept unsigned ASA requests when no `asaSecret` is set.  Only for
-	 * local tests against a simulator; refused with the production URL.
+	 * The secret of the Lithic event subscription (`whsec_...`) that sends
+	 * `card_transaction.updated` events to `POST /api/cards/lithic/events`.
+	 * Those events settle, reverse and expire the anchor's holds on the
+	 * storage account's balance.  Without it the route refuses every
+	 * request, unless `allowUnsignedWebhooks` is set.
+	 */
+	eventsSecret?: string;
+	/**
+	 * Accept unsigned webhooks on a route whose secret is not set.  Only
+	 * for local tests against a simulator; refused with the production URL.
 	 */
 	allowUnsignedWebhooks?: boolean;
 	/** How long one Lithic API call may take, in milliseconds (default 10 s) */
@@ -149,6 +157,46 @@ export function lithicASAResult(decision: CardAuthorizationDecision): LithicASAR
 	};
 
 	return(results[decision.reason]);
+}
+
+/**
+ * The anchor's view of a Lithic `card_transaction.updated` event: what is
+ * still held and what has settled, from the transaction's `amounts`.  A
+ * voided, expired or declined transaction holds nothing.  Undefined for
+ * other events.  Accepts the transaction itself or an event wrapping it
+ * in `payload`.
+ */
+export function lithicTransactionUpdate(body: unknown): CardTransactionUpdate | undefined {
+	if (!isRecord(body)) {
+		throw(new Error('Not a Lithic event'));
+	}
+
+	const eventType = stringField(body, 'event_type');
+	const transaction = isRecord(body.payload) ? body.payload : body;
+	if ((eventType ?? stringField(transaction, 'event_type')) !== 'card_transaction.updated') {
+		return(undefined);
+	}
+
+	const authorizationID = stringField(transaction, 'token');
+	if (!authorizationID) {
+		throw(new Error('Lithic transaction event is missing its token'));
+	}
+
+	const amounts = isRecord(transaction.amounts) ? transaction.amounts : {};
+	const amount = function(name: string): number {
+		const part = amounts[name];
+		return(Math.abs((isRecord(part) ? numberField(part, 'amount') : undefined) ?? 0));
+	};
+
+	const status = stringField(transaction, 'status') ?? '';
+	const released = status === 'VOIDED' || status === 'EXPIRED' || status === 'DECLINED';
+	const settledCents = amount('settlement') || Math.abs(numberField(transaction, 'settled_amount') ?? 0);
+	return({
+		authorizationID,
+		pendingCents: released ? 0 : amount('hold'),
+		settledCents,
+		updatedAt: stringField(transaction, 'updated') ?? stringField(body, 'created') ?? new Date().toISOString()
+	});
 }
 
 /**
@@ -265,21 +313,24 @@ export class LithicCardProvider implements CardProvider {
 
 	readonly #apiKey: string | undefined;
 	readonly #asaSecret: string | undefined;
+	readonly #eventsSecret: string | undefined;
 	readonly #allowUnsignedWebhooks: boolean;
 	readonly #requestTimeoutMS: number;
 	readonly #embedOrigin: string | undefined;
 	readonly #accountFor: LithicCardProviderOptions['accountFor'];
 	readonly #fetch: typeof fetch;
 	#authorizer: ((request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>) | null = null;
+	#transactionListener: ((update: CardTransactionUpdate) => Promise<void>) | null = null;
 
 	constructor(options: LithicCardProviderOptions) {
 		this.baseURL = trimTrailingSlashes(options.baseURL ?? LITHIC_SANDBOX_URL);
 		this.depositNetwork = options.depositNetwork ?? 'BASE';
 		this.#apiKey = options.apiKey;
 		this.#asaSecret = options.asaSecret;
-		this.#allowUnsignedWebhooks = options.allowUnsignedWebhooks === true && options.asaSecret === undefined;
+		this.#eventsSecret = options.eventsSecret;
+		this.#allowUnsignedWebhooks = options.allowUnsignedWebhooks === true;
 		if (this.#allowUnsignedWebhooks && this.baseURL === LITHIC_PRODUCTION_URL) {
-			throw(new Error('Unsigned Lithic webhooks are never accepted in production; set asaSecret'));
+			throw(new Error('Unsigned Lithic webhooks are never accepted in production; set asaSecret and eventsSecret'));
 		}
 
 		this.#requestTimeoutMS = options.requestTimeoutMS ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -290,6 +341,10 @@ export class LithicCardProvider implements CardProvider {
 
 	setAuthorizer(authorizer: (request: CardAuthorizationRequest) => Promise<CardAuthorizationDecision>): void {
 		this.#authorizer = authorizer;
+	}
+
+	setTransactionListener(listener: (update: CardTransactionUpdate) => Promise<void>): void {
+		this.#transactionListener = listener;
 	}
 
 	async #call(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown): Promise<unknown> {
@@ -475,41 +530,68 @@ export class LithicCardProvider implements CardProvider {
 		return({ result: lithicASAResult(await this.#authorizer(request)), token });
 	}
 
+	/*
+	 * A signed Lithic webhook route: checks the signature with `secret`
+	 * (failing closed when it isn't configured), parses the JSON body and
+	 * hands it to `handle`.
+	 */
+	#webhookRoute(secret: string | undefined, name: string, handle: (body: unknown) => Promise<unknown>): Routes[string] {
+		return({
+			bodyType: 'raw',
+			maxBodySize: 256 * 1024,
+			handler: async (_ignore_params, body, headers) => {
+				if (secret === undefined && !this.#allowUnsignedWebhooks) {
+					/* Fail closed: a deploy missing its secret must not take forged requests */
+					return({ statusCode: 503, output: JSON.stringify({ error: `${name} webhook secret is not configured` }), contentType: 'application/json' });
+				}
+
+				if (secret !== undefined) {
+					const signed = verifyLithicWebhook(secret, {
+						id: header(headers, 'webhook-id'),
+						timestamp: header(headers, 'webhook-timestamp'),
+						signature: header(headers, 'webhook-signature')
+					}, body);
+
+					if (!signed) {
+						return({ statusCode: 401, output: JSON.stringify({ error: 'Bad signature' }), contentType: 'application/json' });
+					}
+				}
+
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(body.toString('utf-8'));
+				} catch {
+					return({ statusCode: 400, output: JSON.stringify({ error: 'Malformed request' }), contentType: 'application/json' });
+				}
+
+				/* A thrown error becomes a 5xx, which Lithic retries */
+				return({ output: JSON.stringify(await handle(parsed)), contentType: 'application/json' });
+			}
+		});
+	}
+
+	/**
+	 * Apply one Lithic event to the anchor's holds.  Only
+	 * `card_transaction.updated` events matter; others are acknowledged.
+	 */
+	async handleEvent(body: unknown): Promise<{ applied: boolean; }> {
+		const update = lithicTransactionUpdate(body);
+		if (update === undefined || this.#transactionListener === null) {
+			return({ applied: false });
+		}
+
+		await this.#transactionListener(update);
+		return({ applied: true });
+	}
+
 	routes(): Routes {
 		return({
-			'POST /api/cards/lithic/asa': {
-				bodyType: 'raw',
-				maxBodySize: 256 * 1024,
-				handler: async (_ignore_params, body, headers) => {
-					if (this.#asaSecret === undefined && !this.#allowUnsignedWebhooks) {
-						/* Fail closed: a deploy missing its secret must not take forged requests */
-						return({ statusCode: 503, output: JSON.stringify({ error: 'ASA webhook secret is not configured' }), contentType: 'application/json' });
-					}
-
-					if (this.#asaSecret !== undefined) {
-						const signed = verifyLithicWebhook(this.#asaSecret, {
-							id: header(headers, 'webhook-id'),
-							timestamp: header(headers, 'webhook-timestamp'),
-							signature: header(headers, 'webhook-signature')
-						}, body);
-
-						if (!signed) {
-							return({ statusCode: 401, output: JSON.stringify({ error: 'Bad signature' }), contentType: 'application/json' });
-						}
-					}
-
-					let parsed: unknown;
-					try {
-						parsed = JSON.parse(body.toString('utf-8'));
-					} catch {
-						return({ statusCode: 400, output: JSON.stringify({ error: 'Malformed request' }), contentType: 'application/json' });
-					}
-
-					/* A thrown error becomes a 5xx, which Lithic retries once */
-					const answer = await this.answerASA(parsed);
-					return({ output: JSON.stringify(answer), contentType: 'application/json' });
-				}
-			}
+			'POST /api/cards/lithic/asa': this.#webhookRoute(this.#asaSecret, 'ASA', async (body) => {
+				return(await this.answerASA(body));
+			}),
+			'POST /api/cards/lithic/events': this.#webhookRoute(this.#eventsSecret, 'Events', async (body) => {
+				return(await this.handleEvent(body));
+			})
 		});
 	}
 }
