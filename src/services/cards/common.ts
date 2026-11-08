@@ -143,8 +143,8 @@ export type CardDeclineReason =
 	'merchant_category_not_allowed' |
 	'merchant_category_blocked' |
 	/*
-	 * Reserved for issuers whose balance the anchor can see; today the
-	 * issuer itself declines when the wallet or card balance is short.
+	 * The purchase is more than the storage account holds in the anchor's
+	 * funding tokens (only checked when the anchor is given them).
 	 */
 	'insufficient_funds';
 

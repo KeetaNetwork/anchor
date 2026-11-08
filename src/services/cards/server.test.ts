@@ -5,7 +5,8 @@ import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } fr
 import { KeetaCardsAnchorClient } from './client.js';
 import { MockCardProvider, centsToUSDCUnits } from './mock-provider.js';
 import { CARD_AGENT_OPERATIONS } from './common.js';
-import { KeetaNetCardsAnchorHTTPServer } from './server.js';
+import { KeetaNetCardsAnchorHTTPServer, tokenUnitsToCents } from './server.js';
+import type { KeetaAnchorCardsServerConfig } from './server.js';
 
 function newAccount() {
 	return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
@@ -16,7 +17,7 @@ const casino = { name: 'Lucky Casino', categoryCode: '7995' };
 const walletAddress = '0x' + 'ab'.repeat(20);
 const wallet = { chain: 'base', currency: 'usdc', address: walletAddress };
 
-async function setup() {
+async function setup(extra: (usd: InstanceType<typeof KeetaNet.lib.Account>) => Partial<KeetaAnchorCardsServerConfig> = function() { return({}); }) {
 	const owner = newAccount();
 	const agent = newAccount();
 	const otherAgent = newAccount();
@@ -39,7 +40,7 @@ async function setup() {
 	provider.ledger.mint(walletAddress, centsToUSDCUnits(200_00));
 	provider.ledger.approve(walletAddress, provider.spender, centsToUSDCUnits(150_00));
 
-	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider, delegateOperations: CARD_AGENT_OPERATIONS });
+	const server = new KeetaNetCardsAnchorHTTPServer({ client: { client: ownerClient.client }, provider, delegateOperations: CARD_AGENT_OPERATIONS, ...extra(usd) });
 	await server.start();
 
 	const cardsFor = function(storage: InstanceType<typeof KeetaNet.lib.Account>, signer: InstanceType<typeof KeetaNet.lib.Account>) {
@@ -124,6 +125,28 @@ test('the issuer declines when the wallet approval or balance is too low', async
 	const overBalance = await env.provider.simulatePurchase(card.id, 250_00, groceries);
 	expect(overBalance).toMatchObject({ approved: false, reason: 'issuer_declined', detail: 'wallet balance is lower than the amount' });
 	expect((await agentCards.getCard(card.id)).spentCents).toBe(0);
+});
+
+test('with funding tokens, purchases cannot spend past the storage account balance', async function() {
+	/* usd has 2 decimals here, so the agent's 500 units are 5.00 */
+	await using env = await setup(function(usd) { return({ fundingTokens: [{ token: usd.publicKeyString.get(), decimals: 2 }] }); });
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const card = await agentCards.createCard({ wallet });
+
+	expect(await env.provider.simulatePurchase(card.id, 5_01, groceries)).toEqual({ approved: false, reason: 'insufficient_funds' });
+	expect(await env.provider.simulatePurchase(card.id, 5_00, groceries)).toEqual({ approved: true });
+	expect((await agentCards.getCard(card.id)).spentCents).toBe(5_00);
+
+	/* Once the owner revokes and the balance is swept, the revoke wins */
+	await revokeAgentSpending(env.ownerClient, env.spending);
+	expect(await env.provider.simulatePurchase(card.id, 1, groceries)).toEqual({ approved: false, reason: 'delegate_revoked' });
+});
+
+test('token balances convert to whole cents, rounded down', function() {
+	expect(tokenUnitsToCents(12_345_678n, 6)).toBe(1234);
+	expect(tokenUnitsToCents(500n, 2)).toBe(500);
+	expect(tokenUnitsToCents(3n, 0)).toBe(300);
+	expect(tokenUnitsToCents(10n ** 40n, 6)).toBe(Number.MAX_SAFE_INTEGER);
 });
 
 test('agents can freeze but only the owner can unfreeze or change limits', async function() {

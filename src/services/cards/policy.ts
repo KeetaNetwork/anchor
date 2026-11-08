@@ -14,6 +14,12 @@ export type CardAuthorizationContext = {
 	 */
 	creatorStillAuthorized: boolean;
 	now: Date;
+	/**
+	 * What the storage account holds for card purchases, in US cents, when
+	 * the anchor is configured with funding tokens.  Undefined skips the
+	 * check and leaves it to the card issuer.
+	 */
+	availableCents?: number;
 };
 
 export function decideCardAuthorization(request: CardAuthorizationRequest, context: CardAuthorizationContext): CardAuthorizationDecision {
@@ -50,6 +56,10 @@ export function decideCardAuthorization(request: CardAuthorizationRequest, conte
 
 	if (controls.blockedCategories?.includes(category)) {
 		return({ approved: false, reason: 'merchant_category_blocked' });
+	}
+
+	if (context.availableCents !== undefined && request.amountCents > context.availableCents) {
+		return({ approved: false, reason: 'insufficient_funds' });
 	}
 
 	return({ approved: true });

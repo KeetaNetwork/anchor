@@ -22,6 +22,7 @@
  */
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
+import type { TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import { KeetaAnchorUserError } from '../../lib/error.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
@@ -224,6 +225,34 @@ export interface KeetaAnchorCardsServerConfig extends KeetaAnchorHTTPServer.Keet
 	 * so set these to cap what agents can give themselves.
 	 */
 	defaultControls?: CardControls;
+
+	/**
+	 * Keeta tokens in a storage account that pay for its card purchases,
+	 * each with its decimal places (one whole token is one US dollar).
+	 * When set, a purchase larger than what the account holds in these
+	 * tokens is declined with `insufficient_funds`, so an agent's cards
+	 * can't spend past the balance the owner gave it.  When unset, the
+	 * anchor leaves the balance to the card issuer.
+	 *
+	 * This reads the balance at the moment of the purchase.  It doesn't
+	 * yet hold back purchases that are approved but not yet paid for from
+	 * the account, or two purchases racing each other.
+	 */
+	fundingTokens?: readonly CardFundingToken[];
+}
+
+export type CardFundingToken = {
+	token: TokenAddress | string;
+	/** Decimal places of the token: 6 for USDC */
+	decimals: number;
+};
+
+/**
+ * Whole US cents in a token balance, rounded down
+ */
+export function tokenUnitsToCents(units: bigint, decimals: number): number {
+	const cents = decimals >= 2 ? units / (10n ** BigInt(decimals - 2)) : units * (10n ** BigInt(2 - decimals));
+	return(cents > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(cents));
 }
 
 type Caller = {
@@ -250,6 +279,7 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 	readonly store: CardStore;
 	readonly delegateOperations: readonly CardsOperationName[];
 	readonly defaultControls: CardControls;
+	readonly fundingTokens: readonly CardFundingToken[] | undefined;
 	readonly #client: KeetaNetClient;
 	/*
 	 * Revoke freezes running now, by storage account, so an unfreeze waits
@@ -265,6 +295,7 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		this.store = config.store ?? new InMemoryCardStore();
 		this.delegateOperations = config.delegateOperations ?? DEFAULT_CARD_DELEGATE_OPERATIONS;
 		this.defaultControls = config.defaultControls ?? {};
+		this.fundingTokens = config.fundingTokens;
 		this.#client = config.client.client;
 
 		this.provider.setAuthorizer?.((request) => {
@@ -438,6 +469,28 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 	}
 
 	/**
+	 * What a storage account holds in the funding tokens, in US cents, or
+	 * undefined when the anchor has none configured.  A balance that can't
+	 * be read counts as zero, so the purchase is declined rather than
+	 * approved blind.
+	 */
+	async #availableCents(account: string): Promise<number | undefined> {
+		if (this.fundingTokens === undefined) {
+			return(undefined);
+		}
+
+		try {
+			const balances = await Promise.all(this.fundingTokens.map(async ({ token, decimals }) => {
+				return(tokenUnitsToCents(await this.#client.getBalance(account, token), decimals));
+			}));
+			return(balances.reduce(function(sum, cents) { return(Math.min(sum + cents, Number.MAX_SAFE_INTEGER)); }, 0));
+		} catch (error: unknown) {
+			this.logger.error('KeetaNetCardsAnchorHTTPServer', 'could not read the storage account balance', account, error);
+			return(0);
+		}
+	}
+
+	/**
 	 * The real-time decision for a purchase.  A provider's webhook route
 	 * calls this and answers the issuer with the result.  It never calls
 	 * the issuer itself: freezing or closing the card at the issuer happens
@@ -450,14 +503,17 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			return({ approved: false, reason: 'card_not_found' });
 		}
 
-		/* Read the grants before taking the card's lock, so the lock is short */
-		const isAuthorized = await this.#authorityFor(known.account);
+		/* Read the grants and balance before taking the card's lock, so the lock is short */
+		const [isAuthorized, availableCents] = await Promise.all([
+			this.#authorityFor(known.account),
+			this.#availableCents(known.account)
+		]);
 		const creatorStillAuthorized = isAuthorized(known.createdBy);
 
 		let after: 'freeze' | 'close' | undefined;
 		const decision = await this.store.recordAuthorization(request.cardID, request.authorizationID, function(card) {
 			after = undefined;
-			const decided = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date() });
+			const decided = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date(), ...(availableCents !== undefined ? { availableCents } : {}) });
 			if (card === null) {
 				return({ decision: decided });
 			}

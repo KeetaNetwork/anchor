@@ -23,10 +23,10 @@ function card(overrides: Partial<CardDetails> = {}): CardDetails {
 
 const groceries = { name: 'Corner Grocer', categoryCode: '5411' };
 
-function decide(details: CardDetails | null, amountCents: number, options: { creatorStillAuthorized?: boolean; merchant?: typeof groceries; } = {}) {
+function decide(details: CardDetails | null, amountCents: number, options: { creatorStillAuthorized?: boolean; merchant?: typeof groceries; availableCents?: number; } = {}) {
 	return(decideCardAuthorization(
 		{ cardID: 'ic_test', amountCents, merchant: options.merchant ?? groceries },
-		{ card: details, creatorStillAuthorized: options.creatorStillAuthorized ?? true, now }
+		{ card: details, creatorStillAuthorized: options.creatorStillAuthorized ?? true, now, ...(options.availableCents !== undefined ? { availableCents: options.availableCents } : {}) }
 	));
 }
 
@@ -41,6 +41,16 @@ test('declines in a fixed order of checks', function() {
 	expect(decide(card(), 1, { creatorStillAuthorized: false })).toEqual({ approved: false, reason: 'delegate_revoked' });
 	expect(decide(card({ controls: { expiresAt: '2026-11-07T11:59:59Z' }}), 1)).toEqual({ approved: false, reason: 'card_expired' });
 	expect(decide(card({ controls: { expiresAt: '2026-11-07T12:00:01Z' }}), 1)).toEqual({ approved: true });
+});
+
+test('declines a purchase larger than the storage account holds, after the other checks', function() {
+	expect(decide(card(), 20_00, { availableCents: 20_00 })).toEqual({ approved: true });
+	expect(decide(card(), 20_01, { availableCents: 20_00 })).toEqual({ approved: false, reason: 'insufficient_funds' });
+	expect(decide(card(), 1, { availableCents: 0 })).toEqual({ approved: false, reason: 'insufficient_funds' });
+	expect(decide(card(), 1, { availableCents: 0, creatorStillAuthorized: false })).toEqual({ approved: false, reason: 'delegate_revoked' });
+	expect(decide(card({ controls: { perPurchaseLimitCents: 10_00 }}), 20_01, { availableCents: 20_00 })).toEqual({ approved: false, reason: 'over_per_purchase_limit' });
+	/* No funding tokens configured: the issuer decides */
+	expect(decide(card(), 1_000_000_00)).toEqual({ approved: true });
 });
 
 test('enforces per-purchase and lifetime limits', function() {
