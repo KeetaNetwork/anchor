@@ -652,6 +652,14 @@ export async function buildRevokeAgentSpending(builder: Builder, ownerClient: Us
 	return({ returned: sweep, unswept });
 }
 
+async function stillGranted(base: Client, storage: Account, agent: Account): Promise<boolean> {
+	const storageAccount = storage.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE);
+	const acls = await base.listACLsByEntity(storageAccount);
+	return(acls.some(function(acl) {
+		return(acl.principalType === 'ACCOUNT' && acl.principal.comparePublicKey(agent) && acl.permissions.has(['SEND_ON_BEHALF']) && coversWholeAccount(acl.target, storageAccount));
+	}));
+}
+
 /**
  * Remove the agent's grant, then return the leftover to the owner.
  *
@@ -673,7 +681,18 @@ export async function revokeAgentSpending(ownerClient: UserClient, options: Revo
 
 	const revokeOnly = ownerClient.initBuilder();
 	await buildRevokeAgentSpending(revokeOnly, ownerClient, { ...options, sweep: false });
-	await ownerClient.publishBuilder(revokeOnly);
+	try {
+		await ownerClient.publishBuilder(revokeOnly);
+	} catch (error: unknown) {
+		/*
+		 * The combined publish may have landed after all (a timeout, say),
+		 * in which case the grant is already gone and this one is refused.
+		 * Only throw when the agent really still holds the grant.
+		 */
+		if (await stillGranted(ownerClient.client, options.storage, options.agent)) {
+			throw(error);
+		}
+	}
 
 	if (options.sweep === false) {
 		return({ returned: [], unswept: [] });

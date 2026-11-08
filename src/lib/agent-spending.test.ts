@@ -250,6 +250,22 @@ test('revoke holds when the agent pays between the balance read and the publish'
 
 	await ownerClient.send(storage, 10n, usdToken);
 	await expect(agentPay(agentClient, merchant, 1n, usd)).rejects.toThrow(/does not have required permissions/);
+
+	/*
+	 * The combined publish lands but the client sees an error (a timeout,
+	 * say): the revoke-only retry is refused, and the result still reports
+	 * success because the grant is gone.
+	 */
+	const second = newAccount();
+	await ownerClient.updatePermissions(second, new KeetaNet.lib.Permissions(['SEND_ON_BEHALF']), undefined, undefined, { account: storage });
+	const lost = vi.spyOn(ownerClient, 'publishBuilder').mockImplementationOnce(async function(builder) {
+		await publish(builder);
+		throw(new Error('timeout'));
+	});
+	const afterTimeout = await revokeAgentSpending(ownerClient, { agent: second, storage, tokens: [ usd ] });
+	lost.mockRestore();
+	expect(afterTimeout.unswept).toHaveLength(0);
+	expect((await getAgentSpendingAccount(ownerClient, storage))?.active).toBe(false);
 }, 60_000);
 
 /*
