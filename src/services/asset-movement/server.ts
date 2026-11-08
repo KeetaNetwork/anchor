@@ -85,7 +85,7 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedField, HTTPSignedFieldURLParametersGenericAccount } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import { verifyStorageAccountSignature } from '../../lib/utils/storage-account.js';
+import { authenticateStorageAccountRequest } from '../../lib/utils/storage-account.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
@@ -95,15 +95,23 @@ type AssetMovementHandlers = KeetaAnchorAssetMovementServerConfig['assetMovement
 export type AssetMovementOperationName = { [K in keyof AssetMovementHandlers]-?: NonNullable<AssetMovementHandlers[K]> extends (...args: any[]) => any ? K : never }[keyof AssetMovementHandlers];
 
 /**
- * What a storage account delegate (an agent) may do by default: simulate,
- * start and complete a transfer, and check on it.
+ * The operations an agent needs to pay through an anchor: simulate, start
+ * and complete a transfer, and check on it.  Pass this as
+ * `storageAccountDelegateOperations` to switch agent signing on.
  */
-export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([
+export const STORAGE_ACCOUNT_AGENT_TRANSFER_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([
 	'simulateTransfer',
 	'initiateTransfer',
 	'executeTransfer',
 	'getTransferStatus'
 ]);
+
+/**
+ * By default no operation is open to storage account delegates: only the
+ * owner can sign for a storage account until the operator switches agent
+ * signing on.
+ */
+export const DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS: readonly AssetMovementOperationName[] = Object.freeze([]);
 
 /**
  * Who authorized a request.  `account` is the identity the request carries
@@ -148,10 +156,11 @@ export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadat
 	 * account (for example an agent) may call for that storage account.
 	 * The storage account's owner can always call every operation.
 	 *
-	 * Defaults to {@link DEFAULT_STORAGE_ACCOUNT_DELEGATE_OPERATIONS}:
-	 * moving money and following a transfer, but not sharing KYC,
-	 * reading account status or history, or managing forwarding
-	 * addresses.  Pass an empty list to refuse delegates entirely.
+	 * Defaults to none, so agent signing is off until the operator
+	 * switches it on.  {@link STORAGE_ACCOUNT_AGENT_TRANSFER_OPERATIONS}
+	 * is the usual set: moving money and following a transfer, but not
+	 * sharing KYC, reading account status or history, or managing
+	 * forwarding addresses.
 	 */
 	storageAccountDelegateOperations?: readonly AssetMovementOperationName[];
 
@@ -375,7 +384,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'));
 					}
 
-					let signable = input.getSigningData ? input.getSigningData(request, params) : [];
+					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 					if (requestAccount.isStorage()) {
 						if (!config.client) {
 							throw(new KeetaAnchorUserError('Storage accounts are not supported without a network client configuration'));
@@ -387,22 +396,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						 * the owner's identity, so KYC lookups see the owner;
 						 * the context tells handlers who signed.
 						 */
-						signable = [requestAccount, ...signable];
-						const verified = await verifyStorageAccountSignature(config.client.client, requestAccount, signable, signed);
-						if (verified === null) {
-							throw(new KeetaAnchorUserError('Invalid signature'));
-						}
-
-						const delegate = !verified.signer.comparePublicKey(verified.owner);
-						if (delegate) {
-							const allowed: readonly string[] = server.storageAccountDelegateOperations;
-							if (!allowed.includes(input.handlerName)) {
-								throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
-							}
-						}
+						const verified = await authenticateStorageAccountRequest(config.client.client, requestAccount, signable, signed, {
+							operation: input.handlerName,
+							delegateOperations: server.storageAccountDelegateOperations
+						});
 
 						account = verified.owner;
-						authority = { account, signer: verified.signer, storageAccount: requestAccount, delegate };
+						authority = { account, signer: verified.signer, storageAccount: requestAccount, delegate: !verified.isOwner };
 					} else {
 						account = requestAccount.assertAccount();
 

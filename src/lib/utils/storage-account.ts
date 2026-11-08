@@ -3,6 +3,7 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { HTTPSignedField } from '../http-server/common.js';
 import type { Signable } from './signing.js';
 import { VerifySignedData } from './signing.js';
+import { KeetaAnchorUserError } from '../error.js';
 
 type KeetaNetClient = InstanceType<typeof KeetaNet.Client>;
 type KeetaNetAccount = InstanceType<typeof KeetaNet.lib.Account>;
@@ -128,4 +129,39 @@ export async function verifyStorageAccountSignature(client: KeetaNetClient, stor
 	}
 
 	return(null);
+}
+
+/**
+ * Who signed an authenticated storage account request.
+ */
+export type StorageAccountRequestAuthority = {
+	/** The owner, whose identity and KYC the request carries */
+	owner: Account.Account;
+	/** The account that produced the signature: the owner or a delegate */
+	signer: Account.Account;
+	isOwner: boolean;
+};
+
+/**
+ * Authenticate a request signed for a storage account, the way every anchor
+ * that takes storage accounts does: prefix `signable` with the storage
+ * account (so a signature cannot be replayed against another account the
+ * same key can act for), accept the owner or a SEND_ON_BEHALF delegate, and
+ * let a delegate run only the operations in `delegateOperations`.
+ *
+ * @throws KeetaAnchorUserError when the signature is not valid, or a
+ *         delegate asks for an operation it may not run
+ */
+export async function authenticateStorageAccountRequest(client: KeetaNetClient, storageAccount: KeetaNetAccount, signable: Signable, signed: HTTPSignedField, permission: { operation: string; delegateOperations: readonly string[]; }): Promise<StorageAccountRequestAuthority> {
+	const verified = await verifyStorageAccountSignature(client, storageAccount, [storageAccount, ...signable], signed);
+	if (verified === null) {
+		throw(new KeetaAnchorUserError('Invalid signature'));
+	}
+
+	const isOwner = verified.signer.comparePublicKey(verified.owner);
+	if (!isOwner && !permission.delegateOperations.includes(permission.operation)) {
+		throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
+	}
+
+	return({ owner: verified.owner, signer: verified.signer, isOwner });
 }
