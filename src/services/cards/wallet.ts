@@ -10,7 +10,12 @@
  * Everything here is pure: it builds calldata and plans amounts, and leaves
  * signing and sending to the wallet.
  */
-import { USDC_UNITS_PER_CENT } from './mock-provider.js';
+/** USDC has 6 decimals, so one cent is 10,000 base units */
+export const USDC_UNITS_PER_CENT = 10_000n;
+
+export function centsToUSDCUnits(cents: number): bigint {
+	return(BigInt(cents) * USDC_UNITS_PER_CENT);
+}
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const UINT256_MAX = (1n << 256n) - 1n;

@@ -16,11 +16,9 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { CardAuthorizationDecision, CardAuthorizationRequest, CardControls, CardMerchant, CardRevealToken } from './common.js';
 import type { CardProvider, CardProviderCard, CardProviderCreateInput } from './provider.js';
 
-export const USDC_UNITS_PER_CENT = 10_000n;
+import { centsToUSDCUnits } from './wallet.js';
 
-export function centsToUSDCUnits(cents: number): bigint {
-	return(BigInt(cents) * USDC_UNITS_PER_CENT);
-}
+export { USDC_UNITS_PER_CENT, centsToUSDCUnits } from './wallet.js';
 
 /**
  * A tiny stand-in for a stablecoin contract on an EVM chain: balances and

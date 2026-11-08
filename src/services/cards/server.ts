@@ -50,11 +50,17 @@ import {
 	assertKeetaCardsRevealRequestJSON,
 	assertKeetaCardsUpdateControlsRequestJSON
 } from './common.server.generated.js';
-import { decideCardAuthorization } from './policy.js';
+import { decideCardAuthorization, tightenCardControls } from './policy.js';
 import type { CardProvider } from './provider.js';
 
 type Account = InstanceType<typeof KeetaNet.lib.Account>;
 type KeetaNetClient = InstanceType<typeof KeetaNet.Client>;
+
+/**
+ * What {@link CardStore.recordAuthorization} asks of its caller: given the
+ * card as stored right now, the decision and the card to save (if changed).
+ */
+export type CardAuthorizationStep = (card: CardDetails | null) => { decision: CardAuthorizationDecision; card?: CardDetails; };
 
 /**
  * Where the anchor keeps its cards.  The in-memory store is for tests and
@@ -64,13 +70,89 @@ export interface CardStore {
 	put(card: CardDetails): Promise<void>;
 	get(id: string): Promise<CardDetails | null>;
 	listByAccount(account: string): Promise<CardDetails[]>;
+
+	/**
+	 * Decide one purchase and save its effect on the card atomically, so
+	 * concurrent authorizations can't both spend the same limit or both use
+	 * a single-use card.  Calls for one card run one at a time against the
+	 * latest stored card; a database does this in a transaction that locks
+	 * the card's row (SELECT ... FOR UPDATE) and runs `step` inside it.
+	 *
+	 * `key` is the issuer's ID for the authorization.  When a decision for
+	 * that key is already recorded (an issuer retry or a replay), it is
+	 * returned again and `step` is not run, so a purchase is counted once.
+	 */
+	recordAuthorization(id: string, key: string | undefined, step: CardAuthorizationStep): Promise<CardAuthorizationDecision>;
+
+	/**
+	 * Change a stored card atomically, against its latest version, so a
+	 * status change can't overwrite spend recorded by a concurrent
+	 * authorization.  Returns the saved card, or null if there is none.
+	 */
+	update(id: string, change: (card: CardDetails) => void): Promise<CardDetails | null>;
 }
 
 export class InMemoryCardStore implements CardStore {
 	readonly #cards = new Map<string, CardDetails>();
+	readonly #decisions = new Map<string, CardAuthorizationDecision>();
+	/* The tail of each card's queue of writes, so writes to a card don't interleave */
+	readonly #queues = new Map<string, Promise<unknown>>();
+
+	#serialize<T>(id: string, work: () => T): Promise<T> {
+		const previous = this.#queues.get(id) ?? Promise.resolve();
+		const next = previous.then(work, work);
+		const tail = next.catch(function() { return(undefined); });
+		this.#queues.set(id, tail);
+		void tail.then(() => {
+			if (this.#queues.get(id) === tail) {
+				this.#queues.delete(id);
+			}
+		});
+
+		return(next);
+	}
 
 	async put(card: CardDetails): Promise<void> {
-		this.#cards.set(card.id, structuredClone(card));
+		const copy = structuredClone(card);
+		await this.#serialize(card.id, () => {
+			this.#cards.set(copy.id, copy);
+		});
+	}
+
+	async update(id: string, change: (card: CardDetails) => void): Promise<CardDetails | null> {
+		return(await this.#serialize(id, () => {
+			const stored = this.#cards.get(id);
+			if (!stored) {
+				return(null);
+			}
+
+			const card = structuredClone(stored);
+			change(card);
+			this.#cards.set(id, structuredClone(card));
+			return(card);
+		}));
+	}
+
+	async recordAuthorization(id: string, key: string | undefined, step: CardAuthorizationStep): Promise<CardAuthorizationDecision> {
+		return(await this.#serialize(id, () => {
+			const recordKey = key === undefined ? undefined : `${id}:${key}`;
+			const recorded = recordKey === undefined ? undefined : this.#decisions.get(recordKey);
+			if (recorded !== undefined) {
+				return(structuredClone(recorded));
+			}
+
+			const stored = this.#cards.get(id);
+			const { decision, card } = step(stored ? structuredClone(stored) : null);
+			if (card !== undefined) {
+				this.#cards.set(id, structuredClone(card));
+			}
+
+			if (recordKey !== undefined) {
+				this.#decisions.set(recordKey, structuredClone(decision));
+			}
+
+			return(decision);
+		}));
 	}
 
 	async get(id: string): Promise<CardDetails | null> {
@@ -108,7 +190,11 @@ export interface KeetaAnchorCardsServerConfig extends KeetaAnchorHTTPServer.Keet
 	 */
 	delegateOperations?: readonly CardsOperationName[];
 
-	/** Controls applied to every new card unless the request sets them */
+	/**
+	 * Controls for new cards.  An owner's request may override them; an
+	 * agent's request can only tighten them (see {@link tightenCardControls}),
+	 * so set these to cap what agents can give themselves.
+	 */
 	defaultControls?: CardControls;
 }
 
@@ -185,9 +271,14 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		return({ storage, owner: verified.owner, signer: verified.signer, isOwner });
 	}
 
+	/* An agent only sees and acts on the cards it made; the owner sees all */
+	#canSee(caller: Caller, card: CardDetails): boolean {
+		return(card.account === caller.storage.publicKeyString.get() && (caller.isOwner || card.createdBy === caller.signer.publicKeyString.get()));
+	}
+
 	async #cardFor(caller: Caller, id: string): Promise<CardDetails> {
 		const card = await this.store.get(id);
-		if (card === null || card.account !== caller.storage.publicKeyString.get()) {
+		if (card === null || !this.#canSee(caller, card)) {
 			throw(new KeetaAnchorUserError('Card not found'));
 		}
 
@@ -231,9 +322,13 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			await this.provider.freezeCard(card.id);
 		}
 
-		card.status = 'frozen';
-		card.statusReason = 'delegate_revoked';
-		await this.store.put(card);
+		const saved = await this.store.update(card.id, function(fresh) {
+			if (fresh.status !== 'closed') {
+				fresh.status = 'frozen';
+				fresh.statusReason = 'delegate_revoked';
+			}
+		});
+		Object.assign(card, saved);
 	}
 
 	/**
@@ -264,47 +359,67 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 	/**
 	 * The real-time decision for a purchase.  A provider's webhook route
-	 * calls this and answers the issuer with the result.
+	 * calls this and answers the issuer with the result.  It never calls
+	 * the issuer itself: freezing or closing the card at the issuer happens
+	 * after the answer, so the issuer's time budget only covers the network
+	 * lookup and the store.
 	 */
 	async authorize(request: CardAuthorizationRequest): Promise<CardAuthorizationDecision> {
-		const card = await this.store.get(request.cardID);
-
-		let creatorStillAuthorized = false;
-		if (card !== null) {
-			const isAuthorized = await this.#authorityFor(card.account);
-			creatorStillAuthorized = isAuthorized(card.createdBy);
+		const known = await this.store.get(request.cardID);
+		if (known === null) {
+			return({ approved: false, reason: 'card_not_found' });
 		}
 
-		const decision = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date() });
-		if (card === null) {
-			return(decision);
-		}
+		/* Read the grants before taking the card's lock, so the lock is short */
+		const isAuthorized = await this.#authorityFor(known.account);
+		const creatorStillAuthorized = isAuthorized(known.createdBy);
 
-		if (!creatorStillAuthorized && card.status !== 'closed') {
-			/* The agent lost access: stop the card at the issuer too */
-			await this.#freezeForRevokedAgent(card);
-		}
+		let after: 'freeze' | 'close' | undefined;
+		const decision = await this.store.recordAuthorization(request.cardID, request.authorizationID, function(card) {
+			after = undefined;
+			const decided = decideCardAuthorization(request, { card, creatorStillAuthorized, now: new Date() });
+			if (card === null) {
+				return({ decision: decided });
+			}
 
-		if (decision.approved) {
+			if (!creatorStillAuthorized && card.status !== 'closed') {
+				after = 'freeze';
+			}
+
+			if (!decided.approved) {
+				return({ decision: decided });
+			}
+
 			card.spentCents += request.amountCents;
 			if (card.controls.singleUse) {
 				card.status = 'closed';
 				card.statusReason = 'single_use';
+				after = 'close';
 			}
 
-			await this.store.put(card);
+			return({ decision: decided, card });
+		});
 
-			if (card.controls.singleUse) {
-				/*
-				 * Close at the issuer after answering, so the purchase
-				 * being approved now still completes.
-				 */
-				setImmediate(() => {
-					this.provider.closeCard(card.id).catch((error: unknown) => {
-						this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to close single-use card', card.id, error);
-					});
+		/*
+		 * After answering, so a slow or failing issuer can't turn the
+		 * decision into an error, and the purchase approved now completes
+		 * before a single-use card closes.
+		 */
+		const cardID = request.cardID;
+		if (after === 'freeze') {
+			setImmediate(() => {
+				this.store.get(cardID).then((card) => {
+					return(card === null ? undefined : this.#freezeForRevokedAgent(card));
+				}).catch((error: unknown) => {
+					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to freeze a revoked agent\'s card', cardID, error);
 				});
-			}
+			});
+		} else if (after === 'close') {
+			setImmediate(() => {
+				this.provider.closeCard(cardID).catch((error: unknown) => {
+					this.logger.error('KeetaNetCardsAnchorHTTPServer', 'failed to close single-use card', cardID, error);
+				});
+			});
 		}
 
 		return(decision);
@@ -317,9 +432,14 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			const request = parseBody(assertKeetaCardsCreateRequestJSON, body);
 			const caller = await this.#authenticate(request.account, assertHTTPSignedField(request.signed), getCreateCardSignable(request), 'createCard');
 
-			const controls = { ...this.defaultControls, ...(request.controls ?? {}) };
+			/* The owner may loosen the defaults; an agent can only tighten them */
+			const requested = request.controls ?? {};
+			const controls = caller.isOwner
+				? { ...this.defaultControls, ...requested }
+				: tightenCardControls(this.defaultControls, requested);
 			try {
 				assertValidFundingWallet(request.wallet);
+				assertValidCardControls(requested);
 				assertValidCardControls(controls);
 			} catch (error) {
 				throw(new KeetaAnchorUserError(error instanceof Error ? error.message : 'Invalid request'));
@@ -359,7 +479,9 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			const cards = await this.store.listByAccount(account);
 			/* Catch cards of an agent revoked without the wallet's follow-up freeze */
 			await this.#freezeCardsOfRevokedAgents(account, cards);
-			return(json({ ok: true, cards }));
+			return(json({ ok: true, cards: cards.filter((card) => {
+				return(this.#canSee(caller, card));
+			}) }));
 		};
 
 		routes['POST /api/cards/agents/:agent/freeze'] = async (params, body) => {
@@ -373,17 +495,25 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				throw(new KeetaAnchorUserError('Only the owner can freeze an agent\'s cards'));
 			}
 
-			if (request.agent === caller.owner.publicKeyString.get()) {
+			let agent: string;
+			try {
+				/* Canonical form, so it matches how cards record their creator */
+				agent = KeetaNet.lib.Account.fromPublicKeyString(request.agent).publicKeyString.get();
+			} catch {
+				throw(new KeetaAnchorUserError('Invalid agent public key'));
+			}
+
+			if (agent === caller.owner.publicKeyString.get()) {
 				throw(new KeetaAnchorUserError('Name the agent, not the owner'));
 			}
 
 			const isAuthorized = await this.#authorityFor(caller.storage.publicKeyString.get());
-			const stillAuthorized = isAuthorized(request.agent);
+			const stillAuthorized = isAuthorized(agent);
 
 			const result: KeetaCardsFreezeAgentCardsResult = { cards: [], failed: [] };
 			const cards = await this.store.listByAccount(caller.storage.publicKeyString.get());
 			for (const card of cards) {
-				if (card.createdBy !== request.agent || card.status === 'closed') {
+				if (card.createdBy !== agent || card.status === 'closed') {
 					continue;
 				}
 
@@ -392,9 +522,12 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 						/* The owner is pausing an agent it has not revoked: an ordinary freeze */
 						if (card.status === 'active') {
 							await this.provider.freezeCard(card.id);
-							card.status = 'frozen';
-							card.statusReason = 'requested';
-							await this.store.put(card);
+							Object.assign(card, await this.store.update(card.id, function(fresh) {
+								if (fresh.status === 'active') {
+									fresh.status = 'frozen';
+									fresh.statusReason = 'requested';
+								}
+							}));
 						}
 					} else {
 						await this.#freezeForRevokedAgent(card);
@@ -418,7 +551,11 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			return(json({ ok: true, card }));
 		};
 
-		const action = (name: 'freeze' | 'unfreeze' | 'close', operation: CardsOperationName, apply: (card: CardDetails) => Promise<void>) => {
+		/*
+		 * `apply` makes the change at the issuer and returns how to record it
+		 * on the stored card, which is then changed atomically.
+		 */
+		const action = (name: 'freeze' | 'unfreeze' | 'close', operation: CardsOperationName, apply: (card: CardDetails) => Promise<(card: CardDetails) => void>) => {
 			routes[`POST /api/cards/:id/${name}`] = async (params, body) => {
 				const request = parseBody(assertKeetaCardsCardActionRequestJSON, body);
 				if (request.id !== params.get('id')) {
@@ -431,16 +568,23 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 					throw(new KeetaAnchorUserError('The card is closed'));
 				}
 
-				await apply(card);
-				await this.store.put(card);
-				return(json({ ok: true, card }));
+				const change = await apply(card);
+				const saved = await this.store.update(card.id, change);
+				return(json({ ok: true, card: saved }));
 			};
 		};
 
 		action('freeze', 'freezeCard', async (card) => {
 			await this.provider.freezeCard(card.id);
-			card.status = 'frozen';
-			card.statusReason = 'requested';
+			return(function(fresh) {
+				if (fresh.status !== 'closed') {
+					fresh.status = 'frozen';
+					/* Keep a revoked agent's card marked as such: it still only closes */
+					if (fresh.statusReason !== 'delegate_revoked') {
+						fresh.statusReason = 'requested';
+					}
+				}
+			});
 		});
 
 		action('unfreeze', 'unfreezeCard', async (card) => {
@@ -451,14 +595,22 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			}
 
 			await this.provider.unfreezeCard(card.id);
-			card.status = 'active';
-			delete card.statusReason;
+			return(function(fresh) {
+				if (fresh.status === 'frozen') {
+					fresh.status = 'active';
+					delete fresh.statusReason;
+				}
+			});
 		});
 
 		action('close', 'closeCard', async (card) => {
 			await this.provider.closeCard(card.id);
-			card.status = 'closed';
-			card.statusReason = 'requested';
+			return(function(fresh) {
+				if (fresh.status !== 'closed') {
+					fresh.status = 'closed';
+					fresh.statusReason = 'requested';
+				}
+			});
 		});
 
 		routes['POST /api/cards/:id/controls'] = async (params, body) => {
@@ -469,6 +621,10 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 
 			const caller = await this.#authenticate(request.account, assertHTTPSignedField(request.signed), getUpdateControlsSignable(request), 'updateControls');
 			const card = await this.#cardFor(caller, request.id);
+			if (card.status === 'closed') {
+				throw(new KeetaAnchorUserError('The card is closed'));
+			}
+
 			try {
 				assertValidCardControls(request.controls);
 			} catch (error) {
@@ -476,9 +632,10 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 			}
 
 			await this.provider.updateControls(card.id, request.controls);
-			card.controls = request.controls;
-			await this.store.put(card);
-			return(json({ ok: true, card }));
+			const saved = await this.store.update(card.id, function(fresh) {
+				fresh.controls = request.controls;
+			});
+			return(json({ ok: true, card: saved }));
 		};
 
 		routes['POST /api/cards/:id/reveal'] = async (params, body) => {

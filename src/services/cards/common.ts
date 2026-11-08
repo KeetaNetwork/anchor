@@ -69,6 +69,11 @@ export type CardDetails = {
 	/** For prepaid issuers: where to send funds before the card can spend them */
 	deposit?: CardFundingWallet;
 	controls: CardControls;
+	/**
+	 * What the anchor has approved on the card.  It counts authorizations
+	 * and is not reduced by reversals, refunds or a smaller final clearing
+	 * amount, so the lifetime limit errs on the side of declining.
+	 */
 	spentCents: number;
 	createdAt: string;
 };
@@ -86,6 +91,12 @@ export type CardAuthorizationRequest = {
 	cardID: string;
 	amountCents: number;
 	merchant: CardMerchant;
+	/**
+	 * The issuer's ID for this authorization (Lithic's ASA `token`).  A
+	 * retried or replayed request with the same ID gets the first answer
+	 * again and is counted once.
+	 */
+	authorizationID?: string;
 };
 
 export type CardAuthorizationDecision = {
@@ -104,6 +115,10 @@ export type CardDeclineReason =
 	'over_lifetime_limit' |
 	'merchant_category_not_allowed' |
 	'merchant_category_blocked' |
+	/*
+	 * Reserved for issuers whose balance the anchor can see; today the
+	 * issuer itself declines when the wallet or card balance is short.
+	 */
 	'insufficient_funds';
 
 /*

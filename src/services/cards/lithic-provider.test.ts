@@ -5,7 +5,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { agentSpendingClient, openAgentSpendingAccount, revokeAgentSpending } from '../../lib/agent-spending.js';
 import { Buffer } from '../../lib/utils/buffer.js';
 import { KeetaCardsAnchorClient } from './client.js';
-import { LithicCardProvider, lithicAuthorizationRequest, lithicSpendLimit, verifyLithicWebhook } from './lithic-provider.js';
+import { LITHIC_PRODUCTION_URL, LithicCardProvider, lithicAuthorizationRequest, lithicSpendLimit, verifyLithicWebhook } from './lithic-provider.js';
 import { KeetaNetCardsAnchorHTTPServer } from './server.js';
 
 function newAccount() {
@@ -130,8 +130,11 @@ test('Lithic helpers: one issuer limit, webhook signatures and ASA parsing', fun
 	expect(verifyLithicWebhook(SECRET, { ...signed, id: undefined }, Buffer.from(body))).toBe(false);
 
 	const parsed = lithicAuthorizationRequest(JSON.parse(body));
-	expect(parsed.request).toEqual({ cardID: 'card_1', amountCents: 12_00, merchant: { name: 'CLOUD HOSTING CO', categoryCode: '5734', country: 'USA' }});
-	expect(lithicAuthorizationRequest(asaRequest('card_1', 5_00, '5734', 'CREDIT_AUTHORIZATION')).request).toBeUndefined();
+	expect(parsed.request).toEqual({ cardID: 'card_1', authorizationID: parsed.token, amountCents: 12_00, merchant: { name: 'CLOUD HOSTING CO', categoryCode: '5734', country: 'USA' }});
+	expect(lithicAuthorizationRequest(asaRequest('card_1', 5_00, '5734', 'CREDIT_AUTHORIZATION'))).toMatchObject({ request: undefined });
+	expect(lithicAuthorizationRequest(asaRequest('card_1', 0, '5734', 'BALANCE_INQUIRY')).decline).toBeUndefined();
+	/* A status this code doesn't know is declined, not approved */
+	expect(lithicAuthorizationRequest(asaRequest('card_1', 5_00, '5734', 'SOMETHING_NEW')).decline).toBe(true);
 
 	/* A fuel pump asks for 1.00 and Lithic holds 150.00: the hold is checked */
 	const fuel = { ...asaRequest('card_1', 1_00, '5542'), amounts: { cardholder: { amount: 1_00, currency: 'USD', conversion_rate: '1' }, hold: { amount: 150_00, currency: 'USD' }}};
@@ -206,6 +209,11 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 		expect((await asa(asaRequest(card.id, 30_00, '5734'))).result).toBe('VELOCITY_EXCEEDED');
 		expect((await asa(asaRequest(card.id, 5_00, '7995'))).result).toBe('UNAUTHORIZED_MERCHANT');
 		expect((await asa(asaRequest(card.id, 5_00, '5734', 'CREDIT_AUTHORIZATION'))).result).toBe('APPROVED');
+		expect((await asa(asaRequest(card.id, 5_00, '5734', 'SOMETHING_NEW'))).result).toBe('SUSPECTED_FRAUD');
+		expect((await agentCards.getCard(card.id)).spentCents).toBe(20_00);
+
+		/* Lithic's retry (or a replay) of the same authorization is answered the same and counted once */
+		expect((await asa(approved)).body).toEqual({ result: 'APPROVED', token: approved.token });
 		expect((await agentCards.getCard(card.id)).spentCents).toBe(20_00);
 
 		/* Unsigned or forged requests are refused before any decision */
@@ -230,6 +238,10 @@ test('Lithic cards through the anchor: issue, deposit address, controls, signed 
 		await revokeAgentSpending(ownerClient, spending);
 		const afterRevoke = asaRequest(card.id, 5_00, '5734');
 		expect((await asa(afterRevoke)).body).toEqual({ result: 'CARD_PAUSED', token: afterRevoke.token });
+		/* Paused at Lithic just after the answer, off the ASA time budget */
+		for (let attempt = 0; attempt < 50 && lithic.cards.get(card.id)?.state !== 'PAUSED'; attempt++) {
+			await new Promise(function(resolve) { setTimeout(resolve, 10); });
+		}
 		expect(lithic.cards.get(card.id)?.state).toBe('PAUSED');
 		expect((await ownerCards.getCard(card.id)).statusReason).toBe('delegate_revoked');
 
@@ -278,4 +290,22 @@ test('Lithic accounts without a ledger, rate limits and reveal sessions (found a
 	const failing = fakeLithic({ rateLimitWrites: 10 });
 	const limited = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: failing.fetcher, accountFor: async function() { return('acct'); } });
 	await expect(limited.createCard({ owner: newAccount(), storage: newAccount(), wallet, controls: {}})).rejects.toMatchObject({ status: 429 });
+});
+
+test('the Lithic ASA route fails closed without its secret', async function() {
+	const lithic = fakeLithic();
+	const accountFor = async function() { return('acct'); };
+	const unsigned = new LithicCardProvider({ baseURL: 'https://sandbox.lithic.test', fetch: lithic.fetcher, accountFor });
+	const route = unsigned.routes()['POST /api/cards/lithic/asa'];
+	if (typeof route !== 'object' || route.bodyType !== 'raw') {
+		throw(new Error('ASA route missing'));
+	}
+
+	const body = Buffer.from(JSON.stringify(asaRequest('card_1', 1_00, '5734')));
+	const answer = await route.handler(new Map(), body, {}, new URL('http://localhost/api/cards/lithic/asa'));
+	expect(answer).toMatchObject({ statusCode: 503 });
+
+	expect(function() {
+		return(new LithicCardProvider({ baseURL: LITHIC_PRODUCTION_URL, allowUnsignedWebhooks: true, accountFor }));
+	}).toThrow(/production/);
 });

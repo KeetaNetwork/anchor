@@ -52,6 +52,17 @@ const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 const RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_MAX_WAIT_MS = 5000;
 
+/** How long one Lithic API call may take before it is abandoned */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+/*
+ * ASA statuses that move money onto the card or only ask for a balance:
+ * approved without asking the anchor.  Any other status that is not a
+ * purchase, including ones Lithic adds later, is declined.
+ */
+const ASA_PURCHASE_STATUSES: ReadonlySet<string> = new Set(['AUTHORIZATION', 'FINANCIAL_AUTHORIZATION']);
+const ASA_NO_DECISION_STATUSES: ReadonlySet<string> = new Set(['CREDIT_AUTHORIZATION', 'FINANCIAL_CREDIT_AUTHORIZATION', 'BALANCE_INQUIRY']);
+
 /** Embed sessions last at most ten minutes */
 const REVEAL_SECONDS = 5 * 60;
 
@@ -63,10 +74,17 @@ export type LithicCardProviderOptions = {
 	/** The Lithic account a card for this owner and storage account goes under */
 	accountFor: (input: Pick<CardProviderCreateInput, 'owner' | 'storage'>) => Promise<string>;
 	/**
-	 * The ASA HMAC secret (`whsec_...`).  Without it, unsigned webhook
-	 * requests are accepted, which is only for local tests.
+	 * The ASA HMAC secret (`whsec_...`).  Without it the ASA route refuses
+	 * every request, unless `allowUnsignedWebhooks` is set.
 	 */
 	asaSecret?: string;
+	/**
+	 * Accept unsigned ASA requests when no `asaSecret` is set.  Only for
+	 * local tests against a simulator; refused with the production URL.
+	 */
+	allowUnsignedWebhooks?: boolean;
+	/** How long one Lithic API call may take, in milliseconds (default 10 s) */
+	requestTimeoutMS?: number;
 	/**
 	 * The HTTPS origin of the page that shows revealed card details (the
 	 * wallet).  Lithic's embed iframe only renders inside this origin, and
@@ -137,7 +155,7 @@ export function lithicASAResult(decision: CardAuthorizationDecision): LithicASAR
  * The anchor's question from a Lithic ASA request, or undefined when the
  * request needs no decision (refunds, credits and balance inquiries).
  */
-export function lithicAuthorizationRequest(body: unknown): { token: string; request: CardAuthorizationRequest | undefined; } {
+export function lithicAuthorizationRequest(body: unknown): { token: string; request: CardAuthorizationRequest | undefined; decline?: true; } {
 	if (!isRecord(body) || !isRecord(body.card) || !isRecord(body.merchant)) {
 		throw(new Error('Not a Lithic ASA request'));
 	}
@@ -148,9 +166,13 @@ export function lithicAuthorizationRequest(body: unknown): { token: string; requ
 		throw(new Error('Lithic ASA request is missing its token or card'));
 	}
 
-	const status = stringField(body, 'status');
-	if (status !== 'AUTHORIZATION' && status !== 'FINANCIAL_AUTHORIZATION') {
+	const status = stringField(body, 'status') ?? '';
+	if (ASA_NO_DECISION_STATUSES.has(status)) {
 		return({ token, request: undefined });
+	}
+
+	if (!ASA_PURCHASE_STATUSES.has(status)) {
+		return({ token, request: undefined, decline: true });
 	}
 
 	/*
@@ -177,6 +199,7 @@ export function lithicAuthorizationRequest(body: unknown): { token: string; requ
 		token,
 		request: {
 			cardID,
+			authorizationID: token,
 			amountCents,
 			merchant: {
 				name: stringField(body.merchant, 'descriptor') ?? '',
@@ -242,6 +265,8 @@ export class LithicCardProvider implements CardProvider {
 
 	readonly #apiKey: string | undefined;
 	readonly #asaSecret: string | undefined;
+	readonly #allowUnsignedWebhooks: boolean;
+	readonly #requestTimeoutMS: number;
 	readonly #embedOrigin: string | undefined;
 	readonly #accountFor: LithicCardProviderOptions['accountFor'];
 	readonly #fetch: typeof fetch;
@@ -252,6 +277,12 @@ export class LithicCardProvider implements CardProvider {
 		this.depositNetwork = options.depositNetwork ?? 'BASE';
 		this.#apiKey = options.apiKey;
 		this.#asaSecret = options.asaSecret;
+		this.#allowUnsignedWebhooks = options.allowUnsignedWebhooks === true && options.asaSecret === undefined;
+		if (this.#allowUnsignedWebhooks && this.baseURL === LITHIC_PRODUCTION_URL) {
+			throw(new Error('Unsigned Lithic webhooks are never accepted in production; set asaSecret'));
+		}
+
+		this.#requestTimeoutMS = options.requestTimeoutMS ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		this.#embedOrigin = options.embedOrigin !== undefined ? new URL(options.embedOrigin).origin : undefined;
 		this.#accountFor = options.accountFor;
 		this.#fetch = options.fetch ?? fetch;
@@ -277,6 +308,7 @@ export class LithicCardProvider implements CardProvider {
 			response = await this.#fetch(`${this.baseURL}${path}`, {
 				method,
 				headers,
+				signal: AbortSignal.timeout(this.#requestTimeoutMS),
 				...(body !== undefined ? { body: JSON.stringify(body) } : {})
 			});
 
@@ -422,11 +454,16 @@ export class LithicCardProvider implements CardProvider {
 
 	/**
 	 * Answer one ASA request: approve or decline with Lithic's result code,
-	 * echoing the transaction token.  Refunds and balance inquiries are
-	 * approved without asking the anchor.
+	 * echoing the transaction token.  Credits and balance inquiries are
+	 * approved without asking the anchor; statuses it doesn't know are
+	 * declined.
 	 */
 	async answerASA(body: unknown): Promise<{ result: LithicASAResult; token: string; }> {
-		const { token, request } = lithicAuthorizationRequest(body);
+		const { token, request, decline } = lithicAuthorizationRequest(body);
+		if (decline === true) {
+			return({ result: 'SUSPECTED_FRAUD', token });
+		}
+
 		if (request === undefined) {
 			return({ result: 'APPROVED', token });
 		}
@@ -444,6 +481,11 @@ export class LithicCardProvider implements CardProvider {
 				bodyType: 'raw',
 				maxBodySize: 256 * 1024,
 				handler: async (_ignore_params, body, headers) => {
+					if (this.#asaSecret === undefined && !this.#allowUnsignedWebhooks) {
+						/* Fail closed: a deploy missing its secret must not take forged requests */
+						return({ statusCode: 503, output: JSON.stringify({ error: 'ASA webhook secret is not configured' }), contentType: 'application/json' });
+					}
+
 					if (this.#asaSecret !== undefined) {
 						const signed = verifyLithicWebhook(this.#asaSecret, {
 							id: header(headers, 'webhook-id'),

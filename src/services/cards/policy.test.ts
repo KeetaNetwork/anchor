@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import type { CardDetails } from './common.js';
 import { assertValidCardControls, assertValidFundingWallet, canonicalControls } from './common.js';
-import { decideCardAuthorization } from './policy.js';
+import { decideCardAuthorization, tightenCardControls } from './policy.js';
 
 const now = new Date('2026-11-07T12:00:00Z');
 
@@ -75,4 +75,25 @@ test('rejects invalid controls and wallets', function() {
 	expect(function() { assertValidFundingWallet({ chain: 'base', currency: 'usdc', address: '0x123' }); }).toThrow(/20-byte/);
 	expect(function() { assertValidFundingWallet({ chain: 'Base Mainnet', currency: 'usdc', address: '0x' + 'a'.repeat(40) }); }).toThrow(/chain/);
 	expect(function() { assertValidFundingWallet({ chain: 'base', currency: 'usdc', address: '0x' + 'a'.repeat(40) }); }).not.toThrow();
+});
+
+test('an agent\'s requested controls stay within the ceiling', function() {
+	const ceiling = { perPurchaseLimitCents: 50_00, allowedCategories: ['5411', '5734'], blockedCategories: ['7995'], expiresAt: '2027-01-01T00:00:00.000Z' };
+	expect(tightenCardControls(ceiling, {
+		perPurchaseLimitCents: 80_00,
+		lifetimeLimitCents: 300_00,
+		allowedCategories: ['5734', '5812'],
+		blockedCategories: ['5813'],
+		singleUse: true,
+		expiresAt: '2028-01-01T00:00:00.000Z'
+	})).toEqual({
+		perPurchaseLimitCents: 50_00,
+		lifetimeLimitCents: 300_00,
+		allowedCategories: ['5734'],
+		blockedCategories: ['7995', '5813'],
+		singleUse: true,
+		expiresAt: '2027-01-01T00:00:00.000Z'
+	});
+	expect(tightenCardControls({}, { perPurchaseLimitCents: 10_00 })).toEqual({ perPurchaseLimitCents: 10_00 });
+	expect(tightenCardControls(ceiling, {})).toEqual(ceiling);
 });

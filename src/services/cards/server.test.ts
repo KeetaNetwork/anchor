@@ -55,6 +55,22 @@ async function setup() {
 
 const wallet = { chain: 'base', currency: 'usdc', address: walletAddress };
 
+/* Issuer calls made after answering an authorization land a moment later */
+async function eventually(check: () => void | Promise<void>): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await check();
+			return;
+		} catch (error) {
+			if (attempt >= 50) {
+				throw(error);
+			}
+
+			await new Promise(function(resolve) { setTimeout(resolve, 10); });
+		}
+	}
+}
+
 test('an agent issues a card and its purchases follow the anchor rules', async function() {
 	await using env = await setup();
 	const agentCards = env.cardsFor(env.spending.storage, env.agent);
@@ -138,12 +154,93 @@ test('revoking the agent declines and freezes its cards', async function() {
 
 	/* The issuer still sees an active card, so it asks; the anchor says no */
 	expect(await env.provider.simulatePurchase(card.id, 10_00, groceries)).toEqual({ approved: false, reason: 'delegate_revoked' });
-	expect(env.provider.issuerStatus(card.id)).toBe('frozen');
+	await eventually(function() { expect(env.provider.issuerStatus(card.id)).toBe('frozen'); });
 
 	/* The revoked agent can no longer reach the card */
 	await expect(agentCards.getCard(card.id)).rejects.toThrow(/Invalid signature/);
 	const ownerView = await env.cardsFor(env.spending.storage, env.owner).getCard(card.id);
 	expect(ownerView).toMatchObject({ status: 'frozen', statusReason: 'delegate_revoked' });
+});
+
+test('a failing issuer freeze does not turn a revoked decline into an error', async function() {
+	await using env = await setup();
+	const card = await env.cardsFor(env.spending.storage, env.agent).createCard({ wallet });
+	await revokeAgentSpending(env.ownerClient, { agent: env.agent, storage: env.spending.storage });
+
+	env.provider.freezeCard = async function() {
+		throw(new Error('issuer is down'));
+	};
+	expect(await env.server.authorize({ cardID: card.id, amountCents: 1_00, merchant: groceries })).toEqual({ approved: false, reason: 'delegate_revoked' });
+});
+
+test('concurrent purchases cannot overspend the lifetime limit or reuse a single-use card', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const limited = await agentCards.createCard({ wallet, controls: { lifetimeLimitCents: 100_00 }});
+
+	const results = await Promise.all([
+		env.server.authorize({ cardID: limited.id, amountCents: 90_00, merchant: groceries }),
+		env.server.authorize({ cardID: limited.id, amountCents: 90_00, merchant: groceries })
+	]);
+	expect(results.filter(function(result) { return(result.approved); })).toHaveLength(1);
+	expect(results).toContainEqual({ approved: false, reason: 'over_lifetime_limit' });
+	expect((await agentCards.getCard(limited.id)).spentCents).toBe(90_00);
+
+	const once = await agentCards.createCard({ wallet, controls: { singleUse: true }});
+	const onceResults = await Promise.all([1, 2, 3].map(function() {
+		return(env.server.authorize({ cardID: once.id, amountCents: 5_00, merchant: groceries }));
+	}));
+	expect(onceResults.filter(function(result) { return(result.approved); })).toHaveLength(1);
+
+	/* An issuer retry of the same authorization gets the same answer and counts once */
+	const retried = await agentCards.createCard({ wallet });
+	const first = await env.server.authorize({ cardID: retried.id, amountCents: 7_00, merchant: groceries, authorizationID: 'auth_1' });
+	const again = await env.server.authorize({ cardID: retried.id, amountCents: 7_00, merchant: groceries, authorizationID: 'auth_1' });
+	expect(again).toEqual(first);
+	expect((await agentCards.getCard(retried.id)).spentCents).toBe(7_00);
+
+	/* A status change made meanwhile keeps the recorded spend */
+	await agentCards.freezeCard(retried.id);
+	expect((await agentCards.getCard(retried.id)).spentCents).toBe(7_00);
+});
+
+test('an agent can only tighten the operator\'s default controls', async function() {
+	await using env = await setup();
+	const ceiling = { perPurchaseLimitCents: 50_00, lifetimeLimitCents: 200_00, blockedCategories: ['7995'] };
+	await using server = new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: env.provider, defaultControls: ceiling });
+	await server.start();
+	const client = function(signer: InstanceType<typeof KeetaNet.lib.Account>) {
+		return(new KeetaCardsAnchorClient({ baseURL: server.url, client: agentSpendingClient(env.ownerClient, env.spending.storage, signer) }));
+	};
+
+	const loose = await client(env.agent).createCard({ wallet, controls: { perPurchaseLimitCents: 999_00, lifetimeLimitCents: 100_00, blockedCategories: ['5813'] }});
+	expect(loose.controls).toEqual({ perPurchaseLimitCents: 50_00, lifetimeLimitCents: 100_00, blockedCategories: ['7995', '5813'] });
+
+	const none = await client(env.agent).createCard({ wallet, controls: {}});
+	expect(none.controls).toEqual(ceiling);
+
+	/* The owner may set looser limits */
+	const owners = await client(env.owner).createCard({ wallet, controls: { perPurchaseLimitCents: 999_00 }});
+	expect(owners.controls.perPurchaseLimitCents).toBe(999_00);
+});
+
+test('an agent only sees and acts on the cards it made', async function() {
+	await using env = await setup();
+	const agentCards = env.cardsFor(env.spending.storage, env.agent);
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+	const agents = await agentCards.createCard({ wallet, label: 'Agent' });
+	const owners = await ownerCards.createCard({ wallet, label: 'Owner' });
+
+	expect((await agentCards.listCards()).map(function(card) { return(card.id); })).toEqual([agents.id]);
+	expect((await ownerCards.listCards()).map(function(card) { return(card.id); }).sort()).toEqual([agents.id, owners.id].sort());
+	await expect(agentCards.revealCard(owners.id, 'nonce-1234567890')).rejects.toThrow(/Card not found/);
+	await expect(agentCards.closeCard(owners.id)).rejects.toThrow(/Card not found/);
+	await expect(agentCards.getCard(owners.id)).rejects.toThrow(/Card not found/);
+	expect(env.provider.issuerStatus(owners.id)).toBe('active');
+
+	/* Closed cards keep their limits */
+	await ownerCards.closeCard(owners.id);
+	await expect(ownerCards.updateControls(owners.id, { perPurchaseLimitCents: 1_00 })).rejects.toThrow(/closed/);
 });
 
 test('revoking the agent freezes all of its cards at once', async function() {
@@ -186,8 +283,9 @@ test('revoking the agent freezes all of its cards at once', async function() {
 	const again = await ownerCards.freezeAgentCards(agentKey);
 	expect(again.cards.map(function(card) { return(card.id); }).sort()).toEqual([second.id, pausedByAgent.id].sort());
 
-	/* The owner is not an agent */
+	/* The owner is not an agent, and a malformed key is an error, not an empty answer */
 	await expect(ownerCards.freezeAgentCards(env.owner)).rejects.toThrow(/not the owner/);
+	await expect(ownerCards.freezeAgentCards('keeta_not_a_key')).rejects.toThrow(/Invalid agent public key/);
 });
 
 test('listing cards freezes a revoked agent\'s cards the wallet missed', async function() {
