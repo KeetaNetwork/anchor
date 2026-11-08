@@ -85,7 +85,7 @@ import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedField, HTTPSignedFieldURLParametersGenericAccount } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
 import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/conversion.js';
-import { verifyStorageAccountSignature } from '../../lib/utils/storage-account.js';
+import { authenticateStorageAccountRequest } from '../../lib/utils/storage-account.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
@@ -384,7 +384,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						throw(new Error('when request is not defined, getSignatureFieldAccountFromRequest must be provided'));
 					}
 
-					let signable = input.getSigningData ? input.getSigningData(request, params) : [];
+					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 					if (requestAccount.isStorage()) {
 						if (!config.client) {
 							throw(new KeetaAnchorUserError('Storage accounts are not supported without a network client configuration'));
@@ -396,22 +396,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 						 * the owner's identity, so KYC lookups see the owner;
 						 * the context tells handlers who signed.
 						 */
-						signable = [requestAccount, ...signable];
-						const verified = await verifyStorageAccountSignature(config.client.client, requestAccount, signable, signed);
-						if (verified === null) {
-							throw(new KeetaAnchorUserError('Invalid signature'));
-						}
-
-						const delegate = !verified.signer.comparePublicKey(verified.owner);
-						if (delegate) {
-							const allowed: readonly string[] = server.storageAccountDelegateOperations;
-							if (!allowed.includes(input.handlerName)) {
-								throw(new KeetaAnchorUserError('This operation is not available to storage account delegates'));
-							}
-						}
+						const verified = await authenticateStorageAccountRequest(config.client.client, requestAccount, signable, signed, {
+							operation: input.handlerName,
+							delegateOperations: server.storageAccountDelegateOperations
+						});
 
 						account = verified.owner;
-						authority = { account, signer: verified.signer, storageAccount: requestAccount, delegate };
+						authority = { account, signer: verified.signer, storageAccount: requestAccount, delegate: !verified.isOwner };
 					} else {
 						account = requestAccount.assertAccount();
 
