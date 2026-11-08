@@ -417,3 +417,15 @@ test('a revoke-frozen card comes back only with a new number or a new grant', as
 	expect(env.provider.issuerStatus(granted.id)).toBe('active');
 	expect(await env.provider.simulatePurchase(granted.id, 5_00, groceries)).toEqual({ approved: true });
 });
+
+test('a replacement the issuer fails to issue says the old card is closed', async function() {
+	await using env = await setup();
+	const ownerCards = env.cardsFor(env.spending.storage, env.owner);
+	const card = await ownerCards.createCard({ wallet });
+	env.provider.createCard = async function() {
+		throw(new Error('issuer down'));
+	};
+
+	await expect(ownerCards.replaceCard(card.id)).rejects.toThrow(/old card is closed/);
+	expect(await ownerCards.getCard(card.id)).toMatchObject({ status: 'closed', statusReason: 'replaced' });
+});

@@ -765,13 +765,20 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 				fresh.statusReason = 'replaced';
 			});
 
-			const issued = await this.provider.createCard({
-				owner: caller.owner,
-				storage: caller.storage,
-				wallet: old.wallet,
-				controls: old.controls,
-				...(old.label !== undefined ? { label: old.label } : {})
-			});
+			let issued: Awaited<ReturnType<CardProvider['createCard']>>;
+			try {
+				issued = await this.provider.createCard({
+					owner: caller.owner,
+					storage: caller.storage,
+					wallet: old.wallet,
+					controls: old.controls,
+					...(old.label !== undefined ? { label: old.label } : {})
+				});
+			} catch (error) {
+				/* Say plainly that the old card is gone, so the owner knows to make a new one */
+				this.logger.error('KeetaNetCardsAnchorHTTPServer', 'closed a card but could not issue its replacement', old.id, error);
+				throw(new KeetaAnchorUserError('The old card is closed, but the card issuer could not issue its replacement. Create a new card instead'));
+			}
 
 			const card: CardDetails = {
 				id: issued.providerCardID,
