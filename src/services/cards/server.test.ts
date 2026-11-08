@@ -452,3 +452,10 @@ test('a replacement the issuer fails to issue says the old card is closed', asyn
 	await expect(ownerCards.replaceCard(card.id)).rejects.toThrow(/old card is closed/);
 	expect(await ownerCards.getCard(card.id)).toMatchObject({ status: 'closed', statusReason: 'replaced' });
 });
+
+test('funding tokens need whole, non-negative decimals', async function() {
+	await using env = await setup();
+	expect(function() {
+		return(new KeetaNetCardsAnchorHTTPServer({ client: { client: env.ownerClient.client }, provider: env.provider, fundingTokens: [{ token: env.usd.publicKeyString.get(), decimals: -1 }] }));
+	}).toThrow(/decimals/);
+});

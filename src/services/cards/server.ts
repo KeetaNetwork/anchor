@@ -234,6 +234,12 @@ export interface KeetaAnchorCardsServerConfig extends KeetaAnchorHTTPServer.Keet
 	 * can't spend past the balance the owner gave it.  When unset, the
 	 * anchor leaves the balance to the card issuer.
 	 *
+	 * This suits issuers that pull funds when a purchase settles.  With a
+	 * prepaid issuer (such as Lithic), the money for purchases usually
+	 * already sits at the issuer's deposit address, so the storage account
+	 * can hold less than the card may spend and good purchases would be
+	 * declined.
+	 *
 	 * This reads the balance at the moment of the purchase.  It doesn't
 	 * yet hold back purchases that are approved but not yet paid for from
 	 * the account, or two purchases racing each other.
@@ -295,6 +301,11 @@ export class KeetaNetCardsAnchorHTTPServer extends KeetaAnchorHTTPServer.KeetaNe
 		this.store = config.store ?? new InMemoryCardStore();
 		this.delegateOperations = config.delegateOperations ?? DEFAULT_CARD_DELEGATE_OPERATIONS;
 		this.defaultControls = config.defaultControls ?? {};
+		for (const { decimals } of config.fundingTokens ?? []) {
+			if (!Number.isInteger(decimals) || decimals < 0) {
+				throw(new Error('fundingTokens decimals must be a whole number, 0 or more'));
+			}
+		}
 		this.fundingTokens = config.fundingTokens;
 		this.#client = config.client.client;
 
