@@ -1998,7 +1998,12 @@ suite('Driver Tests', async function() {
 					testRunner(`Concurrent Workers Each Process A Full Batch (worker IDs ${runningWorkerIDs.join(', ')} of 3)`, async function() {
 						await using queueInfo = await driverConfig.create(`concurrent-workers-full-batch-${runningWorkerIDs.join('-')}`);
 						const workerCount = 3;
-						const batchSize = 2;
+						/*
+						 * A worker tries a different slot on each attempt,
+						 * so a batch of workerCount attempts reaches the
+						 * oldest entry whatever order the workers run in
+						 */
+						const batchSize = workerCount;
 
 						const processedKeys: string[] = [];
 						const runners = runningWorkerIDs.map(function(workerID) {
