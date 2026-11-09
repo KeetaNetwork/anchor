@@ -1087,7 +1087,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(8);
 			} else {
-				expect(processCallCountByKey.size).toBe(45);
+				expect(processCallCountByKey.size).toBe(43);
 			}
 
 			const id0 = ids[0];
@@ -1990,60 +1990,65 @@ suite('Driver Tests', async function() {
 				/*
 				 * With several workers sharing a queue, the oldest-first
 				 * order must not make them all race for the same entry:
-				 * every worker should fill its whole batch
+				 * every running worker should fill its whole batch.  When
+				 * a worker ID is not running, the others must still reach
+				 * the oldest entry.
 				 */
-				testRunner('Concurrent Workers Each Process A Full Batch', async function() {
-					await using queueInfo = await driverConfig.create('concurrent-workers-full-batch');
-					const workerCount = 3;
-					const batchSize = 2;
+				for (const runningWorkerIDs of [[0, 1, 2], [1, 2]]) {
+					testRunner(`Concurrent Workers Each Process A Full Batch (worker IDs ${runningWorkerIDs.join(', ')} of 3)`, async function() {
+						await using queueInfo = await driverConfig.create(`concurrent-workers-full-batch-${runningWorkerIDs.join('-')}`);
+						const workerCount = 3;
+						const batchSize = 2;
 
-					const processedKeys: string[] = [];
-					const runners = Array.from({ length: workerCount }).map(function(_ignored_value, workerID) {
-						return(new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
-							id: `concurrent-workers-${workerID}`,
-							queue: queueInfo.queue,
-							logger: logger,
-							workers: { count: workerCount, id: workerID },
-							batchSize: batchSize,
-							processor: async function(entry) {
-								processedKeys.push(entry.request);
-								/*
-								 * Yield so the workers interleave
-								 */
-								await asleep(1);
-								return({ status: 'completed', output: entry.request });
-							}
-						}));
-					});
-					await using cleanup = new AsyncDisposableStack();
-					for (const runner of runners) {
-						cleanup.defer(async function() {
-							await runner.destroy();
+						const processedKeys: string[] = [];
+						const runners = runningWorkerIDs.map(function(workerID) {
+							return(new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+								id: `concurrent-workers-${workerID}`,
+								queue: queueInfo.queue,
+								logger: logger,
+								workers: { count: workerCount, id: workerID },
+								batchSize: batchSize,
+								processor: async function(entry) {
+									processedKeys.push(entry.request);
+									/*
+									 * Yield so the workers interleave
+									 */
+									await asleep(1);
+									return({ status: 'completed', output: entry.request });
+								}
+							}));
 						});
-					}
+						await using cleanup = new AsyncDisposableStack();
+						for (const runner of runners) {
+							cleanup.defer(async function() {
+								await runner.destroy();
+							});
+						}
 
-					const firstRunner = runners[0];
-					if (firstRunner === undefined) {
-						throw(new Error('internal error: no runners'));
-					}
+						const firstRunner = runners[0];
+						if (firstRunner === undefined) {
+							throw(new Error('internal error: no runners'));
+						}
 
-					const keys = Array.from({ length: workerCount * batchSize }).map(function(_ignored_value, index) {
-						return(`job${index}`);
-					});
-					for (const key of keys) {
-						await firstRunner.add(key);
-					}
+						const keys = Array.from({ length: workerCount * batchSize }).map(function(_ignored_value, index) {
+							return(`job${index}`);
+						});
+						for (const key of keys) {
+							await firstRunner.add(key);
+							await nextUpdatedTime();
+						}
 
-					await Promise.all(runners.map(async function(runner) {
-						return(await runner.run());
-					}));
+						await Promise.all(runners.map(async function(runner) {
+							return(await runner.run());
+						}));
 
-					function compareKeys(a: string, b: string): number {
-						return(a.localeCompare(b));
-					}
-					expect([...processedKeys].sort(compareKeys)).toEqual([...keys].sort(compareKeys));
-					expect(await firstRunner.query({ status: 'pending' })).toEqual([]);
-				}, 60_000);
+						const expectedProcessed = runningWorkerIDs.length * batchSize;
+						expect(processedKeys).toHaveLength(expectedProcessed);
+						expect(new Set(processedKeys).size).toBe(expectedProcessed);
+						expect(processedKeys).toContain(keys[0]);
+						expect(await firstRunner.query({ status: 'pending' })).toHaveLength(keys.length - expectedProcessed);
+					}, 60_000);
+				}
 
 				/*
 				 * Moving an entry to the back of the line sets its status

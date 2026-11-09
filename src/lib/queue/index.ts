@@ -1256,7 +1256,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			let contended = 0;
 			let processed = 0;
 			while (processed < batchSize) {
-				const entry = await this.nextEntryToProcess(status);
+				const entry = await this.nextEntryToProcess(status, processed + contended);
 				if (entry === undefined) {
 					return('empty');
 				}
@@ -1344,17 +1344,24 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 * query() returns the oldest entries first, so if every worker
 	 * took the first one they would all race for the same entry and
 	 * all but one would lose it.  Instead each worker looks at the
-	 * oldest `workers.count` entries and takes the one at its own
-	 * worker ID, so concurrent workers start on different entries.
-	 * With a single worker this is simply the oldest entry.
+	 * oldest `workers.count` entries and takes the one at its worker
+	 * ID plus `attempt`, so concurrent workers start on different
+	 * entries.  Adding the attempt number rotates the slot within a
+	 * run, so every worker reaches the oldest entry within
+	 * `workers.count` attempts even when some worker IDs are not
+	 * running.  With a single worker this is simply the oldest entry.
+	 *
+	 * @param status The status to pick an entry from
+	 * @param attempt How many entries this run has already tried in
+	 *                that status
 	 */
-	private async nextEntryToProcess(status: KeetaAnchorQueueStatus): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | undefined> {
+	private async nextEntryToProcess(status: KeetaAnchorQueueStatus, attempt: number): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | undefined> {
 		const candidates = await this.queue.query({ status: status, limit: Math.max(1, this.workers.count) });
 		if (candidates.length === 0) {
 			return(undefined);
 		}
 
-		return(candidates[this.workers.id % candidates.length]);
+		return(candidates[(this.workers.id + attempt) % candidates.length]);
 	}
 
 	private async markStuckRequestsAsStuck(): Promise<void> {
@@ -1610,6 +1617,24 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			}
 		}
 
+		const unmovedRequests: typeof allRequests = [];
+
+		const TotalPipes = pipes.length;
+		for (const request of allRequests) {
+			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
+			if (sentCount !== TotalPipes) {
+				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+
+				unmovedRequests.push(request);
+
+				continue;
+			}
+
+			logger?.debug(`Marking ${statusTarget} request with id ${String(request.id)} as moved`);
+
+			await this.queue.setStatus(request.id, 'moved', { oldStatus: statusTarget, by: this.workerID });
+		}
+
 		/*
 		 * If we fetched a full page, there may be more entries behind
 		 * the ones we could not move.  Since query() returns the oldest
@@ -1623,30 +1648,32 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 * original worker is kept so the entry still records who
 		 * processed it.
 		 */
-		const rotateUnmoved = allRequests.length >= fetchLimit;
+		if (allRequests.length >= fetchLimit) {
+			await this.sendToBackOfLine(unmovedRequests, statusTarget);
+		}
+	}
 
-		const TotalPipes = pipes.length;
-		for (const request of allRequests) {
-			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
-			if (sentCount !== TotalPipes) {
-				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+	/**
+	 * Send entries to the back of the line by setting each to the
+	 * status it already has, which bumps "updated" and keeps the
+	 * worker that processed it.  Another worker may have changed an
+	 * entry since it was fetched, so a failure is logged and skipped.
+	 */
+	private async sendToBackOfLine(requests: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[], status: KeetaAnchorQueueStatus): Promise<void> {
+		const logger = this.methodLogger('sendToBackOfLine');
 
-				if (rotateUnmoved) {
-					try {
-						await this.queue.setStatus(request.id, statusTarget, { oldStatus: statusTarget, by: request.worker ?? undefined });
-					} catch (error: unknown) {
-						logger?.debug(`Failed to move ${statusTarget} request with id ${String(request.id)} to the back of the line:`, error);
-					}
-				}
-
-				continue;
+		for (const request of requests) {
+			let worker: KeetaAnchorQueueWorkerID | undefined = undefined;
+			if (request.worker !== null) {
+				worker = request.worker;
 			}
 
-			logger?.debug(`Marking ${statusTarget} request with id ${String(request.id)} as moved`);
-
-			await this.queue.setStatus(request.id, 'moved', { oldStatus: statusTarget, by: this.workerID });
+			try {
+				await this.queue.setStatus(request.id, status, { oldStatus: status, by: worker });
+			} catch (error: unknown) {
+				logger?.debug(`Failed to move ${status} request with id ${String(request.id)} to the back of the line:`, error);
+			}
 		}
-
 	}
 
 	async maintain(): Promise<void> {
