@@ -696,6 +696,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	 */
 	protected processTimeout = 300_000; /* 5 minutes */
 	/**
+	 * The number of completed entries fetched per maintenance pass
+	 * when moving entries to the next stage.  A full page means more
+	 * entries may be waiting behind it, so unmoved entries are sent
+	 * to the back of the line.
+	 */
+	private readonly pipeMoveFetchLimit = 100;
+	/**
 	 * When piping a batch of jobs to another runner, this is the number
 	 * of jobs to include in each batch (max).
 	 */
@@ -906,6 +913,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		setParams: (params: Partial<KeetaAnchorQueueRunnerConfigurationObject> & { maxRunners?: number; }) => void;
 		queue: () => KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult>;
 		markWorkerAsProcessing: () => Promise<void>;
+		pipeMoveFetchLimit: number;
 	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
@@ -928,7 +936,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					oldStatus: '@internal',
 					by: this.workerID
 				});
-			}
+			},
+			pipeMoveFetchLimit: this.pipeMoveFetchLimit
 		});
 	}
 
@@ -1409,7 +1418,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			return;
 		}
 
-		const fetchLimit = 100;
+		const fetchLimit = this.pipeMoveFetchLimit;
 		const allRequests = await this.queue.query({ status: statusTarget, limit: fetchLimit });
 		let requests = allRequests;
 

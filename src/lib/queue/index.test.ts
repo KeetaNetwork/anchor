@@ -1478,27 +1478,11 @@ test('Errors', async function() {
 });
 
 /**
- * Number of entries the runner fetches per maintenance pass when moving
- * entries to the next stage (see moveCompletedToNextStage)
+ * Wait long enough on the real clock that the next write gets a later
+ * "updated" time than the last one
  */
-const PipeMoveFetchLimit = 100;
-
-/**
- * Fake only the clock (not timers, which the database clients rely on)
- * so that each step of a test gets a distinct, known "updated" time
- */
-function useControlledClock(): { tick: () => void; [Symbol.asyncDispose]: () => Promise<void>; } {
-	vi.useFakeTimers({ toFake: ['Date'] });
-	vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
-
-	return({
-		tick: function() {
-			vi.setSystemTime(Date.now() + 1000);
-		},
-		[Symbol.asyncDispose]: async function() {
-			vi.useRealTimers();
-		}
-	});
+async function nextUpdatedTime(): Promise<void> {
+	await asleep(5);
 }
 
 async function queryIDs(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, filter: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueRequestID[]> {
@@ -1555,6 +1539,7 @@ type RejectingPipeKind = 'single' | 'batch';
  */
 async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, name: string, kind: RejectingPipeKind): Promise<{
 	source: KeetaAnchorQueueRunnerJSONConfigProc<string, string>;
+	pipeMoveFetchLimit: number;
 	targetRequests: () => Promise<JSONSerializable[]>;
 	[Symbol.asyncDispose]: () => Promise<void>;
 }> {
@@ -1562,11 +1547,17 @@ async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSeri
 		id: `${name}-${kind}-source`,
 		queue: await queue.partition('source'),
 		logger: logger,
-		batchSize: PipeMoveFetchLimit * 2,
 		processor: async function(entry) {
 			return({ status: 'completed', output: entry.request });
 		}
 	});
+
+	/*
+	 * Read the page size from the runner so the tests stay in step
+	 * with it, and let one run() complete more than a whole page
+	 */
+	const pipeMoveFetchLimit = source._Testing(TestingKey).pipeMoveFetchLimit;
+	source._Testing(TestingKey).setParams({ batchSize: pipeMoveFetchLimit * 2 });
 
 	const targetConfig = {
 		id: `${name}-${kind}-target`,
@@ -1593,6 +1584,7 @@ async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSeri
 
 	return({
 		source: source,
+		pipeMoveFetchLimit: pipeMoveFetchLimit,
 		targetRequests: async function() {
 			/*
 			 * The target never runs, so everything piped into it is
@@ -1911,16 +1903,15 @@ suite('Driver Tests', async function() {
 				 * entry to the back of the line
 				 */
 				testRunner('Query Order Is Oldest Updated First', async function() {
-					await using clock = useControlledClock();
 					await using queueInfo = await driverConfig.create('query-order');
 					const localQueue = queueInfo.queue;
 
 					const firstID = await localQueue.add({ key: 'order0' });
-					clock.tick();
+					await nextUpdatedTime();
 					const secondID = await localQueue.add({ key: 'order1' });
-					clock.tick();
+					await nextUpdatedTime();
 					const thirdID = await localQueue.add({ key: 'order2' });
-					clock.tick();
+					await nextUpdatedTime();
 
 					expect(await queryIDs(localQueue, { status: 'pending' })).toEqual([firstID, secondID, thirdID]);
 					expect(await queryIDs(localQueue, { status: 'pending', limit: 1 })).toEqual([firstID]);
@@ -1952,7 +1943,6 @@ suite('Driver Tests', async function() {
 					 * entries must not stop newer entries from moving
 					 */
 					testRunner(`Pipe Failures Do Not Block Newer Entries (${pipeKind} pipe)`, async function() {
-						await using clock = useControlledClock();
 						await using queueInfo = await driverConfig.create(`pipe-failures-no-block-${pipeKind}`);
 						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-failures', pipeKind);
 
@@ -1960,19 +1950,19 @@ suite('Driver Tests', async function() {
 						 * Fill a whole maintenance page with rejected entries,
 						 * then add one good entry behind them
 						 */
-						for (let index = 0; index < PipeMoveFetchLimit; index++) {
+						for (let index = 0; index < stages.pipeMoveFetchLimit; index++) {
 							await stages.source.add(`poison${index}`);
 						}
 						await stages.source.run();
-						clock.tick();
+						await nextUpdatedTime();
 
 						const goodID = await stages.source.add('good');
 						await stages.source.run();
-						clock.tick();
+						await nextUpdatedTime();
 
 						for (let pass = 0; pass < 2; pass++) {
 							await stages.source.maintain();
-							clock.tick();
+							await nextUpdatedTime();
 						}
 
 						const goodEntry = await stages.source.get(goodID);
@@ -1980,7 +1970,7 @@ suite('Driver Tests', async function() {
 						expect(await stages.targetRequests()).toEqual([GoodRequestInTarget[pipeKind]]);
 
 						const stillCompleted = await stages.source.query({ status: 'completed' });
-						expect(stillCompleted.length).toBe(PipeMoveFetchLimit);
+						expect(stillCompleted.length).toBe(stages.pipeMoveFetchLimit);
 					}, 120_000);
 
 					/*
@@ -1989,17 +1979,16 @@ suite('Driver Tests', async function() {
 					 * they are rather than written on every pass
 					 */
 					testRunner(`Pipe Failures Below A Full Page Are Not Rewritten (${pipeKind} pipe)`, async function() {
-						await using clock = useControlledClock();
 						await using queueInfo = await driverConfig.create(`pipe-failures-partial-page-${pipeKind}`);
 						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-partial', pipeKind);
 
 						const poisonID = await stages.source.add('poison-only');
 						await stages.source.run();
-						clock.tick();
+						await nextUpdatedTime();
 
 						const before = await stages.source.get(poisonID);
 						await stages.source.maintain();
-						clock.tick();
+						await nextUpdatedTime();
 						const after = await stages.source.get(poisonID);
 
 						expect(after?.status).toBe('completed');
