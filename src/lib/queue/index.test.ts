@@ -1745,6 +1745,181 @@ suite('Driver Tests', async function() {
 					expect(noEntriesBeforePast.length).toBe(0);
 				});
 
+				/*
+				 * Every driver must return entries oldest-updated first, so
+				 * that a status change (which bumps "updated") moves an
+				 * entry to the back of the line
+				 */
+				testRunner('Query Order Is Oldest Updated First', async function() {
+					await using queueInfo = await driverConfig.create('query-order');
+					const localQueue = queueInfo.queue;
+
+					const ids: KeetaAnchorQueueRequestID[] = [];
+					for (let index = 0; index < 3; index++) {
+						ids.push(await localQueue.add({ key: `order${index}` }));
+						await asleep(5);
+					}
+
+					const [first, second, third] = ids;
+					if (first === undefined || second === undefined || third === undefined) {
+						throw(new Error('internal error: missing IDs'));
+					}
+
+					async function queryIDs(filter: Parameters<typeof localQueue.query>[0]): Promise<KeetaAnchorQueueRequestID[]> {
+						const entries = await localQueue.query(filter);
+						return(entries.map(function(entry) {
+							return(entry.id);
+						}));
+					}
+
+					expect(await queryIDs({ status: 'pending' })).toEqual([first, second, third]);
+					expect(await queryIDs({ status: 'pending', limit: 1 })).toEqual([first]);
+					expect(await queryIDs({ status: 'pending', limit: 2 })).toEqual([first, second]);
+
+					/*
+					 * Touching the first entry moves it to the back
+					 */
+					await localQueue.setStatus(first, 'pending', { oldStatus: 'pending' });
+
+					expect(await queryIDs({ status: 'pending' })).toEqual([second, third, first]);
+					expect(await queryIDs({ status: 'pending', limit: 1 })).toEqual([second]);
+					expect(await queryIDs({ status: 'pending', limit: 1, updatedBefore: new Date(Date.now() + 1000) })).toEqual([second]);
+					expect(await queryIDs({ limit: 3 })).toEqual([second, third, first]);
+				});
+
+				/*
+				 * A pipe target that keeps rejecting the oldest completed
+				 * entries must not stop newer entries from moving
+				 */
+				testRunner('Pipe Failures Do Not Block Newer Entries', async function() {
+					await using queueInfo = await driverConfig.create('pipe-failures-no-block');
+					const localQueue = queueInfo.queue;
+
+					/*
+					 * Must be at least the number of entries the runner
+					 * fetches per maintenance pass
+					 */
+					const poisonCount = 100;
+
+					class RejectingRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
+						override async add(request: string, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
+							if (request.startsWith('poison')) {
+								throw(new Error('Simulated pipe target rejection'));
+							}
+							return(await super.add(request, info));
+						}
+					}
+
+					await using source = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+						id: 'pipe-failures-source',
+						queue: await localQueue.partition('source'),
+						logger: logger,
+						batchSize: poisonCount * 2,
+						processor: async function(entry) {
+							return({ status: 'completed', output: entry.request });
+						}
+					});
+
+					await using target = new RejectingRunner({
+						id: 'pipe-failures-target',
+						queue: await localQueue.partition('target'),
+						logger: logger,
+						processor: async function(entry) {
+							return({ status: 'completed', output: entry.request });
+						}
+					});
+
+					source.pipe(target);
+
+					for (let index = 0; index < poisonCount; index++) {
+						await source.add(`poison${index}`);
+					}
+					const goodID = await source.add('good');
+
+					await source.run();
+
+					/*
+					 * Make sure the good entry is the newest completed entry,
+					 * so every poisoned entry is ahead of it in line
+					 */
+					await asleep(5);
+					await source.setStatus(goodID, 'completed', { oldStatus: 'completed' });
+
+					for (let pass = 0; pass < 2; pass++) {
+						await source.maintain();
+					}
+
+					const goodEntry = await source.get(goodID);
+					expect(goodEntry?.status).toBe('moved');
+
+					const targetEntry = await target.get(goodID);
+					expect(targetEntry?.request).toBe('good');
+
+					const stillCompleted = await source.query({ status: 'completed' });
+					expect(stillCompleted.length).toBe(poisonCount);
+				}, 120_000);
+
+				/*
+				 * Moving an entry to the back of the line sets its status
+				 * without an output, which must leave the stored output
+				 * untouched
+				 */
+				testRunner('Status Change Without Output Preserves Output', async function() {
+					await using queueInfo = await driverConfig.create('status-without-output');
+					const localQueue = queueInfo.queue;
+
+					const output = { nested: 'value', list: [1, 2, 3] };
+					const id = await localQueue.add({ key: 'keep-output' });
+					await localQueue.setStatus(id, 'completed', { output: output });
+
+					for (let pass = 0; pass < 3; pass++) {
+						await localQueue.setStatus(id, 'completed', { oldStatus: 'completed' });
+					}
+					await localQueue.setStatus(id, 'moved', { oldStatus: 'completed' });
+
+					const entry = await localQueue.get(id);
+					expect(entry?.status).toBe('moved');
+					expect(entry?.output).toEqual(output);
+
+					const withoutOutputID = await localQueue.add({ key: 'no-output' });
+					for (const status of ['processing', 'failed_temporarily', 'pending', 'processing'] as const) {
+						await localQueue.setStatus(withoutOutputID, status);
+					}
+					const withoutOutput = await localQueue.get(withoutOutputID);
+					expect(withoutOutput?.output).toBeNull();
+				});
+
+				if (driver === 'PostgreSQL') {
+					/*
+					 * The Postgres query must be served by the queue order index
+					 * without sorting the matching rows
+					 */
+					testRunner('Query Uses Order Index', async function() {
+						await using queueInfo = await driverConfig.create('query-uses-order-index');
+						const localQueue = queueInfo.queue;
+						if (!isPostgresDriver(localQueue)) {
+							throw(new Error('internal error: expected a PostgreSQL driver'));
+						}
+
+						await localQueue.add({ key: 'index-check' });
+
+						const testing = localQueue._Testing(TestingKey);
+						testing.enableDebugForceIndexScan();
+						try {
+							for (const filter of [
+								{ status: 'pending', limit: 1 },
+								{ status: 'failed_temporarily', limit: 100, updatedBefore: new Date() }
+							] as const) {
+								const plan = await testing.explainQuery(filter);
+								expect(plan).toMatch(/Index (Only )?Scan using idx_\w+_path_status_updated_id/);
+								expect(plan).not.toMatch(/Sort/);
+							}
+						} finally {
+							testing.disableDebugForceIndexScan();
+						}
+					});
+				}
+
 				testRunner('Delete Expired Completed', async function() {
 					/*
 					 * Must exceed the time from setStatus(completed) through

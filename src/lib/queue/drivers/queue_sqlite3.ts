@@ -106,6 +106,9 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 				CREATE INDEX IF NOT EXISTS idx_queue_entries_status ON queue_entries(status);
 				CREATE INDEX IF NOT EXISTS idx_queue_entries_updated ON queue_entries(updated);
 				CREATE INDEX IF NOT EXISTS idx_queue_idempotent_keys_idempotent_id ON queue_idempotent_keys(idempotent_id);
+
+				-- Serves query(): filter by path and status, ordered oldest updated first
+				CREATE INDEX IF NOT EXISTS idx_queue_entries_path_status_updated_id ON queue_entries(path, status, updated, id);
 			`);
 
 			return(true);
@@ -322,7 +325,11 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			const workerValue = newEntry.worker;
 			const newFailures = newEntry.failures;
 			const newLastError = newEntry.lastError !== undefined ? newEntry.lastError : existingEntry.lastError;
-			const newOutput = newEntry.output !== undefined ? JSON.stringify(newEntry.output) : null;
+			/*
+			 * Only encode an output the caller supplied; otherwise keep the
+			 * stored (already encoded) output as it is
+			 */
+			const newOutput = changedData.output !== undefined ? JSON.stringify(changedData.output) : existingEntry.output;
 
 			if (currentTime === undefined || workerValue === undefined || newFailures === undefined) {
 				throw(new Error('Internal error: Missing updated data for status update'));
@@ -425,6 +432,11 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			if (conditions.length > 0) {
 				query += ' WHERE ' + conditions.join(' AND ');
 			}
+
+			/*
+			 * Oldest updated first, as the storage driver contract requires
+			 */
+			query += ' ORDER BY updated, id';
 
 			if (filter?.limit !== undefined) {
 				query += ' LIMIT ?';

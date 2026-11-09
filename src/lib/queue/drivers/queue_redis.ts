@@ -349,51 +349,15 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 
 		logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
-		let entryIDs: string[];
-
-		if (filter?.status) {
-			const count = filter.limit ?? -1;
-			const allIDs = await redis.zRange(this.indexKey(filter.status), 0, -1);
-
-			if (filter.updatedBefore) {
-				const maxScore = filter.updatedBefore.getTime();
-				const filteredIDs: string[] = [];
-				for (const entryID of allIDs) {
-					const score = await redis.zScore(this.indexKey(filter.status), entryID);
-					if (score !== null && score < maxScore) {
-						filteredIDs.push(entryID);
-					}
-				}
-				entryIDs = filteredIDs;
-			} else {
-				entryIDs = allIDs;
-			}
-
-			if (count !== -1) {
-				entryIDs = entryIDs.slice(0, count);
-			}
-		} else {
-			const count = filter?.limit ?? -1;
-			const allIDs = await redis.zRange(this.indexKey(), 0, -1);
-
-			if (filter?.updatedBefore) {
-				const maxScore = filter.updatedBefore.getTime();
-				const filteredIDs: string[] = [];
-				for (const entryID of allIDs) {
-					const score = await redis.zScore(this.indexKey(), entryID);
-					if (score !== null && score < maxScore) {
-						filteredIDs.push(entryID);
-					}
-				}
-				entryIDs = filteredIDs;
-			} else {
-				entryIDs = allIDs;
-			}
-
-			if (count !== -1) {
-				entryIDs = entryIDs.slice(0, count);
-			}
-		}
+		/*
+		 * The index sorted sets are scored by "updated", and members with
+		 * equal scores sort by ID, which is the order the storage driver
+		 * contract requires.  Read only the range we need.
+		 */
+		const indexKey = this.indexKey(filter?.status);
+		const maxScore = filter?.updatedBefore ? `(${filter.updatedBefore.getTime()}` : '+inf';
+		const limit = filter?.limit !== undefined ? { LIMIT: { offset: 0, count: filter.limit } } : {};
+		const entryIDs = await redis.zRange(indexKey, '-inf', maxScore, { BY: 'SCORE', ...limit });
 
 		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 

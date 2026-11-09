@@ -7,6 +7,7 @@ import type { KeetaAnchorQueueRunOptions } from './common.js';
 import { asleep } from '../utils/asleep.js';
 import { Errors } from './common.js';
 import {
+	CompareQueueEntryOrder,
 	MethodLogger,
 	ManageStatusUpdates,
 	ConvertStringToRequestID
@@ -167,8 +168,16 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	/**
 	 * Get entries from storage with an optional filter
 	 *
+	 * Entries MUST be returned oldest "updated" first.  Ties MUST be
+	 * broken in a fixed order the driver chooses (entry ID for the
+	 * database drivers, insertion order for the memory driver), so
+	 * repeated queries agree.  Every status change bumps "updated",
+	 * so an entry whose status is set (even to the same status) moves
+	 * to the back of the line.  The runner relies on this to keep
+	 * entries that cannot make progress from blocking newer ones.
+	 *
 	 * @param filter The filter to apply (optional)
-	 * @returns An array of entries matching the criteria
+	 * @returns An array of entries matching the criteria, in the order above
 	 */
 	query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]>;
 
@@ -398,9 +407,15 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 			}
 		})();
 
-		let retval = allEntriesInStatus;
+		/*
+		 * Oldest updated first, as the storage driver contract requires;
+		 * the sort is stable, so ties keep their insertion order
+		 */
+		const orderedEntries = allEntriesInStatus.sort(CompareQueueEntryOrder);
+
+		let retval = orderedEntries;
 		if (filter?.limit !== undefined) {
-			retval = allEntriesInStatus.slice(0, filter.limit);
+			retval = orderedEntries.slice(0, filter.limit);
 		}
 
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', retval.length, 'entries');
@@ -1358,7 +1373,8 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			return;
 		}
 
-		const allRequests = await this.queue.query({ status: statusTarget, limit: 100 });
+		const fetchLimit = 100;
+		const allRequests = await this.queue.query({ status: statusTarget, limit: fetchLimit });
 		let requests = allRequests;
 
 		const RequestSentToPipes = new Map<KeetaAnchorQueueRequestID, number>();
@@ -1548,11 +1564,29 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			}
 		}
 
+		/*
+		 * If we fetched a full page, there may be more entries behind
+		 * the ones we could not move.  Since query() returns the oldest
+		 * updated entries first, the same entries would be fetched again
+		 * on the next pass and block everything behind them, so touch
+		 * each one we could not move to send it to the back of the line.
+		 */
+		const rotateUnmoved = allRequests.length >= fetchLimit;
+
 		const TotalPipes = pipes.length;
 		for (const request of allRequests) {
 			const sentCount = RequestSentToPipes.get(request.id) ?? 0;
 			if (sentCount !== TotalPipes) {
 				logger?.debug(`${statusTarget} request with id ${String(request.id)} was only moved to ${sentCount} out of ${TotalPipes} pipes -- not marking as moved`);
+
+				if (rotateUnmoved) {
+					try {
+						await this.queue.setStatus(request.id, statusTarget, { oldStatus: statusTarget, by: this.workerID });
+					} catch (error: unknown) {
+						logger?.debug(`Failed to move ${statusTarget} request with id ${String(request.id)} to the back of the line:`, error);
+					}
+				}
+
 				continue;
 			}
 
