@@ -409,13 +409,14 @@ export class KeetaAnchorQueueStorageDriverMemory<QueueRequest extends JSONSerial
 
 		/*
 		 * Oldest updated first, as the storage driver contract requires;
-		 * the sort is stable, so ties keep their insertion order
+		 * the sort is stable, so ties keep their insertion order.  Both
+		 * branches above return a copy, so sorting in place is safe.
 		 */
-		const orderedEntries = allEntriesInStatus.sort(CompareQueueEntryOrder);
+		allEntriesInStatus.sort(CompareQueueEntryOrder);
 
-		let retval = orderedEntries;
+		let retval = allEntriesInStatus;
 		if (filter?.limit !== undefined) {
-			retval = orderedEntries.slice(0, filter.limit);
+			retval = allEntriesInStatus.slice(0, filter.limit);
 		}
 
 		logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', retval.length, 'entries');

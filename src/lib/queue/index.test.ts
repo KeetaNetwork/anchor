@@ -1504,24 +1504,13 @@ function isPoisonRequest(request: string | string[]): boolean {
 }
 
 /**
- * A single-item pipe target that rejects poison requests, standing in
- * for a next stage that cannot accept some entries
+ * A pipe target that rejects poison requests, standing in for a next
+ * stage that cannot accept some entries.  A single-item pipe hands it
+ * a string; a batch pipe hands it an array, which is rejected when it
+ * contains a poison request.
  */
-class RejectingPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
-	override async add(request: string, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
-		if (isPoisonRequest(request)) {
-			throw(new Error('Simulated pipe target rejection'));
-		}
-		return(await super.add(request, info));
-	}
-}
-
-/**
- * The batch pipe version of {@link RejectingPipeTargetRunner}: it rejects
- * any batch that contains a poison request
- */
-class RejectingBatchPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string[], string> {
-	override async add(request: string[], info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string[], string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
+class RejectingPipeTargetRunner<Request extends string | string[]> extends KeetaAnchorQueueRunnerJSONConfigProc<Request, string> {
+	override async add(request: Request, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<Request, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
 		if (isPoisonRequest(request)) {
 			throw(new Error('Simulated pipe target rejection'));
 		}
@@ -1570,12 +1559,12 @@ async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSeri
 
 	const targets = {
 		single: function() {
-			const target = new RejectingPipeTargetRunner(targetConfig);
+			const target = new RejectingPipeTargetRunner<string>(targetConfig);
 			source.pipe(target);
 			return(target);
 		},
 		batch: function() {
-			const target = new RejectingBatchPipeTargetRunner(targetConfig);
+			const target = new RejectingPipeTargetRunner<string[]>(targetConfig);
 			source.pipeBatch(target, 1, 1);
 			return(target);
 		}
@@ -1970,7 +1959,7 @@ suite('Driver Tests', async function() {
 						expect(await stages.targetRequests()).toEqual([GoodRequestInTarget[pipeKind]]);
 
 						const stillCompleted = await stages.source.query({ status: 'completed' });
-						expect(stillCompleted.length).toBe(stages.pipeMoveFetchLimit);
+						expect(stillCompleted).toHaveLength(stages.pipeMoveFetchLimit);
 					}, 120_000);
 
 					/*
@@ -2049,7 +2038,10 @@ suite('Driver Tests', async function() {
 						return(await runner.run());
 					}));
 
-					expect([...processedKeys].sort()).toEqual([...keys].sort());
+					function compareKeys(a: string, b: string): number {
+						return(a.localeCompare(b));
+					}
+					expect([...processedKeys].sort(compareKeys)).toEqual([...keys].sort(compareKeys));
 					expect(await firstRunner.query({ status: 'pending' })).toEqual([]);
 				}, 60_000);
 
