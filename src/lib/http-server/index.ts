@@ -15,6 +15,9 @@ import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 import { Buffer } from '../utils/buffer.js';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+
+type RequestTiming = InstanceType<typeof KeetaNetLib.Timing.RequestTiming>;
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -23,7 +26,30 @@ export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCod
  */
 const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
 
-type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+type RouteHandlerContext = {
+	timing: RequestTiming;
+};
+
+/*
+ * Positional parameters are getting too numerous, so starting
+ * with `timing` new parameters go into `RouteHandlerContext`
+ *
+ * TODO: Migrate the existing positional parameters into
+ * `RouteHandlerContext` as well
+ */
+type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (
+	urlParams: Map<string, string>,
+	postData: BodyDataType,
+	requestHeaders: http.IncomingHttpHeaders,
+	requestUrl: URL,
+	context: RouteHandlerContext
+) => Promise<{
+	output: string | Buffer;
+	statusCode?: number;
+	contentType?: string;
+	headers?: { [headerName: string]: string; };
+}>;
+
 type RouteHandlerWithConfig = {
 	bodyType: 'raw';
 	maxBodySize?: number;
@@ -402,6 +428,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
+			const timing = new KeetaNetLib.Timing.RequestTiming();
+			timing.log = this.logger;
+
 			const forwardedProtoHeader = request.headers['x-forwarded-proto'];
 			let forwardedProto: string | undefined;
 			if (Array.isArray(forwardedProtoHeader)) {
@@ -445,10 +474,18 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const method = request.method ?? 'GET';
 
 			/*
-			 * Finalize the response by syncing the logger and ending
-			 * the response.
+			 * Finalize the response by adding the Server-Timing
+			 * header, **writing the output**, syncing the logger and
+			 * ending the response.
 			 */
-			const responseFinalize = async () => {
+			const responseFinalize = async (output: string | Buffer) => {
+				const serverTiming = timing.toServerTimingHeader();
+				if (serverTiming !== '') {
+					response.setHeader('Server-Timing', serverTiming);
+				}
+
+				response.write(output);
+
 				if ('sync' in this.logger && typeof this.logger.sync === 'function') {
 					try {
 						await this.logger.sync();
@@ -466,8 +503,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (inputURLRaw.at(0) !== '/') {
 				response.statusCode = 400;
 				response.setHeader('Content-Type', 'text/plain');
-				response.write('Bad Request');
-				await responseFinalize();
+				await responseFinalize('Bad Request');
 				return;
 			}
 
@@ -478,8 +514,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (requestedRouteAndParams === null) {
 				response.statusCode = 404;
 				response.setHeader('Content-Type', 'text/plain');
-				response.write('Not Found');
-				await responseFinalize();
+				await responseFinalize('Not Found');
 				return;
 			}
 
@@ -522,13 +557,13 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 							response.statusCode = 413;
 							response.setHeader('Content-Type', 'text/plain');
-							response.write('Payload Too Large');
-
-							await responseFinalize();
+							await responseFinalize('Payload Too Large');
 
 							return;
 						}
 					}
+
+					using bodyTimer = timing.startTime('http-request-body');
 
 					const data = await request.map(function(chunk) {
 						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -543,6 +578,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 						}
 						return(Buffer.concat([prev, curr]));
 					}, Buffer.from(''));
+
+					bodyTimer.end();
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
@@ -561,8 +598,10 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				/**
 				 * Call the route handler
 				 */
-				// @ts-ignore
-				result = await route.handler(params, bodyData, request.headers, url);
+				result = await timing.runTimer('http-handler', async function() {
+					// @ts-ignore
+					return(await route.handler(params, bodyData, request.headers, url, { timing }));
+				});
 
 				generatedResult = true;
 			} catch (err) {
@@ -598,7 +637,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					}
 
 					// @ts-ignore
-					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url);
+					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url, { timing });
 					generatedResult = true;
 				}
 
@@ -608,8 +647,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					 */
 					response.statusCode = 500;
 					response.setHeader('Content-Type', 'text/plain');
-					response.write('Internal Server Error');
-					await responseFinalize();
+					await responseFinalize('Internal Server Error');
 					return;
 				}
 			}
@@ -631,8 +669,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			response.setHeader('Content-Type', result.contentType ?? 'application/json');
-			response.write(result.output);
-			await responseFinalize();
+			await responseFinalize(result.output);
 		});
 		this.#server = server;
 
