@@ -355,9 +355,21 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 		 * contract requires.  Read only the range we need.
 		 */
 		const indexKey = this.indexKey(filter?.status);
-		const maxScore = filter?.updatedBefore ? `(${filter.updatedBefore.getTime()}` : '+inf';
-		const limit = filter?.limit !== undefined ? { LIMIT: { offset: 0, count: filter.limit } } : {};
-		const entryIDs = await redis.zRange(indexKey, '-inf', maxScore, { BY: 'SCORE', ...limit });
+
+		/*
+		 * "updatedBefore" is exclusive, which Redis spells as "(score"
+		 */
+		let maxScore = '+inf';
+		if (filter?.updatedBefore) {
+			maxScore = `(${filter.updatedBefore.getTime()}`;
+		}
+
+		const rangeOptions: { BY: 'SCORE'; LIMIT?: { offset: number; count: number; }; } = { BY: 'SCORE' };
+		if (filter?.limit !== undefined) {
+			rangeOptions.LIMIT = { offset: 0, count: filter.limit };
+		}
+
+		const entryIDs = await redis.zRange(indexKey, '-inf', maxScore, rangeOptions);
 
 		const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 

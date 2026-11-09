@@ -14,6 +14,7 @@ import type {
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueRequestID,
+	KeetaAnchorQueueFilter,
 	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
@@ -1458,6 +1459,84 @@ test('Errors', async function() {
 
 });
 
+/**
+ * Number of entries the runner fetches per maintenance pass when moving
+ * entries to the next stage (see moveCompletedToNextStage)
+ */
+const PipeMoveFetchLimit = 100;
+
+/**
+ * Fake only the clock (not timers, which the database clients rely on)
+ * so that each step of a test gets a distinct, known "updated" time
+ */
+function useControlledClock(): { tick: () => void; [Symbol.asyncDispose]: () => Promise<void>; } {
+	vi.useFakeTimers({ toFake: ['Date'] });
+	vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+
+	return({
+		tick: function() {
+			vi.setSystemTime(Date.now() + 1000);
+		},
+		[Symbol.asyncDispose]: async function() {
+			vi.useRealTimers();
+		}
+	});
+}
+
+async function queryIDs(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, filter: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueRequestID[]> {
+	const entries = await queue.query(filter);
+	return(entries.map(function(entry) {
+		return(entry.id);
+	}));
+}
+
+/**
+ * A runner whose add() rejects every request starting with "poison",
+ * standing in for a next stage that cannot accept some entries
+ */
+class RejectingPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
+	override async add(request: string, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
+		if (request.startsWith('poison')) {
+			throw(new Error('Simulated pipe target rejection'));
+		}
+		return(await super.add(request, info));
+	}
+}
+
+/**
+ * Create a source stage piped into a {@link RejectingPipeTargetRunner},
+ * each on its own partition of the given queue
+ */
+async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, name: string): Promise<{ source: KeetaAnchorQueueRunnerJSONConfigProc<string, string>; target: RejectingPipeTargetRunner; [Symbol.asyncDispose]: () => Promise<void>; }> {
+	async function echo(entry: KeetaAnchorQueueEntry<string, string>): Promise<{ status: 'completed'; output: string; }> {
+		return({ status: 'completed', output: entry.request });
+	}
+
+	const source = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+		id: `${name}-source`,
+		queue: await queue.partition('source'),
+		logger: logger,
+		batchSize: PipeMoveFetchLimit * 2,
+		processor: echo
+	});
+	const target = new RejectingPipeTargetRunner({
+		id: `${name}-target`,
+		queue: await queue.partition('target'),
+		logger: logger,
+		processor: echo
+	});
+	source.pipe(target);
+
+	return({
+		source: source,
+		target: target,
+		[Symbol.asyncDispose]: async function() {
+			await source.destroy();
+			await target.destroy();
+		}
+	});
+}
+
 suite('Driver Tests', async function() {
 	for (const driver in drivers) {
 		const driverConfig = drivers[driver];
@@ -1751,40 +1830,39 @@ suite('Driver Tests', async function() {
 				 * entry to the back of the line
 				 */
 				testRunner('Query Order Is Oldest Updated First', async function() {
+					await using clock = useControlledClock();
 					await using queueInfo = await driverConfig.create('query-order');
 					const localQueue = queueInfo.queue;
 
-					const ids: KeetaAnchorQueueRequestID[] = [];
-					for (let index = 0; index < 3; index++) {
-						ids.push(await localQueue.add({ key: `order${index}` }));
-						await asleep(5);
-					}
+					const firstID = await localQueue.add({ key: 'order0' });
+					clock.tick();
+					const secondID = await localQueue.add({ key: 'order1' });
+					clock.tick();
+					const thirdID = await localQueue.add({ key: 'order2' });
+					clock.tick();
 
-					const [first, second, third] = ids;
-					if (first === undefined || second === undefined || third === undefined) {
-						throw(new Error('internal error: missing IDs'));
-					}
-
-					async function queryIDs(filter: Parameters<typeof localQueue.query>[0]): Promise<KeetaAnchorQueueRequestID[]> {
-						const entries = await localQueue.query(filter);
-						return(entries.map(function(entry) {
-							return(entry.id);
-						}));
-					}
-
-					expect(await queryIDs({ status: 'pending' })).toEqual([first, second, third]);
-					expect(await queryIDs({ status: 'pending', limit: 1 })).toEqual([first]);
-					expect(await queryIDs({ status: 'pending', limit: 2 })).toEqual([first, second]);
+					expect(await queryIDs(localQueue, { status: 'pending' })).toEqual([firstID, secondID, thirdID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1 })).toEqual([firstID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 2 })).toEqual([firstID, secondID]);
 
 					/*
 					 * Touching the first entry moves it to the back
 					 */
-					await localQueue.setStatus(first, 'pending', { oldStatus: 'pending' });
+					await localQueue.setStatus(firstID, 'pending', { oldStatus: 'pending' });
 
-					expect(await queryIDs({ status: 'pending' })).toEqual([second, third, first]);
-					expect(await queryIDs({ status: 'pending', limit: 1 })).toEqual([second]);
-					expect(await queryIDs({ status: 'pending', limit: 1, updatedBefore: new Date(Date.now() + 1000) })).toEqual([second]);
-					expect(await queryIDs({ limit: 3 })).toEqual([second, third, first]);
+					expect(await queryIDs(localQueue, { status: 'pending' })).toEqual([secondID, thirdID, firstID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1 })).toEqual([secondID]);
+					expect(await queryIDs(localQueue, { limit: 3 })).toEqual([secondID, thirdID, firstID]);
+
+					/*
+					 * "updatedBefore" is exclusive: an entry updated exactly
+					 * at the cutoff is left out
+					 */
+					const thirdEntry = await localQueue.get(thirdID);
+					expect(thirdEntry).not.toBeNull();
+					const thirdUpdated = thirdEntry?.updated ?? new Date(0);
+					expect(await queryIDs(localQueue, { status: 'pending', updatedBefore: thirdUpdated })).toEqual([secondID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1, updatedBefore: new Date(thirdUpdated.getTime() + 1) })).toEqual([secondID]);
 				});
 
 				/*
@@ -1792,72 +1870,62 @@ suite('Driver Tests', async function() {
 				 * entries must not stop newer entries from moving
 				 */
 				testRunner('Pipe Failures Do Not Block Newer Entries', async function() {
+					await using clock = useControlledClock();
 					await using queueInfo = await driverConfig.create('pipe-failures-no-block');
-					const localQueue = queueInfo.queue;
+					await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-failures');
 
 					/*
-					 * Must be at least the number of entries the runner
-					 * fetches per maintenance pass
+					 * Fill a whole maintenance page with rejected entries,
+					 * then add one good entry behind them
 					 */
-					const poisonCount = 100;
-
-					class RejectingRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
-						override async add(request: string, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
-							if (request.startsWith('poison')) {
-								throw(new Error('Simulated pipe target rejection'));
-							}
-							return(await super.add(request, info));
-						}
+					for (let index = 0; index < PipeMoveFetchLimit; index++) {
+						await stages.source.add(`poison${index}`);
 					}
+					await stages.source.run();
+					clock.tick();
 
-					await using source = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
-						id: 'pipe-failures-source',
-						queue: await localQueue.partition('source'),
-						logger: logger,
-						batchSize: poisonCount * 2,
-						processor: async function(entry) {
-							return({ status: 'completed', output: entry.request });
-						}
-					});
-
-					await using target = new RejectingRunner({
-						id: 'pipe-failures-target',
-						queue: await localQueue.partition('target'),
-						logger: logger,
-						processor: async function(entry) {
-							return({ status: 'completed', output: entry.request });
-						}
-					});
-
-					source.pipe(target);
-
-					for (let index = 0; index < poisonCount; index++) {
-						await source.add(`poison${index}`);
-					}
-					const goodID = await source.add('good');
-
-					await source.run();
-
-					/*
-					 * Make sure the good entry is the newest completed entry,
-					 * so every poisoned entry is ahead of it in line
-					 */
-					await asleep(5);
-					await source.setStatus(goodID, 'completed', { oldStatus: 'completed' });
+					const goodID = await stages.source.add('good');
+					await stages.source.run();
+					clock.tick();
 
 					for (let pass = 0; pass < 2; pass++) {
-						await source.maintain();
+						await stages.source.maintain();
+						clock.tick();
 					}
 
-					const goodEntry = await source.get(goodID);
+					const goodEntry = await stages.source.get(goodID);
 					expect(goodEntry?.status).toBe('moved');
 
-					const targetEntry = await target.get(goodID);
+					const targetEntry = await stages.target.get(goodID);
 					expect(targetEntry?.request).toBe('good');
 
-					const stillCompleted = await source.query({ status: 'completed' });
-					expect(stillCompleted.length).toBe(poisonCount);
+					const stillCompleted = await stages.source.query({ status: 'completed' });
+					expect(stillCompleted.length).toBe(PipeMoveFetchLimit);
 				}, 120_000);
+
+				/*
+				 * When the maintenance pass saw every waiting entry there is
+				 * nothing behind the rejected ones, so they are left as they
+				 * are rather than written on every pass
+				 */
+				testRunner('Pipe Failures Below A Full Page Are Not Rewritten', async function() {
+					await using clock = useControlledClock();
+					await using queueInfo = await driverConfig.create('pipe-failures-partial-page');
+					await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-partial');
+
+					const poisonID = await stages.source.add('poison-only');
+					await stages.source.run();
+					clock.tick();
+
+					const before = await stages.source.get(poisonID);
+					await stages.source.maintain();
+					clock.tick();
+					const after = await stages.source.get(poisonID);
+
+					expect(after?.status).toBe('completed');
+					expect(after?.updated).toEqual(before?.updated);
+					expect(after?.worker).toEqual(before?.worker);
+				});
 
 				/*
 				 * Moving an entry to the back of the line sets its status

@@ -1570,6 +1570,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 * updated entries first, the same entries would be fetched again
 		 * on the next pass and block everything behind them, so touch
 		 * each one we could not move to send it to the back of the line.
+		 *
+		 * Touching resets "updated", which completed-entry retention
+		 * also reads; that is safe only because retention is skipped
+		 * for any queue with pipes (see deleteExpiredCompleted).  The
+		 * original worker is kept so the entry still records who
+		 * processed it.
 		 */
 		const rotateUnmoved = allRequests.length >= fetchLimit;
 
@@ -1581,7 +1587,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 				if (rotateUnmoved) {
 					try {
-						await this.queue.setStatus(request.id, statusTarget, { oldStatus: statusTarget, by: this.workerID });
+						await this.queue.setStatus(request.id, statusTarget, { oldStatus: statusTarget, by: request.worker ?? undefined });
 					} catch (error: unknown) {
 						logger?.debug(`Failed to move ${statusTarget} request with id ${String(request.id)} to the back of the line:`, error);
 					}

@@ -329,7 +329,10 @@ export default class KeetaAnchorQueueStorageDriverSQLite3<QueueRequest extends J
 			 * Only encode an output the caller supplied; otherwise keep the
 			 * stored (already encoded) output as it is
 			 */
-			const newOutput = changedData.output !== undefined ? JSON.stringify(changedData.output) : existingEntry.output;
+			let newOutput = existingEntry.output;
+			if (changedData.output !== undefined) {
+				newOutput = JSON.stringify(changedData.output);
+			}
 
 			if (currentTime === undefined || workerValue === undefined || newFailures === undefined) {
 				throw(new Error('Internal error: Missing updated data for status update'));
