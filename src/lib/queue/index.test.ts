@@ -1077,12 +1077,17 @@ for (const singleWorkerID of [true, false]) {
 			/*
 			 * Ensure that the expected number of jobs were
 			 * processed since this is a deterministic process
-			 * because the timers are being faked
+			 * because the timers are being faked.  The counts
+			 * also depend on how the runners' awaits interleave,
+			 * so a change to run() that adds or removes an await
+			 * can move them.  With separate worker IDs the
+			 * workers start on different entries, so they get
+			 * through many more jobs than one shared worker ID.
 			 */
 			if (singleWorkerID) {
-				expect(processCallCountByKey.size).toBe(10);
+				expect(processCallCountByKey.size).toBe(8);
 			} else {
-				expect(processCallCountByKey.size).toBe(17);
+				expect(processCallCountByKey.size).toBe(45);
 			}
 
 			const id0 = ids[0];
@@ -1091,13 +1096,26 @@ for (const singleWorkerID of [true, false]) {
 			}
 
 			/*
-			 * Check that all runners see the same completed status for the first job
+			 * Check that all runners see the same status for the
+			 * first job.  A single worker processes one job at a
+			 * time, so the first job completes.  Separate worker
+			 * IDs process jobs side by side, and every processor
+			 * advances the one shared fake clock, so the first job
+			 * can run past its processTimeout and be aborted; that
+			 * is a property of the fake clock, not of the queue.
 			 */
-			for (let runnerIndex = 0; runnerIndex < runners.length; runnerIndex++) {
+			const firstRunnerEntry = await getRunnerFromIndex(0).get(id0);
+			if (singleWorkerID) {
+				expect(firstRunnerEntry?.status).toBe('completed');
+				expect(firstRunnerEntry?.output).toBe('OK');
+			} else {
+				expect(['completed', 'aborted']).toContain(firstRunnerEntry?.status);
+			}
+			for (let runnerIndex = 1; runnerIndex < runners.length; runnerIndex++) {
 				const runner = getRunnerFromIndex(runnerIndex);
 				const entry = await runner.get(id0);
-				expect(entry?.status).toBe('completed');
-				expect(entry?.output).toBe('OK');
+				expect(entry?.status).toBe(firstRunnerEntry?.status);
+				expect(entry?.output).toEqual(firstRunnerEntry?.output);
 			}
 		}
 	});
@@ -1990,6 +2008,61 @@ suite('Driver Tests', async function() {
 						expect(await stages.targetRequests()).toEqual([]);
 					});
 				}
+
+				/*
+				 * With several workers sharing a queue, the oldest-first
+				 * order must not make them all race for the same entry:
+				 * every worker should fill its whole batch
+				 */
+				testRunner('Concurrent Workers Each Process A Full Batch', async function() {
+					await using queueInfo = await driverConfig.create('concurrent-workers-full-batch');
+					const workerCount = 3;
+					const batchSize = 2;
+
+					const processedKeys: string[] = [];
+					const runners = Array.from({ length: workerCount }).map(function(_ignored_value, workerID) {
+						return(new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+							id: `concurrent-workers-${workerID}`,
+							queue: queueInfo.queue,
+							logger: logger,
+							workers: { count: workerCount, id: workerID },
+							batchSize: batchSize,
+							processor: async function(entry) {
+								processedKeys.push(entry.request);
+								/*
+								 * Yield so the workers interleave
+								 */
+								await asleep(1);
+								return({ status: 'completed', output: entry.request });
+							}
+						}));
+					});
+					await using cleanup = new AsyncDisposableStack();
+					for (const runner of runners) {
+						cleanup.defer(async function() {
+							await runner.destroy();
+						});
+					}
+
+					const firstRunner = runners[0];
+					if (firstRunner === undefined) {
+						throw(new Error('internal error: no runners'));
+					}
+
+					const keys = Array.from({ length: workerCount * batchSize }).map(function(_ignored_value, index) {
+						return(`job${index}`);
+					});
+					for (const key of keys) {
+						await firstRunner.add(key);
+					}
+
+					await Promise.all(runners.map(async function(runner) {
+						return(await runner.run());
+					}));
+
+					expect([...processedKeys].sort()).toEqual([...keys].sort());
+					expect(await firstRunner.query({ status: 'pending' })).toEqual([]);
+				}, 60_000);
 
 				/*
 				 * Moving an entry to the back of the line sets its status

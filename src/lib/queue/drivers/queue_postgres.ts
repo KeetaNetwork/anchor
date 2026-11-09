@@ -572,15 +572,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 
 		let text = `SELECT id, request, output, last_error, status, created, updated, worker, failures FROM ${this.tableNameEntries}`;
 		text += ' WHERE ' + conditions.join(' AND ');
-		/*
-		 * XXX:TODO: With more than one worker (workers.count > 1), every
-		 * worker's run() asks for the same oldest pending row, and the
-		 * losers each spend one batchSize slot on an
-		 * IncorrectStateAssertedError.  The fix is an atomic claim on
-		 * the storage driver (on Postgres, an UPDATE ... RETURNING over a
-		 * "FOR UPDATE SKIP LOCKED" subquery) instead of query() followed
-		 * by a compare-and-swap setStatus().
-		 */
 		text += ' ORDER BY updated, id';
 
 		if (filter?.limit !== undefined) {

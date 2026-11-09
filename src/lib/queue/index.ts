@@ -1135,8 +1135,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 		const processJobOk = Symbol('processJobOk');
 		const processJobTimeout = Symbol('processJobTimeout');
+		const processJobContended = Symbol('processJobContended');
 
-		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, processor: (entry: KeetaAnchorQueueEntry<UserRequest, UserResult>) => Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>): Promise<typeof processJobTimeout | typeof processJobOk> => {
+		type EntryProcessor = (entry: KeetaAnchorQueueEntry<UserRequest, UserResult>) => Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
+
+		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, processor: EntryProcessor): Promise<typeof processJobTimeout | typeof processJobOk | typeof processJobContended> => {
 			if (timeout !== undefined) {
 				const elapsed = Date.now() - startTime;
 				if (elapsed >= timeout) {
@@ -1201,7 +1204,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				if (Errors.IncorrectStateAssertedError.isInstance(error)) {
 					logger?.debug(`Skipping request with id ${String(entry.id)} because it is no longer in the expected state "${startingStatus}"`, error);
 
-					return(processJobOk);
+					return(processJobContended);
 				}
 
 				logger?.error(`Failed to process request with id ${String(entry.id)}, setting state to "${setEntryStatus.status}":`, error);
@@ -1227,22 +1230,49 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			return(processJobOk);
 		};
 
+		/**
+		 * Process up to `batchSize` entries in the given status.
+		 *
+		 * Returns 'empty' when no entries are left in that status,
+		 * 'timeout' when the run timeout was reached, and 'more' when
+		 * the batch is used up and entries may remain.
+		 */
+		const processStatus = async (status: KeetaAnchorQueueStatus, processor: EntryProcessor): Promise<'empty' | 'timeout' | 'more'> => {
+			/*
+			 * Losing an entry to another worker does not use up a
+			 * batch slot, but the retries are bounded so a run always
+			 * ends
+			 */
+			let contended = 0;
+			let processed = 0;
+			while (processed < batchSize) {
+				const entry = await this.nextEntryToProcess(status);
+				if (entry === undefined) {
+					return('empty');
+				}
+
+				const result = await processJob(processed, entry, status, processor);
+				if (result === processJobTimeout) {
+					return('timeout');
+				}
+
+				if (result === processJobContended && contended < batchSize) {
+					contended++;
+					continue;
+				}
+
+				processed++;
+			}
+
+			return('more');
+		};
+
 		/*
 		 * Process pending jobs first
 		 */
-		for (let index = 0; index < batchSize; index++) {
-			const entries = await this.queue.query({ status: 'pending', limit: 1 });
-			const entry = entries[0];
-			if (entry === undefined) {
-				retval = false;
-
-				break;
-			}
-
-			const result = await processJob(index, entry, 'pending', this.processor.bind(this));
-			if (result === processJobTimeout) {
-				break;
-			}
+		const pendingResult = await processStatus('pending', this.processor.bind(this));
+		if (pendingResult === 'empty') {
+			retval = false;
 		}
 
 		/*
@@ -1284,31 +1314,37 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			processor: this.processorStuck?.bind(this)
 		}];
 
-		let timeoutReached = false;
 		for (const condition of conditions) {
 			if (condition.processor === undefined) {
 				continue;
 			}
-			for (let index = 0; index < batchSize; index++) {
-				const entries = await this.queue.query({ status: condition.status, limit: 1 });
-				const entry = entries[0];
-				if (entry === undefined) {
-					break;
-				}
 
-				const result = await processJob(index, entry, condition.status, condition.processor);
-				if (result === processJobTimeout) {
-					timeoutReached = true;
-					break;
-				}
-			}
-
-			if (timeoutReached) {
+			const conditionResult = await processStatus(condition.status, condition.processor);
+			if (conditionResult === 'timeout') {
 				break;
 			}
 		}
 
 		return(retval);
+	}
+
+	/**
+	 * Pick the next entry in the given status for this worker to try.
+	 *
+	 * query() returns the oldest entries first, so if every worker
+	 * took the first one they would all race for the same entry and
+	 * all but one would lose it.  Instead each worker looks at the
+	 * oldest `workers.count` entries and takes the one at its own
+	 * worker ID, so concurrent workers start on different entries.
+	 * With a single worker this is simply the oldest entry.
+	 */
+	private async nextEntryToProcess(status: KeetaAnchorQueueStatus): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | undefined> {
+		const candidates = await this.queue.query({ status: status, limit: Math.max(1, this.workers.count) });
+		if (candidates.length === 0) {
+			return(undefined);
+		}
+
+		return(candidates[this.workers.id % candidates.length]);
 	}
 
 	private async markStuckRequestsAsStuck(): Promise<void> {
