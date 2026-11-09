@@ -1491,12 +1491,23 @@ async function queryIDs(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, J
 }
 
 /**
- * A runner whose add() rejects every request starting with "poison",
- * standing in for a next stage that cannot accept some entries
+ * Whether a request handed to a pipe target is one the target rejects:
+ * a "poison" entry, or a batch that contains one
+ */
+function isPoisonRequest(request: string | string[]): boolean {
+	if (Array.isArray(request)) {
+		return(request.some(isPoisonRequest));
+	}
+	return(request.startsWith('poison'));
+}
+
+/**
+ * A single-item pipe target that rejects poison requests, standing in
+ * for a next stage that cannot accept some entries
  */
 class RejectingPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string, string> {
 	override async add(request: string, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
-		if (request.startsWith('poison')) {
+		if (isPoisonRequest(request)) {
 			throw(new Error('Simulated pipe target rejection'));
 		}
 		return(await super.add(request, info));
@@ -1504,38 +1515,90 @@ class RejectingPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<str
 }
 
 /**
- * Create a source stage piped into a {@link RejectingPipeTargetRunner},
- * each on its own partition of the given queue
+ * The batch pipe version of {@link RejectingPipeTargetRunner}: it rejects
+ * any batch that contains a poison request
  */
-async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, name: string): Promise<{ source: KeetaAnchorQueueRunnerJSONConfigProc<string, string>; target: RejectingPipeTargetRunner; [Symbol.asyncDispose]: () => Promise<void>; }> {
-	async function echo(entry: KeetaAnchorQueueEntry<string, string>): Promise<{ status: 'completed'; output: string; }> {
-		return({ status: 'completed', output: entry.request });
+class RejectingBatchPipeTargetRunner extends KeetaAnchorQueueRunnerJSONConfigProc<string[], string> {
+	override async add(request: string[], info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<string[], string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
+		if (isPoisonRequest(request)) {
+			throw(new Error('Simulated pipe target rejection'));
+		}
+		return(await super.add(request, info));
 	}
+}
 
+type RejectingPipeKind = 'single' | 'batch';
+
+/**
+ * Create a source stage piped into a rejecting target, each on its own
+ * partition of the given queue.  The batch pipe uses batches of one so
+ * each entry is accepted or skipped (via the runner's skip list) on its
+ * own.
+ */
+async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, name: string, kind: RejectingPipeKind): Promise<{
+	source: KeetaAnchorQueueRunnerJSONConfigProc<string, string>;
+	targetRequests: () => Promise<JSONSerializable[]>;
+	[Symbol.asyncDispose]: () => Promise<void>;
+}> {
 	const source = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
-		id: `${name}-source`,
+		id: `${name}-${kind}-source`,
 		queue: await queue.partition('source'),
 		logger: logger,
 		batchSize: PipeMoveFetchLimit * 2,
-		processor: echo
+		processor: async function(entry) {
+			return({ status: 'completed', output: entry.request });
+		}
 	});
-	const target = new RejectingPipeTargetRunner({
-		id: `${name}-target`,
+
+	const targetConfig = {
+		id: `${name}-${kind}-target`,
 		queue: await queue.partition('target'),
 		logger: logger,
-		processor: echo
-	});
-	source.pipe(target);
+		processor: async function() {
+			return({ status: 'completed' as const, output: 'ok' });
+		}
+	};
+
+	const targets = {
+		single: function() {
+			const target = new RejectingPipeTargetRunner(targetConfig);
+			source.pipe(target);
+			return(target);
+		},
+		batch: function() {
+			const target = new RejectingBatchPipeTargetRunner(targetConfig);
+			source.pipeBatch(target, 1, 1);
+			return(target);
+		}
+	} satisfies { [key in RejectingPipeKind]: () => KeetaAnchorQueueRunnerJSONConfigProc<string, string> | KeetaAnchorQueueRunnerJSONConfigProc<string[], string>; };
+	const target = targets[kind]();
 
 	return({
 		source: source,
-		target: target,
+		targetRequests: async function() {
+			/*
+			 * The target never runs, so everything piped into it is
+			 * still pending (this also leaves out its runner lock entry)
+			 */
+			const entries = await target.query({ status: 'pending' });
+			return(entries.map(function(entry) {
+				return(entry.request);
+			}));
+		},
 		[Symbol.asyncDispose]: async function() {
 			await source.destroy();
 			await target.destroy();
 		}
 	});
 }
+
+/**
+ * How the good entry's request appears in each kind of pipe target
+ */
+const GoodRequestInTarget: { [key in RejectingPipeKind]: JSONSerializable } = {
+	single: 'good',
+	batch: ['good']
+};
 
 suite('Driver Tests', async function() {
 	for (const driver in drivers) {
@@ -1865,67 +1928,68 @@ suite('Driver Tests', async function() {
 					expect(await queryIDs(localQueue, { status: 'pending', limit: 1, updatedBefore: new Date(thirdUpdated.getTime() + 1) })).toEqual([secondID]);
 				});
 
-				/*
-				 * A pipe target that keeps rejecting the oldest completed
-				 * entries must not stop newer entries from moving
-				 */
-				testRunner('Pipe Failures Do Not Block Newer Entries', async function() {
-					await using clock = useControlledClock();
-					await using queueInfo = await driverConfig.create('pipe-failures-no-block');
-					await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-failures');
+				for (const pipeKind of ['single', 'batch'] as const) {
+					/*
+					 * A pipe target that keeps rejecting the oldest completed
+					 * entries must not stop newer entries from moving
+					 */
+					testRunner(`Pipe Failures Do Not Block Newer Entries (${pipeKind} pipe)`, async function() {
+						await using clock = useControlledClock();
+						await using queueInfo = await driverConfig.create(`pipe-failures-no-block-${pipeKind}`);
+						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-failures', pipeKind);
+
+						/*
+						 * Fill a whole maintenance page with rejected entries,
+						 * then add one good entry behind them
+						 */
+						for (let index = 0; index < PipeMoveFetchLimit; index++) {
+							await stages.source.add(`poison${index}`);
+						}
+						await stages.source.run();
+						clock.tick();
+
+						const goodID = await stages.source.add('good');
+						await stages.source.run();
+						clock.tick();
+
+						for (let pass = 0; pass < 2; pass++) {
+							await stages.source.maintain();
+							clock.tick();
+						}
+
+						const goodEntry = await stages.source.get(goodID);
+						expect(goodEntry?.status).toBe('moved');
+						expect(await stages.targetRequests()).toEqual([GoodRequestInTarget[pipeKind]]);
+
+						const stillCompleted = await stages.source.query({ status: 'completed' });
+						expect(stillCompleted.length).toBe(PipeMoveFetchLimit);
+					}, 120_000);
 
 					/*
-					 * Fill a whole maintenance page with rejected entries,
-					 * then add one good entry behind them
+					 * When the maintenance pass saw every waiting entry there
+					 * is nothing behind the rejected ones, so they are left as
+					 * they are rather than written on every pass
 					 */
-					for (let index = 0; index < PipeMoveFetchLimit; index++) {
-						await stages.source.add(`poison${index}`);
-					}
-					await stages.source.run();
-					clock.tick();
+					testRunner(`Pipe Failures Below A Full Page Are Not Rewritten (${pipeKind} pipe)`, async function() {
+						await using clock = useControlledClock();
+						await using queueInfo = await driverConfig.create(`pipe-failures-partial-page-${pipeKind}`);
+						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-partial', pipeKind);
 
-					const goodID = await stages.source.add('good');
-					await stages.source.run();
-					clock.tick();
+						const poisonID = await stages.source.add('poison-only');
+						await stages.source.run();
+						clock.tick();
 
-					for (let pass = 0; pass < 2; pass++) {
+						const before = await stages.source.get(poisonID);
 						await stages.source.maintain();
 						clock.tick();
-					}
+						const after = await stages.source.get(poisonID);
 
-					const goodEntry = await stages.source.get(goodID);
-					expect(goodEntry?.status).toBe('moved');
-
-					const targetEntry = await stages.target.get(goodID);
-					expect(targetEntry?.request).toBe('good');
-
-					const stillCompleted = await stages.source.query({ status: 'completed' });
-					expect(stillCompleted.length).toBe(PipeMoveFetchLimit);
-				}, 120_000);
-
-				/*
-				 * When the maintenance pass saw every waiting entry there is
-				 * nothing behind the rejected ones, so they are left as they
-				 * are rather than written on every pass
-				 */
-				testRunner('Pipe Failures Below A Full Page Are Not Rewritten', async function() {
-					await using clock = useControlledClock();
-					await using queueInfo = await driverConfig.create('pipe-failures-partial-page');
-					await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-partial');
-
-					const poisonID = await stages.source.add('poison-only');
-					await stages.source.run();
-					clock.tick();
-
-					const before = await stages.source.get(poisonID);
-					await stages.source.maintain();
-					clock.tick();
-					const after = await stages.source.get(poisonID);
-
-					expect(after?.status).toBe('completed');
-					expect(after?.updated).toEqual(before?.updated);
-					expect(after?.worker).toEqual(before?.worker);
-				});
+						expect(after?.status).toBe('completed');
+						expect(after?.updated).toEqual(before?.updated);
+						expect(after?.worker).toEqual(before?.worker);
+						expect(await stages.targetRequests()).toEqual([]);
+					});
+				}
 
 				/*
 				 * Moving an entry to the back of the line sets its status
