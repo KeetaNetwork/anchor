@@ -1268,6 +1268,19 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		};
 
 		/**
+		 * After a timeout, report 'empty' when nothing is left in the
+		 * status, so the caller knows there is no more work
+		 */
+		const statusAfterTimeout = async (status: KeetaAnchorQueueStatus): Promise<'empty' | 'timeout'> => {
+			const remaining = await this.queue.query({ status: status, limit: 1 });
+			if (remaining.length === 0) {
+				return('empty');
+			}
+
+			return('timeout');
+		};
+
+		/**
 		 * Process up to `batchSize` entries in the given status.
 		 *
 		 * Returns 'empty' when no entries are left in that status,
@@ -1289,12 +1302,7 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				 * by the time the pick returns
 				 */
 				if (timedOut(processed, status)) {
-					const remaining = await this.queue.query({ status: status, limit: 1 });
-					if (remaining.length === 0) {
-						return('empty');
-					}
-
-					return('timeout');
+					break;
 				}
 
 				const next = await this.nextEntryToProcess(status, processed + contended);
@@ -1309,6 +1317,13 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				}
 
 				processed++;
+			}
+
+			/*
+			 * The loop only ends with the batch unfilled on a timeout
+			 */
+			if (processed < batchSize) {
+				return(await statusAfterTimeout(status));
 			}
 
 			return('more');

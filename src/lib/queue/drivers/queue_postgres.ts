@@ -787,11 +787,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			const { text, params } = this.buildQuerySQL(filter);
 			const rows = await client.query<QueueEntryRow>(text, params);
 
-			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
-
-			for (const row of rows.rows) {
-				entries.push(await this.decodeEntryRow(client, row));
-			}
+			const entries = await Promise.all(rows.rows.map(async (row) => {
+				return(await this.decodeEntryRow(client, row));
+			}));
 
 			logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');
 
