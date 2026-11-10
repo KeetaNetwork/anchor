@@ -4,6 +4,7 @@ import { asleep } from '../utils/asleep.js';
 import { AsyncDisposableStack } from '../utils/defer.js';
 import type { JSONSerializable } from '../utils/json.ts';
 import { hash } from '../utils/tests/hash.js';
+import { getTestingPostgresConfig } from '../utils/tests/postgres.js';
 
 import {
 	KeetaAnchorQueueRunnerJSONConfigProc,
@@ -74,24 +75,6 @@ function getTestingRedisConfig(): { host: string; port: number; password: string
 	}
 
 	return({ host: host, port: port, password: password });
-}
-
-function getTestingPostgresConfig(): { host: string; port: number; user: string; password: string; } | null {
-	const host = process.env['ANCHOR_TESTING_POSTGRES_HOST'];
-	const portStr = process.env['ANCHOR_TESTING_POSTGRES_PORT'];
-	const user = process.env['ANCHOR_TESTING_POSTGRES_USER'];
-	const password = process.env['ANCHOR_TESTING_POSTGRES_PASS'];
-
-	if (!host || !portStr || !user || !password) {
-		return(null);
-	}
-
-	const port = Number(portStr);
-	if (isNaN(port) || port <= 0 || port >= 65536) {
-		return(null);
-	}
-
-	return({ host: host, port: port, user: user, password: password });
 }
 
 function getTestingFirestoreConfig(): { host: string; port: number; } | null {

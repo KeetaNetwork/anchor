@@ -1,4 +1,4 @@
-// cspell:ignore seqscan
+// cspell:ignore seqscan autovacuum regclass reloptions SQLSTATE
 
 import type {
 	KeetaAnchorQueueStorageDriver,
@@ -43,6 +43,84 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
+/**
+ * How often Postgres vacuums the queue's entries table.
+ *
+ * Every status change is an update to a column the queue's indexes are
+ * keyed on, so it leaves a dead index entry at the oldest end of the
+ * status range the entry left.  That is exactly where the next query()
+ * starts reading, so until a vacuum cleans the index each pick reads
+ * past every entry processed since the last vacuum.
+ */
+export type KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
+	/**
+	 * Number of updated or deleted rows that triggers an autovacuum of
+	 * the entries table (autovacuum_vacuum_threshold)
+	 */
+	vacuumThreshold: number;
+
+	/**
+	 * Fraction of the table added to `vacuumThreshold`
+	 * (autovacuum_vacuum_scale_factor).  The cost of a pick depends on
+	 * how many dead entries sit ahead of it, not on the table size, so
+	 * the default is 0.
+	 */
+	vacuumScaleFactor: number;
+
+	/**
+	 * Fraction of the table changed that triggers an automatic ANALYZE
+	 * (autovacuum_analyze_scale_factor)
+	 */
+	analyzeScaleFactor: number;
+};
+
+const DefaultVacuumPolicy: KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
+	vacuumThreshold: 10_000,
+	vacuumScaleFactor: 0,
+	analyzeScaleFactor: 0.02
+};
+
+/**
+ * Postgres accepts scale factors from 0 to 100
+ */
+const MaxScaleFactor = 100;
+
+/**
+ * The SQLSTATE Postgres returns when the role does not own the table
+ */
+const InsufficientPrivilegeSQLState = '42501';
+
+/**
+ * Check the vacuum policy and build the table storage parameters for it.
+ * The values are written into the ALTER TABLE statement (storage
+ * parameters cannot be bound), so each one must be a finite number in
+ * the range Postgres accepts.
+ */
+function VacuumPolicyStorageParameters(policy: KeetaAnchorQueueStorageDriverPostgresVacuumPolicy): { [name: string]: string } {
+	if (!Number.isSafeInteger(policy.vacuumThreshold) || policy.vacuumThreshold < 0) {
+		throw(new Error(`Invalid vacuumThreshold ${String(policy.vacuumThreshold)}: must be a non-negative integer`));
+	}
+
+	for (const [name, value] of [['vacuumScaleFactor', policy.vacuumScaleFactor], ['analyzeScaleFactor', policy.analyzeScaleFactor]] as const) {
+		if (!Number.isFinite(value) || value < 0 || value > MaxScaleFactor) {
+			throw(new Error(`Invalid ${name} ${String(value)}: must be a number from 0 to ${MaxScaleFactor}`));
+		}
+	}
+
+	return({
+		/*
+		 * Without this, a vacuum skips cleaning the indexes when
+		 * fewer than about 2% of the table's pages hold dead rows,
+		 * which is always the case for a drained range of a large
+		 * queue, and the dead index entries the pick reads past stay
+		 */
+		vacuum_index_cleanup: 'on',
+		autovacuum_vacuum_threshold: String(policy.vacuumThreshold),
+		autovacuum_vacuum_scale_factor: String(policy.vacuumScaleFactor),
+		autovacuum_analyze_scale_factor: String(policy.analyzeScaleFactor)
+	});
+}
+
 type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	/**
 	 * Function that returns a Postgres connection pool.
@@ -55,6 +133,14 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	 * and `queue_schema_version`.
 	 */
 	tablePrefix?: string | undefined;
+
+	/**
+	 * Vacuum settings for the entries table, applied each time the
+	 * driver initializes.  Any value left out uses the default
+	 * ({@link DefaultVacuumPolicy}).  Pass `false` to leave the table's
+	 * vacuum settings alone, for example when an operator manages them.
+	 */
+	vacuumPolicy?: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false | undefined;
 };
 
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
@@ -73,12 +159,19 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
+	private readonly vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false | undefined;
+	private readonly vacuumStorageParameters: { [name: string]: string } | null;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
+		this.vacuumPolicy = options.vacuumPolicy;
+		this.vacuumStorageParameters = null;
+		if (options.vacuumPolicy !== false) {
+			this.vacuumStorageParameters = VacuumPolicyStorageParameters({ ...DefaultVacuumPolicy, ...options.vacuumPolicy });
+		}
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		Object.freeze(this.path);
@@ -238,6 +331,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 
 					logger?.debug('Schema is up to date');
+
+					await this.applyVacuumPolicy(client);
 				} finally {
 					// Always release the advisory lock
 					// Note: Advisory locks are session-based and auto-release on disconnect,
@@ -262,6 +357,57 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		await this.dbInitializationPromise;
 
 		return(pool);
+	}
+
+	/**
+	 * Set the entries table's vacuum storage parameters to the
+	 * configured policy.  This runs on every initialization rather than
+	 * as a versioned migration, so an upgraded database gets the
+	 * settings and a changed policy takes effect.  The table is only
+	 * altered when its settings differ.
+	 *
+	 * Changing storage parameters requires owning the table.  Without
+	 * that privilege the queue still works, only more slowly while a
+	 * large backlog drains, so a warning is logged and startup goes on.
+	 */
+	private async applyVacuumPolicy(client: pg.PoolClient): Promise<void> {
+		const logger = this.methodLogger('applyVacuumPolicy');
+		const wanted = this.vacuumStorageParameters;
+		if (wanted === null) {
+			logger?.debug('Vacuum policy disabled, leaving the entries table settings alone');
+			return;
+		}
+
+		const current = await client.query<{ reloptions: string[] | null }>('SELECT reloptions FROM pg_class WHERE oid = to_regclass($1)', [this.tableNameEntries]);
+		const currentParameters = new Map<string, string>();
+		for (const option of current.rows[0]?.reloptions ?? []) {
+			const separator = option.indexOf('=');
+			currentParameters.set(option.slice(0, separator), option.slice(separator + 1));
+		}
+
+		const differs = Object.entries(wanted).some(function([name, value]) {
+			return(currentParameters.get(name) !== value);
+		});
+		if (!differs) {
+			logger?.debug('Entries table vacuum settings are up to date');
+			return;
+		}
+
+		const assignments = Object.entries(wanted).map(function([name, value]) {
+			return(`${name} = ${value}`);
+		});
+
+		try {
+			await client.query(`ALTER TABLE ${this.tableNameEntries} SET (${assignments.join(', ')})`);
+			logger?.debug('Applied entries table vacuum settings:', assignments);
+		} catch (error: unknown) {
+			if (typeof error === 'object' && error !== null && 'code' in error && error.code === InsufficientPrivilegeSQLState) {
+				logger?.warn(`Could not set vacuum settings on ${this.tableNameEntries} (the role does not own it); a large backlog may drain more slowly between vacuums:`, error);
+				return;
+			}
+
+			throw(error);
+		}
 	}
 
 	private methodLogger(method: string): Logger | undefined {
@@ -677,7 +823,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger: this.logger,
 			pool: this.poolInternal,
 			path: [...this.path, path],
-			tablePrefix: this.tablePrefix
+			tablePrefix: this.tablePrefix,
+			vacuumPolicy: this.vacuumPolicy
 		});
 
 		return(retval);
