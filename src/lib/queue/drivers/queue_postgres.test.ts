@@ -1,9 +1,11 @@
-// cspell:ignore autovacuum regclass reloptions
+// cspell:ignore autovacuum regclass reloptions lpad
 import { suite, test, expect } from 'vitest';
 import * as pg from 'pg';
 import { getTestingPostgresConfig } from '../../utils/tests/postgres.js';
 import KeetaAnchorQueueStorageDriverPostgres from './queue_postgres.js';
 import type { KeetaAnchorQueueStorageDriverPostgresVacuumPolicy } from './queue_postgres.js';
+import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueWorkerID } from '../index.js';
+import { ConvertStringToRequestID } from '../internal.js';
 
 const postgresConfig = getTestingPostgresConfig();
 
@@ -260,4 +262,87 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		expect(afterDrain).toBeGreaterThan(before + 5);
 		expect(afterVacuum).toBeGreaterThan(before + 5);
 	}, 60_000);
+});
+
+suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
+	function workerID(id: number): KeetaAnchorQueueWorkerID {
+		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+		return(id as KeetaAnchorQueueWorkerID);
+	}
+
+	/**
+	 * Add `count` pending entries named job001, job002, ... with
+	 * "updated" in that order
+	 */
+	async function addPendingEntries(pool: pg.Pool, entries: string, count: number): Promise<KeetaAnchorQueueRequestID[]> {
+		await pool.query(`INSERT INTO ${entries} (id, path, request, status, created, updated)
+			SELECT 'job' || lpad(n::text, 3, '0'), 'root', '"x"', 'pending', n, n FROM generate_series(1, ${count}) AS n`);
+
+		return(Array.from({ length: count }).map(function(_ignored_value, index) {
+			return(ConvertStringToRequestID(`job${String(index + 1).padStart(3, '0')}`));
+		}));
+	}
+
+	test('Claims The Oldest Entry And Returns It As It Was', async function() {
+		await using tables = await useTables();
+		await using queue = await initializeDriver(tables.pool, tables.prefix);
+		const ids = await addPendingEntries(tables.pool, tables.entries, 3);
+		const worker = workerID(7);
+
+		const [firstID] = ids;
+		if (firstID === undefined) {
+			throw(new Error('internal error: no entries added'));
+		}
+
+		const first = await queue.claimNext('pending', worker);
+		expect(first?.id).toBe(firstID);
+		expect(first?.status).toBe('pending');
+		expect(first?.updated.getTime()).toBe(1);
+
+		const stored = await queue.get(firstID);
+		expect(stored?.status).toBe('processing');
+		expect(String(stored?.worker)).toBe(String(worker));
+
+		expect((await queue.claimNext('pending', worker))?.id).toBe(ids[1]);
+		expect((await queue.claimNext('pending', worker))?.id).toBe(ids[2]);
+		expect(await queue.claimNext('pending', worker)).toBeNull();
+	});
+
+	test('Concurrent Claims Take Different Entries', async function() {
+		await using tables = await useTables();
+		await using queue = await initializeDriver(tables.pool, tables.prefix);
+		const ids = await addPendingEntries(tables.pool, tables.entries, 20);
+
+		const claims = await Promise.all(ids.map(async function(_ignored_id, index) {
+			return(await queue.claimNext('pending', workerID(index)));
+		}));
+
+		const claimedIDs = claims.map(function(claim) {
+			return(String(claim?.id));
+		});
+		claimedIDs.sort(function(a, b) {
+			return(a.localeCompare(b));
+		});
+		expect(claimedIDs).toEqual(ids);
+		expect(await queue.query({ status: 'pending' })).toHaveLength(0);
+	});
+
+	test('Passes Over An Entry Another Transaction Holds', async function() {
+		await using tables = await useTables();
+		await using queue = await initializeDriver(tables.pool, tables.prefix);
+		const ids = await addPendingEntries(tables.pool, tables.entries, 2);
+
+		const holder = await tables.pool.connect();
+		try {
+			await holder.query('BEGIN');
+			await holder.query(`SELECT id FROM ${tables.entries} WHERE id = $1 FOR UPDATE`, [ids[0]]);
+
+			expect((await queue.claimNext('pending', workerID(0)))?.id).toBe(ids[1]);
+		} finally {
+			await holder.query('ROLLBACK');
+			holder.release();
+		}
+
+		expect((await queue.claimNext('pending', workerID(0)))?.id).toBe(ids[0]);
+	});
 });

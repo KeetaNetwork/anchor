@@ -182,6 +182,25 @@ export interface KeetaAnchorQueueStorageDriver<QueueRequest extends JSONSerializ
 	query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]>;
 
 	/**
+	 * Atomically claim the next entry in a status for a worker
+	 *
+	 * Moves the entry that query() would return first for the status to
+	 * "processing", owned by the worker, as one step.  Concurrent
+	 * claims MUST NOT return the same entry, and a claim MUST NOT skip
+	 * an older entry that no other claim holds.
+	 *
+	 * Optional: when a driver does not implement it, the runner reads
+	 * the oldest entries and claims one with setStatus() instead, which
+	 * can lose the entry to another worker.
+	 *
+	 * @param status The status to claim an entry from
+	 * @param worker The worker that will own the entry
+	 * @returns The entry as it was before the claim, or null if no entry
+	 *          is in that status
+	 */
+	claimNext?: (status: KeetaAnchorQueueStatus, worker: KeetaAnchorQueueWorkerID) => Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null>;
+
+	/**
 	 * Get a single entry from storage by ID
 	 *
 	 * @param id The ID of the entry to retrieve
@@ -1144,21 +1163,26 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		}
 
 		const processJobOk = Symbol('processJobOk');
-		const processJobTimeout = Symbol('processJobTimeout');
 		const processJobContended = Symbol('processJobContended');
 
 		type EntryProcessor = (entry: KeetaAnchorQueueEntry<UserRequest, UserResult>) => Promise<{ status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; }>;
 
-		const processJob = async (index: number, entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, processor: EntryProcessor): Promise<typeof processJobTimeout | typeof processJobOk | typeof processJobContended> => {
-			if (timeout !== undefined) {
-				const elapsed = Date.now() - startTime;
-				if (elapsed >= timeout) {
-					logger?.debug(`Timeout of ${timeout}ms reached after processing ${index} entries (${startingStatus} phase; elapsed ${elapsed}ms)`);
-
-					return(processJobTimeout);
-				}
+		const timedOut = function(index: number, startingStatus: KeetaAnchorQueueStatus): boolean {
+			if (timeout === undefined) {
+				return(false);
 			}
 
+			const elapsed = Date.now() - startTime;
+			if (elapsed < timeout) {
+				return(false);
+			}
+
+			logger?.debug(`Timeout of ${timeout}ms reached after processing ${index} entries (${startingStatus} phase; elapsed ${elapsed}ms)`);
+
+			return(true);
+		};
+
+		const processJob = async (entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, claimed: boolean, processor: EntryProcessor): Promise<typeof processJobOk | typeof processJobContended> => {
 			await this.updateRunnerLockTimestamp();
 
 			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
@@ -1167,9 +1191,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 			try {
 				/*
-				 * Get a lock by setting it to 'processing'
+				 * Get a lock by setting it to 'processing', unless the
+				 * driver already claimed it
 				 */
-				await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
+				if (!claimed) {
+					await this.queue.setStatus(entry.id, 'processing', { oldStatus: startingStatus, by: this.workerID });
+				}
 
 				/*
 				 * Log an info-level log when we start and finish processing an entry
@@ -1256,16 +1283,26 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			let contended = 0;
 			let processed = 0;
 			while (processed < batchSize) {
-				const entry = await this.nextEntryToProcess(status, processed + contended);
-				if (entry === undefined) {
-					return('empty');
-				}
+				/*
+				 * Check the timeout before picking, because a driver
+				 * that claims atomically has already taken the entry
+				 * by the time the pick returns
+				 */
+				if (timedOut(processed, status)) {
+					const remaining = await this.queue.query({ status: status, limit: 1 });
+					if (remaining.length === 0) {
+						return('empty');
+					}
 
-				const result = await processJob(processed, entry, status, processor);
-				if (result === processJobTimeout) {
 					return('timeout');
 				}
 
+				const next = await this.nextEntryToProcess(status, processed + contended);
+				if (next === undefined) {
+					return('empty');
+				}
+
+				const result = await processJob(next.entry, status, next.claimed, processor);
 				if (result === processJobContended && contended < batchSize) {
 					contended++;
 					continue;
@@ -1341,27 +1378,41 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	/**
 	 * Pick the next entry in the given status for this worker to try.
 	 *
-	 * query() returns the oldest entries first, so if every worker
-	 * took the first one they would all race for the same entry and
-	 * all but one would lose it.  Instead each worker looks at the
+	 * When the driver can claim an entry atomically, it does, and the
+	 * entry comes back already in "processing" for this worker.
+	 *
+	 * Otherwise query() returns the oldest entries first, so if every
+	 * worker took the first one they would all race for the same entry
+	 * and all but one would lose it.  Instead each worker looks at the
 	 * oldest `workers.count` entries and takes the one at its worker
 	 * ID plus `attempt`, so concurrent workers start on different
 	 * entries.  Adding the attempt number rotates the slot within a
 	 * run, so every worker reaches the oldest entry within
 	 * `workers.count` attempts even when some worker IDs are not
 	 * running.  With a single worker this is simply the oldest entry.
+	 * The caller still has to claim that entry.
 	 *
 	 * @param status The status to pick an entry from
 	 * @param attempt How many entries this run has already tried in
 	 *                that status
 	 */
-	private async nextEntryToProcess(status: KeetaAnchorQueueStatus, attempt: number): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | undefined> {
+	private async nextEntryToProcess(status: KeetaAnchorQueueStatus, attempt: number): Promise<{ entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>; claimed: boolean; } | undefined> {
+		if (this.queue.claimNext !== undefined) {
+			const entry = await this.queue.claimNext(status, this.workerID);
+			if (entry === null) {
+				return(undefined);
+			}
+
+			return({ entry: entry, claimed: true });
+		}
+
 		const candidates = await this.queue.query({ status: status, limit: Math.max(1, this.workers.count) });
-		if (candidates.length === 0) {
+		const entry = candidates[(this.workers.id + attempt) % Math.max(1, candidates.length)];
+		if (entry === undefined) {
 			return(undefined);
 		}
 
-		return(candidates[(this.workers.id + attempt) % candidates.length]);
+		return({ entry: entry, claimed: false });
 	}
 
 	private async markStuckRequestsAsStuck(): Promise<void> {

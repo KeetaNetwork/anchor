@@ -663,32 +663,77 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				return(null);
 			}
 
-			const idempotentRows = await client.query<IdempotentRow>(
-				`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
-				[id, this.pathStr]
+			return(await this.decodeEntryRow(client, entry));
+		}));
+	}
+
+	/**
+	 * Turn an entries row into a queue entry, with its idempotent keys
+	 */
+	private async decodeEntryRow(client: pg.PoolClient, row: QueueEntryRow): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>> {
+		const idempotentRows = await client.query<IdempotentRow>(
+			`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
+			[row.id, this.pathStr]
+		);
+
+		let idempotentKeys: Set<KeetaAnchorQueueRequestID> | undefined = undefined;
+		if (idempotentRows.rows.length > 0) {
+			idempotentKeys = new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
+				return(ConvertStringToRequestID(idempotentRow.idempotent_id));
+			}));
+		}
+
+		return({
+			id: ConvertStringToRequestID(row.id),
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			request: JSON.parse(row.request) as QueueRequest,
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			output: row.output ? JSON.parse(row.output) as QueueResult : null,
+			lastError: row.last_error,
+			status: row.status,
+			created: new Date(Number(row.created)),
+			updated: new Date(Number(row.updated)),
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
+			failures: row.failures,
+			idempotentKeys: idempotentKeys
+		});
+	}
+
+	/**
+	 * Move the oldest entry in a status to "processing" in one statement.
+	 *
+	 * The inner SELECT locks its row with SKIP LOCKED, so concurrent
+	 * claims take different entries.  Postgres locks rows below the
+	 * LIMIT, so a row that left the status after the statement started
+	 * is re-checked and passed over, and the scan moves on to the next
+	 * one.  The entry is returned as it was before the claim.
+	 */
+	async claimNext(status: KeetaAnchorQueueStatus, worker: KeetaAnchorQueueWorkerID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
+		return(await this.dbTransaction('claimNext', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
+			const result = await client.query<QueueEntryRow>(
+				`UPDATE ${this.tableNameEntries} AS e
+				 SET status = 'processing', updated = $3, worker = $4
+				 FROM (
+					SELECT id, path, status, updated, worker FROM ${this.tableNameEntries}
+					WHERE path = $1 AND status = $2
+					ORDER BY updated, id
+					LIMIT 1
+					FOR UPDATE SKIP LOCKED
+				 ) AS previous
+				 WHERE e.id = previous.id AND e.path = previous.path
+				 RETURNING e.id, e.request, e.output, e.last_error, previous.status, e.created, previous.updated, previous.worker, e.failures`,
+				[this.pathStr, status, Date.now(), worker]
 			);
 
-			const idempotentKeys = idempotentRows.rows.length > 0
-				? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-					return(ConvertStringToRequestID(idempotentRow.idempotent_id));
-				}))
-				: undefined;
+			const row = result.rows[0];
+			if (row === undefined) {
+				return(null);
+			}
 
-			return({
-				id: ConvertStringToRequestID(entry.id),
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				request: JSON.parse(entry.request) as QueueRequest,
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				output: entry.output ? JSON.parse(entry.output) as QueueResult : null,
-				lastError: entry.last_error,
-				status: entry.status,
-				created: new Date(Number(entry.created)),
-				updated: new Date(Number(entry.updated)),
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				worker: entry.worker as unknown as KeetaAnchorQueueWorkerID | null,
-				failures: entry.failures,
-				idempotentKeys: idempotentKeys
-			});
+			this.methodLogger('claimNext')?.debug(`Claimed request with id ${row.id} from status "${status}" for worker`, worker);
+
+			return(await this.decodeEntryRow(client, row));
 		}));
 	}
 
@@ -739,32 +784,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
 			for (const row of rows.rows) {
-				const idempotentRows = await client.query<IdempotentRow>(
-					`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
-					[row.id, this.pathStr]
-				);
-
-				const idempotentKeys = idempotentRows.rows.length > 0
-					? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-						return(ConvertStringToRequestID(idempotentRow.idempotent_id));
-					}))
-					: undefined;
-
-				entries.push({
-					id: ConvertStringToRequestID(row.id),
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					request: JSON.parse(row.request) as QueueRequest,
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					output: row.output ? JSON.parse(row.output) as QueueResult : null,
-					lastError: row.last_error,
-					status: row.status,
-					created: new Date(Number(row.created)),
-					updated: new Date(Number(row.updated)),
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
-					failures: row.failures,
-					idempotentKeys: idempotentKeys
-				});
+				entries.push(await this.decodeEntryRow(client, row));
 			}
 
 			logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');

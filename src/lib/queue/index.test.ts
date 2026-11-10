@@ -1070,7 +1070,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(8);
 			} else {
-				expect(processCallCountByKey.size).toBe(43);
+				expect(processCallCountByKey.size).toBe(50);
 			}
 
 			const id0 = ids[0];
@@ -2643,6 +2643,17 @@ suite('Driver Tests', async function() {
 
 					expect(successCount).toBe(1);
 					expect(failureCount).toBe(concurrentUpdates - 1);
+
+					/*
+					 * The runner treats only this error as a lost claim,
+					 * and any other error as a failure of the entry it
+					 * does not own
+					 */
+					for (const result of results) {
+						if (!result.success) {
+							expect(Errors.IncorrectStateAssertedError.isInstance(result.error)).toBe(true);
+						}
+					}
 
 					const finalEntry = await queueLocal.get(entryID);
 					expect(finalEntry?.status).toBe('processing');
