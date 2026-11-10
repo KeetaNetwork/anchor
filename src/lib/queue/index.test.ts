@@ -14,6 +14,7 @@ import type {
 	KeetaAnchorQueueEntry,
 	KeetaAnchorQueueStorageDriver,
 	KeetaAnchorQueueRequestID,
+	KeetaAnchorQueueFilter,
 	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
@@ -1076,12 +1077,17 @@ for (const singleWorkerID of [true, false]) {
 			/*
 			 * Ensure that the expected number of jobs were
 			 * processed since this is a deterministic process
-			 * because the timers are being faked
+			 * because the timers are being faked.  The counts
+			 * also depend on how the runners' awaits interleave,
+			 * so a change to run() that adds or removes an await
+			 * can move them.  With separate worker IDs the
+			 * workers start on different entries, so they get
+			 * through many more jobs than one shared worker ID.
 			 */
 			if (singleWorkerID) {
-				expect(processCallCountByKey.size).toBe(10);
+				expect(processCallCountByKey.size).toBe(8);
 			} else {
-				expect(processCallCountByKey.size).toBe(17);
+				expect(processCallCountByKey.size).toBe(43);
 			}
 
 			const id0 = ids[0];
@@ -1090,13 +1096,26 @@ for (const singleWorkerID of [true, false]) {
 			}
 
 			/*
-			 * Check that all runners see the same completed status for the first job
+			 * Check that all runners see the same status for the
+			 * first job.  A single worker processes one job at a
+			 * time, so the first job completes.  Separate worker
+			 * IDs process jobs side by side, and every processor
+			 * advances the one shared fake clock, so the first job
+			 * can run past its processTimeout and be aborted; that
+			 * is a property of the fake clock, not of the queue.
 			 */
-			for (let runnerIndex = 0; runnerIndex < runners.length; runnerIndex++) {
+			const firstRunnerEntry = await getRunnerFromIndex(0).get(id0);
+			if (singleWorkerID) {
+				expect(firstRunnerEntry?.status).toBe('completed');
+				expect(firstRunnerEntry?.output).toBe('OK');
+			} else {
+				expect(['completed', 'aborted']).toContain(firstRunnerEntry?.status);
+			}
+			for (let runnerIndex = 1; runnerIndex < runners.length; runnerIndex++) {
 				const runner = getRunnerFromIndex(runnerIndex);
 				const entry = await runner.get(id0);
-				expect(entry?.status).toBe('completed');
-				expect(entry?.output).toBe('OK');
+				expect(entry?.status).toBe(firstRunnerEntry?.status);
+				expect(entry?.output).toEqual(firstRunnerEntry?.output);
 			}
 		}
 	});
@@ -1458,6 +1477,128 @@ test('Errors', async function() {
 
 });
 
+/**
+ * Wait long enough on the real clock that the next write gets a later
+ * "updated" time than the last one
+ */
+async function nextUpdatedTime(): Promise<void> {
+	await asleep(5);
+}
+
+async function queryIDs(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, filter: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueRequestID[]> {
+	const entries = await queue.query(filter);
+	return(entries.map(function(entry) {
+		return(entry.id);
+	}));
+}
+
+/**
+ * Whether a request handed to a pipe target is one the target rejects:
+ * a "poison" entry, or a batch that contains one
+ */
+function isPoisonRequest(request: string | string[]): boolean {
+	if (Array.isArray(request)) {
+		return(request.some(isPoisonRequest));
+	}
+	return(request.startsWith('poison'));
+}
+
+/**
+ * A pipe target that rejects poison requests, standing in for a next
+ * stage that cannot accept some entries.  A single-item pipe hands it
+ * a string; a batch pipe hands it an array, which is rejected when it
+ * contains a poison request.
+ */
+class RejectingPipeTargetRunner<Request extends string | string[]> extends KeetaAnchorQueueRunnerJSONConfigProc<Request, string> {
+	override async add(request: Request, info?: Parameters<KeetaAnchorQueueRunnerJSONConfigProc<Request, string>['add']>[1]): Promise<KeetaAnchorQueueRequestID> {
+		if (isPoisonRequest(request)) {
+			throw(new Error('Simulated pipe target rejection'));
+		}
+		return(await super.add(request, info));
+	}
+}
+
+type RejectingPipeKind = 'single' | 'batch';
+
+/**
+ * Create a source stage piped into a rejecting target, each on its own
+ * partition of the given queue.  The batch pipe uses batches of one so
+ * each entry is accepted or skipped (via the runner's skip list) on its
+ * own.
+ */
+async function createRejectingPipe(queue: KeetaAnchorQueueStorageDriver<JSONSerializable, JSONSerializable>, name: string, kind: RejectingPipeKind): Promise<{
+	source: KeetaAnchorQueueRunnerJSONConfigProc<string, string>;
+	pipeMoveFetchLimit: number;
+	targetRequests: () => Promise<JSONSerializable[]>;
+	[Symbol.asyncDispose]: () => Promise<void>;
+}> {
+	const source = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+		id: `${name}-${kind}-source`,
+		queue: await queue.partition('source'),
+		logger: logger,
+		processor: async function(entry) {
+			return({ status: 'completed', output: entry.request });
+		}
+	});
+
+	/*
+	 * Read the page size from the runner so the tests stay in step
+	 * with it, and let one run() complete more than a whole page
+	 */
+	const pipeMoveFetchLimit = source._Testing(TestingKey).pipeMoveFetchLimit;
+	source._Testing(TestingKey).setParams({ batchSize: pipeMoveFetchLimit * 2 });
+
+	const targetConfig = {
+		id: `${name}-${kind}-target`,
+		queue: await queue.partition('target'),
+		logger: logger,
+		processor: async function() {
+			return({ status: 'completed' as const, output: 'ok' });
+		}
+	};
+
+	const targets = {
+		single: function() {
+			const target = new RejectingPipeTargetRunner<string>(targetConfig);
+			source.pipe(target);
+			return(target);
+		},
+		batch: function() {
+			const target = new RejectingPipeTargetRunner<string[]>(targetConfig);
+			source.pipeBatch(target, 1, 1);
+			return(target);
+		}
+	} satisfies { [key in RejectingPipeKind]: () => KeetaAnchorQueueRunnerJSONConfigProc<string, string> | KeetaAnchorQueueRunnerJSONConfigProc<string[], string>; };
+	const target = targets[kind]();
+
+	return({
+		source: source,
+		pipeMoveFetchLimit: pipeMoveFetchLimit,
+		targetRequests: async function() {
+			/*
+			 * The target never runs, so everything piped into it is
+			 * still pending (this also leaves out its runner lock entry)
+			 */
+			const entries = await target.query({ status: 'pending' });
+			return(entries.map(function(entry) {
+				return(entry.request);
+			}));
+		},
+		[Symbol.asyncDispose]: async function() {
+			await source.destroy();
+			await target.destroy();
+		}
+	});
+}
+
+/**
+ * How the good entry's request appears in each kind of pipe target
+ */
+const GoodRequestInTarget: { [key in RejectingPipeKind]: JSONSerializable } = {
+	single: 'good',
+	batch: ['good']
+};
+
 suite('Driver Tests', async function() {
 	for (const driver in drivers) {
 		const driverConfig = drivers[driver];
@@ -1744,6 +1885,236 @@ suite('Driver Tests', async function() {
 					const noEntriesBeforePast = await localQueue.query({ updatedBefore: pastDate });
 					expect(noEntriesBeforePast.length).toBe(0);
 				});
+
+				/*
+				 * Every driver must return entries oldest-updated first, so
+				 * that a status change (which bumps "updated") moves an
+				 * entry to the back of the line
+				 */
+				testRunner('Query Order Is Oldest Updated First', async function() {
+					await using queueInfo = await driverConfig.create('query-order');
+					const localQueue = queueInfo.queue;
+
+					const firstID = await localQueue.add({ key: 'order0' });
+					await nextUpdatedTime();
+					const secondID = await localQueue.add({ key: 'order1' });
+					await nextUpdatedTime();
+					const thirdID = await localQueue.add({ key: 'order2' });
+					await nextUpdatedTime();
+
+					expect(await queryIDs(localQueue, { status: 'pending' })).toEqual([firstID, secondID, thirdID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1 })).toEqual([firstID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 2 })).toEqual([firstID, secondID]);
+
+					/*
+					 * Touching the first entry moves it to the back
+					 */
+					await localQueue.setStatus(firstID, 'pending', { oldStatus: 'pending' });
+
+					expect(await queryIDs(localQueue, { status: 'pending' })).toEqual([secondID, thirdID, firstID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1 })).toEqual([secondID]);
+					expect(await queryIDs(localQueue, { limit: 3 })).toEqual([secondID, thirdID, firstID]);
+
+					/*
+					 * "updatedBefore" is exclusive: an entry updated exactly
+					 * at the cutoff is left out
+					 */
+					const thirdEntry = await localQueue.get(thirdID);
+					expect(thirdEntry).not.toBeNull();
+					const thirdUpdated = thirdEntry?.updated ?? new Date(0);
+					expect(await queryIDs(localQueue, { status: 'pending', updatedBefore: thirdUpdated })).toEqual([secondID]);
+					expect(await queryIDs(localQueue, { status: 'pending', limit: 1, updatedBefore: new Date(thirdUpdated.getTime() + 1) })).toEqual([secondID]);
+				});
+
+				for (const pipeKind of ['single', 'batch'] as const) {
+					/*
+					 * A pipe target that keeps rejecting the oldest completed
+					 * entries must not stop newer entries from moving
+					 */
+					testRunner(`Pipe Failures Do Not Block Newer Entries (${pipeKind} pipe)`, async function() {
+						await using queueInfo = await driverConfig.create(`pipe-failures-no-block-${pipeKind}`);
+						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-failures', pipeKind);
+
+						/*
+						 * Fill a whole maintenance page with rejected entries,
+						 * then add one good entry behind them
+						 */
+						for (let index = 0; index < stages.pipeMoveFetchLimit; index++) {
+							await stages.source.add(`poison${index}`);
+						}
+						await stages.source.run();
+						await nextUpdatedTime();
+
+						const goodID = await stages.source.add('good');
+						await stages.source.run();
+						await nextUpdatedTime();
+
+						for (let pass = 0; pass < 2; pass++) {
+							await stages.source.maintain();
+							await nextUpdatedTime();
+						}
+
+						const goodEntry = await stages.source.get(goodID);
+						expect(goodEntry?.status).toBe('moved');
+						expect(await stages.targetRequests()).toEqual([GoodRequestInTarget[pipeKind]]);
+
+						const stillCompleted = await stages.source.query({ status: 'completed' });
+						expect(stillCompleted).toHaveLength(stages.pipeMoveFetchLimit);
+					}, 120_000);
+
+					/*
+					 * When the maintenance pass saw every waiting entry there
+					 * is nothing behind the rejected ones, so they are left as
+					 * they are rather than written on every pass
+					 */
+					testRunner(`Pipe Failures Below A Full Page Are Not Rewritten (${pipeKind} pipe)`, async function() {
+						await using queueInfo = await driverConfig.create(`pipe-failures-partial-page-${pipeKind}`);
+						await using stages = await createRejectingPipe(queueInfo.queue, 'pipe-partial', pipeKind);
+
+						const poisonID = await stages.source.add('poison-only');
+						await stages.source.run();
+						await nextUpdatedTime();
+
+						const before = await stages.source.get(poisonID);
+						await stages.source.maintain();
+						await nextUpdatedTime();
+						const after = await stages.source.get(poisonID);
+
+						expect(after?.status).toBe('completed');
+						expect(after?.updated).toEqual(before?.updated);
+						expect(after?.worker).toEqual(before?.worker);
+						expect(await stages.targetRequests()).toEqual([]);
+					});
+				}
+
+				/*
+				 * With several workers sharing a queue, the oldest-first
+				 * order must not make them all race for the same entry:
+				 * every running worker should fill its whole batch.  When
+				 * a worker ID is not running, the others must still reach
+				 * the oldest entry.
+				 */
+				for (const runningWorkerIDs of [[0, 1, 2], [1, 2]]) {
+					testRunner(`Concurrent Workers Each Process A Full Batch (worker IDs ${runningWorkerIDs.join(', ')} of 3)`, async function() {
+						await using queueInfo = await driverConfig.create(`concurrent-workers-full-batch-${runningWorkerIDs.join('-')}`);
+						const workerCount = 3;
+						/*
+						 * A worker tries a different slot on each attempt,
+						 * so a batch of workerCount attempts reaches the
+						 * oldest entry whatever order the workers run in
+						 */
+						const batchSize = workerCount;
+
+						const processedKeys: string[] = [];
+						const runners = runningWorkerIDs.map(function(workerID) {
+							return(new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+								id: `concurrent-workers-${workerID}`,
+								queue: queueInfo.queue,
+								logger: logger,
+								workers: { count: workerCount, id: workerID },
+								batchSize: batchSize,
+								processor: async function(entry) {
+									processedKeys.push(entry.request);
+									/*
+									 * Yield so the workers interleave
+									 */
+									await asleep(1);
+									return({ status: 'completed', output: entry.request });
+								}
+							}));
+						});
+						await using cleanup = new AsyncDisposableStack();
+						for (const runner of runners) {
+							cleanup.defer(async function() {
+								await runner.destroy();
+							});
+						}
+
+						const firstRunner = runners[0];
+						if (firstRunner === undefined) {
+							throw(new Error('internal error: no runners'));
+						}
+
+						const keys = Array.from({ length: workerCount * batchSize }).map(function(_ignored_value, index) {
+							return(`job${index}`);
+						});
+						for (const key of keys) {
+							await firstRunner.add(key);
+							await nextUpdatedTime();
+						}
+
+						await Promise.all(runners.map(async function(runner) {
+							return(await runner.run());
+						}));
+
+						const expectedProcessed = runningWorkerIDs.length * batchSize;
+						expect(processedKeys).toHaveLength(expectedProcessed);
+						expect(new Set(processedKeys).size).toBe(expectedProcessed);
+						expect(processedKeys).toContain(keys[0]);
+						expect(await firstRunner.query({ status: 'pending' })).toHaveLength(keys.length - expectedProcessed);
+					}, 60_000);
+				}
+
+				/*
+				 * Moving an entry to the back of the line sets its status
+				 * without an output, which must leave the stored output
+				 * untouched
+				 */
+				testRunner('Status Change Without Output Preserves Output', async function() {
+					await using queueInfo = await driverConfig.create('status-without-output');
+					const localQueue = queueInfo.queue;
+
+					const output = { nested: 'value', list: [1, 2, 3] };
+					const id = await localQueue.add({ key: 'keep-output' });
+					await localQueue.setStatus(id, 'completed', { output: output });
+
+					for (let pass = 0; pass < 3; pass++) {
+						await localQueue.setStatus(id, 'completed', { oldStatus: 'completed' });
+					}
+					await localQueue.setStatus(id, 'moved', { oldStatus: 'completed' });
+
+					const entry = await localQueue.get(id);
+					expect(entry?.status).toBe('moved');
+					expect(entry?.output).toEqual(output);
+
+					const withoutOutputID = await localQueue.add({ key: 'no-output' });
+					for (const status of ['processing', 'failed_temporarily', 'pending', 'processing'] as const) {
+						await localQueue.setStatus(withoutOutputID, status);
+					}
+					const withoutOutput = await localQueue.get(withoutOutputID);
+					expect(withoutOutput?.output).toBeNull();
+				});
+
+				if (driver === 'PostgreSQL') {
+					/*
+					 * The Postgres query must be served by the queue order index
+					 * without sorting the matching rows
+					 */
+					testRunner('Query Uses Order Index', async function() {
+						await using queueInfo = await driverConfig.create('query-uses-order-index');
+						const localQueue = queueInfo.queue;
+						if (!isPostgresDriver(localQueue)) {
+							throw(new Error('internal error: expected a PostgreSQL driver'));
+						}
+
+						await localQueue.add({ key: 'index-check' });
+
+						const testing = localQueue._Testing(TestingKey);
+						testing.enableDebugForceIndexScan();
+						try {
+							for (const filter of [
+								{ status: 'pending', limit: 1 },
+								{ status: 'failed_temporarily', limit: 100, updatedBefore: new Date() }
+							] as const) {
+								const plan = await testing.explainQuery(filter);
+								expect(plan).toMatch(/Index (Only )?Scan using idx_\w+_path_status_updated_id/);
+								expect(plan).not.toMatch(/Sort/);
+							}
+						} finally {
+							testing.disableDebugForceIndexScan();
+						}
+					});
+				}
 
 				testRunner('Delete Expired Completed', async function() {
 					/*

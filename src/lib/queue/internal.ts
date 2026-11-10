@@ -92,3 +92,13 @@ export function ConvertStringToRequestID(input: string | KeetaAnchorQueueRequest
 	// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 	return(input as KeetaAnchorQueueRequestID);
 }
+
+/**
+ * Compare two queue entries by the order that
+ * `KeetaAnchorQueueStorageDriver.query()` must return them in: oldest
+ * "updated" first.  Use with a stable sort so that ties keep their
+ * existing (insertion) order.
+ */
+export function CompareQueueEntryOrder(a: Pick<KeetaAnchorQueueEntry<unknown, unknown>, 'updated'>, b: Pick<KeetaAnchorQueueEntry<unknown, unknown>, 'updated'>): number {
+	return(a.updated.getTime() - b.updated.getTime());
+}

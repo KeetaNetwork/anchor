@@ -208,6 +208,35 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						}
 					}
 
+					// Version 3: Index that serves the query() order (oldest updated first, ties by id)
+					if (currentVersion < 3) {
+						logger?.debug('Applying schema version 3: Queue order index');
+
+						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
+						try {
+							/*
+							 * This blocks writes to the entries table while
+							 * the index builds.  For a large table, an operator
+							 * can build it ahead of time with
+							 * "CREATE INDEX CONCURRENTLY" under the same name,
+							 * and this step then only drops the old index.
+							 */
+							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated_id ON ${this.tableNameEntries}(path, status, updated, id)`);
+
+							/*
+							 * The new index serves every query the old one did
+							 */
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
+
+							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (3, $1)`, [Date.now()]);
+							await client.query('COMMIT');
+							logger?.debug('Applied schema version 3');
+						} catch (error) {
+							await client.query('ROLLBACK');
+							throw(error);
+						}
+					}
+
 					logger?.debug('Schema is up to date');
 				} finally {
 					// Always release the advisory lock
@@ -517,44 +546,49 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		}));
 	}
 
+	/**
+	 * Build the SQL for {@link query}, ordered as the storage driver
+	 * contract requires (oldest updated first, ties by id) so that the
+	 * (path, status, updated, id) index serves both the filter and the
+	 * order
+	 */
+	private buildQuerySQL(filter?: KeetaAnchorQueueFilter): { text: string; params: (string | number)[]; } {
+		const conditions: string[] = [];
+		const params: (string | number)[] = [];
+		let paramIndex = 1;
+
+		conditions.push(`path = $${paramIndex++}`);
+		params.push(this.pathStr);
+
+		if (filter?.status) {
+			conditions.push(`status = $${paramIndex++}`);
+			params.push(filter.status);
+		}
+
+		if (filter?.updatedBefore) {
+			conditions.push(`updated < $${paramIndex++}`);
+			params.push(filter.updatedBefore.getTime());
+		}
+
+		let text = `SELECT id, request, output, last_error, status, created, updated, worker, failures FROM ${this.tableNameEntries}`;
+		text += ' WHERE ' + conditions.join(' AND ');
+		text += ' ORDER BY updated, id';
+
+		if (filter?.limit !== undefined) {
+			text += ` LIMIT $${paramIndex++}`;
+			params.push(filter.limit);
+		}
+
+		return({ text: text, params: params });
+	}
+
 	async query(filter?: KeetaAnchorQueueFilter): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> {
 		return(await this.dbTransaction('query', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>[]> => {
 			const logger = this.methodLogger('query');
 			logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
-			const conditions: string[] = [];
-			const params: (string | number)[] = [];
-			let paramIndex = 1;
-
-			conditions.push(`path = $${paramIndex++}`);
-			params.push(this.pathStr);
-
-			if (filter?.status) {
-				conditions.push(`status = $${paramIndex++}`);
-				params.push(filter.status);
-			}
-
-			if (filter?.updatedBefore) {
-				conditions.push(`updated < $${paramIndex++}`);
-				params.push(filter.updatedBefore.getTime());
-			}
-
-			let query = `SELECT id, request, output, last_error, status, created, updated, worker, failures FROM ${this.tableNameEntries}`;
-
-			if (conditions.length > 0) {
-				query += ' WHERE ' + conditions.join(' AND ');
-			}
-
-			// Use random ordering to prevent multiple workers from contending for the same rows
-			// This spreads the load when multiple workers query simultaneously
-			query += ' ORDER BY RANDOM()';
-
-			if (filter?.limit !== undefined) {
-				query += ` LIMIT $${paramIndex++}`;
-				params.push(filter.limit);
-			}
-
-			const rows = await client.query<QueueEntryRow>(query, params);
+			const { text, params } = this.buildQuerySQL(filter);
+			const rows = await client.query<QueueEntryRow>(text, params);
 
 			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
 
@@ -667,6 +701,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		resetSerializationRetryCount(): void;
 		enableDebugForceIndexScan(): void;
 		disableDebugForceIndexScan(): void;
+		explainQuery(filter?: KeetaAnchorQueueFilter): Promise<string>;
 	} {
 		if (key !== 'bc81abf8-e43b-490b-b486-744fb49a5082') {
 			throw(new Error('This is a testing only method'));
@@ -692,6 +727,15 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			},
 			disableDebugForceIndexScan: (): void => {
 				this.debugForceIndexScan = false;
+			},
+			explainQuery: async (filter?: KeetaAnchorQueueFilter): Promise<string> => {
+				return(await this.dbTransaction('explainQuery', async (client): Promise<string> => {
+					const { text, params } = this.buildQuerySQL(filter);
+					const plan = await client.query<{ 'QUERY PLAN': string }>(`EXPLAIN ${text}`, params);
+					return(plan.rows.map(function(row) {
+						return(row['QUERY PLAN']);
+					}).join('\n'));
+				}));
 			}
 		});
 	}
