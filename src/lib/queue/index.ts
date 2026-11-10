@@ -1281,52 +1281,41 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		};
 
 		/**
-		 * Process up to `batchSize` entries in the given status.
+		 * Process up to `batchSize` entries in the given status, one
+		 * entry per call, recursing for the next one.
 		 *
 		 * Returns 'empty' when no entries are left in that status,
 		 * 'timeout' when the run timeout was reached, and 'more' when
 		 * the batch is used up and entries may remain.
+		 *
+		 * Losing an entry to another worker does not use up a batch
+		 * slot, but `contended` bounds the retries so a run always ends.
 		 */
-		const processStatus = async (status: KeetaAnchorQueueStatus, processor: EntryProcessor): Promise<'empty' | 'timeout' | 'more'> => {
-			/*
-			 * Losing an entry to another worker does not use up a
-			 * batch slot, but the retries are bounded so a run always
-			 * ends
-			 */
-			let contended = 0;
-			let processed = 0;
-			while (processed < batchSize) {
-				/*
-				 * Check the timeout before picking, because a driver
-				 * that claims atomically has already taken the entry
-				 * by the time the pick returns
-				 */
-				if (timedOut(processed, status)) {
-					break;
-				}
-
-				const next = await this.nextEntryToProcess(status, processed + contended);
-				if (next === undefined) {
-					return('empty');
-				}
-
-				const result = await processJob(next.entry, status, next.claimed, processor);
-				if (result === processJobContended && contended < batchSize) {
-					contended++;
-					continue;
-				}
-
-				processed++;
+		const processStatus = async (status: KeetaAnchorQueueStatus, processor: EntryProcessor, processed = 0, contended = 0): Promise<'empty' | 'timeout' | 'more'> => {
+			if (processed >= batchSize) {
+				return('more');
 			}
 
 			/*
-			 * The loop only ends with the batch unfilled on a timeout
+			 * Check the timeout before picking, because a driver that
+			 * claims atomically has already taken the entry by the time
+			 * the pick returns
 			 */
-			if (processed < batchSize) {
+			if (timedOut(processed, status)) {
 				return(await statusAfterTimeout(status));
 			}
 
-			return('more');
+			const next = await this.nextEntryToProcess(status, processed + contended);
+			if (next === undefined) {
+				return('empty');
+			}
+
+			const result = await processJob(next.entry, status, next.claimed, processor);
+			if (result === processJobContended && contended < batchSize) {
+				return(await processStatus(status, processor, processed, contended + 1));
+			}
+
+			return(await processStatus(status, processor, processed + 1, contended));
 		};
 
 		/*

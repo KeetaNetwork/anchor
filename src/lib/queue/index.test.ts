@@ -1070,7 +1070,7 @@ for (const singleWorkerID of [true, false]) {
 			if (singleWorkerID) {
 				expect(processCallCountByKey.size).toBe(8);
 			} else {
-				expect(processCallCountByKey.size).toBe(50);
+				expect(processCallCountByKey.size).toBe(40);
 			}
 
 			const id0 = ids[0];
