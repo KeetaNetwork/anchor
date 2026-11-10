@@ -140,7 +140,7 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	 * ({@link DefaultVacuumPolicy}).  Pass `false` to leave the table's
 	 * vacuum settings alone, for example when an operator manages them.
 	 */
-	vacuumPolicy?: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false | undefined;
+	vacuumPolicy?: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false;
 };
 
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
@@ -159,7 +159,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
-	private readonly vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false | undefined;
+	private readonly vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false;
 	private readonly vacuumStorageParameters: { [name: string]: string } | null;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
@@ -167,10 +167,10 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
-		this.vacuumPolicy = options.vacuumPolicy;
+		this.vacuumPolicy = options.vacuumPolicy ?? {};
 		this.vacuumStorageParameters = null;
-		if (options.vacuumPolicy !== false) {
-			this.vacuumStorageParameters = VacuumPolicyStorageParameters({ ...DefaultVacuumPolicy, ...options.vacuumPolicy });
+		if (this.vacuumPolicy !== false) {
+			this.vacuumStorageParameters = VacuumPolicyStorageParameters({ ...DefaultVacuumPolicy, ...this.vacuumPolicy });
 		}
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
