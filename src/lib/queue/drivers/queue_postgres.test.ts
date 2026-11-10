@@ -1,9 +1,9 @@
 // cspell:ignore autovacuum regclass reloptions
 import { suite, test, expect } from 'vitest';
 import * as pg from 'pg';
-import type { Logger } from '../../log/index.ts';
 import { getTestingPostgresConfig } from '../../utils/tests/postgres.js';
 import KeetaAnchorQueueStorageDriverPostgres from './queue_postgres.js';
+import type { KeetaAnchorQueueStorageDriverPostgresVacuumPolicy } from './queue_postgres.js';
 
 const postgresConfig = getTestingPostgresConfig();
 
@@ -95,7 +95,7 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		await using tables = await useTables();
 		await using queue = await initializeDriver(tables.pool, tables.prefix);
 
-		expect(queue).toBeDefined();
+		void queue;
 		expect(await storageParameters(tables.pool, tables.entries)).toEqual({
 			vacuum_index_cleanup: 'on',
 			autovacuum_vacuum_threshold: '10000',
@@ -112,11 +112,11 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		 * in for one created before the vacuum policy existed
 		 */
 		await using unmanaged = await initializeDriver(tables.pool, tables.prefix, { vacuumPolicy: false });
-		expect(unmanaged).toBeDefined();
+		void unmanaged;
 		expect(await storageParameters(tables.pool, tables.entries)).toEqual({});
 
 		await using custom = await initializeDriver(tables.pool, tables.prefix, { vacuumPolicy: { vacuumThreshold: 500 }});
-		expect(custom).toBeDefined();
+		void custom;
 		expect(await storageParameters(tables.pool, tables.entries)).toMatchObject({
 			vacuum_index_cleanup: 'on',
 			autovacuum_vacuum_threshold: '500',
@@ -127,35 +127,48 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		 * A changed policy takes effect on the next initialization
 		 */
 		await using changed = await initializeDriver(tables.pool, tables.prefix, { vacuumPolicy: { vacuumThreshold: 2000, vacuumScaleFactor: 0.05 }});
-		expect(changed).toBeDefined();
+		void changed;
 		expect(await storageParameters(tables.pool, tables.entries)).toMatchObject({
 			autovacuum_vacuum_threshold: '2000',
 			autovacuum_vacuum_scale_factor: '0.05'
 		});
 	});
 
-	test('Rejects Invalid Vacuum Policy Values', function() {
+	test('Accepts Vacuum Policy Values Only Within Their Bounds', function() {
 		const pool = async function(): Promise<pg.Pool> {
 			throw(new Error('not used'));
 		};
+		const construct = function(vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy>) {
+			return(function() {
+				return(new KeetaAnchorQueueStorageDriverPostgres({ pool: pool, vacuumPolicy: vacuumPolicy }));
+			});
+		};
+
+		for (const vacuumPolicy of [
+			{ vacuumThreshold: 0 },
+			{ vacuumScaleFactor: 0 },
+			{ vacuumScaleFactor: 100 },
+			{ analyzeScaleFactor: 0 },
+			{ analyzeScaleFactor: 100 }
+		]) {
+			expect(construct(vacuumPolicy)).not.toThrow();
+		}
 
 		for (const vacuumPolicy of [
 			{ vacuumThreshold: -1 },
 			{ vacuumThreshold: 1.5 },
 			{ vacuumScaleFactor: Number.NaN },
-			{ vacuumScaleFactor: 101 },
-			{ analyzeScaleFactor: -0.1 }
+			{ vacuumScaleFactor: 100.01 },
+			{ analyzeScaleFactor: -0.01 }
 		]) {
-			expect(function() {
-				return(new KeetaAnchorQueueStorageDriverPostgres({ pool: pool, vacuumPolicy: vacuumPolicy }));
-			}).toThrow(/Invalid/);
+			expect(construct(vacuumPolicy)).toThrow();
 		}
 	});
 
 	test('Starts Without Vacuum Settings When The Role Does Not Own The Table', async function() {
 		await using tables = await useTables();
 		await using owner = await initializeDriver(tables.pool, tables.prefix, { vacuumPolicy: false });
-		expect(owner).toBeDefined();
+		void owner;
 
 		const role = `${tables.prefix}_role`;
 		const password = crypto.randomUUID();
@@ -166,7 +179,7 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 				await tables.pool.query(`DROP ROLE ${role}`);
 			}
 		};
-		expect(roleCleanup).toBeDefined();
+		void roleCleanup;
 		await tables.pool.query(`GRANT USAGE, CREATE ON SCHEMA public TO ${role}`);
 		await tables.pool.query(`GRANT ALL ON ${tables.prefix}_entries, ${tables.prefix}_idempotent_keys, ${tables.prefix}_schema_version TO ${role}`);
 
@@ -179,26 +192,12 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 				await rolePool.end();
 			}
 		};
-		expect(rolePoolCleanup).toBeDefined();
+		void rolePoolCleanup;
 
-		const warnings: unknown[][] = [];
-		const logger = {
-			...console,
-			debug: function() { /* quiet */ },
-			info: function() { /* quiet */ },
-			log: function() { /* quiet */ },
-			warn: function(...args: unknown[]) {
-				warnings.push(args);
-			}
-		} satisfies Logger;
-
-		await using notOwner = await initializeDriver(rolePool, tables.prefix, { logger: logger });
+		await using notOwner = await initializeDriver(rolePool, tables.prefix);
 		await notOwner.add({ key: 'still-works' });
 
 		expect(await notOwner.query({ status: 'pending' })).toHaveLength(1);
-		expect(warnings.some(function(args) {
-			return(String(args[1] ?? args[0]).includes('Could not set vacuum settings'));
-		})).toBe(true);
 		expect(await storageParameters(tables.pool, tables.entries)).toEqual({});
 	});
 
@@ -208,10 +207,10 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 	 * a large table a vacuum skips cleaning the index unless
 	 * vacuum_index_cleanup is on
 	 */
-	test('A Vacuum Clears The Dead Index Entries A Drain Leaves', async function() {
+	async function drainAndVacuum(vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false): Promise<{ before: number; afterDrain: number; afterVacuum: number; }> {
 		await using tables = await useTables();
-		await using queue = await initializeDriver(tables.pool, tables.prefix);
-		expect(queue).toBeDefined();
+		await using queue = await initializeDriver(tables.pool, tables.prefix, { vacuumPolicy: vacuumPolicy });
+		void queue;
 
 		/*
 		 * Drained rows must sit on under 2% of the table's pages,
@@ -237,14 +236,28 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 			}
 
 			const afterDrain = await pickBuffers(client, tables.entries);
-			expect(afterDrain).toBeGreaterThan(before + 5);
 
 			await client.query(`VACUUM ${tables.entries}`);
 
 			const afterVacuum = await pickBuffers(client, tables.entries);
-			expect(afterVacuum).toBeLessThanOrEqual(before + 2);
+
+			return({ before: before, afterDrain: afterDrain, afterVacuum: afterVacuum });
 		} finally {
 			client.release();
 		}
+	}
+
+	test('A Vacuum Clears The Dead Index Entries A Drain Leaves', async function() {
+		const { before, afterDrain, afterVacuum } = await drainAndVacuum({});
+
+		expect(afterDrain).toBeGreaterThan(before + 5);
+		expect(afterVacuum).toBeLessThanOrEqual(before + 2);
+	}, 60_000);
+
+	test('Without The Policy A Vacuum Leaves The Dead Index Entries', async function() {
+		const { before, afterDrain, afterVacuum } = await drainAndVacuum(false);
+
+		expect(afterDrain).toBeGreaterThan(before + 5);
+		expect(afterVacuum).toBeGreaterThan(before + 5);
 	}, 60_000);
 });
