@@ -101,7 +101,7 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		expect(await storageParameters(tables.pool, tables.entries)).toEqual({
 			vacuum_index_cleanup: 'on',
 			autovacuum_vacuum_threshold: '10000',
-			autovacuum_vacuum_scale_factor: '0',
+			autovacuum_vacuum_scale_factor: '0.001',
 			autovacuum_analyze_scale_factor: '0.02'
 		});
 	});
@@ -122,7 +122,7 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Vacuum Policy', function(
 		expect(await storageParameters(tables.pool, tables.entries)).toMatchObject({
 			vacuum_index_cleanup: 'on',
 			autovacuum_vacuum_threshold: '500',
-			autovacuum_vacuum_scale_factor: '0'
+			autovacuum_vacuum_scale_factor: '0.001'
 		});
 
 		/*
