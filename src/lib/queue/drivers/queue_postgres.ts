@@ -61,9 +61,11 @@ export type KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
 
 	/**
 	 * Fraction of the table added to `vacuumThreshold`
-	 * (autovacuum_vacuum_scale_factor).  The cost of a pick depends on
-	 * how many dead entries sit ahead of it, not on the table size, so
-	 * the default is 0.
+	 * (autovacuum_vacuum_scale_factor).  A pick slows with the number of
+	 * dead entries ahead of it, but each vacuum reads every index in
+	 * full, so its cost grows with the table.  A small fraction lets a
+	 * large table vacuum less often, so it does not vacuum almost
+	 * constantly.
 	 */
 	vacuumScaleFactor: number;
 
@@ -76,7 +78,7 @@ export type KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
 
 const DefaultVacuumPolicy: KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
 	vacuumThreshold: 10_000,
-	vacuumScaleFactor: 0,
+	vacuumScaleFactor: 0.001,
 	analyzeScaleFactor: 0.02
 };
 
