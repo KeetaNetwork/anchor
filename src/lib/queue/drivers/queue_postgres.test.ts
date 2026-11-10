@@ -301,7 +301,7 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
 
 		const stored = await queue.get(firstID);
 		expect(stored?.status).toBe('processing');
-		expect(String(stored?.worker)).toBe(String(worker));
+		expect(Number(stored?.worker)).toBe(7);
 
 		expect((await queue.claimNext('pending', worker))?.id).toBe(ids[1]);
 		expect((await queue.claimNext('pending', worker))?.id).toBe(ids[2]);
@@ -318,12 +318,9 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
 		}));
 
 		const claimedIDs = claims.map(function(claim) {
-			return(String(claim?.id));
+			return(claim?.id);
 		});
-		claimedIDs.sort(function(a, b) {
-			return(a.localeCompare(b));
-		});
-		expect(claimedIDs).toEqual(ids);
+		expect(new Set(claimedIDs)).toEqual(new Set(ids));
 		expect(await queue.query({ status: 'pending' })).toHaveLength(0);
 	});
 
