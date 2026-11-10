@@ -2057,6 +2057,15 @@ suite('Driver Tests', async function() {
 					const queue = queueInfo.queue;
 					const contendedQueue = new Proxy(queue, {
 						get(target, property, receiver): unknown {
+							/*
+							 * Hide atomic claiming (Postgres), which
+							 * cannot be lost, so every driver goes
+							 * through the lock-by-setStatus path
+							 */
+							if (property === 'claimNext') {
+								return(undefined);
+							}
+
 							if (property !== 'setStatus') {
 								const value: unknown = Reflect.get(target, property, receiver);
 								if (typeof value === 'function') {

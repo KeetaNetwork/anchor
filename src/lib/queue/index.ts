@@ -1289,8 +1289,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		 * the batch is used up and entries may remain.
 		 *
 		 * Losing an entry to another worker does not use up a batch
-		 * slot, but `contended` bounds the retries so a run always ends.
+		 * slot, since that entry is now the other worker's to process.
+		 * Every loss means another worker made progress, so `contended`
+		 * only bounds the retries (generously) so a run always ends.
 		 */
+		const maxContended = batchSize * 100;
 		const processStatus = async (status: KeetaAnchorQueueStatus, processor: EntryProcessor, processed = 0, contended = 0): Promise<'empty' | 'timeout' | 'more'> => {
 			if (processed >= batchSize) {
 				return('more');
@@ -1311,7 +1314,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 			}
 
 			const result = await processJob(next.entry, status, next.claimed, processor);
-			if (result === processJobContended && contended < batchSize) {
+			if (result === processJobContended) {
+				if (contended >= maxContended) {
+					return('more');
+				}
+
 				return(await processStatus(status, processor, processed, contended + 1));
 			}
 
