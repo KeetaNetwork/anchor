@@ -605,29 +605,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
-			const newEntry = ManageStatusUpdates<QueueResult>(id, currentEntry, status, ancillary, logger);
-			const currentTime = newEntry.updated.getTime();
-			const workerValue = newEntry.worker;
-			const newFailures = newEntry.failures ?? currentEntry.failures;
-			const newLastError = newEntry.lastError !== undefined ? newEntry.lastError : currentEntry.last_error;
-			const newOutput = newEntry.output !== undefined ? JSON.stringify(newEntry.output) : currentEntry.output;
-
-			let updateQuery: string;
-			let updateParams: (KeetaAnchorQueueRequestID | string | number | null)[];
-
-			if (oldStatus) {
-				updateQuery = `UPDATE ${this.tableNameEntries}
-				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
-				               WHERE id = $7 AND path = $8 AND status = $9`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr, oldStatus];
-			} else {
-				updateQuery = `UPDATE ${this.tableNameEntries}
-				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
-				               WHERE id = $7 AND path = $8`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr];
-			}
-
-			const result = await client.query(updateQuery, updateParams);
+			const result = await this.writeStatusUpdate(client, id, currentEntry, status, ancillary, logger);
 
 			await this.toctouDelay?.();
 
@@ -644,6 +622,35 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				}
 			}
 		}));
+	}
+
+	/**
+	 * Write a status change to an entry whose current values the
+	 * caller has read (and locked), so every status change goes through
+	 * {@link ManageStatusUpdates}.  With `oldStatus` the UPDATE also
+	 * requires the entry to still be in that status.
+	 */
+	private async writeStatusUpdate(client: pg.PoolClient, id: KeetaAnchorQueueRequestID, currentEntry: Pick<QueueEntryRow, 'status' | 'failures' | 'last_error' | 'output'>, status: KeetaAnchorQueueStatus, ancillary: KeetaAnchorQueueEntryAncillaryData<QueueResult> | undefined, logger: Logger | undefined): Promise<pg.QueryResult> {
+		const newEntry = ManageStatusUpdates<QueueResult>(id, currentEntry, status, ancillary, logger);
+		let newLastError = currentEntry.last_error;
+		if (newEntry.lastError !== undefined) {
+			newLastError = newEntry.lastError;
+		}
+		let newOutput = currentEntry.output;
+		if (newEntry.output !== undefined) {
+			newOutput = JSON.stringify(newEntry.output);
+		}
+
+		const params: (KeetaAnchorQueueRequestID | string | number | null)[] = [status, newEntry.updated.getTime(), newEntry.worker, newEntry.failures ?? currentEntry.failures, newLastError, newOutput, id, this.pathStr];
+		let text = `UPDATE ${this.tableNameEntries}
+		            SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
+		            WHERE id = $7 AND path = $8`;
+		if (ancillary?.oldStatus) {
+			text += ' AND status = $9';
+			params.push(ancillary.oldStatus);
+		}
+
+		return(await client.query(text, params));
 	}
 
 	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
@@ -701,29 +708,25 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	}
 
 	/**
-	 * Move the oldest entry in a status to "processing" in one statement.
+	 * Move the oldest entry in a status to "processing" for a worker.
 	 *
-	 * The inner SELECT locks its row with SKIP LOCKED, so concurrent
-	 * claims take different entries.  Postgres locks rows below the
-	 * LIMIT, so a row that left the status after the statement started
-	 * is re-checked and passed over, and the scan moves on to the next
-	 * one.  The entry is returned as it was before the claim.
+	 * SKIP LOCKED makes concurrent claims lock different rows.
+	 * Postgres locks rows below the LIMIT, so a row that left the status
+	 * after the statement started is re-checked and passed over, and
+	 * the scan moves on to the next one.  The row stays locked until
+	 * the transaction commits, so the UPDATE cannot lose it.  The entry
+	 * is returned as it was before the claim.
 	 */
 	async claimNext(status: KeetaAnchorQueueStatus, worker: KeetaAnchorQueueWorkerID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
 		return(await this.dbTransaction('claimNext', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
 			const result = await client.query<QueueEntryRow>(
-				`UPDATE ${this.tableNameEntries} AS e
-				 SET status = 'processing', updated = $3, worker = $4
-				 FROM (
-					SELECT id, path, status, updated, worker FROM ${this.tableNameEntries}
-					WHERE path = $1 AND status = $2
-					ORDER BY updated, id
-					LIMIT 1
-					FOR UPDATE SKIP LOCKED
-				 ) AS previous
-				 WHERE e.id = previous.id AND e.path = previous.path
-				 RETURNING e.id, e.request, e.output, e.last_error, previous.status, e.created, previous.updated, previous.worker, e.failures`,
-				[this.pathStr, status, Date.now(), worker]
+				`SELECT id, request, output, last_error, status, created, updated, worker, failures
+				 FROM ${this.tableNameEntries}
+				 WHERE path = $1 AND status = $2
+				 ORDER BY updated, id
+				 LIMIT 1
+				 FOR UPDATE SKIP LOCKED`,
+				[this.pathStr, status]
 			);
 
 			const row = result.rows[0];
@@ -731,7 +734,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				return(null);
 			}
 
-			this.methodLogger('claimNext')?.debug(`Claimed request with id ${row.id} from status "${status}" for worker`, worker);
+			const id = ConvertStringToRequestID(row.id);
+			await this.writeStatusUpdate(client, id, row, 'processing', { oldStatus: status, by: worker }, this.methodLogger('claimNext'));
 
 			return(await this.decodeEntryRow(client, row));
 		}));
