@@ -15,7 +15,7 @@ const PickSQL = (table: string): string => {
 };
 
 function randomTablePrefix(): string {
-	return(`vacuum_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`);
+	return(`vacuum_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`);
 }
 
 function newPool(): pg.Pool {

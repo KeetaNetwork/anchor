@@ -14,7 +14,7 @@ export function getTestingPostgresConfig(): { host: string; port: number; user: 
 	}
 
 	const port = Number(portStr);
-	if (isNaN(port) || port <= 0 || port >= 65536) {
+	if (Number.isNaN(port) || port <= 0 || port >= 65536) {
 		return(null);
 	}
 
