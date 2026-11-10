@@ -1,4 +1,4 @@
-// cspell:ignore seqscan
+// cspell:ignore seqscan autovacuum regclass reloptions SQLSTATE
 
 import type {
 	KeetaAnchorQueueStorageDriver,
@@ -43,6 +43,86 @@ type IdempotentRow = {
 	idempotent_id: string;
 };
 
+/**
+ * How often Postgres vacuums the queue's entries table.
+ *
+ * Every status change is an update to a column the queue's indexes are
+ * keyed on, so it leaves a dead index entry at the oldest end of the
+ * status range the entry left.  That is exactly where the next query()
+ * starts reading, so until a vacuum cleans the index each pick reads
+ * past every entry processed since the last vacuum.
+ */
+export type KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
+	/**
+	 * Number of updated or deleted rows that triggers an autovacuum of
+	 * the entries table (autovacuum_vacuum_threshold)
+	 */
+	vacuumThreshold: number;
+
+	/**
+	 * Fraction of the table added to `vacuumThreshold`
+	 * (autovacuum_vacuum_scale_factor).  A pick slows with the number of
+	 * dead entries ahead of it, but each vacuum reads every index in
+	 * full, so its cost grows with the table.  A small fraction lets a
+	 * large table vacuum less often, so it does not vacuum almost
+	 * constantly.
+	 */
+	vacuumScaleFactor: number;
+
+	/**
+	 * Fraction of the table changed that triggers an automatic ANALYZE
+	 * (autovacuum_analyze_scale_factor)
+	 */
+	analyzeScaleFactor: number;
+};
+
+const DefaultVacuumPolicy: KeetaAnchorQueueStorageDriverPostgresVacuumPolicy = {
+	vacuumThreshold: 10_000,
+	vacuumScaleFactor: 0.001,
+	analyzeScaleFactor: 0.02
+};
+
+/**
+ * Postgres accepts scale factors from 0 to 100
+ */
+const MaxScaleFactor = 100;
+
+/**
+ * The SQLSTATE Postgres returns when the role does not own the table
+ */
+const InsufficientPrivilegeSQLState = '42501';
+
+/**
+ * Check the vacuum policy and build the table storage parameters for it.
+ * The values are written into the ALTER TABLE statement (storage
+ * parameters cannot be bound), so each one must be a finite number in
+ * the range Postgres accepts.
+ */
+function VacuumPolicyStorageParameters(policy: KeetaAnchorQueueStorageDriverPostgresVacuumPolicy): { [name: string]: string } {
+	if (!Number.isSafeInteger(policy.vacuumThreshold) || policy.vacuumThreshold < 0) {
+		throw(new Error(`Invalid vacuumThreshold ${String(policy.vacuumThreshold)}: must be a non-negative integer`));
+	}
+
+	for (const [name, value] of [['vacuumScaleFactor', policy.vacuumScaleFactor], ['analyzeScaleFactor', policy.analyzeScaleFactor]] as const) {
+		if (!Number.isFinite(value) || value < 0 || value > MaxScaleFactor) {
+			throw(new Error(`Invalid ${name} ${String(value)}: must be a number from 0 to ${MaxScaleFactor}`));
+		}
+	}
+
+	return({
+		/*
+		 * Without this, a vacuum skips cleaning the indexes when
+		 * fewer than about 2% of the table's pages hold dead rows,
+		 * which is always the case for a drained range of a large
+		 * queue, and the dead index entries the pick reads past stay
+		 */
+		vacuum_index_cleanup: 'on',
+		autovacuum_vacuum_threshold: String(policy.vacuumThreshold),
+		autovacuum_vacuum_scale_factor: String(policy.vacuumScaleFactor),
+		autovacuum_analyze_scale_factor: String(policy.analyzeScaleFactor)
+	});
+}
+
 type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	/**
 	 * Function that returns a Postgres connection pool.
@@ -55,6 +135,14 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	 * and `queue_schema_version`.
 	 */
 	tablePrefix?: string | undefined;
+
+	/**
+	 * Vacuum settings for the entries table, applied each time the
+	 * driver initializes.  Any value left out uses the default
+	 * ({@link DefaultVacuumPolicy}).  Pass `false` to leave the table's
+	 * vacuum settings alone, for example when an operator manages them.
+	 */
+	vacuumPolicy?: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false;
 };
 
 export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends JSONSerializable = JSONSerializable, QueueResult extends JSONSerializable = JSONSerializable> implements KeetaAnchorQueueStorageDriver<QueueRequest, QueueResult> {
@@ -73,12 +161,19 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 	readonly path: string[] = [];
 	private readonly pathStr: string;
 	private toctouDelay: (() => Promise<void>) | undefined = undefined;
+	private readonly vacuumPolicy: Partial<KeetaAnchorQueueStorageDriverPostgresVacuumPolicy> | false;
+	private readonly vacuumStorageParameters: { [name: string]: string } | null;
 
 	constructor(options: NonNullable<ConstructorParameters<KeetaAnchorQueueStorageDriverConstructor<QueueRequest, QueueResult>>[0]> & KeetaAnchorQueueStorageDriverPostgresOptions) {
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
 		this.poolInternal = options.pool;
+		this.vacuumPolicy = options.vacuumPolicy ?? {};
+		this.vacuumStorageParameters = null;
+		if (this.vacuumPolicy !== false) {
+			this.vacuumStorageParameters = VacuumPolicyStorageParameters({ ...DefaultVacuumPolicy, ...this.vacuumPolicy });
+		}
 		this.path = options.path ?? [];
 		this.pathStr = ['root', ...this.path].join('.');
 		Object.freeze(this.path);
@@ -238,6 +333,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 					}
 
 					logger?.debug('Schema is up to date');
+
+					await this.applyVacuumPolicy(client);
 				} finally {
 					// Always release the advisory lock
 					// Note: Advisory locks are session-based and auto-release on disconnect,
@@ -262,6 +359,57 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		await this.dbInitializationPromise;
 
 		return(pool);
+	}
+
+	/**
+	 * Set the entries table's vacuum storage parameters to the
+	 * configured policy.  This runs on every initialization rather than
+	 * as a versioned migration, so an upgraded database gets the
+	 * settings and a changed policy takes effect.  The table is only
+	 * altered when its settings differ.
+	 *
+	 * Changing storage parameters requires owning the table.  Without
+	 * that privilege the queue still works, only more slowly while a
+	 * large backlog drains, so a warning is logged and startup goes on.
+	 */
+	private async applyVacuumPolicy(client: pg.PoolClient): Promise<void> {
+		const logger = this.methodLogger('applyVacuumPolicy');
+		const wanted = this.vacuumStorageParameters;
+		if (wanted === null) {
+			logger?.debug('Vacuum policy disabled, leaving the entries table settings alone');
+			return;
+		}
+
+		const current = await client.query<{ reloptions: string[] | null }>('SELECT reloptions FROM pg_class WHERE oid = to_regclass($1)', [this.tableNameEntries]);
+		const currentParameters = new Map<string, string>();
+		for (const option of current.rows[0]?.reloptions ?? []) {
+			const separator = option.indexOf('=');
+			currentParameters.set(option.slice(0, separator), option.slice(separator + 1));
+		}
+
+		const differs = Object.entries(wanted).some(function([name, value]) {
+			return(currentParameters.get(name) !== value);
+		});
+		if (!differs) {
+			logger?.debug('Entries table vacuum settings are up to date');
+			return;
+		}
+
+		const assignments = Object.entries(wanted).map(function([name, value]) {
+			return(`${name} = ${value}`);
+		});
+
+		try {
+			await client.query(`ALTER TABLE ${this.tableNameEntries} SET (${assignments.join(', ')})`);
+			logger?.debug('Applied entries table vacuum settings:', assignments);
+		} catch (error: unknown) {
+			if (typeof error === 'object' && error !== null && 'code' in error && error.code === InsufficientPrivilegeSQLState) {
+				logger?.warn(`Could not set vacuum settings on ${this.tableNameEntries} (the role does not own it); a large backlog may drain more slowly between vacuums:`, error);
+				return;
+			}
+
+			throw(error);
+		}
 	}
 
 	private methodLogger(method: string): Logger | undefined {
@@ -459,29 +607,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				throw(new Error(`Request with ID ${String(id)} not found`));
 			}
 
-			const newEntry = ManageStatusUpdates<QueueResult>(id, currentEntry, status, ancillary, logger);
-			const currentTime = newEntry.updated.getTime();
-			const workerValue = newEntry.worker;
-			const newFailures = newEntry.failures ?? currentEntry.failures;
-			const newLastError = newEntry.lastError !== undefined ? newEntry.lastError : currentEntry.last_error;
-			const newOutput = newEntry.output !== undefined ? JSON.stringify(newEntry.output) : currentEntry.output;
-
-			let updateQuery: string;
-			let updateParams: (KeetaAnchorQueueRequestID | string | number | null)[];
-
-			if (oldStatus) {
-				updateQuery = `UPDATE ${this.tableNameEntries}
-				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
-				               WHERE id = $7 AND path = $8 AND status = $9`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr, oldStatus];
-			} else {
-				updateQuery = `UPDATE ${this.tableNameEntries}
-				               SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
-				               WHERE id = $7 AND path = $8`;
-				updateParams = [status, currentTime, workerValue, newFailures, newLastError, newOutput, id, this.pathStr];
-			}
-
-			const result = await client.query(updateQuery, updateParams);
+			const result = await this.writeStatusUpdate(client, id, currentEntry, status, ancillary, logger);
 
 			await this.toctouDelay?.();
 
@@ -498,6 +624,35 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				}
 			}
 		}));
+	}
+
+	/**
+	 * Write a status change to an entry whose current values the
+	 * caller has read (and locked), so every status change goes through
+	 * {@link ManageStatusUpdates}.  With `oldStatus` the UPDATE also
+	 * requires the entry to still be in that status.
+	 */
+	private async writeStatusUpdate(client: pg.PoolClient, id: KeetaAnchorQueueRequestID, currentEntry: Pick<QueueEntryRow, 'status' | 'failures' | 'last_error' | 'output'>, status: KeetaAnchorQueueStatus, ancillary: KeetaAnchorQueueEntryAncillaryData<QueueResult> | undefined, logger: Logger | undefined): Promise<pg.QueryResult> {
+		const newEntry = ManageStatusUpdates<QueueResult>(id, currentEntry, status, ancillary, logger);
+		let newLastError = currentEntry.last_error;
+		if (newEntry.lastError !== undefined) {
+			newLastError = newEntry.lastError;
+		}
+		let newOutput = currentEntry.output;
+		if (newEntry.output !== undefined) {
+			newOutput = JSON.stringify(newEntry.output);
+		}
+
+		const params: (KeetaAnchorQueueRequestID | string | number | null)[] = [status, newEntry.updated.getTime(), newEntry.worker, newEntry.failures ?? currentEntry.failures, newLastError, newOutput, id, this.pathStr];
+		let text = `UPDATE ${this.tableNameEntries}
+		            SET status = $1, updated = $2, worker = $3, failures = $4, last_error = $5, output = $6
+		            WHERE id = $7 AND path = $8`;
+		if (ancillary?.oldStatus) {
+			text += ' AND status = $9';
+			params.push(ancillary.oldStatus);
+		}
+
+		return(await client.query(text, params));
 	}
 
 	async get(id: KeetaAnchorQueueRequestID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
@@ -517,32 +672,74 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 				return(null);
 			}
 
-			const idempotentRows = await client.query<IdempotentRow>(
-				`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
-				[id, this.pathStr]
+			return(await this.decodeEntryRow(client, entry));
+		}));
+	}
+
+	/**
+	 * Turn an entries row into a queue entry, with its idempotent keys
+	 */
+	private async decodeEntryRow(client: pg.PoolClient, row: QueueEntryRow): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult>> {
+		const idempotentRows = await client.query<IdempotentRow>(
+			`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
+			[row.id, this.pathStr]
+		);
+
+		let idempotentKeys: Set<KeetaAnchorQueueRequestID> | undefined = undefined;
+		if (idempotentRows.rows.length > 0) {
+			idempotentKeys = new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
+				return(ConvertStringToRequestID(idempotentRow.idempotent_id));
+			}));
+		}
+
+		return({
+			id: ConvertStringToRequestID(row.id),
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			request: JSON.parse(row.request) as QueueRequest,
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			output: row.output ? JSON.parse(row.output) as QueueResult : null,
+			lastError: row.last_error,
+			status: row.status,
+			created: new Date(Number(row.created)),
+			updated: new Date(Number(row.updated)),
+			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+			worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
+			failures: row.failures,
+			idempotentKeys: idempotentKeys
+		});
+	}
+
+	/**
+	 * Move the oldest entry in a status to "processing" for a worker.
+	 *
+	 * SKIP LOCKED makes concurrent claims lock different rows.
+	 * Postgres locks rows below the LIMIT, so a row that left the status
+	 * after the statement started is re-checked and passed over, and
+	 * the scan moves on to the next one.  The row stays locked until
+	 * the transaction commits, so the UPDATE cannot lose it.  The entry
+	 * is returned as it was before the claim.
+	 */
+	async claimNext(status: KeetaAnchorQueueStatus, worker: KeetaAnchorQueueWorkerID): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> {
+		return(await this.dbTransaction('claimNext', async (client): Promise<KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null> => {
+			const result = await client.query<QueueEntryRow>(
+				`SELECT id, request, output, last_error, status, created, updated, worker, failures
+				 FROM ${this.tableNameEntries}
+				 WHERE path = $1 AND status = $2
+				 ORDER BY updated, id
+				 LIMIT 1
+				 FOR UPDATE SKIP LOCKED`,
+				[this.pathStr, status]
 			);
 
-			const idempotentKeys = idempotentRows.rows.length > 0
-				? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-					return(ConvertStringToRequestID(idempotentRow.idempotent_id));
-				}))
-				: undefined;
+			const row = result.rows[0];
+			if (row === undefined) {
+				return(null);
+			}
 
-			return({
-				id: ConvertStringToRequestID(entry.id),
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				request: JSON.parse(entry.request) as QueueRequest,
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				output: entry.output ? JSON.parse(entry.output) as QueueResult : null,
-				lastError: entry.last_error,
-				status: entry.status,
-				created: new Date(Number(entry.created)),
-				updated: new Date(Number(entry.updated)),
-				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-				worker: entry.worker as unknown as KeetaAnchorQueueWorkerID | null,
-				failures: entry.failures,
-				idempotentKeys: idempotentKeys
-			});
+			const id = ConvertStringToRequestID(row.id);
+			await this.writeStatusUpdate(client, id, row, 'processing', { oldStatus: status, by: worker }, this.methodLogger('claimNext'));
+
+			return(await this.decodeEntryRow(client, row));
 		}));
 	}
 
@@ -590,36 +787,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			const { text, params } = this.buildQuerySQL(filter);
 			const rows = await client.query<QueueEntryRow>(text, params);
 
-			const entries: KeetaAnchorQueueEntry<QueueRequest, QueueResult>[] = [];
-
-			for (const row of rows.rows) {
-				const idempotentRows = await client.query<IdempotentRow>(
-					`SELECT idempotent_id FROM ${this.tableNameIdempotentKeys} WHERE entry_id = $1 AND path = $2`,
-					[row.id, this.pathStr]
-				);
-
-				const idempotentKeys = idempotentRows.rows.length > 0
-					? new Set(idempotentRows.rows.map(function(idempotentRow: IdempotentRow) {
-						return(ConvertStringToRequestID(idempotentRow.idempotent_id));
-					}))
-					: undefined;
-
-				entries.push({
-					id: ConvertStringToRequestID(row.id),
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					request: JSON.parse(row.request) as QueueRequest,
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					output: row.output ? JSON.parse(row.output) as QueueResult : null,
-					lastError: row.last_error,
-					status: row.status,
-					created: new Date(Number(row.created)),
-					updated: new Date(Number(row.updated)),
-					// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-					worker: row.worker as unknown as KeetaAnchorQueueWorkerID | null,
-					failures: row.failures,
-					idempotentKeys: idempotentKeys
-				});
-			}
+			const entries = await Promise.all(rows.rows.map(async (row) => {
+				return(await this.decodeEntryRow(client, row));
+			}));
 
 			logger?.debug(`Queried queue with id ${this.id} with filter:`, filter, '-- found', entries.length, 'entries');
 
@@ -677,7 +847,8 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 			logger: this.logger,
 			pool: this.poolInternal,
 			path: [...this.path, path],
-			tablePrefix: this.tablePrefix
+			tablePrefix: this.tablePrefix,
+			vacuumPolicy: this.vacuumPolicy
 		});
 
 		return(retval);
