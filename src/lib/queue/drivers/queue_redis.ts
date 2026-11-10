@@ -274,27 +274,15 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 				return {ok = 'OK'}
 			`;
 
-			const result = await redis.eval(luaScript, {
-				keys: [this.queueKey(id)],
-				arguments: [
-					oldStatus,
-					JSON.stringify(updatedEntry),
-					this.indexKey(oldStatus),
-					this.indexKey(status),
-					this.indexKey(),
-					String(id),
-					String(currentTime)
-				]
-			});
-
-			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-			const resultObj = result as { err?: string; ok?: string };
-			if (resultObj.err === 'NOT_FOUND') {
-				throw(new Error(`Request with ID ${String(id)} not found`));
-			}
-			if (resultObj.err === 'STATUS_MISMATCH') {
-				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, existingEntry.status));
-			}
+			await this.evalStatusSwap(redis, luaScript, id, oldStatus, [
+				oldStatus,
+				JSON.stringify(updatedEntry),
+				this.indexKey(oldStatus),
+				this.indexKey(status),
+				this.indexKey(),
+				String(id),
+				String(currentTime)
+			]);
 		} else {
 			const multi = redis.multi();
 			multi.set(this.queueKey(id), JSON.stringify(updatedEntry));
@@ -306,6 +294,39 @@ export default class KeetaAnchorQueueStorageDriverRedis<QueueRequest extends JSO
 			multi.zAdd(this.indexKey(), { score: currentTime, value: String(id) });
 
 			await multi.exec();
+		}
+	}
+
+	/**
+	 * Run the status swap script and turn its errors into queue errors.
+	 *
+	 * A Lua error table comes back as a rejected ErrorReply, not as a
+	 * result.  Without this mapping a claim that loses the race looks
+	 * like a processing failure, and the runner would overwrite the
+	 * winner's entry.
+	 */
+	private async evalStatusSwap(redis: RedisClientType, luaScript: string, id: KeetaAnchorQueueRequestID, oldStatus: KeetaAnchorQueueStatus, scriptArguments: string[]): Promise<void> {
+		try {
+			await redis.eval(luaScript, { keys: [this.queueKey(id)], arguments: scriptArguments });
+		} catch (error: unknown) {
+			if (!(error instanceof Error)) {
+				throw(error);
+			}
+
+			let current: KeetaAnchorQueueEntry<QueueRequest, QueueResult> | null = null;
+			if (error.message === 'STATUS_MISMATCH') {
+				current = await this.get(id);
+			}
+
+			if (current !== null) {
+				throw(new Errors.IncorrectStateAssertedError(id, oldStatus, current.status));
+			}
+
+			if (error.message === 'NOT_FOUND' || error.message === 'STATUS_MISMATCH') {
+				throw(new Error(`Request with ID ${String(id)} not found`));
+			}
+
+			throw(error);
 		}
 	}
 
