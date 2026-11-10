@@ -1250,9 +1250,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		const processStatus = async (status: KeetaAnchorQueueStatus, processor: EntryProcessor): Promise<'empty' | 'timeout' | 'more'> => {
 			/*
 			 * Losing an entry to another worker does not use up a
-			 * batch slot, but the retries are bounded so a run always
-			 * ends
+			 * batch slot, since that entry is now the other worker's
+			 * to process.  Every loss means another worker made
+			 * progress, so the retries are only bounded (generously)
+			 * to guarantee a run ends if entries keep coming back
 			 */
+			const maxContended = batchSize * 100;
 			let contended = 0;
 			let processed = 0;
 			while (processed < batchSize) {
@@ -1266,7 +1269,11 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 					return('timeout');
 				}
 
-				if (result === processJobContended && contended < batchSize) {
+				if (result === processJobContended) {
+					if (contended >= maxContended) {
+						return('more');
+					}
+
 					contended++;
 					continue;
 				}
