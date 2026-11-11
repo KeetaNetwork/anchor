@@ -93,19 +93,10 @@ const MaxScaleFactor = 100;
 const InsufficientPrivilegeSQLState = '42501';
 
 /**
- * Postgres cuts longer identifiers to this many bytes
+ * The longest table prefix, which keeps every table and index name well
+ * under the 63 bytes Postgres allows
  */
-const MaxIdentifierBytes = 63;
-
-/**
- * The longest name the driver builds from the table prefix, without the prefix
- */
-const LongestIdentifierAffixes = ['idx_', '_idempotent_keys_path_idempotent_id'];
-
-/**
- * The longest table prefix whose table and index names Postgres keeps whole
- */
-export const MaxTablePrefixLength: number = MaxIdentifierBytes - LongestIdentifierAffixes.join('').length;
+export const MaxTablePrefixLength = 20;
 
 /**
  * Check the vacuum policy and build the table storage parameters for it.
