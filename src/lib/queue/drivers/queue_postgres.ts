@@ -93,10 +93,10 @@ const MaxScaleFactor = 100;
 const InsufficientPrivilegeSQLState = '42501';
 
 /**
- * The longest table prefix, which keeps every table and index name well
- * under the 63 bytes Postgres allows
+ * The longest table prefix that keeps every table and index name within
+ * the 63 bytes Postgres allows
  */
-export const MaxTablePrefixLength = 20;
+export const MaxTablePrefixLength = 24;
 
 /**
  * Check the vacuum policy and build the table storage parameters for it.
