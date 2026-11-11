@@ -310,6 +310,15 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							/*
+							 * The new index serves every query the old one did.
+							 * Drop the old one first: Postgres cuts names to 63
+							 * bytes, and for a long table name both names cut
+							 * to the same one, so creating first would keep the
+							 * old index and the drop would then remove it.
+							 */
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
+
+							/*
 							 * This blocks writes to the entries table while
 							 * the index builds.  For a large table, an operator
 							 * can build it ahead of time with
@@ -317,11 +326,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 							 * and this step then only drops the old index.
 							 */
 							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated_id ON ${this.tableNameEntries}(path, status, updated, id)`);
-
-							/*
-							 * The new index serves every query the old one did
-							 */
-							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
 
 							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (3, $1)`, [Date.now()]);
 							await client.query('COMMIT');

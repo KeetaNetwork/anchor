@@ -1,4 +1,4 @@
-// cspell:ignore autovacuum regclass reloptions lpad
+// cspell:ignore autovacuum regclass reloptions lpad indexdef tablename
 import { suite, test, expect } from 'vitest';
 import * as pg from 'pg';
 import { getTestingPostgresConfig } from '../../utils/tests/postgres.js';
@@ -37,9 +37,8 @@ function newPool(): pg.Pool {
  * A pool plus a unique table prefix, with every table under that prefix
  * dropped on dispose
  */
-async function useTables(): Promise<{ pool: pg.Pool; prefix: string; entries: string; [Symbol.asyncDispose]: () => Promise<void>; }> {
+async function useTables(prefix = randomTablePrefix()): Promise<{ pool: pg.Pool; prefix: string; entries: string; [Symbol.asyncDispose]: () => Promise<void>; }> {
 	const pool = newPool();
-	const prefix = randomTablePrefix();
 
 	return({
 		pool: pool,
@@ -341,5 +340,27 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
 		}
 
 		expect((await queue.claimNext('pending', workerID(0)))?.id).toBe(ids[0]);
+	});
+});
+
+suite.skipIf(postgresConfig === null)('Postgres Driver Schema', function() {
+	test('Keeps The Queue Order Index When The Table Name Cuts Both Index Names To The Same 63 Bytes', async function() {
+		/*
+		 * Postgres cuts identifiers to 63 bytes.  With this prefix,
+		 * "idx_<entries>_path_status_updated" and
+		 * "idx_<entries>_path_status_updated_id" cut to the same name
+		 */
+		const prefix = randomTablePrefix().padEnd(40, 'x');
+		expect(`idx_${prefix}_entries_path_status_updated`.length).toBeGreaterThan(63);
+
+		await using tables = await useTables(prefix);
+		await using queue = await initializeDriver(tables.pool, tables.prefix);
+		void queue;
+
+		const indexes = await tables.pool.query<{ definition: string }>('SELECT indexdef AS definition FROM pg_indexes WHERE tablename = $1', [tables.entries]);
+		const definitions = indexes.rows.map(function(row) {
+			return(row.definition);
+		});
+		expect(definitions).toContainEqual(expect.stringContaining('(path, status, updated, id)'));
 	});
 });
