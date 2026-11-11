@@ -93,6 +93,21 @@ const MaxScaleFactor = 100;
 const InsufficientPrivilegeSQLState = '42501';
 
 /**
+ * Postgres cuts longer identifiers to this many bytes
+ */
+const MaxIdentifierBytes = 63;
+
+/**
+ * The longest name the driver builds from the table prefix, without the prefix
+ */
+const LongestIdentifierAffixes = ['idx_', '_idempotent_keys_path_idempotent_id'];
+
+/**
+ * The longest table prefix whose table and index names Postgres keeps whole
+ */
+export const MaxTablePrefixLength: number = MaxIdentifierBytes - LongestIdentifierAffixes.join('').length;
+
+/**
  * Check the vacuum policy and build the table storage parameters for it.
  * The values are written into the ALTER TABLE statement (storage
  * parameters cannot be bound), so each one must be a finite number in
@@ -132,7 +147,8 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	/**
 	 * The prefix to use for the database tables. Defaults to 'queue',
 	 * resulting in table names 'queue_entries', 'queue_idempotent_keys',
-	 * and `queue_schema_version`.
+	 * and `queue_schema_version`.  At most {@link MaxTablePrefixLength}
+	 * bytes.
 	 */
 	tablePrefix?: string | undefined;
 
@@ -168,6 +184,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
+		if (this.tablePrefix !== undefined && new TextEncoder().encode(this.tablePrefix).length > MaxTablePrefixLength) {
+			throw(new Error(`Invalid tablePrefix: must be at most ${MaxTablePrefixLength} bytes`));
+		}
 		this.poolInternal = options.pool;
 		this.vacuumPolicy = options.vacuumPolicy ?? {};
 		this.vacuumStorageParameters = null;
@@ -310,11 +329,7 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							/*
-							 * The new index serves every query the old one did.
-							 * Drop the old one first: Postgres cuts names to 63
-							 * bytes, and for a long table name both names cut
-							 * to the same one, so creating first would keep the
-							 * old index and the drop would then remove it.
+							 * The new index serves every query the old one did
 							 */
 							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
 

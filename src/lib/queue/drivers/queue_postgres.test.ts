@@ -1,8 +1,8 @@
-// cspell:ignore autovacuum regclass reloptions lpad indexdef tablename
+// cspell:ignore autovacuum regclass reloptions lpad indexname tablename
 import { suite, test, expect } from 'vitest';
 import * as pg from 'pg';
 import { getTestingPostgresConfig } from '../../utils/tests/postgres.js';
-import KeetaAnchorQueueStorageDriverPostgres from './queue_postgres.js';
+import KeetaAnchorQueueStorageDriverPostgres, { MaxTablePrefixLength } from './queue_postgres.js';
 import type { KeetaAnchorQueueStorageDriverPostgresVacuumPolicy } from './queue_postgres.js';
 import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueWorkerID } from '../index.js';
 import { ConvertStringToRequestID } from '../internal.js';
@@ -344,23 +344,31 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
 });
 
 suite.skipIf(postgresConfig === null)('Postgres Driver Schema', function() {
-	test('Keeps The Queue Order Index When The Table Name Cuts Both Index Names To The Same 63 Bytes', async function() {
-		/*
-		 * Postgres cuts identifiers to 63 bytes.  With this prefix,
-		 * "idx_<entries>_path_status_updated" and
-		 * "idx_<entries>_path_status_updated_id" cut to the same name
-		 */
-		const prefix = randomTablePrefix().padEnd(40, 'x');
-		expect(`idx_${prefix}_entries_path_status_updated`.length).toBeGreaterThan(63);
-
+	test('Keeps Every Index Name Whole At The Longest Table Prefix', async function() {
+		const prefix = randomTablePrefix().padEnd(MaxTablePrefixLength, 'x');
 		await using tables = await useTables(prefix);
 		await using queue = await initializeDriver(tables.pool, tables.prefix);
 		void queue;
 
-		const indexes = await tables.pool.query<{ definition: string }>('SELECT indexdef AS definition FROM pg_indexes WHERE tablename = $1', [tables.entries]);
-		const definitions = indexes.rows.map(function(row) {
-			return(row.definition);
-		});
-		expect(definitions).toContainEqual(expect.stringContaining('(path, status, updated, id)'));
+		const indexes = await tables.pool.query<{ name: string }>(String.raw`SELECT indexname AS name FROM pg_indexes WHERE tablename IN ($1, $2) AND indexname LIKE 'idx\_%' ORDER BY indexname`, [tables.entries, `${prefix}_idempotent_keys`]);
+		expect(indexes.rows.map(function(row) {
+			return(row.name);
+		})).toEqual([
+			`idx_${prefix}_entries_path_status`,
+			`idx_${prefix}_entries_path_status_updated_id`,
+			`idx_${prefix}_entries_path_updated`,
+			`idx_${prefix}_idempotent_keys_path_idempotent_id`
+		]);
+	});
+
+	test('Rejects A Longer Table Prefix', function() {
+		expect(function() {
+			return(new KeetaAnchorQueueStorageDriverPostgres({
+				tablePrefix: 'x'.repeat(MaxTablePrefixLength + 1),
+				pool: async function() {
+					return(newPool());
+				}
+			}));
+		}).toThrow(`Invalid tablePrefix: must be at most ${MaxTablePrefixLength} bytes`);
 	});
 });
