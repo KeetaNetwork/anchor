@@ -1,8 +1,8 @@
-// cspell:ignore autovacuum regclass reloptions lpad
+// cspell:ignore autovacuum regclass reloptions lpad indexname tablename
 import { suite, test, expect } from 'vitest';
 import * as pg from 'pg';
 import { getTestingPostgresConfig } from '../../utils/tests/postgres.js';
-import KeetaAnchorQueueStorageDriverPostgres from './queue_postgres.js';
+import KeetaAnchorQueueStorageDriverPostgres, { MaxTablePrefixLength } from './queue_postgres.js';
 import type { KeetaAnchorQueueStorageDriverPostgresVacuumPolicy } from './queue_postgres.js';
 import type { KeetaAnchorQueueRequestID, KeetaAnchorQueueWorkerID } from '../index.js';
 import { ConvertStringToRequestID } from '../internal.js';
@@ -37,9 +37,8 @@ function newPool(): pg.Pool {
  * A pool plus a unique table prefix, with every table under that prefix
  * dropped on dispose
  */
-async function useTables(): Promise<{ pool: pg.Pool; prefix: string; entries: string; [Symbol.asyncDispose]: () => Promise<void>; }> {
+async function useTables(prefix = randomTablePrefix()): Promise<{ pool: pg.Pool; prefix: string; entries: string; [Symbol.asyncDispose]: () => Promise<void>; }> {
 	const pool = newPool();
-	const prefix = randomTablePrefix();
 
 	return({
 		pool: pool,
@@ -341,5 +340,35 @@ suite.skipIf(postgresConfig === null)('Postgres Driver Claim', function() {
 		}
 
 		expect((await queue.claimNext('pending', workerID(0)))?.id).toBe(ids[0]);
+	});
+});
+
+suite.skipIf(postgresConfig === null)('Postgres Driver Schema', function() {
+	test('Keeps Every Index Name Whole At The Longest Table Prefix', async function() {
+		const prefix = randomTablePrefix().padEnd(MaxTablePrefixLength, 'x');
+		await using tables = await useTables(prefix);
+		await using queue = await initializeDriver(tables.pool, tables.prefix);
+		void queue;
+
+		const indexes = await tables.pool.query<{ name: string }>(String.raw`SELECT indexname AS name FROM pg_indexes WHERE tablename IN ($1, $2) AND indexname LIKE 'idx\_%' ORDER BY indexname`, [tables.entries, `${prefix}_idempotent_keys`]);
+		expect(indexes.rows.map(function(row) {
+			return(row.name);
+		})).toEqual([
+			`idx_${prefix}_entries_path_status`,
+			`idx_${prefix}_entries_path_status_updated_id`,
+			`idx_${prefix}_entries_path_updated`,
+			`idx_${prefix}_idempotent_keys_path_idempotent_id`
+		]);
+	});
+
+	test('Rejects A Longer Table Prefix', function() {
+		expect(function() {
+			return(new KeetaAnchorQueueStorageDriverPostgres({
+				tablePrefix: 'x'.repeat(MaxTablePrefixLength + 1),
+				pool: async function() {
+					return(newPool());
+				}
+			}));
+		}).toThrow(`Invalid tablePrefix: must be at most ${MaxTablePrefixLength} bytes`);
 	});
 });

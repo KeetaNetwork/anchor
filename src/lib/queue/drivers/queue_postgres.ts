@@ -93,6 +93,12 @@ const MaxScaleFactor = 100;
 const InsufficientPrivilegeSQLState = '42501';
 
 /**
+ * The longest table prefix that keeps every table and index name within
+ * the 63 bytes Postgres allows
+ */
+export const MaxTablePrefixLength = 24;
+
+/**
  * Check the vacuum policy and build the table storage parameters for it.
  * The values are written into the ALTER TABLE statement (storage
  * parameters cannot be bound), so each one must be a finite number in
@@ -132,7 +138,8 @@ type KeetaAnchorQueueStorageDriverPostgresOptions = {
 	/**
 	 * The prefix to use for the database tables. Defaults to 'queue',
 	 * resulting in table names 'queue_entries', 'queue_idempotent_keys',
-	 * and `queue_schema_version`.
+	 * and `queue_schema_version`.  At most {@link MaxTablePrefixLength}
+	 * bytes.
 	 */
 	tablePrefix?: string | undefined;
 
@@ -168,6 +175,9 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 		this.id = options?.id ?? crypto.randomUUID();
 		this.logger = options?.logger;
 		this.tablePrefix = options?.tablePrefix;
+		if (this.tablePrefix !== undefined && new TextEncoder().encode(this.tablePrefix).length > MaxTablePrefixLength) {
+			throw(new Error(`Invalid tablePrefix: must be at most ${MaxTablePrefixLength} bytes`));
+		}
 		this.poolInternal = options.pool;
 		this.vacuumPolicy = options.vacuumPolicy ?? {};
 		this.vacuumStorageParameters = null;
@@ -310,6 +320,11 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 						await client.query('BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED');
 						try {
 							/*
+							 * The new index serves every query the old one did
+							 */
+							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
+
+							/*
 							 * This blocks writes to the entries table while
 							 * the index builds.  For a large table, an operator
 							 * can build it ahead of time with
@@ -317,11 +332,6 @@ export default class KeetaAnchorQueueStorageDriverPostgres<QueueRequest extends 
 							 * and this step then only drops the old index.
 							 */
 							await client.query(`CREATE INDEX IF NOT EXISTS idx_${this.tableNameEntries}_path_status_updated_id ON ${this.tableNameEntries}(path, status, updated, id)`);
-
-							/*
-							 * The new index serves every query the old one did
-							 */
-							await client.query(`DROP INDEX IF EXISTS idx_${this.tableNameEntries}_path_status_updated`);
 
 							await client.query(`INSERT INTO ${this.tableNameSchemaVersion} (version, applied_at) VALUES (3, $1)`, [Date.now()]);
 							await client.query('COMMIT');
