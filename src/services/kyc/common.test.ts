@@ -2,7 +2,7 @@ import { test, expect } from 'vitest';
 import { Errors } from './common.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import { Buffer } from '../../lib/utils/buffer.js';
+import { Buffer, bufferToArrayBuffer } from '../../lib/utils/buffer.js';
 
 for (const errorClass of [
 	Errors.VerificationNotFound,
@@ -37,7 +37,7 @@ for (const errorClass of [
 test('KYC Error Round-trip Serialization - PaymentRequired', async function() {
 	// Create a token account for testing
 	const tokenAccount = KeetaNet.lib.Account.fromSeed(
-		Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'),
+		bufferToArrayBuffer(Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex')),
 		0,
 		KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN
 	);

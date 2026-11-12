@@ -114,7 +114,7 @@ do-deploy: dist node_modules
 
 # This is a synthetic target that runs this test suite.
 test: node_modules $(GENERATED_FILES)
-	npm run tsc -- --noEmit
+	npm run tsrs -- --noEmit
 	rm -rf .coverage
 	npm run vitest run -- --config ./.vitest.config.js $(ANCHOR_TEST_EXTRA_ARGS)
 
