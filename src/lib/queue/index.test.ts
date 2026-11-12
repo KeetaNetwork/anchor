@@ -2039,6 +2039,82 @@ suite('Driver Tests', async function() {
 				}
 
 				/*
+				 * Losing entries to other workers must not use up the
+				 * batch, even when it happens more often than the
+				 * batch size
+				 */
+				testRunner('Losing Entries To Other Workers Does Not Use Up The Batch', async function() {
+					await using queueInfo = await driverConfig.create('contended-batch');
+					const batchSize = 2;
+					const stolenCount = batchSize * 2;
+					let stolen = 0;
+
+					/*
+					 * Make the first entries the runner tries to lock
+					 * be taken by another worker just before it gets
+					 * there
+					 */
+					const queue = queueInfo.queue;
+					const contendedQueue = new Proxy(queue, {
+						get(target, property, receiver): unknown {
+							/*
+							 * Hide atomic claiming (Postgres), which
+							 * cannot be lost, so every driver goes
+							 * through the lock-by-setStatus path
+							 */
+							if (property === 'claimNext') {
+								return(undefined);
+							}
+
+							if (property !== 'setStatus') {
+								const value: unknown = Reflect.get(target, property, receiver);
+								if (typeof value === 'function') {
+									return(value.bind(target));
+								}
+
+								return(value);
+							}
+
+							return(async function(id: Parameters<typeof queue.setStatus>[0], status: Parameters<typeof queue.setStatus>[1], ancillary?: Parameters<typeof queue.setStatus>[2]): Promise<void> {
+								if (status === 'processing' && ancillary?.oldStatus === 'pending' && stolen < stolenCount) {
+									stolen++;
+									await target.setStatus(id, 'completed', { oldStatus: 'pending' });
+								}
+
+								await target.setStatus(id, status, ancillary);
+							});
+						}
+					});
+
+					const processedKeys: string[] = [];
+					const runner = new KeetaAnchorQueueRunnerJSONConfigProc<string, string>({
+						id: 'contended-batch',
+						queue: contendedQueue,
+						logger: logger,
+						batchSize: batchSize,
+						processor: async function(entry) {
+							processedKeys.push(entry.request);
+							return({ status: 'completed', output: entry.request });
+						}
+					});
+					await using cleanup = new AsyncDisposableStack();
+					cleanup.defer(async function() {
+						await runner.destroy();
+					});
+
+					const entryCount = stolenCount + batchSize;
+					for (let index = 0; index < entryCount; index++) {
+						await runner.add(`job${index}`);
+						await nextUpdatedTime();
+					}
+
+					await runner.run();
+
+					expect(stolen).toBe(stolenCount);
+					expect(processedKeys).toHaveLength(batchSize);
+				}, 60_000);
+
+				/*
 				 * Moving an entry to the back of the line sets its status
 				 * without an output, which must leave the stored output
 				 * untouched
