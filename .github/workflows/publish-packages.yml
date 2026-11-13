@@ -78,6 +78,12 @@ jobs:
           registry-url: 'https://npm.pkg.github.com'
           scope: '@keetanetwork'
 
+      # Needed to clone the KeetaNet Node repository, whose client and node
+      # packages are vendored by commit hash
+      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY_NODE }}
+
       - name: Build release artifacts and create packages
         run: make -j8 do-npm-pack
         env:

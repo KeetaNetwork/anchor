@@ -330,6 +330,33 @@ type ServiceMetadata = {
 				};
 			}
 		};
+		contracts?: {
+			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
+				/**
+				 * The sequencer account: it orders calls to the contracts
+				 * that name it, by signing blocks on their chains.
+				 * Representatives run the calls.
+				 */
+				sequencer: string;
+
+				/**
+				 * What the sequencer charges per call, paid with a SEND to it
+				 * in the block carrying the calls: `perCall` for each call
+				 * plus `perGas` for each unit of its gas limit, in atomic
+				 * units of `token`. Absent when it charges nothing.
+				 */
+				fee?: {
+					token: string;
+					perCall: string;
+					perGas: string;
+				};
+
+				operations: {
+					/** Submit signed blocks carrying contract calls, to be ordered */
+					submit?: ServiceMetadataEndpoint;
+				};
+			}
+		};
 	};
 };
 
@@ -442,7 +469,11 @@ type ServiceSearchCriteria<T extends Services> = {
 		 * Search for a provider which supports ANY of the following
 		 */
 		supportedSubscriptions?: NotificationSubscriptionType[];
-	}
+	};
+	// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+	'contracts': {
+		/* No search criteria */
+	};
 }[T];
 
 type ResolverLookupServiceResults<Service extends Services> = { [id: string]: ToValuizableObject<NonNullable<ServiceMetadata['services'][Service]>[string]> };
@@ -1752,6 +1783,9 @@ class Resolver {
 		},
 		'notification': {
 			search: this.lookupNotificationServices.bind(this)
+		},
+		'contracts': {
+			search: this.lookupContractsServices.bind(this)
 		}
 	};
 
@@ -2411,6 +2445,37 @@ class Resolver {
 				retval[checkStorageServiceID] = checkStorageService;
 			} catch (checkStorageServiceError) {
 				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking storage service', checkStorageServiceID, ':', checkStorageServiceError, ' -- ignoring');
+			}
+		}
+
+		if (Object.keys(retval).length === 0) {
+			return(undefined);
+		}
+
+		return(retval);
+	}
+
+	private async lookupContractsServices(contractsServices: ValuizableObject | undefined, _ignore_criteria: ServiceSearchCriteria<'contracts'>): Promise<ResolverLookupServiceResults<'contracts'> | undefined> {
+		if (contractsServices === undefined) {
+			return(undefined);
+		}
+
+		const retval: ResolverLookupServiceResults<'contracts'> = {};
+		for (const checkContractsServiceID in contractsServices) {
+			try {
+				const checkContractsService = await isValidOperations(await contractsServices[checkContractsServiceID]?.('object'));
+				if (!checkContractsService) {
+					continue;
+				}
+
+				if (!('sequencer' in checkContractsService)) {
+					continue;
+				}
+
+				// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+				retval[checkContractsServiceID] = checkContractsService as unknown as ResolverLookupServiceResults<'contracts'>[string];
+			} catch (checkContractsServiceError) {
+				this.#logger?.debug(`Resolver:${this.id}`, 'Error checking contracts service', checkContractsServiceID, ':', checkContractsServiceError, ' -- ignoring');
 			}
 		}
 

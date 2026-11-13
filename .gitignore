@@ -9,3 +9,4 @@
 /src/services/kyc/oids.generated.ts
 /src/services/asset-movement/lib/data/addresses/**/*.generated.ts
 /actionlint*
+/vendor
