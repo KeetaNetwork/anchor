@@ -8,6 +8,7 @@ import { afterEach, expect } from 'vitest';
 import { createTestNode, testingNetworkId } from '@keetanetwork/keetanet-node/dist/lib/utils/helper_testing.js';
 import type { LocalNodeWithPrivateKey } from '@keetanetwork/keetanet-node/dist/lib/utils/helper_testing.js';
 import { generateInitialVoteStaple } from '@keetanetwork/keetanet-node/dist/lib/utils/initial.js';
+import * as KeetaNetNode from '@keetanetwork/keetanet-node/dist/client';
 import type { BlockJSONOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaNetContractsAnchorHTTPServer } from './server.js';
@@ -18,7 +19,19 @@ import type { Account, KeyPairAccount } from './test-utils.js';
 import { contractTest, instruction, logger, probe, program } from './test-utils.js';
 
 type Block = InstanceType<typeof KeetaNet.lib.Block>;
-type VoteStaple = InstanceType<typeof KeetaNet.lib.Vote.Staple>;
+type NodeVoteStaple = InstanceType<typeof KeetaNetNode.lib.Vote.Staple>;
+
+/*
+ * The representatives run the node package and the sequencer the client
+ * package; each has its own classes, so values cross between them as
+ * bytes or public keys.
+ */
+function toNodeAccount(account: Account) {
+	return(KeetaNetNode.lib.Account.fromPublicKeyString(account.publicKeyString.get()));
+}
+function toNodeBlock(block: Block) {
+	return(new KeetaNetNode.lib.Block(block.toBytes()));
+}
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async function() {
@@ -35,23 +48,26 @@ interface Network {
 	/** Blocks signed by `signer` on `account`'s chain (its own by default), extending the head */
 	block(signer: KeyPairAccount, operations: BlockJSONOperations[], account?: Account): Promise<Block>;
 	/** Votes from every representative, applied to `to` (every representative by default) */
-	staple(blocks: Block[], to?: LocalNodeWithPrivateKey[]): Promise<VoteStaple>;
+	staple(blocks: Block[], to?: LocalNodeWithPrivateKey[]): Promise<NodeVoteStaple>;
 	deploy(creator: KeyPairAccount, code: Buffer): Promise<string>;
 	/** The sequencer as `account` reaches it, with its contracts client */
 	as(account: KeyPairAccount): { contracts: KeetaContractsAnchorClient; provider: KeetaContractsAnchorProvider; };
 }
 
 async function network(): Promise<Network> {
-	const seed = KeetaNet.lib.Account.generateRandomSeed();
+	const seed = KeetaNet.lib.Account.generateRandomSeed({ asString: true });
 	const account = (index: number) => KeetaNet.lib.Account.fromSeed(seed, index);
 	const [repA, repB, trusted, holder, sequencer] = [0, 1, 100, 101, 102].map(account);
 	if (repA === undefined || repB === undefined || trusted === undefined || holder === undefined || sequencer === undefined) {
 		throw(new Error('accounts'));
 	}
+	// The same keys, as the representatives hold them
+	const nodeAccount = (index: number) => KeetaNetNode.lib.Account.fromSeed(seed, index);
+	const [nodeRepA, nodeRepB, nodeTrusted] = [nodeAccount(0), nodeAccount(1), nodeAccount(100)];
 
 	const nodes: LocalNodeWithPrivateKey[] = [];
-	for (const rep of [repA, repB]) {
-		const node = await createTestNode(rep, { initialTrustedAccount: trusted });
+	for (const rep of [nodeRepA, nodeRepB]) {
+		const node = await createTestNode(rep, { initialTrustedAccount: nodeTrusted });
 		cleanup.push(async () => await node.stop());
 		nodes.push(node);
 	}
@@ -61,19 +77,20 @@ async function network(): Promise<Network> {
 	}
 
 	async function block(signer: KeyPairAccount, operations: BlockJSONOperations[], chain: Account = signer): Promise<Block> {
-		const head = await first?.ledger.getHeadBlock(chain, 'main');
-		return(await new KeetaNet.lib.Block.Builder({ account: chain, signer, previous: head?.hash ?? KeetaNet.lib.Block.NO_PREVIOUS, network: testingNetworkId, operations }).seal());
+		const head = await first?.ledger.getHeadBlock(toNodeAccount(chain), 'main');
+		return(await new KeetaNet.lib.Block.Builder({ account: chain, signer, previous: head?.hash.toString() ?? KeetaNet.lib.Block.NO_PREVIOUS, network: testingNetworkId, operations }).seal());
 	}
-	async function staple(blocks: Block[], to: LocalNodeWithPrivateKey[] = nodes): Promise<VoteStaple> {
+	async function staple(blocks: Block[], to: LocalNodeWithPrivateKey[] = nodes): Promise<NodeVoteStaple> {
+		const nodeBlocks = blocks.map(toNodeBlock);
 		const temporary = [];
 		for (const node of nodes) {
-			temporary.push(await node.ledger.vote(blocks));
+			temporary.push(await node.ledger.vote(nodeBlocks));
 		}
 		const permanent = [];
 		for (const node of nodes) {
-			permanent.push(await node.ledger.vote(blocks, temporary));
+			permanent.push(await node.ledger.vote(nodeBlocks, temporary));
 		}
-		const voteStaple = KeetaNet.lib.Vote.Staple.fromVotesAndBlocks(permanent, blocks);
+		const voteStaple = KeetaNetNode.lib.Vote.Staple.fromVotesAndBlocks(permanent, nodeBlocks);
 		for (const node of to) {
 			await node.ledger.add(voteStaple);
 		}
@@ -81,11 +98,11 @@ async function network(): Promise<Network> {
 	}
 
 	// Half the weight to each representative.
-	const initial = await generateInitialVoteStaple({ initialTrustedAccount: trusted, network: testingNetworkId, addSupply: { recipient: trusted, delegate: true, delegateTo: repA, amount: 1_000n }});
+	const initial = await generateInitialVoteStaple({ initialTrustedAccount: nodeTrusted, network: testingNetworkId, addSupply: { recipient: nodeTrusted, delegate: true, delegateTo: nodeRepA, amount: 1_000n }});
 	for (const node of nodes) {
 		await node.ledger.add(initial.voteStaple);
 	}
-	const baseToken = first.ledger.baseToken.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+	const baseToken = KeetaNet.lib.Account.fromPublicKeyString(first.ledger.baseToken.publicKeyString.get()).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	await staple([await block(trusted, [{ type: KeetaNet.lib.Block.OperationType.SEND, to: holder, token: baseToken, amount: 500n }])]);
 	await staple([await block(holder, [{ type: KeetaNet.lib.Block.OperationType.SET_REP, to: repB }])]);
 
@@ -106,8 +123,8 @@ async function network(): Promise<Network> {
 		block,
 		staple,
 		async deploy(creator, code) {
-			const head = await first.ledger.getHeadBlock(creator, 'main');
-			const contract = creator.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE, head?.hash ?? KeetaNet.lib.Block.NO_PREVIOUS, 0);
+			const head = await first.ledger.getHeadBlock(toNodeAccount(creator), 'main');
+			const contract = creator.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.STORAGE, head?.hash.toString() ?? KeetaNet.lib.Block.NO_PREVIOUS, 0);
 			await staple([await block(creator, [{ type: KeetaNet.lib.Block.OperationType.CONTRACT_DEPLOY, contract, code, sequencer }])]);
 			return(contract.publicKeyString.get());
 		},
@@ -142,7 +159,7 @@ contractTest('the sequencer waits for a representative that is behind, instead o
 	const result = await provider.call({ instruction: instruction(contract, [{ name: 'counter', writable: true }], probe.increment(0)) });
 	expect(result.writes[0]?.version).toBe(1n);
 	for (const node of on.nodes) {
-		expect((await node.ledger.getContractState(KeetaNet.lib.Account.fromPublicKeyString(contract), stateId('counter'))).version).toBe(1n);
+		expect((await node.ledger.getContractState(KeetaNetNode.lib.Account.fromPublicKeyString(contract), stateId('counter'))).version).toBe(1n);
 	}
 }, 120_000);
 
@@ -177,7 +194,7 @@ contractTest('a caller forking its chain between the quotes and the votes holds 
 	on.client.voteEach = async (...args: Parameters<typeof original>) => {
 		if (!forked) {
 			forked = true;
-			await nodeB?.ledger.vote([await on.block(bob, [{ type: KeetaNet.lib.Block.OperationType.SET_REP, to: on.sequencer }])]);
+			await nodeB?.ledger.vote([toNodeBlock(await on.block(bob, [{ type: KeetaNet.lib.Block.OperationType.SET_REP, to: on.sequencer }]))]);
 		}
 		return(await original(...args));
 	};
