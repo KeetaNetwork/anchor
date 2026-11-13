@@ -1,6 +1,9 @@
 /**
- * Client for contract sequencers: finds them through the resolver, builds
- * and signs the caller's funding block, and calls them.
+ * Client for contracts on Keeta: deploys contracts, builds and signs blocks
+ * calling them, submits those to a sequencer (found through the resolver)
+ * for ordering, and reads contract state from the network.
+ *
+ * Representatives run the calls; the sequencer only orders them.
  */
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import type { UserClient as KeetaNetUserClient } from '@keetanetwork/keetanet-client';
@@ -9,68 +12,64 @@ import type { Logger } from '../../lib/log/index.ts';
 import Resolver from '../../lib/resolver.js';
 import type { ServiceMetadata, SharedLookupCriteria } from '../../lib/resolver.ts';
 import { KeetaAnchorError } from '../../lib/error.js';
-import { SignData } from '../../lib/utils/signing.js';
-import type { Signable } from '../../lib/utils/signing.js';
-import type { ContractRecord, ContractStorageProof } from './engine.js';
-import type { KeetaContractsAnchorCallResult } from './common.js';
-import {
-	getContractExecuteSignable,
-	getContractInstantiateSignable,
-	getContractMigrateSignable,
-	getContractUploadSignable,
-	isKeetaContractsAnchorCallResponseJSON,
-	isKeetaContractsAnchorContractResponseJSON,
-	isKeetaContractsAnchorProveResponseJSON,
-	isKeetaContractsAnchorQueryResponseJSON,
-	isKeetaContractsAnchorSimulateResponseJSON,
-	isKeetaContractsAnchorUploadResponseJSON
-} from './common.js';
+import type { ContractInstruction, Hex, KeetaContractsAnchorCallOutcome, KeetaContractsAnchorSubmitResult } from './common.js';
+import { Errors, feeFor, isKeetaContractsAnchorSubmitResponseJSON } from './common.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+import type { BlockJSONOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
 
 type KeetaNetAccount = InstanceType<typeof KeetaNetLib.Account>;
+type KeetaNetBlock = InstanceType<typeof KeetaNetLib.Block>;
+/** A block's previous: the head's hash, or none for an account's first block */
+type Previous = KeetaNetBlock['hash'] | typeof KeetaNetLib.Block.NO_PREVIOUS;
 type ContractsServiceMetadata = NonNullable<ServiceMetadata['services']['contracts']>[string];
 type Operation = keyof ContractsServiceMetadata['operations'];
+
+const OperationType = KeetaNetLib.Block.OperationType;
+
+/** Gas a call may use unless told otherwise. */
+export const DEFAULT_GAS_LIMIT = 1_400_000n;
 
 export type KeetaContractsAnchorClientConfig = {
 	id?: string;
 	logger?: Logger | undefined;
 	resolver?: Resolver;
-	/** Signs requests and funding blocks; defaults to the user client's account */
+	/** Signs blocks; defaults to the user client's account */
 	account?: KeetaNetAccount;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'>;
 
-/** Tokens to attach to a call. */
+/** Tokens to send to the called contract, in the same block, before the call. */
 export interface KeetaContractsAnchorFund {
 	token: KeetaNetAccount | string;
 	amount: bigint;
 }
 
-interface CallInput {
+export interface KeetaContractsAnchorCallInput {
+	instruction: ContractInstruction;
+	/** The call's funds: the contract sees them as sent with the call */
 	funds?: KeetaContractsAnchorFund[];
-	/**
-	 * Fee to prepay, in the sequencer's gas price token; unused gas is
-	 * refunded. Estimated (with a 20% margin) when omitted.
-	 */
-	fee?: bigint;
 	gasLimit?: bigint;
+	/** The sequencer's fee for ordering the call, sent to it in the same block (`KeetaContractsAnchorProvider.call` adds it) */
+	fee?: { sequencer: KeetaNetAccount | string; token: KeetaNetAccount | string; amount: bigint; };
 }
 
-export interface KeetaContractsAnchorInstantiateInput extends CallInput {
-	codeId: bigint;
-	msg: unknown;
-	label: string;
+/** What a call did: the representatives' outcome, decoded. */
+export interface KeetaContractsAnchorCallResult {
+	/** Hashes of the published staple's blocks, in order */
+	blocks: Hex[];
+	/** The block carrying the call */
+	block: Hex;
+	gasUsed: bigint;
+	returnData: Buffer;
+	writes: { owner: string; id: Hex; version: bigint; }[];
+}
+
+export interface KeetaContractsAnchorDeployInput {
+	/** An sBPF v3 ELF file */
+	code: Uint8Array;
+	/** The sequencer that will order the contract's calls; it cannot be changed later */
+	sequencer: KeetaContractsAnchorProvider | KeetaNetAccount | string;
+	/** Account allowed to upgrade the contract */
 	admin?: KeetaNetAccount | string;
-}
-
-export interface KeetaContractsAnchorExecuteInput extends CallInput {
-	contract: KeetaNetAccount | string;
-	msg: unknown;
-}
-
-export interface KeetaContractsAnchorMigrateInput extends Omit<CallInput, 'funds'> {
-	contract: KeetaNetAccount | string;
-	newCodeId: bigint;
-	msg: unknown;
 }
 
 function address(account: KeetaNetAccount | string): string {
@@ -85,48 +84,53 @@ function toAccount(account: KeetaNetAccount | string): KeetaNetAccount {
 export class KeetaContractsAnchorProvider {
 	readonly providerID: string;
 	readonly sequencer: string;
-	readonly gasPrice: { token: string; numerator: bigint; denominator: bigint; } | undefined;
+	/** What the sequencer charges per call; `undefined` if nothing */
+	readonly fee: { token: string; perCall: bigint; perGas: bigint; } | undefined;
 	readonly #operations: { [name in Operation]?: string; };
 	readonly #parent: KeetaContractsAnchorClient;
 
-	constructor(providerID: string, info: { sequencer: string; gasPrice?: { token: string; numerator: string; denominator: string; } | undefined; operations: { [name in Operation]?: string; }; }, parent: KeetaContractsAnchorClient) {
+	constructor(providerID: string, info: { sequencer: string; fee?: { token: string; perCall: string; perGas: string; } | undefined; operations: { [name in Operation]?: string; }; }, parent: KeetaContractsAnchorClient) {
 		this.providerID = providerID;
 		this.sequencer = info.sequencer;
-		this.gasPrice = info.gasPrice === undefined ? undefined : {
-			token: info.gasPrice.token,
-			numerator: BigInt(info.gasPrice.numerator),
-			denominator: BigInt(info.gasPrice.denominator)
-		};
+		this.fee = info.fee === undefined ? undefined : { token: info.fee.token, perCall: BigInt(info.fee.perCall), perGas: BigInt(info.fee.perGas) };
 		this.#operations = info.operations;
 		this.#parent = parent;
 	}
 
-	#url(operation: Operation, params: { [key: string]: string; } = {}): string {
-		let url = this.#operations[operation];
+	/** The fee this sequencer charges for one call with this gas limit, and the token it is in; `undefined` if nothing. */
+	feeFor(gasLimit: bigint = DEFAULT_GAS_LIMIT): { sequencer: string; token: string; amount: bigint; } | undefined {
+		if (this.fee === undefined) {
+			return(undefined);
+		}
+		return({ sequencer: this.sequencer, token: this.fee.token, amount: feeFor(this.fee, [gasLimit]) });
+	}
+
+	#url(operation: Operation): string {
+		const url = this.#operations[operation];
 		if (url === undefined) {
 			throw(new Error(`Contract sequencer ${this.providerID} does not support ${operation}`));
-		}
-		for (const [key, value] of Object.entries(params)) {
-			url = url.replace(`{${key}}`, encodeURIComponent(value));
 		}
 
 		return(url);
 	}
 
-	async #request<T extends { ok: boolean; }>(operation: Operation, body: unknown, check: (input: unknown) => input is T, params?: { [key: string]: string; }): Promise<Extract<T, { ok: true; }>> {
-		const response = await fetch(this.#url(operation, params), body === undefined ? {
-			headers: { 'Accept': 'application/json' }
-		} : {
+	/**
+	 * Submit signed blocks carrying contract calls. The sequencer orders
+	 * them, and returns once the network has published them, with the
+	 * outcome of their calls.
+	 */
+	async submit(blocks: KeetaNetBlock[]): Promise<KeetaContractsAnchorSubmitResult> {
+		const response = await fetch(this.#url('submit'), {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-			body: JSON.stringify(body)
+			body: JSON.stringify({ blocks: blocks.map((block) => Buffer.from(block.toBytes()).toString('base64')) })
 		});
 
 		let data: unknown;
 		try {
 			data = await response.json();
 		} catch (error) {
-			throw(new Error(`Contract sequencer ${operation} returned invalid JSON: ${String(error)}`));
+			throw(new Error(`Contract sequencer submit returned invalid JSON: ${String(error)}`));
 		}
 
 		if (typeof data === 'object' && data !== null && 'ok' in data && data.ok === false) {
@@ -134,180 +138,55 @@ export class KeetaContractsAnchorProvider {
 			try {
 				error = await KeetaAnchorError.fromJSON(data);
 			} catch {
-				error = new Error('error' in data && typeof data.error === 'string' ? data.error : `Contract sequencer ${operation} failed`);
+				error = new Error('error' in data && typeof data.error === 'string' ? data.error : 'Contract sequencer submit failed');
 			}
 			throw(error);
 		}
 
-		if (!check(data)) {
-			throw(new Error(`Contract sequencer ${operation} returned an unexpected response`));
+		if (!isKeetaContractsAnchorSubmitResponseJSON(data) || !data.ok) {
+			throw(new Error('Contract sequencer submit returned an unexpected response'));
 		}
 
-		// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-		return(data as Extract<T, { ok: true; }>);
+		return({ blocks: data.blocks, calls: data.calls });
 	}
 
-	async #signed(signable: Signable): Promise<{ account: string; signed: Awaited<ReturnType<typeof SignData>>; }> {
-		const account = this.#parent.account;
-		return({ account: account.publicKeyString.get(), signed: await SignData(account.assertAccount(), signable) });
-	}
-
-	/** Upload Wasm code. Returns its code id. */
-	async upload(wasm: Uint8Array): Promise<{ codeId: bigint; checksum: string; requiredCapabilities: string[]; }> {
-		const encoded = Buffer.from(wasm).toString('base64');
-		const auth = await this.#signed(getContractUploadSignable({ wasm: encoded }));
-		const response = await this.#request('upload', { ...auth, wasm: encoded }, isKeetaContractsAnchorUploadResponseJSON);
-		return({ codeId: BigInt(response.codeId), checksum: response.checksum, requiredCapabilities: response.requiredCapabilities });
-	}
-
-	/**
-	 * The address the next contract created by this sequencer will get, so a
-	 * caller can fund an instantiation. Only valid until the sequencer
-	 * publishes something else.
-	 */
-	async nextContractAddress(): Promise<string> {
-		const head = await this.#parent.client.client.getHeadBlock(this.sequencer);
-		const sequencer = KeetaNetLib.Account.fromPublicKeyString(this.sequencer);
-		return(sequencer.generateIdentifier(KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE, head?.hash, 0).publicKeyString.get());
-	}
-
-	/** Dry-run a call: the gas it uses and the fee that costs. */
-	async simulate(input: ({ kind: 'instantiate'; codeId: bigint; msg: unknown; label: string; } | { kind: 'execute'; contract: KeetaNetAccount | string; msg: unknown; }) & { funds?: KeetaContractsAnchorFund[]; gasLimit?: bigint; }): Promise<{ gasUsed: bigint; fee: bigint; }> {
-		const common = {
-			account: this.#parent.account.publicKeyString.get(),
-			msg: JSON.stringify(input.msg),
-			...(input.funds !== undefined ? { funds: input.funds.map((fund) => ({ token: address(fund.token), amount: fund.amount.toString() })) } : {}),
-			...(input.gasLimit !== undefined ? { gasLimit: input.gasLimit.toString() } : {})
-		};
-		const body = input.kind === 'instantiate'
-			? { ...common, kind: input.kind, codeId: input.codeId.toString(), label: input.label }
-			: { ...common, kind: input.kind, contract: address(input.contract) };
-		const response = await this.#request('simulate', body, isKeetaContractsAnchorSimulateResponseJSON);
-		return({ gasUsed: BigInt(response.gasUsed), fee: BigInt(response.fee) });
-	}
-
-	/** The caller's signed block moving `funds` to `contract` and `fee` to the sequencer. */
-	async #fundingBlock(contract: string, funds: KeetaContractsAnchorFund[], fee: bigint): Promise<string | undefined> {
-		if (funds.length === 0 && fee === 0n) {
-			return(undefined);
-		}
-
-		const builder = this.#parent.client.initBuilder({ account: this.#parent.account });
-		for (const fund of funds) {
-			builder.send(toAccount(contract), fund.amount, toAccount(fund.token).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN));
-		}
-		if (fee > 0n) {
-			if (this.gasPrice === undefined) {
-				throw(new Error('This sequencer charges no fee'));
+	/** Call a contract: sign a block with the call (and its funds) and have it ordered. */
+	async call(input: KeetaContractsAnchorCallInput): Promise<KeetaContractsAnchorCallResult> {
+		return(await this.#parent.serial(async () => {
+			const fee = input.fee ?? this.feeFor(input.gasLimit ?? DEFAULT_GAS_LIMIT);
+			const block = await this.#parent.callBlock({ ...input, ...(fee !== undefined ? { fee } : {}) });
+			const result = await this.submit([block]);
+			this.#parent.published(block);
+			const outcome = result.calls.find((call: KeetaContractsAnchorCallOutcome) => call.block === block.hash.toString().toLowerCase());
+			if (outcome === undefined) {
+				throw(new Error('The sequencer did not report the call\'s outcome'));
 			}
-			builder.send(toAccount(this.sequencer), fee, toAccount(this.gasPrice.token).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN));
-		}
+			if (outcome.failure !== undefined) {
+				throw(new Errors.CallFailed({ kind: 'reverted' }, `The contract refused the call (${outcome.failure.kind}): ${outcome.failure.message}. It still landed in block ${outcome.block} and paid its fee and gas; it changed nothing.`));
+			}
 
-		const { blocks } = await builder.computeBlocks();
-		const [block] = blocks;
-		if (block === undefined || blocks.length !== 1) {
-			throw(new Error(`Expected one funding block, got ${blocks.length}`));
-		}
-
-		return(Buffer.from(block.toBytes()).toString('base64'));
-	}
-
-	async #fee(input: CallInput, simulate: () => Promise<{ fee: bigint; }>): Promise<bigint> {
-		if (input.fee !== undefined) {
-			return(input.fee);
-		}
-		if (this.gasPrice === undefined) {
-			return(0n);
-		}
-
-		const { fee } = await simulate();
-		return(fee + fee / 5n + 1n);
-	}
-
-	#parse(response: KeetaContractsAnchorCallResult): KeetaContractsAnchorCallResult {
-		return(response);
-	}
-
-	/** Create a contract from uploaded code. */
-	async instantiate(input: KeetaContractsAnchorInstantiateInput): Promise<KeetaContractsAnchorCallResult> {
-		const funds = input.funds ?? [];
-		const fee = await this.#fee(input, async () => await this.simulate({ kind: 'instantiate', codeId: input.codeId, msg: input.msg, label: input.label, funds }));
-		const contract = funds.length > 0 ? await this.nextContractAddress() : this.sequencer;
-		const fundingBlock = await this.#fundingBlock(contract, funds, fee);
-		const request = {
-			codeId: input.codeId.toString(),
-			msg: JSON.stringify(input.msg),
-			label: input.label,
-			...(input.admin !== undefined ? { admin: address(input.admin) } : {}),
-			...(fundingBlock !== undefined ? { fundingBlock } : {}),
-			...(input.gasLimit !== undefined ? { gasLimit: input.gasLimit.toString() } : {})
-		};
-		const auth = await this.#signed(getContractInstantiateSignable(request));
-		return(this.#parse(await this.#request('instantiate', { ...request, ...auth }, isKeetaContractsAnchorCallResponseJSON)));
-	}
-
-	/** Call a contract's `execute`. */
-	async execute(input: KeetaContractsAnchorExecuteInput): Promise<KeetaContractsAnchorCallResult> {
-		const contract = address(input.contract);
-		const funds = input.funds ?? [];
-		const fee = await this.#fee(input, async () => await this.simulate({ kind: 'execute', contract, msg: input.msg, funds }));
-		const fundingBlock = await this.#fundingBlock(contract, funds, fee);
-		const request = {
-			contract,
-			msg: JSON.stringify(input.msg),
-			...(fundingBlock !== undefined ? { fundingBlock } : {}),
-			...(input.gasLimit !== undefined ? { gasLimit: input.gasLimit.toString() } : {})
-		};
-		const auth = await this.#signed(getContractExecuteSignable(request));
-		return(this.#parse(await this.#request('execute', { ...request, ...auth }, isKeetaContractsAnchorCallResponseJSON)));
-	}
-
-	/** Move a contract to new code (admin only). */
-	async migrate(input: KeetaContractsAnchorMigrateInput): Promise<KeetaContractsAnchorCallResult> {
-		const contract = address(input.contract);
-		const fee = input.fee ?? (this.gasPrice === undefined ? 0n : undefined);
-		if (fee === undefined) {
-			throw(new Error('Pass a fee for migrations on a sequencer that charges for gas'));
-		}
-		const fundingBlock = await this.#fundingBlock(contract, [], fee);
-		const request = {
-			contract,
-			newCodeId: input.newCodeId.toString(),
-			msg: JSON.stringify(input.msg),
-			...(fundingBlock !== undefined ? { fundingBlock } : {}),
-			...(input.gasLimit !== undefined ? { gasLimit: input.gasLimit.toString() } : {})
-		};
-		const auth = await this.#signed(getContractMigrateSignable(request));
-		return(this.#parse(await this.#request('migrate', { ...request, ...auth }, isKeetaContractsAnchorCallResponseJSON)));
-	}
-
-	/** Call a contract's `query`; returns its parsed JSON response. */
-	async query(contract: KeetaNetAccount | string, msg: unknown): Promise<unknown> {
-		const response = await this.#request('query', { contract: address(contract), msg: JSON.stringify(msg) }, isKeetaContractsAnchorQueryResponseJSON);
-		const parsed: unknown = JSON.parse(Buffer.from(response.result, 'base64').toString('utf-8'));
-		return(parsed);
-	}
-
-	/** The sequencer's record of a contract. */
-	async getContract(contract: KeetaNetAccount | string): Promise<ContractRecord> {
-		const response = await this.#request('contract', undefined, isKeetaContractsAnchorContractResponseJSON, { address: address(contract) });
-		return(response.contract);
-	}
-
-	/** A storage value with a proof against the contract's committed state root. */
-	async prove(contract: KeetaNetAccount | string, key: Uint8Array): Promise<ContractStorageProof> {
-		const response = await this.#request('prove', { contract: address(contract), key: Buffer.from(key).toString('base64') }, isKeetaContractsAnchorProveResponseJSON);
-		return(response.proof);
+			return({
+				blocks: result.blocks,
+				block: outcome.block,
+				gasUsed: BigInt(outcome.gasUsed),
+				returnData: Buffer.from(outcome.returnData, 'base64'),
+				writes: outcome.writes.map((write) => ({ ...write, version: BigInt(write.version) }))
+			});
+		}));
 	}
 }
 
-/** Finds contract sequencers through the resolver. */
+/** Contracts on Keeta, and the sequencers that order their calls. */
 export class KeetaContractsAnchorClient {
 	readonly client: KeetaNetUserClient;
 	readonly resolver: Resolver;
 	readonly id: string;
 	readonly logger?: Logger | undefined;
 	readonly account: KeetaNetAccount;
+	/** This account's head, once it has published through this client */
+	#head: InstanceType<typeof KeetaNetLib.Block>['hash'] | null = null;
+	/** Blocks from this account, one at a time, each extending the last */
+	#queue: Promise<unknown> = Promise.resolve();
 
 	constructor(client: KeetaNetUserClient, config: KeetaContractsAnchorClientConfig = {}) {
 		this.client = client;
@@ -315,6 +194,146 @@ export class KeetaContractsAnchorClient {
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger;
 		this.account = config.account ?? client.account;
+	}
+
+	/** @internal Run work that publishes from this account after everything queued before it. */
+	async serial<T>(work: () => Promise<T>): Promise<T> {
+		const result = this.#queue.then(work);
+		this.#queue = result.catch(() => {
+			// A failed block was not published: read the head again next time.
+			this.#head = null;
+		});
+
+		return(await result);
+	}
+
+	/** @internal Record a block from this account as published. */
+	published(block: KeetaNetBlock): void {
+		this.#head = block.hash;
+	}
+
+	async #previous(): Promise<Previous> {
+		return(this.#head ?? (await this.client.client.getHeadBlock(this.account))?.hash ?? KeetaNetLib.Block.NO_PREVIOUS);
+	}
+
+	async #sign(operations: BlockJSONOperations[]): Promise<KeetaNetBlock> {
+		return(await new KeetaNetLib.Block.Builder({
+			account: this.account,
+			signer: this.account.assertAccount(),
+			previous: await this.#previous(),
+			network: this.client.network,
+			operations
+		}).seal());
+	}
+
+	/**
+	 * A block from this account calling a contract, signed but not
+	 * published: its `SEND`s fund the call (and pay the sequencer's fee, if
+	 * `fee` is given), and then the call itself.
+	 */
+	async callBlock(input: KeetaContractsAnchorCallInput): Promise<KeetaNetBlock> {
+		const { instruction, fee } = input;
+		const contract = toAccount(instruction.contract);
+		const feeOperations: BlockJSONOperations[] = fee === undefined || fee.amount === 0n ? [] : [{
+			type: OperationType.SEND,
+			to: toAccount(fee.sequencer),
+			token: toAccount(fee.token).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN),
+			amount: fee.amount
+		}];
+		return(await this.#sign([
+			...feeOperations,
+			...(input.funds ?? []).map((fund): BlockJSONOperations => ({
+				type: OperationType.SEND,
+				to: contract,
+				token: toAccount(fund.token).assertKeyType(KeetaNetLib.Account.AccountKeyAlgorithm.TOKEN),
+				amount: fund.amount
+			})),
+			{
+				type: OperationType.CONTRACT_CALL,
+				contract,
+				accounts: instruction.accounts.map((account) => ({ owner: toAccount(account.owner), id: Buffer.from(account.id, 'hex'), writable: account.writable })),
+				data: Buffer.from(instruction.data, 'base64'),
+				gasLimit: input.gasLimit ?? DEFAULT_GAS_LIMIT
+			}
+		]));
+	}
+
+	/**
+	 * Deploy a contract. No code runs: set it up with a call of its own.
+	 * Deploying needs no sequencer, but names the one that will order the
+	 * contract's calls.
+	 */
+	async deploy(input: KeetaContractsAnchorDeployInput): Promise<{ contract: string; block: Hex; }> {
+		const sequencer = input.sequencer instanceof KeetaContractsAnchorProvider ? input.sequencer.sequencer : address(input.sequencer);
+		return(await this.serial(async () => {
+			const previous = await this.#previous();
+			const contract = this.account.generateIdentifier(KeetaNetLib.Account.AccountKeyAlgorithm.STORAGE, previous, 0);
+			const block = await this.#sign([{
+				type: OperationType.CONTRACT_DEPLOY,
+				contract,
+				code: Buffer.from(input.code),
+				sequencer: toAccount(sequencer),
+				...(input.admin !== undefined ? { admin: toAccount(input.admin) } : {})
+			}]);
+			const published = await this.client.client.transmit([block], this.client.config.generateFeeBlock !== undefined ? { generateFeeBlock: this.client.config.generateFeeBlock } : {});
+			if (!published.publish) {
+				throw(new Error('The network did not accept the deploy'));
+			}
+			// When the network charges for votes, the staple ends with this account's fee block: that is its head.
+			const ours = published.voteStaple.blocks.filter((entry) => entry.account.comparePublicKey(this.account));
+			this.published(ours.at(-1) ?? block);
+
+			return({ contract: contract.publicKeyString.get(), block: block.hash.toString().toLowerCase() });
+		}));
+	}
+
+	/**
+	 * Run a call read-only on a representative, against the state as it is
+	 * now: a view, or an estimate of a call. Nothing it writes is kept, and
+	 * no block is signed; the contract sees this client's account as its
+	 * caller unless `caller` is given. Throws if the contract refuses.
+	 */
+	async simulate(input: KeetaContractsAnchorCallInput & { caller?: KeetaNetAccount | string; }): Promise<{ gasUsed: bigint; returnData: Buffer; writes: { owner: string; id: Hex; version: bigint; }[]; }> {
+		const { instruction } = input;
+		const result = await this.client.client.simulateContractCall(instruction.contract, {
+			caller: address(input.caller ?? this.account),
+			accounts: instruction.accounts,
+			data: Buffer.from(instruction.data, 'base64'),
+			...(input.funds === undefined ? {} : { funds: input.funds.map((fund) => ({ token: address(fund.token), amount: fund.amount })) }),
+			...(input.gasLimit === undefined ? {} : { gasLimit: input.gasLimit })
+		});
+
+		return({
+			gasUsed: result.gasUsed,
+			returnData: Buffer.from(result.returnData),
+			writes: result.writes.map((write) => ({ owner: write.owner.publicKeyString.get(), id: write.id.toString('hex'), version: write.version }))
+		});
+	}
+
+	/** A deployed contract: its code hash, admin, creator and sequencer; `null` if the account is not a contract. */
+	async getContract(contract: KeetaNetAccount | string): Promise<{ codeHash: Hex; admin: string | null; creator: string; sequencer: string; } | null> {
+		const record = await this.client.client.getContract(address(contract));
+		if (record === null) {
+			return(null);
+		}
+
+		return({
+			codeHash: record.codeHash,
+			admin: record.admin?.publicKeyString.get() ?? null,
+			creator: record.creator.publicKeyString.get(),
+			sequencer: record.sequencer.publicKeyString.get()
+		});
+	}
+
+	/** One of a contract's state accounts, as published: version 0 and no data if it was never written. */
+	async getState(contract: KeetaNetAccount | string, id: Hex | Buffer): Promise<{ version: bigint; data: Buffer | null; }> {
+		return(await this.client.client.getContractState(address(contract), id));
+	}
+
+	/** A page of a contract's existing state accounts in id order, after `startAfter`. */
+	async listState(contract: KeetaNetAccount | string, options: { startAfter?: Hex | Buffer; limit?: number; } = {}): Promise<{ id: Hex; version: bigint; data: Buffer; }[]> {
+		const states = await this.client.client.listContractState(address(contract), options);
+		return(states.map((state) => ({ id: state.id.toString('hex'), version: state.version, data: state.data })));
 	}
 
 	/** Every sequencer the resolver knows. */
@@ -340,11 +359,11 @@ export class KeetaContractsAnchorClient {
 					}
 				}
 
-				const gasPrice = 'gasPrice' in info && typeof info.gasPrice === 'object' && info.gasPrice !== null && 'token' in info.gasPrice && 'numerator' in info.gasPrice && 'denominator' in info.gasPrice && typeof info.gasPrice.token === 'string' && typeof info.gasPrice.numerator === 'string' && typeof info.gasPrice.denominator === 'string'
-					? { token: info.gasPrice.token, numerator: info.gasPrice.numerator, denominator: info.gasPrice.denominator }
+				const fee = 'fee' in info && typeof info.fee === 'object' && info.fee !== null && 'token' in info.fee && 'perCall' in info.fee && 'perGas' in info.fee && typeof info.fee.token === 'string' && typeof info.fee.perCall === 'string' && typeof info.fee.perGas === 'string'
+					? { token: info.fee.token, perCall: info.fee.perCall, perGas: info.fee.perGas }
 					: undefined;
 
-				return(new KeetaContractsAnchorProvider(id, { sequencer: info.sequencer, gasPrice, operations }, this));
+				return(new KeetaContractsAnchorProvider(id, { sequencer: info.sequencer, fee, operations }, this));
 			} catch (error) {
 				this.logger?.debug('ContractsAnchor', 'Ignoring contract sequencer', id, error);
 				return(null);

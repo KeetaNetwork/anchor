@@ -333,29 +333,27 @@ type ServiceMetadata = {
 		contracts?: {
 			[id: string]: SharedAnchorCallerCertificateRequirementMetadata & SharedAnchorMetadataSignedExtension & {
 				/**
-				 * The sequencer account: it owns contract accounts, signs
-				 * their blocks and collects fees
+				 * The sequencer account: it orders calls to the contracts
+				 * that name it, by signing blocks on their chains.
+				 * Representatives run the calls.
 				 */
 				sequencer: string;
+
 				/**
-				 * What gas costs: `gas × numerator / denominator` base units
-				 * of `token`, rounded up. Absent when calls are free.
+				 * What the sequencer charges per call, paid with a SEND to it
+				 * in the block carrying the calls: `perCall` for each call
+				 * plus `perGas` for each unit of its gas limit, in atomic
+				 * units of `token`. Absent when it charges nothing.
 				 */
-				gasPrice?: {
+				fee?: {
 					token: string;
-					numerator: string;
-					denominator: string;
+					perCall: string;
+					perGas: string;
 				};
 
 				operations: {
-					upload?: ServiceMetadataEndpoint;
-					instantiate?: ServiceMetadataEndpoint;
-					execute?: ServiceMetadataEndpoint;
-					migrate?: ServiceMetadataEndpoint;
-					query?: ServiceMetadataEndpoint;
-					contract?: ServiceMetadataEndpoint;
-					prove?: ServiceMetadataEndpoint;
-					simulate?: ServiceMetadataEndpoint;
+					/** Submit signed blocks carrying contract calls, to be ordered */
+					submit?: ServiceMetadataEndpoint;
 				};
 			}
 		};
