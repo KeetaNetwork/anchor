@@ -27,7 +27,7 @@
 		"@cspell/dict-typescript": "3.2.3",
 		"@google-cloud/firestore": "8.2.0",
 		"@keetanetwork/eslint-config-typescript": "1.4.9",
-		"@keetanetwork/keetanet-node": "0.19.3",
+		"@keetanetwork/keetanet-node": "file:vendor/dynamic/keetanetwork-keetanet-node-b0639f6839de2c2c81e84faa51ffe59f107db703.tgz",
 		"@types/asn1js": "2.0.2",
 		"@types/node": "24.19.0",
 		"@types/pg": "8.15.6",
@@ -45,7 +45,7 @@
 	},
 	"dependencies": {
 		"@keetanetwork/currency-info": "1.2.9",
-		"@keetanetwork/keetanet-client": "0.19.3",
+		"@keetanetwork/keetanet-client": "file:vendor/dynamic/keetanetwork-keetanet-client-b0639f6839de2c2c81e84faa51ffe59f107db703.tgz",
 		"@noble/hashes": "1.5.0",
 		"typia": "12.2.1"
 	},
