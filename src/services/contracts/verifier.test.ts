@@ -45,7 +45,11 @@ function fakeRunner(program: () => Buffer, calls: string[][]): CommandRunner {
 		if (args[0] === 'image') {
 			return({ code: 0, stdout: '', stderr: '' });
 		}
-		const script = args.at(-1) ?? '';
+		// The step's script is passed in the environment, not as an argument.
+		const script = args.find((arg) => arg.startsWith('KEETA_STEP='))?.slice('KEETA_STEP='.length) ?? '';
+		if (script.includes('cargo fetch')) {
+			return({ code: 0, stdout: '', stderr: '' });
+		}
 		if (script.includes('cargo metadata')) {
 			// The workspace has another contract, which the example does not use: its files are not part of the verification.
 			// The example builds with the SDK, a local package: a library, listed apart from the example's own files.
@@ -123,6 +127,26 @@ test('verifies source whose build matches the contract\'s code, and keeps that o
 	// The repository was cloned at exactly the commit, and built in the pinned image.
 	expect(calls.some((call) => call[0] === 'git' && call.includes('checkout') && call.includes(COMMIT))).toBe(true);
 	expect(calls.some((call) => call.includes('--platform') && call.join(' ').includes('cargo-build-sbf --arch v3 --tools-version'))).toBe(true);
+	// Every step is limited and unprivileged; the steps that run the source's code are offline, and those that fetch are not.
+	const steps = calls.filter((call) => call[0] === 'docker' && call[1] === 'run');
+	const step = (text: string) => steps.filter((call) => call.join(' ').includes(text));
+	expect(steps.length).toBeGreaterThan(0);
+	for (const call of steps) {
+		expect(call).toEqual(expect.arrayContaining(['--memory', '--pids-limit', '--user', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']));
+		expect(call).not.toContain('--cap-add');
+	}
+	for (const call of [...step('cargo-build-sbf'), ...step('cargo run')]) {
+		expect(call.join(' ')).toContain('--network none');
+	}
+	expect(step('cargo fetch').length).toBe(2);
+	for (const call of step('cargo fetch')) {
+		expect(call.join(' ')).not.toContain('--network none');
+	}
+
+	// The same commit is not checked again.
+	const again = await post(url, request);
+	expect(again.status).toBe(400);
+	expect(await again.text()).toMatch(/verified from that commit already/u);
 
 	// Verified files are served, for explorers to show (with CORS).
 	const file = await fetch(new URL(`api/verifications/${CONTRACT}/files/example/src/lib.rs`, url));
@@ -133,10 +157,13 @@ test('verifies source whose build matches the contract\'s code, and keeps that o
 
 	// Other source that does not match is recorded as an attempt, and the verification stays.
 	program = Buffer.from('another program');
-	expect((await post(url, request)).status).toBe(202);
+	const other = { ...request, commit: 'b'.repeat(40) };
+	expect((await post(url, other)).status).toBe(202);
 	const second = await until(url, CONTRACT, (status) => typeof status['lastAttempt'] === 'object');
 	expect(second['verification']).toMatchObject({ verified: true });
 	expect(second['lastAttempt']).toMatchObject({ verified: false });
+	// Checking it again straight away would give the same answer.
+	expect((await post(url, other)).status).toBe(429);
 });
 
 test('refuses requests that could not be checked by anyone else, or that are not for a contract', async () => {

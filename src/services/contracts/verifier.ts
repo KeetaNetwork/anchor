@@ -77,6 +77,15 @@ interface Stored {
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 
+/** Most checks waiting to run: each is a whole build. */
+const MAX_QUEUED = 32;
+
+/** How long the same check is refused after it ran, in milliseconds: running it again would give the same answer. */
+const RECHECK_AFTER_MS = 10 * 60_000;
+
+/** A request refused for now, not for what it asks: the verifier is busy, or ran it moments ago. */
+export class VerifierBusyError extends Error {}
+
 type Status = 'none' | 'queued' | 'running' | 'done' | 'failed';
 
 const CONTRACT = /^keeta_[a-z0-9]{50,70}$/u;
@@ -102,6 +111,8 @@ export class ContractVerifier {
 	readonly #run: CommandRunner;
 	readonly #queue: Request[] = [];
 	readonly #status = new Map<string, { status: Status; error?: string; }>();
+	/** When each check last finished, by `#checkKey` */
+	readonly #finished = new Map<string, number>();
 	#working: Promise<void> | null = null;
 	#server: Server | null = null;
 
@@ -148,6 +159,11 @@ export class ContractVerifier {
 		return({ ...verification, libraries: verification.libraries.map((library) => ({ ...library, files: listFiles(library.files) })) });
 	}
 
+	/** What makes two checks the same: one would give the other's answer. */
+	#checkKey(request: Request): string {
+		return(JSON.stringify([request.contract, request.repository, request.commit, request.package, request.manifestPath ?? 'Cargo.toml']));
+	}
+
 	/** Check a request and queue it. Throws a message for the caller when it is not one to run. */
 	async submit(body: unknown): Promise<void> {
 		const request: Request = {
@@ -181,6 +197,21 @@ export class ContractVerifier {
 		const current = this.#status.get(request.contract)?.status;
 		if (current === 'queued' || current === 'running') {
 			throw(new Error('That contract is being verified already'));
+		}
+		// A working tree can change between checks; a commit cannot.
+		if (request.commit !== undefined) {
+			const verified = (await this.#stored(request.contract)).verification;
+			const verifiedSource = verified?.source;
+			if (verified !== undefined && verifiedSource !== undefined && 'repository' in verifiedSource && verifiedSource.repository === request.repository && verifiedSource.commit === request.commit && verified.package === request.package && verified.manifestPath === (request.manifestPath ?? 'Cargo.toml')) {
+				throw(new Error('That contract is verified from that commit already'));
+			}
+			const finished = this.#finished.get(this.#checkKey(request));
+			if (finished !== undefined && Date.now() - finished < RECHECK_AFTER_MS) {
+				throw(new VerifierBusyError(`That check ran in the last ${RECHECK_AFTER_MS / 60_000} minutes; try again later`));
+			}
+		}
+		if (this.#queue.length >= MAX_QUEUED) {
+			throw(new VerifierBusyError('The verifier has too many checks waiting; try again later'));
 		}
 
 		this.#queue.push(request);
@@ -246,7 +277,19 @@ export class ContractVerifier {
 					await rm(dir, { recursive: true, force: true }).catch(() => undefined);
 				}
 			}
+			this.#noteFinished(request);
 		}
+	}
+
+	/** Remember when a check finished, forgetting those too old to matter. */
+	#noteFinished(request: Request): void {
+		const now = Date.now();
+		for (const [key, at] of this.#finished) {
+			if (now - at >= RECHECK_AFTER_MS) {
+				this.#finished.delete(key);
+			}
+		}
+		this.#finished.set(this.#checkKey(request), now);
 	}
 
 	/** What is known about a contract's source. */
@@ -327,7 +370,7 @@ export class ContractVerifier {
 			try {
 				await this.submit(body);
 			} catch (error) {
-				reply(400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+				reply(error instanceof VerifierBusyError ? 429 : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
 				return;
 			}
 			reply(202, { ok: true, status: 'queued' });
