@@ -35,6 +35,8 @@ export const BUILD_DOCKERFILE: string = [
 	'\t&& printf \'[lib]\\ncrate-type = ["cdylib"]\\n\' >> Cargo.toml \\',
 	`\t&& cargo-build-sbf --arch v3 --tools-version ${PLATFORM_TOOLS_VERSION} \\`,
 	'\t&& rm -rf /tmp/warm',
+	'# Builds run as an unprivileged user: it uses the toolchain where root installed it, and writes the build path',
+	`RUN chmod 755 /root && mkdir -p ${BUILD_SOURCE_DIR} && chmod 1777 ${BUILD_SOURCE_DIR}`,
 	`WORKDIR ${BUILD_SOURCE_DIR}`,
 	''
 ].join('\n');

@@ -99,26 +99,85 @@ function manifestOf(source: ContractSource): string {
 const IN_IMAGE_TIMEOUT_SECONDS = 3_600;
 
 /**
- * Run a shell script in the build image, with the source copied to the
- * build path (it is mounted read-only) and `out` mounted at /out.
+ * What a step in the build image may use. Builds run the source's own code
+ * (build scripts, procedural macros, the interface exporter), so a source
+ * must not be able to starve the machine that checks it.
  */
-async function inImage(run: CommandRunner, source: ContractSource, out: string, script: string, what: string): Promise<string> {
+const IN_IMAGE_LIMITS = ['--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--pids-limit', '1024'];
+
+/** Where cargo keeps downloaded crates and git dependencies in the build image. */
+const CARGO_DEPENDENCY_DIRS = ['/usr/local/cargo/registry', '/usr/local/cargo/git'];
+
+/** How a step in the build image runs. */
+interface StepOptions {
+	/**
+	 * Whether it may reach the network. Only steps that run none of the
+	 * source's code do: they fetch what the steps that do then use offline.
+	 */
+	network: boolean;
+	/** A host directory for cargo's downloads, so a step that fetches them leaves them for the next */
+	dependencies?: string | undefined;
+}
+
+/**
+ * The user the build image's steps run as: this process's own, so a step
+ * reads and writes the directories mounted for it (and nothing else of the
+ * host's) as their owner, without privileges, and leaves files this process
+ * can remove.
+ */
+function stepUser(): string {
+	const uid = process.getuid?.();
+	const gid = process.getgid?.();
+	return(uid === undefined || gid === undefined ? '1000:1000' : `${uid}:${gid}`);
+}
+
+/**
+ * Run a shell script in the build image, with the source copied to the
+ * build path (it is mounted read-only) and `out` mounted at /out. The step
+ * runs as an unprivileged user (see `stepUser`), with no capabilities and
+ * its resources limited.
+ */
+async function inImage(run: CommandRunner, source: ContractSource, out: string, script: string, what: string, options: StepOptions): Promise<string> {
 	const image = await ensureBuildImage(run);
+	const dependencyMounts = options.dependencies === undefined ? [] : CARGO_DEPENDENCY_DIRS.map((dir) => ['-v', `${join(resolve(options.dependencies ?? ''), dir.split('/').pop() ?? '')}:${dir}`]).flat();
+	/*
+	 * Copied entry by entry, not as ".", which would have tar set the mode
+	 * of the build path (the image's, not this user's). Without build output
+	 * or git's data: a working tree's target
+	 * directories are not source. Nor Cargo's configuration (`.cargo`),
+	 * which can change the build (flags, a linker or rustc wrapper, crates
+	 * replaced by copies in the source) without being part of the source a
+	 * verification shows.
+	 *
+	 * Every step uses the platform tools' Rust, the one the build compiles
+	 * with, as the image's rustup knows it: a toolchain the image pins, which
+	 * a source's `rust-toolchain.toml` cannot swap for another one fetched at
+	 * run time (rustup gives `RUSTUP_TOOLCHAIN` precedence over that file).
+	 */
+	const step = `export RUSTUP_TOOLCHAIN="$(rustup toolchain list | sed -n 's/^\\([^ ]*-sbpf-solana-${PLATFORM_TOOLS_VERSION}\\).*/\\1/p' | head -n 1)" && test -n "$RUSTUP_TOOLCHAIN" && cd /src && find . -mindepth 1 -maxdepth 1 ! -name .git ! -name target ! -name .cargo -print0 | tar -cf - --null --exclude=target --exclude=.cargo -T - | tar -C ${BUILD_SOURCE_DIR} --no-same-owner -xf - && cd ${BUILD_SOURCE_DIR} && ${script}`;
 	return(await check(run, 'docker', [
-		'run', '--rm', '--platform', BUILD_PLATFORM,
+		'run', '--rm', '--init', '--platform', BUILD_PLATFORM,
+		...(options.network ? [] : ['--network', 'none']),
+		...IN_IMAGE_LIMITS,
+		// The toolchain is found under root's home, which the image lets any user read.
+		'--user', stepUser(), '-e', 'HOME=/root',
+		'--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
 		'-v', `${resolve(source.dir)}:/src:ro`,
 		'-v', `${resolve(out)}:/out`,
+		...dependencyMounts,
+		'-e', `KEETA_STEP=${step}`,
 		image,
-		'timeout', '-k', '10', String(IN_IMAGE_TIMEOUT_SECONDS),
-		/*
-		 * Copied without build output or git's data: a working tree's target
-		 * directories are not source. Nor Cargo's configuration (`.cargo`),
-		 * which can change the build (flags, a linker or rustc wrapper,
-		 * crates replaced by copies in the source) without being part of the
-		 * source a verification shows.
-		 */
-		'sh', '-ec', `tar -C /src -cf - --exclude=./.git --exclude=target --exclude=.cargo . | tar -C ${BUILD_SOURCE_DIR} -xf - && cd ${BUILD_SOURCE_DIR} && ${script}`
+		'timeout', '-k', '10', String(IN_IMAGE_TIMEOUT_SECONDS), 'sh', '-ec', 'eval "$KEETA_STEP"'
 	], what));
+}
+
+/** A fresh host directory for cargo's downloads, made for one build and removed with it. */
+async function dependencyDir(): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), 'keeta-contract-deps-'));
+	for (const sub of CARGO_DEPENDENCY_DIRS) {
+		await mkdir(join(dir, sub.split('/').pop() ?? ''));
+	}
+	return(dir);
 }
 
 function shellQuote(text: string): string {
@@ -144,7 +203,7 @@ export function packageDirIn(metadata: string, name: string): string {
 export async function packageDirOf(source: ContractSource, run: CommandRunner = runCommand): Promise<string> {
 	const out = await mkdtemp(join(tmpdir(), 'keeta-contract-metadata-'));
 	try {
-		const metadata = await inImage(run, source, out, `cargo metadata --no-deps --format-version 1 --manifest-path ${shellQuote(manifestOf(source))}`, 'Reading the source\'s packages');
+		const metadata = await inImage(run, source, out, `cargo metadata --no-deps --format-version 1 --manifest-path ${shellQuote(manifestOf(source))}`, 'Reading the source\'s packages', { network: false });
 		const dir = packageDirIn(metadata, source.package);
 		const inside = relative(BUILD_SOURCE_DIR, dir);
 		if (inside.startsWith('..') || inside.startsWith('/')) {
@@ -172,7 +231,8 @@ export interface LocalPackage {
 export async function localPackagesOf(source: ContractSource, run: CommandRunner = runCommand): Promise<{ packages: LocalPackage[]; workspaceDir: string | undefined; }> {
 	const out = await mkdtemp(join(tmpdir(), 'keeta-contract-metadata-'));
 	try {
-		const metadata: unknown = JSON.parse(await inImage(run, source, out, `cargo metadata --format-version 1 --locked --manifest-path ${shellQuote(manifestOf(source))}`, 'Reading the source\'s dependencies'));
+		// Resolving downloads the dependencies' manifests, and runs none of their code.
+		const metadata: unknown = JSON.parse(await inImage(run, source, out, `cargo metadata --format-version 1 --locked --manifest-path ${shellQuote(manifestOf(source))}`, 'Reading the source\'s dependencies', { network: true }));
 		const field = (value: unknown, name: string): unknown => (typeof value === 'object' && value !== null ? Reflect.get(value, name) : undefined);
 		const packagesField = field(metadata, 'packages');
 		const packages: unknown[] = Array.isArray(packagesField) ? packagesField : [];
@@ -235,12 +295,11 @@ export async function verifiableBuild(source: ContractSource, run: CommandRunner
 	// The package's own manifest: given a workspace's, cargo-build-sbf looks for every member's program.
 	const packageManifest = `${await packageDirOf(source, run)}/Cargo.toml`;
 	const out = await mkdtemp(join(tmpdir(), 'keeta-contract-build-'));
+	const dependencies = await dependencyDir();
 	try {
-		await inImage(run, source, out, [
-			`cargo-build-sbf --arch v3 --tools-version ${PLATFORM_TOOLS_VERSION} --manifest-path ${shellQuote(packageManifest)} --sbf-out-dir /out -- --locked`,
-			// The output belongs to the container's root; let the host read and remove it
-			'chmod -R a+rwX /out'
-		].join(' && '), `Building ${source.package}`);
+		await inImage(run, source, out, `cargo fetch --locked --manifest-path ${shellQuote(packageManifest)}`, `Fetching ${source.package}'s dependencies`, { network: true, dependencies });
+		// The build runs the source's build scripts and macros: offline, with what was fetched.
+		await inImage(run, source, out, `cargo-build-sbf --arch v3 --tools-version ${PLATFORM_TOOLS_VERSION} --manifest-path ${shellQuote(packageManifest)} --sbf-out-dir /out -- --locked --offline`, `Building ${source.package}`, { network: false, dependencies });
 		const path = join(out, `${source.package.replace(/-/gu, '_')}.so`);
 		// The build wrote it, so it is not trusted: a link would read a file of this machine's instead.
 		if ((await lstat(path).catch(() => null))?.isFile() !== true) {
@@ -250,6 +309,7 @@ export async function verifiableBuild(source: ContractSource, run: CommandRunner
 		return({ program, sha256: createHash('sha256').update(program).digest('hex'), builder: builderInfo() });
 	} finally {
 		await rm(out, { recursive: true, force: true });
+		await rm(dependencies, { recursive: true, force: true });
 	}
 }
 
@@ -279,16 +339,20 @@ export async function exportInterface(source: ContractSource, run: CommandRunner
 		throw(new Error(`Not a package name: ${source.package}`));
 	}
 	const out = await mkdtemp(join(tmpdir(), 'keeta-contract-interface-'));
+	const dependencies = await dependencyDir();
 	try {
 		const exporter = interfaceExporter(`${BUILD_SOURCE_DIR}/${await packageDirOf(source, run)}`, source.package);
 		await writeFile(join(out, 'Cargo.toml'), exporter.manifest);
 		await mkdir(join(out, 'src'));
 		await writeFile(join(out, 'src', 'main.rs'), exporter.main);
-		const printed = await inImage(run, source, out, 'cp -a /out /tmp/export && cargo run --quiet --manifest-path /tmp/export/Cargo.toml', `Exporting ${source.package}'s interface`);
+		// Fetch, keeping the lock file it resolves; then build and run the exporter, which runs the source's code, offline.
+		await inImage(run, source, out, 'cp -a /out /tmp/export && cargo fetch --manifest-path /tmp/export/Cargo.toml && cp /tmp/export/Cargo.lock /out/Cargo.lock', `Fetching ${source.package}'s interface exporter`, { network: true, dependencies });
+		const printed = await inImage(run, source, out, 'cp -a /out /tmp/export && cargo run --quiet --offline --locked --manifest-path /tmp/export/Cargo.toml', `Exporting ${source.package}'s interface`, { network: false, dependencies });
 		const parsed: unknown = JSON.parse(printed);
 		return(parsed);
 	} finally {
 		await rm(out, { recursive: true, force: true });
+		await rm(dependencies, { recursive: true, force: true });
 	}
 }
 

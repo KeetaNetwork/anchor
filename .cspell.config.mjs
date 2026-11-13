@@ -43,6 +43,9 @@ export default {
 		// Anchor-specific words
 		'Anza',
 		'borsh',
+		// Docker and rustup terms in the verifiable build's sandbox
+		'pids',
+		'rustup',
 		'keypair',
 		'merkle',
 		'reentrancy',
