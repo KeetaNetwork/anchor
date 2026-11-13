@@ -1,6 +1,7 @@
 /**
- * Shared setup for the contract sequencer tests: a test node, a sequencer
- * on it registered with the resolver, and the native engine.
+ * Shared setup for the contract sequencer tests: a test node (a
+ * representative that runs contracts), a sequencer registered with the
+ * resolver, and encoders for the example contracts.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,26 +12,22 @@ import Resolver from '../../lib/resolver.js';
 import { KeetaNetContractsAnchorHTTPServer } from './server.js';
 import KeetaContractsAnchorClient from './client.js';
 import type { KeetaContractsAnchorProvider } from './client.js';
-import { MemoryContractStateBackend } from './state.js';
-import type { ContractEngineBinding } from './engine.js';
-import { loadContractEngine } from './engine.js';
-import type { Buffer } from '../../lib/utils/buffer.js';
+import type { ContractInstruction } from './common.js';
+import { contractAddress, stateId } from './common.js';
+import { Buffer } from '../../lib/utils/buffer.js';
 
 /*
- * These tests need the native engine (`@keetanetwork/contract-engine`) and
- * the example contracts from node-rs. Point KEETA_CONTRACTS_WASM_DIR at the
+ * These tests need a KeetaNet node that runs contracts (the node's
+ * `feat/contract-execution` branch, with the contract engine addon linked
+ * into it) and the example contracts from node-rs, built with
+ * `cargo build-sbf --arch v3`. Point KEETA_CONTRACTS_SBF_DIR at the
  * compiled contracts if node-rs is not checked out next to this repository.
  */
-const wasmDir = process.env['KEETA_CONTRACTS_WASM_DIR'] ?? join(import.meta.dirname, '../../../../node-rs/keetanetwork-contract-engine/tests/contracts/target/wasm32-unknown-unknown/release');
-let binding: ContractEngineBinding | null = null;
-try {
-	binding = await loadContractEngine();
-} catch {
-	binding = null;
-}
-export const available: boolean = binding !== null && existsSync(join(wasmDir, 'cw20_token.wasm'));
+const programDir = process.env['KEETA_CONTRACTS_SBF_DIR'] ?? join(import.meta.dirname, '../../../../node-rs/keetanetwork-contract-engine/tests/contracts/target/deploy');
+const nodeRunsContracts = 'Contract' in KeetaNet.lib;
+export const available: boolean = nodeRunsContracts && existsSync(join(programDir, 'keeta_probe.so')) && existsSync(join(programDir, 'keeta_escrow.so'));
 
-/** A test that needs the native engine and the example contracts; skipped without them. */
+/** A test that needs a node running contracts and the example contracts; skipped without them. */
 export function contractTest(name: string, body: () => Promise<void>, timeout?: number): void {
 	(available ? test : test.skip)(name, body, timeout);
 }
@@ -45,43 +42,89 @@ export function newAccount(): KeyPairAccount {
 	return(KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0));
 }
 
-export function wasm(name: string): Buffer {
-	return(readFileSync(join(wasmDir, `${name}.wasm`)));
+/** An example contract's ELF file, e.g. `program('keeta_probe')`. */
+export function program(name: string): Buffer {
+	return(readFileSync(join(programDir, `${name}.so`)));
 }
 
-export function engine(): ContractEngineBinding {
-	if (binding === null) {
-		throw(new Error('engine not loaded'));
-	}
+/** borsh: a `u32` length, then the bytes. */
+function borshBytes(bytes: Buffer): Buffer {
+	const length = Buffer.alloc(4);
+	length.writeUInt32LE(bytes.length);
+	return(Buffer.concat([length, bytes]));
+}
 
-	return(binding);
+function borshString(text: string): Buffer {
+	return(borshBytes(Buffer.from(text, 'utf-8')));
+}
+
+function address(account: Account | string): Buffer {
+	return(contractAddress(typeof account === 'string' ? KeetaNet.lib.Account.fromPublicKeyString(account) : account));
+}
+
+/** The keeta-probe contract's instructions, borsh-encoded (see node-rs tests/contracts/keeta-probe). */
+export const probe = {
+	increment: (index: number): Buffer => Buffer.from([0, index]),
+	/** Invoke `target`, passing on accounts (index, writable), then report account `report`'s data */
+	invoke: (target: Account | string, accounts: [number, boolean][], data: Buffer, report?: number): Buffer => {
+		const count = Buffer.alloc(4);
+		count.writeUInt32LE(accounts.length);
+		return(Buffer.concat([
+			Buffer.from([4]),
+			address(target),
+			count,
+			...accounts.map(([index, writable]) => Buffer.from([index, writable ? 1 : 0])),
+			borshBytes(data),
+			report === undefined ? Buffer.from([0]) : Buffer.from([1, report])
+		]));
+	},
+	fail: (message: string): Buffer => Buffer.concat([Buffer.from([8]), borshString(message)])
+};
+
+/** The keeta-escrow contract's instructions (see node-rs tests/contracts/keeta-escrow). */
+export const escrow = {
+	open: (arbiter: Account | string, recipient: Account | string, expiresAtMillis: bigint): Buffer => {
+		const expires = Buffer.alloc(8);
+		expires.writeBigInt64LE(expiresAtMillis);
+		return(Buffer.concat([Buffer.from([0]), address(arbiter), address(recipient), expires]));
+	},
+	approve: (memo: string): Buffer => Buffer.concat([Buffer.from([2, 1]), borshString(memo)])
+};
+
+/** An instruction for `contract`, over accounts named by `state_id([name])`, of `contract` unless an owner is given. */
+export function instruction(contract: string, accounts: { name: string; writable: boolean; owner?: string; }[], data: Buffer): ContractInstruction {
+	return({
+		contract,
+		accounts: accounts.map((account) => ({ owner: account.owner ?? contract, id: stateId(account.name).toString('hex'), writable: account.writable })),
+		data: data.toString('base64')
+	});
 }
 
 /** A test node with a sequencer on it, registered with the resolver. */
 export interface ContractsTestWorld {
 	sequencer: KeyPairAccount;
 	client: InstanceType<typeof KeetaNet.UserClient>;
-	state: MemoryContractStateBackend;
 	server: KeetaNetContractsAnchorHTTPServer;
-	/** The sequencer as `account` sees it through the resolver */
-	providerFor(account: KeyPairAccount): Promise<KeetaContractsAnchorProvider>;
+	/** The contracts client for `account`, and the sequencer as it sees it through the resolver */
+	as(account: KeyPairAccount): Promise<{ contracts: KeetaContractsAnchorClient; provider: KeetaContractsAnchorProvider; }>;
 	give(account: Account, amount: bigint): Promise<void>;
+	balance(account: Account | string): Promise<bigint>;
+	/** The representative's vote fees: off unless a test turns them on */
+	fees: { enable(): void; disable(): void; };
 	[Symbol.asyncDispose](): Promise<void>;
 }
 
-export async function setup(options: { gasPrice?: { numerator: bigint; denominator: bigint; }; } = {}): Promise<ContractsTestWorld> {
+export async function setup(options: { batchWindowMs?: number; fee?: { perCall: bigint; perGas: bigint; }; } = {}): Promise<ContractsTestWorld> {
 	const sequencer = newAccount();
 	const nodeAndClient = await createNodeAndClient(sequencer);
 	nodeAndClient.fees.disable();
 	const client = nodeAndClient.userClient;
-	const state = new MemoryContractStateBackend();
 	const server = new KeetaNetContractsAnchorHTTPServer({
 		logger,
 		sequencer,
 		client,
-		state,
-		engine: engine(),
-		...(options.gasPrice !== undefined ? { gasPrice: options.gasPrice } : {})
+		...(options.batchWindowMs !== undefined ? { batchWindowMs: options.batchWindowMs } : {}),
+		...(options.fee !== undefined ? { fee: options.fee } : {})
 	});
 	await server.start();
 
@@ -96,7 +139,7 @@ export async function setup(options: { gasPrice?: { numerator: bigint; denominat
 		})
 	});
 
-	async function providerFor(account: KeyPairAccount): Promise<KeetaContractsAnchorProvider> {
+	async function as(account: KeyPairAccount): Promise<{ contracts: KeetaContractsAnchorClient; provider: KeetaContractsAnchorProvider; }> {
 		const userClient = new KeetaNet.UserClient({
 			client: client.client,
 			signer: account,
@@ -104,31 +147,26 @@ export async function setup(options: { gasPrice?: { numerator: bigint; denominat
 			network: client.network,
 			networkAlias: 'test'
 		});
-		const provider = await new KeetaContractsAnchorClient(userClient, { root: sequencer, account, logger }).getProvider(providerID);
+		const contracts = new KeetaContractsAnchorClient(userClient, { root: sequencer, account, logger });
+		const provider = await contracts.getProvider(providerID);
 		if (provider === null) {
 			throw(new Error('sequencer not found through the resolver'));
 		}
 
-		return(provider);
+		return({ contracts, provider });
 	}
 
 	return({
 		sequencer,
 		client,
-		state,
 		server,
-		providerFor,
+		as,
 		give: nodeAndClient.give,
+		fees: nodeAndClient.fees,
+		balance: async (account) => await client.client.getBalance(account, client.baseToken),
 		async [Symbol.asyncDispose]() {
 			await server[Symbol.asyncDispose]();
 			await nodeAndClient[Symbol.asyncDispose]();
 		}
 	});
-}
-
-export async function onChainInfo(client: InstanceType<typeof KeetaNet.UserClient>, account: string): Promise<{ metadata: string; name: string; }> {
-	const info = (await client.client.getAccountsInfo([account]))[account]?.info;
-	const metadata = info !== undefined && 'metadata' in info && typeof info.metadata === 'string' ? info.metadata : '';
-	const name = info !== undefined && 'name' in info && typeof info.name === 'string' ? info.name : '';
-	return({ metadata, name });
 }

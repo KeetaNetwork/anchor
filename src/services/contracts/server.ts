@@ -1,101 +1,194 @@
 /**
- * The contract sequencer: an anchor service that runs CosmWasm-compatible
- * contracts and publishes their effects on Keeta.
+ * The contract sequencer: an anchor service that orders calls to the
+ * contracts it sequences. It does not run them: representatives do, and
+ * vote on the outcome (see the node's `docs/CONTRACTS.md`).
  *
- * Each state-changing call (instantiate, execute, migrate) runs to
- * completion before the next starts:
+ * Callers submit blocks they signed, carrying `CONTRACT_CALL` operations.
+ * The sequencer gathers the blocks that arrive within a short window into
+ * one staple, adds a `CONTRACT_ORDER` block on the chain of every contract
+ * the calls touch (listing that contract's calls in the order they run),
+ * and asks the representatives to vote on it. A call its contract refuses
+ * still lands, as a failed call that pays its fee and gas and changes
+ * nothing. If the representatives refuse a batch outright (a block the
+ * ledger would not take), each submission is retried alone, so one bad
+ * block does not hold up the rest.
  *
- * 1. finish any call a crash left staged ({@link ContractStateBackend});
- * 2. execute it in the engine against the sequencer's state and the ledger;
- * 3. sign the blocks the sequencer owns, and seal them;
- * 4. stage the state changes, publish the staple (the caller's funding
- *    block, the contract accounts' blocks, the commitments, the refund);
- * 5. commit the changes once the staple has landed.
- *
- * The sequencer is custodial in this phase: it holds the keys that move
- * contract funds.
+ * The sequencer is trusted for ordering only: it can delay or refuse a
+ * call, but it cannot change what the call does, and it holds no funds.
  */
-import { randomUUID } from 'node:crypto';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import type * as KeetaAnchorHTTPServer from '../../lib/http-server/index.js';
 import type { KeetaAnchorMetadataServerConfig } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
-import type { ServiceMetadata, ServiceMetadataAuthenticationType } from '../../lib/resolver.ts';
+import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Routes } from '../../lib/http-server/index.ts';
-import type { HTTPSignedField } from '../../lib/http-server/common.js';
-import { verifyBodyAuth } from '../../lib/http-server/common.js';
-import { KeetaAnchorUserError } from '../../lib/error.js';
-import type { ContractStateBackend } from './state.js';
-import type {
-	ContractCall,
-	ContractEngineBinding,
-	ContractEngineConfig,
-	ContractEngineInstance,
-	ContractExecution,
-	ContractStapleBlock,
-	ContractStorageProof,
-	ContractStoredCode
-} from './engine.js';
-import {
-	ContractEngineCallError,
-	KeetaNetChainReader,
-	createHostCallback,
-	loadContractEngine,
-	unwrapOutcome
-} from './engine.js';
-import type { KeetaContractsAnchorCallResult } from './common.js';
-import {
-	Errors,
-	getContractExecuteSignable,
-	getContractInstantiateSignable,
-	getContractMigrateSignable,
-	getContractUploadSignable
-} from './common.js';
-import {
-	assertKeetaContractsAnchorExecuteRequestJSON,
-	assertKeetaContractsAnchorInstantiateRequestJSON,
-	assertKeetaContractsAnchorMigrateRequestJSON,
-	assertKeetaContractsAnchorProveRequestJSON,
-	assertKeetaContractsAnchorQueryRequestJSON,
-	assertKeetaContractsAnchorSimulateRequestJSON,
-	assertKeetaContractsAnchorUploadRequestJSON
-} from './common.server.generated.js';
+import { assertAccountCertificateChain } from '../../lib/utils/certificate-network.js';
+import type { KeetaContractsAnchorCallOutcome, KeetaContractsAnchorSubmitResult } from './common.js';
+import { Errors, feeFor } from './common.js';
+import { assertKeetaContractsAnchorSubmitRequestJSON } from './common.server.generated.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+import type { BlockJSONOperations } from '@keetanetwork/keetanet-client/lib/block/operations.js';
 
 type ContractsServiceMetadata = NonNullable<ServiceMetadata['services']['contracts']>[string];
 type KeetaNetAccount = InstanceType<typeof KeetaNet.lib.Account>;
+type KeetaNetBlock = InstanceType<typeof KeetaNet.lib.Block>;
+type KeetaNetBlockHash = KeetaNetBlock['hash'];
+type KeetaNetVoteStaple = Awaited<ReturnType<KeetaNet.Client['transmit']>>['voteStaple'];
+type KeetaNetVote = KeetaNetVoteStaple['votes'][number];
+type KeetaNetRepresentative = KeetaNet.Client['representatives'][number];
 
-/** Largest accepted Wasm upload by default (CosmWasm's own default limit). */
-const DEFAULT_MAX_WASM_SIZE = 3 * 1024 * 1024;
+/** One representative's answer: its vote or quote, or its error. */
+interface Answer<T> {
+	representative: KeetaNetAccount;
+	weight: bigint;
+	result: T | null;
+	error: unknown;
+}
 
-/** How long a request nonce is remembered, to refuse replays. */
-const NONCE_WINDOW_MS = 15 * 60 * 1000;
+const OperationType = KeetaNet.lib.Block.OperationType;
+
+/** How long to gather calls into one staple by default, in milliseconds. */
+const DEFAULT_BATCH_WINDOW_MS = 25;
+
+/** Most blocks submitted by callers in one staple, by default. */
+const DEFAULT_MAX_BATCH_BLOCKS = 32;
+
+/** Most blocks submitted by callers waiting to be ordered, by default. */
+const DEFAULT_MAX_QUEUED_BLOCKS = 1_024;
+
+/** Most calls one `CONTRACT_ORDER` operation lists. */
+const MAX_CALLS_PER_ORDER = 64;
+
+/** Most blocks one submission may carry. */
+const MAX_SUBMITTED_BLOCKS = 8;
+
+/** How long to wait for representatives that are behind to catch up, by default, in milliseconds. */
+const DEFAULT_CATCH_UP_MS = 3_000;
+
+/**
+ * How long past its expiry a vote still counts, for clock skew between
+ * nodes (the node's `Vote.allowedSlop`), in milliseconds.
+ */
+const VOTE_EXPIRY_SLOP_MS = 60_000;
+
+/** How long a caller whose fork left a staple short of quorum is refused, in milliseconds. */
+const FORK_REFUSAL_MS = 10 * 60_000;
+
+/** How often to ask representatives that are behind again, in milliseconds. */
+const RETRY_INTERVAL_MS = 100;
+
+/**
+ * Errors a representative gives when it has not yet applied a block the
+ * staple builds on: asked again shortly, it may answer.
+ */
+const BEHIND = new Set(['LEDGER_NOT_SUCCESSOR', 'LEDGER_NOT_OPENING']);
+
+function errorCode(error: unknown): string | undefined {
+	return(typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined);
+}
+
+function errorMessage(error: unknown): string {
+	return(error instanceof Error ? error.message : String(error));
+}
+
+/** Whether a representative that answered with `error` is behind, so may answer if asked again shortly. */
+function isBehind(error: unknown): boolean {
+	const code = errorCode(error);
+	return(code !== undefined && BEHIND.has(code));
+}
+
+/** What a vote or quote says the calls did, as a key to compare by. */
+function outcomeKey(result: { contractOutcomes?: ArrayBuffer | undefined; }): string {
+	return(result.contractOutcomes === undefined ? '' : Buffer.from(result.contractOutcomes).toString('hex'));
+}
+
+/**
+ * The results of the heaviest group of answers that agree on the calls'
+ * outcome: votes with different outcomes cannot be stapled together.
+ */
+function agreeing<T extends { contractOutcomes?: ArrayBuffer | undefined; }>(answers: Answer<T>[]): T[] {
+	const groups = new Map<string, { weight: bigint; results: T[]; }>();
+	for (const answer of answers) {
+		if (answer.result === null) {
+			continue;
+		}
+		const key = outcomeKey(answer.result);
+		const group = groups.get(key) ?? { weight: 0n, results: [] };
+		group.weight += answer.weight;
+		group.results.push(answer.result);
+		groups.set(key, group);
+	}
+	let best: { weight: bigint; results: T[]; } = { weight: 0n, results: [] };
+	for (const group of groups.values()) {
+		if (group.weight > best.weight) {
+			best = group;
+		}
+	}
+	return(best.results);
+}
+
+/**
+ * Why representatives would not answer: the heaviest refusal of the first
+ * round that has one, preferring a ledger's reason to being behind or out
+ * of reach.
+ */
+function refusalReason(...rounds: Answer<unknown>[][]): string {
+	for (const answers of rounds) {
+		const errors = answers.filter((answer) => answer.result === null).sort((a, b) => (a.weight < b.weight ? 1 : -1));
+		const heaviest = errors.find((answer) => errorCode(answer.error) !== undefined && !isBehind(answer.error)) ?? errors[0];
+		if (heaviest !== undefined) {
+			return(errorMessage(heaviest.error));
+		}
+	}
+	return('representatives disagree on the outcome');
+}
+
+async function sleep(milliseconds: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 export interface KeetaAnchorContractsServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
-	 * The sequencer account, with its private key. It owns every contract
-	 * and contract-created token account, signs their blocks and collects
-	 * fees.
+	 * The sequencer account, with its private key. Contracts that name it
+	 * when they are deployed have their calls ordered by it.
 	 */
 	sequencer: KeetaNetAccount;
-	/** Reads the ledger and publishes staples. */
+	/** Reads the ledger and publishes staples; pays the network's fees, if any, through its `generateFeeBlock`. */
 	client: KeetaNet.UserClient;
-	/** Where the sequencer's own state lives. */
-	state: ContractStateBackend;
+	/** How long to gather calls into one staple, in milliseconds (25 by default). */
+	batchWindowMs?: number;
+	/** Most caller blocks in one staple (32 by default). */
+	maxBatchBlocks?: number;
+	/** Most caller blocks waiting to be ordered: submissions beyond that are refused (1024 by default). */
+	maxQueuedBlocks?: number;
+	/** How long to wait for representatives that are behind, in milliseconds (3000 by default). */
+	catchUpMs?: number;
 	/**
-	 * Gas price, in base units of the network's base token: a call costs
-	 * `gas × numerator / denominator`, rounded up. Omit for free calls.
+	 * What each call costs its caller, so that none is free: `perCall` for
+	 * each `CONTRACT_CALL` in a block plus `perGas` for each unit of its gas
+	 * limit, in atomic units of `token` (the network's base token by
+	 * default). The block pays it with a SEND to the sequencer, and a block
+	 * that pays less is refused. Calls are free without one.
 	 */
-	gasPrice?: { numerator: bigint; denominator: bigint; };
-	/** The engine addon; loaded from `@keetanetwork/contract-engine` by default. */
-	engine?: ContractEngineBinding;
-	/** Directory for compiled contract code, private to the sequencer. */
-	cacheDir?: string;
-	/** `env.block.chain_id` as contracts see it. */
-	chainId?: string;
-	/** Largest Wasm upload accepted, in bytes. */
-	maxWasmSize?: number;
+	fee?: { token?: KeetaNetAccount; perCall: bigint; perGas: bigint; };
 	routes?: Routes;
+}
+
+/** A contract call in a submitted block. */
+interface Call {
+	block: KeetaNetBlock;
+	operationIndex: number;
+	contract: string;
+}
+
+/** One submission waiting to be ordered. */
+interface Submission {
+	blocks: KeetaNetBlock[];
+	calls: Call[];
+	/** Every contract the calls touch: called, or owning state they list */
+	contracts: Set<string>;
+	resolve: (result: KeetaContractsAnchorSubmitResult) => void;
+	reject: (error: unknown) => void;
 }
 
 function json(output: unknown): { output: string; contentType: string; } {
@@ -107,26 +200,29 @@ function json(output: unknown): { output: string; contentType: string; } {
 	});
 }
 
-function lastHeads(blocks: ContractStapleBlock[]): { account: string; hash: string; }[] {
-	const heads = new Map<string, string>();
-	for (const block of blocks) {
-		heads.set(block.account, block.hash);
-	}
-
-	return([...heads].map(([account, hash]) => ({ account, hash })));
-}
-
 export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer<ContractsServiceMetadata, KeetaAnchorContractsServerConfig> {
 	readonly sequencer: KeetaNetAccount;
-	readonly state: ContractStateBackend;
 	readonly routes: Routes;
 	readonly #client: KeetaNet.UserClient;
-	readonly #config: KeetaAnchorContractsServerConfig;
-	readonly #maxWasmSize: number;
-	#engines: Promise<{ binding: ContractEngineBinding; engine: ContractEngineInstance; simulator: ContractEngineInstance; }> | null = null;
-	/** State-changing calls, one at a time */
-	#queue: Promise<unknown> = Promise.resolve();
-	readonly #nonces = new Map<string, number>();
+	readonly #batchWindowMs: number;
+	readonly #maxBatchBlocks: number;
+	readonly #maxQueuedBlocks: number;
+	readonly #catchUpMs: number;
+	readonly #fee: { token: KeetaNetAccount; perCall: bigint; perGas: bigint; } | undefined;
+	/**
+	 * Contract chains held by temporary votes for a staple that did not
+	 * reach quorum, until those votes expire: representatives holding them
+	 * refuse any other block on the chain until then
+	 */
+	readonly #heldUntil = new Map<string, number>();
+	/** Callers refused for a while, because a fork of theirs left a staple short of quorum */
+	readonly #refusedUntil = new Map<string, number>();
+	readonly #queue: Submission[] = [];
+	#pumping: Promise<void> | null = null;
+	/** Contracts known to name this sequencer (that never changes) */
+	readonly #sequenced = new Set<string>();
+	/** Each contract's head as last published by this sequencer, the only one signing its chain */
+	readonly #heads = new Map<string, KeetaNetBlockHash | null>();
 
 	constructor(config: KeetaAnchorContractsServerConfig) {
 		super(config);
@@ -136,107 +232,17 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 		}
 
 		this.sequencer = config.sequencer;
-		this.state = config.state;
 		this.routes = config.routes ?? {};
 		this.#client = config.client;
-		this.#config = config;
-		this.#maxWasmSize = config.maxWasmSize ?? DEFAULT_MAX_WASM_SIZE;
+		this.#batchWindowMs = config.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS;
+		this.#maxBatchBlocks = config.maxBatchBlocks ?? DEFAULT_MAX_BATCH_BLOCKS;
+		this.#maxQueuedBlocks = config.maxQueuedBlocks ?? DEFAULT_MAX_QUEUED_BLOCKS;
+		this.#catchUpMs = config.catchUpMs ?? DEFAULT_CATCH_UP_MS;
+		this.#fee = config.fee === undefined ? undefined : { ...config.fee, token: config.fee.token ?? config.client.baseToken };
 	}
 
 	get #sequencerAddress(): string {
 		return(this.sequencer.publicKeyString.get());
-	}
-
-	get #gasPrice(): ContractEngineConfig['gasPrice'] {
-		const price = this.#config.gasPrice;
-		if (price === undefined) {
-			return(undefined);
-		}
-
-		return({
-			token: this.#client.baseToken.publicKeyString.get(),
-			numerator: price.numerator.toString(),
-			denominator: price.denominator.toString()
-		});
-	}
-
-	/** The engine (and a fee-free twin for simulation), created on first use. */
-	async #engine(): Promise<{ binding: ContractEngineBinding; engine: ContractEngineInstance; simulator: ContractEngineInstance; }> {
-		this.#engines ??= (async () => {
-			const binding = this.#config.engine ?? await loadContractEngine();
-			const host = createHostCallback(this.state, new KeetaNetChainReader(this.#client.client));
-			const base: ContractEngineConfig = {
-				network: this.#client.network.toString(),
-				sequencer: this.#sequencerAddress,
-				...(this.#config.chainId !== undefined ? { chainId: this.#config.chainId } : {})
-			};
-			const gasPrice = this.#gasPrice;
-			const engine = new binding.ContractEngine(JSON.stringify({
-				...base,
-				...(this.#config.cacheDir !== undefined ? { cacheDir: this.#config.cacheDir } : {}),
-				...(gasPrice !== undefined ? { gasPrice } : {})
-			}), host);
-			const simulator = new binding.ContractEngine(JSON.stringify(base), host);
-			return({ binding, engine, simulator });
-		})();
-
-		return(await this.#engines);
-	}
-
-	/** Run state-changing work after everything queued before it. */
-	async #serial<T>(work: () => Promise<T>): Promise<T> {
-		const result = this.#queue.then(work);
-		this.#queue = result.catch(function() {
-			/* The caller sees the error; the queue moves on */
-		});
-
-		return(await result);
-	}
-
-	/** Refuse a request nonce seen before. */
-	#claimNonce(signed: HTTPSignedField): void {
-		const now = Date.now();
-		for (const [nonce, expiry] of this.#nonces) {
-			if (expiry < now) {
-				this.#nonces.delete(nonce);
-			}
-		}
-		if (this.#nonces.has(signed.nonce)) {
-			throw(new KeetaAnchorUserError('This request was already submitted'));
-		}
-
-		this.#nonces.set(signed.nonce, now + NONCE_WINDOW_MS);
-	}
-
-	/** Whether every account in the staple ends at the expected block. */
-	async #landed(expectedHeads: { account: string; hash: string; }[]): Promise<boolean> {
-		const reader = new KeetaNetChainReader(this.#client.client);
-		for (const { account, hash } of expectedHeads) {
-			if (await reader.head(account) !== hash.toLowerCase()) {
-				return(false);
-			}
-		}
-
-		return(true);
-	}
-
-	/** Finish a call a crash left between publishing and committing. */
-	async #recover(): Promise<void> {
-		const pending = await this.state.pending();
-		if (pending === null) {
-			return;
-		}
-
-		// A staple voted on but never published holds the sequencer's chain.
-		if (await this.#client.client.getPendingBlock(this.sequencer) !== null) {
-			await this.#client.client.recoverAccount(this.sequencer, true, this.#publishOptions());
-		}
-
-		if (await this.#landed(pending.expectedHeads)) {
-			await this.state.commit(pending.id);
-		} else {
-			await this.state.discard(pending.id);
-		}
 	}
 
 	#publishOptions(): Parameters<KeetaNet.Client['transmit']>[1] {
@@ -248,96 +254,436 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 		return(options);
 	}
 
-	/** Sign the sequencer's blocks and turn the staple into KeetaNet blocks. */
-	async #sign(binding: ContractEngineBinding, blocks: ContractStapleBlock[]): Promise<InstanceType<typeof KeetaNet.lib.Block>[]> {
-		const signed = [];
-		for (const block of blocks) {
-			const bytes = Buffer.from(block.bytes, 'base64');
-			if (block.signed) {
-				signed.push(new KeetaNet.lib.Block(bytes));
+	/** Refuse a contract this sequencer does not order. */
+	async #assertSequenced(contract: string): Promise<void> {
+		if (this.#sequenced.has(contract)) {
+			return;
+		}
+
+		const record = await this.#client.client.getContract(contract);
+		if (record === null) {
+			throw(new Errors.CallFailed({ kind: 'notSequenced' }, `${contract} is not a contract`));
+		}
+		if (record.sequencer.publicKeyString.get() !== this.#sequencerAddress) {
+			throw(new Errors.CallFailed({ kind: 'notSequenced' }, `${contract} is ordered by another sequencer`));
+		}
+
+		this.#sequenced.add(contract);
+	}
+
+	/** Decode and check submitted blocks, and find their calls. */
+	async #parse(encoded: string[]): Promise<Omit<Submission, 'resolve' | 'reject'>> {
+		if (encoded.length === 0 || encoded.length > MAX_SUBMITTED_BLOCKS) {
+			throw(new Errors.CallFailed({ kind: 'invalidBlock' }, `Submit 1 to ${MAX_SUBMITTED_BLOCKS} blocks`));
+		}
+
+		const chain = this.resolvedCertificateChainRequirement;
+		const blocks: KeetaNetBlock[] = [];
+		const calls: Call[] = [];
+		const contracts = new Set<string>();
+		for (const bytes of encoded) {
+			let block: KeetaNetBlock;
+			try {
+				// Checks the block's signature
+				block = new KeetaNet.lib.Block(Buffer.from(bytes, 'base64'));
+			} catch (error) {
+				throw(new Errors.CallFailed({ kind: 'invalidBlock' }, `Not a signed block: ${errorMessage(error)}`));
+			}
+			if (block.network !== this.#client.network) {
+				throw(new Errors.CallFailed({ kind: 'invalidBlock' }, 'The block is for another network'));
+			}
+			// A block already on the ledger was spent: its chain has moved on, and so no representative would vote for it again.
+			if (await this.#client.client.getBlock(block.hash) !== null) {
+				throw(new Errors.CallFailed({ kind: 'invalidBlock' }, `Block ${block.hash.toString()} is already published`));
+			}
+			const caller = block.account.publicKeyString.get();
+			if ((this.#refusedUntil.get(caller) ?? 0) > Date.now()) {
+				throw(new Errors.CallFailed({ kind: 'refused' }, `${caller} forked its chain while a call of its was being voted on; try again later`));
+			} else {
+				this.#refusedUntil.delete(caller);
+			}
+
+			for (const [operationIndex, operation] of block.operations.entries()) {
+				if (operation.type === OperationType.CONTRACT_ORDER) {
+					throw(new Errors.CallFailed({ kind: 'invalidBlock' }, 'Only the sequencer orders calls'));
+				}
+				if (operation.type !== OperationType.CONTRACT_CALL) {
+					continue;
+				}
+
+				const contract = operation.contract.publicKeyString.get();
+				calls.push({ block, operationIndex, contract });
+				contracts.add(contract);
+				for (const account of operation.accounts) {
+					contracts.add(account.owner.publicKeyString.get());
+				}
+			}
+
+			this.#assertPaysFee(block);
+
+			const signer = block.signer;
+			for (const account of Array.isArray(signer) ? [block.account] : [block.account, signer]) {
+				await assertAccountCertificateChain(account.assertAccount(), chain);
+			}
+			blocks.push(block);
+		}
+
+		if (calls.length === 0) {
+			throw(new Errors.CallFailed({ kind: 'invalidBlock' }, 'The blocks call no contract'));
+		}
+		for (const contract of contracts) {
+			await this.#assertSequenced(contract);
+		}
+
+		return({ blocks, calls, contracts });
+	}
+
+	/** Refuse a block that does not pay the fee for its calls. */
+	#assertPaysFee(block: KeetaNetBlock): void {
+		const fee = this.#fee;
+		if (fee === undefined) {
+			return;
+		}
+		const gasLimits = block.operations.flatMap((operation) => (operation.type === OperationType.CONTRACT_CALL ? [operation.gasLimit] : []));
+		const owed = feeFor(fee, gasLimits);
+		const paid = block.operations.reduce((total, operation) => {
+			if (operation.type !== OperationType.SEND || !operation.to.comparePublicKey(this.sequencer) || !operation.token.comparePublicKey(fee.token)) {
+				return(total);
+			}
+			return(total + operation.amount);
+		}, 0n);
+		if (paid < owed) {
+			throw(new Errors.CallFailed({ kind: 'fee' }, `The block pays ${paid} of the ${owed} its calls cost (${fee.perCall} per call and ${fee.perGas} per unit of gas limit, in ${fee.token.publicKeyString.get()}, sent to ${this.#sequencerAddress})`));
+		}
+	}
+
+	/** Queue a submission and wait for its staple. */
+	async #submit(parsed: Omit<Submission, 'resolve' | 'reject'>): Promise<KeetaContractsAnchorSubmitResult> {
+		const queued = this.#queue.reduce((total, submission) => total + submission.blocks.length, 0);
+		if (queued + parsed.blocks.length > this.#maxQueuedBlocks) {
+			throw(new Errors.CallFailed({ kind: 'refused' }, 'The sequencer has too many calls waiting; try again later'));
+		}
+		const result = new Promise<KeetaContractsAnchorSubmitResult>((resolve, reject) => {
+			this.#queue.push({ ...parsed, resolve, reject });
+		});
+		this.#startPump();
+
+		return(await result);
+	}
+
+	/** Start publishing the queue, unless that is under way. */
+	#startPump(): void {
+		if (this.#pumping !== null) {
+			return;
+		}
+		this.#pumping = this.#pump().finally(() => {
+			this.#pumping = null;
+			// A submission queued after the pump last looked, but before it stopped, would otherwise wait for the next one.
+			if (this.#queue.length > 0) {
+				this.#startPump();
+			}
+		});
+	}
+
+	/** Publish queued submissions, a batch at a time, until none are left. */
+	async #pump(): Promise<void> {
+		while (this.#queue.length > 0) {
+			await new Promise((resolve) => setTimeout(resolve, this.#batchWindowMs));
+
+			const batch: Submission[] = [];
+			let size = 0;
+			while (this.#queue.length > 0) {
+				const next = this.#queue[0];
+				if (next === undefined || (batch.length > 0 && size + next.blocks.length > this.#maxBatchBlocks)) {
+					break;
+				}
+				batch.push(next);
+				size += next.blocks.length;
+				this.#queue.shift();
+			}
+
+			try {
+				await this.#publish(batch);
+			} catch (error) {
+				if (batch.length === 1) {
+					batch[0]?.reject(error);
+					continue;
+				}
+
+				// One refused call should not hold up the rest: try each alone.
+				for (const submission of batch) {
+					try {
+						await this.#publish([submission]);
+					} catch (alone) {
+						submission.reject(alone);
+					}
+				}
+			}
+		}
+	}
+
+	/** The head of a contract's chain, recovering any staple left half-voted. */
+	async #head(contract: string): Promise<KeetaNetBlockHash | null> {
+		const known = this.#heads.get(contract);
+		if (known !== undefined) {
+			return(known);
+		}
+
+		/*
+		 * A block we got votes for but never published (we stopped
+		 * between voting and publishing) holds the chain: publish it if
+		 * its votes still make a quorum. If they do not, they expire.
+		 */
+		const account = KeetaNet.lib.Account.fromPublicKeyString(contract);
+		try {
+			if (await this.#client.client.getPendingBlock(account) !== null) {
+				await this.#client.client.recoverAccount(account, true, this.#publishOptions());
+			}
+		} catch (error) {
+			this.logger?.debug('ContractsAnchor', 'Could not recover a pending block on', contract, error);
+		}
+		const head = (await this.#client.client.getHeadBlock(contract))?.hash ?? null;
+		this.#heads.set(contract, head);
+		return(head);
+	}
+
+	/** Order one batch of submissions, publish it, and settle each submission. */
+	async #publish(batch: Submission[]): Promise<void> {
+		const calls = new Map<string, Call[]>();
+		for (const submission of batch) {
+			for (const contract of submission.contracts) {
+				calls.set(contract, calls.get(contract) ?? []);
+			}
+			for (const call of submission.calls) {
+				calls.get(call.contract)?.push(call);
+			}
+		}
+
+		await this.#waitForChains([...calls.keys()]);
+
+		const orders: KeetaNetBlock[] = [];
+		for (const [contract, ordered] of calls) {
+			const references = ordered.map((call) => ({ block: call.block.hash, operationIndex: call.operationIndex }));
+			const operations: BlockJSONOperations[] = [];
+			for (let start = 0; start === 0 || start < references.length; start += MAX_CALLS_PER_ORDER) {
+				operations.push({ type: OperationType.CONTRACT_ORDER, calls: references.slice(start, start + MAX_CALLS_PER_ORDER) });
+			}
+			const previous = await this.#head(contract);
+			orders.push(await new KeetaNet.lib.Block.Builder({
+				account: KeetaNet.lib.Account.fromPublicKeyString(contract),
+				signer: this.sequencer.assertAccount(),
+				previous: previous ?? KeetaNet.lib.Block.NO_PREVIOUS,
+				network: this.#client.network,
+				operations
+			}).seal());
+		}
+
+		const blocks = [...batch.flatMap((submission) => submission.blocks), ...orders];
+		let voteStaple: KeetaNetVoteStaple;
+		try {
+			voteStaple = await this.#vote(blocks, orders);
+		} catch (error) {
+			// The staple may have landed even though the reply was lost.
+			const [first] = orders;
+			const landed = first === undefined ? null : await this.#client.client.getVoteStaple(first.hash).catch(() => null);
+			if (landed === null) {
+				for (const contract of calls.keys()) {
+					this.#heads.delete(contract);
+				}
+				throw(Errors.CallFailed.isInstance(error) ? error : new Errors.CallFailed({ kind: 'refused' }, errorMessage(error)));
+			}
+			voteStaple = landed;
+		}
+
+		for (const order of orders) {
+			this.#heads.set(order.account.publicKeyString.get(), order.hash);
+		}
+		this.#settle(batch, voteStaple);
+	}
+
+	/** Wait until no temporary votes from a failed staple hold any of these contract chains. */
+	async #waitForChains(contracts: string[]): Promise<void> {
+		const until = Math.max(0, ...contracts.map((contract) => this.#heldUntil.get(contract) ?? 0));
+		if (until > Date.now()) {
+			this.logger?.debug('ContractsAnchor', `Waiting ${until - Date.now()}ms for temporary votes holding a contract chain to expire`);
+			await sleep(until - Date.now());
+		}
+		for (const contract of contracts) {
+			if ((this.#heldUntil.get(contract) ?? 0) <= Date.now()) {
+				this.#heldUntil.delete(contract);
+			}
+		}
+	}
+
+	/**
+	 * Ask every representative with `ask`, then ask again those that are
+	 * behind, until they answer or `catchUpMs` passes. `ask` gets the
+	 * representatives to ask (all of them, at first). Answers given are
+	 * kept, since a representative that has voted would refuse to vote
+	 * again. Whether the answers are enough is for the representatives to
+	 * judge: one gives a permanent vote only for temporary votes that hold a
+	 * quorum, and accepts a staple only with permanent votes that hold one.
+	 */
+	async #askAll<T>(ask: (reps: KeetaNetRepresentative[] | undefined) => Promise<Answer<T>[]>): Promise<Answer<T>[]> {
+		const client = this.#client.client;
+		const deadline = Date.now() + this.#catchUpMs;
+		const answers = new Map<string, Answer<T>>();
+		let pending: KeetaNetRepresentative[] | undefined;
+
+		for (;;) {
+			for (const answer of await ask(pending)) {
+				answers.set(answer.representative.publicKeyString.get(), answer);
+			}
+			const behind = new Set([...answers.values()].filter((answer) => answer.result === null && isBehind(answer.error)).map((answer) => answer.representative.publicKeyString.get()));
+			if (behind.size === 0 || Date.now() >= deadline) {
+				return([...answers.values()]);
+			}
+			pending = client.representatives.filter((rep) => behind.has(rep.key.publicKeyString.get()));
+			await sleep(RETRY_INTERVAL_MS);
+		}
+	}
+
+	/**
+	 * A dry run of the votes: one representative's quote, which on contract
+	 * calls carries their outcome. Calls run the same on every
+	 * representative that is up to date, so one is enough; a call it
+	 * refuses never gets a vote. The heaviest representative that answers
+	 * is used, waiting for one that is behind and skipping one out of reach.
+	 */
+	async #dryRun(blocks: KeetaNetBlock[]): Promise<void> {
+		const client = this.#client.client;
+		const reps = [...client.representatives].sort((a, b) => ((a.weight ?? 0n) < (b.weight ?? 0n) ? 1 : -1));
+		const unanswered: Answer<unknown>[] = [];
+		for (const rep of reps) {
+			const answers = await this.#askAll((pending) => client.quoteEach(blocks, pending ?? [rep]));
+			if (answers.some((answer) => answer.result !== null)) {
+				return;
+			}
+			const refusal = answers.find((answer) => errorCode(answer.error) !== undefined && !isBehind(answer.error));
+			if (refusal !== undefined) {
+				throw(new Errors.CallFailed({ kind: 'refused' }, `Representatives refused the quote: ${errorMessage(refusal.error)}`));
+			}
+			unanswered.push(...answers);
+		}
+		throw(new Errors.CallFailed({ kind: 'refused' }, `No representative quoted the staple: ${unanswered.length === 0 ? 'there are none' : refusalReason(unanswered)}`));
+	}
+
+	/**
+	 * Get the staple voted on and published, without leaving a contract
+	 * chain held by votes when that can be avoided:
+	 *
+	 * 1. A dry run ({@link #dryRun}): it holds nothing, so a refused call
+	 *    never gets a vote at all.
+	 * 2. Temporary votes on exactly these blocks from every representative,
+	 *    asking again those that are behind. A competing ordering is never
+	 *    built while any of them is live.
+	 * 3. The fee block, if the votes ask for fees; permanent votes.
+	 * 4. Publish to every representative, so that none falls behind.
+	 *
+	 * If the temporary votes fall short of a quorum (a caller forked its
+	 * chain after the dry run), representatives refuse the permanent votes,
+	 * and the temporary ones hold the contract chains until they expire;
+	 * later calls to those contracts wait for that.
+	 */
+	async #vote(blocks: KeetaNetBlock[], orders: KeetaNetBlock[]): Promise<KeetaNetVoteStaple> {
+		const client = this.#client.client;
+		const staple = blocks.map((block) => block.hash.toString().slice(0, 12)).join(',');
+		this.logger?.debug('ContractsAnchor', `dry run of ${staple}`);
+		await this.#dryRun(blocks);
+		this.logger?.debug('ContractsAnchor', `temporary votes for ${staple}`);
+
+		const temporaryAnswers = await this.#askAll((reps) => client.voteEach(blocks, undefined, reps));
+		let permanent: KeetaNetVote[];
+		try {
+			const temporary = agreeing(temporaryAnswers);
+			if (temporary.length === 0) {
+				throw(new Errors.CallFailed({ kind: 'refused' }, `Representatives refused the vote: ${refusalReason(temporaryAnswers)}`));
+			}
+
+			const generateFeeBlock = this.#client.config.generateFeeBlock;
+			if (client.votesRequireFees(temporary)) {
+				if (generateFeeBlock === undefined) {
+					throw(new Error('The votes ask for fees, and the sequencer cannot pay them'));
+				}
+				blocks.push(await generateFeeBlock(KeetaNet.lib.Vote.Staple.fromVotesAndBlocks(temporary, blocks)));
+			}
+			this.logger?.debug('ContractsAnchor', `permanent votes for ${staple}`);
+			const permanentAnswers = await this.#askAll((reps) => client.voteEach(blocks, temporary, reps));
+			permanent = agreeing(permanentAnswers);
+			if (permanent.length === 0) {
+				// A refused temporary vote says why better than the permanent refusals it caused.
+				throw(new Errors.CallFailed({ kind: 'refused' }, `Representatives refused the vote: ${refusalReason(temporaryAnswers, permanentAnswers)}`));
+			}
+		} catch (error) {
+			const expiries = temporaryAnswers.flatMap((answer) => (answer.result === null ? [] : [answer.result.validityTo.valueOf()]));
+			if (expiries.length > 0) {
+				// The votes given hold these chains until they expire, slop included.
+				const until = Math.max(...expiries) + VOTE_EXPIRY_SLOP_MS + 1_000;
+				for (const order of orders) {
+					this.#heldUntil.set(order.account.publicKeyString.get(), until);
+				}
+				this.#refuseForkers(blocks, orders, temporaryAnswers.filter((answer) => answer.result === null));
+			}
+			throw(error);
+		}
+		this.logger?.debug('ContractsAnchor', `publishing ${staple}`);
+
+		const voteStaple = KeetaNet.lib.Vote.Staple.fromVotesAndBlocks(permanent, blocks);
+		const { publish } = await client.transmitStaple(voteStaple, client.representatives);
+		if (!publish) {
+			throw(new Error('The network did not accept the staple'));
+		}
+		this.logger?.debug('ContractsAnchor', `published ${staple}`);
+
+		return(voteStaple);
+	}
+
+	/**
+	 * Refuse, for a while, callers whose blocks representatives would not
+	 * vote for because they had voted for another block on the caller's
+	 * chain: the caller forked it after the quotes.
+	 */
+	#refuseForkers(blocks: KeetaNetBlock[], orders: KeetaNetBlock[], refusals: Answer<KeetaNetVote>[]): void {
+		const ours = new Set(orders.map((order) => order.hash.toString().toUpperCase()));
+		for (const refusal of refusals) {
+			if (errorCode(refusal.error) !== 'LEDGER_SUCCESSOR_VOTE_EXISTS') {
 				continue;
 			}
-
-			if (block.signers.length !== 1 || block.signers[0] !== this.#sequencerAddress) {
-				throw(new Error(`The engine produced a block for ${block.account} that the sequencer cannot sign`));
+			const hash = /hash=([0-9A-Fa-f]{64})/u.exec(errorMessage(refusal.error))?.[1]?.toUpperCase();
+			const forked = hash === undefined || ours.has(hash) ? undefined : blocks.find((block) => block.hash.toString().toUpperCase() === hash);
+			if (forked !== undefined) {
+				this.#refusedUntil.set(forked.account.publicKeyString.get(), Date.now() + FORK_REFUSAL_MS);
 			}
-
-			const hash = Buffer.from(block.hash, 'hex');
-			const signature = await this.sequencer.sign(hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength));
-			signed.push(new KeetaNet.lib.Block(binding.sealBlock(bytes, [signature.getBuffer()])));
 		}
-
-		return(signed);
 	}
 
-	/** Execute, publish and commit one state-changing call. */
-	async #call(sender: string, options: { fundingBlock?: string | undefined; gasLimit?: string | undefined; }, run: (engine: ContractEngineInstance, call: string) => Promise<string>): Promise<KeetaContractsAnchorCallResult> {
-		return(await this.#serial(async () => {
-			await this.#recover();
-			const { binding, engine } = await this.#engine();
-			const height = await this.state.height() + 1n;
-			const call: ContractCall = {
-				sender,
-				height: height.toString(),
-				timeMillis: Date.now(),
-				...(options.fundingBlock !== undefined ? { fundingBlock: options.fundingBlock } : {}),
-				...(options.gasLimit !== undefined ? { gasLimit: options.gasLimit } : {})
-			};
+	/** Give each submission the outcome of its calls, from the staple's votes. */
+	#settle(batch: Submission[], voteStaple: KeetaNetVoteStaple): void {
+		const der = voteStaple.votes[0]?.contractOutcomes;
+		const outcomes = der === undefined ? [] : KeetaNet.lib.Contract.Outcomes.fromDER(der).calls;
+		const blockHashes = voteStaple.blocks.map((block) => block.hash.toString().toLowerCase());
 
-			let execution: ContractExecution;
-			try {
-				execution = unwrapOutcome<ContractExecution>(await run(engine, JSON.stringify(call)));
-			} catch (error) {
-				if (error instanceof ContractEngineCallError && error.kind !== 'host') {
-					throw(new Errors.CallFailed({ kind: error.kind }, error.message));
+		for (const submission of batch) {
+			const contracts = new Map(submission.calls.map((call) => [`${call.block.hash.toString().toLowerCase()}/${call.operationIndex}`, call.contract]));
+			const results: KeetaContractsAnchorCallOutcome[] = [];
+			for (const outcome of outcomes) {
+				const block = outcome.block.toString().toLowerCase();
+				const contract = contracts.get(`${block}/${outcome.operationIndex}`);
+				if (contract === undefined) {
+					continue;
 				}
-				throw(error);
+				results.push({
+					block,
+					operationIndex: outcome.operationIndex,
+					contract,
+					gasUsed: outcome.gasUsed.toString(),
+					returnData: outcome.returnData.toString('base64'),
+					writes: outcome.writes.map((write) => ({ owner: write.owner.publicKeyString.get(), id: write.id.toString('hex'), version: write.version.toString() })),
+					...(outcome.failure === undefined ? {} : { failure: { kind: outcome.failure.kind, message: outcome.failure.message }})
+				});
 			}
-
-			const blocks = await this.#sign(binding, execution.blocks);
-			const id = randomUUID();
-			const expectedHeads = lastHeads(execution.blocks);
-			await this.state.stage({ id, height: height.toString(), changes: execution.changes, expectedHeads });
-
-			let published = blocks.length === 0;
-			if (!published) {
-				try {
-					published = (await this.#client.client.transmit(blocks, this.#publishOptions())).publish;
-				} catch (error) {
-					// The staple may have landed even though the reply was lost.
-					if (!await this.#landed(expectedHeads)) {
-						await this.state.discard(id);
-						throw(error);
-					}
-					published = true;
-				}
-			}
-			if (!published) {
-				await this.state.discard(id);
-				throw(new KeetaAnchorUserError('The network did not accept the call'));
-			}
-
-			await this.state.commit(id);
-			return({
-				contract: execution.contract,
-				data: execution.data,
-				events: execution.events,
-				gasUsed: execution.gasUsed,
-				fee: execution.fee,
-				refund: execution.refund,
-				blocks: execution.blocks.map((block) => block.hash),
-				commitments: execution.commitments
-			});
-		}));
-	}
-
-	#assertSender(account: KeetaNetAccount, claimed: string): string {
-		const sender = account.publicKeyString.get();
-		if (sender !== claimed) {
-			throw(new KeetaAnchorUserError('The signed account does not match the request'));
+			submission.resolve({ blocks: blockHashes, calls: results });
 		}
-
-		return(sender);
 	}
 
 	protected async initRoutes(config: KeetaAnchorContractsServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
@@ -345,136 +691,11 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 			...(await super.initRoutes(config)),
 			...this.routes
 		};
-		const chain = this.resolvedCertificateChainRequirement;
 
-		routes['POST /api/upload'] = {
-			bodyType: 'parsed',
-			// Base64 plus the envelope
-			maxBodySize: Math.ceil(this.#maxWasmSize * 4 / 3) + 64 * 1024,
-			handler: async (_params, body) => {
-				const raw = assertKeetaContractsAnchorUploadRequestJSON(body);
-				const account = await verifyBodyAuth(raw, getContractUploadSignable, chain);
-				this.#claimNonce(raw.signed);
-				const wasm = Buffer.from(raw.wasm, 'base64');
-				if (wasm.length > this.#maxWasmSize) {
-					throw(new KeetaAnchorUserError(`Code is larger than ${this.#maxWasmSize} bytes`));
-				}
-
-				const { engine } = await this.#engine();
-				let stored: ContractStoredCode;
-				try {
-					stored = unwrapOutcome<ContractStoredCode>(await engine.storeCode(wasm));
-				} catch (error) {
-					if (error instanceof ContractEngineCallError) {
-						throw(new Errors.CallFailed({ kind: error.kind }, error.message));
-					}
-					throw(error);
-				}
-				const codeId = await this.state.addCode(stored.checksum, account.publicKeyString.get(), wasm);
-				return(json({ ok: true, codeId: codeId.toString(), checksum: stored.checksum, requiredCapabilities: stored.requiredCapabilities }));
-			}
-		};
-
-		routes['POST /api/instantiate'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorInstantiateRequestJSON(body);
-			const account = await verifyBodyAuth(raw, getContractInstantiateSignable, chain);
-			this.#claimNonce(raw.signed);
-			const sender = this.#assertSender(account, raw.account);
-			const result = await this.#call(sender, raw, async (engine, call) => {
-				return(await engine.instantiate(call, raw.codeId, raw.msg, raw.label, raw.admin ?? null));
-			});
+		routes['POST /api/submit'] = async (_params, body) => {
+			const raw = assertKeetaContractsAnchorSubmitRequestJSON(body);
+			const result = await this.#submit(await this.#parse(raw.blocks));
 			return(json({ ok: true, ...result }));
-		};
-
-		routes['POST /api/execute'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorExecuteRequestJSON(body);
-			const account = await verifyBodyAuth(raw, getContractExecuteSignable, chain);
-			this.#claimNonce(raw.signed);
-			const sender = this.#assertSender(account, raw.account);
-			const result = await this.#call(sender, raw, async (engine, call) => {
-				return(await engine.execute(call, raw.contract, raw.msg));
-			});
-			return(json({ ok: true, ...result }));
-		};
-
-		routes['POST /api/migrate'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorMigrateRequestJSON(body);
-			const account = await verifyBodyAuth(raw, getContractMigrateSignable, chain);
-			this.#claimNonce(raw.signed);
-			const sender = this.#assertSender(account, raw.account);
-			const result = await this.#call(sender, raw, async (engine, call) => {
-				return(await engine.migrate(call, raw.contract, raw.newCodeId, raw.msg));
-			});
-			return(json({ ok: true, ...result }));
-		};
-
-		routes['POST /api/query'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorQueryRequestJSON(body);
-			const { engine } = await this.#engine();
-			const block = JSON.stringify({ height: (await this.state.height()).toString(), timeMillis: Date.now() });
-			try {
-				const result = unwrapOutcome<string>(await engine.query(block, raw.contract, raw.msg));
-				return(json({ ok: true, result }));
-			} catch (error) {
-				if (error instanceof ContractEngineCallError) {
-					throw(new Errors.CallFailed({ kind: error.kind }, error.message));
-				}
-				throw(error);
-			}
-		};
-
-		routes['GET /api/contract/:address'] = async (params) => {
-			const address = params.get('address');
-			const contract = address ? await this.state.contract(address) : null;
-			if (contract === null) {
-				throw(new Errors.CallFailed({ kind: 'unknownContract' }, `No contract at ${address ?? ''}`));
-			}
-
-			return(json({ ok: true, contract }));
-		};
-
-		routes['POST /api/prove'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorProveRequestJSON(body);
-			const { engine } = await this.#engine();
-			try {
-				const proof = unwrapOutcome<ContractStorageProof>(await engine.prove(raw.contract, Buffer.from(raw.key, 'base64')));
-				return(json({ ok: true, proof }));
-			} catch (error) {
-				if (error instanceof ContractEngineCallError) {
-					throw(new Errors.CallFailed({ kind: error.kind }, error.message));
-				}
-				throw(error);
-			}
-		};
-
-		routes['POST /api/simulate'] = async (_params, body) => {
-			const raw = assertKeetaContractsAnchorSimulateRequestJSON(body);
-			const { simulator } = await this.#engine();
-			const call = JSON.stringify({
-				sender: raw.account,
-				height: ((await this.state.height()) + 1n).toString(),
-				timeMillis: Date.now(),
-				funds: raw.funds ?? [],
-				...(raw.gasLimit !== undefined ? { gasLimit: raw.gasLimit } : {})
-			});
-
-			let execution: ContractExecution;
-			try {
-				const outcome = raw.kind === 'instantiate'
-					? await simulator.instantiate(call, raw.codeId, raw.msg, raw.label, null)
-					: await simulator.execute(call, raw.contract, raw.msg);
-				execution = unwrapOutcome<ContractExecution>(outcome);
-			} catch (error) {
-				if (error instanceof ContractEngineCallError) {
-					throw(new Errors.CallFailed({ kind: error.kind }, error.message));
-				}
-				throw(error);
-			}
-
-			const price = this.#config.gasPrice;
-			const gasUsed = BigInt(execution.gasUsed);
-			const fee = price === undefined ? 0n : (gasUsed * price.numerator + price.denominator - 1n) / price.denominator;
-			return(json({ ok: true, gasUsed: execution.gasUsed, fee: fee.toString(), events: execution.events, data: execution.data }));
 		};
 
 		return(routes);
@@ -482,22 +703,13 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 
 	protected async buildServiceMetadata(): Promise<ContractsServiceMetadata> {
 		const acceptedIssuerDNs = this.acceptedIssuerDNs();
-		const authentication: ServiceMetadataAuthenticationType = { method: 'keeta-account', type: 'required' };
-		const url = (path: string) => (new URL(path, this.url)).toString();
-		const gasPrice = this.#gasPrice;
 
+		const fee = this.#fee;
 		return({
 			sequencer: this.#sequencerAddress,
-			...(gasPrice !== undefined ? { gasPrice } : {}),
+			...(fee !== undefined ? { fee: { token: fee.token.publicKeyString.get(), perCall: fee.perCall.toString(), perGas: fee.perGas.toString() }} : {}),
 			operations: {
-				upload: { url: url('/api/upload'), options: { authentication }},
-				instantiate: { url: url('/api/instantiate'), options: { authentication }},
-				execute: { url: url('/api/execute'), options: { authentication }},
-				migrate: { url: url('/api/migrate'), options: { authentication }},
-				query: url('/api/query'),
-				contract: url('/api/contract') + '/{address}',
-				prove: url('/api/prove'),
-				simulate: url('/api/simulate')
+				submit: (new URL('/api/submit', this.url)).toString()
 			},
 			...(acceptedIssuerDNs !== undefined && { acceptedIssuerDNs })
 		});
