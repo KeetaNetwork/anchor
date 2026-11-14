@@ -41,6 +41,7 @@ import { KeetaAnchorQueueStorageDriverMemory } from './queue/index.js';
 import { asleep } from './utils/asleep.js';
 import { Buffer } from './utils/buffer.js';
 import { createNodeAndClient } from './utils/tests/node.js';
+import { acceptShownTerms } from './utils/tests/fx.js';
 import KeetaAssetMovementStatusSource from '../services/asset-movement/status-source.js';
 import KeetaFXStatusSource from '../services/fx/status-source.js';
 import Resolver from './resolver.js';
@@ -1147,7 +1148,7 @@ async function startFXExchangeFixture(options: FXExchangeFixtureOptions = {}): P
 	const setup = await setupFXAnchor(options);
 
 	const quote = await requestUSDtoEURQuote(setup.fxClient);
-	const exchange = await quote.createExchange();
+	const exchange = await quote.createExchange(undefined, acceptShownTerms(quote));
 	await settleExchange(setup.server, exchange);
 
 	const history = buildFXHistory(setup.client, setup.userAccount);
@@ -1179,7 +1180,7 @@ async function startChainedFXExchangeFixture(): Promise<{
 	const setup = await setupFXAnchor({ giveBase: 100n });
 
 	const firstQuote = await requestUSDtoEURQuote(setup.fxClient);
-	const firstExchange = await firstQuote.createExchange();
+	const firstExchange = await firstQuote.createExchange(undefined, acceptShownTerms(firstQuote));
 	await settleExchange(setup.server, firstExchange);
 
 	const firstStatus = await firstExchange.getExchangeStatus();
@@ -1190,7 +1191,7 @@ async function startChainedFXExchangeFixture(): Promise<{
 	const firstBlockHash = firstStatus.blockhash;
 
 	const secondQuote = await requestUSDtoEURQuote(setup.fxClient);
-	const secondExchange = await secondQuote.createExchange(undefined, { inputs: [ { blockHash: firstBlockHash } ] });
+	const secondExchange = await secondQuote.createExchange(undefined, { ...acceptShownTerms(secondQuote), inputs: [ { blockHash: firstBlockHash } ] });
 	await settleExchange(setup.server, secondExchange);
 
 	const history = buildFXHistory(setup.client, setup.userAccount);
@@ -1307,15 +1308,14 @@ async function startFXSlippageFixture(): Promise<{
 		})
 	});
 
-	/* The fixture's bound is 20% above its converted amount, past the client's default cap */
-	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount, defaultLimits: { maxEstimateBoundBps: null }});
+	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount });
 	const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: received, affinity: 'to' });
 	const estimate = estimates?.[0];
 	if (estimate === undefined) {
 		throw(new Error('Expected a USD to EUR estimate from the FX anchor'));
 	}
 
-	const exchange = await estimate.createExchange();
+	const exchange = await estimate.createExchange(undefined, acceptShownTerms(estimate));
 	await settleExchange(server, exchange);
 
 	const history = buildFXHistory(client, userAccount);

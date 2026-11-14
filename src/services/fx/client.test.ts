@@ -13,6 +13,7 @@ import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
 import { assertConversionInputCanonicalJSON, isKeetaFXAnchorEstimateResponse, Errors as FXErrors } from './common.js';
 import type { JSONSerializable } from '../../lib/utils/json.js';
+import { acceptShownTerms } from '../../lib/utils/tests/fx.js';
 import type KeetaFXAnchorClient from './client.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import type { Routes } from '../../lib/http-server/index.js';
@@ -24,12 +25,6 @@ import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.type
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
-
-/*
- * Turns off the client's default fee and estimate bound caps, for tests
- * that check server behavior with values outside those caps.
- */
-const noDefaultLimits = { maxCostBps: null, maxEstimateBoundBps: null };
 
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
@@ -620,7 +615,7 @@ for (const useDeprecated of [false, true]) {
 			expect(exchangeStatusWithBlock.status).toBe('completed');
 			expect(exchangeStatusWithBlock.blockhash).toBeDefined();
 
-			const exchange = await quoteFromEstimate.createExchange();
+			const exchange = await quoteFromEstimate.createExchange(undefined, acceptShownTerms(quoteFromEstimate));
 			expect(exchange.exchange.exchangeID).toBeDefined();
 
 			const exchangeStatus = await waitForExchangeToComplete(server, exchange);
@@ -824,7 +819,7 @@ test('createExchange handles missing status field', async function() {
 		throw(new Error('No quotes available'));
 	}
 
-	const exchange = await quote.createExchange();
+	const exchange = await quote.createExchange(undefined, acceptShownTerms(quote));
 
 	expect(fetchIntercepted).toBe(true);
 	expect(exchange.exchange.exchangeID).toBe('test-exchange-123');
@@ -903,7 +898,7 @@ test('FX Client resolves a settled exchange by account and reports its conversio
 		throw(new Error('Expected a USD to EUR quote'));
 	}
 
-	const exchange = await quote.createExchange();
+	const exchange = await quote.createExchange(undefined, acceptShownTerms(quote));
 	const completed = await waitForExchangeToComplete(server, exchange);
 	expect(completed.status).toBe('completed');
 
@@ -995,7 +990,7 @@ test('createExchange succeeds when FX fee is charged in the send token', async f
 		})
 	});
 
-	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger, defaultLimits: noDefaultLimits });
+	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger });
 	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: swapAmount, affinity: 'from' });
 	const quote = quotes?.[0];
 	if (quote === undefined) {
@@ -1008,7 +1003,7 @@ test('createExchange succeeds when FX fee is charged in the send token', async f
 	const usdBefore = await client.balance(testCurrencyUSD);
 	const eurBefore = await client.balance(testCurrencyEUR);
 
-	const exchange = await quote.createExchange();
+	const exchange = await quote.createExchange(undefined, acceptShownTerms(quote));
 	const completed = await waitForExchangeToComplete(server, exchange);
 	expect(completed.status).toBe('completed');
 
@@ -1232,8 +1227,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		root: userAccount,
 		signer: userAccount,
 		account: userAccount,
-		logger: logger,
-		defaultLimits: noDefaultLimits
+		logger: logger
 	});
 
 	const localeCompareArgs = [
@@ -1349,7 +1343,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 		expect(singleEstimate.estimate.convertedAmount).toBe(1001n);
 		expect(singleEstimate.estimate.convertedAmountBound).toBe(750n);
 
-		const exchange = await singleEstimate.createExchange();
+		const exchange = await singleEstimate.createExchange(undefined, acceptShownTerms(singleEstimate));
 
 		const completedStatus = await waitForExchangeToComplete(serverDoesNotRequireDoesNotIssueQuote, exchange);
 
@@ -1690,7 +1684,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 			const storageFromTokenBalancePre = await client.balance(request.from, { account: storageAccount });
 			const storageToTokenBalancePre = await client.balance(request.to, { account: storageAccount });
 
-			const exchange = await singleEstimate.createExchange();
+			const exchange = await singleEstimate.createExchange(undefined, acceptShownTerms(singleEstimate));
 			const completedStatus = await waitForExchangeToComplete(serverDoesNotRequireQuote, exchange);
 			expect(completedStatus.status).toBe('completed');
 
@@ -2286,7 +2280,7 @@ test('FX Server Queue extensions', async function() {
 	if (!successfulQuote) {
 		throw(new Error('FX quote unexpectedly undefined after length check'));
 	}
-	const successExchange = await successfulQuote.createExchange();
+	const successExchange = await successfulQuote.createExchange(undefined, acceptShownTerms(successfulQuote));
 	const successExchangeStatus = await waitForExchangeToComplete(server, successExchange);
 
 	expect(successHandledBlockhashes[successExchangeStatus.blockhash]).toBe(1);
@@ -2410,8 +2404,7 @@ test('FX Server Converted Amount Bound Validation', async function() {
 		root: userAccount,
 		signer: userAccount,
 		account: userAccount,
-		logger: logger,
-		defaultLimits: noDefaultLimits
+		logger: logger
 	});
 
 	const testCases: { convertedAmount: bigint; convertedAmountBound: bigint; affinity: 'to' | 'from'; shouldSucceed: boolean; }[] = [
@@ -2748,29 +2741,41 @@ test('FX Client createExchange enforces the caller limits before it signs', asyn
 	});
 }, 60_000);
 
-test('FX Client applies its default fee and estimate bound caps', async function() {
-	await withConversionBindingServer(async function({ fxClient, request, setCost, setEstimateBoundOffset, testCurrencyUSD, baseToken }) {
+test('FX Client applies its default limits when it signs, without dropping quotes', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setCost, setEstimateBoundOffset, sentSends, testCurrencyUSD, baseToken }) {
+		async function expectLimitExceeded(exchange: Promise<unknown>) {
+			const error: unknown = await exchange.catch(function(caught: unknown) { return(caught); });
+			expect(FXErrors.ExchangeLimitExceeded.isInstance(error)).toBe(true);
+		}
+
 		const provider = await getOnlyProvider(fxClient, request);
-
-		setCost({ amount: 10n, token: testCurrencyUSD });
-		await expect(provider.getQuote()).resolves.toBeDefined();
-
-		setCost({ amount: 11n, token: testCurrencyUSD });
-		const quoteError: unknown = await provider.getQuote().catch(function(error: unknown) { return(error); });
-		const estimateError: unknown = await provider.getEstimate().catch(function(error: unknown) { return(error); });
-		expect(FXErrors.ExchangeLimitExceeded.isInstance(quoteError)).toBe(true);
-		expect(FXErrors.ExchangeLimitExceeded.isInstance(estimateError)).toBe(true);
-		expect(await fxClient.getQuotesOrEstimates(request)).toBeNull();
-
-		setCost({ amount: 0n, token: baseToken });
 		const toProvider = await getOnlyProvider(fxClient, { ...request, affinity: 'to' });
-		const convertedAmount = 920n;
 
-		setEstimateBoundOffset(convertedAmount * 5n / 100n);
-		await expect(toProvider.getEstimate()).resolves.toBeDefined();
+		/* A fee over 1% of the amount sent is still listed, but needs maxCost to sign */
+		setCost({ amount: 11n, token: testCurrencyUSD });
+		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
+		const highFeeQuote = await provider.getQuote();
+		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }));
 
-		setEstimateBoundOffset((convertedAmount * 5n / 100n) + 1n);
-		const boundError: unknown = await toProvider.getEstimate().catch(function(error: unknown) { return(error); });
-		expect(FXErrors.ExchangeLimitExceeded.isInstance(boundError)).toBe(true);
+		/* A fee outside the from and to tokens needs maxCost, however small */
+		setCost({ amount: 5n, token: baseToken });
+		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }));
+		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 5n }}}));
+
+		/* Affinity "to" needs maxSend, because the provider sets the amount sent */
+		setCost({ amount: 0n, token: baseToken });
+		await expectLimitExceeded(toProvider.createExchange({ quote: await toProvider.getQuote() }));
+
+		/* An estimate bound more than 5% below its converted amount is still listed, but needs minReceive to sign */
+		const { convertedAmount } = await provider.getEstimate();
+		setEstimateBoundOffset(-((convertedAmount * 5n / 100n) + 1n));
+		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
+		await expectLimitExceeded(provider.createExchange({ estimate: await provider.getEstimate() }));
+
+		expect(sentSends()).toEqual([]);
+
+		/* With maxCost the caller accepts the higher fee */
+		await provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 11n }}});
+		expect(sentSends()).toEqual([{ token: testCurrencyUSD.publicKeyString.get(), amount: 1011n }]);
 	});
 }, 60_000);

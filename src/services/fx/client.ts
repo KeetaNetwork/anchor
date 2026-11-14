@@ -259,14 +259,24 @@ async function getEndpoints(
 }
 
 /**
- * Limits the caller sets on the block that `createExchange` builds. Each
- * limit is optional. The limits apply only when `createExchange` builds
- * the block, not to a block the caller gives.
+ * Limits the caller sets on the block that `createExchange` builds, from
+ * the terms it showed the user. The limits apply only when
+ * `createExchange` builds the block, not to a block the caller gives.
+ *
+ * `createExchange` signs no amount that the anchor sets unless a limit
+ * bounds it:
+ * - With affinity `to`, the anchor sets the amount sent, so `maxSend` is
+ *   required.
+ * - A fee in a token other than `from` or `to` needs `maxCost`.
+ * - Without `maxCost`, a fee in `from` or `to` is capped by the client's
+ *   `defaultLimits.maxCostBps`.
+ * - With affinity `from` and no `minReceive`, an estimate bound is capped
+ *   by the client's `defaultLimits.maxEstimateBoundBps`.
  */
 export interface KeetaFXAnchorExchangeLimits {
 	/**
 	 * The most of the `from` token the block may send for the conversion,
-	 * not counting the fee.
+	 * not counting the fee. Required for affinity `to`.
 	 */
 	maxSend?: bigint;
 	/**
@@ -275,6 +285,7 @@ export interface KeetaFXAnchorExchangeLimits {
 	minReceive?: bigint;
 	/**
 	 * The most the fee may be. A non-zero fee must also be in this token.
+	 * When set, it replaces the default fee cap.
 	 */
 	maxCost?: { token: KeetaNetToken; amount: bigint; };
 }
@@ -284,48 +295,25 @@ export interface KeetaFXAnchorCreateExchangeOptions {
 	limits?: KeetaFXAnchorExchangeLimits;
 }
 
-function assertExchangeWithinLimits(limits: KeetaFXAnchorExchangeLimits | undefined, terms: ExchangeTerms): void {
-	if (limits === undefined) {
-		return;
-	}
-
-	if (limits.maxSend !== undefined && terms.sendAmount > limits.maxSend) {
-		throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would send ${terms.sendAmount}, more than the limit of ${limits.maxSend}`));
-	}
-
-	if (limits.minReceive !== undefined && terms.receiveAmount < limits.minReceive) {
-		throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would receive ${terms.receiveAmount}, less than the limit of ${limits.minReceive}`));
-	}
-
-	if (limits.maxCost !== undefined && terms.costAmount > 0n) {
-		if (!limits.maxCost.token.comparePublicKey(terms.costToken)) {
-			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee is in ${terms.costToken.publicKeyString.get()}, not in the limit token ${limits.maxCost.token.publicKeyString.get()}`));
-		}
-
-		if (terms.costAmount > limits.maxCost.amount) {
-			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee of ${terms.costAmount} is more than the limit of ${limits.maxCost.amount}`));
-		}
-	}
-}
-
 /**
- * Caps the client applies to every quote and estimate, so that a caller
- * that sets no limits is still protected. Set a cap to `null` to turn it
+ * Caps `createExchange` applies when the caller gives no limit for the
+ * same term, so that a caller that sets no limits is still protected.
+ * They do not filter quotes or estimates. Set a cap to `null` to turn it
  * off.
  */
 export interface KeetaFXAnchorClientDefaultLimits {
 	/**
 	 * The most a fee in the `from` or `to` token may be, in basis points
-	 * of the amount the conversion sends or receives in that token. It
-	 * does not apply to a fee in another token. Use `maxCost` on
-	 * `createExchange` to cap a fee in any token.
+	 * of the amount the conversion sends or receives in that token, when
+	 * the caller gives no `maxCost`.
 	 *
 	 * Defaults to `100` (1%).
 	 */
 	maxCostBps?: number | null;
 	/**
-	 * The furthest an estimate's bound may be from its converted amount,
-	 * in basis points, on the side that is worse for the user.
+	 * The furthest an estimate's bound may be below its converted amount,
+	 * in basis points, for affinity `from` when the caller gives no
+	 * `minReceive`. Affinity `to` always needs `maxSend` instead.
 	 *
 	 * Defaults to `500` (5%).
 	 */
@@ -470,39 +458,65 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		if (isInvalid) {
 			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} gave an estimate bound of ${convertedAmountBound} that is on the wrong side of its converted amount ${convertedAmount} for affinity "${affinity}"`));
 		}
-
-		const maxBps = this.#defaultLimits.maxEstimateBoundBps;
-		if (maxBps === null) {
-			return;
-		}
-
-		const distance = affinity === 'from' ? convertedAmount - convertedAmountBound : convertedAmountBound - convertedAmount;
-		if (distance * 10000n > convertedAmount * BigInt(maxBps)) {
-			throw(new FXErrors.ExchangeLimitExceeded(`FX provider ${String(this.providerID)} gave an estimate bound of ${convertedAmountBound}, more than ${maxBps} basis points from its converted amount ${convertedAmount}`));
-		}
 	}
 
 	/**
-	 * Checks a fee in the `from` or `to` token against the default
-	 * `maxCostBps` cap. Throws when the fee is above the cap.
+	 * Checks every amount the anchor sets in the block against the
+	 * caller's limits, or against the client's default caps where the
+	 * caller gave no limit. Throws when an amount is not bounded or is
+	 * past its bound. See {@link KeetaFXAnchorExchangeLimits}.
 	 */
-	#assertDefaultCostCap(terms: ExchangeTerms): void {
-		const maxBps = this.#defaultLimits.maxCostBps;
-		if (maxBps === null || terms.costAmount === 0n) {
+	#assertSigningLimits(terms: ExchangeTerms, estimate: { convertedAmount: bigint; convertedAmountBound: bigint; } | undefined, limits: KeetaFXAnchorExchangeLimits | undefined): void {
+		const conversion = this.conversion;
+
+		if (limits?.maxSend !== undefined) {
+			if (terms.sendAmount > limits.maxSend) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would send ${terms.sendAmount}, more than the limit of ${limits.maxSend}`));
+			}
+		} else if (conversion.affinity === 'to') {
+			throw(new FXErrors.ExchangeLimitExceeded('FX exchange with affinity "to" needs limits.maxSend, because the provider sets the amount sent'));
+		}
+
+		if (limits?.minReceive !== undefined) {
+			if (terms.receiveAmount < limits.minReceive) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would receive ${terms.receiveAmount}, less than the limit of ${limits.minReceive}`));
+			}
+		} else if (estimate !== undefined && conversion.affinity === 'from') {
+			const maxBps = this.#defaultLimits.maxEstimateBoundBps;
+			const distance = estimate.convertedAmount - estimate.convertedAmountBound;
+			if (maxBps !== null && distance * 10000n > estimate.convertedAmount * BigInt(maxBps)) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX estimate bound of ${estimate.convertedAmountBound} is more than ${maxBps} basis points below its converted amount ${estimate.convertedAmount}; set limits.minReceive to accept it`));
+			}
+		}
+
+		if (terms.costAmount === 0n) {
+			return;
+		}
+
+		if (limits?.maxCost !== undefined) {
+			if (!limits.maxCost.token.comparePublicKey(terms.costToken)) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee is in ${terms.costToken.publicKeyString.get()}, not in the limit token ${limits.maxCost.token.publicKeyString.get()}`));
+			}
+
+			if (terms.costAmount > limits.maxCost.amount) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee of ${terms.costAmount} is more than the limit of ${limits.maxCost.amount}`));
+			}
+
 			return;
 		}
 
 		let base;
-		if (terms.costToken.comparePublicKey(this.conversion.from)) {
+		if (terms.costToken.comparePublicKey(conversion.from)) {
 			base = terms.sendAmount;
-		} else if (terms.costToken.comparePublicKey(this.conversion.to)) {
+		} else if (terms.costToken.comparePublicKey(conversion.to)) {
 			base = terms.receiveAmount;
 		} else {
-			return;
+			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee is in ${terms.costToken.publicKeyString.get()}, which is not part of the conversion; set limits.maxCost to accept it`));
 		}
 
-		if (terms.costAmount * 10000n > base * BigInt(maxBps)) {
-			throw(new FXErrors.ExchangeLimitExceeded(`FX provider ${String(this.providerID)} charges a fee of ${terms.costAmount}, more than ${maxBps} basis points of ${base}`));
+		const maxBps = this.#defaultLimits.maxCostBps;
+		if (maxBps !== null && terms.costAmount * 10000n > base * BigInt(maxBps)) {
+			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee of ${terms.costAmount} is more than ${maxBps} basis points of ${base}; set limits.maxCost to accept it`));
 		}
 	}
 
@@ -595,7 +609,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		const estimateCost = { amount: estimate.expectedCost.max, token: estimate.expectedCost.token };
 		this.#assertEstimateBound(estimate.convertedAmount, estimate.convertedAmountBound);
 		this.#assertCostToken(estimateCost);
-		this.#assertDefaultCostCap(exchangeTerms(this.conversion, estimate.convertedAmountBound ?? estimate.convertedAmount, estimateCost));
 
 		return(estimate);
 	}
@@ -658,7 +671,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		};
 
 		this.#assertCostToken(quote.cost);
-		this.#assertDefaultCostCap(exchangeTerms(this.conversion, quote.convertedAmount, quote.cost));
 
 		return(quote);
 	}
@@ -709,12 +721,13 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			const { sendAmount, receiveAmount } = terms;
 
 			this.#assertCostToken({ amount: costAmount, token: costToken });
+			let estimateTerms;
 			if ('estimate' in input) {
 				this.#assertEstimateBound(input.estimate.convertedAmount, input.estimate.convertedAmountBound);
+				estimateTerms = { convertedAmount: input.estimate.convertedAmount, convertedAmountBound: convertedAmountBound };
 			}
 
-			this.#assertDefaultCostCap(terms);
-			assertExchangeWithinLimits(options?.limits, terms);
+			this.#assertSigningLimits(terms, estimateTerms, options?.limits);
 
 			/*
 			 * When the fee is charged in the same token as the swap send,
@@ -1327,7 +1340,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 				return(new KeetaFXAnchorEstimateWithProvider(provider, estimate));
 			} catch (error) {
-				if (FXErrors.ResponseMismatch.isInstance(error) || FXErrors.ExchangeLimitExceeded.isInstance(error)) {
+				if (FXErrors.ResponseMismatch.isInstance(error)) {
 					this.logger?.warn(`Ignoring estimate from FX provider ${String(provider.providerID)}:`, error);
 				} else {
 					this.logger?.error(`Failed to get estimate from provider ${String(provider.providerID)}:`, error);
@@ -1369,7 +1382,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 				const quote = await provider.getQuote();
 				return({ provider, quote: new KeetaFXAnchorQuoteWithProvider(provider, quote) });
 			} catch (error) {
-				if (FXErrors.ResponseMismatch.isInstance(error) || FXErrors.ExchangeLimitExceeded.isInstance(error)) {
+				if (FXErrors.ResponseMismatch.isInstance(error)) {
 					this.logger?.warn(`Ignoring quote from FX provider ${String(provider.providerID)}:`, error);
 				}
 

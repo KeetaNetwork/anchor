@@ -3437,9 +3437,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				if (step.type === 'fx') {
+					/*
+					 * Hold the exchange to what the plan priced: its amounts
+					 * and the fee shown by listChainingPlanFees.
+					 */
+					const plannedCost = step.result.isQuote
+						? { token: step.result.quote.cost.token, amount: step.result.quote.cost.amount }
+						: { token: step.result.estimate.expectedCost.token, amount: step.result.estimate.expectedCost.max };
 					const exchange = await step.result.createExchange(undefined, {
 						inputs: [...publishedInputs],
-						limits: { maxSend: step.valueIn, minReceive: step.valueOut }
+						limits: { maxSend: step.valueIn, minReceive: step.valueOut, maxCost: plannedCost }
 					});
 					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
