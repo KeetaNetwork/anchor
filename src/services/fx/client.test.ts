@@ -11,7 +11,8 @@ import type { KeetaAnchorQueueEntry } from '../../lib/queue/index.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
-import { isKeetaFXAnchorQuoteResponse } from './common.js';
+import { assertConversionInputCanonicalJSON } from './common.js';
+import type { JSONSerializable } from '../../lib/utils/json.js';
 import type KeetaFXAnchorClient from './client.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
 import type { Routes } from '../../lib/http-server/index.js';
@@ -2428,9 +2429,21 @@ test('FX Server Converted Amount Bound Validation', async function() {
 	}
 });
 
-type ConversionResponseVariant = 'same' | 'amount' | 'from';
+type ConversionMismatch = 'from' | 'to' | 'amount' | 'affinity' | 'preferredCostAsset';
 
-async function runConversionBindingScenario(variant: ConversionResponseVariant, preferredCostAsset: boolean) {
+/**
+ * Runs `body` against an FX server that can price a different conversion
+ * than the client asked for. The server signs what it prices, so the
+ * conversion is the only field that differs from an honest answer.
+ */
+async function withConversionBindingServer(body: (context: {
+	fxClient: KeetaFXAnchorClient;
+	request: ConversionInput;
+	setMismatch: (mismatch: ConversionMismatch | null) => void;
+	sentSends: () => { token: string; amount: bigint; }[];
+	testCurrencyUSD: KeetaNetToken;
+	baseToken: KeetaNetToken;
+}) => Promise<void>) {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const quoteSigner = KeetaNet.lib.Account.fromSeed(seed, 2);
 	const liquidityProvider = KeetaNet.lib.Account.fromSeed(seed, 3);
@@ -2439,55 +2452,88 @@ async function runConversionBindingScenario(variant: ConversionResponseVariant, 
 	const client = nodeAndClient.userClient;
 	const baseToken = client.baseToken;
 
-	const { account: testCurrencyUSD } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	const { account: testCurrencyEUR } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-	if (!testCurrencyUSD.isToken() || !testCurrencyEUR.isToken()) {
-		throw(new Error('USD and EUR must be tokens'));
+	async function generateToken(): Promise<KeetaNetToken> {
+		const { account: token } = await client.generateIdentifier(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		if (!token.isToken()) {
+			throw(new Error('Generated identifier is not a token'));
+		}
+
+		return(token);
 	}
 
+	const testCurrencyUSD = await generateToken();
+	const testCurrencyEUR = await generateToken();
+	const testCurrencyGBP = await generateToken();
+
+	let mismatch: ConversionMismatch | null = null;
 	const sentBlocks: InstanceType<typeof KeetaNet.lib.Block>[] = [];
+
+	function alterConversion(postData: JSONSerializable | undefined): JSONSerializable | undefined {
+		if (mismatch === null || typeof postData !== 'object' || postData === null || Array.isArray(postData)) {
+			return(postData);
+		}
+
+		const request = assertConversionInputCanonicalJSON(postData.request);
+		let altered: ConversionInputCanonicalJSON;
+		switch (mismatch) {
+			case 'from':
+				altered = { ...request, from: baseToken.publicKeyString.get() };
+				break;
+			case 'to':
+				altered = { ...request, to: testCurrencyGBP.publicKeyString.get() };
+				break;
+			case 'amount':
+				altered = { ...request, amount: toJSONSerializable(BigInt(request.amount) * 1000n) };
+				break;
+			case 'affinity':
+				altered = { ...request, affinity: request.affinity === 'from' ? 'to' : 'from' };
+				break;
+			case 'preferredCostAsset':
+				altered = { ...request, preferredCostAsset: baseToken.publicKeyString.get() };
+				break;
+		}
+
+		return({ ...postData, request: altered });
+	}
 
 	await using server = new (class extends KeetaNetFXAnchorHTTPServer {
 		protected async initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
 			const routes = await super.initRoutes(config);
 			const getQuote = routes['POST /api/getQuote'];
+			const getEstimate = routes['POST /api/getEstimate'];
 			const createExchange = routes['POST /api/createExchange'];
-			if (typeof getQuote !== 'function' || typeof createExchange !== 'function') {
+			if (typeof getQuote !== 'function' || typeof getEstimate !== 'function' || typeof createExchange !== 'function') {
 				throw(new Error('FX server routes are missing'));
 			}
 
-			routes['POST /api/getQuote'] = async function(...args) {
-				const response = await getQuote(...args);
-				const body: unknown = JSON.parse(response.output.toString());
-				if (!isKeetaFXAnchorQuoteResponse(body) || !body.ok) {
-					throw(new Error('Unexpected quote response'));
-				}
-
-				let request = body.quote.request;
-				if (variant === 'amount') {
-					request = { ...request, amount: toJSONSerializable(BigInt(request.amount) * 1000n) };
-				} else if (variant === 'from') {
-					request = { ...request, from: baseToken.publicKeyString.get(), amount: toJSONSerializable(50000n) };
-				}
-
-				return({ ...response, output: JSON.stringify({ ...body, quote: { ...body.quote, request }}) });
+			routes['POST /api/getQuote'] = async function(urlParams, postData, headers, url) {
+				return(await getQuote(urlParams, alterConversion(postData), headers, url));
 			};
 
-			routes['POST /api/createExchange'] = async function(...args) {
-				const [ , postData ] = args;
+			routes['POST /api/getEstimate'] = async function(urlParams, postData, headers, url) {
+				return(await getEstimate(urlParams, alterConversion(postData), headers, url));
+			};
+
+			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url) {
 				if (typeof postData === 'object' && postData !== null && 'request' in postData && typeof postData.request === 'object' && postData.request !== null && 'block' in postData.request && typeof postData.request.block === 'string') {
 					sentBlocks.push(new KeetaNet.lib.Block(postData.request.block));
 				}
 
-				return(await createExchange(...args));
+				return(await createExchange(urlParams, postData, headers, url));
 			};
 
 			return(routes);
 		}
 	})({
 		logger: logger,
-		account: liquidityProvider,
+		accounts: new KeetaNet.lib.Account.Set([ liquidityProvider ]),
+		signer: liquidityProvider,
 		quoteSigner: quoteSigner,
+		quoteConfiguration: {
+			requiresQuote: false,
+			validateQuoteBeforeExchange: false,
+			issueQuotes: true
+		},
 		client: { client: client.client, network: client.config.network, networkAlias: client.config.networkAlias },
 		storage: {
 			queue: new KeetaAnchorQueueStorageDriverMemory({ logger: logger, id: 'queue' }),
@@ -2500,9 +2546,11 @@ async function runConversionBindingScenario(variant: ConversionResponseVariant, 
 			}],
 			acceptedCostAssets: [baseToken.publicKeyString.get()],
 			getConversionRateAndFee: async function(request) {
+				const convertedAmount = BigInt(request.amount) * 92n / 100n;
 				return({
 					account: liquidityProvider,
-					convertedAmount: BigInt(request.amount) * 92n / 100n,
+					convertedAmount: convertedAmount,
+					convertedAmountBound: convertedAmount,
 					cost: { amount: 0n, token: baseToken }
 				});
 			}
@@ -2526,43 +2574,80 @@ async function runConversionBindingScenario(variant: ConversionResponseVariant, 
 		})
 	});
 
-	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, logger: logger });
-	const quotes = await fxClient.getQuotes({
-		from: 'USD',
-		to: 'EUR',
-		amount: 1000n,
-		affinity: 'from',
-		...(preferredCostAsset ? { preferredCostAsset: baseToken.publicKeyString.get() } : {})
+	await body({
+		fxClient: new KeetaNetAnchor.FX.Client(client, { root: account, logger: logger }),
+		request: { from: 'USD', to: 'EUR', amount: 1000n, affinity: 'from' },
+		setMismatch: function(next) {
+			mismatch = next;
+		},
+		sentSends: function() {
+			return(sentBlocks.flatMap(function(block) {
+				return(block.operations.flatMap(function(operation) {
+					if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
+						return([]);
+					}
+
+					return([{ token: operation.token.publicKeyString.get(), amount: operation.amount }]);
+				}));
+			}));
+		},
+		testCurrencyUSD,
+		baseToken
 	});
-
-	const quote = quotes?.[0];
-	if (quote !== undefined) {
-		await quote.createExchange();
-	}
-
-	const sends = sentBlocks.flatMap(function(block) {
-		return(block.operations.flatMap(function(operation) {
-			if (operation.type !== KeetaNet.lib.Block.OperationType.SEND) {
-				return([]);
-			}
-
-			return([{ token: operation.token.publicKeyString.get(), amount: operation.amount }]);
-		}));
-	});
-
-	return({ quotes, quote, sends, testCurrencyUSD, baseToken });
 }
 
-test('FX Client refuses a quote for a different conversion than requested', async function() {
-	for (const variant of ['amount', 'from'] as const) {
-		const result = await runConversionBindingScenario(variant, false);
-		expect(result.quotes).toBeNull();
-		expect(result.sends).toEqual([]);
+async function getOnlyProvider(fxClient: KeetaFXAnchorClient, request: ConversionInput) {
+	const providers = await fxClient.getBaseProvidersForConversion(request);
+	const provider = providers?.[0];
+	if (provider === undefined) {
+		throw(new Error('No FX provider found'));
 	}
+
+	return(provider);
+}
+
+test('FX Client refuses a quote or estimate for a different conversion than requested', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setMismatch, sentSends }) {
+		const provider = await getOnlyProvider(fxClient, request);
+		const mismatches: ConversionMismatch[] = ['from', 'to', 'amount', 'affinity', 'preferredCostAsset'];
+		for (const mismatch of mismatches) {
+			setMismatch(mismatch);
+			const expectedError = `answered for a different conversion than requested (${mismatch})`;
+			await expect(provider.getQuote()).rejects.toThrow(expectedError);
+			await expect(provider.getEstimate()).rejects.toThrow(expectedError);
+		}
+
+		setMismatch('amount');
+		expect(await fxClient.getQuotesOrEstimates(request)).toBeNull();
+		expect(sentSends()).toEqual([]);
+	});
 }, 60_000);
 
-test('FX Client keeps preferredCostAsset through createExchange', async function() {
-	const result = await runConversionBindingScenario('same', true);
-	expect(result.quote?.request.preferredCostAsset).toBe(result.baseToken.publicKeyString.get());
-	expect(result.sends).toEqual([{ token: result.testCurrencyUSD.publicKeyString.get(), amount: 1000n }]);
+test('FX Client createExchange refuses a quote or estimate for a different conversion', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, sentSends }) {
+		const provider = await getOnlyProvider(fxClient, request);
+		const quote = await provider.getQuote();
+		const estimate = await provider.getEstimate();
+		const expectedError = 'answered for a different conversion than requested (amount)';
+
+		await expect(provider.createExchange({ quote: { ...quote, request: { ...quote.request, amount: 1_000_000n }}})).rejects.toThrow(expectedError);
+		await expect(provider.createExchange({ estimate: { ...estimate, request: { ...estimate.request, amount: 1_000_000n }}})).rejects.toThrow(expectedError);
+		expect(sentSends()).toEqual([]);
+	});
+}, 60_000);
+
+test('FX Client builds the exchange block from the requested conversion', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, sentSends, testCurrencyUSD, baseToken }) {
+		const expectedSend = { token: testCurrencyUSD.publicKeyString.get(), amount: 1000n };
+
+		const quoteProvider = await getOnlyProvider(fxClient, { ...request, preferredCostAsset: baseToken.publicKeyString.get() });
+		const quote = await quoteProvider.getQuote();
+		expect(quote.request.preferredCostAsset).toBe(baseToken.publicKeyString.get());
+		await quoteProvider.createExchange({ quote });
+		expect(sentSends()).toEqual([expectedSend]);
+
+		const estimateProvider = await getOnlyProvider(fxClient, request);
+		await estimateProvider.createExchange({ estimate: await estimateProvider.getEstimate() });
+		expect(sentSends()).toEqual([expectedSend, expectedSend]);
+	});
 }, 60_000);

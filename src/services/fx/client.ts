@@ -286,10 +286,8 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	/**
-	 * The conversion this provider was asked for is the only source of
-	 * truth for what the user will sign. An anchor's echo of it is checked
-	 * against it and then discarded: the returned value is always
-	 * `this.conversion`, never data parsed from the anchor.
+	 * Checks that the anchor's echoed request matches this conversion and
+	 * returns `this.conversion`. Throws when any field differs.
 	 */
 	#bindConversion(echoed: ConversionInputCanonical | ConversionInputCanonicalJSON): ConversionInputCanonical {
 		const own = this.conversion;
@@ -462,11 +460,12 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchange> {
+		const request = this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
+
 		let swapBlock = block;
 		if (swapBlock === undefined) {
 			/* Liquidity Provider that will complete the swap */
 			let liquidityProvider;
-			let request;
 			let convertedAmountBound: bigint;
 
 			if ('estimate' in input) {
@@ -479,7 +478,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				}
 
 				liquidityProvider = input.estimate.account;
-				request = this.#bindConversion(input.estimate.request);
 				if (input.estimate.convertedAmountBound !== undefined) {
 					convertedAmountBound = input.estimate.convertedAmountBound;
 				} else {
@@ -487,7 +485,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				}
 			} else {
 				liquidityProvider = input.quote.account;
-				request = this.#bindConversion(input.quote.request);
 				convertedAmountBound = input.quote.convertedAmount;
 			}
 
@@ -560,9 +557,9 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		let bodyAdditionalData: { quote: KeetaFXAnchorQuote; } | { request: ConversionInputCanonical; };
 
 		if ('quote' in input) {
-			bodyAdditionalData = { quote: { ...input.quote, request: this.#bindConversion(input.quote.request) }};
+			bodyAdditionalData = { quote: { ...input.quote, request }};
 		} else {
-			bodyAdditionalData = { request: this.#bindConversion(input.estimate.request) };
+			bodyAdditionalData = { request };
 		}
 
 		const serviceURL = await this.#getEndpoint('createExchange');
