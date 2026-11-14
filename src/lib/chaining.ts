@@ -1981,6 +1981,23 @@ export type AnchorChainingPlanFeeBreakdown = {
 	lineItems: AnchorChainingFeeLineItem[];
 };
 
+/**
+ * Checks that a Keeta send instruction from an asset movement provider
+ * sends the step's own asset and the amount the plan deposits. The
+ * provider sets both, and execution signs the send as given. Fees come
+ * out of the amount received, not on top of the amount sent.
+ */
+function assertKeetaSendMatchesStep(instruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>, asset: AnchorChainingAsset, depositValue: bigint, providerID: string): void {
+	const expectedToken = KeetaNet.lib.Account.isInstance(asset) ? asset.publicKeyString.get() : asset;
+	if (instruction.tokenAddress !== expectedToken) {
+		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.tokenAddress}, not the step asset ${expectedToken}`));
+	}
+
+	if (BigInt(instruction.value) !== depositValue) {
+		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.value}, not the planned deposit of ${depositValue}`));
+	}
+}
+
 /** List combined fees for a computed chaining plan. Keeta-send steps are omitted (treated as zero). */
 export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPlan }): AnchorChainingPlanFeeBreakdown {
 	const lineItems: AnchorChainingFeeLineItem[] = [];
@@ -2905,6 +2922,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							});
 
 							const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
+							if (usingInstruction.type === 'KEETA_SEND') {
+								assertKeetaSendMatchesStep(usingInstruction, step.from.asset, depositValue, step.providerID);
+							}
 
 							let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
 							if (totalReceiveAmount === undefined && 'value' in usingInstruction) {

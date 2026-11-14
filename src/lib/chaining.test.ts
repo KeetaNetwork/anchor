@@ -2951,6 +2951,38 @@ describe('plan create error reports failedAt providerID', function() {
 	});
 });
 
+describe('plan refuses a Keeta send instruction that differs from the step', function() {
+	type KeetaSendChoice = Extract<Awaited<ReturnType<InitiateTransferFn>>['instructionChoices'][number], { type: 'KEETA_SEND' }>;
+	const alterations: [ string, (choice: KeetaSendChoice, otherToken: KeetaSendChoice['tokenAddress']) => KeetaSendChoice ][] = [
+		[ 'a larger amount', function(choice) { return({ ...choice, value: (BigInt(choice.value) * 1000n).toString() }); } ],
+		[ 'a smaller amount', function(choice) { return({ ...choice, value: (BigInt(choice.value) - 1n).toString() }); } ],
+		[ 'another token', function(choice, otherToken) { return({ ...choice, tokenAddress: otherToken }); } ]
+	];
+
+	test.each(alterations)('refuses %s', async function(_name, alter) {
+		await using h = await createChainingTestHarness();
+		const otherToken = h.tokens.USDC.publicKeyString.get();
+		h.bankServerEU.wrapInitiateTransfer(async function(request, next) {
+			const response = await next(request);
+			return({
+				...response,
+				instructionChoices: response.instructionChoices.map(function(choice) {
+					return(choice.type === 'KEETA_SEND' ? alter(choice, otherToken) : choice);
+				})
+			});
+		});
+
+		const path = await h.getPathVia('FXOne');
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(error.failedAtStep.providerID).toEqual(h.euBankProviderID);
+		expect(error.rootError).toBeInstanceOf(Error);
+		expect(String(error.rootError)).toMatch(/asked for a send of/);
+	});
+});
+
 test('AnchorChaining resolveAssets', async function() {
 	await using h = await createChainingTestHarness();
 
