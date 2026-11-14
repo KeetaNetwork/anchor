@@ -14,6 +14,7 @@ import { assertNever } from './utils/never.js';
 import { withRetry } from './utils/retry.js';
 import type { PublicRetryOptions, RetryOptions } from './utils/retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
+import type { KeetaFXAnchorClientDefaultLimits } from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
 import { isExternalChainAsset, isMovableAssetEqual } from './asset.js';
@@ -218,6 +219,12 @@ export interface AnchorChainingConfig {
 	signer?: InstanceType<typeof KeetaNetLib.Account>;
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 	logger?: Logger;
+	/**
+	 * Default caps for the FX exchanges a plan signs. Raise them to
+	 * accept a larger fee or estimate bound, such as a flat fee on a
+	 * small conversion.
+	 */
+	fxDefaultLimits?: KeetaFXAnchorClientDefaultLimits;
 }
 
 interface BaseGraphNodeLike<Type extends 'fx' | 'assetMovement', AssetType extends AnchorChainingAsset> {
@@ -2409,7 +2416,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			...(this.parent['logger'] ? { logger: this.parent['logger'] } : {})
 		} as const;
 
-		const fxClient = new KeetaFXAnchorClient(this.parent['client'], sharedClientOptions);
+		const fxDefaultLimits = this.parent['fxDefaultLimits'];
+		const fxClient = new KeetaFXAnchorClient(this.parent['client'], {
+			...sharedClientOptions,
+			...(fxDefaultLimits !== undefined ? { defaultLimits: fxDefaultLimits } : {})
+		});
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
 
@@ -3458,15 +3469,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 				if (step.type === 'fx') {
 					/*
-					 * Hold the exchange to what the plan priced: its amounts
-					 * and the fee shown by listChainingPlanFees.
+					 * The planned amounts come from the same quote or
+					 * estimate, so they pin the exchange to the plan but do
+					 * not bound the anchor's terms. The FX client's default
+					 * caps do that. No maxCost is passed, so a fee outside
+					 * the from and to tokens is refused rather than taken
+					 * on the quote's word.
 					 */
-					const plannedCost = step.result.isQuote
-						? { token: step.result.quote.cost.token, amount: step.result.quote.cost.amount }
-						: { token: step.result.estimate.expectedCost.token, amount: step.result.estimate.expectedCost.max };
 					const exchange = await step.result.createExchange(undefined, {
 						inputs: [...publishedInputs],
-						limits: { maxSend: step.valueIn, minReceive: step.valueOut, maxCost: plannedCost }
+						limits: { maxSend: step.valueIn, minReceive: step.valueOut }
 					});
 					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
@@ -3638,9 +3650,11 @@ export class AnchorChaining {
 	private resolver: Resolver;
 	readonly graph: AnchorGraph;
 	private logger?: Logger;
+	private readonly fxDefaultLimits: KeetaFXAnchorClientDefaultLimits | undefined;
 
 	constructor(config: AnchorChainingConfig) {
 		this.client = config.client;
+		this.fxDefaultLimits = config.fxDefaultLimits;
 		if (config.resolver) {
 			this.resolver = config.resolver;
 		} else {

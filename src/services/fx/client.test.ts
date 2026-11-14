@@ -990,7 +990,8 @@ test('createExchange succeeds when FX fee is charged in the send token', async f
 		})
 	});
 
-	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger });
+	/* The fixture's fee is 5% of the swap, past the client's default fee cap */
+	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger, defaultLimits: { maxCostBps: null }});
 	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: swapAmount, affinity: 'from' });
 	const quote = quotes?.[0];
 	if (quote === undefined) {
@@ -1227,7 +1228,9 @@ test('FX Server Estimate to Exchange Test', async function() {
 		root: userAccount,
 		signer: userAccount,
 		account: userAccount,
-		logger: logger
+		logger: logger,
+		/* Some fixtures bound their estimate 25% from its converted amount */
+		defaultLimits: { maxEstimateBoundBps: null }
 	});
 
 	const localeCompareArgs = [
@@ -2751,11 +2754,12 @@ test('FX Client applies its default limits when it signs, without dropping quote
 		const provider = await getOnlyProvider(fxClient, request);
 		const toProvider = await getOnlyProvider(fxClient, { ...request, affinity: 'to' });
 
-		/* A fee over 1% of the amount sent is still listed, but needs maxCost to sign */
+		/* A fee over 1% of the amount sent is still listed, but is refused even with a maxCost copied from the quote */
 		setCost({ amount: 11n, token: testCurrencyUSD });
 		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
 		const highFeeQuote = await provider.getQuote();
 		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }));
+		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 11n }}}));
 
 		/* A fee outside the from and to tokens needs maxCost, however small */
 		setCost({ amount: 5n, token: baseToken });
@@ -2766,16 +2770,25 @@ test('FX Client applies its default limits when it signs, without dropping quote
 		setCost({ amount: 0n, token: baseToken });
 		await expectLimitExceeded(toProvider.createExchange({ quote: await toProvider.getQuote() }));
 
-		/* An estimate bound more than 5% below its converted amount is still listed, but needs minReceive to sign */
-		const { convertedAmount } = await provider.getEstimate();
-		setEstimateBoundOffset(-((convertedAmount * 5n / 100n) + 1n));
+		/* An estimate bound more than 5% from its converted amount is still listed, but is refused even with limits copied from it */
+		const fromConverted = (await provider.getEstimate()).convertedAmount;
+		setEstimateBoundOffset(-((fromConverted * 5n / 100n) + 1n));
 		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
-		await expectLimitExceeded(provider.createExchange({ estimate: await provider.getEstimate() }));
+		const wideFromEstimate = await provider.getEstimate();
+		await expectLimitExceeded(provider.createExchange({ estimate: wideFromEstimate }, undefined, { limits: { minReceive: wideFromEstimate.convertedAmountBound ?? 0n }}));
+
+		setEstimateBoundOffset(null);
+		const toConverted = (await toProvider.getEstimate()).convertedAmount;
+		setEstimateBoundOffset((toConverted * 5n / 100n) + 1n);
+		const wideToEstimate = await toProvider.getEstimate();
+		await expectLimitExceeded(toProvider.createExchange({ estimate: wideToEstimate }, undefined, { limits: { maxSend: wideToEstimate.convertedAmountBound ?? 0n }}));
 
 		expect(sentSends()).toEqual([]);
 
-		/* With maxCost the caller accepts the higher fee */
-		await provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 11n }}});
-		expect(sentSends()).toEqual([{ token: testCurrencyUSD.publicKeyString.get(), amount: 1011n }]);
+		/* A fee of exactly 1% is within the default cap */
+		setEstimateBoundOffset(null);
+		setCost({ amount: 10n, token: testCurrencyUSD });
+		await provider.createExchange({ quote: await provider.getQuote() });
+		expect(sentSends()).toEqual([{ token: testCurrencyUSD.publicKeyString.get(), amount: 1010n }]);
 	});
 }, 60_000);

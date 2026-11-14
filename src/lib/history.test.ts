@@ -1308,7 +1308,8 @@ async function startFXSlippageFixture(): Promise<{
 		})
 	});
 
-	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount });
+	/* The fixture's bound is 20% above its converted amount, past the client's default cap */
+	const fxClient = new FX.Client(client, { root: userAccount, signer: userAccount, account: userAccount, defaultLimits: { maxEstimateBoundBps: null }});
 	const estimates = await fxClient.getEstimates({ from: 'USD', to: 'EUR', amount: received, affinity: 'to' });
 	const estimate = estimates?.[0];
 	if (estimate === undefined) {

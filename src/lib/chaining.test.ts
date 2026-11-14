@@ -5,6 +5,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementSer
 import { type AnchorTokenLocationMetadata, convertAssetLocationToString, convertAssetSearchInputToCanonical, isAssetPairLike, toAssetLocation, toAssetPair, type AssetLocationLike, type AssetOrPair, type KeetaAssetMovementTransaction, type KeetaPersistentForwardingAddressDetails, type PersistentAddressAssetFeeBreakdown } from '../services/asset-movement/common.js';
 import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetConversionRateAndFeeContext, type KeetaFXInternalPriceQuote } from '../services/fx/server.js';
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
+import { Errors as FXErrors } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, AnchorChainingPlanCreateError, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
@@ -2949,6 +2950,65 @@ describe('plan create error reports failedAt providerID', function() {
 			failedAt: { providerID: h.euBankProviderID }
 		});
 	});
+});
+
+describe('chaining FX caps hold against the plan numbers', function() {
+	/*
+	 * Each case charges a fee on the FXOne leg of a 100 USDC plan and then
+	 * executes it. A limit the plan copies from the anchor's own estimate
+	 * must not lift the client's default caps.
+	 */
+	async function executeWithFee(fee: (from: TokenAddress, baseToken: TokenAddress) => { amount: bigint; token: TokenAddress; }, fxDefaultLimits?: { maxCostBps?: number | null }) {
+		const h = await createChainingTestHarness();
+		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+		const original = h.fxServerOne['_rateRef'].fn;
+		h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
+			const quote = await original(request, context);
+			const from = KeetaNet.lib.Account.fromPublicKeyString(request.from).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			return({ ...quote, cost: fee(from, h.client.baseToken) });
+		});
+
+		const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
+		const plans = await chaining.getPlans({
+			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		});
+		const plan = plans?.find(p => p.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+		if (!plan) {
+			throw(new Error('No plan via FXOne'));
+		}
+
+		const before = await h.client.balance(h.tokens.USDC);
+		const error: unknown = await plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		const after = await h.client.balance(h.tokens.USDC);
+		await h[Symbol.asyncDispose]();
+		return({ planValueIn: plan.plan.totalValueIn, spent: before - after, error });
+	}
+
+	test('refuses an 800 USDC fee on a 100 USDC plan and spends nothing', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 800n, token: from }); });
+		expect(result.planValueIn).toBe(100n);
+		expect(result.spent).toBe(0n);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
+	}, 60_000);
+
+	test('refuses a fee in the network base token and spends nothing', async function() {
+		const result = await executeWithFee(function(_from, baseToken) { return({ amount: 5n, token: baseToken }); });
+		expect(result.spent).toBe(0n);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
+	}, 60_000);
+
+	test('signs a 1% fee under the default cap', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 1n, token: from }); });
+		expect(result.error).toBeNull();
+		expect(result.spent).toBe(101n);
+	}, 60_000);
+
+	test('signs a 5% flat fee when fxDefaultLimits raises the cap', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 5n, token: from }); }, { maxCostBps: 500 });
+		expect(result.error).toBeNull();
+		expect(result.spent).toBe(105n);
+	}, 60_000);
 });
 
 describe('plan refuses a Keeta send instruction that differs from the step', function() {
