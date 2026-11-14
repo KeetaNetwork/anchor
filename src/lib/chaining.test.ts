@@ -3073,6 +3073,36 @@ describe('chaining FX caps hold against the plan numbers', function() {
 	}, 60_000);
 });
 
+describe('plan refuses a bank instruction for another amount than the deposit', function() {
+	test('refuses an ACH instruction that asks for more than the plan deposits', async function() {
+		await using h = await createChainingTestHarness();
+		h.bankServerUS.wrapInitiateTransfer(async function(request, next) {
+			const response = await next(request);
+			return({
+				...response,
+				instructionChoices: response.instructionChoices.map(function(choice) {
+					return('value' in choice ? { ...choice, value: (BigInt(choice.value) * 1000n).toString() } : choice);
+				})
+			});
+		});
+
+		const paths = await h.anchorChaining.getPaths({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+		});
+		const path = paths?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'BankUS');
+		if (!path) {
+			throw(new Error('No single-step BankUS path found'));
+		}
+
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(String(error.rootError)).toMatch(/asked for a send of 100000, not the planned deposit of 100/);
+	});
+});
+
 describe('chaining spends only what the previous step delivered on-chain', function() {
 	test('refuses to spend the user\'s own balance when an earlier anchor over-reports what it delivered', async function() {
 		await using h = await createChainingTestHarness();

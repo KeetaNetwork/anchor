@@ -416,6 +416,17 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	}
 
 	/**
+	 * Checks that the anchor's amounts are possible: a positive converted
+	 * amount and bound, and a fee range that is not negative or reversed.
+	 */
+	#assertAmounts(convertedAmount: bigint, convertedAmountBound: bigint | undefined, costMin: bigint, costMax: bigint): void {
+		const isInvalid = convertedAmount <= 0n || (convertedAmountBound !== undefined && convertedAmountBound <= 0n) || costMin < 0n || costMax < costMin;
+		if (isInvalid) {
+			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} gave invalid amounts (converted ${convertedAmount}, bound ${convertedAmountBound ?? 'none'}, fee ${costMin} to ${costMax})`));
+		}
+	}
+
+	/**
 	 * Checks that a non-zero fee is in a token the user expects to pay
 	 * with: the `from` or `to` token, the network base token, or the
 	 * requested `preferredCostAsset`. Throws when it is any other token.
@@ -605,6 +616,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		};
 
 		const estimateCost = { amount: estimate.expectedCost.max, token: estimate.expectedCost.token };
+		this.#assertAmounts(estimate.convertedAmount, estimate.convertedAmountBound, estimate.expectedCost.min, estimate.expectedCost.max);
 		this.#assertEstimateBound(estimate.convertedAmount, estimate.convertedAmountBound);
 		this.#assertCostToken(estimateCost);
 
@@ -668,6 +680,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			signed: quoteJSON.signed
 		};
 
+		this.#assertAmounts(quote.convertedAmount, undefined, quote.cost.amount, quote.cost.amount);
 		this.#assertCostToken(quote.cost);
 
 		return(quote);
@@ -675,6 +688,9 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchange> {
 		const request = this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
+		if (block !== undefined && options?.limits !== undefined) {
+			throw(new KeetaAnchorUserError('createExchange applies limits only to a block it builds, not to a given block'));
+		}
 
 		let swapBlock = block;
 		if (swapBlock === undefined) {
@@ -718,6 +734,11 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			const terms = exchangeTerms(request, convertedAmountBound, { amount: costAmount, token: costToken });
 			const { sendAmount, receiveAmount } = terms;
 
+			if ('quote' in input) {
+				this.#assertAmounts(input.quote.convertedAmount, undefined, costAmount, costAmount);
+			} else {
+				this.#assertAmounts(input.estimate.convertedAmount, input.estimate.convertedAmountBound, input.estimate.expectedCost.min, costAmount);
+			}
 			this.#assertCostToken({ amount: costAmount, token: costToken });
 			let estimateTerms;
 			if ('estimate' in input) {

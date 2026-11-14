@@ -1989,18 +1989,21 @@ export type AnchorChainingPlanFeeBreakdown = {
 };
 
 /**
- * Checks that a Keeta send instruction from an asset movement provider
- * sends the step's own asset and the amount the plan deposits. The
- * provider sets both, and execution signs the send as given. Fees come
- * out of the amount received, not on top of the amount sent.
+ * Checks that a transfer instruction from an asset movement provider asks
+ * for the amount the plan deposits and, for a Keeta send, the step's own
+ * asset. The provider sets both, and the user or the plan sends them as
+ * given. Fees come out of the amount received, not on top of the amount
+ * sent.
  */
-function assertKeetaSendMatchesStep(instruction: Extract<AssetTransferInstructions, { type: 'KEETA_SEND' }>, asset: AnchorChainingAsset, depositValue: bigint, providerID: string): void {
-	const expectedToken = KeetaNet.lib.Account.isInstance(asset) ? asset.publicKeyString.get() : asset;
-	if (instruction.tokenAddress !== expectedToken) {
-		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.tokenAddress}, not the step asset ${expectedToken}`));
+function assertInstructionMatchesStep(instruction: AssetTransferInstructions, asset: AnchorChainingAsset, depositValue: bigint, providerID: string): void {
+	if (instruction.type === 'KEETA_SEND') {
+		const expectedToken = KeetaNet.lib.Account.isInstance(asset) ? asset.publicKeyString.get() : asset;
+		if (instruction.tokenAddress !== expectedToken) {
+			throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.tokenAddress}, not the step asset ${expectedToken}`));
+		}
 	}
 
-	if (BigInt(instruction.value) !== depositValue) {
+	if ('value' in instruction && instruction.value !== undefined && BigInt(instruction.value) !== depositValue) {
 		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.value}, not the planned deposit of ${depositValue}`));
 	}
 }
@@ -2933,9 +2936,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							});
 
 							const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
-							if (usingInstruction.type === 'KEETA_SEND') {
-								assertKeetaSendMatchesStep(usingInstruction, step.from.asset, depositValue, step.providerID);
-							}
+							assertInstructionMatchesStep(usingInstruction, step.from.asset, depositValue, step.providerID);
 
 							let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
 							if (totalReceiveAmount === undefined && 'value' in usingInstruction) {

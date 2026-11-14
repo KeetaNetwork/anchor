@@ -690,6 +690,8 @@ for (const useDeprecated of [false, true]) {
 				throw(new Error('No computed block'));
 			}
 
+			/* Limits cannot be checked against a block the caller built, so they are refused */
+			await expect(quote.createExchange(computedBlock, { limits: { maxSend: 1n }})).rejects.toThrow('createExchange applies limits only to a block it builds');
 			const exchange = await quote.createExchange(computedBlock);
 
 			let gotError;
@@ -2741,6 +2743,25 @@ test('FX Client createExchange enforces the caller limits before it signs', asyn
 			{ token: baseToken.publicKeyString.get(), amount: 5n },
 			{ token: testCurrencyUSD.publicKeyString.get(), amount: 1000n }
 		]));
+	});
+}, 60_000);
+
+test('FX Client refuses impossible amounts from the anchor', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setCost, sentSends, testCurrencyUSD }) {
+		const provider = await getOnlyProvider(fxClient, request);
+		async function expectMismatch(result: Promise<unknown>) {
+			const error: unknown = await result.catch(function(caught: unknown) { return(caught); });
+			expect(FXErrors.ResponseMismatch.isInstance(error)).toBe(true);
+		}
+
+		setCost({ amount: 0n, token: testCurrencyUSD });
+		const quote = await provider.getQuote();
+		const estimate = await provider.getEstimate();
+		await expectMismatch(provider.createExchange({ quote: { ...quote, convertedAmount: 0n }}));
+		await expectMismatch(provider.createExchange({ quote: { ...quote, cost: { ...quote.cost, amount: -5n }}}));
+		await expectMismatch(provider.createExchange({ estimate: { ...estimate, convertedAmount: -1n, convertedAmountBound: -1n }}));
+		await expectMismatch(provider.createExchange({ estimate: { ...estimate, expectedCost: { ...estimate.expectedCost, min: 2n, max: 1n }}}));
+		expect(sentSends()).toEqual([]);
 	});
 }, 60_000);
 
