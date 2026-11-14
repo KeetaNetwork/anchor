@@ -4,7 +4,6 @@ import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
 import { createAssert, createIs } from 'typia';
 import {
-	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
@@ -393,7 +392,7 @@ class KeetaFXAnchorQuoteIssuanceDisabledError extends KeetaAnchorUserError {
 	}
 }
 
-class KeetaFXAnchorResponseMismatchError extends KeetaAnchorError {
+class KeetaFXAnchorResponseMismatchError extends KeetaAnchorUserError {
 	static override readonly name: string = 'KeetaFXAnchorResponseMismatchError';
 	private readonly KeetaFXAnchorResponseMismatchErrorObjectTypeID!: string;
 	private static readonly KeetaFXAnchorResponseMismatchErrorObjectTypeID = '3c6b1e52-8f0d-4a97-b2e4-71d95c0a6f38';
@@ -410,13 +409,6 @@ class KeetaFXAnchorResponseMismatchError extends KeetaAnchorError {
 
 	static isInstance(input: unknown): input is KeetaFXAnchorResponseMismatchError {
 		return(this.hasPropWithValue(input, 'KeetaFXAnchorResponseMismatchErrorObjectTypeID', KeetaFXAnchorResponseMismatchError.KeetaFXAnchorResponseMismatchErrorObjectTypeID));
-	}
-
-	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
-		const { message, other } = this.extractErrorProperties(input, this);
-		const error = new this(message);
-		error.restoreFromJSON(other);
-		return(error);
 	}
 }
 
@@ -437,13 +429,6 @@ class KeetaFXAnchorExchangeLimitExceededError extends KeetaAnchorUserError {
 
 	static isInstance(input: unknown): input is KeetaFXAnchorExchangeLimitExceededError {
 		return(this.hasPropWithValue(input, 'KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID', KeetaFXAnchorExchangeLimitExceededError.KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID));
-	}
-
-	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
-		const { message, other } = this.extractErrorProperties(input, this);
-		const error = new this(message);
-		error.restoreFromJSON(other);
-		return(error);
 	}
 }
 

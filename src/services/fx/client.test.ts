@@ -2480,32 +2480,50 @@ async function withConversionBindingServer(body: (context: {
 	let estimateBoundOffset: bigint | null = null;
 	const sentBlocks: InstanceType<typeof KeetaNet.lib.Block>[] = [];
 
-	function alterConversion(postData: JSONSerializable | undefined): JSONSerializable | undefined {
-		if (mismatch === null || typeof postData !== 'object' || postData === null || Array.isArray(postData)) {
-			return(postData);
-		}
-
-		const request = assertConversionInputCanonicalJSON(postData.request);
-		let altered: ConversionInputCanonicalJSON;
-		switch (mismatch) {
+	function alterRequest(request: ConversionInputCanonicalJSON, field: ConversionMismatch): ConversionInputCanonicalJSON {
+		const altered: ConversionInputCanonicalJSON = { ...request };
+		switch (field) {
 			case 'from':
-				altered = { ...request, from: baseToken.publicKeyString.get() };
+				altered.from = baseToken.publicKeyString.get();
 				break;
 			case 'to':
-				altered = { ...request, to: testCurrencyGBP.publicKeyString.get() };
+				altered.to = testCurrencyGBP.publicKeyString.get();
 				break;
 			case 'amount':
-				altered = { ...request, amount: toJSONSerializable(BigInt(request.amount) * 1000n) };
+				altered.amount = toJSONSerializable(BigInt(request.amount) * 1000n);
 				break;
 			case 'affinity':
-				altered = { ...request, affinity: request.affinity === 'from' ? 'to' : 'from' };
+				altered.affinity = request.affinity === 'from' ? 'to' : 'from';
 				break;
 			case 'preferredCostAsset':
-				altered = { ...request, preferredCostAsset: baseToken.publicKeyString.get() };
+				altered.preferredCostAsset = baseToken.publicKeyString.get();
 				break;
 		}
 
-		return({ ...postData, request: altered });
+		return(altered);
+	}
+
+	function alterConversion(postData: JSONSerializable | undefined, field: ConversionMismatch): { [key: string]: JSONSerializable } {
+		if (typeof postData !== 'object' || postData === null || Array.isArray(postData)) {
+			throw(new Error('Expected a JSON object request'));
+		}
+
+		const altered: { [key: string]: JSONSerializable } = { ...postData };
+		altered['request'] = alterRequest(assertConversionInputCanonicalJSON(postData['request']), field);
+		return(altered);
+	}
+
+	function sentBlockOf(postData: JSONSerializable | undefined): string | undefined {
+		if (typeof postData !== 'object' || postData === null || !('request' in postData)) {
+			return(undefined);
+		}
+
+		const request = postData.request;
+		if (typeof request !== 'object' || request === null || !('block' in request) || typeof request.block !== 'string') {
+			return(undefined);
+		}
+
+		return(request.block);
 	}
 
 	await using server = new (class extends KeetaNetFXAnchorHTTPServer {
@@ -2519,11 +2537,11 @@ async function withConversionBindingServer(body: (context: {
 			}
 
 			routes['POST /api/getQuote'] = async function(urlParams, postData, headers, url) {
-				return(await getQuote(urlParams, alterConversion(postData), headers, url));
+				return(await getQuote(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url));
 			};
 
 			routes['POST /api/getEstimate'] = async function(urlParams, postData, headers, url) {
-				const response = await getEstimate(urlParams, alterConversion(postData), headers, url);
+				const response = await getEstimate(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url);
 				if (estimateBoundOffset === null) {
 					return(response);
 				}
@@ -2538,8 +2556,9 @@ async function withConversionBindingServer(body: (context: {
 			};
 
 			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url) {
-				if (typeof postData === 'object' && postData !== null && 'request' in postData && typeof postData.request === 'object' && postData.request !== null && 'block' in postData.request && typeof postData.request.block === 'string') {
-					sentBlocks.push(new KeetaNet.lib.Block(postData.request.block));
+				const sentBlock = sentBlockOf(postData);
+				if (sentBlock !== undefined) {
+					sentBlocks.push(new KeetaNet.lib.Block(sentBlock));
 				}
 
 				return(await createExchange(urlParams, postData, headers, url));

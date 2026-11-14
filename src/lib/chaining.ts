@@ -1989,6 +1989,12 @@ export type AnchorChainingPlanFeeBreakdown = {
 };
 
 /**
+ * The account and token a step spends from, with that account's balance
+ * of the token before the step that funds it ran.
+ */
+type FundingSnapshot = { account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; balance: bigint; };
+
+/**
  * Checks that a transfer instruction from an asset movement provider asks
  * for the amount the plan deposits and, for a Keeta send, the step's own
  * asset. The provider sets both, and the user or the plan sends them as
@@ -2003,7 +2009,7 @@ function assertInstructionMatchesStep(instruction: AssetTransferInstructions, as
 		}
 	}
 
-	if ('value' in instruction && instruction.value !== undefined && BigInt(instruction.value) !== depositValue) {
+	if ('value' in instruction && BigInt(instruction.value) !== depositValue) {
 		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.value}, not the planned deposit of ${depositValue}`));
 	}
 }
@@ -3183,6 +3189,42 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 	}
 
 	/**
+	 * What the previous step delivered: the smaller of the value its
+	 * anchor reported and the balance increase observed on chain since
+	 * the snapshot, or the reported value when there is no snapshot.
+	 */
+	async #deliveredValue(snapshot: FundingSnapshot | null, reported: bigint | null): Promise<bigint | null> {
+		if (snapshot === null) {
+			return(reported);
+		}
+
+		const delivered = await this.parent['client'].balance(snapshot.token, { account: snapshot.account }) - snapshot.balance;
+		if (reported === null || delivered < reported) {
+			return(delivered);
+		}
+
+		return(reported);
+	}
+
+	/**
+	 * The balance a step will spend from, taken before the step that
+	 * funds it runs, or `null` when the step does not spend from the
+	 * user's Keeta balance.
+	 */
+	async #fundingSnapshot(step: ChainStepResolution | undefined): Promise<FundingSnapshot | null> {
+		if (step === undefined) {
+			return(null);
+		}
+
+		const funding = await this.#keetaFunding(step);
+		if (funding === null) {
+			return(null);
+		}
+
+		return({ ...funding, balance: await this.parent['client'].balance(funding.token, { account: funding.account }) });
+	}
+
+	/**
 	 * The account and token a step spends from the user's Keeta balance,
 	 * or `null` when the step does not spend from it.
 	 */
@@ -3457,7 +3499,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 * before the current step ran, when the next step spends from the
 		 * user's Keeta balance.
 		 */
-		let fundingSnapshot: { account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; balance: bigint; } | null = null;
+		let fundingSnapshot: FundingSnapshot | null = null;
 
 		let index = 0;
 		try {
@@ -3488,20 +3530,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				 * is part of its own atomic block, so the network already
 				 * enforces it; only an anchor's payout needs measuring.
 				 */
-				if (fundingSnapshot !== null) {
-					const delivered = await this.parent['client'].balance(fundingSnapshot.token, { account: fundingSnapshot.account }) - fundingSnapshot.balance;
-					if (prevActualValueOut === null || delivered < prevActualValueOut) {
-						prevActualValueOut = delivered;
-					}
-				}
-				fundingSnapshot = null;
-				const nextStep = this.plan.steps[index + 1];
-				if (nextStep !== undefined && step.type !== 'fx') {
-					const funding = await this.#keetaFunding(nextStep);
-					if (funding !== null) {
-						fundingSnapshot = { ...funding, balance: await this.parent['client'].balance(funding.token, { account: funding.account }) };
-					}
-				}
+				prevActualValueOut = await this.#deliveredValue(fundingSnapshot, prevActualValueOut);
+				fundingSnapshot = step.type === 'fx' ? null : await this.#fundingSnapshot(this.plan.steps[index + 1]);
 
 				// Verify the actual output from the previous step covers the expected
 				// input for this step, less the allowed slippage. A larger shortfall
