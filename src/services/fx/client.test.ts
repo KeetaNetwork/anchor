@@ -11,7 +11,7 @@ import type { KeetaAnchorQueueEntry } from '../../lib/queue/index.js';
 import { KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { ConversionInput, ConversionInputCanonicalJSON, KeetaFXAnchorQuote, KeetaNetToken } from './common.js';
-import { assertConversionInputCanonicalJSON } from './common.js';
+import { assertConversionInputCanonicalJSON, isKeetaFXAnchorEstimateResponse, Errors as FXErrors } from './common.js';
 import type { JSONSerializable } from '../../lib/utils/json.js';
 import type KeetaFXAnchorClient from './client.js';
 import { KeetaAnchorError, KeetaAnchorUserError } from '../../lib/error.js';
@@ -1131,6 +1131,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 					currencyCodes: [testCurrencyUSD.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()],
 					to: [testCurrencyEUR.assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN).publicKeyString.get()]
 				}],
+				acceptedCostAssets: [testCurrencyGBP.publicKeyString.get()],
 				getConversionRateAndFee: async function(request) {
 					const rateAndFee = await getRate(request);
 					return({
@@ -1538,7 +1539,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 
 			const tests: {
 				quote: { convertedAmount: bigint; cost: { token: TokenAddress; amount: bigint; }; };
-				request: Pick<ConversionInput, 'amount' | 'affinity'>;
+				request: Pick<ConversionInput, 'amount' | 'affinity' | 'preferredCostAsset'>;
 				send: { sendValue: bigint; costValue: bigint; }
 				expectedChange: { sendToken: bigint; costToken?: bigint; };
 			}[] = [
@@ -1580,7 +1581,7 @@ test('FX Server Estimate to Exchange Test', async function() {
 					expectedChange: { sendToken: 205n }
 				},
 				{
-					request: { amount: 100n, affinity: 'to' },
+					request: { amount: 100n, affinity: 'to', preferredCostAsset: testCurrencyGBP.publicKeyString.get() },
 					quote: { cost: { token: testCurrencyGBP, amount: 5n }, convertedAmount: 200n },
 					send: { sendValue: 300n, costValue: 10n },
 					expectedChange: { sendToken: 200n, costToken: 5n }
@@ -2440,8 +2441,11 @@ async function withConversionBindingServer(body: (context: {
 	fxClient: KeetaFXAnchorClient;
 	request: ConversionInput;
 	setMismatch: (mismatch: ConversionMismatch | null) => void;
+	setCost: (cost: { amount: bigint; token: KeetaNetToken; }) => void;
+	setEstimateBoundOffset: (offset: bigint | null) => void;
 	sentSends: () => { token: string; amount: bigint; }[];
 	testCurrencyUSD: KeetaNetToken;
+	testCurrencyGBP: KeetaNetToken;
 	baseToken: KeetaNetToken;
 }) => Promise<void>) {
 	const account = KeetaNet.lib.Account.fromSeed(seed, 0);
@@ -2466,6 +2470,8 @@ async function withConversionBindingServer(body: (context: {
 	const testCurrencyGBP = await generateToken();
 
 	let mismatch: ConversionMismatch | null = null;
+	let cost = { amount: 0n, token: baseToken };
+	let estimateBoundOffset: bigint | null = null;
 	const sentBlocks: InstanceType<typeof KeetaNet.lib.Block>[] = [];
 
 	function alterConversion(postData: JSONSerializable | undefined): JSONSerializable | undefined {
@@ -2511,7 +2517,18 @@ async function withConversionBindingServer(body: (context: {
 			};
 
 			routes['POST /api/getEstimate'] = async function(urlParams, postData, headers, url) {
-				return(await getEstimate(urlParams, alterConversion(postData), headers, url));
+				const response = await getEstimate(urlParams, alterConversion(postData), headers, url);
+				if (estimateBoundOffset === null) {
+					return(response);
+				}
+
+				const body: unknown = JSON.parse(response.output.toString());
+				if (!isKeetaFXAnchorEstimateResponse(body) || !body.ok) {
+					throw(new Error('Unexpected estimate response'));
+				}
+
+				const convertedAmountBound = toJSONSerializable(BigInt(body.estimate.convertedAmount) + estimateBoundOffset);
+				return({ ...response, output: JSON.stringify({ ...body, estimate: { ...body.estimate, convertedAmountBound }}) });
 			};
 
 			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url) {
@@ -2551,7 +2568,7 @@ async function withConversionBindingServer(body: (context: {
 					account: liquidityProvider,
 					convertedAmount: convertedAmount,
 					convertedAmountBound: convertedAmount,
-					cost: { amount: 0n, token: baseToken }
+					cost: cost
 				});
 			}
 		}
@@ -2580,6 +2597,12 @@ async function withConversionBindingServer(body: (context: {
 		setMismatch: function(next) {
 			mismatch = next;
 		},
+		setCost: function(next) {
+			cost = next;
+		},
+		setEstimateBoundOffset: function(next) {
+			estimateBoundOffset = next;
+		},
 		sentSends: function() {
 			return(sentBlocks.flatMap(function(block) {
 				return(block.operations.flatMap(function(operation) {
@@ -2592,6 +2615,7 @@ async function withConversionBindingServer(body: (context: {
 			}));
 		},
 		testCurrencyUSD,
+		testCurrencyGBP,
 		baseToken
 	});
 }
@@ -2649,5 +2673,69 @@ test('FX Client builds the exchange block from the requested conversion', async 
 		const estimateProvider = await getOnlyProvider(fxClient, request);
 		await estimateProvider.createExchange({ estimate: await estimateProvider.getEstimate() });
 		expect(sentSends()).toEqual([expectedSend, expectedSend]);
+	});
+}, 60_000);
+
+test('FX Client refuses a fee in a token outside the conversion', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setCost, testCurrencyGBP, baseToken }) {
+		const provider = await getOnlyProvider(fxClient, request);
+		setCost({ amount: 250_000n, token: testCurrencyGBP });
+
+		const quoteError: unknown = await provider.getQuote().catch(function(error: unknown) { return(error); });
+		const estimateError: unknown = await provider.getEstimate().catch(function(error: unknown) { return(error); });
+		expect(FXErrors.ResponseMismatch.isInstance(quoteError)).toBe(true);
+		expect(FXErrors.ResponseMismatch.isInstance(estimateError)).toBe(true);
+
+		setCost({ amount: 5n, token: baseToken });
+		await expect(provider.getQuote()).resolves.toBeDefined();
+	});
+}, 60_000);
+
+test('FX Client refuses an estimate bound on the wrong side of its converted amount', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setEstimateBoundOffset }) {
+		const fromProvider = await getOnlyProvider(fxClient, request);
+		const toProvider = await getOnlyProvider(fxClient, { ...request, affinity: 'to' });
+
+		setEstimateBoundOffset(1n);
+		const fromError: unknown = await fromProvider.getEstimate().catch(function(error: unknown) { return(error); });
+		expect(FXErrors.ResponseMismatch.isInstance(fromError)).toBe(true);
+		await expect(toProvider.getEstimate()).resolves.toBeDefined();
+
+		setEstimateBoundOffset(-1n);
+		const toError: unknown = await toProvider.getEstimate().catch(function(error: unknown) { return(error); });
+		expect(FXErrors.ResponseMismatch.isInstance(toError)).toBe(true);
+		await expect(fromProvider.getEstimate()).resolves.toBeDefined();
+	});
+}, 60_000);
+
+test('FX Client createExchange enforces the caller limits before it signs', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setCost, sentSends, testCurrencyUSD, baseToken }) {
+		setCost({ amount: 5n, token: baseToken });
+		const provider = await getOnlyProvider(fxClient, request);
+		const quote = await provider.getQuote();
+		const estimate = await provider.getEstimate();
+		const withinLimits = { maxSend: 1000n, minReceive: 920n, maxCost: { token: baseToken, amount: 5n }};
+
+		const overLimits = [
+			{ ...withinLimits, maxSend: 999n },
+			{ ...withinLimits, minReceive: 921n },
+			{ ...withinLimits, maxCost: { token: baseToken, amount: 4n }},
+			{ ...withinLimits, maxCost: { token: testCurrencyUSD, amount: 5n }}
+		];
+		for (const limits of overLimits) {
+			for (const input of [{ quote }, { estimate }]) {
+				const error: unknown = await provider.createExchange(input, undefined, { limits }).catch(function(caught: unknown) { return(caught); });
+				expect(FXErrors.ExchangeLimitExceeded.isInstance(error)).toBe(true);
+			}
+		}
+		expect(sentSends()).toEqual([]);
+
+		await provider.createExchange({ quote }, undefined, { limits: withinLimits });
+		const sends = sentSends();
+		expect(sends).toHaveLength(2);
+		expect(sends).toEqual(expect.arrayContaining([
+			{ token: baseToken.publicKeyString.get(), amount: 5n },
+			{ token: testCurrencyUSD.publicKeyString.get(), amount: 1000n }
+		]));
 	});
 }, 60_000);

@@ -2675,7 +2675,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								throw(new Error(`FX estimate from provider ${step.providerID} indicates exchange cannot be performed`));
 							}
 
-							const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
+							/*
+							 * Book what the exchange block will commit to. For an
+							 * estimate that is its bound, which can be less
+							 * favorable than its converted amount.
+							 */
+							const convertedAmount = result.isQuote ? result.quote.convertedAmount : (result.estimate.convertedAmountBound ?? result.estimate.convertedAmount);
 
 							let valueIn;
 							let valueOut;
@@ -3432,7 +3437,10 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				if (step.type === 'fx') {
-					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
+					const exchange = await step.result.createExchange(undefined, {
+						inputs: [...publishedInputs],
+						limits: { maxSend: step.valueIn, minReceive: step.valueOut }
+					});
 					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
 					publishedInputs.push({ blockHash: exchangeStatus.blockhash });

@@ -4,6 +4,7 @@ import type { ServiceSearchCriteria } from '../../lib/resolver.js';
 import type { ToJSONSerializable } from '../../lib/utils/json.js';
 import { createAssert, createIs } from 'typia';
 import {
+	KeetaAnchorError,
 	KeetaAnchorUserError
 } from '../../lib/error.js';
 import type { HTTPSignedField } from '../../lib/http-server/common.js';
@@ -392,10 +393,66 @@ class KeetaFXAnchorQuoteIssuanceDisabledError extends KeetaAnchorUserError {
 	}
 }
 
+class KeetaFXAnchorResponseMismatchError extends KeetaAnchorError {
+	static override readonly name: string = 'KeetaFXAnchorResponseMismatchError';
+	private readonly KeetaFXAnchorResponseMismatchErrorObjectTypeID!: string;
+	private static readonly KeetaFXAnchorResponseMismatchErrorObjectTypeID = '3c6b1e52-8f0d-4a97-b2e4-71d95c0a6f38';
+
+	constructor(message?: string) {
+		super(message ?? 'FX provider response does not match the request');
+		this.statusCode = 502;
+
+		Object.defineProperty(this, 'KeetaFXAnchorResponseMismatchErrorObjectTypeID', {
+			value: KeetaFXAnchorResponseMismatchError.KeetaFXAnchorResponseMismatchErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaFXAnchorResponseMismatchError {
+		return(this.hasPropWithValue(input, 'KeetaFXAnchorResponseMismatchErrorObjectTypeID', KeetaFXAnchorResponseMismatchError.KeetaFXAnchorResponseMismatchErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
+class KeetaFXAnchorExchangeLimitExceededError extends KeetaAnchorUserError {
+	static override readonly name: string = 'KeetaFXAnchorExchangeLimitExceededError';
+	private readonly KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID!: string;
+	private static readonly KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID = 'd2a47f90-5c1b-4e38-9a6d-0b8e3f71c5a4';
+
+	constructor(message?: string) {
+		super(message ?? 'FX exchange exceeds the limits set by the caller');
+		this.statusCode = 400;
+
+		Object.defineProperty(this, 'KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID', {
+			value: KeetaFXAnchorExchangeLimitExceededError.KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID,
+			enumerable: false
+		});
+	}
+
+	static isInstance(input: unknown): input is KeetaFXAnchorExchangeLimitExceededError {
+		return(this.hasPropWithValue(input, 'KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID', KeetaFXAnchorExchangeLimitExceededError.KeetaFXAnchorExchangeLimitExceededErrorObjectTypeID));
+	}
+
+	static async fromJSON(input: unknown): Promise<InstanceType<typeof this>> {
+		const { message, other } = this.extractErrorProperties(input, this);
+		const error = new this(message);
+		error.restoreFromJSON(other);
+		return(error);
+	}
+}
+
 export const Errors: {
 	QuoteValidationFailed: typeof KeetaFXAnchorQuoteValidationFailedError;
 	QuoteRequired: typeof KeetaFXAnchorQuoteRequiredError;
 	QuoteIssuanceDisabled: typeof KeetaFXAnchorQuoteIssuanceDisabledError;
+	ResponseMismatch: typeof KeetaFXAnchorResponseMismatchError;
+	ExchangeLimitExceeded: typeof KeetaFXAnchorExchangeLimitExceededError;
 } = {
 	/**
 	 * The quote validation failed
@@ -410,5 +467,18 @@ export const Errors: {
 	/**
 	 * The anchor cannot issue quotes
 	 */
-	QuoteIssuanceDisabled: KeetaFXAnchorQuoteIssuanceDisabledError
+	QuoteIssuanceDisabled: KeetaFXAnchorQuoteIssuanceDisabledError,
+
+	/**
+	 * The FX provider answered with terms that do not match the request:
+	 * another conversion, a fee in a token the client does not accept, or
+	 * an estimate bound on the wrong side of its converted amount
+	 */
+	ResponseMismatch: KeetaFXAnchorResponseMismatchError,
+
+	/**
+	 * The exchange would send, receive, or charge more than the limits the
+	 * caller gave to `createExchange`
+	 */
+	ExchangeLimitExceeded: KeetaFXAnchorExchangeLimitExceededError
 };
