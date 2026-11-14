@@ -25,6 +25,12 @@ const DEBUG = false;
 const logger = DEBUG ? console : undefined;
 const toJSONSerializable = KeetaNet.lib.Utils.Conversion.toJSONSerializable;
 
+/*
+ * Turns off the client's default fee and estimate bound caps, for tests
+ * that check server behavior with values outside those caps.
+ */
+const noDefaultLimits = { maxCostBps: null, maxEstimateBoundBps: null };
+
 const testCurrencyBTC = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 const seed = 'B56AA6594977F94A8D40099674ADFACF34E1208ED965E5F7E76EE6D8A2E2744E';
 
@@ -989,7 +995,7 @@ test('createExchange succeeds when FX fee is charged in the send token', async f
 		})
 	});
 
-	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger });
+	const fxClient = new KeetaNetAnchor.FX.Client(client, { root: account, signer: account, account: account, logger: logger, defaultLimits: noDefaultLimits });
 	const quotes = await fxClient.getQuotes({ from: 'USD', to: 'EUR', amount: swapAmount, affinity: 'from' });
 	const quote = quotes?.[0];
 	if (quote === undefined) {
@@ -1226,7 +1232,8 @@ test('FX Server Estimate to Exchange Test', async function() {
 		root: userAccount,
 		signer: userAccount,
 		account: userAccount,
-		logger: logger
+		logger: logger,
+		defaultLimits: noDefaultLimits
 	});
 
 	const localeCompareArgs = [
@@ -2403,7 +2410,8 @@ test('FX Server Converted Amount Bound Validation', async function() {
 		root: userAccount,
 		signer: userAccount,
 		account: userAccount,
-		logger: logger
+		logger: logger,
+		defaultLimits: noDefaultLimits
 	});
 
 	const testCases: { convertedAmount: bigint; convertedAmountBound: bigint; affinity: 'to' | 'from'; shouldSucceed: boolean; }[] = [
@@ -2737,5 +2745,32 @@ test('FX Client createExchange enforces the caller limits before it signs', asyn
 			{ token: baseToken.publicKeyString.get(), amount: 5n },
 			{ token: testCurrencyUSD.publicKeyString.get(), amount: 1000n }
 		]));
+	});
+}, 60_000);
+
+test('FX Client applies its default fee and estimate bound caps', async function() {
+	await withConversionBindingServer(async function({ fxClient, request, setCost, setEstimateBoundOffset, testCurrencyUSD, baseToken }) {
+		const provider = await getOnlyProvider(fxClient, request);
+
+		setCost({ amount: 10n, token: testCurrencyUSD });
+		await expect(provider.getQuote()).resolves.toBeDefined();
+
+		setCost({ amount: 11n, token: testCurrencyUSD });
+		const quoteError: unknown = await provider.getQuote().catch(function(error: unknown) { return(error); });
+		const estimateError: unknown = await provider.getEstimate().catch(function(error: unknown) { return(error); });
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(quoteError)).toBe(true);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(estimateError)).toBe(true);
+		expect(await fxClient.getQuotesOrEstimates(request)).toBeNull();
+
+		setCost({ amount: 0n, token: baseToken });
+		const toProvider = await getOnlyProvider(fxClient, { ...request, affinity: 'to' });
+		const convertedAmount = 920n;
+
+		setEstimateBoundOffset(convertedAmount * 5n / 100n);
+		await expect(toProvider.getEstimate()).resolves.toBeDefined();
+
+		setEstimateBoundOffset((convertedAmount * 5n / 100n) + 1n);
+		const boundError: unknown = await toProvider.getEstimate().catch(function(error: unknown) { return(error); });
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(boundError)).toBe(true);
 	});
 }, 60_000);
