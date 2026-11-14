@@ -285,13 +285,35 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.options = options;
 	}
 
-	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {
-		return({
-			from: KeetaNetLib.Account.fromPublicKeyString(input.from),
-			to: KeetaNetLib.Account.fromPublicKeyString(input.to),
-			amount: BigInt(input.amount),
-			affinity: input.affinity
-		});
+	/**
+	 * The conversion this provider was asked for is the only source of
+	 * truth for what the user will sign. An anchor's echo of it is checked
+	 * against it and then discarded: the returned value is always
+	 * `this.conversion`, never data parsed from the anchor.
+	 */
+	#bindConversion(echoed: ConversionInputCanonical | ConversionInputCanonicalJSON): ConversionInputCanonical {
+		const own = this.conversion;
+		const mismatched: string[] = [];
+		if (!KeetaNetLib.Account.toAccount(echoed.from).comparePublicKey(own.from)) {
+			mismatched.push('from');
+		}
+		if (!KeetaNetLib.Account.toAccount(echoed.to).comparePublicKey(own.to)) {
+			mismatched.push('to');
+		}
+		if (BigInt(echoed.amount) !== own.amount) {
+			mismatched.push('amount');
+		}
+		if (echoed.affinity !== own.affinity) {
+			mismatched.push('affinity');
+		}
+		if (echoed.preferredCostAsset !== own.preferredCostAsset) {
+			mismatched.push('preferredCostAsset');
+		}
+		if (mismatched.length !== 0) {
+			throw(new KeetaAnchorError(`FX provider ${String(this.providerID)} answered for a different conversion than requested (${mismatched.join(', ')})`));
+		}
+
+		return(own);
 	}
 
 	async #parseResponseError(data: { ok: false }) {
@@ -354,7 +376,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const estimateJSON = requestInformationJSON.estimate;
 		return({
-			request: this.#parseConversionRequest(estimateJSON.request),
+			request: this.#bindConversion(estimateJSON.request),
 			convertedAmount: BigInt(estimateJSON.convertedAmount),
 			expectedCost: {
 				min: BigInt(estimateJSON.expectedCost.min),
@@ -428,7 +450,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const quoteJSON = requestInformationJSON.quote;
 		return({
-			request: this.#parseConversionRequest(quoteJSON.request),
+			request: this.#bindConversion(quoteJSON.request),
 			account: KeetaNetLib.Account.fromPublicKeyString(quoteJSON.account),
 			convertedAmount: BigInt(quoteJSON.convertedAmount),
 			cost: {
@@ -457,7 +479,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				}
 
 				liquidityProvider = input.estimate.account;
-				request = input.estimate.request;
+				request = this.#bindConversion(input.estimate.request);
 				if (input.estimate.convertedAmountBound !== undefined) {
 					convertedAmountBound = input.estimate.convertedAmountBound;
 				} else {
@@ -465,7 +487,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				}
 			} else {
 				liquidityProvider = input.quote.account;
-				request = input.quote.request;
+				request = this.#bindConversion(input.quote.request);
 				convertedAmountBound = input.quote.convertedAmount;
 			}
 
@@ -538,9 +560,9 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		let bodyAdditionalData: { quote: KeetaFXAnchorQuote; } | { request: ConversionInputCanonical; };
 
 		if ('quote' in input) {
-			bodyAdditionalData = { quote: input.quote };
+			bodyAdditionalData = { quote: { ...input.quote, request: this.#bindConversion(input.quote.request) }};
 		} else {
-			bodyAdditionalData = { request: input.estimate.request };
+			bodyAdditionalData = { request: this.#bindConversion(input.estimate.request) };
 		}
 
 		const serviceURL = await this.#getEndpoint('createExchange');
