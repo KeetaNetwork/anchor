@@ -3174,6 +3174,25 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		return(await promise);
 	}
 
+	/**
+	 * The account and token a step spends from the user's Keeta balance,
+	 * or `null` when the step does not spend from it.
+	 */
+	async #keetaFunding(step: ChainStepResolution): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; } | null> {
+		if (step.type === 'fx') {
+			const { account } = await this.getAccountsForAction({ type: 'fx', providerMethod: 'getAccountForAction' }, this.#options?.overrides);
+			return({ account, token: step.result.request.from });
+		}
+
+		if ((step.type === 'assetMovement' || step.type === 'keetaSend') && step.usingInstruction.type === 'KEETA_SEND') {
+			const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
+			const token = KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			return({ account, token });
+		}
+
+		return(null);
+	}
+
 	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<string | undefined> {
 		if (options?.requireSendAuth) {
 			await this.#awaitStepCompletion({
@@ -3424,6 +3443,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 * anchor's signed envelope references the prior steps' operations.
 		 */
 		const publishedInputs: AnchorExternalInput[] = [];
+
+		/*
+		 * The next step's funding account and token, with its balance
+		 * before the current step ran, when the next step spends from the
+		 * user's Keeta balance.
+		 */
+		let fundingSnapshot: { account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; balance: bigint; } | null = null;
+
 		let index = 0;
 		try {
 			for (index = 0; index < this.plan.steps.length; index++) {
@@ -3445,6 +3472,26 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				const pollContext = { stepIndex: index, planStep: step };
+
+				/*
+				 * A step funded from the user's Keeta balance may spend only
+				 * what the previous step delivered there, as observed on
+				 * chain, not what its anchor reports.
+				 */
+				if (fundingSnapshot !== null) {
+					const delivered = await this.parent['client'].balance(fundingSnapshot.token, { account: fundingSnapshot.account }) - fundingSnapshot.balance;
+					if (prevActualValueOut === null || delivered < prevActualValueOut) {
+						prevActualValueOut = delivered;
+					}
+				}
+				fundingSnapshot = null;
+				const nextStep = this.plan.steps[index + 1];
+				if (nextStep !== undefined) {
+					const funding = await this.#keetaFunding(nextStep);
+					if (funding !== null) {
+						fundingSnapshot = { ...funding, balance: await this.parent['client'].balance(funding.token, { account: funding.account }) };
+					}
+				}
 
 				// Verify the actual output from the previous step covers the expected
 				// input for this step, less the allowed slippage. A larger shortfall
