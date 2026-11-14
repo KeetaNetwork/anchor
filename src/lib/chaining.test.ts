@@ -3031,25 +3031,32 @@ describe('chaining FX caps hold against the plan numbers', function() {
 		});
 
 		const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
-		const plans = await chaining.getPlans({
+		const results = await chaining.getPlans({
 			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
-		});
-		const plan = plans?.find(p => p.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
-		if (!plan) {
-			throw(new Error('No plan via FXOne'));
-		}
+		}, { includeAllOutput: true });
 
 		const before = await h.client.balance(h.tokens.USDC);
-		const error: unknown = await plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		let error: unknown = null;
+		let planValueIn: bigint | null = null;
+		const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+		const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
+		if (planned?.success) {
+			planValueIn = planned.plan.plan.totalValueIn;
+			error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		} else if (refused !== undefined && !refused.success) {
+			/* Refused while computing the plan, before anything executed */
+			error = refused.error;
+		} else {
+			throw(new Error('No plan or plan error via FXOne'));
+		}
 		const after = await h.client.balance(h.tokens.USDC);
 		await h[Symbol.asyncDispose]();
-		return({ planValueIn: plan.plan.totalValueIn, spent: before - after, error });
+		return({ planValueIn, spent: before - after, error });
 	}
 
 	test('refuses an 800 USDC fee on a 100 USDC plan and spends nothing', async function() {
 		const result = await executeWithFee(function(from) { return({ amount: 800n, token: from }); });
-		expect(result.planValueIn).toBe(100n);
 		expect(result.spent).toBe(0n);
 		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
 	}, 60_000);
@@ -3058,6 +3065,41 @@ describe('chaining FX caps hold against the plan numbers', function() {
 		const result = await executeWithFee(function(_from, baseToken) { return({ amount: 5n, token: baseToken }); });
 		expect(result.spent).toBe(0n);
 		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
+	}, 60_000);
+
+	test('refuses a later FX fee when it builds the plan, before the user funds the first step', async function() {
+		await using h = await createChainingTestHarness();
+		const original = h.fxServerOne['_rateRef'].fn;
+		h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
+			return({ ...await original(request, context), cost: { amount: 5n, token: h.client.baseToken }});
+		});
+
+		const results = await h.anchorChaining.getPlans({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		}, { includeAllOutput: true });
+
+		let userActions = 0;
+		let error: unknown = null;
+		const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+		if (planned?.success) {
+			planned.plan.on('stepNeedsAction', function(payload) {
+				userActions++;
+				if (payload.type === 'keetaSendAuthRequired') {
+					payload.markCompleted({ sent: true });
+				} else {
+					payload.markCompleted();
+				}
+			});
+			error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		} else {
+			const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
+			error = refused !== undefined && !refused.success ? refused.error : null;
+		}
+
+		/* The user was never asked to fund the bank step */
+		expect(userActions).toBe(0);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(error)).toBe(true);
 	}, 60_000);
 
 	test('signs a 1% fee under the default cap', async function() {

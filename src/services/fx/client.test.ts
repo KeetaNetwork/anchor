@@ -2673,11 +2673,12 @@ test('FX Client builds the exchange block from the requested conversion', async 
 		const quoteProvider = await getOnlyProvider(fxClient, { ...request, preferredCostAsset: baseToken.publicKeyString.get() });
 		const quote = await quoteProvider.getQuote();
 		expect(quote.request.preferredCostAsset).toBe(baseToken.publicKeyString.get());
-		await quoteProvider.createExchange({ quote });
+		await quoteProvider.createExchange({ quote }, undefined, { limits: { minReceive: quote.convertedAmount }});
 		expect(sentSends()).toEqual([expectedSend]);
 
 		const estimateProvider = await getOnlyProvider(fxClient, request);
-		await estimateProvider.createExchange({ estimate: await estimateProvider.getEstimate() });
+		const estimate = await estimateProvider.getEstimate();
+		await estimateProvider.createExchange({ estimate }, undefined, { limits: { minReceive: estimate.convertedAmountBound ?? estimate.convertedAmount }});
 		expect(sentSends()).toEqual([expectedSend, expectedSend]);
 	});
 }, 60_000);
@@ -2779,17 +2780,19 @@ test('FX Client applies its default limits when it signs, without dropping quote
 		setCost({ amount: 11n, token: testCurrencyUSD });
 		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
 		const highFeeQuote = await provider.getQuote();
-		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }));
-		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 11n }}}));
+		const minReceive = highFeeQuote.convertedAmount;
+		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { minReceive }}));
+		await expectLimitExceeded(provider.createExchange({ quote: highFeeQuote }, undefined, { limits: { minReceive, maxCost: { token: testCurrencyUSD, amount: 11n }}}));
 
 		/* A fee outside the from and to tokens needs maxCost, however small */
 		setCost({ amount: 5n, token: baseToken });
-		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }));
-		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }, undefined, { limits: { maxCost: { token: testCurrencyUSD, amount: 5n }}}));
+		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }, undefined, { limits: { minReceive }}));
+		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }, undefined, { limits: { minReceive, maxCost: { token: testCurrencyUSD, amount: 5n }}}));
 
-		/* Affinity "to" needs maxSend, because the provider sets the amount sent */
+		/* Affinity "to" needs maxSend and affinity "from" needs minReceive, because the provider sets that amount */
 		setCost({ amount: 0n, token: baseToken });
 		await expectLimitExceeded(toProvider.createExchange({ quote: await toProvider.getQuote() }));
+		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }));
 
 		/* An estimate bound more than 5% from its converted amount is still listed, but is refused even with limits copied from it */
 		const fromConverted = (await provider.getEstimate()).convertedAmount;
@@ -2809,7 +2812,8 @@ test('FX Client applies its default limits when it signs, without dropping quote
 		/* A fee of exactly 1% is within the default cap */
 		setEstimateBoundOffset(null);
 		setCost({ amount: 10n, token: testCurrencyUSD });
-		await provider.createExchange({ quote: await provider.getQuote() });
+		const onePercentQuote = await provider.getQuote();
+		await provider.createExchange({ quote: onePercentQuote }, undefined, { limits: { minReceive: onePercentQuote.convertedAmount }});
 		expect(sentSends()).toEqual([{ token: testCurrencyUSD.publicKeyString.get(), amount: 1010n }]);
 	});
 }, 60_000);

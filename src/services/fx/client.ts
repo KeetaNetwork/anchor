@@ -265,7 +265,8 @@ async function getEndpoints(
  *
  * The limits add to the client's `defaultLimits`; they never lift them.
  * - With affinity `to`, the anchor sets the amount sent, so `maxSend` is
- *   required.
+ *   required. With affinity `from`, it sets the amount received, so
+ *   `minReceive` is required.
  * - A fee in a token other than `from` or `to` needs `maxCost`, since no
  *   default can price it.
  * - A fee in `from` or `to` must also be within `defaultLimits.maxCostBps`.
@@ -279,7 +280,8 @@ export interface KeetaFXAnchorExchangeLimits {
 	 */
 	maxSend?: bigint;
 	/**
-	 * The least of the `to` token the block may receive.
+	 * The least of the `to` token the block may receive. Required for
+	 * affinity `from`.
 	 */
 	minReceive?: bigint;
 	/**
@@ -486,8 +488,12 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(new FXErrors.ExchangeLimitExceeded('FX exchange with affinity "to" needs limits.maxSend, because the provider sets the amount sent'));
 		}
 
-		if (limits?.minReceive !== undefined && terms.receiveAmount < limits.minReceive) {
-			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would receive ${terms.receiveAmount}, less than the limit of ${limits.minReceive}`));
+		if (limits?.minReceive !== undefined) {
+			if (terms.receiveAmount < limits.minReceive) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would receive ${terms.receiveAmount}, less than the limit of ${limits.minReceive}`));
+			}
+		} else if (conversion.affinity === 'from') {
+			throw(new FXErrors.ExchangeLimitExceeded('FX exchange with affinity "from" needs limits.minReceive, because the provider sets the amount received'));
 		}
 
 		if (estimate !== undefined && defaults.maxEstimateBoundBps !== null) {
@@ -686,6 +692,58 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		return(quote);
 	}
 
+	/**
+	 * Checks the terms of a quote or estimate as `createExchange` would
+	 * before it signs, without building or sending anything. Throws the
+	 * same errors `createExchange` would.
+	 */
+	checkExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
+		this.#checkExchangeTerms(input, options?.limits);
+	}
+
+	/**
+	 * Every check `createExchange` runs on the anchor's terms before it
+	 * builds the block. Returns the terms the block commits to.
+	 */
+	#checkExchangeTerms(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, limits: KeetaFXAnchorExchangeLimits | undefined): { liquidityProvider: KeetaFXAnchorQuote['account']; terms: ExchangeTerms; } {
+		let liquidityProvider;
+		let convertedAmountBound: bigint;
+		let costAmount;
+		let costToken;
+		let estimateTerms;
+
+		if ('estimate' in input) {
+			if (input.estimate.canPerformExchange === false) {
+				throw(new KeetaAnchorUserError('The provided estimate indicates that the exchange cannot be performed'));
+			}
+
+			if (input.estimate.requiresQuote !== false) {
+				throw(new FXErrors.QuoteRequired());
+			}
+
+			liquidityProvider = input.estimate.account;
+			convertedAmountBound = input.estimate.convertedAmountBound ?? input.estimate.convertedAmount;
+			costAmount = input.estimate.expectedCost.max;
+			costToken = input.estimate.expectedCost.token;
+			this.#assertAmounts(input.estimate.convertedAmount, input.estimate.convertedAmountBound, input.estimate.expectedCost.min, costAmount);
+			this.#assertEstimateBound(input.estimate.convertedAmount, input.estimate.convertedAmountBound);
+			estimateTerms = { convertedAmount: input.estimate.convertedAmount, convertedAmountBound: convertedAmountBound };
+		} else {
+			liquidityProvider = input.quote.account;
+			convertedAmountBound = input.quote.convertedAmount;
+			costAmount = input.quote.cost.amount;
+			costToken = input.quote.cost.token;
+			this.#assertAmounts(input.quote.convertedAmount, undefined, costAmount, costAmount);
+		}
+
+		this.#assertCostToken({ amount: costAmount, token: costToken });
+		const terms = exchangeTerms(this.conversion, convertedAmountBound, { amount: costAmount, token: costToken });
+		this.#assertSigningLimits(terms, estimateTerms, limits);
+
+		return({ liquidityProvider, terms });
+	}
+
 	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchange> {
 		const request = this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
 		if (block !== undefined && options?.limits !== undefined) {
@@ -694,59 +752,11 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		let swapBlock = block;
 		if (swapBlock === undefined) {
-			/* Liquidity Provider that will complete the swap */
-			let liquidityProvider;
-			let convertedAmountBound: bigint;
-
-			if ('estimate' in input) {
-				if (input.estimate.canPerformExchange === false) {
-					throw(new KeetaAnchorUserError('The provided estimate indicates that the exchange cannot be performed'));
-				}
-
-				if (input.estimate.requiresQuote !== false) {
-					throw(new FXErrors.QuoteRequired());
-				}
-
-				liquidityProvider = input.estimate.account;
-				if (input.estimate.convertedAmountBound !== undefined) {
-					convertedAmountBound = input.estimate.convertedAmountBound;
-				} else {
-					convertedAmountBound = input.estimate.convertedAmount;
-				}
-			} else {
-				liquidityProvider = input.quote.account;
-				convertedAmountBound = input.quote.convertedAmount;
-			}
+			const { liquidityProvider, terms } = this.#checkExchangeTerms(input, options?.limits);
+			const { sendAmount, receiveAmount, costAmount, costToken } = terms;
 
 			/* Construct the required operations for the swap request */
 			const builder = this.client.initBuilder(this.options);
-
-			let costAmount = 0n;
-			let costToken;
-			if ('quote' in input) {
-				costAmount = input.quote.cost.amount;
-				costToken = input.quote.cost.token;
-			} else {
-				costAmount = input.estimate.expectedCost.max;
-				costToken = input.estimate.expectedCost.token;
-			}
-
-			const terms = exchangeTerms(request, convertedAmountBound, { amount: costAmount, token: costToken });
-			const { sendAmount, receiveAmount } = terms;
-
-			if ('quote' in input) {
-				this.#assertAmounts(input.quote.convertedAmount, undefined, costAmount, costAmount);
-			} else {
-				this.#assertAmounts(input.estimate.convertedAmount, input.estimate.convertedAmountBound, input.estimate.expectedCost.min, costAmount);
-			}
-			this.#assertCostToken({ amount: costAmount, token: costToken });
-			let estimateTerms;
-			if ('estimate' in input) {
-				this.#assertEstimateBound(input.estimate.convertedAmount, input.estimate.convertedAmountBound);
-				estimateTerms = { convertedAmount: input.estimate.convertedAmount, convertedAmountBound: convertedAmountBound };
-			}
-
-			this.#assertSigningLimits(terms, estimateTerms, options?.limits);
 
 			/*
 			 * When the fee is charged in the same token as the swap send,
@@ -918,6 +928,8 @@ interface CanCreateExchange {
 	get request(): ConversionInputCanonical;
 
 	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider>;
+
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void;
 }
 
 class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
@@ -937,6 +949,14 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange({ quote: this.quote }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
+	}
+
+	/**
+	 * Checks this quote's terms as `createExchange` would, without
+	 * signing. See {@link KeetaFXAnchorProviderBase.checkExchange}.
+	 */
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.provider.checkExchange({ quote: this.quote }, options);
 	}
 
 	/**
@@ -972,6 +992,14 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
+	}
+
+	/**
+	 * Checks this estimate's terms as `createExchange` would, without
+	 * signing. See {@link KeetaFXAnchorProviderBase.checkExchange}.
+	 */
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.provider.checkExchange({ estimate: this.estimate }, options);
 	}
 
 	/**

@@ -2726,6 +2726,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								assertNever(affinity);
 							}
 
+							/*
+							 * Run the checks execution will run before signing,
+							 * so a fee or bound the client refuses fails here,
+							 * before any earlier step moves funds.
+							 */
+							result.checkExchange({ limits: { maxSend: valueIn, minReceive: valueOut }});
+
 							return({ type: 'fx', step, valueIn, valueOut, result });
 						} else if (step.type === 'assetMovement') {
 							/*
@@ -3477,7 +3484,9 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				/*
 				 * A step funded from the user's Keeta balance may spend only
 				 * what the previous step delivered there, as observed on
-				 * chain, not what its anchor reports.
+				 * chain, not what its anchor reports. An FX step's receive
+				 * is part of its own atomic block, so the network already
+				 * enforces it; only an anchor's payout needs measuring.
 				 */
 				if (fundingSnapshot !== null) {
 					const delivered = await this.parent['client'].balance(fundingSnapshot.token, { account: fundingSnapshot.account }) - fundingSnapshot.balance;
@@ -3487,7 +3496,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 				fundingSnapshot = null;
 				const nextStep = this.plan.steps[index + 1];
-				if (nextStep !== undefined) {
+				if (nextStep !== undefined && step.type !== 'fx') {
 					const funding = await this.#keetaFunding(nextStep);
 					if (funding !== null) {
 						fundingSnapshot = { ...funding, balance: await this.parent['client'].balance(funding.token, { account: funding.account }) };
