@@ -8,8 +8,8 @@ import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
 import { Errors as FXErrors } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
-import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, AnchorChainingPlanCreateError, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
-import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, AnchorChainingPath, GetPlansOptions } from './chaining.js';
+import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPath, AnchorChainingPlan, AnchorChainingPlanCreateError, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
+import type { AnchorChainingPathState, ExecutedStep, AnchorChainingAsset, AnchorChainingAssetInfo, AnchorChainingResolveAssetsFilter, Disclaimer, AnchorChainingPathInput, GetPlansOptions } from './chaining.js';
 import type { GenericAccount, TokenAddress } from '@keetanetwork/keetanet-client/lib/account.js';
 import { KeetaAnchorUserError } from './error.js';
 import { AnchorExternal } from './anchor-external.js';
@@ -1432,13 +1432,23 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 		} satisfies ServiceMetadataExternalizable)
 	});
 
+	const resolver = new Resolver({
+		root: client.account,
+		client: client,
+		trustedCAs: []
+	});
+
+	/* USD bank -> USDC keeta -> FX -> EURC: the swap is a second user signature */
+	const defaultChaining = new AnchorChaining({ client, resolver });
+	expect(await defaultChaining.getPaths({
+		source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+		destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+	})).toBeNull();
+
 	const anchorChaining = new AnchorChaining({
 		client: client,
-		resolver: new Resolver({
-			root: client.account,
-			client: client,
-			trustedCAs: []
-		})
+		resolver,
+		allowMidPlanUserSignatures: true
 	});
 
 	const paths = await anchorChaining.getPaths({
@@ -1492,7 +1502,7 @@ test('Asset Movement Chaining Test', async function({ expect }) {
 	])).toEqual(toJSONSerializable(path.path));
 });
 
-async function createChainingTestHarness(options: { includeSwapAnchor?: boolean } = {}) {
+async function createChainingTestHarness(options: { includeSwapAnchor?: boolean; allowMidPlanUserSignatures?: boolean; } = {}) {
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const { userClient: client, fees } = await createNodeAndClient(account);
 
@@ -1699,7 +1709,12 @@ async function createChainingTestHarness(options: { includeSwapAnchor?: boolean 
 
 	const anchorChaining = new AnchorChaining({
 		client,
-		resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+		resolver: new Resolver({ root: client.account, client, trustedCAs: [] }),
+		/*
+		 * The fixture's routes swap and then send to an anchor (two user
+		 * signatures), so the tests built on it opt in unless they ask not to
+		 */
+		allowMidPlanUserSignatures: options.allowMidPlanUserSignatures ?? true
 	});
 
 	const getPathVia = async (fxProviderID: 'FXOne' | 'FXTwo', affinity: 'to' | 'from' = 'from') => {
@@ -3029,7 +3044,7 @@ async function executeWithFee(fee: (from: TokenAddress, baseToken: TokenAddress)
 		return({ ...quote, cost: fee(from, h.client.baseToken) });
 	});
 
-	const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
+	const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits, allowMidPlanUserSignatures: true });
 	const results = await chaining.getPlans({
 		source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
 		destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
@@ -3573,7 +3588,7 @@ describe('AnchorChainingAssetInfo metadata', function() {
 		await using h = await createMetadataHarness();
 
 		const assets = await h.anchorChaining.graph.listAssetsWithMetadata(
-			{ to: { location: h.evmChainLocation }},
+			{ from: { location: h.keetaLocation }},
 			{ providerID: 'NonExistentBridge' }
 		);
 
@@ -4305,13 +4320,12 @@ describe('Generic Test Cases', function() {
 			} satisfies ServiceMetadataExternalizable)
 		});
 
-		const anchorChaining = new AnchorChaining({
-			client,
-			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
-		});
+		const resolver = new Resolver({ root: client.account, client, trustedCAs: [] });
+		const anchorChaining = new AnchorChaining({ client, resolver });
+		const anchorChainingAllowMidPlan = new AnchorChaining({ client, resolver, allowMidPlanUserSignatures: true });
 
 		return({
-			client, fees, tokens, keetaLocation, anchorChaining, giveTokens, symbolOf,
+			client, fees, tokens, keetaLocation, anchorChaining, anchorChainingAllowMidPlan, giveTokens, symbolOf,
 			recipient: client.account.publicKeyString.get(),
 			[Symbol.asyncDispose]: async function() {
 				await am1[Symbol.asyncDispose]?.();
@@ -4337,6 +4351,11 @@ describe('Generic Test Cases', function() {
 		pfrEligibleFinalLeg?: boolean;
 		/** Restrict to specific leg modes (default: both) */
 		legModes?: LegMode[];
+		/**
+		 * True when a leg after the first needs the user to sign a Keeta
+		 * block, so the path is only found with allowMidPlanUserSignatures
+		 */
+		midPlanUserSignature?: boolean;
 	};
 
 	const assetIdOf = (asset: AnchorChainingAsset): string => {
@@ -4390,6 +4409,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: 'BRL keeta -> EUR keeta (AM1 BRL->USD, AM1 USD->EUR)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			request: (w, input) => ({
 				source: { asset: w.tokens.BRL, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
@@ -4434,6 +4454,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: 'EUR keeta -> EUR SEPA (AM1 EUR->USD, AM1 USD->EUR/SEPA)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			request: (w, input) => ({
 				source: { asset: w.tokens.EUR, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
@@ -4446,6 +4467,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: 'KTA keeta -> USDC base (FX1 keeta swap, AM2 keeta->base)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			request: (w, input) => ({
 				source: { asset: w.tokens.KTA, location: w.keetaLocation, value: input, rail: 'KEETA_SEND' },
@@ -4497,6 +4519,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: '3-leg: KTA keeta -> USDC ethereum (FX1 swap, AM2 keeta->base, AM3 base->eth)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			pfrEligibleFinalLeg: true,
 			request: (w, input) => ({
@@ -4511,6 +4534,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: '3-leg: USDC ethereum -> KTA keeta (AM3 eth->base, AM2 base->keeta, FX1 swap)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			legModes: [ 'managed' ], // middle base->keeta leg cannot be persistent-forwarding mid-chain
 			request: (w, input) => ({
@@ -4525,6 +4549,7 @@ describe('Generic Test Cases', function() {
 		},
 		{
 			name: '3-leg: USDC ethereum -> EUR SEPA (AM3 eth->base, AM1 base->USD keeta, AM1 USD->EUR/SEPA)',
+			midPlanUserSignature: true,
 			inputAmount: 1000n,
 			legModes: [ 'managed' ], // middle base->keeta leg cannot be persistent-forwarding mid-chain
 			request: (w, input) => ({
@@ -4556,7 +4581,12 @@ describe('Generic Test Cases', function() {
 
 		// 1. Routing: a path matching the expected legs must exist, and it must
 		//    be the same regardless of fees/leg-mode (expectedLegs is fixed).
-		const paths = await w.anchorChaining.getPaths(request);
+		if (tc.midPlanUserSignature === true) {
+			const excluded = await w.anchorChaining.getPaths(request);
+			expect(excluded?.some((p) => legsEqual(pathSignature(p, w), tc.expectedLegs)) ?? false).toBe(false);
+		}
+		const chaining = tc.midPlanUserSignature === true ? w.anchorChainingAllowMidPlan : w.anchorChaining;
+		const paths = await chaining.getPaths(request);
 		if (!paths) {
 			throw(new Error(`No paths found`));
 		}
@@ -5847,7 +5877,7 @@ describe('getPlans forwardingOnly', function() {
 describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', function() {
 	type AssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
 
-	async function createKeetaSwapHarness() {
+	async function createKeetaSwapHarness(options: { allowMidPlanUserSignatures?: boolean } = {}) {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 		const { userClient: client, fees } = await createNodeAndClient(account);
 		fees.addFeeFreeAccount(client.account);
@@ -5909,14 +5939,17 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 
 		const anchorChaining = new AnchorChaining({
 			client,
-			resolver: new Resolver({ root: client.account, client, trustedCAs: [] })
+			resolver: new Resolver({ root: client.account, client, trustedCAs: [] }),
+			...(options.allowMidPlanUserSignatures === true ? { allowMidPlanUserSignatures: true } : {})
 		});
 
+		const eurToCadRequest: AnchorChainingPathInput = {
+			source: { asset: tokens.EUR, location: keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
+			destination: { asset: tokens.CAD, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+		};
+
 		const getEurToCadPath = async () => {
-			const paths = await anchorChaining.getPaths({
-				source: { asset: tokens.EUR, location: keetaLocation, value: 1000n, rail: 'KEETA_SEND' },
-				destination: { asset: tokens.CAD, location: keetaLocation, recipient: client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
-			});
+			const paths = await anchorChaining.getPaths(eurToCadRequest);
 			const path = paths?.find(p => p.path.length === 2);
 			if (!path) {
 				throw(new Error(`Expected a 2-leg EUR -> USD -> CAD path, got ${JSON.stringify(paths?.map(p => p.path.length))}`));
@@ -5925,7 +5958,7 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 		};
 
 		return({
-			client, tokens, keetaLocation, anchorChaining, giveTokens, getEurToCadPath,
+			client, tokens, keetaLocation, anchorChaining, giveTokens, getEurToCadPath, eurToCadRequest,
 			[Symbol.asyncDispose]: async function() {
 				await hub[Symbol.asyncDispose]?.();
 			}
@@ -5933,7 +5966,7 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 	}
 
 	test('plans EUR -> USD -> CAD as two managed sends, not a forwarded step', async function() {
-		await using h = await createKeetaSwapHarness();
+		await using h = await createKeetaSwapHarness({ allowMidPlanUserSignatures: true });
 
 		const path = await h.getEurToCadPath();
 
@@ -5951,7 +5984,7 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 	});
 
 	test('executes EUR -> USD -> CAD with two user sends (the second send is not skipped)', async function() {
-		await using h = await createKeetaSwapHarness();
+		await using h = await createKeetaSwapHarness({ allowMidPlanUserSignatures: true });
 		await h.giveTokens(h.client.account, 1_000_000n, h.tokens.EUR);
 		await h.giveTokens(h.client.account, 1_000_000n, h.tokens.USD);
 
@@ -5975,6 +6008,78 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 		expect(sends).toHaveLength(2);
 		expect(sends[0]?.token).toEqual(h.tokens.EUR.publicKeyString.get());
 		expect(sends[1]?.token).toEqual(h.tokens.USD.publicKeyString.get());
+	});
+
+	/*
+	 * EUR -> USD -> CAD lands USD in the user's account after the first
+	 * swap, so the user would have to sign the second send partway through
+	 * the plan. By default it is neither found nor listed.
+	 */
+	test('leaves out EUR -> USD -> CAD by default, since the user would sign again mid-plan', async function() {
+		await using h = await createKeetaSwapHarness();
+
+		const paths = await h.anchorChaining.getPaths(h.eurToCadRequest);
+		expect(paths).toBeNull();
+
+		const plans = await h.anchorChaining.getPlans(h.eurToCadRequest);
+		expect(plans).toBeNull();
+	});
+
+	test('lists only single-swap destinations by default', async function() {
+		await using h = await createKeetaSwapHarness();
+		await using allowed = await createKeetaSwapHarness({ allowMidPlanUserSignatures: true });
+
+		const keysOf = (assets: { asset: AnchorChainingAsset }[]): string[] => {
+			return(assets.map(a => KeetaNet.lib.Account.isInstance(a.asset) ? a.asset.publicKeyString.get() : String(a.asset)).sort());
+		};
+
+		const fromEur = await h.anchorChaining.graph.listAssets({ from: { asset: h.tokens.EUR, location: h.keetaLocation }});
+		expect(keysOf(fromEur)).not.toContain(h.tokens.CAD.publicKeyString.get());
+		expect(keysOf(fromEur)).toContain(h.tokens.USD.publicKeyString.get());
+
+		const toCad = await h.anchorChaining.graph.listAssets({ to: { asset: h.tokens.CAD, location: h.keetaLocation }});
+		expect(keysOf(toCad)).not.toContain(h.tokens.EUR.publicKeyString.get());
+		expect(keysOf(toCad)).toContain(h.tokens.USD.publicKeyString.get());
+
+		const fromEurAllowed = await allowed.anchorChaining.graph.listAssets({ from: { asset: allowed.tokens.EUR, location: allowed.keetaLocation }});
+		expect(keysOf(fromEurAllowed)).toContain(allowed.tokens.CAD.publicKeyString.get());
+	});
+
+	test('validate rejects a path that needs a mid-plan user signature unless allowed', async function() {
+		await using allowed = await createKeetaSwapHarness({ allowMidPlanUserSignatures: true });
+		const path = await allowed.getEurToCadPath();
+		expect(path.validate()).toEqual({ valid: true });
+
+		const strict = new AnchorChaining({ client: allowed.client, resolver: allowed.anchorChaining['resolver'] });
+		const strictPath = new AnchorChainingPath({ request: path.request, path: path.path, parent: strict });
+		const result = strictPath.validate();
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.reason).toContain('mid-plan user signatures are disabled');
+		}
+		await expect(AnchorChainingPlan.create(strictPath)).rejects.toThrow('mid-plan user signatures are disabled');
+	});
+
+	test('validate rejects FX -> FX, which needs a second swap signature', async function() {
+		await using h = await createKeetaSwapHarness();
+		const side = (asset: TokenAddress) => ({ asset, location: h.keetaLocation, rail: 'KEETA_SEND' as const });
+		const path = new AnchorChainingPath({
+			request: {
+				source: { ...side(h.tokens.EUR), value: 1000n },
+				destination: { ...side(h.tokens.CAD), recipient: h.client.account.publicKeyString.get() }
+			},
+			path: [
+				{ type: 'fx', providerID: 'FXOne', from: side(h.tokens.EUR), to: side(h.tokens.USD) },
+				{ type: 'fx', providerID: 'FXTwo', from: side(h.tokens.USD), to: side(h.tokens.CAD) }
+			],
+			parent: h.anchorChaining
+		});
+
+		const result = path.validate();
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.reason).toContain('Step 1 needs the user to sign a Keeta block');
+		}
 	});
 });
 
