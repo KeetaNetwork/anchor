@@ -19,9 +19,31 @@ import { Buffer } from '../utils/buffer.js';
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 /**
- * The maximum size of a request (128MiB)
+ * The maximum size of a request body when the route sets no
+ * `maxBodySize` (1 MiB)
  */
-const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
+const MAX_REQUEST_SIZE = 1024 ** 2;
+
+/**
+ * Read a request body, refusing it once it passes `limit` bytes.
+ * Returns null when the body is too large.
+ */
+async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer | null> {
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of request) {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+		const buffer = Buffer.from(chunk);
+		size += buffer.length;
+		if (size > limit) {
+			return(null);
+		}
+
+		chunks.push(buffer);
+	}
+
+	return(Buffer.concat(chunks, size));
+}
 
 type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
 type RouteHandlerWithConfig = {
@@ -515,34 +537,19 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					// Early rejection based on Content-Length header
 					const contentLength = request.headers['content-length'];
-					if (contentLength !== undefined) {
-						const declaredSize = parseInt(contentLength, 10);
-						if (!isNaN(declaredSize) && declaredSize > bodySizeLimit) {
-							request.resume();
+					const declaredSize = contentLength === undefined ? NaN : parseInt(contentLength, 10);
+					const data = !isNaN(declaredSize) && declaredSize > bodySizeLimit ? null : await readBody(request, bodySizeLimit);
+					if (data === null) {
+						request.resume();
 
-							response.statusCode = 413;
-							response.setHeader('Content-Type', 'text/plain');
-							response.write('Payload Too Large');
+						response.statusCode = 413;
+						response.setHeader('Content-Type', 'text/plain');
+						response.write('Payload Too Large');
 
-							await responseFinalize();
+						await responseFinalize();
 
-							return;
-						}
+						return;
 					}
-
-					const data = await request.map(function(chunk) {
-						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-						return(Buffer.from(chunk));
-					}).reduce(function(prev, curr) {
-						if (prev.length > bodySizeLimit) {
-							throw(new Error('Request too large'));
-						}
-
-						if (!Buffer.isBuffer(curr)) {
-							throw(new Error(`internal error: Current item is not a buffer -- ${typeof curr}`));
-						}
-						return(Buffer.concat([prev, curr]));
-					}, Buffer.from(''));
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
