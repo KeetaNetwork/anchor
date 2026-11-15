@@ -3014,47 +3014,47 @@ describe('plan create error reports failedAt providerID', function() {
 	});
 });
 
-describe('chaining FX caps hold against the plan numbers', function() {
-	/*
-	 * Each case charges a fee on the FXOne leg of a 100 USDC plan and then
-	 * executes it. A limit the plan copies from the anchor's own estimate
-	 * must not lift the client's default caps.
-	 */
-	async function executeWithFee(fee: (from: TokenAddress, baseToken: TokenAddress) => { amount: bigint; token: TokenAddress; }, fxDefaultLimits?: { maxCostBps?: number | null }) {
-		const h = await createChainingTestHarness();
-		await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
-		const original = h.fxServerOne['_rateRef'].fn;
-		h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
-			const quote = await original(request, context);
-			const from = KeetaNet.lib.Account.fromPublicKeyString(request.from).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
-			return({ ...quote, cost: fee(from, h.client.baseToken) });
-		});
+/*
+ * Each case charges a fee on the FXOne leg of a 100 USDC plan and then
+ * executes it. A limit the plan copies from the anchor's own estimate
+ * must not lift the client's default caps.
+ */
+async function executeWithFee(fee: (from: TokenAddress, baseToken: TokenAddress) => { amount: bigint; token: TokenAddress; }, fxDefaultLimits?: { maxCostBps?: number | null }) {
+	const h = await createChainingTestHarness();
+	await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+	const original = h.fxServerOne['_rateRef'].fn;
+	h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
+		const quote = await original(request, context);
+		const from = KeetaNet.lib.Account.fromPublicKeyString(request.from).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		return({ ...quote, cost: fee(from, h.client.baseToken) });
+	});
 
-		const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
-		const results = await chaining.getPlans({
-			source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
-			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
-		}, { includeAllOutput: true });
+	const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
+	const results = await chaining.getPlans({
+		source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+		destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+	}, { includeAllOutput: true });
 
-		const before = await h.client.balance(h.tokens.USDC);
-		let error: unknown = null;
-		let planValueIn: bigint | null = null;
-		const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
-		const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
-		if (planned?.success) {
-			planValueIn = planned.plan.plan.totalValueIn;
-			error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
-		} else if (refused !== undefined && !refused.success) {
-			/* Refused while computing the plan, before anything executed */
-			error = refused.error;
-		} else {
-			throw(new Error('No plan or plan error via FXOne'));
-		}
-		const after = await h.client.balance(h.tokens.USDC);
-		await h[Symbol.asyncDispose]();
-		return({ planValueIn, spent: before - after, error });
+	const before = await h.client.balance(h.tokens.USDC);
+	let error: unknown = null;
+	let planValueIn: bigint | null = null;
+	const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+	const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
+	if (planned?.success) {
+		planValueIn = planned.plan.plan.totalValueIn;
+		error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+	} else if (refused !== undefined && !refused.success) {
+		/* Refused while computing the plan, before anything executed */
+		error = refused.error;
+	} else {
+		throw(new Error('No plan or plan error via FXOne'));
 	}
+	const after = await h.client.balance(h.tokens.USDC);
+	await h[Symbol.asyncDispose]();
+	return({ planValueIn, spent: before - after, error });
+}
 
+describe('chaining FX caps hold against the plan numbers', function() {
 	test('refuses an 800 USDC fee on a 100 USDC plan and spends nothing', async function() {
 		const result = await executeWithFee(function(from) { return({ amount: 800n, token: from }); });
 		expect(result.spent).toBe(0n);
@@ -3172,13 +3172,15 @@ describe('chaining spends only what the previous step delivered on-chain', funct
 		}
 		expect(plan.plan.totalValueIn).toBe(100n);
 
-		plan.on('stepNeedsAction', async function(payload) {
+		const reportInflated: Promise<void>[] = [];
+		plan.on('stepNeedsAction', function(payload) {
 			if (payload.type === 'assetMovementUserExecutionRequired') {
 				/* The anchor delivers 90 USDC but reports 1,000,000 */
-				const transferID = payload.action.assetMovementTransfer.transferID;
-				const status = await payload.action.assetMovementTransfer.getTransferStatus();
-				h.bankServerUS.setTransferStatus(transferID, { to: { ...status.transaction.to, value: inflated.toString() }});
-				payload.markCompleted();
+				const transfer = payload.action.assetMovementTransfer;
+				reportInflated.push(transfer.getTransferStatus().then(function(status) {
+					h.bankServerUS.setTransferStatus(transfer.transferID, { to: { ...status.transaction.to, value: inflated.toString() }});
+					payload.markCompleted();
+				}));
 			} else {
 				payload.markCompleted({ sent: true });
 			}
@@ -3186,11 +3188,12 @@ describe('chaining spends only what the previous step delivered on-chain', funct
 
 		const before = await h.client.balance(h.tokens.USDC);
 		const error: unknown = await plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		await Promise.all(reportInflated);
 		const after = await h.client.balance(h.tokens.USDC);
 
 		/* The user keeps their own USDC plus the 90 the anchor delivered */
 		expect(after - before).toBe(90n);
-		expect(String(error)).toMatch(/expected at least 1000000 but previous step produced 90/);
+		expect(String(error)).toContain('expected at least 1000000 but previous step produced 90');
 	}, 60_000);
 });
 

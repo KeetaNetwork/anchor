@@ -2428,7 +2428,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		const fxDefaultLimits = this.parent['fxDefaultLimits'];
 		const fxClient = new KeetaFXAnchorClient(this.parent['client'], {
 			...sharedClientOptions,
-			...(fxDefaultLimits !== undefined ? { defaultLimits: fxDefaultLimits } : {})
+			...(fxDefaultLimits === undefined ? {} : { defaultLimits: fxDefaultLimits })
 		});
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);

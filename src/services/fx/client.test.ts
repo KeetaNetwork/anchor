@@ -2438,6 +2438,19 @@ test('FX Server Converted Amount Bound Validation', async function() {
 
 type ConversionMismatch = 'from' | 'to' | 'amount' | 'affinity' | 'preferredCostAsset';
 
+function sentBlockOf(postData: JSONSerializable | undefined): string | undefined {
+	if (typeof postData !== 'object' || postData === null || !('request' in postData)) {
+		return(undefined);
+	}
+
+	const request = postData.request;
+	if (typeof request !== 'object' || request === null || !('block' in request) || typeof request.block !== 'string') {
+		return(undefined);
+	}
+
+	return(request.block);
+}
+
 /**
  * Runs `body` against an FX server that can price a different conversion
  * than the client asked for. The server signs what it prices, so the
@@ -2513,18 +2526,6 @@ async function withConversionBindingServer(body: (context: {
 		return(altered);
 	}
 
-	function sentBlockOf(postData: JSONSerializable | undefined): string | undefined {
-		if (typeof postData !== 'object' || postData === null || !('request' in postData)) {
-			return(undefined);
-		}
-
-		const request = postData.request;
-		if (typeof request !== 'object' || request === null || !('block' in request) || typeof request.block !== 'string') {
-			return(undefined);
-		}
-
-		return(request.block);
-	}
 
 	await using server = new (class extends KeetaNetFXAnchorHTTPServer {
 		protected async initRoutes(config: KeetaAnchorFXServerConfig): Promise<Routes> {
@@ -2533,7 +2534,7 @@ async function withConversionBindingServer(body: (context: {
 			const getEstimate = routes['POST /api/getEstimate'];
 			const createExchange = routes['POST /api/createExchange'];
 			if (typeof getQuote !== 'function' || typeof getEstimate !== 'function' || typeof createExchange !== 'function') {
-				throw(new Error('FX server routes are missing'));
+				throw(new TypeError('FX server routes are missing'));
 			}
 
 			routes['POST /api/getQuote'] = async function(urlParams, postData, headers, url) {
@@ -2546,13 +2547,13 @@ async function withConversionBindingServer(body: (context: {
 					return(response);
 				}
 
-				const body: unknown = JSON.parse(response.output.toString());
-				if (!isKeetaFXAnchorEstimateResponse(body) || !body.ok) {
+				const estimateResponse: unknown = JSON.parse(response.output.toString());
+				if (!isKeetaFXAnchorEstimateResponse(estimateResponse) || !estimateResponse.ok) {
 					throw(new Error('Unexpected estimate response'));
 				}
 
-				const convertedAmountBound = toJSONSerializable(BigInt(body.estimate.convertedAmount) + estimateBoundOffset);
-				return({ ...response, output: JSON.stringify({ ...body, estimate: { ...body.estimate, convertedAmountBound }}) });
+				const convertedAmountBound = toJSONSerializable(BigInt(estimateResponse.estimate.convertedAmount) + estimateBoundOffset);
+				return({ ...response, output: JSON.stringify({ ...estimateResponse, estimate: { ...estimateResponse.estimate, convertedAmountBound }}) });
 			};
 
 			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url) {
@@ -2814,14 +2815,16 @@ test('FX Client applies its default limits when it signs, without dropping quote
 		await expectLimitExceeded(provider.createExchange({ quote: await provider.getQuote() }));
 
 		/* An estimate bound more than 5% from its converted amount is still listed, but is refused even with limits copied from it */
-		const fromConverted = (await provider.getEstimate()).convertedAmount;
+		const fromEstimate = await provider.getEstimate();
+		const fromConverted = fromEstimate.convertedAmount;
 		setEstimateBoundOffset(-((fromConverted * 5n / 100n) + 1n));
 		expect(await fxClient.getQuotesOrEstimates(request)).not.toBeNull();
 		const wideFromEstimate = await provider.getEstimate();
 		await expectLimitExceeded(provider.createExchange({ estimate: wideFromEstimate }, undefined, { limits: { minReceive: wideFromEstimate.convertedAmountBound ?? 0n }}));
 
 		setEstimateBoundOffset(null);
-		const toConverted = (await toProvider.getEstimate()).convertedAmount;
+		const toEstimate = await toProvider.getEstimate();
+		const toConverted = toEstimate.convertedAmount;
 		setEstimateBoundOffset((toConverted * 5n / 100n) + 1n);
 		const wideToEstimate = await toProvider.getEstimate();
 		await expectLimitExceeded(toProvider.createExchange({ estimate: wideToEstimate }, undefined, { limits: { maxSend: wideToEstimate.convertedAmountBound ?? 0n }}));

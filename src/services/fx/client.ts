@@ -410,7 +410,7 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		if (echoed.preferredCostAsset !== own.preferredCostAsset) {
 			mismatched.push('preferredCostAsset');
 		}
-		if (mismatched.length !== 0) {
+		if (mismatched.length > 0) {
 			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} answered for a different conversion than requested (${mismatched.join(', ')})`));
 		}
 
