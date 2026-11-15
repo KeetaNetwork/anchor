@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import KeetaNotificationAnchorClient from './client.js';
 import { KeetaNetNotificationAnchorHTTPServer } from './server.js';
@@ -281,3 +281,92 @@ test('notification cert-gate: account with cert outside trust set is rejected (4
 		return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
 	});
 }, 20_000);
+
+test('a signed notification request is accepted once, and only by the anchor it was made for', async function() {
+	const rootAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using nodeAndClient = await createNodeAndClient(rootAccount);
+	const client = nodeAndClient.userClient;
+	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	function makeServer(targets: Map<string, unknown>) {
+		return(new KeetaNetNotificationAnchorHTTPServer({
+			logger,
+			notification: {
+				async registerTarget({ channel }) {
+					const id = String(targets.size + 1);
+					targets.set(id, channel);
+					return({ id });
+				},
+				async listTargets() {
+					return({ targets: [] });
+				},
+				supportedChannels: { FCM: [{ projectId: 'p', messagingSenderId: 'm', appId: 'hello', apiKey: 'k' }] },
+				supportedSubscriptions: []
+			}
+		}));
+	}
+
+	const targetsA = new Map<string, unknown>();
+	const targetsB = new Map<string, unknown>();
+	await using serverA = makeServer(targetsA);
+	await using serverB = makeServer(targetsB);
+	await serverA.start();
+	await serverB.start();
+
+	await client.setInfo({
+		description: '', name: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: {
+				notification: { A: await serverA.serviceMetadata(), B: await serverB.serviceMetadata() }
+			}
+		})
+	});
+
+	const notificationClient = new KeetaNotificationAnchorClient(client, { root: rootAccount, account: userAccount, logger });
+	const providerA = asNonNull(await notificationClient.getProvider('A'));
+
+	/* Record the exact requests the client sends to anchor A */
+	const sent: { url: string; body: string | undefined }[] = [];
+	const realFetch = globalThis.fetch;
+	const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async function(input, init) {
+		const body = typeof init?.body === 'string' ? init.body : undefined;
+		sent.push({ url: (input instanceof Request ? input.url : input.toString()), body });
+		return(await realFetch(input, init));
+	});
+	try {
+		await providerA.registerTarget({ account: userAccount, channel: { type: 'FCM', fcmToken: 'device-token', appId: 'hello' }});
+		await providerA.listTargets({ account: userAccount });
+	} finally {
+		spy.mockRestore();
+	}
+	expect(targetsA.size).toBe(1);
+
+	const register = sent.find(function(entry) { return(entry.body !== undefined); });
+	const list = sent.find(function(entry) { return(entry.body === undefined); });
+	if (register === undefined || list === undefined) {
+		throw(new Error('Expected a register and a list request'));
+	}
+
+	async function replay(url: URL, body: string | undefined): Promise<number> {
+		const response = await realFetch(url, body === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	function atServer(url: string, server: { url: string }): URL {
+		const original = new URL(url);
+		return(new URL(`${original.pathname}${original.search}`, server.url));
+	}
+
+	/* The same request again, at the same anchor */
+	expect(await replay(new URL(register.url), register.body)).not.toBe(200);
+	expect(await replay(new URL(list.url), undefined)).not.toBe(200);
+	expect(targetsA.size).toBe(1);
+
+	/* The same request at another anchor */
+	expect(await replay(atServer(register.url, serverB), register.body)).not.toBe(200);
+	expect(await replay(atServer(list.url, serverB), undefined)).not.toBe(200);
+	expect(targetsB.size).toBe(0);
+}, 30_000);

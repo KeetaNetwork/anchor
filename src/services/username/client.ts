@@ -9,7 +9,7 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import { createAssertEquals } from 'typia';
 import type { BrandedString } from '../../lib/utils/brand.ts';
 import { KeetaAnchorError, KeetaAnchorUserValidationError } from '../../lib/error.js';
-import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import type {
 	TransferUsernameOwnershipSignablePayload,
 	KeetaUsernameAnchorClaimRequestPayload,
@@ -363,6 +363,17 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 	}
 
 	/**
+	 * Sign `from`'s consent to transfer `username` to `to`. The signature
+	 * is valid only for this provider's claim operation, and only once.
+	 */
+	async signUsernameTransfer(request: Omit<TransferUsernameOwnershipSignablePayload, 'from'>, from: KeetaNetAccount): Promise<HTTPSignedField> {
+		const endpoint = await this.#getOperation('claim');
+		const signable = getUsernameTransferSignable({ ...request, from });
+
+		return(await signRequest(from.assertAccount(), { method: 'POST', url: new URL(endpoint.url()) }, signable));
+	}
+
+	/**
 	 * Claim a username for a specific provider
 	 * @param usernameInput The username to claim
 	 * @param options The account to claim for, and options related to transfer if applicable
@@ -409,35 +420,30 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 					throw(new Error('Transfer "from" account must have a private key when signature is not provided'));
 				}
 
-				const signable = getUsernameTransferSignable({
-					username,
-					from: from,
-					to: accountToUse
-				});
-
-				signed = await SignData(from.assertAccount(), signable);
+				signed = await this.signUsernameTransfer({ username, to: accountToUse }, from);
 			}
 
 			request.transfer = { from, signed };
 		}
 
-		const signed = await SignData(accountToUse.assertAccount(), getUsernameClaimSignable(request));
+		const claimURL = new URL(endpoint.url());
+		const body = {
+			username: username,
+			account: accountToUse.publicKeyString.get(),
+			transfer: request.transfer ? {
+				from: request.transfer.from.publicKeyString.get(),
+				signed: request.transfer.signed
+			} : undefined
+		};
+		const signed = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: claimURL, body }, getUsernameClaimSignable(request));
 
-		const response = await fetch(endpoint.url(), {
+		const response = await fetch(claimURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				username: username,
-				account: accountToUse.publicKeyString.get(),
-				transfer: request.transfer ? {
-					from: request.transfer.from.publicKeyString.get(),
-					signed: request.transfer.signed
-				} : undefined,
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;
@@ -475,18 +481,17 @@ class KeetaUsernameAnchorProvider extends KeetaUsernameAnchorBase {
 			throw(new Error('Account is required to claim a username'));
 		}
 
-		const signed = await SignData(accountToUse.assertAccount(), getUsernameReleaseSignable({ account: accountToUse }));
+		const releaseURL = new URL(endpoint.url());
+		const body = { account: accountToUse.publicKeyString.get() };
+		const signed = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: releaseURL, body }, getUsernameReleaseSignable({ account: accountToUse }));
 
-		const response = await fetch(endpoint.url(), {
+		const response = await fetch(releaseURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				account: accountToUse.publicKeyString.get(),
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;
@@ -723,18 +728,19 @@ class KeetaUsernameAnchorClient extends KeetaUsernameAnchorBase {
 		return(await provider.claimUsername(username, options));
 	}
 
-	async signUsernameTransfer(request: Omit<TransferUsernameOwnershipSignablePayload, 'from'>, from?: KeetaNetAccount): Promise<HTTPSignedField> {
+	/**
+	 * Sign `from`'s consent to transfer `username` to `to` at the provider
+	 * named by `providerID`. The signature is valid only at that provider.
+	 */
+	async signUsernameTransfer(request: Omit<TransferUsernameOwnershipSignablePayload, 'from'> & { providerID: string }, from?: KeetaNetAccount, shared?: SharedLookupCriteria): Promise<HTTPSignedField> {
 		const accountToUse = from ?? this.signer ?? this.account;
 		if (!accountToUse) {
 			throw(new Error('Signer or account is required to sign username transfer'));
 		}
 
-		const signable = getUsernameTransferSignable({
-			...request,
-			from: accountToUse
-		});
-
-		return(await SignData(accountToUse.assertAccount(), signable));
+		const { providerID, ...transfer } = request;
+		const provider = await this.#requireProvider(providerID, shared);
+		return(await provider.signUsernameTransfer(transfer, accountToUse));
 	}
 
 	/** @internal */

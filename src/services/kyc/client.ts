@@ -19,19 +19,14 @@ import type {
 import type {
 	KYCVerificationStatus
 } from './status.js';
-import {
-	verifySignedData,
-	generateSignedData
-} from './common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
-import { SignData, type SignableAccount } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
+import type { SignableAccount } from '../../lib/utils/signing.js';
 import type { Logger } from '../../lib/log/index.ts';
 import type Resolver from '../../lib/resolver.ts';
 import type { KYCEntityType, ServiceMetadata } from '../../lib/resolver.ts';
 import crypto from '../../lib/utils/crypto.js';
 import { validateURL } from '../../lib/utils/url.js';
-
-const PARANOID = true;
 
 /**
  * The configuration options for the KYC Anchor client.
@@ -204,10 +199,15 @@ async function getEndpoints(resolver: Resolver, request: Pick<KeetaKYCAnchorCrea
 	return(retval);
 }
 
+/**
+ * A verification request before it is signed for one provider.
+ */
+type KeetaKYCAnchorUnsignedVerificationRequest = Omit<KeetaKYCAnchorCreateVerificationRequest, 'signed'>;
+
 type KeetaKYCAnchorCommonConfig = {
 	id: ProviderID;
 	serviceInfo: KeetaKYCVerificationServiceInfo;
-	request: KeetaKYCAnchorCreateVerificationRequest;
+	request: KeetaKYCAnchorUnsignedVerificationRequest;
 	account: SignableAccount;
 	client: KeetaKYCAnchorClient;
 	operations: NonNullable<Pick<KeetaKYCAnchorOperations, 'createVerification' | 'getCertificates' | 'getVerificationStatus'>>;
@@ -250,6 +250,7 @@ class KeetaKYCVerification {
 			throw(new Error('KYC verification service does not support createVerification operation'));
 		}
 
+		const signed = await signRequest(args.account, { method: 'POST', url: createVerification, body: args.request }, []);
 		const requestInformation = await fetch(createVerification, {
 			method: 'POST',
 			headers: {
@@ -257,7 +258,7 @@ class KeetaKYCVerification {
 				'Accept': 'application/json'
 			},
 			body: JSON.stringify({
-				request: args.request
+				request: { ...args.request, signed }
 			})
 		});
 
@@ -291,7 +292,9 @@ class KeetaKYCVerification {
 	getCertificates(): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
 		return(this.client.getCertificates(this.providerID, {
 			id: this.id,
-			...this.request
+			account: this.account,
+			countryCodes: this.request.countryCodes,
+			...(this.request.entityType !== undefined ? { entityType: this.request.entityType } : {})
 		}));
 	}
 
@@ -320,7 +323,7 @@ class KeetaKYCVerification {
 class KeetaKYCProvider {
 	readonly id: ProviderID;
 	private readonly serviceInfo: KeetaKYCVerificationServiceInfo;
-	private readonly request: KeetaKYCAnchorCreateVerificationRequest;
+	private readonly request: KeetaKYCAnchorUnsignedVerificationRequest;
 	private readonly account: SignableAccount;
 	private readonly logger?: Logger | undefined;
 	private readonly client: KeetaKYCAnchorClient;
@@ -380,25 +383,15 @@ class KeetaKYCAnchorClient {
 	}
 
 	async createVerification(request: KeetaKYCAnchorClientCreateVerificationRequest): Promise<KeetaKYCProvider[]> {
-		const signedData = await generateSignedData(request.account.assertAccount());
-
-		if (PARANOID) {
-			const check = await verifySignedData({ account: request.account.publicKeyString.get(), signed: signedData });
-			if (!check) {
-				throw(new Error('Failed to verify signed data'));
-			}
-		}
-
-		const signedRequest: KeetaKYCAnchorCreateVerificationRequest = {
+		const unsignedRequest: KeetaKYCAnchorUnsignedVerificationRequest = {
 			...request,
-			account: request.account.publicKeyString.get(),
-			signed: signedData
+			account: request.account.publicKeyString.get()
 		};
 
 		/* Only provider selection defaults to individual; the by-ID lookups below must not filter. */
 		const endpoints = await getEndpoints(this.resolver, {
-			countryCodes: signedRequest.countryCodes,
-			entityType: signedRequest.entityType ?? 'individual'
+			countryCodes: unsignedRequest.countryCodes,
+			entityType: unsignedRequest.entityType ?? 'individual'
 		});
 		if (endpoints === null) {
 			throw(new Error('No KYC endpoints found for the given criteria'));
@@ -428,7 +421,7 @@ class KeetaKYCAnchorClient {
 			return(new KeetaKYCProvider({
 				id: providerID,
 				serviceInfo: serviceInfo,
-				request: signedRequest,
+				request: unsignedRequest,
 				account: request.account.assertAccount(),
 				client: this,
 				logger: this.logger,
@@ -463,7 +456,7 @@ class KeetaKYCAnchorClient {
 		return(retval);
 	}
 
-	async getCertificates(providerID: ProviderID, request: KeetaKYCAnchorCreateVerificationRequest & { id: RequestID; }): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
+	async getCertificates(providerID: ProviderID, request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'countryCodes' | 'entityType'> & { id: RequestID; account: SignableAccount; }): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
 		const endpoints = await getEndpoints(this.resolver, request);
 		if (endpoints === null) {
 			throw(new Error('No KYC endpoints found for the given criteria'));
@@ -480,7 +473,13 @@ class KeetaKYCAnchorClient {
 			throw(new Error('internal error: KYC verification service does not support getCertificate operation'));
 		}
 
-		const response = await fetch(getCertificate, {
+		const signed = await signRequest(request.account, { method: 'GET', url: getCertificate }, []);
+		const signedURL = addSignatureToURL(getCertificate, {
+			signedField: signed,
+			account: request.account
+		});
+
+		const response = await fetch(signedURL, {
 			method: 'GET',
 			headers: {
 				'Accept': 'application/json'
@@ -556,7 +555,7 @@ class KeetaKYCAnchorClient {
 			throw(new Error('internal error: KYC verification service does not support getVerificationStatus operation'));
 		}
 
-		const signed = await SignData(request.account, []);
+		const signed = await signRequest(request.account, { method: 'GET', url: getVerificationStatus }, []);
 		const signedURL = addSignatureToURL(getVerificationStatus, {
 			signedField: signed,
 			account: request.account
@@ -609,7 +608,7 @@ class KeetaKYCAnchorClient {
 			return(null);
 		}
 
-		const signed = await SignData(request.account, []);
+		const signed = await signRequest(request.account, { method: 'GET', url: getVerificationURL }, []);
 		const signedURL = addSignatureToURL(getVerificationURL, {
 			signedField: signed,
 			account: request.account
