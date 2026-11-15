@@ -2537,12 +2537,12 @@ async function withConversionBindingServer(body: (context: {
 				throw(new TypeError('FX server routes are missing'));
 			}
 
-			routes['POST /api/getQuote'] = async function(urlParams, postData, headers, url) {
-				return(await getQuote(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url));
+			routes['POST /api/getQuote'] = async function(urlParams, postData, headers, url, context) {
+				return(await getQuote(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url, context));
 			};
 
-			routes['POST /api/getEstimate'] = async function(urlParams, postData, headers, url) {
-				const response = await getEstimate(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url);
+			routes['POST /api/getEstimate'] = async function(urlParams, postData, headers, url, context) {
+				const response = await getEstimate(urlParams, mismatch === null ? postData : alterConversion(postData, mismatch), headers, url, context);
 				if (estimateBoundOffset === null) {
 					return(response);
 				}
@@ -2556,13 +2556,13 @@ async function withConversionBindingServer(body: (context: {
 				return({ ...response, output: JSON.stringify({ ...estimateResponse, estimate: { ...estimateResponse.estimate, convertedAmountBound }}) });
 			};
 
-			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url) {
+			routes['POST /api/createExchange'] = async function(urlParams, postData, headers, url, context) {
 				const sentBlock = sentBlockOf(postData);
 				if (sentBlock !== undefined) {
 					sentBlocks.push(new KeetaNet.lib.Block(sentBlock));
 				}
 
-				return(await createExchange(urlParams, postData, headers, url));
+				return(await createExchange(urlParams, postData, headers, url, context));
 			};
 
 			return(routes);
