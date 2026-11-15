@@ -15,15 +15,15 @@ export interface KeetaAnchorReplayGuard {
 }
 
 /**
- * Default number of keys {@link MemoryReplayGuard} holds before it evicts
- * the oldest claim.
+ * Default number of live claims {@link MemoryReplayGuard} holds.
  */
 const DEFAULT_MAX_ENTRIES = 100_000;
 
 /**
- * Process-local {@link KeetaAnchorReplayGuard}. When full, it evicts the
- * oldest claim rather than refusing new ones, so a flood of signed
- * requests cannot lock out other callers.
+ * Process-local {@link KeetaAnchorReplayGuard}. When it holds the maximum
+ * number of live claims, it refuses new ones rather than forgetting an
+ * earlier claim, so a flood of signed requests cannot make a spent nonce
+ * usable again.
  */
 export class MemoryReplayGuard implements KeetaAnchorReplayGuard {
 	readonly #expiries = new Map<string, number>();
@@ -42,16 +42,12 @@ export class MemoryReplayGuard implements KeetaAnchorReplayGuard {
 			return(false);
 		}
 
+		if (existing === undefined && this.#expiries.size >= this.#maxEntries) {
+			return(false);
+		}
+
 		this.#expiries.delete(key);
 		this.#expiries.set(key, expiresAt.valueOf());
-		while (this.#expiries.size > this.#maxEntries) {
-			const oldest = this.#expiries.keys().next();
-			if (oldest.done === true) {
-				break;
-			}
-
-			this.#expiries.delete(oldest.value);
-		}
 
 		return(true);
 	}

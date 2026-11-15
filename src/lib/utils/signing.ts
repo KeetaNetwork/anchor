@@ -196,14 +196,14 @@ export function objectToSignable(item: SignableInput): Signable {
 }
 
 /**
- * Options for signature verification
- */
-/**
  * How far a signature's timestamp may be from the verifier's clock, by
  * default (5 minutes)
  */
 export const DEFAULT_MAX_SKEW_MS: number = 5 * 60 * 1000;
 
+/**
+ * Options for signature verification
+ */
 export interface VerifyOptions {
 	/** Maximum allowed time difference in milliseconds (default: 5 * 60 * 1000 = 5 minutes) */
 	maxSkewMs?: number;

@@ -327,21 +327,21 @@ async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: Keet
 
 /**
  * Refuse an exchange block that cannot be published now: it must extend
- * the account head, or open the account. A block that is already on the
- * network is accepted, so the queue can report it as completed.
+ * the account head, or open the account.
  */
 async function assertBlockExtendsHead(client: KeetaNet.Client, block: InstanceType<typeof KeetaNet.lib.Block>): Promise<void> {
 	const head = await client.getHeadBlock(block.account);
-	const extendsHead = head === null ? block['$opening'] : head.hash.compare(block.previous);
-	if (extendsHead) {
-		return;
+
+	let extendsHead: boolean;
+	if (head === null) {
+		extendsHead = block['$opening'];
+	} else {
+		extendsHead = head.hash.compare(block.previous);
 	}
 
-	if (await client.getBlock(block.hash) !== null) {
-		return;
+	if (!extendsHead) {
+		throw(new KeetaAnchorUserError('Exchange block does not extend the account head'));
 	}
-
-	throw(new KeetaAnchorUserError('Exchange block does not extend the account head'));
 }
 
 /**
