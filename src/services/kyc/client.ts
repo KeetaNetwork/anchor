@@ -294,7 +294,7 @@ class KeetaKYCVerification {
 			id: this.id,
 			account: this.account,
 			countryCodes: this.request.countryCodes,
-			...(this.request.entityType !== undefined ? { entityType: this.request.entityType } : {})
+			...(this.request.entityType === undefined ? {} : { entityType: this.request.entityType })
 		}));
 	}
 

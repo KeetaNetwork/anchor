@@ -71,7 +71,9 @@ function requestBodyDigest(body: RequestTarget['body']): string {
 	if (Buffer.isBuffer(body)) {
 		bytes = body;
 	} else {
-		const parsed: unknown = JSON.parse(JSON.stringify(body));
+		/* The server sees the body as it parses from the wire */
+		const wire = JSON.stringify(body);
+		const parsed: unknown = JSON.parse(wire);
 		if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && 'signed' in parsed) {
 			const unsigned = Object.entries(parsed).filter(function([ key ]) {
 				return(key !== 'signed');

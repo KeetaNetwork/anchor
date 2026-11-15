@@ -214,8 +214,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const server = this;
+		const requestAuthContext = this.requestAuthContext.bind(this);
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -321,7 +320,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
-					const context = server.requestAuthContext(input.method, url, input.method === 'POST' ? postData : undefined);
+					const context = requestAuthContext(input.method, url, input.method === 'POST' ? postData : undefined);
 					const valid = await verifySignedRequest(account, context, signable, signed);
 
 					if (!valid) {

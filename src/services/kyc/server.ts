@@ -27,6 +27,14 @@ import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 const kycProviderURLUndefined = 'NO_KYC_PROVIDER_URL:87f0175c-4d0a-4029-a4f3-ba93ef725654';
 
 /**
+ * Every signed KYC request carries an empty signable: the request
+ * binding covers the operation, the verification ID and the body.
+ */
+function noSigningData(): [] {
+	return([]);
+}
+
+/**
  * The Base certificate type, from the KeetaNet Client
  *
  * The KYC Certificate type is a subclass of this, so it will also work
@@ -220,17 +228,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 
 	protected async initRoutes(config: KeetaAnchorKYCServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const server = this;
-
-		/*
-		 * Every signed KYC request carries an empty signable: the
-		 * request binding covers the operation, the verification ID
-		 * and the body.
-		 */
-		function noSigningData(): [] {
-			return([]);
-		}
+		const requestAuthContext = this.requestAuthContext.bind(this);
 
 
 		/**
@@ -266,7 +264,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 			}
 
 			const body = assertCreateVerificationRequest(bodyInput.request);
-			await verifyBodyAuth(server.requestAuthContext('POST', requestUrl, bodyInput.request), body, noSigningData);
+			await verifyBodyAuth(requestAuthContext('POST', requestUrl, bodyInput.request), body, noSigningData);
 
 			let response: Partial<KeetaKYCAnchorCreateVerificationResponse> | undefined = {};
 			if (config.kyc.verificationStarted) {
@@ -335,7 +333,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 				throw(new KeetaAnchorUserError('No verification ID provided'));
 			}
 
-			const account = await verifyURLAuth(server.requestAuthContext('GET', requestUrl), noSigningData);
+			const account = await verifyURLAuth(requestAuthContext('GET', requestUrl), noSigningData);
 			const certificates = await config.kyc.getCertificates(verificationID, { account });
 
 			const response: KeetaKYCAnchorGetCertificateResponse = {
@@ -357,7 +355,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 				throw(new KeetaAnchorUserError('No verification ID provided'));
 			}
 
-			const account = await verifyURLAuth(server.requestAuthContext('GET', requestUrl), noSigningData);
+			const account = await verifyURLAuth(requestAuthContext('GET', requestUrl), noSigningData);
 
 			const result = await config.kyc.getVerificationStatus(verificationID, { account });
 			const response: KeetaKYCAnchorGetVerificationStatusResponse = {
@@ -384,7 +382,7 @@ export class KeetaNetKYCAnchorHTTPServer extends KeetaAnchorMetadataServer<NonNu
 					throw(new KeetaAnchorUserError('No verification ID provided'));
 				}
 
-				const account = await verifyURLAuth(server.requestAuthContext('GET', requestUrl), noSigningData);
+				const account = await verifyURLAuth(requestAuthContext('GET', requestUrl), noSigningData);
 
 				const result = await getVerificationURL(verificationID, { account });
 				const response: KeetaKYCAnchorGetVerificationURLResponse = {

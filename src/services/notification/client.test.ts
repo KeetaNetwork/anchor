@@ -349,7 +349,7 @@ test('a signed notification request is accepted once, and only by the anchor it 
 		throw(new Error('Expected a register and a list request'));
 	}
 
-	async function replay(url: URL, body: string | undefined): Promise<number> {
+	async function replay(url: URL, body?: string): Promise<number> {
 		const response = await realFetch(url, body === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
 		await response.arrayBuffer();
 		return(response.status);
@@ -362,11 +362,11 @@ test('a signed notification request is accepted once, and only by the anchor it 
 
 	/* The same request again, at the same anchor */
 	expect(await replay(new URL(register.url), register.body)).not.toBe(200);
-	expect(await replay(new URL(list.url), undefined)).not.toBe(200);
+	expect(await replay(new URL(list.url))).not.toBe(200);
 	expect(targetsA.size).toBe(1);
 
 	/* The same request at another anchor */
 	expect(await replay(atServer(register.url, serverB), register.body)).not.toBe(200);
-	expect(await replay(atServer(list.url, serverB), undefined)).not.toBe(200);
+	expect(await replay(atServer(list.url, serverB))).not.toBe(200);
 	expect(targetsB.size).toBe(0);
 }, 30_000);

@@ -551,8 +551,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					// Early rejection based on Content-Length header
 					const contentLength = request.headers['content-length'];
-					const declaredSize = contentLength === undefined ? NaN : parseInt(contentLength, 10);
-					const data = !isNaN(declaredSize) && declaredSize > bodySizeLimit ? null : await readBody(request, bodySizeLimit);
+					const declaredSize = contentLength === undefined ? Number.NaN : Number.parseInt(contentLength, 10);
+					const data = !Number.isNaN(declaredSize) && declaredSize > bodySizeLimit ? null : await readBody(request, bodySizeLimit);
 					if (data === null) {
 						request.resume();
 
