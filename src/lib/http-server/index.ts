@@ -17,7 +17,7 @@ import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 import { Buffer } from '../utils/buffer.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 
-type RequestTiming = InstanceType<typeof KeetaNetLib.Timing.RequestTiming>;
+type RequestTiming = InstanceType<typeof KeetaNetLib.RequestTiming>;
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
@@ -428,7 +428,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
-			const timing = new KeetaNetLib.Timing.RequestTiming();
+			const timing = new KeetaNetLib.RequestTiming();
 			timing.log = this.logger;
 
 			const forwardedProtoHeader = request.headers['x-forwarded-proto'];
