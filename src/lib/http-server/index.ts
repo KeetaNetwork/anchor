@@ -16,6 +16,10 @@ import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 import { Buffer } from '../utils/buffer.js';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import type { KeetaAnchorReplayGuard } from './replay-guard.js';
+import { MemoryReplayGuard } from './replay-guard.js';
+import type { RequestAuthContext } from './request-signing.js';
+import { normalizeRequestPath, publicRequestURL } from './request-signing.js';
 
 type RequestTiming = InstanceType<typeof KeetaNetLib.RequestTiming>;
 
@@ -99,6 +103,14 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * MUST have a published cert chaining to one of `trustedIssuers`.
 	 */
 	requireCertificateChain?: CertificateChainConfig | undefined;
+
+	/**
+	 * Where signed request nonces are recorded so each signature is
+	 * accepted once. Defaults to a {@link MemoryReplayGuard}, which is
+	 * per process: servers running several instances behind one URL
+	 * must share one guard.
+	 */
+	replayGuard?: KeetaAnchorReplayGuard | undefined;
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
@@ -110,6 +122,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	 * @see {@link requireCertificateChain}.
 	 */
 	protected readonly resolvedCertificateChainRequirement: ResolvedCertificateChainRequirement | undefined;
+	readonly replayGuard: KeetaAnchorReplayGuard;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
@@ -122,6 +135,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 		this.resolvedCertificateChainRequirement = resolveCertificateChainConfig(config.requireCertificateChain);
+		this.replayGuard = config.replayGuard ?? new MemoryReplayGuard();
 
 		if (config.url !== undefined) {
 			if (config.url instanceof URL || typeof config.url === 'string') {
@@ -461,7 +475,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			 * Normalize the input URL by stripping leading slashes and
 			 * combining it with the base URL to get the full URL for routing.
 			 */
-			const inputURLRaw = (request.url ?? '/').replace(/^\/+/, '/');
+			const inputURLRaw = normalizeRequestPath(request.url ?? '/');
 			const inputURLObject = new URL(inputURLRaw, 'http://localhost');
 			const inputURL = inputURLObject.pathname + (function() {
 				if (inputURLObject.search === '') {
@@ -784,6 +798,19 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	set url(value: undefined | string | URL | ((object: this) => string)) {
 		this.#urlParts = undefined;
 		this.#url = value;
+	}
+
+	/**
+	 * The context to verify a signed request against: the request as
+	 * seen at this server's public URL, and this server's replay guard.
+	 */
+	protected requestAuthContext(method: string, requestURL: URL, body?: RequestAuthContext['body']): RequestAuthContext {
+		return({
+			method,
+			url: publicRequestURL(this.url, requestURL),
+			body,
+			replayGuard: this.replayGuard
+		});
 	}
 
 	[Symbol.asyncDispose](): Promise<void> {

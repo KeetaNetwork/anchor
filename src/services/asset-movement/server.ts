@@ -80,7 +80,7 @@ import {
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
-import { VerifySignedData } from '../../lib/utils/signing.js';
+import { verifySignedRequest } from '../../lib/http-server/request-signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
@@ -209,6 +209,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
+		const requestAuthContext = this.requestAuthContext.bind(this);
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -309,7 +310,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
-					const valid = await VerifySignedData(account, signable, signed);
+					const context = requestAuthContext(input.method, url, input.method === 'POST' ? postData : undefined);
+					const valid = await verifySignedRequest(account, context, signable, signed);
 
 					if (!valid) {
 						throw(new KeetaAnchorUserError('Invalid signature'));

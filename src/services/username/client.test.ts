@@ -288,6 +288,7 @@ test('username client resolves accounts through resolver', async () => {
 	expect(await usernameClient.claimUsername(formatGloballyIdentifiableUsername(davidUsername, providerID))).toBe(true);
 
 	const transferSignedField = await usernameClient.signUsernameTransfer({
+		providerID,
 		username: transferUsernameKey,
 		to: transferRecipientAccount
 	}, transferFromAccount);

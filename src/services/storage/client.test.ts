@@ -1,4 +1,4 @@
-import { test, expect, describe, assert } from 'vitest';
+import { test, expect, describe, assert, vi } from 'vitest';
 
 import type { KeetaAnchorStorageServerConfig } from './server.js';
 import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
@@ -653,6 +653,55 @@ describe('Storage Client - Session API', function() {
 			});
 
 			expect(result).toBe('via withSession');
+		}));
+	});
+});
+
+describe('Storage Client - Signed request replay', function() {
+	test('a captured put cannot write other content, here or at another storage anchor', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount, makePath, backend }) {
+			const path = makePath('contact.txt');
+
+			/* Record the exact upload the client sends */
+			let captured: string | undefined;
+			const realFetch = globalThis.fetch;
+			const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async function(input, init) {
+				if (init?.method === 'PUT') {
+					captured = (input instanceof Request ? input.url : input.toString());
+				}
+				return(await realFetch(input, init));
+			});
+			try {
+				await provider.put({ path, data: Buffer.from('address A'), mimeType: 'text/plain', account });
+			} finally {
+				spy.mockRestore();
+			}
+			if (captured === undefined) {
+				throw(new Error('No upload captured'));
+			}
+			const stored = await backend.get(path);
+
+			const otherBackend = new MemoryStorageBackend();
+			await using otherServer = new KeetaNetStorageAnchorHTTPServer({ backend: otherBackend, anchorAccount, pathPolicies: [testPathPolicy] });
+			await otherServer.start();
+
+			/* Well-formed content for the same owner, written by someone else */
+			const attacker = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const forged = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('address B').toString('base64') }), [account], { signer: attacker });
+			const forgedBody = Buffer.from(await forged.getEncodedBuffer());
+
+			async function upload(url: URL): Promise<number> {
+				const response = await realFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: forgedBody });
+				await response.arrayBuffer();
+				return(response.status);
+			}
+
+			const original = new URL(captured);
+			expect(await upload(original)).not.toBe(200);
+			expect((await backend.get(path))?.data).toEqual(stored?.data);
+
+			expect(await upload(new URL(`${original.pathname}${original.search}`, otherServer.url))).not.toBe(200);
+			expect(await otherBackend.get(path)).toBeNull();
 		}));
 	});
 });
