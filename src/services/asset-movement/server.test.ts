@@ -212,3 +212,26 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	const json: unknown = await response.json();
 	expect(json).toMatchObject({ ok: false });
 });
+
+test('Asset Movement Server accepts share-KYC bodies over the 1 MiB default and refuses them elsewhere', async function() {
+	const baseConfig = makeServerConfig();
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+		...baseConfig,
+		assetMovement: {
+			...baseConfig.assetMovement,
+			shareKYC: async function() { throw(new KeetaAnchorUserError('not implemented')); },
+			initiateTransfer: async function() { throw(new KeetaAnchorUserError('not implemented')); }
+		}
+	});
+	await server.start();
+
+	const body = JSON.stringify({ attributes: 'x'.repeat(2 * 1024 * 1024) });
+	async function post(path: string): Promise<number> {
+		const response = await fetch(new URL(path, server.url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	expect(await post('/api/shareKYC')).not.toBe(413);
+	expect(await post('/api/initiateTransfer')).toBe(413);
+});
