@@ -307,6 +307,31 @@ function requiresUserKeetaSignature(step: AnchorChainingStepLike): boolean {
 	return(isChainLocation(toAssetLocation(step.from.location), 'keeta'));
 }
 
+/**
+ * Whether `next` may directly follow `prev` in a path. Chaining one FX
+ * anchor to itself is pointless, and unless allowMidPlanUserSignatures is
+ * set, no step after the first may need the user to sign a Keeta block.
+ */
+function canFollow(prev: GraphNodeLike, next: GraphNodeLike, allowMidPlanUserSignatures: boolean): boolean {
+	if (prev.type === 'fx' && next.type === 'fx' && prev.providerID === next.providerID) {
+		return(false);
+	}
+
+	return(allowMidPlanUserSignatures || !requiresUserKeetaSignature(next));
+}
+
+/**
+ * Throws when a step after the first needs the user to sign a Keeta block.
+ */
+function assertNoMidPlanUserSignature(path: AnchorChainingStepLike[]): void {
+	const index = path.findIndex(function(step, stepIndex) {
+		return(stepIndex > 0 && requiresUserKeetaSignature(step));
+	});
+	if (index > 0) {
+		throw(new Error(`Step ${index} needs the user to sign a Keeta block after step ${index - 1} settles; mid-plan user signatures are disabled (allowMidPlanUserSignatures)`));
+	}
+}
+
 
 interface AssetMovementResolvedRails {
 	common: RailWithSupportedOperations[];
@@ -566,12 +591,7 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
  */
 function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string, allowMidPlanUserSignatures: boolean): void {
 	if (!allowMidPlanUserSignatures) {
-		for (let index = 1; index < path.length; index++) {
-			const step = path[index];
-			if (step !== undefined && requiresUserKeetaSignature(step)) {
-				throw(new Error(`Step ${index} needs the user to sign a Keeta block after step ${index - 1} settles; mid-plan user signatures are disabled (allowMidPlanUserSignatures)`));
-			}
-		}
+		assertNoMidPlanUserSignature(path);
 	}
 
 	/*
@@ -1296,12 +1316,7 @@ class AnchorGraph {
 				if (!nj) {
 					throw(new Error(`Invalid node index during adjacency construction: ${j}`));
 				}
-				// We can ignore chaining one fx anchor to itself
-				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
-					continue;
-				}
-				// Only the first step may need the user to sign a Keeta block
-				if (!this.#allowMidPlanUserSignatures && requiresUserKeetaSignature(nj.node)) {
+				if (!canFollow(ni.node, nj.node, this.#allowMidPlanUserSignatures)) {
 					continue;
 				}
 				ni.next.push(j);
@@ -1594,12 +1609,8 @@ class AnchorGraph {
 					if (!neighbor) {
 						throw(new Error(`Invalid node index during BFS processing: ${neighborIdx}`));
 					}
-					if (node.type === 'fx' && neighbor.type === 'fx' && node.providerID === neighbor.providerID) {
-						continue;
-					}
-					// Same rule as findPaths: only the first step may need the user to sign a Keeta block
-					const laterStep = direction === 'forward' ? neighbor : node;
-					if (!this.#allowMidPlanUserSignatures && requiresUserKeetaSignature(laterStep)) {
+					const [ prev, next ] = direction === 'forward' ? [ node, neighbor ] : [ neighbor, node ];
+					if (!canFollow(prev, next, this.#allowMidPlanUserSignatures)) {
 						continue;
 					}
 					nodeVisited.add(neighborIdx);
