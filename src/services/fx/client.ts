@@ -28,6 +28,7 @@ import type {
 	KeetaFXAnchorMarketPricesRequest,
 	KeetaFXAnchorMarketPriceRatio,
 	KeetaFXAnchorQuote,
+	KeetaNetToken,
 	KeetaNetTokenPublicKeyString
 } from './common.ts';
 import { AnchorExternalBuilder } from '../../lib/anchor-external.js';
@@ -123,6 +124,11 @@ export type KeetaFXAnchorClientConfig = {
 	 * - `{ waitMs, maxWaitMs? }` - custom timing (`maxWaitMs` defaults to `4 * waitMs`)
 	 */
 	getPricesBatching?: KeetaFXAnchorClientGetPricesBatching | boolean;
+	/**
+	 * Caps the client applies to every quote and estimate. See
+	 * {@link KeetaFXAnchorClientDefaultLimits}.
+	 */
+	defaultLimits?: KeetaFXAnchorClientDefaultLimits;
 } & Omit<NonNullable<Parameters<typeof getDefaultResolver>[1]>, 'client'> & AccountOptions;
 
 function typedFxServiceEntries<T extends object>(obj: T): [keyof T, T[keyof T]][] {
@@ -252,6 +258,101 @@ async function getEndpoints(
 	return(retval);
 }
 
+/**
+ * Limits the caller sets on the block that `createExchange` builds, from
+ * the terms it showed the user. The limits apply only when
+ * `createExchange` builds the block, not to a block the caller gives.
+ *
+ * The limits add to the client's `defaultLimits`; they never lift them.
+ * - With affinity `to`, the anchor sets the amount sent, so `maxSend` is
+ *   required. With affinity `from`, it sets the amount received, so
+ *   `minReceive` is required.
+ * - A fee in a token other than `from` or `to` needs `maxCost`, since no
+ *   default can price it.
+ * - A fee in `from` or `to` must also be within `defaultLimits.maxCostBps`.
+ * - An estimate bound must also be within
+ *   `defaultLimits.maxEstimateBoundBps` of its converted amount.
+ */
+export interface KeetaFXAnchorExchangeLimits {
+	/**
+	 * The most of the `from` token the block may send for the conversion,
+	 * not counting the fee. Required for affinity `to`.
+	 */
+	maxSend?: bigint;
+	/**
+	 * The least of the `to` token the block may receive. Required for
+	 * affinity `from`.
+	 */
+	minReceive?: bigint;
+	/**
+	 * The most the fee may be. A non-zero fee must also be in this token.
+	 * A fee in `from` or `to` must also be within the default fee cap.
+	 */
+	maxCost?: { token: KeetaNetToken; amount: bigint; };
+}
+
+export interface KeetaFXAnchorCreateExchangeOptions {
+	inputs?: readonly AnchorExternalInput[];
+	limits?: KeetaFXAnchorExchangeLimits;
+}
+
+/**
+ * Caps `createExchange` applies to every block it builds, on top of any
+ * caller limits. They do not filter quotes or estimates. Set a cap to
+ * `null` to turn it off, or raise it to accept larger terms.
+ */
+export interface KeetaFXAnchorClientDefaultLimits {
+	/**
+	 * The most a fee in the `from` or `to` token may be, in basis points
+	 * of the amount the conversion sends or receives in that token.
+	 *
+	 * Defaults to `100` (1%).
+	 */
+	maxCostBps?: number | null;
+	/**
+	 * The furthest an estimate's bound may be from its converted amount,
+	 * in basis points of the converted amount.
+	 *
+	 * Defaults to `500` (5%).
+	 */
+	maxEstimateBoundBps?: number | null;
+}
+
+type ResolvedDefaultLimits = { [K in keyof KeetaFXAnchorClientDefaultLimits]-?: number | null; };
+
+function resolveDefaultLimits(input: KeetaFXAnchorClientDefaultLimits | undefined): ResolvedDefaultLimits {
+	const resolved: ResolvedDefaultLimits = {
+		maxCostBps: input?.maxCostBps === undefined ? 100 : input.maxCostBps,
+		maxEstimateBoundBps: input?.maxEstimateBoundBps === undefined ? 500 : input.maxEstimateBoundBps
+	};
+
+	for (const [ name, value ] of Object.entries(resolved)) {
+		if (value !== null && (!Number.isInteger(value) || value < 0)) {
+			throw(new Error(`defaultLimits.${name} must be a non-negative integer or null`));
+		}
+	}
+
+	if (resolved.maxEstimateBoundBps !== null && resolved.maxEstimateBoundBps > 10000) {
+		throw(new Error('defaultLimits.maxEstimateBoundBps must be at most 10000'));
+	}
+
+	return(resolved);
+}
+
+type ExchangeTerms = { sendAmount: bigint; receiveAmount: bigint; costAmount: bigint; costToken: KeetaNetToken; };
+
+/**
+ * The amounts an exchange block sends and receives for a conversion, given
+ * the converted amount it commits to and its fee.
+ */
+function exchangeTerms(conversion: ConversionInputCanonical, convertedAmount: bigint, cost: { amount: bigint; token: KeetaNetToken; }): ExchangeTerms {
+	if (conversion.affinity === 'to') {
+		return({ sendAmount: convertedAmount, receiveAmount: conversion.amount, costAmount: cost.amount, costToken: cost.token });
+	}
+
+	return({ sendAmount: conversion.amount, receiveAmount: convertedAmount, costAmount: cost.amount, costToken: cost.token });
+}
+
 interface KeetaFXAnchorBaseConfig {
 	client: KeetaNetUserClient;
 	logger?: Logger | undefined;
@@ -273,11 +374,13 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 	readonly conversion: ConversionInputCanonical;
 	readonly options: Pick<AccountOptions, 'account'> | undefined;
 	private readonly parent: KeetaFXAnchorClient;
+	readonly #defaultLimits: ResolvedDefaultLimits;
 
 	constructor(serviceInfo: KeetaFXServiceInfo, providerID: ProviderID, conversion: ConversionInputCanonical, parent: KeetaFXAnchorClient, options?: Pick<AccountOptions, 'account'>) {
 		const parentPrivate = parent._internals(KeetaFXAnchorClientAccessToken);
 		super(parentPrivate);
 
+		this.#defaultLimits = parentPrivate.defaultLimits;
 		this.serviceInfo = serviceInfo;
 		this.providerID = providerID;
 		this.conversion = conversion;
@@ -285,13 +388,187 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 		this.options = options;
 	}
 
-	#parseConversionRequest(input: ConversionInputCanonicalJSON): ConversionInputCanonical {
-		return({
-			from: KeetaNetLib.Account.fromPublicKeyString(input.from),
-			to: KeetaNetLib.Account.fromPublicKeyString(input.to),
-			amount: BigInt(input.amount),
-			affinity: input.affinity
+	/**
+	 * Checks that the anchor's echoed request matches this conversion and
+	 * returns `this.conversion`. Throws when any field differs.
+	 */
+	#bindConversion(echoed: ConversionInputCanonical | ConversionInputCanonicalJSON): ConversionInputCanonical {
+		const own = this.conversion;
+		const mismatched: string[] = [];
+		if (!KeetaNetLib.Account.toAccount(echoed.from).comparePublicKey(own.from)) {
+			mismatched.push('from');
+		}
+		if (!KeetaNetLib.Account.toAccount(echoed.to).comparePublicKey(own.to)) {
+			mismatched.push('to');
+		}
+		if (BigInt(echoed.amount) !== own.amount) {
+			mismatched.push('amount');
+		}
+		if (echoed.affinity !== own.affinity) {
+			mismatched.push('affinity');
+		}
+		if (echoed.preferredCostAsset !== own.preferredCostAsset) {
+			mismatched.push('preferredCostAsset');
+		}
+		if (mismatched.length > 0) {
+			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} answered for a different conversion than requested (${mismatched.join(', ')})`));
+		}
+
+		return(own);
+	}
+
+	/**
+	 * Checks that the anchor's amounts are possible: a positive converted
+	 * amount and bound, and a fee range that is not negative or reversed.
+	 */
+	#assertAmounts(convertedAmount: bigint, convertedAmountBound: bigint | undefined, costMin: bigint, costMax: bigint): void {
+		const isConvertedInvalid = convertedAmount <= 0n || (convertedAmountBound ?? 1n) <= 0n;
+		const isCostInvalid = costMin < 0n || costMax < costMin;
+		if (isConvertedInvalid || isCostInvalid) {
+			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} gave invalid amounts (converted ${convertedAmount}, bound ${convertedAmountBound ?? 'none'}, fee ${costMin} to ${costMax})`));
+		}
+	}
+
+	/**
+	 * Checks that a non-zero fee is in a token the user expects to pay
+	 * with: the `from` or `to` token, the network base token, or the
+	 * requested `preferredCostAsset`. Throws when it is any other token.
+	 */
+	#assertCostToken(cost: { amount: bigint; token: KeetaNetToken }): void {
+		if (cost.amount === 0n) {
+			return;
+		}
+
+		const own = this.conversion;
+		const allowed = [ own.from, own.to, this.client.baseToken ];
+		if (own.preferredCostAsset !== undefined) {
+			allowed.push(KeetaNetLib.Account.fromPublicKeyString(own.preferredCostAsset));
+		}
+
+		const isAllowed = allowed.some(function(token) {
+			return(token.comparePublicKey(cost.token));
 		});
+		if (!isAllowed) {
+			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} charges its fee in a token that is not part of the conversion (${cost.token.publicKeyString.get()})`));
+		}
+	}
+
+	/**
+	 * Checks that an estimate's bound is on the safe side of its converted
+	 * amount: no more for affinity `from`, no less for affinity `to`.
+	 * Throws when it is on the other side.
+	 */
+	#assertEstimateBound(convertedAmount: bigint, convertedAmountBound: bigint | undefined): void {
+		if (convertedAmountBound === undefined) {
+			return;
+		}
+
+		const affinity = this.conversion.affinity;
+		const isInvalid = affinity === 'from' ? convertedAmountBound > convertedAmount : convertedAmountBound < convertedAmount;
+		if (isInvalid) {
+			throw(new FXErrors.ResponseMismatch(`FX provider ${String(this.providerID)} gave an estimate bound of ${convertedAmountBound} that is on the wrong side of its converted amount ${convertedAmount} for affinity "${affinity}"`));
+		}
+	}
+
+	/**
+	 * Checks every amount the anchor sets in the block against the
+	 * caller's limits and the client's default caps. Both must hold, so
+	 * a limit copied from the anchor's own quote cannot lift a default.
+	 * Throws when an amount is not bounded or is past its bound. See
+	 * {@link KeetaFXAnchorExchangeLimits}.
+	 */
+	#assertSigningLimits(terms: ExchangeTerms, estimate: { convertedAmount: bigint; convertedAmountBound: bigint; } | undefined, limits: KeetaFXAnchorExchangeLimits | undefined): void {
+		this.#assertAmountLimits(terms, limits);
+		if (estimate !== undefined) {
+			this.#assertBoundCap(estimate.convertedAmount, estimate.convertedAmountBound);
+		}
+		this.#assertCostLimits(terms, limits?.maxCost);
+	}
+
+	/**
+	 * Checks the amounts sent and received against the caller's limits.
+	 * The side the provider sets must have a limit: `maxSend` for affinity
+	 * `to`, `minReceive` for affinity `from`.
+	 */
+	#assertAmountLimits(terms: ExchangeTerms, limits: KeetaFXAnchorExchangeLimits | undefined): void {
+		const affinity = this.conversion.affinity;
+		if (affinity === 'to' && limits?.maxSend === undefined) {
+			throw(new FXErrors.ExchangeLimitExceeded('FX exchange with affinity "to" needs limits.maxSend, because the provider sets the amount sent'));
+		}
+		if (affinity === 'from' && limits?.minReceive === undefined) {
+			throw(new FXErrors.ExchangeLimitExceeded('FX exchange with affinity "from" needs limits.minReceive, because the provider sets the amount received'));
+		}
+
+		if (limits?.maxSend !== undefined && terms.sendAmount > limits.maxSend) {
+			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would send ${terms.sendAmount}, more than the limit of ${limits.maxSend}`));
+		}
+		if (limits?.minReceive !== undefined && terms.receiveAmount < limits.minReceive) {
+			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange would receive ${terms.receiveAmount}, less than the limit of ${limits.minReceive}`));
+		}
+	}
+
+	/**
+	 * Checks that an estimate's bound is within the default cap of its
+	 * converted amount.
+	 */
+	#assertBoundCap(convertedAmount: bigint, convertedAmountBound: bigint): void {
+		const maxBps = this.#defaultLimits.maxEstimateBoundBps;
+		if (maxBps === null) {
+			return;
+		}
+
+		const distance = convertedAmount > convertedAmountBound ? convertedAmount - convertedAmountBound : convertedAmountBound - convertedAmount;
+		if (distance * 10000n > convertedAmount * BigInt(maxBps)) {
+			throw(new FXErrors.ExchangeLimitExceeded(`FX estimate bound of ${convertedAmountBound} is more than ${maxBps} basis points from its converted amount ${convertedAmount}; raise defaultLimits.maxEstimateBoundBps to accept it`));
+		}
+	}
+
+	/**
+	 * Checks a non-zero fee against the caller's `maxCost` and, for a fee
+	 * in `from` or `to`, against the default fee cap. A fee in any other
+	 * token needs `maxCost`.
+	 */
+	#assertCostLimits(terms: ExchangeTerms, maxCost: KeetaFXAnchorExchangeLimits['maxCost']): void {
+		if (terms.costAmount === 0n) {
+			return;
+		}
+
+		if (maxCost !== undefined) {
+			if (!maxCost.token.comparePublicKey(terms.costToken)) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee is in ${terms.costToken.publicKeyString.get()}, not in the limit token ${maxCost.token.publicKeyString.get()}`));
+			}
+			if (terms.costAmount > maxCost.amount) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee of ${terms.costAmount} is more than the limit of ${maxCost.amount}`));
+			}
+		}
+
+		const base = this.#costBase(terms);
+		if (base === null) {
+			if (maxCost === undefined) {
+				throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee is in ${terms.costToken.publicKeyString.get()}, which is not part of the conversion; set limits.maxCost to accept it`));
+			}
+			return;
+		}
+
+		const maxBps = this.#defaultLimits.maxCostBps;
+		if (maxBps !== null && terms.costAmount * 10000n > base * BigInt(maxBps)) {
+			throw(new FXErrors.ExchangeLimitExceeded(`FX exchange fee of ${terms.costAmount} is more than ${maxBps} basis points of ${base}; raise defaultLimits.maxCostBps to accept it`));
+		}
+	}
+
+	/**
+	 * The amount a fee is capped against: what the conversion sends when
+	 * the fee is in `from`, what it receives when the fee is in `to`, or
+	 * `null` for a fee in any other token.
+	 */
+	#costBase(terms: ExchangeTerms): bigint | null {
+		if (terms.costToken.comparePublicKey(this.conversion.from)) {
+			return(terms.sendAmount);
+		}
+		if (terms.costToken.comparePublicKey(this.conversion.to)) {
+			return(terms.receiveAmount);
+		}
+		return(null);
 	}
 
 	async #parseResponseError(data: { ok: false }) {
@@ -353,8 +630,8 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		this.logger?.debug(`FX estimate request successful, to provider ${estimateURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const estimateJSON = requestInformationJSON.estimate;
-		return({
-			request: this.#parseConversionRequest(estimateJSON.request),
+		const estimate: KeetaFXAnchorEstimate = {
+			request: this.#bindConversion(estimateJSON.request),
 			convertedAmount: BigInt(estimateJSON.convertedAmount),
 			expectedCost: {
 				min: BigInt(estimateJSON.expectedCost.min),
@@ -378,7 +655,14 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 					});
 				}
 			})()
-		});
+		};
+
+		const estimateCost = { amount: estimate.expectedCost.max, token: estimate.expectedCost.token };
+		this.#assertAmounts(estimate.convertedAmount, estimate.convertedAmountBound, estimate.expectedCost.min, estimate.expectedCost.max);
+		this.#assertEstimateBound(estimate.convertedAmount, estimate.convertedAmountBound);
+		this.#assertCostToken(estimateCost);
+
+		return(estimate);
 	}
 
 	/**
@@ -427,8 +711,8 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 
 		this.logger?.debug(`FX quote request successful, to provider ${serviceURL} for ${JSON.stringify(KeetaNetLib.Utils.Conversion.toJSONSerializable(this.conversion))}`);
 		const quoteJSON = requestInformationJSON.quote;
-		return({
-			request: this.#parseConversionRequest(quoteJSON.request),
+		const quote: KeetaFXAnchorQuote = {
+			request: this.#bindConversion(quoteJSON.request),
 			account: KeetaNetLib.Account.fromPublicKeyString(quoteJSON.account),
 			convertedAmount: BigInt(quoteJSON.convertedAmount),
 			cost: {
@@ -436,111 +720,132 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 				token: KeetaNetLib.Account.fromPublicKeyString(quoteJSON.cost.token)
 			},
 			signed: quoteJSON.signed
-		});
+		};
+
+		this.#assertAmounts(quote.convertedAmount, undefined, quote.cost.amount, quote.cost.amount);
+		this.#assertCostToken(quote.cost);
+
+		return(quote);
 	}
 
-	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchange> {
-		let swapBlock = block;
-		if (swapBlock === undefined) {
-			/* Liquidity Provider that will complete the swap */
-			let liquidityProvider;
-			let request;
-			let convertedAmountBound: bigint;
+	/**
+	 * Checks the terms of a quote or estimate as `createExchange` would
+	 * before it signs, without building or sending anything. Throws the
+	 * same errors `createExchange` would.
+	 */
+	checkExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
+		this.#checkExchangeTerms(input, options?.limits);
+	}
 
-			if ('estimate' in input) {
-				if (input.estimate.canPerformExchange === false) {
-					throw(new KeetaAnchorUserError('The provided estimate indicates that the exchange cannot be performed'));
-				}
+	/**
+	 * Every check `createExchange` runs on the anchor's terms before it
+	 * builds the block. Returns the terms the block commits to.
+	 */
+	#checkExchangeTerms(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, limits: KeetaFXAnchorExchangeLimits | undefined): { liquidityProvider: KeetaFXAnchorQuote['account']; terms: ExchangeTerms; } {
+		let liquidityProvider;
+		let convertedAmountBound: bigint;
+		let costAmount;
+		let costToken;
+		let estimateTerms;
 
-				if (input.estimate.requiresQuote !== false) {
-					throw(new FXErrors.QuoteRequired());
-				}
-
-				liquidityProvider = input.estimate.account;
-				request = input.estimate.request;
-				if (input.estimate.convertedAmountBound !== undefined) {
-					convertedAmountBound = input.estimate.convertedAmountBound;
-				} else {
-					convertedAmountBound = input.estimate.convertedAmount;
-				}
-			} else {
-				liquidityProvider = input.quote.account;
-				request = input.quote.request;
-				convertedAmountBound = input.quote.convertedAmount;
+		if ('estimate' in input) {
+			if (input.estimate.canPerformExchange === false) {
+				throw(new KeetaAnchorUserError('The provided estimate indicates that the exchange cannot be performed'));
 			}
 
-
-			let sendAmount;
-			let receiveAmount;
-
-			if (request.affinity === 'to') {
-				sendAmount = convertedAmountBound;
-				receiveAmount = request.amount;
-			} else if (request.affinity === 'from') {
-				sendAmount = request.amount;
-				receiveAmount = convertedAmountBound;
-			} else {
-				throw(new Error('Invalid affinity in conversion request'));
+			if (input.estimate.requiresQuote !== false) {
+				throw(new FXErrors.QuoteRequired());
 			}
 
-			/* Construct the required operations for the swap request */
-			const builder = this.client.initBuilder(this.options);
-
-			let costAmount = 0n;
-			let costToken;
-			if ('quote' in input) {
-				costAmount = input.quote.cost.amount;
-				costToken = input.quote.cost.token;
-			} else {
-				costAmount = input.estimate.expectedCost.max;
-				costToken = input.estimate.expectedCost.token;
-			}
-
-			/*
-			 * When the fee is charged in the same token as the swap send,
-			 * combine them into a single SEND. The principal send carries an
-			 * external, so the builder will not merge a separate cost send
-			 * of the same token into that operation.
-			 */
-			const costUsesSendToken = costAmount > 0n && costToken.comparePublicKey(request.from);
-
-			if (costAmount > 0n && !costUsesSendToken) {
-				builder.send(liquidityProvider, costAmount, costToken);
-			}
-
-			builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
-
-			/*
-			 * Tag the principal send with an anchor external naming the FX
-			 * provider and a client-chosen correlation id.
-			 */
-			const correlationId = crypto.randomUUID();
-			const externalBuilder = new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId });
-			for (const inputReference of options?.inputs ?? []) {
-				externalBuilder.addInput(inputReference.blockHash, inputReference.operationIndex);
-			}
-
-			const external = await externalBuilder.build();
-			const taggedSendAmount = costUsesSendToken ? sendAmount + costAmount : sendAmount;
-			builder.send(liquidityProvider, taggedSendAmount, request.from, external);
-
-			const blocks = await builder.computeBlocks();
-			if (blocks.blocks.length !== 1) {
-				throw(new Error('Creating Swap Generated more than 1 block'));
-			}
-			swapBlock = blocks.blocks[0];
+			liquidityProvider = input.estimate.account;
+			convertedAmountBound = input.estimate.convertedAmountBound ?? input.estimate.convertedAmount;
+			costAmount = input.estimate.expectedCost.max;
+			costToken = input.estimate.expectedCost.token;
+			this.#assertAmounts(input.estimate.convertedAmount, input.estimate.convertedAmountBound, input.estimate.expectedCost.min, costAmount);
+			this.#assertEstimateBound(input.estimate.convertedAmount, input.estimate.convertedAmountBound);
+			estimateTerms = { convertedAmount: input.estimate.convertedAmount, convertedAmountBound: convertedAmountBound };
+		} else {
+			liquidityProvider = input.quote.account;
+			convertedAmountBound = input.quote.convertedAmount;
+			costAmount = input.quote.cost.amount;
+			costToken = input.quote.cost.token;
+			this.#assertAmounts(input.quote.convertedAmount, undefined, costAmount, costAmount);
 		}
 
-		if (swapBlock == undefined) {
+		this.#assertCostToken({ amount: costAmount, token: costToken });
+		const terms = exchangeTerms(this.conversion, convertedAmountBound, { amount: costAmount, token: costToken });
+		this.#assertSigningLimits(terms, estimateTerms, limits);
+
+		return({ liquidityProvider, terms });
+	}
+
+	/**
+	 * Builds the swap block from this conversion and the anchor's checked
+	 * terms. Throws when a term fails a check; see `checkExchange`.
+	 */
+	async #buildSwapBlock(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, options: KeetaFXAnchorCreateExchangeOptions | undefined): Promise<InstanceType<typeof KeetaNetLib.Block>> {
+		const request = this.conversion;
+		const { liquidityProvider, terms } = this.#checkExchangeTerms(input, options?.limits);
+		const { sendAmount, receiveAmount, costAmount, costToken } = terms;
+
+		/* Construct the required operations for the swap request */
+		const builder = this.client.initBuilder(this.options);
+
+		/*
+		 * When the fee is charged in the same token as the swap send,
+		 * combine them into a single SEND. The principal send carries an
+		 * external, so the builder will not merge a separate cost send
+		 * of the same token into that operation.
+		 */
+		const costUsesSendToken = costAmount > 0n && costToken.comparePublicKey(request.from);
+
+		if (costAmount > 0n && !costUsesSendToken) {
+			builder.send(liquidityProvider, costAmount, costToken);
+		}
+
+		builder.receive(liquidityProvider, receiveAmount, request.to, request.affinity === 'to');
+
+		/*
+		 * Tag the principal send with an anchor external naming the FX
+		 * provider and a client-chosen correlation id.
+		 */
+		const correlationId = crypto.randomUUID();
+		const externalBuilder = new AnchorExternalBuilder().setAnchor(liquidityProvider, { transactionId: correlationId });
+		for (const inputReference of options?.inputs ?? []) {
+			externalBuilder.addInput(inputReference.blockHash, inputReference.operationIndex);
+		}
+
+		const external = await externalBuilder.build();
+		const taggedSendAmount = costUsesSendToken ? sendAmount + costAmount : sendAmount;
+		builder.send(liquidityProvider, taggedSendAmount, request.from, external);
+
+		const blocks = await builder.computeBlocks();
+		if (blocks.blocks.length !== 1) {
+			throw(new Error('Creating Swap Generated more than 1 block'));
+		}
+		const swapBlock = blocks.blocks[0];
+		if (swapBlock === undefined) {
 			throw(new Error('User Swap Block is undefined'));
 		}
+
+		return(swapBlock);
+	}
+
+	async createExchange(input: { quote: KeetaFXAnchorQuote } | { estimate: KeetaFXAnchorEstimate; }, block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchange> {
+		const request = this.#bindConversion('quote' in input ? input.quote.request : input.estimate.request);
+		if (block !== undefined && options?.limits !== undefined) {
+			throw(new KeetaAnchorUserError('createExchange applies limits only to a block it builds, not to a given block'));
+		}
+
+		const swapBlock = block ?? await this.#buildSwapBlock(input, options);
 
 		let bodyAdditionalData: { quote: KeetaFXAnchorQuote; } | { request: ConversionInputCanonical; };
 
 		if ('quote' in input) {
-			bodyAdditionalData = { quote: input.quote };
+			bodyAdditionalData = { quote: { ...input.quote, request }};
 		} else {
-			bodyAdditionalData = { request: input.estimate.request };
+			bodyAdditionalData = { request };
 		}
 
 		const serviceURL = await this.#getEndpoint('createExchange');
@@ -558,8 +863,12 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			})
 		});
 
-		const requestInformationJSON: unknown = await requestInformation.json();
+		const exchange = await this.#parseExchangeResponse(await requestInformation.json(), swapBlock);
+		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
+		return(exchange);
+	}
 
+	async #parseExchangeResponse(requestInformationJSON: unknown, swapBlock: InstanceType<typeof KeetaNetLib.Block>): Promise<KeetaFXAnchorExchange> {
 		// Ensure status defaults to 'completed' if not provided (for backward compatibility)
 		if (typeof requestInformationJSON === 'object' && requestInformationJSON !== null && !('status' in requestInformationJSON)) {
 			Object.assign(requestInformationJSON, { status: 'completed' });
@@ -575,7 +884,6 @@ export class KeetaFXAnchorProviderBase extends KeetaFXAnchorBase {
 			throw(await this.#parseResponseError(requestInformationJSON));
 		}
 
-		this.logger?.debug(`FX exchange request successful, to provider ${serviceURL} for ${swapBlock.hash.toString()}`);
 		return(requestInformationJSON);
 	}
 
@@ -665,7 +973,9 @@ interface CanCreateExchange {
 
 	get request(): ConversionInputCanonical;
 
-	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider>;
+	createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider>;
+
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void;
 }
 
 class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
@@ -682,9 +992,17 @@ class KeetaFXAnchorQuoteWithProvider implements CanCreateExchange {
 		return(this.quote.request);
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange({ quote: this.quote }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
+	}
+
+	/**
+	 * Checks this quote's terms as `createExchange` would, without
+	 * signing. See {@link KeetaFXAnchorProviderBase.checkExchange}.
+	 */
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.provider.checkExchange({ quote: this.quote }, options);
 	}
 
 	/**
@@ -717,9 +1035,17 @@ class KeetaFXAnchorEstimateWithProvider implements CanCreateExchange {
 		return(new KeetaFXAnchorQuoteWithProvider(this.provider, quote));
 	}
 
-	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: { inputs?: readonly AnchorExternalInput[] }): Promise<KeetaFXAnchorExchangeWithProvider> {
+	async createExchange(block?: InstanceType<typeof KeetaNetLib.Block>, options?: KeetaFXAnchorCreateExchangeOptions): Promise<KeetaFXAnchorExchangeWithProvider> {
 		const exchange = await this.provider.createExchange({ estimate: this.estimate }, block, options);
 		return(new KeetaFXAnchorExchangeWithProvider(this.provider, exchange));
+	}
+
+	/**
+	 * Checks this estimate's terms as `createExchange` would, without
+	 * signing. See {@link KeetaFXAnchorProviderBase.checkExchange}.
+	 */
+	checkExchange(options?: Pick<KeetaFXAnchorCreateExchangeOptions, 'limits'>): void {
+		this.provider.checkExchange({ estimate: this.estimate }, options);
 	}
 
 	/**
@@ -789,6 +1115,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 	readonly #signer: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #account: InstanceType<typeof KeetaNetLib.Account>;
 	readonly #getPricesBatching: Required<KeetaFXAnchorClientGetPricesBatching>;
+	readonly #defaultLimits: ResolvedDefaultLimits;
 	readonly #pendingGetMarketPricesBatches = new Map<string, {
 		provider: KeetaFXAnchorProviderBase;
 		base: KeetaNetTokenPublicKeyString;
@@ -821,6 +1148,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 		this.resolver = config.resolver ?? getDefaultResolver(client, config);
 		this.id = config.id ?? crypto.randomUUID();
 		this.#getPricesBatching = KeetaFXAnchorClient.#resolveGetPricesBatching(config.getPricesBatching);
+		this.#defaultLimits = resolveDefaultLimits(config.defaultLimits);
 
 		if (!Number.isFinite(this.#getPricesBatching.waitMs) || this.#getPricesBatching.waitMs < 0) {
 			throw(new Error('getPricesBatching.waitMs must be a non-negative finite number'));
@@ -1105,7 +1433,12 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 				return(new KeetaFXAnchorEstimateWithProvider(provider, estimate));
 			} catch (error) {
-				this.logger?.error(`Failed to get estimate from provider ${String(provider.providerID)}:`, error);
+				if (FXErrors.ResponseMismatch.isInstance(error)) {
+					this.logger?.warn(`Ignoring estimate from FX provider ${String(provider.providerID)}:`, error);
+				} else {
+					this.logger?.error(`Failed to get estimate from provider ${String(provider.providerID)}:`, error);
+				}
+
 				return(null);
 			}
 		}));
@@ -1142,6 +1475,10 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 				const quote = await provider.getQuote();
 				return({ provider, quote: new KeetaFXAnchorQuoteWithProvider(provider, quote) });
 			} catch (error) {
+				if (FXErrors.ResponseMismatch.isInstance(error)) {
+					this.logger?.warn(`Ignoring quote from FX provider ${String(provider.providerID)}:`, error);
+				}
+
 				return({ provider, quote: null, error });
 			}
 		})));
@@ -1462,7 +1799,8 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 			logger: this.logger,
 			client: this.client,
 			signer: this.#signer,
-			account: this.#account
+			account: this.#account,
+			defaultLimits: this.#defaultLimits
 		});
 
 	}
