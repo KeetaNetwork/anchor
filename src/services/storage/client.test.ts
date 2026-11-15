@@ -704,4 +704,34 @@ describe('Storage Client - Signed request replay', function() {
 			expect(await otherBackend.get(path)).toBeNull();
 		}));
 	});
+
+	test('get returns only content signed by an accepted account', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath, backend }) {
+			const path = makePath('contact.txt');
+			const owner = account.publicKeyString.get();
+
+			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account>, text: string) {
+				const container = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from(text).toString('base64') }), [account], { signer });
+				await backend.put(path, Buffer.from(await container.getEncodedBuffer()), { owner, tags: [], visibility: 'private' });
+			}
+
+			/* Content the storage anchor serves, but someone else wrote */
+			const attacker = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			await storeSignedBy(attacker, 'address B');
+			const forgedError = await provider.get({ path, account }).then(function() {
+				return(null);
+			}, function(error: unknown) {
+				return(error);
+			});
+			expect(Errors.SignatureInvalid.isInstance(forgedError)).toBe(true);
+
+			/* Content another account wrote is returned when the caller accepts that account */
+			const accepted = await provider.get({ path, account, signers: [ attacker ] });
+			expect(accepted?.data.toString()).toBe('address B');
+
+			/* The reader's own content needs no list */
+			await storeSignedBy(account, 'address A');
+			expect((await provider.get({ path, account }))?.data.toString()).toBe('address A');
+		}));
+	});
 });
