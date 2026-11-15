@@ -321,9 +321,26 @@ function canFollow(prev: GraphNodeLike, next: GraphNodeLike, allowMidPlanUserSig
 }
 
 /**
- * Throws when a step after the first needs the user to sign a Keeta block.
+ * {@link canFollow} for a graph search: walking forward, `neighbor` follows
+ * `node`; walking backward, `node` follows `neighbor`.
  */
-function assertNoMidPlanUserSignature(path: AnchorChainingStepLike[]): void {
+function canFollowInDirection(node: GraphNodeLike, neighbor: GraphNodeLike, direction: 'forward' | 'backward', allowMidPlanUserSignatures: boolean): boolean {
+	if (direction === 'forward') {
+		return(canFollow(node, neighbor, allowMidPlanUserSignatures));
+	}
+
+	return(canFollow(neighbor, node, allowMidPlanUserSignatures));
+}
+
+/**
+ * Throws when a step after the first needs the user to sign a Keeta block,
+ * unless allowMidPlanUserSignatures is set.
+ */
+function assertNoMidPlanUserSignature(path: AnchorChainingStepLike[], allowMidPlanUserSignatures: boolean): void {
+	if (allowMidPlanUserSignatures) {
+		return;
+	}
+
 	const index = path.findIndex(function(step, stepIndex) {
 		return(stepIndex > 0 && requiresUserKeetaSignature(step));
 	});
@@ -590,9 +607,7 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
  * persistent address), while the default mode allows PFR only as the final step.
  */
 function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string, allowMidPlanUserSignatures: boolean): void {
-	if (!allowMidPlanUserSignatures) {
-		assertNoMidPlanUserSignature(path);
-	}
+	assertNoMidPlanUserSignature(path, allowMidPlanUserSignatures);
 
 	/*
 	 * Forwarding-only requires every asset-movement leg to qualify for
@@ -1609,8 +1624,7 @@ class AnchorGraph {
 					if (!neighbor) {
 						throw(new Error(`Invalid node index during BFS processing: ${neighborIdx}`));
 					}
-					const [ prev, next ] = direction === 'forward' ? [ node, neighbor ] : [ neighbor, node ];
-					if (!canFollow(prev, next, this.#allowMidPlanUserSignatures)) {
+					if (!canFollowInDirection(node, neighbor, direction, this.#allowMidPlanUserSignatures)) {
 						continue;
 					}
 					nodeVisited.add(neighborIdx);

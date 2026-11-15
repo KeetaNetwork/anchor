@@ -5874,6 +5874,12 @@ describe('getPlans forwardingOnly', function() {
 	});
 });
 
+function assetKeysOf(assets: { asset: AnchorChainingAsset }[]): string[] {
+	return(assets.map(function(info) {
+		return(KeetaNet.lib.Account.isInstance(info.asset) ? info.asset.publicKeyString.get() : String(info.asset));
+	}).sort());
+}
+
 describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', function() {
 	type AssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
 
@@ -6029,20 +6035,16 @@ describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', func
 		await using h = await createKeetaSwapHarness();
 		await using allowed = await createKeetaSwapHarness({ allowMidPlanUserSignatures: true });
 
-		const keysOf = (assets: { asset: AnchorChainingAsset }[]): string[] => {
-			return(assets.map(a => KeetaNet.lib.Account.isInstance(a.asset) ? a.asset.publicKeyString.get() : String(a.asset)).sort());
-		};
-
 		const fromEur = await h.anchorChaining.graph.listAssets({ from: { asset: h.tokens.EUR, location: h.keetaLocation }});
-		expect(keysOf(fromEur)).not.toContain(h.tokens.CAD.publicKeyString.get());
-		expect(keysOf(fromEur)).toContain(h.tokens.USD.publicKeyString.get());
+		expect(assetKeysOf(fromEur)).not.toContain(h.tokens.CAD.publicKeyString.get());
+		expect(assetKeysOf(fromEur)).toContain(h.tokens.USD.publicKeyString.get());
 
 		const toCad = await h.anchorChaining.graph.listAssets({ to: { asset: h.tokens.CAD, location: h.keetaLocation }});
-		expect(keysOf(toCad)).not.toContain(h.tokens.EUR.publicKeyString.get());
-		expect(keysOf(toCad)).toContain(h.tokens.USD.publicKeyString.get());
+		expect(assetKeysOf(toCad)).not.toContain(h.tokens.EUR.publicKeyString.get());
+		expect(assetKeysOf(toCad)).toContain(h.tokens.USD.publicKeyString.get());
 
 		const fromEurAllowed = await allowed.anchorChaining.graph.listAssets({ from: { asset: allowed.tokens.EUR, location: allowed.keetaLocation }});
-		expect(keysOf(fromEurAllowed)).toContain(allowed.tokens.CAD.publicKeyString.get());
+		expect(assetKeysOf(fromEurAllowed)).toContain(allowed.tokens.CAD.publicKeyString.get());
 	});
 
 	test('validate rejects a path that needs a mid-plan user signature unless allowed', async function() {
