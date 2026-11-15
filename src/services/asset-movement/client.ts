@@ -1163,8 +1163,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	 * `shareKYC` operation, and refuse one on another origin.
 	 */
 	async #resolvePromiseURL(promiseURL: string): Promise<string> {
-		const { url: shareKYCURL } = await this.#getOperationData('shareKYC');
-		const operationURL = new URL(shareKYCURL);
+		const operation = await this.#getOperationData('shareKYC');
+		const operationURL = new URL(operation.url);
 		const resolved = new URL(promiseURL, operationURL);
 		if (resolved.origin !== operationURL.origin) {
 			throw(new Error(`promiseURL must be on the provider's origin (${operationURL.origin})`));
