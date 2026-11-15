@@ -1361,3 +1361,113 @@ test('getMarketPrices omits or throws failed quote assets based on onQuoteError'
 	});
 	expect(throwResponse.status).toBe(500);
 }, 30000);
+
+test('FX Server queues only exchange blocks that extend the account head, and accepts each quote once', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, token1, token2, userClients } = harness;
+	const userClient = userClients[0];
+	if (userClient === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	async function postExchange(quote: unknown, block: InstanceType<typeof KeetaNet.lib.Block>) {
+		return(await fetch(`${url}/api/createExchange`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({
+				request: {
+					quote: quote,
+					block: Buffer.from(block.toBytes()).toString('base64')
+				}
+			})
+		}));
+	}
+
+	async function computeSwapBlock() {
+		if (userClient === undefined) {
+			throw(new Error('Missing user client'));
+		}
+		const builder = userClient.initBuilder();
+		builder.send(serverAccount, 100n, token1);
+		const computed = await builder.computeBlocks();
+		const block = computed.blocks[0];
+		if (!block) {
+			throw(new Error('No block computed'));
+		}
+		return(block);
+	}
+
+	const userSigner = userClient.signer;
+	if (userSigner === null) {
+		throw(new Error('Missing user signer'));
+	}
+
+	const firstQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+	const secondQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+
+	/*
+	 * Two blocks built on the same head: only one of them can ever run
+	 */
+	const staleBlock = await computeSwapBlock();
+	const firstResponse = await postExchange(firstQuote, await computeSwapBlock());
+	expect(firstResponse.status).toBe(200);
+	await waitForExchangeCompletion(url, extractExchangeID(await firstResponse.json()));
+
+	/*
+	 * A block whose previous is no longer the account head can never
+	 * run, so it is refused before it is queued
+	 */
+	const staleResponse = await postExchange(secondQuote, staleBlock);
+	expect(staleResponse.status).toBeGreaterThanOrEqual(400);
+	expect(staleResponse.status).toBeLessThan(500);
+
+	/*
+	 * A block chained on a block the network has never seen is refused
+	 * the same way
+	 */
+	const orphanBlock = await new KeetaNet.lib.Block.Builder({
+		network: userClient.network,
+		previous: staleBlock.hash.toString(),
+		signer: userSigner,
+		operations: [{
+			type: KeetaNet.lib.Block.OperationType.SEND,
+			to: serverAccount,
+			token: token1,
+			amount: 100n
+		}]
+	}).seal();
+	const orphanResponse = await postExchange(secondQuote, orphanBlock);
+	expect(orphanResponse.status).toBeGreaterThanOrEqual(400);
+	expect(orphanResponse.status).toBeLessThan(500);
+
+	/*
+	 * The refused blocks did not spend the second quote
+	 */
+	const secondResponse = await postExchange(secondQuote, await computeSwapBlock());
+	expect(secondResponse.status).toBe(200);
+	await waitForExchangeCompletion(url, extractExchangeID(await secondResponse.json()));
+
+	/*
+	 * A quote cannot pay for a second exchange
+	 */
+	const reusedResponse = await postExchange(firstQuote, await computeSwapBlock());
+	expect(reusedResponse.status).toBeGreaterThanOrEqual(400);
+	expect(reusedResponse.status).toBeLessThan(500);
+}, 30000);

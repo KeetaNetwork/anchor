@@ -615,7 +615,16 @@ for (const useDeprecated of [false, true]) {
 			expect(exchangeStatusWithBlock.status).toBe('completed');
 			expect(exchangeStatusWithBlock.blockhash).toBeDefined();
 
-			const exchange = await quoteFromEstimate.createExchange(undefined, acceptShownTerms(quoteFromEstimate));
+			/* A quote pays for one exchange, so the second swap needs a new quote */
+			const reuseError = await quoteFromEstimate.createExchange(undefined, acceptShownTerms(quoteFromEstimate)).then(function() {
+				return(null);
+			}, function(error: unknown) {
+				return(error);
+			});
+			expect(FXErrors.QuoteValidationFailed.isInstance(reuseError)).toBe(true);
+
+			const secondQuote = await estimate.getQuote();
+			const exchange = await secondQuote.createExchange(undefined, acceptShownTerms(secondQuote));
 			expect(exchange.exchange.exchangeID).toBeDefined();
 
 			const exchangeStatus = await waitForExchangeToComplete(server, exchange);
@@ -623,7 +632,7 @@ for (const useDeprecated of [false, true]) {
 			expect(exchangeStatus.status).toBe('completed');
 			expect(exchangeStatus.blockhash).toBeDefined();
 
-			/* Multiply by 2 since we createExchange twice for the same swap */
+			/* Multiply by 2 since the same swap was exchanged twice */
 			cumulativeEURChange += BigInt(receiveAmount) * 2n;
 			cumulativeUSDChange += BigInt(sendAmount) * 2n;
 
