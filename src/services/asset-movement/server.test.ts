@@ -253,14 +253,13 @@ test('Asset Movement Server accepts share-KYC bodies over the 1 MiB default and 
 });
 
 test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
-	const asset = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
 	const victim = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const accountsSeen: unknown[] = [];
 
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeServerConfig({
 		assetMovement: {
 			...makeServerConfig().assetMovement,
-			createPersistentForwarding: async function(request) {
+			listPersistentForwarding: async function(request) {
 				accountsSeen.push(request.account);
 				throw(new KeetaAnchorUserError('not implemented'));
 			}
@@ -268,18 +267,14 @@ test('Asset Movement Server refuses a request that names an account without sign
 	}));
 	await server.start();
 
-	const response = await fetch(new URL('/api/createPersistentForwarding', server.url), {
+	/* Ask for another account's forwarding addresses without signing */
+	const response = await fetch(new URL('/api/listPersistentForwarding', server.url), {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-		body: JSON.stringify({
-			account: victim.publicKeyString.get(),
-			sourceLocation: 'chain:evm:123',
-			asset: asset.publicKeyString.get(),
-			persistentAddressTemplateId: 'template-1'
-		})
+		body: JSON.stringify({ account: victim.publicKeyString.get() })
 	});
 
+	expect(accountsSeen).toEqual([]);
 	expect(response.status).toBeGreaterThanOrEqual(400);
 	expect(response.status).toBeLessThan(500);
-	expect(accountsSeen).toEqual([]);
 });
