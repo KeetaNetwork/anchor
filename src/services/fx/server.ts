@@ -28,6 +28,7 @@ import type {
 	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
+import type { KeetaAnchorReplayGuard } from '../../lib/http-server/replay-guard.ts';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -322,6 +323,37 @@ async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: Keet
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
+}
+
+/**
+ * Refuse an exchange block that cannot be published now: it must extend
+ * the account head, or open the account.
+ */
+async function assertBlockExtendsHead(client: KeetaNet.Client, block: InstanceType<typeof KeetaNet.lib.Block>): Promise<void> {
+	const head = await client.getHeadBlock(block.account);
+
+	let extendsHead: boolean;
+	if (head === null) {
+		extendsHead = block['$opening'];
+	} else {
+		extendsHead = head.hash.compare(block.previous);
+	}
+
+	if (!extendsHead) {
+		throw(new KeetaAnchorUserError('Exchange block does not extend the account head'));
+	}
+}
+
+/**
+ * Spend a verified quote, so it pays for one exchange only. The claim
+ * lasts as long as the quote signature is valid.
+ */
+async function claimQuote(replayGuard: KeetaAnchorReplayGuard, quoteSigner: Signing.VerifiableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<void> {
+	const expiresAt = new Date(new Date(quote.signed.timestamp).valueOf() + Signing.DEFAULT_MAX_SKEW_MS);
+	const claimed = await replayGuard.claim(`quote:${quoteSigner.publicKeyString.get()}:${quote.signed.nonce}`, expiresAt);
+	if (!claimed) {
+		throw(new Errors.QuoteValidationFailed());
+	}
 }
 
 async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount | null; }> {
@@ -1788,6 +1820,12 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				checks: { quote: parsedQuote, request: conversionInput },
 				isQuoteBasedExchange: isQuoteBasedExchange
 			});
+
+			await assertBlockExtendsHead(config.client.client, block);
+
+			if (isQuoteBasedExchange && config.quoteSigner !== null && 'signed' in quoteInput) {
+				await claimQuote(this.replayGuard, config.quoteSigner, quoteInput);
+			}
 
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({
