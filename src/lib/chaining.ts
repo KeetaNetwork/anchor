@@ -299,6 +299,12 @@ function isFXLikeNode(node: GraphNodeLike): boolean {
  * allowMidPlanUserSignatures is set: a later one runs after an earlier
  * step settles and fails when the user is not there to sign it.
  */
+// TODO: narrow this once a later step can be funded without the user. A
+// leg that lands on Keeta pays the user's account because #computePlan
+// cannot yet chain an asset movement into a KEETA_SEND step ("multiple keeta
+// locations") or into an FX step (no recipient information). When a Keeta
+// landing can pay the next step's deposit address, or an FX anchor accepts
+// a deposit, those routes can come back by default.
 function requiresUserKeetaSignature(step: AnchorChainingStepLike): boolean {
 	if (step.type === 'fx' || step.type === 'keetaSend') {
 		return(true);

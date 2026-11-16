@@ -3379,6 +3379,18 @@ test('AnchorChaining resolveAssets', async function() {
 	}
 });
 
+function findExternalAsset<T extends { asset: AnchorChainingAsset }>(assets: T[], id: string): T | undefined {
+	return(assets.find(function(info) {
+		return(!KeetaNet.lib.Account.isInstance(info.asset) && String(info.asset) === id);
+	}));
+}
+
+function assetKeysOf(assets: { asset: AnchorChainingAsset }[]): string[] {
+	return(assets.map(function(info) {
+		return(KeetaNet.lib.Account.isInstance(info.asset) ? info.asset.publicKeyString.get() : String(info.asset));
+	}).sort());
+}
+
 describe('AnchorChainingAssetInfo metadata', function() {
 	async function createMetadataHarness() {
 		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -3592,13 +3604,26 @@ describe('AnchorChainingAssetInfo metadata', function() {
 			{ providerID: 'NonExistentBridge' }
 		);
 
-		const evmAsset = assets.find(a =>
-			!KeetaNet.lib.Account.isInstance(a.asset) &&
-			String(a.asset) === h.usdcEvmId
-		);
-
+		const evmAsset = findExternalAsset(assets, h.usdcEvmId);
 		expect(evmAsset).toBeDefined();
 		expect(evmAsset?.metadata).toBeUndefined();
+	});
+
+	/*
+	 * EVM USDC only reaches the EVM chain through EVM -> Keeta -> EVM, whose
+	 * second leg is a send the user signs after the bridge delivers, so it is
+	 * not listed as a source by default.
+	 */
+	test('lists EVM USDC as a source for the EVM chain only when mid-plan user signatures are allowed', async function() {
+		await using h = await createMetadataHarness();
+		const filter = { to: { location: h.evmChainLocation }};
+
+		const byDefault = await h.anchorChaining.graph.listAssetsWithMetadata(filter);
+		expect(findExternalAsset(byDefault, h.usdcEvmId)).toBeUndefined();
+
+		const allowed = new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], allowMidPlanUserSignatures: true });
+		const withOptIn = await allowed.graph.listAssetsWithMetadata(filter);
+		expect(findExternalAsset(withOptIn, h.usdcEvmId)).toBeDefined();
 	});
 
 	test('getAssetMovementProvidersForAsset returns all providers supporting an asset/location', async function() {
@@ -5873,12 +5898,6 @@ describe('getPlans forwardingOnly', function() {
 		expect(step.simulatedTransfer).toBeUndefined();
 	});
 });
-
-function assetKeysOf(assets: { asset: AnchorChainingAsset }[]): string[] {
-	return(assets.map(function(info) {
-		return(KeetaNet.lib.Account.isInstance(info.asset) ? info.asset.publicKeyString.get() : String(info.asset));
-	}).sort());
-}
 
 describe('Keeta-to-keeta swap chaining (persistent-forwarding regression)', function() {
 	type AssetEntry = KeetaAnchorAssetMovementServerConfig['assetMovement']['supportedAssets'][number];
