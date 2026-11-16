@@ -273,7 +273,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 			const authenticationRequired = config.assetMovement.authenticationRequired === true && (input.overrideAllowUnauthenticated !== true);
 
-			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
+			const routeHandler = async function(params: Map<string, string>, postData: JSONSerializable | undefined, _ignore_headers: unknown, url: URL) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
 					// For GET requests, we do not expect a body
@@ -353,13 +353,10 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				});
 			};
 
-			if (input.maxBodySize !== undefined) {
-				const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
-				const routeHandler = routes[routeKey];
-				if (typeof routeHandler !== 'function') {
-					throw(new Error(`internal error: route ${routeKey} is not a plain handler`));
-				}
-
+			const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
+			if (input.maxBodySize === undefined) {
+				routes[routeKey] = routeHandler;
+			} else {
 				routes[routeKey] = { bodyType: 'parsed', maxBodySize: input.maxBodySize, handler: routeHandler };
 			}
 		}
