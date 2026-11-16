@@ -695,6 +695,18 @@ describe('Storage Client - Content signer', function() {
 			const accepted = await provider.get({ path, account, signers: [ attacker ] });
 			expect(accepted?.data.toString()).toBe('address B');
 
+			/* A signature made with an unsupported digest cannot be checked, so it proves nothing */
+			const ownContainer = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('address D').toString('base64') }), [account], { signer: account });
+			const encoded = Buffer.from(await ownContainer.getEncodedBuffer());
+			/* DER of the SHA3-256 OID (2.16.840.1.101.3.4.2.8); the last arc becomes 10, SHA3-512 */
+			const sha3OID = Buffer.from('0609608648016503040208', 'hex');
+			const oidOffset = encoded.indexOf(sha3OID);
+			expect(oidOffset).toBeGreaterThan(-1);
+			encoded[oidOffset + sha3OID.length - 1] = 0x0a;
+			await backend.put(path, encoded, { owner, tags: [], visibility: 'private' });
+			const unsupportedError = await getError();
+			expect(Errors.SignatureInvalid.isInstance(unsupportedError)).toBe(true);
+
 			/* The reader's own content needs no list */
 			await storeSignedBy(account, 'address A');
 			expect((await provider.get({ path, account }))?.data.toString()).toBe('address A');
