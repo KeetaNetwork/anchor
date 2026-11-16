@@ -212,3 +212,30 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	const json: unknown = await response.json();
 	expect(json).toMatchObject({ ok: false });
 });
+
+test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
+	const victim = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const accountsSeen: unknown[] = [];
+
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeServerConfig({
+		assetMovement: {
+			...makeServerConfig().assetMovement,
+			listPersistentForwarding: async function(request) {
+				accountsSeen.push(request.account);
+				throw(new KeetaAnchorUserError('not implemented'));
+			}
+		}
+	}));
+	await server.start();
+
+	/* Ask for another account's forwarding addresses without signing */
+	const response = await fetch(new URL('/api/listPersistentForwarding', server.url), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({ account: victim.publicKeyString.get() })
+	});
+
+	expect(accountsSeen).toEqual([]);
+	expect(response.status).toBeGreaterThanOrEqual(400);
+	expect(response.status).toBeLessThan(500);
+});
