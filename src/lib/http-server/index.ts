@@ -45,7 +45,8 @@ async function readBody(request: http.IncomingMessage, limit: number): Promise<B
 		chunks.push(buffer);
 	}
 
-	return(Buffer.concat(chunks, size));
+	const body = Buffer.concat(chunks, size);
+	return(body);
 }
 
 type RouteHandlerContext = {

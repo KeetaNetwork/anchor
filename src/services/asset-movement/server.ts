@@ -660,7 +660,6 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		addRoute({
 			method: 'POST',
 			handlerName: 'shareKYC',
-			/* The shared attributes can carry documents */
 			maxBodySize: SHARE_KYC_MAX_BODY_SIZE,
 			assertRequest: assertKeetaAssetMovementAnchorShareKYCRequest,
 			assertResponse: assertKeetaAssetMovementAnchorShareKYCResponse,
