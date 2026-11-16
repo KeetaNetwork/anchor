@@ -89,11 +89,11 @@ import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.type
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
 
-
 /**
  * Body limit for shared KYC attributes (128 MiB), which can carry documents
  */
 const SHARE_KYC_MAX_BODY_SIZE = 128 * (1024 ** 2);
+
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -273,7 +273,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 			const authenticationRequired = config.assetMovement.authenticationRequired === true && (input.overrideAllowUnauthenticated !== true);
 
-			const routeHandler = async function(params: Map<string, string>, postData: JSONSerializable | undefined, _ignore_headers: unknown, url: URL) {
+			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
 					// For GET requests, we do not expect a body
@@ -353,10 +353,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				});
 			};
 
-			const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
-			if (input.maxBodySize === undefined) {
-				routes[routeKey] = routeHandler;
-			} else {
+			if (input.maxBodySize !== undefined) {
+				const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
+				const routeHandler = routes[routeKey];
+				if (typeof routeHandler !== 'function') {
+					throw(new Error(`internal error: route ${routeKey} is not a plain handler`));
+				}
+
 				routes[routeKey] = { bodyType: 'parsed', maxBodySize: input.maxBodySize, handler: routeHandler };
 			}
 		}
