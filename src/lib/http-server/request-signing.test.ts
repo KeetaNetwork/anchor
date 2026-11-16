@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
 import { MemoryReplayGuard } from './replay-guard.js';
+import { KeetaAnchorUserError } from '../error.js';
 import { publicRequestURL, signRequest, verifySignedRequest } from './request-signing.js';
 
 const account = KeetaNetLib.Account.fromSeed(KeetaNetLib.Account.generateRandomSeed(), 0);
@@ -27,7 +28,9 @@ test('a request signature covers the anchor, method, path, query and body', asyn
 	const reordered = new URL('https://anchor-a.example.com/api/op?a=1&b=2&account=x&signed.nonce=y');
 	const guard = new MemoryReplayGuard();
 	expect(await verifySignedRequest(account, { method: 'post', url: reordered, body: { ...body, signed }, replayGuard: guard }, [ 'data' ], signed)).toBe(true);
-	expect(await verifySignedRequest(account, { method: 'POST', url, body, replayGuard: guard }, [ 'data' ], signed)).toBe(false);
+
+	/* A second use is refused with its own error, not as a bad signature */
+	await expect(verifySignedRequest(account, { method: 'POST', url, body, replayGuard: guard }, [ 'data' ], signed)).rejects.toSatisfy(KeetaAnchorUserError.isInstance.bind(KeetaAnchorUserError));
 });
 
 test('a server verifies requests against its configured URL, never the Host header', function() {

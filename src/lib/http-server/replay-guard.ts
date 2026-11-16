@@ -43,7 +43,11 @@ export class MemoryReplayGuard implements KeetaAnchorReplayGuard {
 		}
 
 		if (existing === undefined && this.#expiries.size >= this.#maxEntries) {
-			return(false);
+			/* A claim with a later expiry can hide expired ones behind it */
+			this.#dropAllExpired(now);
+			if (this.#expiries.size >= this.#maxEntries) {
+				return(false);
+			}
 		}
 
 		this.#expiries.delete(key);
@@ -63,6 +67,17 @@ export class MemoryReplayGuard implements KeetaAnchorReplayGuard {
 			}
 
 			this.#expiries.delete(key);
+		}
+	}
+
+	/**
+	 * Drop every expired claim, wherever it sits in insertion order.
+	 */
+	#dropAllExpired(now: number): void {
+		for (const [ key, expiry ] of this.#expiries) {
+			if (expiry <= now) {
+				this.#expiries.delete(key);
+			}
 		}
 	}
 }

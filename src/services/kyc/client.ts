@@ -290,12 +290,16 @@ class KeetaKYCVerification {
 	}
 
 	getCertificates(): Promise<KeetaKYCAnchorClientGetCertificateResponse> {
-		return(this.client.getCertificates(this.providerID, {
+		const request: Parameters<KeetaKYCAnchorClient['getCertificates']>[1] = {
 			id: this.id,
 			account: this.account,
-			countryCodes: this.request.countryCodes,
-			...(this.request.entityType === undefined ? {} : { entityType: this.request.entityType })
-		}));
+			countryCodes: this.request.countryCodes
+		};
+		if (this.request.entityType !== undefined) {
+			request.entityType = this.request.entityType;
+		}
+
+		return(this.client.getCertificates(this.providerID, request));
 	}
 
 	getVerificationStatus(): Promise<KeetaKYCAnchorClientGetVerificationStatusResponse> {
