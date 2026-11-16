@@ -6,7 +6,7 @@ import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { assertAccountCertificateChain } from "../utils/certificate-network.js";
 import { createAssertEquals } from "typia";
 import type { RequestAuthContext } from "./request-signing.js";
-import { verifySignedRequest } from "./request-signing.js";
+import { claimRequestNonce, verifyRequestSignature } from "./request-signing.js";
 import type { DistributiveOmit } from "@keetanetwork/keetanet-client/lib/utils/helper.js";
 
 export type ExtractOk<T> = DistributiveOmit<Extract<T, { ok: true }>, 'ok'>;
@@ -117,12 +117,14 @@ export async function verifyBodyAuth<T extends { account?: string; signed?: unkn
 
 	const signable = getSigningData(request);
 	const signed = assertHTTPSignedField(request.signed);
-	const valid = await verifySignedRequest(account, context, signable, signed);
+	const valid = await verifyRequestSignature(account, context, signable, signed);
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
 
+	/* Only a caller that passes the cert-chain gate spends a nonce */
 	await assertAccountCertificateChain(account, certificateChain);
+	await claimRequestNonce(account, context, signed);
 
 	return(account);
 }
@@ -143,12 +145,13 @@ export async function verifyURLAuth(
 	}
 
 	const signable = getSigningData(parsed.account);
-	const valid = await verifySignedRequest(parsed.account, context, signable, parsed.signedField);
+	const valid = await verifyRequestSignature(parsed.account, context, signable, parsed.signedField);
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
 
 	await assertAccountCertificateChain(parsed.account, certificateChain);
+	await claimRequestNonce(parsed.account, context, parsed.signedField);
 
 	return(parsed.account);
 }

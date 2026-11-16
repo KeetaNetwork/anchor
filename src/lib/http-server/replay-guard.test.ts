@@ -38,3 +38,17 @@ test('MemoryReplayGuard accepts new claims again once earlier ones expire', asyn
 	});
 	expect(await guard.claim('next', new Date(Date.now() + 60_000))).toBe(true);
 });
+
+test('MemoryReplayGuard counts only live claims toward its limit, even behind a longer claim', async function() {
+	const guard = new MemoryReplayGuard({ maxEntries: 2 });
+
+	/* The long claim is first in insertion order, so the expired one sits behind it */
+	expect(await guard.claim('long', new Date(Date.now() + 60_000))).toBe(true);
+	expect(await guard.claim('short', new Date(Date.now() + 50))).toBe(true);
+
+	await new Promise(function(resolve) {
+		setTimeout(resolve, 100);
+	});
+	expect(await guard.claim('next', new Date(Date.now() + 60_000))).toBe(true);
+	expect(await guard.claim('long', new Date(Date.now() + 60_000))).toBe(false);
+});
