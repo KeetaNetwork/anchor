@@ -220,9 +220,9 @@ test('Asset Movement Server refuses a request that names an account without sign
 	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeServerConfig({
 		assetMovement: {
 			...makeServerConfig().assetMovement,
-			listPersistentForwarding: async function(request) {
+			listPersistentForwarding: function(request) {
 				accountsSeen.push(request.account);
-				throw(new KeetaAnchorUserError('not implemented'));
+				return(Promise.reject(new KeetaAnchorUserError('not implemented')));
 			}
 		}
 	}));
