@@ -40,7 +40,7 @@ import {
 } from './common.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { getDefaultResolver } from '../../config.js';
-import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
 import { createAssertEquals } from 'typia';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
@@ -259,11 +259,23 @@ async function openSignedContainer(encoded: Buffer, reader: KeetaNetAccount, sig
 	const container = EncryptedContainer.fromEncryptedBuffer(encoded, [ reader ]);
 	const plaintext = await container.getPlaintext();
 
-	const signer = container.getSigningAccount();
-	const accepted = signer !== undefined && signers.some(function(account) {
-		return(account.comparePublicKey(signer));
-	});
-	if (!accepted || !(await container.verifySignature())) {
+	let verified: boolean;
+	try {
+		const signer = container.getSigningAccount();
+		const accepted = signer !== undefined && signers.some(function(account) {
+			return(account.comparePublicKey(signer));
+		});
+		verified = accepted && await container.verifySignature();
+	} catch (error) {
+		/* A signature the container cannot check is no proof of who wrote it */
+		if (EncryptedContainerError.isInstance(error)) {
+			throw(new Errors.SignatureInvalid(`Stored object signature cannot be verified: ${error.code}`));
+		}
+
+		throw(error);
+	}
+
+	if (!verified) {
 		throw(new Errors.SignatureInvalid('Stored object is not signed by an accepted account'));
 	}
 

@@ -663,20 +663,33 @@ describe('Storage Client - Content signer', function() {
 			const path = makePath('contact.txt');
 			const owner = account.publicKeyString.get();
 
-			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account>, text: string) {
-				const container = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from(text).toString('base64') }), [account], { signer });
+			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string) {
+				const plaintext = JSON.stringify({ mimeType: 'text/plain', data: Buffer.from(text).toString('base64') });
+				let container: EncryptedContainer;
+				if (signer === undefined) {
+					container = EncryptedContainer.fromPlaintext(plaintext, [account]);
+				} else {
+					container = EncryptedContainer.fromPlaintext(plaintext, [account], { signer });
+				}
 				await backend.put(path, Buffer.from(await container.getEncodedBuffer()), { owner, tags: [], visibility: 'private' });
 			}
+
+			async function getError(): Promise<unknown> {
+				return(await provider.get({ path, account }).then(function() {
+					return(null);
+				}, function(error: unknown) {
+					return(error);
+				}));
+			}
+
+			/* Unsigned content, the cheapest thing a storage anchor can serve */
+			await storeSignedBy(undefined, 'address C');
+			expect(Errors.SignatureInvalid.isInstance(await getError())).toBe(true);
 
 			/* Content the storage anchor serves, but someone else wrote */
 			const attacker = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
 			await storeSignedBy(attacker, 'address B');
-			const forgedError = await provider.get({ path, account }).then(function() {
-				return(null);
-			}, function(error: unknown) {
-				return(error);
-			});
-			expect(Errors.SignatureInvalid.isInstance(forgedError)).toBe(true);
+			expect(Errors.SignatureInvalid.isInstance(await getError())).toBe(true);
 
 			/* Content another account wrote is returned when the caller accepts that account */
 			const accepted = await provider.get({ path, account, signers: [ attacker ] });
