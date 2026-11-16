@@ -1172,10 +1172,11 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 	/**
 	 * Poll a `promiseURL` supplied by the provider (e.g. from
 	 * `shareKYCAttributes` or an `Errors.KYCPendingReview`) until it
-	 * completes. A root-relative URL resolves against the provider's
-	 * `shareKYC` operation. Resolves `true` once the promise completes and
-	 * `false` if aborted first; rejects with the provider's error if the
-	 * promise fails.
+	 * completes. The provider must offer the `shareKYC` operation: a
+	 * relative URL resolves against it, and a URL on another origin
+	 * rejects before any request is made. Resolves `true` once the
+	 * promise completes and `false` if aborted first; rejects with the
+	 * provider's error if the promise fails.
 	 */
 	async awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<boolean> {
 		return(await this.#pollPromiseURL(await this.#resolvePromiseURL(promiseURL), options));
