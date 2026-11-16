@@ -1419,6 +1419,14 @@ test('FX Server queues only exchange blocks that extend the account head, and ac
 		throw(new Error('Missing user signer'));
 	}
 
+	async function expectRefused(response: Response, errorName: string) {
+		expect(response.status).toBe(400);
+		const errorData: unknown = await response.json();
+		expect(errorData).toHaveProperty('ok', false);
+		expect(errorData).toHaveProperty('name', errorName);
+		return(errorData);
+	}
+
 	const firstQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
 	const secondQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
 
@@ -1434,9 +1442,8 @@ test('FX Server queues only exchange blocks that extend the account head, and ac
 	 * A block whose previous is no longer the account head can never
 	 * run, so it is refused before it is queued
 	 */
-	const staleResponse = await postExchange(secondQuote, staleBlock);
-	expect(staleResponse.status).toBeGreaterThanOrEqual(400);
-	expect(staleResponse.status).toBeLessThan(500);
+	const staleError = await expectRefused(await postExchange(secondQuote, staleBlock), 'KeetaAnchorUserError');
+	expect(staleError).toHaveProperty('error', 'Exchange block does not extend the account head');
 
 	/*
 	 * A block chained on a block the network has never seen is refused
@@ -1453,9 +1460,8 @@ test('FX Server queues only exchange blocks that extend the account head, and ac
 			amount: 100n
 		}]
 	}).seal();
-	const orphanResponse = await postExchange(secondQuote, orphanBlock);
-	expect(orphanResponse.status).toBeGreaterThanOrEqual(400);
-	expect(orphanResponse.status).toBeLessThan(500);
+	const orphanError = await expectRefused(await postExchange(secondQuote, orphanBlock), 'KeetaAnchorUserError');
+	expect(orphanError).toHaveProperty('error', 'Exchange block does not extend the account head');
 
 	/*
 	 * The refused blocks did not spend the second quote
@@ -1467,7 +1473,5 @@ test('FX Server queues only exchange blocks that extend the account head, and ac
 	/*
 	 * A quote cannot pay for a second exchange
 	 */
-	const reusedResponse = await postExchange(firstQuote, await computeSwapBlock());
-	expect(reusedResponse.status).toBeGreaterThanOrEqual(400);
-	expect(reusedResponse.status).toBeLessThan(500);
+	await expectRefused(await postExchange(firstQuote, await computeSwapBlock()), 'KeetaFXAnchorQuoteValidationFailedError');
 }, 30000);
