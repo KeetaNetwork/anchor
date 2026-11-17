@@ -26,9 +26,32 @@ type RequestTiming = InstanceType<typeof KeetaNetLib.RequestTiming>;
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 /**
- * The maximum size of a request (128MiB)
+ * The maximum size of a request body when the route sets no
+ * `maxBodySize` (1 MiB)
  */
-const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
+const MAX_REQUEST_SIZE = 1024 ** 2;
+
+/**
+ * Read a request body, refusing it once it passes `limit` bytes.
+ * Returns null when the body is too large.
+ */
+async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer | null> {
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of request) {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+		const buffer = Buffer.from(chunk);
+		size += buffer.length;
+		if (size > limit) {
+			return(null);
+		}
+
+		chunks.push(buffer);
+	}
+
+	const body = Buffer.concat(chunks, size);
+	return(body);
+}
 
 type RouteHandlerContext = {
 	timing: RequestTiming;
@@ -564,36 +587,27 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					// Early rejection based on Content-Length header
 					const contentLength = request.headers['content-length'];
+					let declaredSize = Number.NaN;
 					if (contentLength !== undefined) {
-						const declaredSize = parseInt(contentLength, 10);
-						if (!isNaN(declaredSize) && declaredSize > bodySizeLimit) {
-							request.resume();
-
-							response.statusCode = 413;
-							response.setHeader('Content-Type', 'text/plain');
-							await responseFinalize('Payload Too Large');
-
-							return;
-						}
+						declaredSize = Number.parseInt(contentLength, 10);
 					}
 
-					using bodyTimer = timing.startTime('http-request-body');
+					let data: Buffer | null = null;
+					if (Number.isNaN(declaredSize) || declaredSize <= bodySizeLimit) {
+						using bodyTimer = timing.startTime('http-request-body');
+						data = await readBody(request, bodySizeLimit);
+						bodyTimer.end();
+					}
 
-					const data = await request.map(function(chunk) {
-						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-						return(Buffer.from(chunk));
-					}).reduce(function(prev, curr) {
-						if (prev.length > bodySizeLimit) {
-							throw(new Error('Request too large'));
-						}
+					if (data === null) {
+						request.resume();
 
-						if (!Buffer.isBuffer(curr)) {
-							throw(new Error(`internal error: Current item is not a buffer -- ${typeof curr}`));
-						}
-						return(Buffer.concat([prev, curr]));
-					}, Buffer.from(''));
+						response.statusCode = 413;
+						response.setHeader('Content-Type', 'text/plain');
+						await responseFinalize('Payload Too Large');
 
-					bodyTimer.end();
+						return;
+					}
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;

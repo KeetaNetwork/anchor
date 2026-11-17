@@ -6,7 +6,7 @@ import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError, KeetaAnchorError } from '../../lib/error.js';
 import { verifyMetadataSignature } from '../../lib/anchor-metadata-server.js';
 import { assertHTTPSignedField } from '../../lib/http-server/common.js';
-import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData } from './common.js';
+import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData, getKeetaAssetMovementAnchorShareKYCRequestSigningData } from './common.js';
 import { isKeetaAssetMovementAnchorGetAccountStatusResponse } from './common.generated.js';
 import { signRequest } from '../../lib/http-server/request-signing.js';
 
@@ -227,4 +227,40 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	expect(response.ok).toBe(false);
 	const json: unknown = await response.json();
 	expect(json).toMatchObject({ ok: false });
+});
+
+test('Asset Movement Server accepts share-KYC bodies over the 1 MiB default and refuses them elsewhere', async function() {
+	const receivedSizes: number[] = [];
+	const baseConfig = makeServerConfig();
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+		...baseConfig,
+		assetMovement: {
+			...baseConfig.assetMovement,
+			shareKYC: async function(request) {
+				receivedSizes.push(request.attributes.length);
+				return({ isPending: false });
+			},
+			initiateTransfer: function() {
+				return(Promise.reject(new KeetaAnchorUserError('not implemented')));
+			}
+		}
+	});
+	await server.start();
+
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const attributes = 'x'.repeat(2 * 1024 * 1024);
+	const request = { account: account.publicKeyString.get(), attributes };
+	const signed = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/shareKYC', server.url), body: request }, getKeetaAssetMovementAnchorShareKYCRequestSigningData({ account, attributes }));
+	const body = JSON.stringify({ ...request, signed });
+	async function post(path: string): Promise<number> {
+		const response = await fetch(new URL(path, server.url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	/* The whole body reaches the share-KYC handler */
+	expect(await post('/api/shareKYC')).toBe(200);
+	expect(receivedSizes).toEqual([ attributes.length ]);
+
+	expect(await post('/api/initiateTransfer')).toBe(413);
 });

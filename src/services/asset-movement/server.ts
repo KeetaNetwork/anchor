@@ -89,6 +89,11 @@ import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.type
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
 
+/**
+ * Body limit for shared KYC attributes (128 MiB), which can carry documents
+ */
+const SHARE_KYC_MAX_BODY_SIZE = 128 * (1024 ** 2);
+
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
 	 * The data to use for the index page (optional)
@@ -242,6 +247,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			method: 'GET' | 'POST';
 			handlerName: HandlerName;
 			pathName?: string;
+			maxBodySize?: number;
 			overrideAllowUnauthenticated?: boolean;
 			assertRequest?: (data: unknown) => SerializedRequest;
 			serializeResponse?: (data: ExtractOk<Response>) => unknown;
@@ -268,7 +274,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 			const authenticationRequired = config.assetMovement.authenticationRequired === true && (input.overrideAllowUnauthenticated !== true);
 
-			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
+			const routeHandler = async function(params: Map<string, string>, postData: JSONSerializable | undefined, _ignore_headers: unknown, url: URL) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
 					// For GET requests, we do not expect a body
@@ -347,6 +353,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return({
 					output: commonJSONStringify(serialized)
 				});
+			};
+
+			const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
+			if (input.maxBodySize === undefined) {
+				routes[routeKey] = routeHandler;
+			} else {
+				routes[routeKey] = { bodyType: 'parsed', maxBodySize: input.maxBodySize, handler: routeHandler };
 			}
 		}
 
@@ -646,6 +659,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		addRoute({
 			method: 'POST',
 			handlerName: 'shareKYC',
+			maxBodySize: SHARE_KYC_MAX_BODY_SIZE,
 			assertRequest: assertKeetaAssetMovementAnchorShareKYCRequest,
 			assertResponse: assertKeetaAssetMovementAnchorShareKYCResponse,
 			getSigningData: getKeetaAssetMovementAnchorShareKYCRequestSigningData
