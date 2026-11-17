@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import * as HTTPServer from './index.js';
 import { KeetaAnchorUserError } from '../error.js';
 import crypto from 'crypto';
+import * as http from 'node:http';
 import { Buffer } from '../utils/buffer.js';
 import { asleep } from '../utils/asleep.js';
 
@@ -891,4 +892,78 @@ test('Server-Timing: parallel requests each get their own timing', async functio
 	expect(first).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
 	expect(second).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-b-0'] });
 	expect(third).toMatchObject({ status: 200, sections: ['http-handler-1', 'work-a-0'] });
+}, 30000);
+
+/**
+ * Send `chunks` as a chunked request body (no Content-Length), so only
+ * the streaming check can enforce the limit.
+ */
+async function sendChunked(url: URL, method: string, contentType: string, chunks: Buffer[]): Promise<number> {
+	return(await new Promise(function(resolve, reject) {
+		const request = http.request(url, { method, headers: { 'Content-Type': contentType, 'Transfer-Encoding': 'chunked' }}, function(response) {
+			response.resume();
+			response.on('end', function() {
+				resolve(response.statusCode ?? 0);
+			});
+		});
+		request.on('error', reject);
+		for (const chunk of chunks) {
+			request.write(chunk);
+		}
+		request.end();
+	}));
+}
+
+test('body limit: a chunked body over the limit is refused with 413 before the handler runs', async function() {
+	const MAX_BODY = 1024;
+	let handlerCalled = false;
+
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'PUT /api/upload': {
+					bodyType: 'raw',
+					maxBodySize: MAX_BODY,
+					handler: async function() {
+						handlerCalled = true;
+						return({ output: JSON.stringify({ ok: true }) });
+					}
+				}
+			});
+		}
+	})({ port: 0 });
+	await server.start();
+
+	/* 1023 bytes, then 2 more: only the last chunk crosses the limit */
+	const over = await sendChunked(new URL('/api/upload', server.url), 'PUT', 'application/octet-stream', [ Buffer.alloc(MAX_BODY - 1), Buffer.alloc(2) ]);
+	expect(over).toBe(413);
+	expect(handlerCalled).toBe(false);
+
+	const atLimit = await sendChunked(new URL('/api/upload', server.url), 'PUT', 'application/octet-stream', Array.from({ length: 16 }, function() { return(Buffer.alloc(MAX_BODY / 16)); }));
+	expect(atLimit).toBe(200);
+	expect(handlerCalled).toBe(true);
+}, 30000);
+
+test('body limit: a route without its own limit refuses a JSON body over 1 MiB', async function() {
+	let handlerCalled = false;
+
+	await using server = new (class extends HTTPServer.KeetaNetAnchorHTTPServer<HTTPServer.KeetaAnchorHTTPServerConfig> {
+		protected async initRoutes(): Promise<HTTPServer.Routes> {
+			return({
+				'POST /api/echo': async function() {
+					handlerCalled = true;
+					return({ output: JSON.stringify({ ok: true }) });
+				}
+			});
+		}
+	})({ port: 0 });
+	await server.start();
+
+	const big = JSON.stringify({ data: 'x'.repeat(1024 * 1024) });
+	const status = await sendChunked(new URL('/api/echo', server.url), 'POST', 'application/json', [ Buffer.from(big) ]);
+	expect(status).toBe(413);
+	expect(handlerCalled).toBe(false);
+
+	const small = await sendChunked(new URL('/api/echo', server.url), 'POST', 'application/json', [ Buffer.from(JSON.stringify({ data: 'x' })) ]);
+	expect(small).toBe(200);
 }, 30000);
