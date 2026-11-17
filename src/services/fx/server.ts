@@ -28,6 +28,7 @@ import type {
 	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
+import type { KeetaAnchorReplayGuard } from '../../lib/http-server/replay-guard.ts';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -322,6 +323,41 @@ async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: Keet
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
+}
+
+/**
+ * Whether `block` can be published on top of `headHash`, the hash of its
+ * account's head block (null when the account has no blocks): it must
+ * extend the head, or open the account.
+ */
+function blockExtendsHead(headHash: InstanceType<typeof KeetaNet.lib.Block.Hash> | null, block: InstanceType<typeof KeetaNet.lib.Block>): boolean {
+	if (headHash === null) {
+		return(block['$opening']);
+	}
+
+	return(headHash.compare(block.previous));
+}
+
+/**
+ * Refuse an exchange block that cannot be published now.
+ */
+async function assertBlockExtendsHead(client: KeetaNet.Client, block: InstanceType<typeof KeetaNet.lib.Block>): Promise<void> {
+	const head = await client.getHeadBlock(block.account);
+	if (!blockExtendsHead(head?.hash ?? null, block)) {
+		throw(new KeetaAnchorUserError('Exchange block does not extend the account head'));
+	}
+}
+
+/**
+ * Spend a verified quote, so it pays for one exchange only. The claim
+ * lasts as long as the quote signature is valid.
+ */
+async function claimQuote(replayGuard: KeetaAnchorReplayGuard, quoteSigner: Signing.VerifiableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<void> {
+	const expiresAt = new Date(new Date(quote.signed.timestamp).valueOf() + Signing.DEFAULT_MAX_SKEW_MS);
+	const claimed = await replayGuard.claim(`quote:${quoteSigner.publicKeyString.get()}:${quote.signed.nonce}`, expiresAt);
+	if (!claimed) {
+		throw(new Errors.QuoteValidationFailed());
+	}
 }
 
 async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount | null; }> {
@@ -715,26 +751,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 		/* Get the current head block of the account in the block */
 		const accountHead = await userClient.head({ account: block.account });
-		let isHeadBlock = false;
-		if (accountHead !== null) {
-			isHeadBlock = accountHead.compare(block.previous);
-		} else {
-			isHeadBlock = block['$opening'];
-		}
 
-		/* If the account's head block is not the block's previous, see if the block's previous exists on the network */
-		if (!isHeadBlock) {
-			let previousBlockOnNetwork = false;
-			if (block['$opening']) {
-				/* Opening block means that there is no previous block, so we are free to proceed */
-				previousBlockOnNetwork = true;
-			} else {
-				const previousBlock = await userClient.block(block.previous);
-				if (previousBlock !== null) {
-					previousBlockOnNetwork = true;
-				}
-			}
-
+		/*
+		 * createExchange queues only blocks that extend the head, so a
+		 * block that no longer does lost a race and can never run
+		 */
+		if (!blockExtendsHead(accountHead, block)) {
 			let blockPreviousString: string;
 			if (block['$opening']) {
 				blockPreviousString = '<opening>';
@@ -742,23 +764,11 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				blockPreviousString = block.previous.toString();
 			}
 
-			/* If block.previous exists on the network, and it's not the account head block we can mark this job as failed_permanently */
-			if (previousBlockOnNetwork) {
-				/* Block's previous exists on the network, but is not the account head -- mark as failed_permanently */
-				return({
-					status: 'failed_permanently',
-					output: null,
-					error: `Block previous (${blockPreviousString}) exists on the network but is not the account head`
-				});
-			} else {
-				/* If block.previous does not exist on the network we can mark this job as failed_temporarily -- it can't process until the missing block is added */
-				/* Block's previous does not exist on the network -- mark as failed_temporarily */
-				return({
-					status: 'failed_temporarily',
-					output: null,
-					error: `Block previous (${blockPreviousString}) does not exist on the network`
-				});
-			}
+			return({
+				status: 'failed_permanently',
+				output: null,
+				error: `Block previous (${blockPreviousString}) is not the account head`
+			});
 		}
 
 		/* We are clear to attempt the swap now */
@@ -1788,6 +1798,12 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				checks: { quote: parsedQuote, request: conversionInput },
 				isQuoteBasedExchange: isQuoteBasedExchange
 			});
+
+			await assertBlockExtendsHead(config.client.client, block);
+
+			if (isQuoteBasedExchange && config.quoteSigner !== null && 'signed' in quoteInput) {
+				await claimQuote(this.replayGuard, config.quoteSigner, quoteInput);
+			}
 
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({

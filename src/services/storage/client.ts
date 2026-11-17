@@ -44,6 +44,7 @@ import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted
 import { createAssertEquals } from 'typia';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import { arrayBufferLikeToBuffer } from '../../lib/utils/buffer.js';
 import { StorageContactsClient } from './clients/contacts.js';
@@ -771,7 +772,8 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 			}
 
 			const signable = input.getSignedData(serializedBody);
-			signed = await SignData(input.account.assertAccount(), signable);
+			const signedBody = input.method === 'POST' || input.method === 'PUT' ? serializedBody : undefined;
+			signed = await signRequest(input.account.assertAccount(), { method: input.method, url, body: signedBody }, signable);
 		}
 
 		const headers: { [key: string]: string } = { 'Accept': CONTENT_TYPE_JSON };
@@ -851,15 +853,16 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 		const tags = input.tags ?? [];
 		this.#validateTags(tags);
 
+		url.searchParams.set('visibility', visibility);
+		if (tags.length > 0) {
+			url.searchParams.set('tags', tags.join(','));
+		}
+
 		const signable = getKeetaStorageAnchorPutRequestSigningData({ path: input.path, visibility, tags });
-		const signed = await SignData(input.account.assertAccount(), signable);
+		const signed = await signRequest(input.account.assertAccount(), { method: 'PUT', url, body: input.data }, signable);
 
 		// Add auth to query params using helper
 		const signedUrl = addSignatureToURL(url, { signedField: signed, account: input.account.assertAccount() });
-		signedUrl.searchParams.set('visibility', visibility);
-		if (tags.length > 0) {
-			signedUrl.searchParams.set('tags', tags.join(','));
-		}
 
 		let response: Response;
 		try {
@@ -914,7 +917,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 
 		// Sign the request
 		const signable = getKeetaStorageAnchorGetRequestSigningData({ path: input.path, account: input.account.publicKeyString.get() });
-		const signed = await SignData(input.account.assertAccount(), signable);
+		const signed = await signRequest(input.account.assertAccount(), { method: 'GET', url }, signable);
 
 		// Add auth to query params
 		const signedUrl = addSignatureToURL(url, { signedField: signed, account: input.account.assertAccount() });

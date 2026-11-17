@@ -100,7 +100,7 @@ import { createAssertEquals } from 'typia';
 import type { ExtractOk, HTTPSignedField } from '../../lib/http-server/common.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import type { Signable } from '../../lib/utils/signing.js';
-import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import { KeetaAnchorError } from '../../lib/error.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { resolveSharedAnchorMetadataLegalExtension, type SharedAnchorMetadataLegalExtension, type AnchorMetadataLegalField } from '../../lib/metadata.types.js';
@@ -667,7 +667,11 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 			// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
 			const signable = input.getSignedData(serializedRequest as SerializedRequest);
 
-			signed = await SignData(input.account.assertAccount(), signable);
+			signed = await signRequest(input.account.assertAccount(), {
+				method: input.method,
+				url,
+				body: input.method === 'POST' ? (serializedRequest ?? {}) : undefined
+			}, signable);
 		}
 
 		let usingUrl = url;

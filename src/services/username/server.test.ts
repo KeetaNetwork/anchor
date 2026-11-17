@@ -2,7 +2,7 @@ import { expect, test } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import { KeetaNetUsernameAnchorHTTPServer } from './server.js';
 import { USERNAME_MAX_LENGTH, getUsernameClaimSignable, getUsernameReleaseSignable, getUsernameTransferSignable } from './common.js';
-import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -139,7 +139,7 @@ test('username server enforces default validation rules', async () => {
 	});
 }, 10_000);
 
-test('username server validates signed transfers and release requests', async () => {
+test('username server accepts a transfer authorization and a release once, and only at the provider they were made for', async () => {
 	const transferFromAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	const transferToAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 	let claimCalls = 0;
@@ -177,11 +177,13 @@ test('username server validates signed transfers and release requests', async ()
 	const baseURL = new URL(server.url);
 	const username = 'transfer';
 
-	const transferSigned = await SignData(transferFromAccount.assertAccount(), getUsernameTransferSignable({
+	const claimURL = new URL('/api/claim', baseURL);
+	const transferSignable = getUsernameTransferSignable({
 		username,
 		from: transferFromAccount,
 		to: transferToAccount
-	}));
+	});
+	const transferSigned = await signRequest(transferFromAccount.assertAccount(), { method: 'POST', url: claimURL }, transferSignable);
 
 	const claimPayload = {
 		username,
@@ -192,24 +194,36 @@ test('username server validates signed transfers and release requests', async ()
 		}
 	};
 
-	const claimSigned = await SignData(transferToAccount.assertAccount(), getUsernameClaimSignable(claimPayload));
-
-	const claimResponse = await fetch(new URL('/api/claim', baseURL), {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({
+	async function postClaim(transferSignedField: typeof transferSigned, tamper = false) {
+		const body = {
 			username,
 			account: transferToAccount.publicKeyString.get(),
 			transfer: {
 				from: transferFromAccount.publicKeyString.get(),
-				signed: transferSigned
+				signed: transferSignedField
+			}
+		};
+		const signed = await signRequest(transferToAccount.assertAccount(), { method: 'POST', url: claimURL, body }, getUsernameClaimSignable({ ...claimPayload, transfer: { ...claimPayload.transfer, signed: transferSignedField }}));
+
+		return(await fetch(claimURL, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json'
 			},
-			signed: claimSigned
-		})
-	});
+			body: JSON.stringify({ ...body, signed: tamper ? { ...signed, signature: 'invalid-signature' } : signed })
+		}));
+	}
+
+	/*
+	 * A transfer authorization made for another provider is refused here
+	 */
+	const otherProviderTransfer = await signRequest(transferFromAccount.assertAccount(), { method: 'POST', url: new URL('https://usernames.example.com/api/claim') }, transferSignable);
+	const otherProviderResponse = await postClaim(otherProviderTransfer);
+	expect(otherProviderResponse.status).toBeGreaterThanOrEqual(400);
+	expect(claimCalls).toBe(0);
+
+	const claimResponse = await postClaim(transferSigned);
 
 	expect(claimResponse.status).toBe(200);
 	expect(await claimResponse.json()).toEqual({ ok: true });
@@ -218,48 +232,49 @@ test('username server validates signed transfers and release requests', async ()
 	expect(transferClaimAccountMatched).toBe(true);
 	expect(transferClaimFromUserMatched).toBe(true);
 
-	const invalidClaimResponse = await fetch(new URL('/api/claim', baseURL), {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-		},
-		body: JSON.stringify({
-			username,
-			account: transferToAccount.publicKeyString.get(),
-			transfer: {
-				from: transferFromAccount.publicKeyString.get(),
-				signed: transferSigned
-			},
-			signed: {
-				...claimSigned,
-				signature: 'invalid-signature'
-			}
-		})
-	});
+	/*
+	 * The transfer authorization is spent, even inside a freshly signed claim
+	 */
+	const reusedTransferResponse = await postClaim(transferSigned);
+	expect(reusedTransferResponse.status).toBeGreaterThanOrEqual(400);
+	expect(claimCalls).toBe(1);
 
+	const invalidClaimResponse = await postClaim(await signRequest(transferFromAccount.assertAccount(), { method: 'POST', url: claimURL }, transferSignable), true);
 	expect(invalidClaimResponse.status).toBeGreaterThanOrEqual(400);
 	expect(invalidClaimResponse.status).toBeLessThan(600);
 	expect(claimCalls).toBe(1);
 
-	const releaseSigned = await SignData(transferToAccount.assertAccount(), getUsernameReleaseSignable({ account: transferToAccount }));
+	const releaseURL = new URL('/api/release', baseURL);
+	const releaseBody = { account: transferToAccount.publicKeyString.get() };
+	const releaseSigned = await signRequest(transferToAccount.assertAccount(), { method: 'POST', url: releaseURL, body: releaseBody }, getUsernameReleaseSignable({ account: transferToAccount }));
 
-	const releaseResponse = await fetch(new URL('/api/release', baseURL), {
+	const releaseResponse = await fetch(releaseURL, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			'Accept': 'application/json'
 		},
-		body: JSON.stringify({
-			account: transferToAccount.publicKeyString.get(),
-			signed: releaseSigned
-		})
+		body: JSON.stringify({ ...releaseBody, signed: releaseSigned })
 	});
 
 	expect(releaseResponse.status).toBe(200);
 	expect(await releaseResponse.json()).toEqual({ ok: true });
 	expect(releaseCalls).toBe(1);
 	expect(releaseMatchedAccount).toBe(true);
+
+	/*
+	 * Replaying the captured release is refused
+	 */
+	const replayedReleaseResponse = await fetch(releaseURL, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+		},
+		body: JSON.stringify({ ...releaseBody, signed: releaseSigned })
+	});
+	expect(replayedReleaseResponse.status).toBeGreaterThanOrEqual(400);
+	expect(releaseCalls).toBe(1);
 
 	const invalidReleaseResponse = await fetch(new URL('/api/release', baseURL), {
 		method: 'POST',
