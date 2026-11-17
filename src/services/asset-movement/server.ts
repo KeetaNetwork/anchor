@@ -286,8 +286,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					request = input.assertRequest(postData);
 				}
 
+				/*
+				 * A request that names an account must prove it, so a
+				 * handler never sees an account nobody signed for
+				 */
 				let account: Account.Account | null = null;
-				if (authenticationRequired || (request !== undefined && 'signed' in request)) {
+				if (authenticationRequired || (request !== undefined && ('signed' in request || 'account' in request))) {
 					let signed;
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
 						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url });

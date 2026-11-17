@@ -213,6 +213,33 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	expect(json).toMatchObject({ ok: false });
 });
 
+test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
+	const victim = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const accountsSeen: unknown[] = [];
+
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeServerConfig({
+		assetMovement: {
+			...makeServerConfig().assetMovement,
+			listPersistentForwarding: function(request) {
+				accountsSeen.push(request.account);
+				return(Promise.reject(new KeetaAnchorUserError('not implemented')));
+			}
+		}
+	}));
+	await server.start();
+
+	/* Ask for another account's forwarding addresses without signing */
+	const response = await fetch(new URL('/api/listPersistentForwarding', server.url), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({ account: victim.publicKeyString.get() })
+	});
+
+	expect(accountsSeen).toEqual([]);
+	expect(response.status).toBeGreaterThanOrEqual(400);
+	expect(response.status).toBeLessThan(500);
+});
+
 test('Asset Movement Server accepts share-KYC bodies over the 1 MiB default and refuses them elsewhere', async function() {
 	const receivedSizes: number[] = [];
 	const baseConfig = makeServerConfig();

@@ -653,7 +653,8 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 
 		let signed: HTTPSignedField | undefined;
 
-		if (auth.type === 'required' || (auth.type === 'optional' && input.account)) {
+		/* The server refuses a request that names an account without signing for it */
+		if (auth.type === 'required' || input.account) {
 			if (!input.account) {
 				throw(new Error('Account information is required for this operation'));
 			}
@@ -1153,22 +1154,29 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 		return(requestInformationJSON);
 	}
 
+	/**
+	 * Resolve a provider-supplied `promiseURL` against the provider's
+	 * `shareKYC` operation, and refuse one on another origin.
+	 */
 	async #resolvePromiseURL(promiseURL: string): Promise<string> {
-		if (!promiseURL.startsWith('/')) {
-			return(promiseURL);
+		const operation = await this.#getOperationData('shareKYC');
+		const operationURL = new URL(operation.url);
+		const resolved = new URL(promiseURL, operationURL);
+		if (resolved.origin !== operationURL.origin) {
+			throw(new Error(`promiseURL must be on the provider's origin (${operationURL.origin})`));
 		}
 
-		const operationData = await this.#getOperationData('shareKYC');
-		return(new URL(promiseURL, operationData.url).toString());
+		return(resolved.toString());
 	}
 
 	/**
 	 * Poll a `promiseURL` supplied by the provider (e.g. from
 	 * `shareKYCAttributes` or an `Errors.KYCPendingReview`) until it
-	 * completes. A root-relative URL resolves against the provider's
-	 * `shareKYC` operation. Resolves `true` once the promise completes and
-	 * `false` if aborted first; rejects with the provider's error if the
-	 * promise fails.
+	 * completes. The provider must offer the `shareKYC` operation: a
+	 * relative URL resolves against it, and a URL on another origin
+	 * rejects before any request is made. Resolves `true` once the
+	 * promise completes and `false` if aborted first; rejects with the
+	 * provider's error if the promise fails.
 	 */
 	async awaitPromiseURL(promiseURL: string, options?: AwaitPromiseURLOptions): Promise<boolean> {
 		return(await this.#pollPromiseURL(await this.#resolvePromiseURL(promiseURL), options));
@@ -1225,11 +1233,13 @@ export class KeetaAssetMovementAnchorProvider extends KeetaAssetMovementAnchorBa
 				}
 			}
 
-			if (!retryAfterMS) {
+			if (retryAfterMS === undefined || retryAfterMS <= 0) {
 				retryAfterMS = options?.defaultPollIntervalMs ?? 1000;
 			}
 
-			await KeetaNet.lib.Utils.Helper.asleep(retryAfterMS);
+			/* Wake no later than the caller's timeout, whatever the provider asks */
+			const remainingMS = Math.max(0, timeout - (Date.now() - startTime));
+			await KeetaNet.lib.Utils.Helper.asleep(Math.min(retryAfterMS, remainingMS));
 		}
 	}
 
