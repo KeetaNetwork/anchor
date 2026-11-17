@@ -40,7 +40,7 @@ import {
 } from './common.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { getDefaultResolver } from '../../config.js';
-import { EncryptedContainer } from '../../lib/encrypted-container.js';
+import { EncryptedContainer, EncryptedContainerError } from '../../lib/encrypted-container.js';
 import { createAssertEquals } from 'typia';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { SignData } from '../../lib/utils/signing.js';
@@ -248,6 +248,39 @@ async function getEndpoints(resolver: Resolver, logger?: Logger): Promise<GetEnd
 interface KeetaStorageAnchorBaseConfig {
 	client: KeetaNetUserClient;
 	logger?: Logger | undefined;
+}
+
+
+/**
+ * Decrypt a stored object for `reader`, and return its plaintext only when
+ * one of `signers` signed it. The storage anchor serves the bytes, so a
+ * signature is the only proof of who wrote them.
+ */
+async function openSignedContainer(encoded: Buffer, reader: KeetaNetAccount, signers: KeetaNetAccount[]): Promise<ArrayBuffer> {
+	const container = EncryptedContainer.fromEncryptedBuffer(encoded, [ reader ]);
+	const plaintext = await container.getPlaintext();
+
+	let verified: boolean;
+	try {
+		const signer = container.getSigningAccount();
+		const accepted = signer !== undefined && signers.some(function(account) {
+			return(account.comparePublicKey(signer));
+		});
+		verified = accepted && await container.verifySignature();
+	} catch (error) {
+		/* A signature the container cannot check is no proof of who wrote it */
+		if (EncryptedContainerError.isInstance(error)) {
+			throw(new Errors.SignatureInvalid(`Stored object signature cannot be verified: ${error.code}`));
+		}
+
+		throw(error);
+	}
+
+	if (!verified) {
+		throw(new Errors.SignatureInvalid('Stored object is not signed by an accepted account'));
+	}
+
+	return(plaintext);
 }
 
 class KeetaStorageAnchorBase {
@@ -942,15 +975,18 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 	 *
 	 * @param options.path - The storage path (e.g., "/user/<publicKey>/myfile.txt")
 	 * @param options.account - Optional account for signing and decryption (falls back to client account)
+	 * @param options.signers - Accounts whose signature on the object is accepted (defaults to the reading account)
 	 *
 	 * @returns The decrypted data and mime-type, or null if not found
 	 *
 	 * @throws PrivateKeyRequired if no account with private key is available
 	 * @throws InvalidResponse if the stored data cannot be decrypted
+	 * @throws SignatureInvalid if no accepted account signed the object
 	 */
 	async get(options: {
 		path: string;
 		account?: KeetaNetAccount;
+		signers?: KeetaNetAccount[];
 	}): Promise<{ data: Buffer; mimeType: string } | null> {
 		const { path } = options;
 		this.logger?.debug(`Getting object at path: ${path}`);
@@ -962,9 +998,7 @@ export class KeetaStorageAnchorProvider extends KeetaStorageAnchorBase {
 				account: signerAccount
 			});
 
-			// Decrypt the container and extract mimeType from encrypted payload
-			const container = EncryptedContainer.fromEncryptedBuffer(encodedData, [signerAccount]);
-			const plaintext = await container.getPlaintext();
+			const plaintext = await openSignedContainer(encodedData, signerAccount, options.signers ?? [ signerAccount ]);
 			const { mimeType, content: data } = parseContainerPayload(plaintext);
 
 			this.logger?.debug(`Get request successful for path: ${path}`);
