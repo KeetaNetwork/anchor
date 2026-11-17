@@ -663,7 +663,7 @@ describe('Storage Client - Content signer', function() {
 			const path = makePath('contact.txt');
 			const owner = account.publicKeyString.get();
 
-			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string) {
+			async function encodeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string): Promise<Buffer> {
 				const plaintext = JSON.stringify({ mimeType: 'text/plain', data: Buffer.from(text).toString('base64') });
 				let container: EncryptedContainer;
 				if (signer === undefined) {
@@ -671,7 +671,11 @@ describe('Storage Client - Content signer', function() {
 				} else {
 					container = EncryptedContainer.fromPlaintext(plaintext, [account], { signer });
 				}
-				await backend.put(path, Buffer.from(await container.getEncodedBuffer()), { owner, tags: [], visibility: 'private' });
+				return(Buffer.from(await container.getEncodedBuffer()));
+			}
+
+			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string) {
+				await backend.put(path, await encodeSignedBy(signer, text), { owner, tags: [], visibility: 'private' });
 			}
 
 			async function getError(): Promise<unknown> {
@@ -696,8 +700,7 @@ describe('Storage Client - Content signer', function() {
 			expect(accepted?.data.toString()).toBe('address B');
 
 			/* A signature made with an unsupported digest cannot be checked, so it proves nothing */
-			const ownContainer = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('address D').toString('base64') }), [account], { signer: account });
-			const encoded = Buffer.from(await ownContainer.getEncodedBuffer());
+			const encoded = await encodeSignedBy(account, 'address D');
 			/* DER of the SHA3-256 OID (2.16.840.1.101.3.4.2.8); the last arc becomes 10, SHA3-512 */
 			const sha3OID = Buffer.from('0609608648016503040208', 'hex');
 			const oidOffset = encoded.indexOf(sha3OID);
