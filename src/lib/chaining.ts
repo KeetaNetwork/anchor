@@ -612,9 +612,7 @@ function stepUsesPFR(path: AnchorChainingStepLike[], index: number): boolean {
  * forwarding-only applies PFR to every leg (chaining each into the next leg's
  * persistent address), while the default mode allows PFR only as the final step.
  */
-function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string, allowMidPlanUserSignatures: boolean): void {
-	assertNoMidPlanUserSignature(path, allowMidPlanUserSignatures);
-
+function validatePathStructure(path: AnchorChainingStepLike[], request: AnchorChainingPathInput, affinity: 'to' | 'from', forwardingOnly: boolean, keetaLocation: string): void {
 	/*
 	 * Forwarding-only requires every asset-movement leg to qualify for
 	 * persistent forwarding. #computePlan walks backwards here because each leg
@@ -2306,7 +2304,8 @@ export class AnchorChainingPath {
 	validate(options?: AnchorChainingPathValidateOptions): AnchorChainingPathValidationResult {
 		try {
 			const { affinity } = validateRequest(this.request);
-			validatePathStructure(this.path, this.request, affinity, options?.forwardingOnly === true, this.keetaLocation, this.parent['allowMidPlanUserSignatures']);
+			assertNoMidPlanUserSignature(this.path, this.parent['allowMidPlanUserSignatures']);
+			validatePathStructure(this.path, this.request, affinity, options?.forwardingOnly === true, this.keetaLocation);
 			return({ valid: true });
 		} catch (error) {
 			return({ valid: false, reason: error instanceof Error ? error.message : String(error) });
@@ -2494,7 +2493,8 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		const affinityAndAmount = validateRequest(this.request);
 		const { affinity } = affinityAndAmount;
-		validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation, this.parent['allowMidPlanUserSignatures']);
+		assertNoMidPlanUserSignature(this.path, this.parent['allowMidPlanUserSignatures']);
+		validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation);
 
 		const sharedClientOptions = {
 			resolver: this.parent['resolver'],
