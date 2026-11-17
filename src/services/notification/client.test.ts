@@ -7,7 +7,6 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { buildCert, buildChain } from '../../lib/utils/tests/certificates.js';
 import { KeetaAnchorCertificateRequiredError } from '../../lib/error.js';
 import Resolver from '../../lib/resolver.js';
-import type { KeetaAnchorReplayGuard } from '../../lib/http-server/replay-guard.js';
 import { MemoryReplayGuard } from '../../lib/http-server/replay-guard.js';
 
 const DEBUG = false;
@@ -191,7 +190,7 @@ interface GatedNotificationFixture extends AsyncDisposable {
  * certificates for arbitrary accounts on the same node and a `makeCaller`
  * helper that builds a notification client bound to a given account.
  */
-async function setupGatedNotificationServer(seed: string | ArrayBuffer, replayGuard?: KeetaAnchorReplayGuard): Promise<GatedNotificationFixture> {
+async function setupGatedNotificationServer(seed: string | ArrayBuffer, replayGuard?: MemoryReplayGuard): Promise<GatedNotificationFixture> {
 	const providerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const nodeAndClient = await createNodeAndClient(providerAccount);
 
@@ -262,20 +261,36 @@ test('notification cert-gate: account without published cert is rejected (401 mi
 }, 20_000);
 
 test('notification cert-gate: a caller without a cert spends no request nonce', async function() {
-	const claims: string[] = [];
-	const inner = new MemoryReplayGuard();
-	const recordingGuard: KeetaAnchorReplayGuard = {
-		async claim(key, expiresAt) {
-			claims.push(key);
-			return(await inner.claim(key, expiresAt));
-		}
-	};
-	await using gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed(), recordingGuard);
+	/*
+	 * The guard holds a single live nonce, so the certified request at
+	 * the end is accepted only if none of the refused requests before it
+	 * claimed one.
+	 */
+	const seed = KeetaNet.lib.Account.generateRandomSeed();
+	await using gate = await setupGatedNotificationServer(seed, new MemoryReplayGuard({ maxEntries: 1 }));
 
 	const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const registerTarget = await gate.makeCaller(noCertAccount);
-	await expect(registerTarget()).rejects.toSatisfy(KeetaAnchorCertificateRequiredError.isInstance.bind(KeetaAnchorCertificateRequiredError));
-	expect(claims).toEqual([]);
+	const registerWithoutCert = await gate.makeCaller(noCertAccount);
+	for (let attempt = 0; attempt < 3; attempt++) {
+		await expect(registerWithoutCert()).rejects.toSatisfy(KeetaAnchorCertificateRequiredError.isInstance.bind(KeetaAnchorCertificateRequiredError));
+	}
+
+	const certifiedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { leaf } = await buildChain({
+		rootIssuer: KeetaNet.lib.Account.fromSeed(seed, 200),
+		leafSubject: certifiedAccount
+	});
+	const certifiedUserClient = new KeetaNet.UserClient({
+		client: gate.client.client,
+		signer: certifiedAccount,
+		usePublishAid: false,
+		network: gate.client.network,
+		networkAlias: 'test'
+	});
+	await certifiedUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, leaf, null);
+
+	const registerWithCert = await gate.makeCaller(certifiedAccount);
+	await expect(registerWithCert()).resolves.toEqual({ id: 'ok' });
 }, 20_000);
 
 test('notification cert-gate: account with cert outside trust set is rejected (403 untrusted)', async () => {
