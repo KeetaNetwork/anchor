@@ -5,6 +5,7 @@ import { AsyncDisposableStack } from '../utils/defer.js';
 import type { JSONSerializable } from '../utils/json.ts';
 import { hash } from '../utils/tests/hash.js';
 import { getTestingPostgresConfig } from '../utils/tests/postgres.js';
+import { getTestingRedisConfig } from '../utils/tests/redis.js';
 
 import {
 	KeetaAnchorQueueRunnerJSONConfigProc,
@@ -57,24 +58,6 @@ function generateRequestID(): KeetaAnchorQueueRequestID {
  */
 function isPostgresDriver(driver: unknown): driver is KeetaAnchorQueueStorageDriverPostgres {
 	return(driver instanceof KeetaAnchorQueueStorageDriverPostgres);
-}
-
-function getTestingRedisConfig(): { host: string; port: number; password: string | undefined; } | null {
-	const host = process.env['ANCHOR_TESTING_REDIS_HOST'];
-	const portStr = process.env['ANCHOR_TESTING_REDIS_PORT'];
-
-	if (!host || !portStr) {
-		return(null);
-	}
-
-	const password = process.env['ANCHOR_TESTING_REDIS_SECRET'];
-
-	const port = Number(portStr);
-	if (isNaN(port) || port <= 0 || port >= 65536) {
-		return(null);
-	}
-
-	return({ host: host, port: port, password: password });
 }
 
 function getTestingFirestoreConfig(): { host: string; port: number; } | null {

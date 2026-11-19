@@ -131,7 +131,8 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * Where signed request nonces are recorded so each signature is
 	 * accepted once. Defaults to a {@link MemoryReplayGuard}, which is
 	 * per process: servers running several instances behind one URL
-	 * must share one guard.
+	 * must share one guard, such as a `RedisReplayGuard` or
+	 * `PostgresReplayGuard`.
 	 */
 	replayGuard?: KeetaAnchorReplayGuard | undefined;
 };

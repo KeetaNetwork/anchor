@@ -3,8 +3,8 @@
  * only once while its timestamp is still within the allowed skew.
  *
  * Servers that run several instances behind one URL must share one
- * guard, such as one backed by Redis or SQL, or a signature can be
- * replayed against another instance.
+ * guard, such as a `RedisReplayGuard` or `PostgresReplayGuard`, or a
+ * signature can be replayed against another instance.
  */
 export interface KeetaAnchorReplayGuard {
 	/**
