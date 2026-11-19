@@ -19,7 +19,7 @@ interface SharedStore extends AsyncDisposable {
 }
 
 function randomName(): string {
-	return(`t${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`);
+	return(`t${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`);
 }
 
 async function memoryStore(): Promise<SharedStore> {

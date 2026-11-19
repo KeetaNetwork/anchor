@@ -14,7 +14,7 @@ export function getTestingRedisConfig(): { host: string; port: number; password:
 	const password = process.env['ANCHOR_TESTING_REDIS_SECRET'];
 
 	const port = Number(portStr);
-	if (isNaN(port) || port <= 0 || port >= 65536) {
+	if (Number.isNaN(port) || port <= 0 || port >= 65536) {
 		return(null);
 	}
 
