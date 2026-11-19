@@ -21,6 +21,10 @@ import KeetaNotificationAnchorClient from '../services/notification/client.js';
 import type {
 	KeetaNotificationAnchorClientConfig
 } from '../services/notification/client.js';
+import KeetaContractsAnchorClient from '../services/contracts/client.js';
+import type {
+	KeetaContractsAnchorClientConfig
+} from '../services/contracts/client.js';
 
 // TODO: Determine how we want to export the client
 // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -52,6 +56,12 @@ export namespace Username {
 export namespace Notification {
 	export type ClientConfig = KeetaNotificationAnchorClientConfig;
 	export const Client: typeof KeetaNotificationAnchorClient = KeetaNotificationAnchorClient;
+}
+// TODO: Determine how we want to export the client
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace Contracts {
+	export type ClientConfig = KeetaContractsAnchorClientConfig;
+	export const Client: typeof KeetaContractsAnchorClient = KeetaContractsAnchorClient;
 }
 
 export {

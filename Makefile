@@ -7,6 +7,15 @@
 #
 # To get a list of targets run "make help".
 
+# Dependencies vendored by commit hash. The tarball under "vendor/dynamic" is a
+# build artifact and is not committed; the commit in the dependency string in
+# "package.json" is the source of truth.
+DYNAMIC_VENDOR_PACKAGES := $(shell jq -crM '( .dependencies + .devDependencies ) | .[] | select(match("file:vendor/dynamic/")) | sub("^file:"; "")' < package.json)
+# Only these are shipped (bundled) in the package; vendored devDependencies
+# are only installed for development
+DYNAMIC_VENDOR_RUNTIME_PACKAGES := $(shell jq -crM '.dependencies | .[] | select(match("file:vendor/dynamic/")) | sub("^file:"; "")' < package.json)
+DYNAMIC_VENDOR_KEETANET_NODE_REPO_URL := git@github.com:KeetaNetwork/node.git
+
 # The default target -- makes the "dist" directory
 # and creates a ".nvmrc" file.
 all: dist .nvmrc
@@ -32,8 +41,38 @@ help:
 	jq -rM '"v" + .engines.node' < package.json > .nvmrc.new
 	mv .nvmrc.new .nvmrc
 
+# Builds the vendored KeetaNet Client and KeetaNet Node tarballs from a commit
+# of the KeetaNet Node repository. The hash is read out of the target name,
+# which is where "package.json" put it. Building the client also builds the
+# Node package's "dist", so one build of the commit makes both (a pattern rule
+# with two targets runs its recipe once for both).
+#
+# The client builds byte-for-byte the same from a commit, so its integrity
+# hash is kept in the lock file. The Node package does not (the zip files in
+# it carry build timestamps), so its integrity hash is removed from the lock
+# file for npm to install whatever this builds.
+vendor/dynamic/keetanetwork-keetanet-client-%.tgz vendor/dynamic/keetanetwork-keetanet-node-%.tgz:
+	if [ "$$(jq -crM '.packages["node_modules/@keetanetwork/keetanet-node"].integrity' < package-lock.json)" != "null" ]; then \
+		jq --tab 'del(.packages["node_modules/@keetanetwork/keetanet-node"].integrity)' < package-lock.json > package-lock.json.new && \
+		mv package-lock.json.new package-lock.json; \
+	fi
+	mkdir -p vendor/dynamic
+	rm -rf __TMP__KEETANET_NODE__
+	mkdir __TMP__KEETANET_NODE__
+	( cd __TMP__KEETANET_NODE__ && git clone --depth 1 '$(DYNAMIC_VENDOR_KEETANET_NODE_REPO_URL)' . && git fetch --depth 1 origin '$*' && git checkout FETCH_HEAD )
+	$(MAKE) -C __TMP__KEETANET_NODE__ built/keetanet-clientlib.tar.gz
+	mv __TMP__KEETANET_NODE__/built/keetanet-clientlib.tar.gz 'vendor/dynamic/keetanetwork-keetanet-client-$*.tgz.new'
+	@# "dist" is already built, so skip the "prepack" script that builds it
+	( cd __TMP__KEETANET_NODE__ && npm pack --ignore-scripts --pack-destination built )
+	mv __TMP__KEETANET_NODE__/built/keetanetwork-keetanet-node-*.tgz 'vendor/dynamic/keetanetwork-keetanet-node-$*.tgz.new'
+	rm -rf __TMP__KEETANET_NODE__
+	tar -tf 'vendor/dynamic/keetanetwork-keetanet-client-$*.tgz.new' > /dev/null
+	tar -tf 'vendor/dynamic/keetanetwork-keetanet-node-$*.tgz.new' > /dev/null
+	mv 'vendor/dynamic/keetanetwork-keetanet-client-$*.tgz.new' 'vendor/dynamic/keetanetwork-keetanet-client-$*.tgz'
+	mv 'vendor/dynamic/keetanetwork-keetanet-node-$*.tgz.new' 'vendor/dynamic/keetanetwork-keetanet-node-$*.tgz'
+
 # This target creates the "node_modules" directory.
-node_modules/.done: package.json package-lock.json Makefile
+node_modules/.done: package.json package-lock.json Makefile $(DYNAMIC_VENDOR_PACKAGES)
 	rm -rf node_modules
 	npm clean-install
 	@touch node_modules/.done
@@ -64,9 +103,18 @@ src/services/asset-movement/lib/data/addresses/types.generated.ts: utils/run-ts 
 	./utils/run-ts ./src/services/asset-movement/lib/data/scripts/generator.ts --types-output=./src/services/asset-movement/lib/data/addresses/types.generated.ts
 
 # This target creates the distribution directory.
-dist/npm-shrinkwrap.json: package-lock.json package.json Makefile
+dist/npm-shrinkwrap.json: package-lock.json package.json Makefile $(DYNAMIC_VENDOR_PACKAGES)
 	mkdir -p dist
-	jq '. | del(.devDependencies) | del(.scripts.prepare)' < package.json > dist/package.json
+	@# The vendored tarballs are copied in for "npm shrinkwrap" to resolve,
+	@# and listed in bundleDependencies for "do-npm-pack".  The bundle holds
+	@# only the vendored packages themselves, so their dependencies are made
+	@# dependencies of this package for npm to install.
+	rm -rf dist/vendor
+	mkdir -p dist/vendor/dynamic
+	$(if $(DYNAMIC_VENDOR_RUNTIME_PACKAGES),cp $(DYNAMIC_VENDOR_RUNTIME_PACKAGES) dist/vendor/dynamic/)
+	for tarball in $(DYNAMIC_VENDOR_RUNTIME_PACKAGES); do tar -xzOf "$$tarball" package/package.json || exit 1; done > dist/vendor-packages.json
+	jq --slurpfile vendored dist/vendor-packages.json '. | del(.devDependencies) | del(.scripts.prepare) | .bundleDependencies = [.dependencies | to_entries[] | select(.value | startswith("file:vendor/dynamic/")) | .key] | .dependencies = (reduce $$vendored[] as $$package ({}; . + ($$package.dependencies // {})) + .dependencies) | .optionalDependencies = (reduce $$vendored[] as $$package ({}; . + ($$package.optionalDependencies // {})) + (.optionalDependencies // {})) | if .optionalDependencies == {} then del(.optionalDependencies) else . end' < package.json > dist/package.json
+	rm -f dist/vendor-packages.json
 	cp package-lock.json dist/
 	test -e .npmrc && cp .npmrc dist/ || :
 	cd dist && npm shrinkwrap
@@ -94,8 +142,19 @@ dist: dist/.done
 
 # This is a synthetic target that creates a distributable
 # package for this project.
+#
+# A registry install cannot resolve a "file:" dependency, so each vendored
+# tarball is unpacked into dist/node_modules for the duration of "npm pack",
+# which bundles it.
 do-npm-pack: dist node_modules Makefile
+	rm -rf dist/node_modules
+	jq -crM '.dependencies | to_entries[] | select(.value | startswith("file:vendor/dynamic/")) | .key + " " + (.value | sub("^file:"; ""))' < dist/package.json | \
+		while read -r name tarball; do \
+			mkdir -p "dist/node_modules/$$name" && \
+			tar -xzf "dist/$$tarball" -C "dist/node_modules/$$name" --strip-components=1 || exit 1; \
+		done
 	cd dist && npm pack
+	rm -rf dist/node_modules
 	mv dist/keetanetwork-anchor-*.tgz .
 
 # Target for publishing to NPM
@@ -133,6 +192,7 @@ clean:
 	rm -rf .coverage
 	rm -f .tsbuildinfo
 	rm -f keetanetwork-anchor-*.tgz
+	rm -f vendor/dynamic/*.new
 	rm -f src/services/kyc/oids.generated.ts src/services/kyc/iso20022.generated.ts
 	rm -f src/services/asset-movement/lib/data/addresses/*.generated.ts
 	rm -f src/services/asset-movement/lib/data/addresses/*/*.generated.ts
@@ -143,6 +203,7 @@ clean:
 # These files should also be added to the ".gitignore" file.
 distclean: clean
 	rm -rf node_modules
+	rm -rf vendor/dynamic
 	rm -f .nvmrc
 
 .PHONY: all help test clean distclean do-npm-pack do-deploy do-lint
