@@ -1,6 +1,7 @@
-// cspell:ignore hashtext TIMESTAMPTZ xact
+// cspell:ignore TIMESTAMPTZ xact
 
 import type * as pg from 'pg';
+import type { Logger } from '../log/index.js';
 import type { KeetaAnchorReplayGuard } from './replay-guard.js';
 
 /**
@@ -14,8 +15,9 @@ export interface PostgresReplayGuardOptions {
 	pool: () => Promise<pg.Pool>;
 
 	/**
-	 * Name of the table the guard keeps its claims in. Created when the
-	 * guard is first used. Defaults to `replay_guard_claims`.
+	 * Name of the table the guard keeps its claims in. Created, with a
+	 * `<tableName>_schema_version` table beside it, when the guard is
+	 * first used. Defaults to `replay_guard_claims`.
 	 */
 	tableName?: string | undefined;
 
@@ -24,14 +26,26 @@ export interface PostgresReplayGuardOptions {
 	 * milliseconds. Defaults to one minute.
 	 */
 	sweepIntervalMs?: number | undefined;
+
+	/**
+	 * Receives errors from deleting expired claims, which never fail a
+	 * claim
+	 */
+	logger?: Logger | undefined;
 }
 
 /**
  * Table names are written into the SQL, so they are limited to plain
- * identifiers short enough that the index name built from them
- * fits the 63 bytes Postgres allows
+ * identifiers short enough that the names built from them, such as
+ * `<tableName>_schema_version`, fit the 63 bytes Postgres allows
  */
-const TableNamePattern = /^[a-z_][a-z0-9_]{0,51}$/;
+const TableNamePattern = /^[a-z_][a-z0-9_]{0,47}$/;
+
+/**
+ * Key of the advisory lock that instances hold while they bring the
+ * tables to the current schema version, one at a time
+ */
+const SCHEMA_LOCK_ID = 0x5245504C;
 
 /**
  * {@link KeetaAnchorReplayGuard} shared through Postgres, for servers
@@ -43,18 +57,20 @@ export class PostgresReplayGuard implements KeetaAnchorReplayGuard {
 	readonly #pool: PostgresReplayGuardOptions['pool'];
 	readonly #tableName: string;
 	readonly #sweepIntervalMs: number;
+	readonly #logger: Logger | undefined;
 	#ready: Promise<pg.Pool> | undefined;
 	#lastSweep = 0;
 
 	constructor(options: PostgresReplayGuardOptions) {
 		const tableName = options.tableName ?? 'replay_guard_claims';
 		if (!TableNamePattern.test(tableName)) {
-			throw(new Error(`Invalid tableName ${tableName}: use lowercase letters, digits and underscores, at most 52 characters`));
+			throw(new Error(`Invalid tableName ${tableName}: use lowercase letters, digits and underscores, at most 48 characters`));
 		}
 
 		this.#pool = options.pool;
 		this.#tableName = tableName;
 		this.#sweepIntervalMs = options.sweepIntervalMs ?? 60_000;
+		this.#logger = options.logger;
 	}
 
 	async claim(key: string, expiresAt: Date): Promise<boolean> {
@@ -68,9 +84,16 @@ export class PostgresReplayGuard implements KeetaAnchorReplayGuard {
 			RETURNING key
 		`, [ key, expiresAt, now ]);
 
-		await this.#sweep(pool, now);
+		const claimed = result.rowCount === 1;
 
-		return(result.rowCount === 1);
+		/* The claim is recorded, so a failed sweep must not fail it */
+		try {
+			await this.#sweep(pool, now);
+		} catch (error: unknown) {
+			this.#logger?.error('PostgresReplayGuard::claim', 'Could not delete expired claims:', error);
+		}
+
+		return(claimed);
 	}
 
 	async #getPool(): Promise<pg.Pool> {
@@ -78,16 +101,30 @@ export class PostgresReplayGuard implements KeetaAnchorReplayGuard {
 			const pool = await this.#pool();
 			const client = await pool.connect();
 			try {
-				/* Instances starting together create the table one at a time */
+				/* Instances starting together migrate the tables one at a time */
 				await client.query('BEGIN');
-				await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [ this.#tableName ]);
+				await client.query('SELECT pg_advisory_xact_lock($1)', [ SCHEMA_LOCK_ID ]);
 				await client.query(`
-					CREATE TABLE IF NOT EXISTS ${this.#tableName} (
-						key TEXT PRIMARY KEY,
-						expires_at TIMESTAMPTZ NOT NULL
+					CREATE TABLE IF NOT EXISTS ${this.#tableName}_schema_version (
+						version INTEGER PRIMARY KEY,
+						applied_at TIMESTAMPTZ NOT NULL
 					)
 				`);
-				await client.query(`CREATE INDEX IF NOT EXISTS ${this.#tableName}_expires_at ON ${this.#tableName} (expires_at)`);
+				const versionResult = await client.query<{ version: number | null }>(`SELECT MAX(version) AS version FROM ${this.#tableName}_schema_version`);
+				const currentVersion = versionResult.rows[0]?.version ?? 0;
+
+				/* Version 1: the claims table and its expiry index */
+				if (currentVersion < 1) {
+					await client.query(`
+						CREATE TABLE ${this.#tableName} (
+							key TEXT PRIMARY KEY,
+							expires_at TIMESTAMPTZ NOT NULL
+						)
+					`);
+					await client.query(`CREATE INDEX ${this.#tableName}_expires_at ON ${this.#tableName} (expires_at)`);
+					await client.query(`INSERT INTO ${this.#tableName}_schema_version (version, applied_at) VALUES (1, now())`);
+				}
+
 				await client.query('COMMIT');
 			} catch (error: unknown) {
 				await client.query('ROLLBACK');
