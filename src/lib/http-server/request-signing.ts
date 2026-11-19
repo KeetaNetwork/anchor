@@ -4,13 +4,19 @@ import type { HTTPSignedField } from './common.js';
 import type { KeetaAnchorReplayGuard } from './replay-guard.js';
 import { Buffer } from '../utils/buffer.js';
 import { KeetaAnchorUserError } from '../error.js';
-import { DEFAULT_MAX_SKEW_MS, SignData, VerifySignedData, canonicalizeJson } from '../utils/signing.js';
+import { DEFAULT_MAX_SKEW_MS, FormatData, VerifySignedData, canonicalizeJson } from '../utils/signing.js';
 
 /**
  * Version tag of the request signable layout. A signature made for
  * another layout never verifies.
  */
 const REQUEST_SIGNABLE_TAG = 'keeta-anchor-request-v1';
+
+/**
+ * Joins the request nonce and the v2 request signature inside the nonce
+ * of a dual signature. Neither a UUID nor base64 contains it.
+ */
+const DUAL_NONCE_SEPARATOR = '~v2~';
 
 /**
  * The request a signature is made for: the operation URL as the client
@@ -30,6 +36,13 @@ export interface RequestTarget {
  */
 export interface RequestAuthContext extends RequestTarget {
 	replayGuard: KeetaAnchorReplayGuard;
+
+	/**
+	 * Accept a signature that covers only the operation's data, as
+	 * clients before request binding make. Such a signature names no
+	 * anchor, method or body. Defaults to `true`.
+	 */
+	acceptLegacySignatures?: boolean | undefined;
 }
 
 /**
@@ -114,18 +127,60 @@ export function publicRequestURL(serverURL: string, requestURL: URL): URL {
 	return(new URL(`${requestURL.pathname}${requestURL.search}`, serverURL));
 }
 
+async function signFormatted(account: SignableAccount, data: Signable, nonce: string, timestamp: string): Promise<string> {
+	const { verificationData } = FormatData(account, data, nonce, timestamp);
+	const signature = await account.sign(KeetaNetLib.Utils.Helper.bufferToArrayBuffer(verificationData));
+
+	return(signature.getBuffer().toString('base64'));
+}
+
 /**
- * Sign `data` for one request.
+ * Sign `data` for one request, in a form both kinds of anchor verify.
+ *
+ * The v2 signature covers the request (see {@link requestSignable}) and
+ * rides in the nonce, after {@link DUAL_NONCE_SEPARATOR}. The
+ * `signature` field is the legacy signature of `data` alone, made over
+ * that whole nonce, so an anchor that predates request binding verifies
+ * it unchanged, and the v2 part cannot be removed without breaking it.
  */
 export async function signRequest(account: SignableAccount, target: RequestTarget, data: Signable): Promise<HTTPSignedField> {
-	return(await SignData(account, requestSignable(target, data)));
+	const requestNonce = crypto.randomUUID();
+	const timestamp = new Date().toISOString();
+	const requestSignature = await signFormatted(account, requestSignable(target, data), requestNonce, timestamp);
+
+	const nonce = `${requestNonce}${DUAL_NONCE_SEPARATOR}${requestSignature}`;
+	const signature = await signFormatted(account, data, nonce, timestamp);
+
+	return({ nonce, timestamp, signature });
+}
+
+/**
+ * The v2 request signature carried in a dual signature's nonce, or
+ * `undefined` when `signed` is not a dual signature
+ */
+function requestSignatureOf(signed: HTTPSignedField): HTTPSignedField | undefined {
+	const separatorAt = signed.nonce.indexOf(DUAL_NONCE_SEPARATOR);
+	if (separatorAt < 0) {
+		return(undefined);
+	}
+
+	return({
+		nonce: signed.nonce.slice(0, separatorAt),
+		timestamp: signed.timestamp,
+		signature: signed.nonce.slice(separatorAt + DUAL_NONCE_SEPARATOR.length)
+	});
 }
 
 /**
  * Check that a request signature covers this request, without spending
  * its nonce. Resolves `false` when it does not.
+ *
+ * A dual signature must hold in both parts, and its v2 part names the
+ * request. A plain signature is accepted when it covers the request, or,
+ * unless `context.acceptLegacySignatures` is `false`, when it covers
+ * `data` alone, as clients before request binding sign.
  */
-export async function verifyRequestSignature(account: VerifiableAccount, context: RequestTarget, data: Signable, signed: HTTPSignedField): Promise<boolean> {
+export async function verifyRequestSignature(account: VerifiableAccount, context: RequestTarget & Pick<RequestAuthContext, 'acceptLegacySignatures'>, data: Signable, signed: HTTPSignedField): Promise<boolean> {
 	let signable: Signable;
 	try {
 		signable = requestSignable(context, data);
@@ -134,7 +189,26 @@ export async function verifyRequestSignature(account: VerifiableAccount, context
 		return(false);
 	}
 
-	return(await VerifySignedData(account, signable, signed, { maxSkewMs: DEFAULT_MAX_SKEW_MS }));
+	const options = { maxSkewMs: DEFAULT_MAX_SKEW_MS };
+	const requestSignature = requestSignatureOf(signed);
+	if (requestSignature !== undefined) {
+		/* Both parts must hold, so a dual signature is never half valid */
+		if (!await VerifySignedData(account, signable, requestSignature, options)) {
+			return(false);
+		}
+
+		return(await VerifySignedData(account, data, signed, options));
+	}
+
+	if (await VerifySignedData(account, signable, signed, options)) {
+		return(true);
+	}
+
+	if (context.acceptLegacySignatures === false) {
+		return(false);
+	}
+
+	return(await VerifySignedData(account, data, signed, options));
 }
 
 /**
@@ -144,7 +218,9 @@ export async function verifyRequestSignature(account: VerifiableAccount, context
  */
 export async function claimRequestNonce(account: VerifiableAccount, context: RequestAuthContext, signed: HTTPSignedField): Promise<void> {
 	const expiresAt = new Date(new Date(signed.timestamp).valueOf() + DEFAULT_MAX_SKEW_MS);
-	const claimed = await context.replayGuard.claim(`request:${account.publicKeyString.get()}:${signed.nonce}`, expiresAt);
+	/* Both parts of a dual signature spend the one request nonce */
+	const nonce = requestSignatureOf(signed)?.nonce ?? signed.nonce;
+	const claimed = await context.replayGuard.claim(`request:${account.publicKeyString.get()}:${nonce}`, expiresAt);
 	if (!claimed) {
 		throw(new KeetaAnchorUserError('Signed request refused: its nonce was already used, or the server cannot accept more signed requests now'));
 	}
