@@ -265,13 +265,13 @@ export function FormatData(account: VerifiableAccount, data: Signable, nonce?: s
 	});
 }
 
-export async function SignData(account: SignableAccount, data: Signable): Promise<{ nonce: string; timestamp: string; signature: string; }> {
-	const { nonce, timestamp, verificationData } = FormatData(account, data);
-	const signature = await account.sign(bufferToArrayBuffer(verificationData));
+export async function SignData(account: SignableAccount, data: Signable, nonce?: string, timestamp?: string | Date): Promise<{ nonce: string; timestamp: string; signature: string; }> {
+	const formatted = FormatData(account, data, nonce, timestamp);
+	const signature = await account.sign(bufferToArrayBuffer(formatted.verificationData));
 
 	return({
-		nonce: nonce,
-		timestamp: timestamp,
+		nonce: formatted.nonce,
+		timestamp: formatted.timestamp,
 		signature: signature.getBuffer().toString('base64')
 	});
 }

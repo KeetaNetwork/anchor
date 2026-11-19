@@ -131,9 +131,18 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * Where signed request nonces are recorded so each signature is
 	 * accepted once. Defaults to a {@link MemoryReplayGuard}, which is
 	 * per process: servers running several instances behind one URL
-	 * must share one guard.
+	 * must share one guard, such as a `RedisReplayGuard` or
+	 * `PostgresReplayGuard`.
 	 */
 	replayGuard?: KeetaAnchorReplayGuard | undefined;
+
+	/**
+	 * Accept request signatures from clients that predate request
+	 * binding. Such a signature covers only the operation's data, so it
+	 * can be replayed at another anchor. Defaults to `true`; set it to
+	 * `false` once every client signs requests.
+	 */
+	acceptLegacyRequestSignatures?: boolean | undefined;
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
@@ -146,6 +155,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	 */
 	protected readonly resolvedCertificateChainRequirement: ResolvedCertificateChainRequirement | undefined;
 	readonly replayGuard: KeetaAnchorReplayGuard;
+	readonly acceptLegacyRequestSignatures: boolean;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
@@ -159,6 +169,12 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 		this.resolvedCertificateChainRequirement = resolveCertificateChainConfig(config.requireCertificateChain);
 		this.replayGuard = config.replayGuard ?? new MemoryReplayGuard();
+		/*
+		 * XXX:TODO: Default to `false` in the first release after every
+		 *           supported client sends dual signatures, and drop the
+		 *           legacy path once no anchor runs a release before them
+		 */
+		this.acceptLegacyRequestSignatures = config.acceptLegacyRequestSignatures ?? true;
 
 		if (config.url !== undefined) {
 			if (config.url instanceof URL || typeof config.url === 'string') {
@@ -816,14 +832,16 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 	/**
 	 * The context to verify a signed request against: the request as
-	 * seen at this server's public URL, and this server's replay guard.
+	 * seen at this server's public URL, this server's replay guard, and
+	 * whether it accepts legacy signatures.
 	 */
 	protected requestAuthContext(method: string, requestURL: URL, body?: RequestAuthContext['body']): RequestAuthContext {
 		return({
 			method,
 			url: publicRequestURL(this.url, requestURL),
 			body,
-			replayGuard: this.replayGuard
+			replayGuard: this.replayGuard,
+			acceptLegacySignatures: this.acceptLegacyRequestSignatures
 		});
 	}
 

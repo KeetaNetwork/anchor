@@ -9,6 +9,8 @@ import { assertHTTPSignedField } from '../../lib/http-server/common.js';
 import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData, getKeetaAssetMovementAnchorShareKYCRequestSigningData } from './common.js';
 import { isKeetaAssetMovementAnchorGetAccountStatusResponse } from './common.generated.js';
 import { signRequest } from '../../lib/http-server/request-signing.js';
+import { MemoryReplayGuard } from '../../lib/http-server/replay-guard.js';
+import { SignData } from '../../lib/utils/signing.js';
 
 function makeServerConfig(overrides: Partial<KeetaAnchorAssetMovementServerConfig> = {}): KeetaAnchorAssetMovementServerConfig {
 	const asset = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -227,6 +229,70 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	expect(response.ok).toBe(false);
 	const json: unknown = await response.json();
 	expect(json).toMatchObject({ ok: false });
+});
+
+test('a signed request spent at one server instance is refused at another that shares its replay guard', async function() {
+	/* Two instances behind one public URL, as on a platform that scales out */
+	const publicURL = 'https://anchor.example.com/';
+	const replayGuard = new MemoryReplayGuard();
+	const accountsSeen: string[] = [];
+	const config = {
+		...makeGetAccountStatusConfig(async function(account) {
+			accountsSeen.push(account.publicKeyString.get());
+			return({ actionRequired: false });
+		}),
+		url: publicURL,
+		replayGuard
+	};
+	await using first = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await using second = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await first.start();
+	await second.start();
+
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const body = { account: account.publicKeyString.get() };
+	const signed = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/getAccountStatus', publicURL), body }, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+	async function sendTo(server: KeetaNetAssetMovementAnchorHTTPServer): Promise<number> {
+		const response = await fetch(new URL('/api/getAccountStatus', `http://localhost:${server.port}`), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ ...body, signed })
+		});
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	expect(await sendTo(first)).toBe(200);
+	expect(await sendTo(second)).toBe(400);
+	expect(accountsSeen).toEqual([ account.publicKeyString.get() ]);
+});
+
+test('a legacy request signature is accepted by default and refused by a server built not to accept it', async function() {
+	async function statusWith(acceptLegacyRequestSignatures: boolean | undefined): Promise<number> {
+		await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+			...makeGetAccountStatusConfig(async function() {
+				return({ actionRequired: false });
+			}),
+			acceptLegacyRequestSignatures
+		});
+		await server.start();
+
+		/* Signed the way clients before request binding sign: the data alone */
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const signed = await SignData(account.assertAccount(), getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+		const response = await fetch(new URL('/api/getAccountStatus', server.url), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ account: account.publicKeyString.get(), signed })
+		});
+		await response.arrayBuffer();
+
+		return(response.status);
+	}
+
+	expect(await statusWith(undefined)).toBe(200);
+	expect(await statusWith(true)).toBe(200);
+	expect(await statusWith(false)).toBe(400);
 });
 
 test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
