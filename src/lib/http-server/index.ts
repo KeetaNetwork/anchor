@@ -169,6 +169,11 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 		this.resolvedCertificateChainRequirement = resolveCertificateChainConfig(config.requireCertificateChain);
 		this.replayGuard = config.replayGuard ?? new MemoryReplayGuard();
+		/*
+		 * XXX:TODO: Default to `false` in the first release after every
+		 *           supported client sends dual signatures, and drop the
+		 *           legacy path once no anchor runs a release before them
+		 */
 		this.acceptLegacyRequestSignatures = config.acceptLegacyRequestSignatures ?? true;
 
 		if (config.url !== undefined) {

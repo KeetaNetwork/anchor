@@ -4,7 +4,7 @@ import type { HTTPSignedField } from './common.js';
 import type { KeetaAnchorReplayGuard } from './replay-guard.js';
 import { Buffer } from '../utils/buffer.js';
 import { KeetaAnchorUserError } from '../error.js';
-import { DEFAULT_MAX_SKEW_MS, FormatData, VerifySignedData, canonicalizeJson } from '../utils/signing.js';
+import { DEFAULT_MAX_SKEW_MS, SignData, VerifySignedData, canonicalizeJson } from '../utils/signing.js';
 
 /**
  * Version tag of the request signable layout. A signature made for
@@ -127,13 +127,6 @@ export function publicRequestURL(serverURL: string, requestURL: URL): URL {
 	return(new URL(`${requestURL.pathname}${requestURL.search}`, serverURL));
 }
 
-async function signFormatted(account: SignableAccount, data: Signable, nonce: string, timestamp: string): Promise<string> {
-	const { verificationData } = FormatData(account, data, nonce, timestamp);
-	const signature = await account.sign(KeetaNetLib.Utils.Helper.bufferToArrayBuffer(verificationData));
-
-	return(signature.getBuffer().toString('base64'));
-}
-
 /**
  * Sign `data` for one request, in a form both kinds of anchor verify.
  *
@@ -144,14 +137,9 @@ async function signFormatted(account: SignableAccount, data: Signable, nonce: st
  * it unchanged, and the v2 part cannot be removed without breaking it.
  */
 export async function signRequest(account: SignableAccount, target: RequestTarget, data: Signable): Promise<HTTPSignedField> {
-	const requestNonce = crypto.randomUUID();
-	const timestamp = new Date().toISOString();
-	const requestSignature = await signFormatted(account, requestSignable(target, data), requestNonce, timestamp);
+	const request = await SignData(account, requestSignable(target, data));
 
-	const nonce = `${requestNonce}${DUAL_NONCE_SEPARATOR}${requestSignature}`;
-	const signature = await signFormatted(account, data, nonce, timestamp);
-
-	return({ nonce, timestamp, signature });
+	return(await SignData(account, data, `${request.nonce}${DUAL_NONCE_SEPARATOR}${request.signature}`, request.timestamp));
 }
 
 /**

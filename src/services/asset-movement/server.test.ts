@@ -10,6 +10,7 @@ import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData, 
 import { isKeetaAssetMovementAnchorGetAccountStatusResponse } from './common.generated.js';
 import { signRequest } from '../../lib/http-server/request-signing.js';
 import { MemoryReplayGuard } from '../../lib/http-server/replay-guard.js';
+import { SignData } from '../../lib/utils/signing.js';
 
 function makeServerConfig(overrides: Partial<KeetaAnchorAssetMovementServerConfig> = {}): KeetaAnchorAssetMovementServerConfig {
 	const asset = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0, KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
@@ -264,6 +265,34 @@ test('a signed request spent at one server instance is refused at another that s
 	expect(await sendTo(first)).toBe(200);
 	expect(await sendTo(second)).toBe(400);
 	expect(accountsSeen).toEqual([ account.publicKeyString.get() ]);
+});
+
+test('a legacy request signature is accepted by default and refused by a server built not to accept it', async function() {
+	async function statusWith(acceptLegacyRequestSignatures: boolean | undefined): Promise<number> {
+		await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+			...makeGetAccountStatusConfig(async function() {
+				return({ actionRequired: false });
+			}),
+			acceptLegacyRequestSignatures
+		});
+		await server.start();
+
+		/* Signed the way clients before request binding sign: the data alone */
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const signed = await SignData(account.assertAccount(), getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+		const response = await fetch(new URL('/api/getAccountStatus', server.url), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ account: account.publicKeyString.get(), signed })
+		});
+		await response.arrayBuffer();
+
+		return(response.status);
+	}
+
+	expect(await statusWith(undefined)).toBe(200);
+	expect(await statusWith(true)).toBe(200);
+	expect(await statusWith(false)).toBe(400);
 });
 
 test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
