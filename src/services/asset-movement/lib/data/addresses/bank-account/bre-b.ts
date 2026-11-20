@@ -1,5 +1,6 @@
 import type { Schema } from '../../json-schema.js';
 import { sharedSchemaReferences, type AccountAddressSchema } from '../../types.js';
+import { colombiaIdentityProperties } from './co.js';
 
 const breBKeyType = { type: 'string', enum: [ 'mobile', 'email', 'id', 'alias' ] } satisfies Schema;
 
@@ -17,18 +18,17 @@ const breBSchema: AccountAddressSchema = {
 			type: 'object',
 			properties: {
 				breBKeyType: breBKeyType,
-				breBKey: { type: 'string' },
+				breBKey: {
+					type: 'string',
+					description: 'Bre-B key: a phone, an email, an ID number, or an alias that starts with @',
+					minLength: 5,
+					maxLength: 92,
+					pattern: '^\\S{5,92}$'
+				},
 				accountAddress: sharedSchemaReferences.PhysicalAddress,
-				document: {
-					type: 'object',
-					properties: {
-						type: { type: 'string', enum: [ 'cc', 'nit', 'ce', 'pass', 'pep' ] },
-						number: { type: 'string' }
-					},
-					required: [ 'number' ]
-				}
+				...colombiaIdentityProperties
 			},
-			required: []
+			required: [ 'breBKeyType', 'breBKey' ]
 		},
 		obfuscated: {
 			type: 'object',
