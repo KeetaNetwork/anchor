@@ -1,7 +1,7 @@
 import { afterEach } from 'vitest';
 import * as KeetaNetClient from '@keetanetwork/keetanet-client';
 import { createTestNode } from '@keetanetwork/keetanet-node/dist/lib/utils/helper_testing.js';
-import * as KeetaNetNode from '@keetanetwork/keetanet-node/dist/client';
+import * as KeetaNetNode from '@keetanetwork/keetanet-node/dist/client/index.js';
 import { assert } from 'typia';
 import Resolver from '../../resolver.js';
 

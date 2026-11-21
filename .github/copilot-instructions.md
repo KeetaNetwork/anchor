@@ -8,7 +8,7 @@ This repository uses **Make** as the primary interface for all build, test, and 
 
 - `make help` - Display all available targets
 - `make all` - Build the entire project (creates dist directory)
-- `make test` - Run the test suite
+- `make test` - Type check with `tsrs --noEmit` (the Rust port of the TypeScript compiler; `npm run tsrs -- --noEmit` to run just that), then run the test suite
 - `make do-lint` - Run ESLint on the project source
 - `make clean` - Remove build artifacts
 - `make distclean` - Remove all build artifacts and dependencies
