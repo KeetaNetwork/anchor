@@ -23,7 +23,7 @@ const breBSchema: AccountAddressSchema = {
 					description: 'Bre-B key: a phone, an email, an ID number, or an alias that starts with @',
 					minLength: 5,
 					maxLength: 92,
-					pattern: '^\\S{5,92}$'
+					pattern: String.raw`^\S{5,92}$`
 				},
 				accountAddress: sharedSchemaReferences.PhysicalAddress,
 				...colombiaIdentityProperties
