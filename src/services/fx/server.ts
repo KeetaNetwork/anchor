@@ -4,7 +4,8 @@ import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorError,
-	KeetaAnchorUserError
+	KeetaAnchorUserError,
+	KeetaAnchorUserValidationError
 } from '../../lib/error.js';
 import {
 	assertConversionInputCanonicalJSON,
@@ -46,6 +47,39 @@ import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+
+/**
+ * Run a typia assertion on user-supplied input, turning a type guard
+ * failure into a {@link KeetaAnchorUserValidationError} so the HTTP
+ * server answers 400 with the offending field instead of 500.
+ */
+function assertUserInput<T>(assert: (input: unknown) => T, input: unknown): T {
+	try {
+		return(assert(input));
+	} catch (error) {
+		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
+			throw(KeetaAnchorUserValidationError.fromTypeGuardError(error));
+		}
+
+		throw(error);
+	}
+}
+
+/**
+ * Extract the "request" member of a POST body, rejecting a missing or
+ * malformed body as a user error.
+ */
+function getPostRequest(postData: unknown): unknown {
+	if (!postData || typeof postData !== 'object') {
+		throw(new KeetaAnchorUserError('No POST data provided'));
+	}
+
+	if (!('request' in postData)) {
+		throw(new KeetaAnchorUserError('POST data missing request'));
+	}
+
+	return(postData.request);
+}
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.
@@ -1405,14 +1439,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		 * Setup the request handler for an estimate request
 		 */
 		routes['POST /api/getEstimate'] = async (_ignore_params, postData) => {
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const conversion = assertConversionInputCanonicalJSON(postData.request);
+			const conversion = assertUserInput(assertConversionInputCanonicalJSON, getPostRequest(postData));
 			const rateAndFee = await this.getUnsignedQuoteData(conversion, 'estimate');
 
 			let requiresQuoteBody: { canPerformExchange: false; } | { requiresQuote: true } | { requiresQuote: false; account: KeetaNetAccount | KeetaNetStorageAccount; };
@@ -1475,13 +1502,13 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 					throw(new KeetaAnchorUserError('Missing base parameter'));
 				}
 
-				const base = assertKeetaNetTokenPublicKeyString(baseParameter.trim());
+				const base = assertUserInput(assertKeetaNetTokenPublicKeyString, baseParameter.trim());
 				const quoteAssets = quoteAssetsParameter.split(',').map(function(token) {
 					return(token.trim());
 				}).filter(function(token) {
 					return(token.length > 0);
 				}).map(function(token) {
-					return(assertKeetaNetTokenPublicKeyString(token));
+					return(assertUserInput(assertKeetaNetTokenPublicKeyString, token));
 				});
 
 				if (quoteAssets.length === 0) {
@@ -1647,15 +1674,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				throw(new Errors.QuoteIssuanceDisabled());
 			}
 
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const conversion = assertConversionInputCanonicalJSON(postData.request);
+			const conversion = assertUserInput(assertConversionInputCanonicalJSON, getPostRequest(postData));
 			const rateAndFee = await this.getUnsignedQuoteData(conversion, 'quote');
 
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
@@ -1679,15 +1698,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		routes['POST /api/createExchange'] = async (_ignore_params, postData) => {
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const request = assertKeetaFXAnchorClientCreateExchangeRequestJSON(postData.request);
+			const request = assertUserInput(assertKeetaFXAnchorClientCreateExchangeRequestJSON, getPostRequest(postData));
 
 			if (!('block' in request) || typeof request.block !== 'string') {
 				throw(new Error('Block was not provided in exchange request'));
