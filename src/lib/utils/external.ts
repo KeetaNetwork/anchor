@@ -85,7 +85,7 @@ export class ExternalReferenceBuilder {
 			digest: digestInfo,
 			encryptionAlgorithm: encryptionAlgorithmOID,
 			$blob: async function() {
-				return(new Blob([documentContent], { type: this.external.contentType }));
+				return(new Blob([new Uint8Array(documentContent)], { type: this.external.contentType }));
 			}
 		};
 
