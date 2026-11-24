@@ -225,6 +225,15 @@ export interface AnchorChainingConfig {
 	 * small conversion.
 	 */
 	fxDefaultLimits?: KeetaFXAnchorClientDefaultLimits;
+	/**
+	 * Allow paths in which a step after the first needs the user to sign
+	 * a Keeta block (an FX exchange, or a send from the user's account to
+	 * an anchor), such as FX then FX, or a bridge back to Keeta then a
+	 * swap. Off by default: such a plan can stop half finished when that
+	 * signature never happens, so path search, asset listings and path
+	 * validation leave these paths out.
+	 */
+	allowMidPlanUserSignatures?: boolean;
 }
 
 interface BaseGraphNodeLike<Type extends 'fx' | 'assetMovement', AssetType extends AnchorChainingAsset> {
@@ -280,6 +289,70 @@ function isFXLikeNode(node: GraphNodeLike): boolean {
 	const fromStr = convertAssetLocationToString(node.from.location);
 	const toStr = convertAssetLocationToString(node.to.location);
 	return(fromStr === toStr && fromStr.startsWith('chain:keeta:'));
+}
+
+/**
+ * Whether the user signs a Keeta block to run this step: an FX exchange,
+ * or a send from the user's Keeta account (a Keeta-source asset movement
+ * is always a user send, never persistent forwarding; see stepUsesPFR).
+ * Only the first step of a plan may need one unless
+ * allowMidPlanUserSignatures is set: a later one runs after an earlier
+ * step settles and fails when the user is not there to sign it.
+ */
+// TODO: narrow this once a later step can be funded without the user. A
+// leg that lands on Keeta pays the user's account because #computePlan
+// cannot yet chain an asset movement into a KEETA_SEND step ("multiple keeta
+// locations") or into an FX step (no recipient information). When a Keeta
+// landing can pay the next step's deposit address, or an FX anchor accepts
+// a deposit, those routes can come back by default.
+function requiresUserKeetaSignature(step: AnchorChainingStepLike): boolean {
+	if (step.type === 'fx' || step.type === 'keetaSend') {
+		return(true);
+	}
+
+	return(isChainLocation(toAssetLocation(step.from.location), 'keeta'));
+}
+
+/**
+ * Whether `next` may directly follow `prev` in a path. Chaining one FX
+ * anchor to itself is pointless, and unless allowMidPlanUserSignatures is
+ * set, no step after the first may need the user to sign a Keeta block.
+ */
+function canFollow(prev: GraphNodeLike, next: GraphNodeLike, allowMidPlanUserSignatures: boolean): boolean {
+	if (prev.type === 'fx' && next.type === 'fx' && prev.providerID === next.providerID) {
+		return(false);
+	}
+
+	return(allowMidPlanUserSignatures || !requiresUserKeetaSignature(next));
+}
+
+/**
+ * {@link canFollow} for a graph search: walking forward, `neighbor` follows
+ * `node`; walking backward, `node` follows `neighbor`.
+ */
+function canFollowInDirection(node: GraphNodeLike, neighbor: GraphNodeLike, direction: 'forward' | 'backward', allowMidPlanUserSignatures: boolean): boolean {
+	if (direction === 'forward') {
+		return(canFollow(node, neighbor, allowMidPlanUserSignatures));
+	}
+
+	return(canFollow(neighbor, node, allowMidPlanUserSignatures));
+}
+
+/**
+ * Throws when a step after the first needs the user to sign a Keeta block,
+ * unless allowMidPlanUserSignatures is set.
+ */
+function assertNoMidPlanUserSignature(path: AnchorChainingStepLike[], allowMidPlanUserSignatures: boolean): void {
+	if (allowMidPlanUserSignatures) {
+		return;
+	}
+
+	const index = path.findIndex(function(step, stepIndex) {
+		return(stepIndex > 0 && requiresUserKeetaSignature(step));
+	});
+	if (index > 0) {
+		throw(new Error(`Step ${index} needs the user to sign a Keeta block after step ${index - 1} settles; mid-plan user signatures are disabled (allowMidPlanUserSignatures)`));
+	}
 }
 
 
@@ -748,11 +821,13 @@ class AnchorGraph {
 	#graphNodePromise: Promise<GraphNodeLike[]> | null = null;
 	#assetMovementProviderIdsByAssetLocation: Promise<Map<string, Set<string>>> | null = null;
 	#resolveIndexPromise: Promise<ResolveIndex> | null = null;
+	readonly #allowMidPlanUserSignatures: boolean;
 
-	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; }) {
+	constructor(args: { client: KeetaNet.UserClient; resolver: Resolver; logger?: Logger | undefined; allowMidPlanUserSignatures?: boolean | undefined; }) {
 		this.resolver = args.resolver;
 		this.client = args.client;
 		this.logger = args.logger;
+		this.#allowMidPlanUserSignatures = args.allowMidPlanUserSignatures === true;
 		this.assetMovementClient = new KeetaAssetMovementAnchorClient(this.client, {
 			resolver: this.resolver,
 			...(this.logger ? { logger: this.logger } : {})
@@ -1260,8 +1335,7 @@ class AnchorGraph {
 				if (!nj) {
 					throw(new Error(`Invalid node index during adjacency construction: ${j}`));
 				}
-				// We can ignore chaining one fx anchor to itself
-				if (ni.node.type === 'fx' && nj.node.type === 'fx' && ni.node.providerID === nj.node.providerID) {
+				if (!canFollow(ni.node, nj.node, this.#allowMidPlanUserSignatures)) {
 					continue;
 				}
 				ni.next.push(j);
@@ -1554,7 +1628,7 @@ class AnchorGraph {
 					if (!neighbor) {
 						throw(new Error(`Invalid node index during BFS processing: ${neighborIdx}`));
 					}
-					if (node.type === 'fx' && neighbor.type === 'fx' && node.providerID === neighbor.providerID) {
+					if (!canFollowInDirection(node, neighbor, direction, this.#allowMidPlanUserSignatures)) {
 						continue;
 					}
 					nodeVisited.add(neighborIdx);
@@ -2230,6 +2304,7 @@ export class AnchorChainingPath {
 	validate(options?: AnchorChainingPathValidateOptions): AnchorChainingPathValidationResult {
 		try {
 			const { affinity } = validateRequest(this.request);
+			assertNoMidPlanUserSignature(this.path, this.parent['allowMidPlanUserSignatures']);
 			validatePathStructure(this.path, this.request, affinity, options?.forwardingOnly === true, this.keetaLocation);
 			return({ valid: true });
 		} catch (error) {
@@ -2418,6 +2493,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 
 		const affinityAndAmount = validateRequest(this.request);
 		const { affinity } = affinityAndAmount;
+		assertNoMidPlanUserSignature(this.path, this.parent['allowMidPlanUserSignatures']);
 		validatePathStructure(this.path, this.request, affinity, this.#options?.forwardingOnly === true, this.keetaLocation);
 
 		const sharedClientOptions = {
@@ -3738,16 +3814,18 @@ export class AnchorChaining {
 	readonly graph: AnchorGraph;
 	private logger?: Logger;
 	private readonly fxDefaultLimits: KeetaFXAnchorClientDefaultLimits | undefined;
+	private readonly allowMidPlanUserSignatures: boolean;
 
 	constructor(config: AnchorChainingConfig) {
 		this.client = config.client;
 		this.fxDefaultLimits = config.fxDefaultLimits;
+		this.allowMidPlanUserSignatures = config.allowMidPlanUserSignatures === true;
 		if (config.resolver) {
 			this.resolver = config.resolver;
 		} else {
 			this.resolver = getDefaultResolver(config.client);
 		}
-		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client, logger: config.logger });
+		this.graph = new AnchorGraph({ resolver: this.resolver, client: this.client, logger: config.logger, allowMidPlanUserSignatures: this.allowMidPlanUserSignatures });
 		if (config.logger !== undefined) {
 			this.logger = config.logger;
 		}
