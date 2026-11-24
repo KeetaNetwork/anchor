@@ -286,11 +286,11 @@ test('FX Server Tests', async function() {
 		]
 
 		const postRoutes = [
-			{ test: '/api/getEstimate', error: 500 },
-			{ test: '/api/getQuote', error: 500 },
-			{ test: '/api/createExchange', error: 500 },
+			{ test: '/api/getEstimate', error: 400 },
+			{ test: '/api/getQuote', error: 400 },
+			{ test: '/api/createExchange', error: 400 },
 			{ test: '/api/missing', error: 404 },
-			{ test: '/api/getEstimate', error: 500, skipJSON: true },
+			{ test: '/api/getEstimate', error: 400, skipJSON: true },
 			{ test: '/api/getEstimate', error: 400, contentType: 'text/plain' }
 		]
 
@@ -311,6 +311,36 @@ test('FX Server Tests', async function() {
 			}
 		}
 
+
+		{
+			/*
+			 * A request that fails the type check names the offending field
+			 */
+			const result = await fetch(`${url}/api/getEstimate`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify({
+					request: {
+						from: 'keeta_a',
+						to: token2.publicKeyString.get(),
+						amount: '1',
+						affinity: 'from'
+					}
+				})
+			});
+			expect(result.status).toBe(400);
+			const body: unknown = await result.json();
+			expect(body).toMatchObject({
+				ok: false,
+				name: 'KeetaAnchorUserValidationError',
+				data: {
+					fields: [{ path: 'from', receivedValue: 'keeta_a' }]
+				}
+			});
+		}
 
 		const getParams = [
 			{ test: '', error: 404 },
@@ -346,7 +376,7 @@ test('FX Server Tests', async function() {
 					responseStatus: 200
 				}, {
 					request: {},
-					responseStatus: 500
+					responseStatus: 400
 				}
 			];
 			for (const check of checks) {
@@ -1236,6 +1266,14 @@ test('getMarketPrices config controls cache, reference amount, and disable', asy
 
 	expect(cachedResponse.status).toBe(200);
 	expect(cachedResponse.headers.get('Cache-Control')).toBe('public, max-age=30');
+
+	const invalidBaseResponse = await fetch(`${cachedServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=not_a_token`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+	expect(invalidBaseResponse.status).toBe(400);
 	expect(await cachedResponse.json()).toEqual({
 		ok: true,
 		base: token2String,
