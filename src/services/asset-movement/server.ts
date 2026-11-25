@@ -80,7 +80,7 @@ import {
 } from './common.js';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import type { Signable } from '../../lib/utils/signing.js';
-import { VerifySignedData } from '../../lib/utils/signing.js';
+import { verifySignedRequest } from '../../lib/http-server/request-signing.js';
 import type Account from '@keetanetwork/keetanet-client/lib/account.js';
 import type { ExtractOk, HTTPSignedFieldURLParameters } from '../../lib/http-server/common.js';
 import { assertHTTPSignedField, parseSignatureFromURL } from '../../lib/http-server/common.js';
@@ -88,6 +88,11 @@ import type { JSONSerializable } from '@keetanetwork/keetanet-client/lib/utils/c
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 
 type AssetMovementServiceMetadata = NonNullable<ServiceMetadata['services']['assetMovement']>[string];
+
+/**
+ * Body limit for shared KYC attributes (128 MiB), which can carry documents
+ */
+const SHARE_KYC_MAX_BODY_SIZE = 128 * (1024 ** 2);
 
 export interface KeetaAnchorAssetMovementServerConfig extends KeetaAnchorMetadataServerConfig {
 	/**
@@ -209,6 +214,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 	protected async initRoutes(config: KeetaAnchorAssetMovementServerConfig): Promise<KeetaAnchorHTTPServer.Routes> {
 		const routes: KeetaAnchorHTTPServer.Routes = await super.initRoutes(config);
+		const requestAuthContext = this.requestAuthContext.bind(this);
 
 		/**
 		 * If a homepage is provided, setup the route for it
@@ -241,6 +247,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 			method: 'GET' | 'POST';
 			handlerName: HandlerName;
 			pathName?: string;
+			maxBodySize?: number;
 			overrideAllowUnauthenticated?: boolean;
 			assertRequest?: (data: unknown) => SerializedRequest;
 			serializeResponse?: (data: ExtractOk<Response>) => unknown;
@@ -267,7 +274,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 			const authenticationRequired = config.assetMovement.authenticationRequired === true && (input.overrideAllowUnauthenticated !== true);
 
-			routes[`${input.method} /api/${input.pathName ?? input.handlerName}`] = async function(params, postData, _ignore_headers, url) {
+			const routeHandler = async function(params: Map<string, string>, postData: JSONSerializable | undefined, _ignore_headers: unknown, url: URL) {
 				let request: SerializedRequest;
 				if (input.method === 'GET') {
 					// For GET requests, we do not expect a body
@@ -280,8 +287,12 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 					request = input.assertRequest(postData);
 				}
 
+				/*
+				 * A request that names an account must prove it, so a
+				 * handler never sees an account nobody signed for
+				 */
 				let account: Account.Account | null = null;
-				if (authenticationRequired || (request !== undefined && 'signed' in request)) {
+				if (authenticationRequired || (request !== undefined && ('signed' in request || 'account' in request))) {
 					let signed;
 					if (input.getSignatureFieldAccountFromRequest !== undefined) {
 						const parsed = input.getSignatureFieldAccountFromRequest({ body: postData, url });
@@ -309,7 +320,8 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 
 					const signable = input.getSigningData ? input.getSigningData(request, params) : [];
 
-					const valid = await VerifySignedData(account, signable, signed);
+					const context = requestAuthContext(input.method, url, input.method === 'POST' ? postData : undefined);
+					const valid = await verifySignedRequest(account, context, signable, signed);
 
 					if (!valid) {
 						throw(new KeetaAnchorUserError('Invalid signature'));
@@ -345,6 +357,13 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 				return({
 					output: commonJSONStringify(serialized)
 				});
+			};
+
+			const routeKey = `${input.method} /api/${input.pathName ?? input.handlerName}`;
+			if (input.maxBodySize === undefined) {
+				routes[routeKey] = routeHandler;
+			} else {
+				routes[routeKey] = { bodyType: 'parsed', maxBodySize: input.maxBodySize, handler: routeHandler };
 			}
 		}
 
@@ -644,6 +663,7 @@ export class KeetaNetAssetMovementAnchorHTTPServer extends KeetaAnchorMetadataSe
 		addRoute({
 			method: 'POST',
 			handlerName: 'shareKYC',
+			maxBodySize: SHARE_KYC_MAX_BODY_SIZE,
 			assertRequest: assertKeetaAssetMovementAnchorShareKYCRequest,
 			assertResponse: assertKeetaAssetMovementAnchorShareKYCResponse,
 			getSigningData: getKeetaAssetMovementAnchorShareKYCRequestSigningData

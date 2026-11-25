@@ -15,15 +15,68 @@ import { createAssert } from 'typia';
 import { assertNever } from '../utils/never.js';
 import { resolveCertificateChainConfig } from '../utils/certificate-network.js';
 import { Buffer } from '../utils/buffer.js';
+import { lib as KeetaNetLib } from '@keetanetwork/keetanet-client';
+import type { KeetaAnchorReplayGuard } from './replay-guard.js';
+import { MemoryReplayGuard } from './replay-guard.js';
+import type { RequestAuthContext } from './request-signing.js';
+import { normalizeRequestPath, publicRequestURL } from './request-signing.js';
+
+type RequestTiming = InstanceType<typeof KeetaNetLib.RequestTiming>;
 
 export const AssertHTTPErrorData: (input: unknown) => { error: string; statusCode?: number; contentType?: string; } = createAssert<{ error: string; statusCode?: number; contentType?: string; }>();
 
 /**
- * The maximum size of a request (128MiB)
+ * The maximum size of a request body when the route sets no
+ * `maxBodySize` (1 MiB)
  */
-const MAX_REQUEST_SIZE = 128 * (1024 ** 2);
+const MAX_REQUEST_SIZE = 1024 ** 2;
 
-type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (urlParams: Map<string, string>, postData: BodyDataType, requestHeaders: http.IncomingHttpHeaders, requestUrl: URL) => Promise<{ output: string | Buffer; statusCode?: number; contentType?: string; headers?: { [headerName: string]: string; }; }>;
+/**
+ * Read a request body, refusing it once it passes `limit` bytes.
+ * Returns null when the body is too large.
+ */
+async function readBody(request: http.IncomingMessage, limit: number): Promise<Buffer | null> {
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of request) {
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+		const buffer = Buffer.from(chunk);
+		size += buffer.length;
+		if (size > limit) {
+			return(null);
+		}
+
+		chunks.push(buffer);
+	}
+
+	const body = Buffer.concat(chunks, size);
+	return(body);
+}
+
+type RouteHandlerContext = {
+	timing: RequestTiming;
+};
+
+/*
+ * Positional parameters are getting too numerous, so starting
+ * with `timing` new parameters go into `RouteHandlerContext`
+ *
+ * TODO: Migrate the existing positional parameters into
+ * `RouteHandlerContext` as well
+ */
+type RouteHandlerMethod<BodyDataType = JSONSerializable | undefined> = (
+	urlParams: Map<string, string>,
+	postData: BodyDataType,
+	requestHeaders: http.IncomingHttpHeaders,
+	requestUrl: URL,
+	context: RouteHandlerContext
+) => Promise<{
+	output: string | Buffer;
+	statusCode?: number;
+	contentType?: string;
+	headers?: { [headerName: string]: string; };
+}>;
+
 type RouteHandlerWithConfig = {
 	bodyType: 'raw';
 	maxBodySize?: number;
@@ -73,6 +126,23 @@ export interface KeetaAnchorHTTPServerConfig {
 	 * MUST have a published cert chaining to one of `trustedIssuers`.
 	 */
 	requireCertificateChain?: CertificateChainConfig | undefined;
+
+	/**
+	 * Where signed request nonces are recorded so each signature is
+	 * accepted once. Defaults to a {@link MemoryReplayGuard}, which is
+	 * per process: servers running several instances behind one URL
+	 * must share one guard, such as a `RedisReplayGuard` or
+	 * `PostgresReplayGuard`.
+	 */
+	replayGuard?: KeetaAnchorReplayGuard | undefined;
+
+	/**
+	 * Accept request signatures from clients that predate request
+	 * binding. Such a signature covers only the operation's data, so it
+	 * can be replayed at another anchor. Defaults to `true`; set it to
+	 * `false` once every client signs requests.
+	 */
+	acceptLegacyRequestSignatures?: boolean | undefined;
 };
 
 export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTTPServerConfig = KeetaAnchorHTTPServerConfig> implements Required<KeetaAnchorHTTPServerConfig> {
@@ -84,6 +154,8 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	 * @see {@link requireCertificateChain}.
 	 */
 	protected readonly resolvedCertificateChainRequirement: ResolvedCertificateChainRequirement | undefined;
+	readonly replayGuard: KeetaAnchorReplayGuard;
+	readonly acceptLegacyRequestSignatures: boolean;
 	#serverPromise?: Promise<void>;
 	#server?: http.Server;
 	#urlParts: undefined | { hostname?: string; port?: number; protocol?: string; };
@@ -96,6 +168,13 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		this.id = config.id ?? crypto.randomUUID();
 		this.logger = config.logger ?? Log.Legacy('ANCHOR');
 		this.resolvedCertificateChainRequirement = resolveCertificateChainConfig(config.requireCertificateChain);
+		this.replayGuard = config.replayGuard ?? new MemoryReplayGuard();
+		/*
+		 * XXX:TODO: Default to `false` in the first release after every
+		 *           supported client sends dual signatures, and drop the
+		 *           legacy path once no anchor runs a release before them
+		 */
+		this.acceptLegacyRequestSignatures = config.acceptLegacyRequestSignatures ?? true;
 
 		if (config.url !== undefined) {
 			if (config.url instanceof URL || typeof config.url === 'string') {
@@ -402,6 +481,9 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 		});
 
 		const server = new http.Server(async (request, response) => {
+			const timing = new KeetaNetLib.RequestTiming();
+			timing.log = this.logger;
+
 			const forwardedProtoHeader = request.headers['x-forwarded-proto'];
 			let forwardedProto: string | undefined;
 			if (Array.isArray(forwardedProtoHeader)) {
@@ -432,7 +514,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			 * Normalize the input URL by stripping leading slashes and
 			 * combining it with the base URL to get the full URL for routing.
 			 */
-			const inputURLRaw = (request.url ?? '/').replace(/^\/+/, '/');
+			const inputURLRaw = normalizeRequestPath(request.url ?? '/');
 			const inputURLObject = new URL(inputURLRaw, 'http://localhost');
 			const inputURL = inputURLObject.pathname + (function() {
 				if (inputURLObject.search === '') {
@@ -445,10 +527,18 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			const method = request.method ?? 'GET';
 
 			/*
-			 * Finalize the response by syncing the logger and ending
-			 * the response.
+			 * Finalize the response by adding the Server-Timing
+			 * header, **writing the output**, syncing the logger and
+			 * ending the response.
 			 */
-			const responseFinalize = async () => {
+			const responseFinalize = async (output: string | Buffer) => {
+				const serverTiming = timing.toServerTimingHeader();
+				if (serverTiming !== '') {
+					response.setHeader('Server-Timing', serverTiming);
+				}
+
+				response.write(output);
+
 				if ('sync' in this.logger && typeof this.logger.sync === 'function') {
 					try {
 						await this.logger.sync();
@@ -466,8 +556,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (inputURLRaw.at(0) !== '/') {
 				response.statusCode = 400;
 				response.setHeader('Content-Type', 'text/plain');
-				response.write('Bad Request');
-				await responseFinalize();
+				await responseFinalize('Bad Request');
 				return;
 			}
 
@@ -478,8 +567,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			if (requestedRouteAndParams === null) {
 				response.statusCode = 404;
 				response.setHeader('Content-Type', 'text/plain');
-				response.write('Not Found');
-				await responseFinalize();
+				await responseFinalize('Not Found');
 				return;
 			}
 
@@ -515,34 +603,27 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 
 					// Early rejection based on Content-Length header
 					const contentLength = request.headers['content-length'];
+					let declaredSize = Number.NaN;
 					if (contentLength !== undefined) {
-						const declaredSize = parseInt(contentLength, 10);
-						if (!isNaN(declaredSize) && declaredSize > bodySizeLimit) {
-							request.resume();
-
-							response.statusCode = 413;
-							response.setHeader('Content-Type', 'text/plain');
-							response.write('Payload Too Large');
-
-							await responseFinalize();
-
-							return;
-						}
+						declaredSize = Number.parseInt(contentLength, 10);
 					}
 
-					const data = await request.map(function(chunk) {
-						// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-						return(Buffer.from(chunk));
-					}).reduce(function(prev, curr) {
-						if (prev.length > bodySizeLimit) {
-							throw(new Error('Request too large'));
-						}
+					let data: Buffer | null = null;
+					if (Number.isNaN(declaredSize) || declaredSize <= bodySizeLimit) {
+						using bodyTimer = timing.startTime('http-request-body');
+						data = await readBody(request, bodySizeLimit);
+						bodyTimer.end();
+					}
 
-						if (!Buffer.isBuffer(curr)) {
-							throw(new Error(`internal error: Current item is not a buffer -- ${typeof curr}`));
-						}
-						return(Buffer.concat([prev, curr]));
-					}, Buffer.from(''));
+					if (data === null) {
+						request.resume();
+
+						response.statusCode = 413;
+						response.setHeader('Content-Type', 'text/plain');
+						await responseFinalize('Payload Too Large');
+
+						return;
+					}
 
 					if (route.bodyType === 'raw') {
 						bodyData = data;
@@ -561,8 +642,10 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 				/**
 				 * Call the route handler
 				 */
-				// @ts-ignore
-				result = await route.handler(params, bodyData, request.headers, url);
+				result = await timing.runTimer('http-handler', async function() {
+					// @ts-ignore
+					return(await route.handler(params, bodyData, request.headers, url, { timing }));
+				});
 
 				generatedResult = true;
 			} catch (err) {
@@ -598,7 +681,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					}
 
 					// @ts-ignore
-					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url);
+					result = await errorHandlerRoute.handler(new Map(), errBody, request.headers, url, { timing });
 					generatedResult = true;
 				}
 
@@ -608,8 +691,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 					 */
 					response.statusCode = 500;
 					response.setHeader('Content-Type', 'text/plain');
-					response.write('Internal Server Error');
-					await responseFinalize();
+					await responseFinalize('Internal Server Error');
 					return;
 				}
 			}
@@ -631,8 +713,7 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 			}
 
 			response.setHeader('Content-Type', result.contentType ?? 'application/json');
-			response.write(result.output);
-			await responseFinalize();
+			await responseFinalize(result.output);
 		});
 		this.#server = server;
 
@@ -747,6 +828,21 @@ export abstract class KeetaNetAnchorHTTPServer<ConfigType extends KeetaAnchorHTT
 	set url(value: undefined | string | URL | ((object: this) => string)) {
 		this.#urlParts = undefined;
 		this.#url = value;
+	}
+
+	/**
+	 * The context to verify a signed request against: the request as
+	 * seen at this server's public URL, this server's replay guard, and
+	 * whether it accepts legacy signatures.
+	 */
+	protected requestAuthContext(method: string, requestURL: URL, body?: RequestAuthContext['body']): RequestAuthContext {
+		return({
+			method,
+			url: publicRequestURL(this.url, requestURL),
+			body,
+			replayGuard: this.replayGuard,
+			acceptLegacySignatures: this.acceptLegacyRequestSignatures
+		});
 	}
 
 	[Symbol.asyncDispose](): Promise<void> {

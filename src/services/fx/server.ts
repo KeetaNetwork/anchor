@@ -4,7 +4,8 @@ import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import {
 	KeetaAnchorError,
-	KeetaAnchorUserError
+	KeetaAnchorUserError,
+	KeetaAnchorUserValidationError
 } from '../../lib/error.js';
 import {
 	assertConversionInputCanonicalJSON,
@@ -28,6 +29,7 @@ import type {
 	KeetaNetStorageAccount
 } from './common.ts';
 import * as Signing from '../../lib/utils/signing.js';
+import type { KeetaAnchorReplayGuard } from '../../lib/http-server/replay-guard.ts';
 import type { AssertNever } from '../../lib/utils/never.ts';
 import type { ServiceMetadata } from '../../lib/resolver.ts';
 import { KeetaAnchorQueueRunner, KeetaAnchorQueueStorageDriverMemory } from '../../lib/queue/index.js';
@@ -45,6 +47,39 @@ import { AsyncDisposableStack } from '../../lib/utils/defer.js';
 import { asleep } from '../../lib/utils/asleep.js';
 import type { SharedAnchorMetadataLegalExtension } from '../../lib/metadata.types.js';
 import { Buffer } from '../../lib/utils/buffer.js';
+
+/**
+ * Run a typia assertion on user-supplied input, turning a type guard
+ * failure into a {@link KeetaAnchorUserValidationError} so the HTTP
+ * server answers 400 with the offending field instead of 500.
+ */
+function assertUserInput<T>(assert: (input: unknown) => T, input: unknown): T {
+	try {
+		return(assert(input));
+	} catch (error) {
+		if (KeetaAnchorUserValidationError.isTypeGuardErrorLike(error)) {
+			throw(KeetaAnchorUserValidationError.fromTypeGuardError(error));
+		}
+
+		throw(error);
+	}
+}
+
+/**
+ * Extract the "request" member of a POST body, rejecting a missing or
+ * malformed body as a user error.
+ */
+function getPostRequest(postData: unknown): unknown {
+	if (!postData || typeof postData !== 'object') {
+		throw(new KeetaAnchorUserError('No POST data provided'));
+	}
+
+	if (!('request' in postData)) {
+		throw(new KeetaAnchorUserError('POST data missing request'));
+	}
+
+	return(postData.request);
+}
 
 /**
  * Enable additional runtime "paranoid" checks in the FX server.
@@ -322,6 +357,41 @@ async function verifySignedData(signedBy: Signing.VerifiableAccount, quote: Keet
 	const signableQuote = await formatQuoteSignable(quote);
 
 	return(await Signing.VerifySignedData(signedBy, signableQuote, quote.signed));
+}
+
+/**
+ * Whether `block` can be published on top of `headHash`, the hash of its
+ * account's head block (null when the account has no blocks): it must
+ * extend the head, or open the account.
+ */
+function blockExtendsHead(headHash: InstanceType<typeof KeetaNet.lib.Block.Hash> | null, block: InstanceType<typeof KeetaNet.lib.Block>): boolean {
+	if (headHash === null) {
+		return(block['$opening']);
+	}
+
+	return(headHash.compare(block.previous));
+}
+
+/**
+ * Refuse an exchange block that cannot be published now.
+ */
+async function assertBlockExtendsHead(client: KeetaNet.Client, block: InstanceType<typeof KeetaNet.lib.Block>): Promise<void> {
+	const head = await client.getHeadBlock(block.account);
+	if (!blockExtendsHead(head?.hash ?? null, block)) {
+		throw(new KeetaAnchorUserError('Exchange block does not extend the account head'));
+	}
+}
+
+/**
+ * Spend a verified quote, so it pays for one exchange only. The claim
+ * lasts as long as the quote signature is valid.
+ */
+async function claimQuote(replayGuard: KeetaAnchorReplayGuard, quoteSigner: Signing.VerifiableAccount, quote: KeetaFXAnchorQuoteJSON): Promise<void> {
+	const expiresAt = new Date(new Date(quote.signed.timestamp).valueOf() + Signing.DEFAULT_MAX_SKEW_MS);
+	const claimed = await replayGuard.claim(`quote:${quoteSigner.publicKeyString.get()}:${quote.signed.nonce}`, expiresAt);
+	if (!claimed) {
+		throw(new Errors.QuoteValidationFailed());
+	}
 }
 
 async function requestToAccounts(config: KeetaAnchorFXServerConfig, request: ConversionInputCanonicalJSON): Promise<{ signer: Signing.SignableAccount; account: KeetaNetAccount | KeetaNetStorageAccount | null; }> {
@@ -715,26 +785,12 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 
 		/* Get the current head block of the account in the block */
 		const accountHead = await userClient.head({ account: block.account });
-		let isHeadBlock = false;
-		if (accountHead !== null) {
-			isHeadBlock = accountHead.compare(block.previous);
-		} else {
-			isHeadBlock = block['$opening'];
-		}
 
-		/* If the account's head block is not the block's previous, see if the block's previous exists on the network */
-		if (!isHeadBlock) {
-			let previousBlockOnNetwork = false;
-			if (block['$opening']) {
-				/* Opening block means that there is no previous block, so we are free to proceed */
-				previousBlockOnNetwork = true;
-			} else {
-				const previousBlock = await userClient.block(block.previous);
-				if (previousBlock !== null) {
-					previousBlockOnNetwork = true;
-				}
-			}
-
+		/*
+		 * createExchange queues only blocks that extend the head, so a
+		 * block that no longer does lost a race and can never run
+		 */
+		if (!blockExtendsHead(accountHead, block)) {
 			let blockPreviousString: string;
 			if (block['$opening']) {
 				blockPreviousString = '<opening>';
@@ -742,23 +798,11 @@ class KeetaFXAnchorQueuePipelineStage1 extends KeetaAnchorQueueRunner<KeetaFXAnc
 				blockPreviousString = block.previous.toString();
 			}
 
-			/* If block.previous exists on the network, and it's not the account head block we can mark this job as failed_permanently */
-			if (previousBlockOnNetwork) {
-				/* Block's previous exists on the network, but is not the account head -- mark as failed_permanently */
-				return({
-					status: 'failed_permanently',
-					output: null,
-					error: `Block previous (${blockPreviousString}) exists on the network but is not the account head`
-				});
-			} else {
-				/* If block.previous does not exist on the network we can mark this job as failed_temporarily -- it can't process until the missing block is added */
-				/* Block's previous does not exist on the network -- mark as failed_temporarily */
-				return({
-					status: 'failed_temporarily',
-					output: null,
-					error: `Block previous (${blockPreviousString}) does not exist on the network`
-				});
-			}
+			return({
+				status: 'failed_permanently',
+				output: null,
+				error: `Block previous (${blockPreviousString}) is not the account head`
+			});
 		}
 
 		/* We are clear to attempt the swap now */
@@ -1395,14 +1439,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 		 * Setup the request handler for an estimate request
 		 */
 		routes['POST /api/getEstimate'] = async (_ignore_params, postData) => {
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const conversion = assertConversionInputCanonicalJSON(postData.request);
+			const conversion = assertUserInput(assertConversionInputCanonicalJSON, getPostRequest(postData));
 			const rateAndFee = await this.getUnsignedQuoteData(conversion, 'estimate');
 
 			let requiresQuoteBody: { canPerformExchange: false; } | { requiresQuote: true } | { requiresQuote: false; account: KeetaNetAccount | KeetaNetStorageAccount; };
@@ -1465,13 +1502,13 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 					throw(new KeetaAnchorUserError('Missing base parameter'));
 				}
 
-				const base = assertKeetaNetTokenPublicKeyString(baseParameter.trim());
+				const base = assertUserInput(assertKeetaNetTokenPublicKeyString, baseParameter.trim());
 				const quoteAssets = quoteAssetsParameter.split(',').map(function(token) {
 					return(token.trim());
 				}).filter(function(token) {
 					return(token.length > 0);
 				}).map(function(token) {
-					return(assertKeetaNetTokenPublicKeyString(token));
+					return(assertUserInput(assertKeetaNetTokenPublicKeyString, token));
 				});
 
 				if (quoteAssets.length === 0) {
@@ -1637,15 +1674,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				throw(new Errors.QuoteIssuanceDisabled());
 			}
 
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const conversion = assertConversionInputCanonicalJSON(postData.request);
+			const conversion = assertUserInput(assertConversionInputCanonicalJSON, getPostRequest(postData));
 			const rateAndFee = await this.getUnsignedQuoteData(conversion, 'quote');
 
 			const unsignedQuote: Omit<KeetaFXAnchorQuoteJSON, 'signed'> = KeetaNet.lib.Utils.Conversion.toJSONSerializable({
@@ -1669,15 +1698,7 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 		}
 
 		routes['POST /api/createExchange'] = async (_ignore_params, postData) => {
-			if (!postData || typeof postData !== 'object') {
-				throw(new Error('No POST data provided'));
-			}
-
-			if (!('request' in postData)) {
-				throw(new Error('POST data missing request'));
-			}
-
-			const request = assertKeetaFXAnchorClientCreateExchangeRequestJSON(postData.request);
+			const request = assertUserInput(assertKeetaFXAnchorClientCreateExchangeRequestJSON, getPostRequest(postData));
 
 			if (!('block' in request) || typeof request.block !== 'string') {
 				throw(new Error('Block was not provided in exchange request'));
@@ -1788,6 +1809,12 @@ export class KeetaNetFXAnchorHTTPServer extends BaseKeetaNetFXAnchorHTTPServer<K
 				checks: { quote: parsedQuote, request: conversionInput },
 				isQuoteBasedExchange: isQuoteBasedExchange
 			});
+
+			await assertBlockExtendsHead(config.client.client, block);
+
+			if (isQuoteBasedExchange && config.quoteSigner !== null && 'signed' in quoteInput) {
+				await claimQuote(this.replayGuard, config.quoteSigner, quoteInput);
+			}
 
 			/* Enqueue the exchange request */
 			const exchangeID = await instance.pipeline.add({

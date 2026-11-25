@@ -1,4 +1,4 @@
-import { test, expect, describe, assert } from 'vitest';
+import { test, expect, describe, assert, vi } from 'vitest';
 
 import type { KeetaAnchorStorageServerConfig } from './server.js';
 import type { StorageObjectMetadata, StorageObjectVisibility } from './common.js';
@@ -653,6 +653,115 @@ describe('Storage Client - Session API', function() {
 			});
 
 			expect(result).toBe('via withSession');
+		}));
+	});
+});
+
+describe('Storage Client - Signed request replay', function() {
+	test('a captured put cannot write other content, here or at another storage anchor', function() {
+		return(withClient(randomSeed(), async function({ provider, account, anchorAccount, makePath, backend }) {
+			const path = makePath('contact.txt');
+
+			/* Record the exact upload the client sends */
+			let captured: string | undefined;
+			const realFetch = globalThis.fetch;
+			const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async function(input, init) {
+				if (init?.method === 'PUT') {
+					captured = (input instanceof Request ? input.url : input.toString());
+				}
+				return(await realFetch(input, init));
+			});
+			try {
+				await provider.put({ path, data: Buffer.from('address A'), mimeType: 'text/plain', account });
+			} finally {
+				spy.mockRestore();
+			}
+			if (captured === undefined) {
+				throw(new Error('No upload captured'));
+			}
+			const stored = await backend.get(path);
+
+			const otherBackend = new MemoryStorageBackend();
+			await using otherServer = new KeetaNetStorageAnchorHTTPServer({ backend: otherBackend, anchorAccount, pathPolicies: [testPathPolicy] });
+			await otherServer.start();
+
+			/* Well-formed content for the same owner, written by someone else */
+			const attacker = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			const forged = EncryptedContainer.fromPlaintext(JSON.stringify({ mimeType: 'text/plain', data: Buffer.from('address B').toString('base64') }), [account], { signer: attacker });
+			const forgedBody = Buffer.from(await forged.getEncodedBuffer());
+
+			async function upload(url: URL): Promise<number> {
+				const response = await realFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: forgedBody });
+				await response.arrayBuffer();
+				return(response.status);
+			}
+
+			const original = new URL(captured);
+			expect(await upload(original)).not.toBe(200);
+			expect((await backend.get(path))?.data).toEqual(stored?.data);
+
+			expect(await upload(new URL(`${original.pathname}${original.search}`, otherServer.url))).not.toBe(200);
+			expect(await otherBackend.get(path)).toBeNull();
+		}));
+	});
+});
+
+describe('Storage Client - Content signer', function() {
+	test('get returns only content signed by an accepted account', function() {
+		return(withClient(randomSeed(), async function({ provider, account, makePath, backend }) {
+			const path = makePath('contact.txt');
+			const owner = account.publicKeyString.get();
+
+			async function encodeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string): Promise<Buffer> {
+				const plaintext = JSON.stringify({ mimeType: 'text/plain', data: Buffer.from(text).toString('base64') });
+				let container: EncryptedContainer;
+				if (signer === undefined) {
+					container = EncryptedContainer.fromPlaintext(plaintext, [account]);
+				} else {
+					container = EncryptedContainer.fromPlaintext(plaintext, [account], { signer });
+				}
+				return(Buffer.from(await container.getEncodedBuffer()));
+			}
+
+			async function storeSignedBy(signer: InstanceType<typeof KeetaNet.lib.Account> | undefined, text: string) {
+				await backend.put(path, await encodeSignedBy(signer, text), { owner, tags: [], visibility: 'private' });
+			}
+
+			async function getError(): Promise<unknown> {
+				return(await provider.get({ path, account }).then(function() {
+					return(null);
+				}, function(error: unknown) {
+					return(error);
+				}));
+			}
+
+			/* Unsigned content, the cheapest thing a storage anchor can serve */
+			await storeSignedBy(undefined, 'address C');
+			expect(Errors.SignatureInvalid.isInstance(await getError())).toBe(true);
+
+			/* Content the storage anchor serves, but someone else wrote */
+			const attacker = KeetaNet.lib.Account.fromSeed(randomSeed(), 0);
+			await storeSignedBy(attacker, 'address B');
+			expect(Errors.SignatureInvalid.isInstance(await getError())).toBe(true);
+
+			/* Content another account wrote is returned when the caller accepts that account */
+			const accepted = await provider.get({ path, account, signers: [ attacker ] });
+			expect(accepted?.data.toString()).toBe('address B');
+
+			/* A signature made with an unsupported digest cannot be checked, so it proves nothing */
+			const encoded = await encodeSignedBy(account, 'address D');
+			/* DER of the SHA3-256 OID (2.16.840.1.101.3.4.2.8); the last arc becomes 10, SHA3-512 */
+			const sha3OID = Buffer.from('0609608648016503040208', 'hex');
+			const oidOffset = encoded.indexOf(sha3OID);
+			expect(oidOffset).toBeGreaterThan(-1);
+			encoded[oidOffset + sha3OID.length - 1] = 0x0a;
+			await backend.put(path, encoded, { owner, tags: [], visibility: 'private' });
+			const unsupportedError = await getError();
+			expect(Errors.SignatureInvalid.isInstance(unsupportedError)).toBe(true);
+
+			/* The reader's own content needs no list */
+			await storeSignedBy(account, 'address A');
+			expect((await provider.get({ path, account }))?.data.toString()).toBe('address A');
 		}));
 	});
 });

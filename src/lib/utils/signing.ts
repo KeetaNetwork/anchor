@@ -196,6 +196,12 @@ export function objectToSignable(item: SignableInput): Signable {
 }
 
 /**
+ * How far a signature's timestamp may be from the verifier's clock, by
+ * default (5 minutes)
+ */
+export const DEFAULT_MAX_SKEW_MS: number = 5 * 60 * 1000;
+
+/**
  * Options for signature verification
  */
 export interface VerifyOptions {
@@ -259,13 +265,13 @@ export function FormatData(account: VerifiableAccount, data: Signable, nonce?: s
 	});
 }
 
-export async function SignData(account: SignableAccount, data: Signable): Promise<{ nonce: string; timestamp: string; signature: string; }> {
-	const { nonce, timestamp, verificationData } = FormatData(account, data);
-	const signature = await account.sign(bufferToArrayBuffer(verificationData));
+export async function SignData(account: SignableAccount, data: Signable, nonce?: string, timestamp?: string | Date): Promise<{ nonce: string; timestamp: string; signature: string; }> {
+	const formatted = FormatData(account, data, nonce, timestamp);
+	const signature = await account.sign(bufferToArrayBuffer(formatted.verificationData));
 
 	return({
-		nonce: nonce,
-		timestamp: timestamp,
+		nonce: formatted.nonce,
+		timestamp: formatted.timestamp,
 		signature: signature.getBuffer().toString('base64')
 	});
 }
@@ -293,7 +299,7 @@ export async function VerifySignedData(
 		return(false);
 	}
 
-	const maxSkewMs = options?.maxSkewMs ?? 5 * 60 * 1000;
+	const maxSkewMs = options?.maxSkewMs ?? DEFAULT_MAX_SKEW_MS;
 	const referenceTime = options?.referenceTime ?? new Date();
 	if (Math.abs(timestamp.valueOf() - referenceTime.valueOf()) > maxSkewMs) {
 		/* Timestamp exceeds allowed skew from reference time */
