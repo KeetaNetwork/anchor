@@ -175,6 +175,12 @@ export interface KeetaAnchorContractsServerConfig extends KeetaAnchorMetadataSer
 }
 
 /** A contract call in a submitted block. */
+/** A contract chain's head block: its hash, and its date (the time its contract last saw) */
+interface ChainHead {
+	hash: KeetaNetBlockHash;
+	date: Date;
+}
+
 interface Call {
 	block: KeetaNetBlock;
 	operationIndex: number;
@@ -221,8 +227,11 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 	#pumping: Promise<void> | null = null;
 	/** Contracts known to name this sequencer (that never changes) */
 	readonly #sequenced = new Set<string>();
-	/** Each contract's head as last published by this sequencer, the only one signing its chain */
-	readonly #heads = new Map<string, KeetaNetBlockHash | null>();
+	/**
+	 * Each contract's head (its hash and date) as last published by this
+	 * sequencer, the only one signing its chain
+	 */
+	readonly #heads = new Map<string, ChainHead | null>();
 
 	constructor(config: KeetaAnchorContractsServerConfig) {
 		super(config);
@@ -423,7 +432,7 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 	}
 
 	/** The head of a contract's chain, recovering any staple left half-voted. */
-	async #head(contract: string): Promise<KeetaNetBlockHash | null> {
+	async #head(contract: string): Promise<ChainHead | null> {
 		const known = this.#heads.get(contract);
 		if (known !== undefined) {
 			return(known);
@@ -442,7 +451,8 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 		} catch (error) {
 			this.logger?.debug('ContractsAnchor', 'Could not recover a pending block on', contract, error);
 		}
-		const head = (await this.#client.client.getHeadBlock(contract))?.hash ?? null;
+		const block = await this.#client.client.getHeadBlock(contract);
+		const head = block === null ? null : { hash: block.hash, date: block.date };
 		this.#heads.set(contract, head);
 		return(head);
 	}
@@ -461,6 +471,13 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 
 		await this.#waitForChains([...calls.keys()]);
 
+		/*
+		 * Contracts see their order block's date as the time, and
+		 * representatives refuse an ordering dated before the previous
+		 * block on the chain: never date one earlier than that, even if
+		 * this clock lags the one that signed it.
+		 */
+		const now = Date.now();
 		const orders: KeetaNetBlock[] = [];
 		for (const [contract, ordered] of calls) {
 			const references = ordered.map((call) => ({ block: call.block.hash, operationIndex: call.operationIndex }));
@@ -469,11 +486,16 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 				operations.push({ type: OperationType.CONTRACT_ORDER, calls: references.slice(start, start + MAX_CALLS_PER_ORDER) });
 			}
 			const previous = await this.#head(contract);
+			const previousDate = previous?.date.valueOf() ?? now;
+			if (previousDate > now) {
+				this.logger?.warn('ContractsAnchor', `${contract}'s last ordering is dated ${previousDate - now}ms ahead of this clock; dating the next one the same`);
+			}
 			orders.push(await new KeetaNet.lib.Block.Builder({
 				account: KeetaNet.lib.Account.fromPublicKeyString(contract),
 				signer: this.sequencer.assertAccount(),
-				previous: previous ?? KeetaNet.lib.Block.NO_PREVIOUS,
+				previous: previous?.hash ?? KeetaNet.lib.Block.NO_PREVIOUS,
 				network: this.#client.network,
+				date: new Date(Math.max(now, previousDate)),
 				operations
 			}).seal());
 		}
@@ -496,7 +518,7 @@ export class KeetaNetContractsAnchorHTTPServer extends KeetaAnchorMetadataServer
 		}
 
 		for (const order of orders) {
-			this.#heads.set(order.account.publicKeyString.get(), order.hash);
+			this.#heads.set(order.account.publicKeyString.get(), { hash: order.hash, date: order.date });
 		}
 		this.#settle(batch, voteStaple);
 	}

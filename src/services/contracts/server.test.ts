@@ -177,3 +177,27 @@ contractTest('every call pays the sequencer\'s fee, so none is free', async () =
 	expect((await contracts.getState(contract, stateId('counter'))).version).toBe(1n);
 }, 120_000);
 
+contractTest('the sequencer never dates an ordering before the one it follows, so a contract\'s time never goes backwards', async () => {
+	await using world = await setup();
+	const alice = newAccount();
+	const { contracts, provider } = await world.as(alice);
+	const { contract } = await contracts.deploy({ code: program('keeta_probe'), sequencer: provider });
+
+	// An empty ordering dated a minute ahead, as a sequencer whose clock ran fast would sign.
+	const ahead = new Date(Date.now() + 60_000);
+	const account = KeetaNet.lib.Account.fromPublicKeyString(contract);
+	const previous = (await world.client.client.getHeadBlock(account))?.hash ?? KeetaNet.lib.Block.NO_PREVIOUS;
+	await world.client.client.transmit([await new KeetaNet.lib.Block.Builder({
+		account,
+		signer: world.sequencer,
+		previous,
+		network: world.client.network,
+		date: ahead,
+		operations: [{ type: KeetaNet.lib.Block.OperationType.CONTRACT_ORDER, calls: [] }]
+	}).seal()]);
+
+	// The next ordering is dated no earlier, though this clock is behind it.
+	const result = await provider.call({ instruction: instruction(contract, [{ name: 'counter', writable: true }], probe.increment(0)) });
+	const ordering = await world.client.client.getBlock(new KeetaNet.lib.Block.Hash(result.blocks[1] ?? ''));
+	expect(ordering?.date.valueOf()).toBeGreaterThanOrEqual(ahead.valueOf());
+}, 120_000);
