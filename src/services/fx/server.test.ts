@@ -286,11 +286,11 @@ test('FX Server Tests', async function() {
 		]
 
 		const postRoutes = [
-			{ test: '/api/getEstimate', error: 500 },
-			{ test: '/api/getQuote', error: 500 },
-			{ test: '/api/createExchange', error: 500 },
+			{ test: '/api/getEstimate', error: 400 },
+			{ test: '/api/getQuote', error: 400 },
+			{ test: '/api/createExchange', error: 400 },
 			{ test: '/api/missing', error: 404 },
-			{ test: '/api/getEstimate', error: 500, skipJSON: true },
+			{ test: '/api/getEstimate', error: 400, skipJSON: true },
 			{ test: '/api/getEstimate', error: 400, contentType: 'text/plain' }
 		]
 
@@ -311,6 +311,36 @@ test('FX Server Tests', async function() {
 			}
 		}
 
+
+		{
+			/*
+			 * A request that fails the type check names the offending field
+			 */
+			const result = await fetch(`${url}/api/getEstimate`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/json'
+				},
+				body: JSON.stringify({
+					request: {
+						from: 'keeta_a',
+						to: token2.publicKeyString.get(),
+						amount: '1',
+						affinity: 'from'
+					}
+				})
+			});
+			expect(result.status).toBe(400);
+			const body: unknown = await result.json();
+			expect(body).toMatchObject({
+				ok: false,
+				name: 'KeetaAnchorUserValidationError',
+				data: {
+					fields: [{ path: 'from', receivedValue: 'keeta_a' }]
+				}
+			});
+		}
 
 		const getParams = [
 			{ test: '', error: 404 },
@@ -346,7 +376,7 @@ test('FX Server Tests', async function() {
 					responseStatus: 200
 				}, {
 					request: {},
-					responseStatus: 500
+					responseStatus: 400
 				}
 			];
 			for (const check of checks) {
@@ -1236,6 +1266,14 @@ test('getMarketPrices config controls cache, reference amount, and disable', asy
 
 	expect(cachedResponse.status).toBe(200);
 	expect(cachedResponse.headers.get('Cache-Control')).toBe('public, max-age=30');
+
+	const invalidBaseResponse = await fetch(`${cachedServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=not_a_token`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+	expect(invalidBaseResponse.status).toBe(400);
 	expect(await cachedResponse.json()).toEqual({
 		ok: true,
 		base: token2String,
@@ -1360,4 +1398,118 @@ test('getMarketPrices omits or throws failed quote assets based on onQuoteError'
 		}
 	});
 	expect(throwResponse.status).toBe(500);
+}, 30000);
+
+test('FX Server queues only exchange blocks that extend the account head, and accepts each quote once', async function() {
+	await using harness = await createFXTestHarness(1);
+	const { serverAccount, token1, token2, userClients } = harness;
+	const userClient = userClients[0];
+	if (userClient === undefined) {
+		throw(new Error('Missing user client'));
+	}
+
+	await using server = harness.createServer({
+		getConversionRateAndFee: async function() {
+			return({
+				account: serverAccount,
+				convertedAmount: 500n,
+				cost: { amount: 0n, token: token1 }
+			});
+		}
+	}, {
+		quoteConfiguration: {
+			requiresQuote: true
+		}
+	});
+
+	await server.start();
+	const url = server.url;
+
+	async function postExchange(quote: unknown, block: InstanceType<typeof KeetaNet.lib.Block>) {
+		return(await fetch(`${url}/api/createExchange`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({
+				request: {
+					quote: quote,
+					block: Buffer.from(block.toBytes()).toString('base64')
+				}
+			})
+		}));
+	}
+
+	async function computeSwapBlock() {
+		if (userClient === undefined) {
+			throw(new Error('Missing user client'));
+		}
+		const builder = userClient.initBuilder();
+		builder.send(serverAccount, 100n, token1);
+		const computed = await builder.computeBlocks();
+		const block = computed.blocks[0];
+		if (!block) {
+			throw(new Error('No block computed'));
+		}
+		return(block);
+	}
+
+	const userSigner = userClient.signer;
+	if (userSigner === null) {
+		throw(new Error('Missing user signer'));
+	}
+
+	async function expectRefused(response: Response, errorName: string) {
+		expect(response.status).toBe(400);
+		const errorData: unknown = await response.json();
+		expect(errorData).toHaveProperty('ok', false);
+		expect(errorData).toHaveProperty('name', errorName);
+		return(errorData);
+	}
+
+	const firstQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+	const secondQuote = await getQuoteFromServer(url, token1.publicKeyString.get(), token2.publicKeyString.get(), '100');
+
+	/*
+	 * Two blocks built on the same head: only one of them can ever run
+	 */
+	const staleBlock = await computeSwapBlock();
+	const firstResponse = await postExchange(firstQuote, await computeSwapBlock());
+	expect(firstResponse.status).toBe(200);
+	await waitForExchangeCompletion(url, extractExchangeID(await firstResponse.json()));
+
+	/*
+	 * A block whose previous is no longer the account head can never
+	 * run, so it is refused before it is queued
+	 */
+	const staleError = await expectRefused(await postExchange(secondQuote, staleBlock), 'KeetaAnchorUserError');
+	expect(staleError).toHaveProperty('error', 'Exchange block does not extend the account head');
+
+	/*
+	 * A block chained on a block the network has never seen is refused
+	 * the same way
+	 */
+	const orphanBlock = await new KeetaNet.lib.Block.Builder({
+		network: userClient.network,
+		previous: staleBlock.hash.toString(),
+		signer: userSigner,
+		operations: [{
+			type: KeetaNet.lib.Block.OperationType.SEND,
+			to: serverAccount,
+			token: token1,
+			amount: 100n
+		}]
+	}).seal();
+	const orphanError = await expectRefused(await postExchange(secondQuote, orphanBlock), 'KeetaAnchorUserError');
+	expect(orphanError).toHaveProperty('error', 'Exchange block does not extend the account head');
+
+	/*
+	 * The refused blocks did not spend the second quote
+	 */
+	const secondResponse = await postExchange(secondQuote, await computeSwapBlock());
+	expect(secondResponse.status).toBe(200);
+	await waitForExchangeCompletion(url, extractExchangeID(await secondResponse.json()));
+
+	/*
+	 * A quote cannot pay for a second exchange
+	 */
+	await expectRefused(await postExchange(firstQuote, await computeSwapBlock()), 'KeetaFXAnchorQuoteValidationFailedError');
 }, 30000);

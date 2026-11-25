@@ -6,8 +6,10 @@ import { KeetaNet } from '../../client/index.js';
 import { KeetaAnchorUserError, KeetaAnchorError } from '../../lib/error.js';
 import { verifyMetadataSignature } from '../../lib/anchor-metadata-server.js';
 import { assertHTTPSignedField } from '../../lib/http-server/common.js';
-import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData } from './common.js';
+import { Errors, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData, getKeetaAssetMovementAnchorShareKYCRequestSigningData } from './common.js';
 import { isKeetaAssetMovementAnchorGetAccountStatusResponse } from './common.generated.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
+import { MemoryReplayGuard } from '../../lib/http-server/replay-guard.js';
 import { SignData } from '../../lib/utils/signing.js';
 
 function makeServerConfig(overrides: Partial<KeetaAnchorAssetMovementServerConfig> = {}): KeetaAnchorAssetMovementServerConfig {
@@ -125,6 +127,24 @@ test('Asset Movement Server publishes getAccountStatus with required authenticat
 	expect(endpoint.options?.authentication).toEqual({ method: 'keeta-account', type: 'required' });
 });
 
+/**
+ * Sign a getAccountStatus request for `serverURL`, and return a function
+ * that sends it
+ */
+async function signedAccountStatusRequest(serverURL: string, account: InstanceType<typeof KeetaNet.lib.Account>): Promise<() => Promise<Response>> {
+	const url = new URL('/api/getAccountStatus', serverURL);
+	const body = { account: account.publicKeyString.get() };
+	const signed = await signRequest(account.assertAccount(), { method: 'POST', url, body }, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+
+	return(async function() {
+		return(await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ ...body, signed })
+		}));
+	});
+}
+
 test('Asset Movement Server getAccountStatus returns actionRequired false for a ready account', async function() {
 	let observedAccount: string | undefined;
 
@@ -135,19 +155,21 @@ test('Asset Movement Server getAccountStatus returns actionRequired false for a 
 	await server.start();
 
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const signed = await SignData(account.assertAccount(), getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+	const sendSignedRequest = await signedAccountStatusRequest(server.url, account);
 
-	const response = await fetch(new URL('/api/getAccountStatus', server.url), {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-		body: JSON.stringify({ account: account.publicKeyString.get(), signed })
-	});
+	const response = await sendSignedRequest();
 
 	expect(response.status).toBe(200);
 	const json: unknown = await response.json();
 	/* The ready branch carries no errors array (toEqual, not toMatchObject, verifies the omission) */
 	expect(json).toEqual({ ok: true, actionRequired: false });
 	expect(observedAccount).toBe(account.publicKeyString.get());
+
+	/* The same signed request is refused when replayed */
+	observedAccount = undefined;
+	const replayed = await sendSignedRequest();
+	expect(replayed.status).toBeGreaterThanOrEqual(400);
+	expect(observedAccount).toBeUndefined();
 });
 
 test('Asset Movement Server getAccountStatus returns multiple required actions in one ok response', async function() {
@@ -163,13 +185,9 @@ test('Asset Movement Server getAccountStatus returns multiple required actions i
 	await server.start();
 
 	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
-	const signed = await SignData(account.assertAccount(), getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+	const sendSignedRequest = await signedAccountStatusRequest(server.url, account);
 
-	const response = await fetch(new URL('/api/getAccountStatus', server.url), {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-		body: JSON.stringify({ account: account.publicKeyString.get(), signed })
-	});
+	const response = await sendSignedRequest();
 
 	expect(response.status).toBe(200);
 	const json: unknown = await response.json();
@@ -211,4 +229,131 @@ test('Asset Movement Server getAccountStatus rejects unauthenticated requests', 
 	expect(response.ok).toBe(false);
 	const json: unknown = await response.json();
 	expect(json).toMatchObject({ ok: false });
+});
+
+test('a signed request spent at one server instance is refused at another that shares its replay guard', async function() {
+	/* Two instances behind one public URL, as on a platform that scales out */
+	const publicURL = 'https://anchor.example.com/';
+	const replayGuard = new MemoryReplayGuard();
+	const accountsSeen: string[] = [];
+	const config = {
+		...makeGetAccountStatusConfig(async function(account) {
+			accountsSeen.push(account.publicKeyString.get());
+			return({ actionRequired: false });
+		}),
+		url: publicURL,
+		replayGuard
+	};
+	await using first = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await using second = new KeetaNetAssetMovementAnchorHTTPServer(config);
+	await first.start();
+	await second.start();
+
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const body = { account: account.publicKeyString.get() };
+	const signed = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/getAccountStatus', publicURL), body }, getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+	async function sendTo(server: KeetaNetAssetMovementAnchorHTTPServer): Promise<number> {
+		const response = await fetch(new URL('/api/getAccountStatus', `http://localhost:${server.port}`), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ ...body, signed })
+		});
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	expect(await sendTo(first)).toBe(200);
+	expect(await sendTo(second)).toBe(400);
+	expect(accountsSeen).toEqual([ account.publicKeyString.get() ]);
+});
+
+test('a legacy request signature is accepted by default and refused by a server built not to accept it', async function() {
+	async function statusWith(acceptLegacyRequestSignatures: boolean | undefined): Promise<number> {
+		await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+			...makeGetAccountStatusConfig(async function() {
+				return({ actionRequired: false });
+			}),
+			acceptLegacyRequestSignatures
+		});
+		await server.start();
+
+		/* Signed the way clients before request binding sign: the data alone */
+		const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+		const signed = await SignData(account.assertAccount(), getKeetaAssetMovementAnchorGetAccountStatusRequestSigningData());
+		const response = await fetch(new URL('/api/getAccountStatus', server.url), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ account: account.publicKeyString.get(), signed })
+		});
+		await response.arrayBuffer();
+
+		return(response.status);
+	}
+
+	expect(await statusWith(undefined)).toBe(200);
+	expect(await statusWith(true)).toBe(200);
+	expect(await statusWith(false)).toBe(400);
+});
+
+test('Asset Movement Server refuses a request that names an account without signing for it', async function() {
+	const victim = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const accountsSeen: unknown[] = [];
+
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer(makeServerConfig({
+		assetMovement: {
+			...makeServerConfig().assetMovement,
+			listPersistentForwarding: function(request) {
+				accountsSeen.push(request.account);
+				return(Promise.reject(new KeetaAnchorUserError('not implemented')));
+			}
+		}
+	}));
+	await server.start();
+
+	/* Ask for another account's forwarding addresses without signing */
+	const response = await fetch(new URL('/api/listPersistentForwarding', server.url), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+		body: JSON.stringify({ account: victim.publicKeyString.get() })
+	});
+
+	expect(accountsSeen).toEqual([]);
+	expect(response.status).toBeGreaterThanOrEqual(400);
+	expect(response.status).toBeLessThan(500);
+});
+
+test('Asset Movement Server accepts share-KYC bodies over the 1 MiB default and refuses them elsewhere', async function() {
+	const receivedSizes: number[] = [];
+	const baseConfig = makeServerConfig();
+	await using server = new KeetaNetAssetMovementAnchorHTTPServer({
+		...baseConfig,
+		assetMovement: {
+			...baseConfig.assetMovement,
+			shareKYC: async function(request) {
+				receivedSizes.push(request.attributes.length);
+				return({ isPending: false });
+			},
+			initiateTransfer: function() {
+				return(Promise.reject(new KeetaAnchorUserError('not implemented')));
+			}
+		}
+	});
+	await server.start();
+
+	const account = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const attributes = 'x'.repeat(2 * 1024 * 1024);
+	const request = { account: account.publicKeyString.get(), attributes };
+	const signed = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/shareKYC', server.url), body: request }, getKeetaAssetMovementAnchorShareKYCRequestSigningData({ account, attributes }));
+	const body = JSON.stringify({ ...request, signed });
+	async function post(path: string): Promise<number> {
+		const response = await fetch(new URL(path, server.url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	/* The whole body reaches the share-KYC handler */
+	expect(await post('/api/shareKYC')).toBe(200);
+	expect(receivedSizes).toEqual([ attributes.length ]);
+
+	expect(await post('/api/initiateTransfer')).toBe(413);
 });

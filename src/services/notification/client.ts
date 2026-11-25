@@ -9,7 +9,7 @@ import type { ServiceMetadata, ServiceMetadataAuthenticationType, ServiceMetadat
 import { createAssertEquals } from 'typia';
 import type { BrandedString } from '../../lib/utils/brand.js';
 import { KeetaAnchorError } from '../../lib/error.js';
-import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import type {
 	KeetaNotificationAnchorRegisterTargetClientRequest,
 	KeetaNotificationAnchorListTargetsClientRequest,
@@ -320,19 +320,21 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationRegisterTargetRequestSignable(input));
 
-		const response = await fetch(endpoint.url(), {
+		const body = {
+			account: accountToUse.publicKeyString.get(),
+			channel: input.channel
+		};
+		const serviceURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: serviceURL, body }, getNotificationRegisterTargetRequestSignable(input));
+
+		const response = await fetch(serviceURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				account: accountToUse.publicKeyString.get(),
-				channel: input.channel,
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;
@@ -361,9 +363,10 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input?.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationListTargetsRequestSignable());
+		const operationURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'GET', url: operationURL }, getNotificationListTargetsRequestSignable());
 
-		const serviceURL = addSignatureToURL(endpoint.url(), { signedField: signed, account: accountToUse.assertAccount() });
+		const serviceURL = addSignatureToURL(operationURL, { signedField: signed, account: accountToUse.assertAccount() });
 
 		const response = await fetch(serviceURL, {
 			method: 'GET',
@@ -396,19 +399,21 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationDeleteTargetRequestSignable(input));
 
-		const response = await fetch(endpoint.url(), {
+		const body = {
+			account: accountToUse.publicKeyString.get(),
+			id: input.id
+		};
+		const serviceURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: serviceURL, body }, getNotificationDeleteTargetRequestSignable(input));
+
+		const response = await fetch(serviceURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				account: accountToUse.publicKeyString.get(),
-				id: input.id,
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;
@@ -437,7 +442,6 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationCreateSubscriptionRequestSignable(input));
 
 		const serializedSubscription = {
 			...input.subscription,
@@ -445,17 +449,20 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 			...(input.subscription.toAddress ? { toAddress: input.subscription.toAddress.publicKeyString.get() } : {})
 		};
 
-		const response = await fetch(endpoint.url(), {
+		const body = {
+			account: accountToUse.publicKeyString.get(),
+			subscription: serializedSubscription
+		};
+		const serviceURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: serviceURL, body }, getNotificationCreateSubscriptionRequestSignable(input));
+
+		const response = await fetch(serviceURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				account: accountToUse.publicKeyString.get(),
-				subscription: serializedSubscription,
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;
@@ -484,9 +491,10 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input?.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationListSubscriptionsRequestSignable());
+		const operationURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'GET', url: operationURL }, getNotificationListSubscriptionsRequestSignable());
 
-		const serviceURL = addSignatureToURL(endpoint.url(), { signedField: signed, account: accountToUse.assertAccount() });
+		const serviceURL = addSignatureToURL(operationURL, { signedField: signed, account: accountToUse.assertAccount() });
 
 		const response = await fetch(serviceURL, {
 			method: 'GET',
@@ -523,19 +531,21 @@ class KeetaNotificationAnchorProvider extends KeetaNotificationAnchorBase {
 		}
 
 		const accountToUse = this.#resolveAccount(input.account);
-		const signed: HTTPSignedField = await SignData(accountToUse.assertAccount(), getNotificationDeleteSubscriptionRequestSignable(input));
 
-		const response = await fetch(endpoint.url(), {
+		const body = {
+			account: accountToUse.publicKeyString.get(),
+			id: input.id
+		};
+		const serviceURL = new URL(endpoint.url());
+		const signed: HTTPSignedField = await signRequest(accountToUse.assertAccount(), { method: 'POST', url: serviceURL, body }, getNotificationDeleteSubscriptionRequestSignable(input));
+
+		const response = await fetch(serviceURL, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
 				'Accept': 'application/json'
 			},
-			body: JSON.stringify({
-				account: accountToUse.publicKeyString.get(),
-				id: input.id,
-				signed
-			})
+			body: JSON.stringify({ ...body, signed })
 		});
 
 		let responseJSON: unknown;

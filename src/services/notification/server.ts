@@ -95,9 +95,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 
 		const registerTargetHandler = this.notification.registerTarget;
 		if (registerTargetHandler) {
-			routes['POST /api/target'] = async (_params, body) => {
+			routes['POST /api/target'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaNotificationAnchorRegisterTargetRequestJSON(body);
-				const account = await verifyBodyAuth(raw, getNotificationRegisterTargetRequestSignable, this.resolvedCertificateChainRequirement);
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, getNotificationRegisterTargetRequestSignable, this.resolvedCertificateChainRequirement);
 				const request: Required<KeetaNotificationAnchorRegisterTargetRequest> = { ...raw, account };
 				const registerResponse = await registerTargetHandler(request);
 
@@ -115,7 +115,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 		if (listTargetsHandler) {
 			routes['GET /api/targets'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
 				const account = await verifyURLAuth(
-					url,
+					this.requestAuthContext('GET', url),
 					function() { return(getNotificationListTargetsRequestSignable()); },
 					this.resolvedCertificateChainRequirement
 				);
@@ -134,9 +134,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 		const deleteTargetHandler = this.notification.deleteTarget;
 		if (deleteTargetHandler) {
 			// XXX:TODO should this be post with body or delete with URL param? Delete with URL param is more RESTful but can be more difficult to call from some clients and doesn't allow for a request body (so all data must be in the URL or signature)
-			routes['POST /api/delete-target'] = async (_params, body) => {
+			routes['POST /api/delete-target'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaNotificationAnchorDeleteTargetRequestJSON(body);
-				const account = await verifyBodyAuth(raw, getNotificationDeleteTargetRequestSignable, this.resolvedCertificateChainRequirement);
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, getNotificationDeleteTargetRequestSignable, this.resolvedCertificateChainRequirement);
 				const request: Required<KeetaNotificationAnchorDeleteTargetRequest> = { ...raw, account };
 				const deleteResponse = await deleteTargetHandler(request);
 
@@ -149,7 +149,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 
 		const createSubscriptionHandler = this.notification.createSubscription;
 		if (createSubscriptionHandler) {
-			routes['POST /api/subscription'] = async (_params, body) => {
+			routes['POST /api/subscription'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaNotificationAnchorCreateSubscriptionRequestJSON(body);
 
 				let subscription: NotificationSubscriptionArguments;
@@ -166,7 +166,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 					throw(new KeetaAnchorUserError(`Unsupported subscription type`));
 				}
 
-				const account = await verifyBodyAuth(raw, function() {
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, function() {
 					return(getNotificationCreateSubscriptionRequestSignable({ subscription }));
 				}, this.resolvedCertificateChainRequirement);
 
@@ -184,7 +184,7 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 		if (listSubscriptionsHandler) {
 			routes['GET /api/subscriptions'] = async (_ignore_params, _ignore_body, _ignore_headers, url) => {
 				const account = await verifyURLAuth(
-					url,
+					this.requestAuthContext('GET', url),
 					function() { return(getNotificationListSubscriptionsRequestSignable()); },
 					this.resolvedCertificateChainRequirement
 				);
@@ -213,9 +213,9 @@ export class KeetaNetNotificationAnchorHTTPServer extends KeetaAnchorMetadataSer
 
 		const deleteSubscriptionHandler = this.notification.deleteSubscription;
 		if (deleteSubscriptionHandler) {
-			routes['POST /api/delete-subscription'] = async (_params, body) => {
+			routes['POST /api/delete-subscription'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaNotificationAnchorDeleteSubscriptionRequestJSON(body);
-				const account = await verifyBodyAuth(raw, getNotificationDeleteSubscriptionRequestSignable, this.resolvedCertificateChainRequirement);
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, getNotificationDeleteSubscriptionRequestSignable, this.resolvedCertificateChainRequirement);
 				const request: Required<KeetaNotificationAnchorDeleteSubscriptionRequest> = { ...raw, account };
 				const deleteResponse = await deleteSubscriptionHandler(request);
 

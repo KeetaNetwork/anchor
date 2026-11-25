@@ -5,6 +5,8 @@ import { KYCVerificationStatus } from './status.js';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
 import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import Resolver from '../../lib/resolver.js';
+import { addSignatureToURL } from '../../lib/http-server/common.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 
 test('KYC Anchor HTTP Server', async function() {
 	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
@@ -381,3 +383,93 @@ test('KYC Anchor HTTP Server - entity type combination matrix', async function()
 	}
 });
 
+
+test('KYC requests need a signature made for this provider, and each signature works once', async function() {
+	const signer = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { userClient } = await createNodeAndClient(signer);
+	const kycCAAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const kycCA = await new KeetaNet.lib.Utils.Certificate.CertificateBuilder({
+		subjectPublicKey: kycCAAccount,
+		issuer: kycCAAccount,
+		serial: 1,
+		validFrom: new Date(Date.now() - 30_000),
+		validTo: new Date(Date.now() + 120_000)
+	}).build();
+
+	const requester = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	let verificationsStarted = 0;
+	const certificateRequesters: string[] = [];
+
+	await using server = new KeetaNetKYCAnchorHTTPServer({
+		signer: signer,
+		ca: kycCA,
+		client: userClient,
+		kycProviderURL: 'https://kyc.example.com/{id}',
+		kyc: {
+			countryCodes: ['US'],
+			verificationStarted: async function() {
+				verificationsStarted += 1;
+				return({ ok: true });
+			},
+			getCertificates: async function(_ignore_verificationID, { account }) {
+				certificateRequesters.push(account.publicKeyString.get());
+				return([{ certificate: '' }]);
+			},
+			getVerificationStatus: async function() {
+				return({ status: KYCVerificationStatus.PASSED });
+			}
+		}
+	});
+	await server.start();
+
+	/*
+	 * Certificates are released only to a signed requester, and the
+	 * handler learns who asked
+	 */
+	const certificatesURL = new URL('/api/getCertificates/verification-1', server.url);
+	const unsignedCertificates = await fetch(certificatesURL);
+	expect(unsignedCertificates.status).toBeGreaterThanOrEqual(400);
+	expect(certificateRequesters).toEqual([]);
+
+	const certificatesSigned = await signRequest(requester, { method: 'GET', url: certificatesURL }, []);
+	const signedCertificatesURL = addSignatureToURL(certificatesURL, { signedField: certificatesSigned, account: requester });
+	expect((await fetch(signedCertificatesURL)).status).toBe(200);
+	expect(certificateRequesters).toEqual([requester.publicKeyString.get()]);
+	expect((await fetch(signedCertificatesURL)).status).toBeGreaterThanOrEqual(400);
+	expect(certificateRequesters).toHaveLength(1);
+
+	/*
+	 * Another verification ID needs its own signature
+	 */
+	const otherVerificationURL = new URL(signedCertificatesURL.toString().replace('verification-1', 'verification-2'));
+	expect((await fetch(otherVerificationURL)).status).toBeGreaterThanOrEqual(400);
+	expect(certificateRequesters).toHaveLength(1);
+
+	/*
+	 * A createVerification request is accepted once, and a signature
+	 * made for another provider is refused
+	 */
+	const createURL = new URL('/api/createVerification', server.url);
+	const request = { countryCodes: ['US'], account: requester.publicKeyString.get() };
+	async function postCreate(signedFor: URL) {
+		const signed = await signRequest(requester, { method: 'POST', url: signedFor, body: request }, []);
+		const body = JSON.stringify({ request: { ...request, signed }});
+		return(async function() {
+			return(await fetch(createURL, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body
+			}));
+		});
+	}
+
+	const otherProvider = await postCreate(new URL('https://other-kyc.example.com/api/createVerification'));
+	expect((await otherProvider()).status).toBeGreaterThanOrEqual(400);
+	expect(verificationsStarted).toBe(0);
+
+	const create = await postCreate(createURL);
+	expect((await create()).status).toBe(200);
+	expect(verificationsStarted).toBe(1);
+	expect((await create()).status).toBeGreaterThanOrEqual(400);
+	expect(verificationsStarted).toBe(1);
+}, 30_000);

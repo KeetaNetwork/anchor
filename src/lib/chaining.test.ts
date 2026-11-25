@@ -5,6 +5,7 @@ import { KeetaNetAssetMovementAnchorHTTPServer, type KeetaAnchorAssetMovementSer
 import { type AnchorTokenLocationMetadata, convertAssetLocationToString, convertAssetSearchInputToCanonical, isAssetPairLike, toAssetLocation, toAssetPair, type AssetLocationLike, type AssetOrPair, type KeetaAssetMovementTransaction, type KeetaPersistentForwardingAddressDetails, type PersistentAddressAssetFeeBreakdown } from '../services/asset-movement/common.js';
 import { KeetaNetFXAnchorHTTPServer, type KeetaAnchorFXServerConfig, type GetConversionRateAndFeeContext, type KeetaFXInternalPriceQuote } from '../services/fx/server.js';
 import type { ConversionInputCanonicalJSON } from '../services/fx/common.js';
+import { Errors as FXErrors } from '../services/fx/common.js';
 import { Resolver } from './index.js';
 import type { ServiceMetadataExternalizable } from './resolver.js';
 import { AnchorChaining, AnchorChainingForwardingOnlyPlan, AnchorChainingPlan, AnchorChainingPlanCreateError, buildForwardingAdjacency, estimateForwardingValueOut, getForwardingDepositAddress, hasForwardingRoute, isForwardingPath, isForwardingPlan, listChainingPlanFees, supportsPersistentForwarding } from './chaining.js';
@@ -104,6 +105,53 @@ function buildTxRecord(args: {
 	});
 }
 
+/**
+ * Delivers what a test anchor's transfer pays out on Keeta when the
+ * transfer completes, so a following step funded from the recipient's
+ * balance spends tokens that actually arrived.
+ */
+class KeetaDeliveries {
+	readonly #client: KeetaNet.UserClient;
+	readonly #pending = new Map<string, { recipient: GenericAccount; token: TokenAddress; amount: bigint; }>();
+	readonly #seen = new Set<string>();
+
+	constructor(client: KeetaNet.UserClient) {
+		this.#client = client;
+	}
+
+	record(transaction: KeetaAssetMovementTransaction | undefined, recipient: unknown): void {
+		if (transaction === undefined || typeof recipient !== 'string' || this.#seen.has(transaction.id)) {
+			return;
+		}
+		this.#seen.add(transaction.id);
+
+		const location = toAssetLocation(transaction.to.location);
+		const toAsset = toAssetPair(transaction.asset).to;
+		if (location.type !== 'chain' || location.chain.type !== 'keeta' || typeof toAsset !== 'string') {
+			return;
+		}
+
+		let token;
+		try {
+			token = KeetaNet.lib.Account.fromPublicKeyString(toAsset).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		} catch {
+			return;
+		}
+
+		this.#pending.set(transaction.id, { recipient: KeetaNet.lib.Account.fromPublicKeyString(recipient), token, amount: BigInt(transaction.to.value) });
+	}
+
+	async deliverIfComplete(transaction: KeetaAssetMovementTransaction): Promise<void> {
+		const pending = this.#pending.get(transaction.id);
+		if (transaction.status !== 'COMPLETE' || pending === undefined) {
+			return;
+		}
+
+		this.#pending.delete(transaction.id);
+		await this.#client.modTokenSupplyAndBalance(pending.amount, pending.token, { account: pending.recipient });
+	}
+}
+
 class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	private readonly _initiateRef: { fn: InitiateTransferFn };
 	#defaultInitiateRef: { fn: InitiateTransferFn; };
@@ -119,6 +167,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		const bankAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
 		const statusMap = new Map<string, KeetaAssetMovementTransaction>();
+		const deliveries = new KeetaDeliveries(userClient);
 		const blockListener = new BlockListener({ client: userClient.client });
 		const getStatusRef: { interceptor: (() => void) | null } = { interceptor: null };
 
@@ -220,7 +269,9 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 				...serverConfig.assetMovement,
 				initiateTransfer: async (request) => {
 					// Status management is handled inside initiateRef.fn per direction.
-					return(await initiateRef.fn(request));
+					const response = await initiateRef.fn(request);
+					deliveries.record(statusMap.get(response.id), request.to.recipient);
+					return(response);
 				},
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				getTransferStatus: async (id: string): Promise<any> => {
@@ -234,6 +285,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 					await blockListener.scan();
 					const tx = statusMap.get(id);
 					if (!tx) {throw(new Error(`Unknown transfer ID: ${id}`));}
+					await deliveries.deliverIfComplete(tx);
 					return({ transaction: tx });
 				}
 			}
@@ -329,7 +381,7 @@ class TestBankServer extends KeetaNetAssetMovementAnchorHTTPServer {
 	}
 
 	/** Manually update the status of an in-flight transfer. */
-	setTransferStatus(id: string, update: Partial<Pick<KeetaAssetMovementTransaction, 'status'>>): this {
+	setTransferStatus(id: string, update: Partial<Pick<KeetaAssetMovementTransaction, 'status' | 'to'>>): this {
 		const existing = this._statusMap.get(id);
 		if (!existing) {throw(new Error(`Unknown transfer ID: ${id}`));}
 		this._statusMap.set(id, { ...existing, ...update, updatedAt: new Date().toISOString() });
@@ -559,6 +611,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 		const addresses = new Map<string, PersistentForwardingBridgeAddressMeta>();
 		const transactionsByAddress = new Map<string, KeetaAssetMovementTransaction[]>();
 		const transferStatuses = new Map<string, KeetaAssetMovementTransaction>();
+		const deliveries = new KeetaDeliveries(userClient);
+		const recipients = new Map<string, unknown>();
 		const delivery = { shortfall: 0n };
 
 		super({
@@ -575,6 +629,7 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 					const value = BigInt(request.value);
 					const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 					const recipientAddress = typeof request.to.recipient === 'string' ? request.to.recipient : '';
+					recipients.set(txId, request.to.recipient);
 
 					transferStatuses.set(txId, buildTxRecord({
 						id: txId,
@@ -675,6 +730,8 @@ class TestPersistentForwardingBridgeServer extends KeetaNetAssetMovementAnchorHT
 						throw(new Error(`Unknown transfer ID: ${id}`));
 					}
 
+					deliveries.record(tx, recipients.get(id));
+					await deliveries.deliverIfComplete(tx);
 					return({ transaction: tx });
 				},
 
@@ -892,6 +949,8 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 		const blockListener = new BlockListener({ client: userClient.client });
 
 		const statusMap = new Map<string, KeetaAssetMovementTransaction>();
+		const deliveries = new KeetaDeliveries(userClient);
+		const recipients = new Map<string, unknown>();
 		const addresses = new Map<string, PersistentForwardingBridgeAddressMeta>();
 		const forwardValues = new Map<string, bigint>();
 
@@ -913,6 +972,7 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 					const receive = convert({ fromAsset, toAsset, fromLocation: request.from.location, toLocation: request.to.location, value });
 					const fee = value - receive;
 					const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+					recipients.set(txId, request.to.recipient);
 
 					const parsedFrom = toAssetLocation(request.from.location);
 					const isKeetaSource = parsedFrom.type === 'chain' && parsedFrom.chain.type === 'keeta';
@@ -1075,6 +1135,8 @@ class TestChainAnchorServer extends KeetaNetAssetMovementAnchorHTTPServer {
 					if (!tx) {
 						throw(new Error(`Unknown transfer ID: ${id}`));
 					}
+					deliveries.record(tx, recipients.get(id));
+					await deliveries.deliverIfComplete(tx);
 					return({ transaction: tx });
 				},
 
@@ -2232,7 +2294,7 @@ describe('AnchorChainingPath execute', function() {
 
 		path.on('stepNeedsAction', async (payload) => {
 			if (payload.type === 'assetMovementUserExecutionRequired') {
-				await h.giveTokens(h.client.account, 90n, h.tokens.USDC);
+				/* The bank delivers its 90 USDC to the user when the transfer completes, after this */
 				afterStep0Balance = {
 					usdc: await h.client.balance(h.tokens.USDC),
 					eurc: await h.client.balance(h.tokens.EURC)
@@ -2254,8 +2316,9 @@ describe('AnchorChainingPath execute', function() {
 
 		expect(capturedUSRecipients.length).toBeGreaterThan(0);
 		capturedUSRecipients.forEach(r => expect(r).toBe(userAddress));
-		expect(afterStep0Balance).toEqual({ usdc: 90n, eurc: 0n });
+		expect(afterStep0Balance).toEqual({ usdc: 0n, eurc: 0n });
 
+		/* The 90 USDC the bank delivered to the user was swapped for 79 EURC */
 		expect(afterStep1Balance).toEqual({ usdc: 0n, eurc: 79n });
 
 		expect(await h.client.balance(h.tokens.USDC)).toBe(0n);
@@ -2948,6 +3011,221 @@ describe('plan create error reports failedAt providerID', function() {
 			error: error.rootError,
 			failedAt: { providerID: h.euBankProviderID }
 		});
+	});
+});
+
+/*
+ * Each case charges a fee on the FXOne leg of a 100 USDC plan and then
+ * executes it. A limit the plan copies from the anchor's own estimate
+ * must not lift the client's default caps.
+ */
+async function executeWithFee(fee: (from: TokenAddress, baseToken: TokenAddress) => { amount: bigint; token: TokenAddress; }, fxDefaultLimits?: { maxCostBps?: number | null }) {
+	const h = await createChainingTestHarness();
+	await h.giveTokens(h.client.account, 1000n, h.tokens.USDC);
+	const original = h.fxServerOne['_rateRef'].fn;
+	h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
+		const quote = await original(request, context);
+		const from = KeetaNet.lib.Account.fromPublicKeyString(request.from).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+		return({ ...quote, cost: fee(from, h.client.baseToken) });
+	});
+
+	const chaining = fxDefaultLimits === undefined ? h.anchorChaining : new AnchorChaining({ client: h.client, resolver: h.anchorChaining['resolver'], fxDefaultLimits });
+	const results = await chaining.getPlans({
+		source: { asset: h.tokens.USDC, location: h.keetaLocation, value: 100n, rail: 'KEETA_SEND' },
+		destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+	}, { includeAllOutput: true });
+
+	const before = await h.client.balance(h.tokens.USDC);
+	let error: unknown = null;
+	let planValueIn: bigint | null = null;
+	const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+	const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
+	if (planned?.success) {
+		planValueIn = planned.plan.plan.totalValueIn;
+		error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+	} else if (refused !== undefined && !refused.success) {
+		/* Refused while computing the plan, before anything executed */
+		error = refused.error;
+	} else {
+		throw(new Error('No plan or plan error via FXOne'));
+	}
+	const after = await h.client.balance(h.tokens.USDC);
+	await h[Symbol.asyncDispose]();
+	return({ planValueIn, spent: before - after, error });
+}
+
+describe('chaining FX caps hold against the plan numbers', function() {
+	test('refuses an 800 USDC fee on a 100 USDC plan and spends nothing', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 800n, token: from }); });
+		expect(result.spent).toBe(0n);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
+	}, 60_000);
+
+	test('refuses a fee in the network base token and spends nothing', async function() {
+		const result = await executeWithFee(function(_from, baseToken) { return({ amount: 5n, token: baseToken }); });
+		expect(result.spent).toBe(0n);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(result.error)).toBe(true);
+	}, 60_000);
+
+	test('refuses a later FX fee when it builds the plan, before the user funds the first step', async function() {
+		await using h = await createChainingTestHarness();
+		const original = h.fxServerOne['_rateRef'].fn;
+		h.fxServerOne.setGetConversionRateAndFee(async function(request, context) {
+			return({ ...await original(request, context), cost: { amount: 5n, token: h.client.baseToken }});
+		});
+
+		const results = await h.anchorChaining.getPlans({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		}, { includeAllOutput: true });
+
+		let userActions = 0;
+		let error: unknown = null;
+		const planned = results?.find(r => r.success && r.plan.plan.steps.some(n => n.type === 'fx' && n.step.providerID === 'FXOne'));
+		if (planned?.success) {
+			planned.plan.on('stepNeedsAction', function(payload) {
+				userActions++;
+				if (payload.type === 'keetaSendAuthRequired') {
+					payload.markCompleted({ sent: true });
+				} else {
+					payload.markCompleted();
+				}
+			});
+			error = await planned.plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		} else {
+			const refused = results?.find(r => !r.success && r.failedAt.providerID === h.fxOneProviderID);
+			error = refused !== undefined && !refused.success ? refused.error : null;
+		}
+
+		/* The user was never asked to fund the bank step */
+		expect(userActions).toBe(0);
+		expect(FXErrors.ExchangeLimitExceeded.isInstance(error)).toBe(true);
+	}, 60_000);
+
+	test('signs a 1% fee under the default cap', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 1n, token: from }); });
+		expect(result.error).toBeNull();
+		expect(result.spent).toBe(101n);
+	}, 60_000);
+
+	test('signs a 5% flat fee when fxDefaultLimits raises the cap', async function() {
+		const result = await executeWithFee(function(from) { return({ amount: 5n, token: from }); }, { maxCostBps: 500 });
+		expect(result.error).toBeNull();
+		expect(result.spent).toBe(105n);
+	}, 60_000);
+});
+
+describe('plan refuses a bank instruction for another amount than the deposit', function() {
+	test('refuses an ACH instruction that asks for more than the plan deposits', async function() {
+		await using h = await createChainingTestHarness();
+		h.bankServerUS.wrapInitiateTransfer(async function(request, next) {
+			const response = await next(request);
+			return({
+				...response,
+				instructionChoices: response.instructionChoices.map(function(choice) {
+					return('value' in choice ? { ...choice, value: (BigInt(choice.value) * 1000n).toString() } : choice);
+				})
+			});
+		});
+
+		const paths = await h.anchorChaining.getPaths({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: h.tokens.USDC, location: h.keetaLocation, recipient: h.client.account.publicKeyString.get(), rail: 'KEETA_SEND' }
+		});
+		const path = paths?.find(p => p.path.length === 1 && p.path[0]?.providerID === 'BankUS');
+		if (!path) {
+			throw(new Error('No single-step BankUS path found'));
+		}
+
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(String(error.rootError)).toMatch(/asked for a send of 100000, not the planned deposit of 100/);
+	});
+});
+
+describe('chaining spends only what the previous step delivered on-chain', function() {
+	test('refuses to spend the user\'s own balance when an earlier anchor over-reports what it delivered', async function() {
+		await using h = await createChainingTestHarness();
+		/* The user already holds USDC unrelated to this plan */
+		await h.giveTokens(h.client.account, 1_000_000n, h.tokens.USDC);
+
+		const inflated = 1_000_000n;
+		h.bankServerUS.wrapInitiateTransfer(async function(request, next) {
+			const response = await next(request);
+			return({
+				...response,
+				instructionChoices: response.instructionChoices.map(function(choice) {
+					return({ ...choice, totalReceiveAmount: inflated.toString() });
+				})
+			});
+		});
+
+		const plans = await h.anchorChaining.getPlans({
+			source: { asset: 'USD', location: 'bank-account:us', value: 100n, rail: 'ACH' },
+			destination: { asset: 'EUR', location: 'bank-account:iban-swift', recipient: h.client.account.publicKeyString.get(), rail: 'SEPA_PUSH' }
+		});
+		const plan = plans?.find(p => p.plan.steps.length === 3 && p.plan.steps[1]?.type === 'fx' && p.plan.steps[1].step.providerID === 'FXOne');
+		if (!plan) {
+			throw(new Error('No USD to EUR plan via BankUS, FXOne and BankEU'));
+		}
+		expect(plan.plan.totalValueIn).toBe(100n);
+
+		const reportInflated: Promise<void>[] = [];
+		plan.on('stepNeedsAction', function(payload) {
+			if (payload.type === 'assetMovementUserExecutionRequired') {
+				/* The anchor delivers 90 USDC but reports 1,000,000 */
+				const transfer = payload.action.assetMovementTransfer;
+				reportInflated.push(transfer.getTransferStatus().then(function(status) {
+					h.bankServerUS.setTransferStatus(transfer.transferID, { to: { ...status.transaction.to, value: inflated.toString() }});
+					payload.markCompleted();
+				}));
+			} else {
+				payload.markCompleted({ sent: true });
+			}
+		});
+
+		const before = await h.client.balance(h.tokens.USDC);
+		const error: unknown = await plan.execute().then(function() { return(null); }, function(caught: unknown) { return(caught); });
+		await Promise.all(reportInflated);
+		const after = await h.client.balance(h.tokens.USDC);
+
+		/* The user keeps their own USDC plus the 90 the anchor delivered */
+		expect(after - before).toBe(90n);
+		expect(String(error)).toContain('expected at least 1000000 but previous step produced 90');
+	}, 60_000);
+});
+
+describe('plan refuses a Keeta send instruction that differs from the step', function() {
+	type KeetaSendChoice = Extract<Awaited<ReturnType<InitiateTransferFn>>['instructionChoices'][number], { type: 'KEETA_SEND' }>;
+	const alterations: [ string, (choice: KeetaSendChoice, otherToken: KeetaSendChoice['tokenAddress']) => KeetaSendChoice ][] = [
+		[ 'a larger amount', function(choice) { return({ ...choice, value: (BigInt(choice.value) * 1000n).toString() }); } ],
+		[ 'a smaller amount', function(choice) { return({ ...choice, value: (BigInt(choice.value) - 1n).toString() }); } ],
+		[ 'another token', function(choice, otherToken) { return({ ...choice, tokenAddress: otherToken }); } ]
+	];
+
+	test.each(alterations)('refuses %s', async function(_name, alter) {
+		await using h = await createChainingTestHarness();
+		const otherToken = h.tokens.USDC.publicKeyString.get();
+		h.bankServerEU.wrapInitiateTransfer(async function(request, next) {
+			const response = await next(request);
+			return({
+				...response,
+				instructionChoices: response.instructionChoices.map(function(choice) {
+					return(choice.type === 'KEETA_SEND' ? alter(choice, otherToken) : choice);
+				})
+			});
+		});
+
+		const path = await h.getPathVia('FXOne');
+		const error = await AnchorChainingPlan.create(path).catch((err: unknown) => err);
+		if (!AnchorChainingPlanCreateError.isInstance(error)) {
+			throw(new Error('Expected AnchorChainingPlanCreateError'));
+		}
+		expect(error.failedAtStep.providerID).toEqual(h.euBankProviderID);
+		expect(error.rootError).toBeInstanceOf(Error);
+		expect(String(error.rootError)).toMatch(/asked for a send of/);
 	});
 });
 

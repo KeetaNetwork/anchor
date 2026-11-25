@@ -6,7 +6,8 @@ import type { TestParsedPath } from './test-utils.js';
 import { KeetaNetStorageAnchorHTTPServer } from './server.js';
 import { MemoryStorageBackend } from './test-utils.js';
 import { KeetaNet } from '../../client/index.js';
-import { SignData, FormatData } from '../../lib/utils/signing.js';
+import { FormatData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 import { getKeetaStorageAnchorGetRequestSigningData, getKeetaStorageAnchorSearchRequestSigningData, getKeetaStorageAnchorPutRequestSigningData, getKeetaStorageAnchorDeleteRequestSigningData, getKeetaStorageAnchorUpdateMetadataRequestSigningData, Errors } from './common.js';
 import { EncryptedContainer } from '../../lib/encrypted-container.js';
@@ -213,8 +214,9 @@ describe('Storage Server', function() {
 
 				await backend.put(objectPath, Buffer.from('secret data'), testMetadata(ownerPubKey, { tags: ['private'] }));
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					attackerAccount,
+					{ method: testCase.method, url: new URL(`${url}${testCase.endpoint}${objectPath}`) },
 					testCase.getSigningData({ path: objectPath, account: attackerAccount.publicKeyString.get() })
 				);
 
@@ -252,8 +254,9 @@ describe('Storage Server', function() {
 				// Attacker tries to overwrite it
 				const visibility = 'private';
 				const tags: string[] = [];
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					attackerAccount,
+					{ method: 'PUT', url: new URL(`${url}/api/object${objectPath}?visibility=${visibility}`), body: Buffer.from('malicious data') },
 					getKeetaStorageAnchorPutRequestSigningData({ path: objectPath, visibility, tags })
 				);
 
@@ -318,8 +321,9 @@ describe('Storage Server', function() {
 					criteria: testCase.makeCriteria(ownerPubKey)
 				};
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					attackerAccount,
+					{ method: 'POST', url: new URL(`${url}/api/search`), body: searchRequest },
 					getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
 				);
 
@@ -356,8 +360,9 @@ describe('Storage Server', function() {
 					criteria: {}
 				};
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					userAccount,
+					{ method: 'POST', url: new URL(`${url}/api/search`), body: searchRequest },
 					getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
 				);
 
@@ -399,8 +404,9 @@ describe('Storage Server', function() {
 					criteria: { visibility: 'public' }
 				};
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					userAccount,
+					{ method: 'POST', url: new URL(`${url}/api/search`), body: searchRequest },
 					getKeetaStorageAnchorSearchRequestSigningData(searchRequest)
 				);
 
@@ -454,14 +460,14 @@ describe('Storage Server', function() {
 				);
 
 				const binaryData = Buffer.from(await container.getEncodedBuffer());
-				const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData({
+				const baseUrl = new URL(`/api/object${objectPath}`, url);
+				baseUrl.searchParams.set('visibility', testCase.visibility);
+				const signedField = await signRequest(userAccount, { method: 'PUT', url: baseUrl, body: binaryData }, getKeetaStorageAnchorPutRequestSigningData({
 					path: objectPath,
 					visibility: testCase.visibility
 				}));
 
-				const baseUrl = new URL(`/api/object${objectPath}`, url);
 				const requestUrl = addSignatureToURL(baseUrl, { signedField, account: userAccount });
-				requestUrl.searchParams.set('visibility', testCase.visibility);
 
 				const response = await fetch(requestUrl, {
 					method: 'PUT',
@@ -577,8 +583,9 @@ describe('Storage Server', function() {
 
 				await backend.put(objectPath, Buffer.from('test'), testMetadata(accountPubKey));
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					account,
+					{ method: 'GET', url: new URL(`${url}/api/object${objectPath}`) },
 					getKeetaStorageAnchorGetRequestSigningData({
 						path: objectPath,
 						account: accountPubKey
@@ -849,8 +856,9 @@ describe('Storage Server', function() {
 			return(withServer(async function({ url }) {
 				const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
 
-				const signedField = await SignData(
+				const signedField = await signRequest(
 					userAccount,
+					{ method: 'GET', url: new URL(`${url}/api/object${testCase.path}`) },
 					getKeetaStorageAnchorGetRequestSigningData({ path: testCase.path, account: userAccount.publicKeyString.get() })
 				);
 
@@ -878,7 +886,7 @@ describe('Storage Server', function() {
 				const path = `/user/${account.publicKeyString.get()}/nonexistent.txt`;
 
 				const signable = getKeetaStorageAnchorGetRequestSigningData({ path, account: account.publicKeyString.get() });
-				const signed = await SignData(account.assertAccount(), signable);
+				const signed = await signRequest(account.assertAccount(), { method: 'GET', url: new URL(`${url}/api/metadata${path}`) }, signable);
 				const signedUrl = addSignatureToURL(new URL(`${url}/api/metadata${path}`), { signedField: signed, account: account.assertAccount() });
 
 				const response = await fetch(signedUrl, {
@@ -907,7 +915,7 @@ describe('Storage Server', function() {
 
 				// Sign and fetch metadata
 				const signable = getKeetaStorageAnchorGetRequestSigningData({ path, account: account.publicKeyString.get() });
-				const signed = await SignData(account.assertAccount(), signable);
+				const signed = await signRequest(account.assertAccount(), { method: 'GET', url: new URL(`${url}/api/metadata${path}`) }, signable);
 				const signedUrl = addSignatureToURL(new URL(`${url}/api/metadata${path}`), { signedField: signed, account: account.assertAccount() });
 
 				const response = await fetch(signedUrl, {
@@ -941,7 +949,7 @@ describe('Storage Server', function() {
 				tags
 			});
 
-			const signed = await SignData(account.assertAccount(), signable);
+			const signed = await signRequest(account.assertAccount(), { method: 'PUT', url: new URL(`${url}/api/metadata${objectPath}`), body: { tags, visibility, account: account.publicKeyString.get() }}, signable);
 			return(await fetch(`${url}/api/metadata${objectPath}`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -1116,16 +1124,14 @@ describe('Storage Server', function() {
 				);
 
 				const binaryData = Buffer.from(await container.getEncodedBuffer());
-				const signedField = await SignData(userAccount, getKeetaStorageAnchorPutRequestSigningData({
+				const baseUrl = new URL(`/api/object${objectPath}`, url);
+				baseUrl.searchParams.set('visibility', 'private');
+				const signedField = await signRequest(userAccount, { method: 'PUT', url: baseUrl, body: binaryData }, getKeetaStorageAnchorPutRequestSigningData({
 					path: objectPath,
 					visibility: 'private'
 				}));
 
-				const requestUrl = addSignatureToURL(
-					new URL(`/api/object${objectPath}`, url),
-					{ signedField, account: userAccount }
-				);
-				requestUrl.searchParams.set('visibility', 'private');
+				const requestUrl = addSignatureToURL(baseUrl, { signedField, account: userAccount });
 
 				const response = await fetch(requestUrl, {
 					method: 'PUT',
