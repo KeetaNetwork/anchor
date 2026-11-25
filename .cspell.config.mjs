@@ -41,6 +41,18 @@ export default {
 	words: [
 		...keetanetNodeWords,
 		// Anchor-specific words
+		'Anza',
+		'borsh',
+		// Docker and rustup terms in the verifiable build's sandbox
+		'pids',
+		'rustup',
+		'keypair',
+		'merkle',
+		'reentrancy',
+		'sbpf',
+		'rustc',
+		'cdylib',
+		'subdenom',
 		'Anchor',
 		'Anchorlist',
 		'ACCOUNTOWNERS',
