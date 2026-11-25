@@ -28,7 +28,7 @@ import type { Routes } from '../../lib/http-server/index.ts';
 import { KeetaAnchorMetadataServer } from '../../lib/anchor-metadata-server.js';
 import { KeetaAnchorUserError, KeetaAnchorUserValidationError } from '../../lib/error.js';
 import { verifyBodyAuth } from '../../lib/http-server/common.js';
-import * as Signing from '../../lib/utils/signing.js';
+import { verifySignedRequest } from '../../lib/http-server/request-signing.js';
 
 function normalizeUsernamePattern(pattern: string | RegExp): RegExp {
 	if (typeof pattern === 'string') {
@@ -182,7 +182,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 
 		const claimHandler = this.usernames.claim;
 		if (claimHandler) {
-			routes['POST /api/claim'] = async (_params, body) => {
+			routes['POST /api/claim'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaUsernameAnchorClaimRequestJSON(body);
 
 				this.#assertProviderIssuedNameValid(raw.username);
@@ -197,7 +197,8 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 						to: toAccount
 					});
 
-					const verifiedTransfer = await Signing.VerifySignedData(fromAccount, transferSignable, raw.transfer.signed);
+					/* The transfer is authorized for this provider's claim operation only */
+					const verifiedTransfer = await verifySignedRequest(fromAccount, this.requestAuthContext('POST', url), transferSignable, raw.transfer.signed);
 					if (!verifiedTransfer) {
 						throw(new KeetaAnchorUserError('Invalid username claim transfer signature'));
 					}
@@ -205,7 +206,7 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 					transfer = { from: fromAccount, signed: raw.transfer.signed };
 				}
 
-				const account = await verifyBodyAuth(raw, function(req) {
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, function(req) {
 					const claimAccount = KeetaNet.lib.Account.toAccount(req.account);
 					const claimPayload: KeetaUsernameAnchorClaimRequestPayload = {
 						username: req.username,
@@ -241,9 +242,9 @@ export class KeetaNetUsernameAnchorHTTPServer extends KeetaAnchorMetadataServer<
 
 		const releaseHandler = this.usernames.releaseUsername;
 		if (releaseHandler) {
-			routes['POST /api/release'] = async (_params, body) => {
+			routes['POST /api/release'] = async (_params, body, _ignore_headers, url) => {
 				const raw = assertKeetaUsernameAnchorReleaseRequestJSON(body);
-				const account = await verifyBodyAuth(raw, function(req) {
+				const account = await verifyBodyAuth(this.requestAuthContext('POST', url, body), raw, function(req) {
 					return(getUsernameReleaseSignable({ account: KeetaNet.lib.Account.toAccount(req.account) }));
 				}, this.resolvedCertificateChainRequirement);
 

@@ -5,7 +5,8 @@ import { KeetaAnchorUserError } from "../error.js";
 import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { assertAccountCertificateChain } from "../utils/certificate-network.js";
 import { createAssertEquals } from "typia";
-import { VerifySignedData } from "../utils/signing.js";
+import type { RequestAuthContext } from "./request-signing.js";
+import { claimRequestNonce, verifyRequestSignature } from "./request-signing.js";
 import type { DistributiveOmit } from "@keetanetwork/keetanet-client/lib/utils/helper.js";
 
 export type ExtractOk<T> = DistributiveOmit<Extract<T, { ok: true }>, 'ok'>;
@@ -103,6 +104,7 @@ export function parseSignatureFromURL(input: URL | string): Partial<HTTPSignedFi
  * caller's on-chain cert chain doesn't satisfy `certificateChain`.
  */
 export async function verifyBodyAuth<T extends { account?: string; signed?: unknown }>(
+	context: RequestAuthContext,
 	request: T,
 	getSigningData: (req: T) => Signable,
 	certificateChain?: ResolvedCertificateChainRequirement
@@ -115,12 +117,14 @@ export async function verifyBodyAuth<T extends { account?: string; signed?: unkn
 
 	const signable = getSigningData(request);
 	const signed = assertHTTPSignedField(request.signed);
-	const valid = await VerifySignedData(account, signable, signed);
+	const valid = await verifyRequestSignature(account, context, signable, signed);
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
 
+	/* Only a caller that passes the cert-chain gate spends a nonce */
 	await assertAccountCertificateChain(account, certificateChain);
+	await claimRequestNonce(account, context, signed);
 
 	return(account);
 }
@@ -131,29 +135,23 @@ export async function verifyBodyAuth<T extends { account?: string; signed?: unkn
  * request derived from the URL-bound account public key.
  */
 export async function verifyURLAuth(
-	url: URL | string,
+	context: RequestAuthContext,
 	getSigningData: (account: Account) => Signable,
 	certificateChain?: ResolvedCertificateChainRequirement
 ): Promise<Account> {
-	let urlString: string;
-	if (typeof url === 'string') {
-		urlString = url;
-	} else {
-		urlString = url.href;
-	}
-
-	const parsed = parseSignatureFromURL(urlString);
+	const parsed = parseSignatureFromURL(context.url);
 	if (!parsed.account || !parsed.signedField) {
 		throw(new KeetaAnchorUserError('Authentication required'));
 	}
 
 	const signable = getSigningData(parsed.account);
-	const valid = await VerifySignedData(parsed.account, signable, parsed.signedField);
+	const valid = await verifyRequestSignature(parsed.account, context, signable, parsed.signedField);
 	if (!valid) {
 		throw(new KeetaAnchorUserError('Invalid signature'));
 	}
 
 	await assertAccountCertificateChain(parsed.account, certificateChain);
+	await claimRequestNonce(parsed.account, context, parsed.signedField);
 
 	return(parsed.account);
 }

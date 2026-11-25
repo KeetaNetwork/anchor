@@ -14,6 +14,7 @@ import { assertNever } from './utils/never.js';
 import { withRetry } from './utils/retry.js';
 import type { PublicRetryOptions, RetryOptions } from './utils/retry.js';
 import KeetaFXAnchorClient from '../services/fx/client.js';
+import type { KeetaFXAnchorClientDefaultLimits } from '../services/fx/client.js';
 import KeetaAssetMovementAnchorClient from '../services/asset-movement/client.js';
 import type { ExternalChainAsset, EVMChecksumCache } from './asset.js';
 import { isExternalChainAsset, isMovableAssetEqual } from './asset.js';
@@ -218,6 +219,12 @@ export interface AnchorChainingConfig {
 	signer?: InstanceType<typeof KeetaNetLib.Account>;
 	account?: InstanceType<typeof KeetaNetLib.Account>;
 	logger?: Logger;
+	/**
+	 * Default caps for the FX exchanges a plan signs. Raise them to
+	 * accept a larger fee or estimate bound, such as a flat fee on a
+	 * small conversion.
+	 */
+	fxDefaultLimits?: KeetaFXAnchorClientDefaultLimits;
 }
 
 interface BaseGraphNodeLike<Type extends 'fx' | 'assetMovement', AssetType extends AnchorChainingAsset> {
@@ -1981,6 +1988,32 @@ export type AnchorChainingPlanFeeBreakdown = {
 	lineItems: AnchorChainingFeeLineItem[];
 };
 
+/**
+ * The account and token a step spends from, with that account's balance
+ * of the token before the step that funds it ran.
+ */
+type FundingSnapshot = { account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; balance: bigint; };
+
+/**
+ * Checks that a transfer instruction from an asset movement provider asks
+ * for the amount the plan deposits and, for a Keeta send, the step's own
+ * asset. The provider sets both, and the user or the plan sends them as
+ * given. Fees come out of the amount received, not on top of the amount
+ * sent.
+ */
+function assertInstructionMatchesStep(instruction: AssetTransferInstructions, asset: AnchorChainingAsset, depositValue: bigint, providerID: string): void {
+	if (instruction.type === 'KEETA_SEND') {
+		const expectedToken = KeetaNet.lib.Account.isInstance(asset) ? asset.publicKeyString.get() : asset;
+		if (instruction.tokenAddress !== expectedToken) {
+			throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.tokenAddress}, not the step asset ${expectedToken}`));
+		}
+	}
+
+	if ('value' in instruction && BigInt(instruction.value) !== depositValue) {
+		throw(new Error(`Asset movement provider ${providerID} asked for a send of ${instruction.value}, not the planned deposit of ${depositValue}`));
+	}
+}
+
 /** List combined fees for a computed chaining plan. Keeta-send steps are omitted (treated as zero). */
 export function listChainingPlanFees(plan: { plan: AnchorChainingPathComputedPlan }): AnchorChainingPlanFeeBreakdown {
 	const lineItems: AnchorChainingFeeLineItem[] = [];
@@ -2392,7 +2425,11 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 			...(this.parent['logger'] ? { logger: this.parent['logger'] } : {})
 		} as const;
 
-		const fxClient = new KeetaFXAnchorClient(this.parent['client'], sharedClientOptions);
+		const fxDefaultLimits = this.parent['fxDefaultLimits'];
+		const fxClient = new KeetaFXAnchorClient(this.parent['client'], {
+			...sharedClientOptions,
+			...(fxDefaultLimits === undefined ? {} : { defaultLimits: fxDefaultLimits })
+		});
 
 		const assetMovementClient = new KeetaAssetMovementAnchorClient(this.parent['client'], sharedClientOptions);
 
@@ -2675,7 +2712,12 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 								throw(new Error(`FX estimate from provider ${step.providerID} indicates exchange cannot be performed`));
 							}
 
-							const convertedAmount = result.isQuote ? result.quote.convertedAmount : result.estimate.convertedAmount;
+							/*
+							 * Book what the exchange block will commit to. For an
+							 * estimate that is its bound, which can be less
+							 * favorable than its converted amount.
+							 */
+							const convertedAmount = result.isQuote ? result.quote.convertedAmount : (result.estimate.convertedAmountBound ?? result.estimate.convertedAmount);
 
 							let valueIn;
 							let valueOut;
@@ -2689,6 +2731,13 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							} else {
 								assertNever(affinity);
 							}
+
+							/*
+							 * Run the checks execution will run before signing,
+							 * so a fee or bound the client refuses fails here,
+							 * before any earlier step moves funds.
+							 */
+							result.checkExchange({ limits: { maxSend: valueIn, minReceive: valueOut }});
 
 							return({ type: 'fx', step, valueIn, valueOut, result });
 						} else if (step.type === 'assetMovement') {
@@ -2900,6 +2949,7 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 							});
 
 							const usingInstruction = findInstruction(transfer.instructions, step.from.rail);
+							assertInstructionMatchesStep(usingInstruction, step.from.asset, depositValue, step.providerID);
 
 							let totalReceiveAmount: string | undefined = usingInstruction.totalReceiveAmount;
 							if (totalReceiveAmount === undefined && 'value' in usingInstruction) {
@@ -3136,6 +3186,61 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		}
 
 		return(await promise);
+	}
+
+	/**
+	 * What the previous step delivered: the smaller of the value its
+	 * anchor reported and the balance increase observed on chain since
+	 * the snapshot, or the reported value when there is no snapshot.
+	 */
+	async #deliveredValue(snapshot: FundingSnapshot | null, reported: bigint | null): Promise<bigint | null> {
+		if (snapshot === null) {
+			return(reported);
+		}
+
+		const delivered = await this.parent['client'].balance(snapshot.token, { account: snapshot.account }) - snapshot.balance;
+		if (reported === null || delivered < reported) {
+			return(delivered);
+		}
+
+		return(reported);
+	}
+
+	/**
+	 * The balance a step will spend from, taken before the step that
+	 * funds it runs, or `null` when the step does not spend from the
+	 * user's Keeta balance.
+	 */
+	async #fundingSnapshot(step: ChainStepResolution | undefined): Promise<FundingSnapshot | null> {
+		if (step === undefined) {
+			return(null);
+		}
+
+		const funding = await this.#keetaFunding(step);
+		if (funding === null) {
+			return(null);
+		}
+
+		return({ ...funding, balance: await this.parent['client'].balance(funding.token, { account: funding.account }) });
+	}
+
+	/**
+	 * The account and token a step spends from the user's Keeta balance,
+	 * or `null` when the step does not spend from it.
+	 */
+	async #keetaFunding(step: ChainStepResolution): Promise<{ account: InstanceType<typeof KeetaNetLib.Account>; token: TokenAddress; } | null> {
+		if (step.type === 'fx') {
+			const { account } = await this.getAccountsForAction({ type: 'fx', providerMethod: 'getAccountForAction' }, this.#options?.overrides);
+			return({ account, token: step.result.request.from });
+		}
+
+		if ((step.type === 'assetMovement' || step.type === 'keetaSend') && step.usingInstruction.type === 'KEETA_SEND') {
+			const { account } = await this.getAccountsForAction({ type: 'assetMovement', providerMethod: 'initiateTransfer' }, this.#options?.overrides);
+			const token = KeetaNet.lib.Account.fromPublicKeyString(step.usingInstruction.tokenAddress).assertKeyType(KeetaNet.lib.Account.AccountKeyAlgorithm.TOKEN);
+			return({ account, token });
+		}
+
+		return(null);
 	}
 
 	async #authorizedSend(options: Pick<AnchorChainingPathExecuteOptions, 'requireSendAuth'> | undefined, sendToAddress: string | GenericAccount, value: bigint, token: TokenAddress | string, external?: string): Promise<string | undefined> {
@@ -3388,6 +3493,14 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 		 * anchor's signed envelope references the prior steps' operations.
 		 */
 		const publishedInputs: AnchorExternalInput[] = [];
+
+		/*
+		 * The next step's funding account and token, with its balance
+		 * before the current step ran, when the next step spends from the
+		 * user's Keeta balance.
+		 */
+		let fundingSnapshot: FundingSnapshot | null = null;
+
 		let index = 0;
 		try {
 			for (index = 0; index < this.plan.steps.length; index++) {
@@ -3409,6 +3522,16 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				const pollContext = { stepIndex: index, planStep: step };
+
+				/*
+				 * A step funded from the user's Keeta balance may spend only
+				 * what the previous step delivered there, as observed on
+				 * chain, not what its anchor reports. An FX step's receive
+				 * is part of its own atomic block, so the network already
+				 * enforces it; only an anchor's payout needs measuring.
+				 */
+				prevActualValueOut = await this.#deliveredValue(fundingSnapshot, prevActualValueOut);
+				fundingSnapshot = step.type === 'fx' ? null : await this.#fundingSnapshot(this.plan.steps[index + 1]);
 
 				// Verify the actual output from the previous step covers the expected
 				// input for this step, less the allowed slippage. A larger shortfall
@@ -3432,7 +3555,18 @@ export class AnchorChainingPlan extends AnchorChainingPath {
 				}
 
 				if (step.type === 'fx') {
-					const exchange = await step.result.createExchange(undefined, { inputs: [...publishedInputs] });
+					/*
+					 * The planned amounts come from the same quote or
+					 * estimate, so they pin the exchange to the plan but do
+					 * not bound the anchor's terms. The FX client's default
+					 * caps do that. No maxCost is passed, so a fee outside
+					 * the from and to tokens is refused rather than taken
+					 * on the quote's word.
+					 */
+					const exchange = await step.result.createExchange(undefined, {
+						inputs: [...publishedInputs],
+						limits: { maxSend: step.valueIn, minReceive: step.valueOut }
+					});
 					const exchangeStatus = await this.#pollExchangeStatus(exchange, options);
 
 					publishedInputs.push({ blockHash: exchangeStatus.blockhash });
@@ -3603,9 +3737,11 @@ export class AnchorChaining {
 	private resolver: Resolver;
 	readonly graph: AnchorGraph;
 	private logger?: Logger;
+	private readonly fxDefaultLimits: KeetaFXAnchorClientDefaultLimits | undefined;
 
 	constructor(config: AnchorChainingConfig) {
 		this.client = config.client;
+		this.fxDefaultLimits = config.fxDefaultLimits;
 		if (config.resolver) {
 			this.resolver = config.resolver;
 		} else {
