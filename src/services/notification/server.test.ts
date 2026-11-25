@@ -9,7 +9,7 @@ import {
 	getNotificationListSubscriptionsRequestSignable,
 	getNotificationDeleteSubscriptionRequestSignable
 } from './common.js';
-import { SignData } from '../../lib/utils/signing.js';
+import { signRequest } from '../../lib/http-server/request-signing.js';
 import { addSignatureToURL } from '../../lib/http-server/common.js';
 
 const DEBUG = false;
@@ -47,7 +47,7 @@ test('notification server registers, lists, and deletes targets', async () => {
 
 	// --- registerTarget ---
 	const registerSignable = getNotificationRegisterTargetRequestSignable({ channel });
-	const registerSigned = await SignData(account.assertAccount(), registerSignable);
+	const registerSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/target', baseURL), body: { account: account.publicKeyString.get(), channel }}, registerSignable);
 
 	const registerResponse = await fetch(new URL('/api/target', baseURL), {
 		method: 'POST',
@@ -69,7 +69,7 @@ test('notification server registers, lists, and deletes targets', async () => {
 
 	// --- listTargets ---
 	const listSignable = getNotificationListTargetsRequestSignable();
-	const listSigned = await SignData(account.assertAccount(), listSignable);
+	const listSigned = await signRequest(account.assertAccount(), { method: 'GET', url: new URL('/api/targets', baseURL) }, listSignable);
 	const listURL = addSignatureToURL(new URL('/api/targets', baseURL), { signedField: listSigned, account: account.assertAccount() });
 
 	const listResponse = await fetch(listURL, {
@@ -82,7 +82,7 @@ test('notification server registers, lists, and deletes targets', async () => {
 
 	// --- deleteTarget ---
 	const deleteSignable = getNotificationDeleteTargetRequestSignable({ id: registeredID });
-	const deleteSigned = await SignData(account.assertAccount(), deleteSignable);
+	const deleteSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/delete-target', baseURL), body: { account: account.publicKeyString.get(), id: registeredID }}, deleteSignable);
 
 	const deleteResponse = await fetch(new URL('/api/delete-target', baseURL), {
 		method: 'POST',
@@ -116,7 +116,7 @@ test('notification server rejects invalid signatures', async () => {
 	const baseURL = new URL(server.url);
 
 	// Invalid registerTarget signature
-	const registerSigned = await SignData(account.assertAccount(), getNotificationRegisterTargetRequestSignable({ channel }));
+	const registerSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/target', baseURL), body: { account: account.publicKeyString.get(), channel }}, getNotificationRegisterTargetRequestSignable({ channel }));
 
 	const badRegisterResponse = await fetch(new URL('/api/target', baseURL), {
 		method: 'POST',
@@ -132,7 +132,7 @@ test('notification server rejects invalid signatures', async () => {
 	expect(badRegisterResponse.status).toBeLessThan(600);
 
 	// Invalid listTargets signature
-	const listSigned = await SignData(account.assertAccount(), getNotificationListTargetsRequestSignable());
+	const listSigned = await signRequest(account.assertAccount(), { method: 'GET', url: new URL('/api/targets', baseURL) }, getNotificationListTargetsRequestSignable());
 	const badListURL = addSignatureToURL(new URL('/api/targets', baseURL), {
 		signedField: { ...listSigned, signature: 'invalid-signature' },
 		account: account.assertAccount()
@@ -147,7 +147,7 @@ test('notification server rejects invalid signatures', async () => {
 	expect(badListResponse.status).toBeLessThan(600);
 
 	// Invalid deleteTarget signature
-	const deleteSigned = await SignData(account.assertAccount(), getNotificationDeleteTargetRequestSignable({ id: 'some-id' }));
+	const deleteSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/delete-target', baseURL), body: { account: account.publicKeyString.get(), id: 'some-id' }}, getNotificationDeleteTargetRequestSignable({ id: 'some-id' }));
 
 	const badDeleteResponse = await fetch(new URL('/api/delete-target', baseURL), {
 		method: 'POST',
@@ -195,7 +195,7 @@ test('notification server creates, lists, and deletes subscriptions', async () =
 
 	// --- createSubscription ---
 	const createSignable = getNotificationCreateSubscriptionRequestSignable({ subscription });
-	const createSigned = await SignData(account.assertAccount(), createSignable);
+	const createSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/subscription', baseURL), body: { account: account.publicKeyString.get(), subscription }}, createSignable);
 
 	const createResponse = await fetch(new URL('/api/subscription', baseURL), {
 		method: 'POST',
@@ -217,7 +217,7 @@ test('notification server creates, lists, and deletes subscriptions', async () =
 
 	// --- listSubscriptions ---
 	const listSignable = getNotificationListSubscriptionsRequestSignable();
-	const listSigned = await SignData(account.assertAccount(), listSignable);
+	const listSigned = await signRequest(account.assertAccount(), { method: 'GET', url: new URL('/api/subscriptions', baseURL) }, listSignable);
 	const listURL = addSignatureToURL(new URL('/api/subscriptions', baseURL), { signedField: listSigned, account: account.assertAccount() });
 
 	const listResponse = await fetch(listURL, {
@@ -233,7 +233,7 @@ test('notification server creates, lists, and deletes subscriptions', async () =
 
 	// --- deleteSubscription ---
 	const deleteSignable = getNotificationDeleteSubscriptionRequestSignable({ id: subscriptionID });
-	const deleteSigned = await SignData(account.assertAccount(), deleteSignable);
+	const deleteSigned = await signRequest(account.assertAccount(), { method: 'POST', url: new URL('/api/delete-subscription', baseURL), body: { account: account.publicKeyString.get(), id: subscriptionID }}, deleteSignable);
 
 	const deleteResponse = await fetch(new URL('/api/delete-subscription', baseURL), {
 		method: 'POST',

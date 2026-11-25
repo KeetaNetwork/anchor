@@ -272,6 +272,10 @@ export default class KeetaAnchorQueueStorageDriverFirestore<QueueRequest extends
 
 		logger?.debug(`Querying queue with id ${this.id} with filter:`, filter);
 
+		/*
+		 * Oldest updated first, as the storage driver contract requires;
+		 * Firestore breaks ties by document name, which is the entry ID
+		 */
 		let query: Query<DocumentData> | CollectionReference<DocumentData> = collection.orderBy('updated');
 
 		if (filter?.status) {

@@ -4,7 +4,6 @@ import type {
 	ServiceSearchCriteria
 } from '../../lib/resolver.ts';
 import * as KeetaNet from '@keetanetwork/keetanet-client';
-import * as Signing from '../../lib/utils/signing.js';
 import {
 	KeetaAnchorUserError
 } from '../../lib/error.js';
@@ -263,13 +262,4 @@ export const Errors: {
 	 * Payment is required for the certificate
 	 */
 	PaymentRequired: KeetaKYCAnchorCertificatePaymentRequired
-}
-
-export async function generateSignedData(account: Signing.SignableAccount): Promise<{ nonce: string; timestamp: string; signature: string; }> {
-	return(await Signing.SignData(account, []));
-}
-
-export async function verifySignedData(request: Pick<KeetaKYCAnchorCreateVerificationRequest, 'account' | 'signed'>): Promise<boolean> {
-	const account = KeetaNet.lib.Account.fromPublicKeyString(request.account);
-	return(await Signing.VerifySignedData(account, [], request.signed));
 }

@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { KeetaNet } from '../../client/index.js';
 import KeetaNotificationAnchorClient from './client.js';
 import { KeetaNetNotificationAnchorHTTPServer } from './server.js';
@@ -7,6 +7,7 @@ import { createNodeAndClient } from '../../lib/utils/tests/node.js';
 import { buildCert, buildChain } from '../../lib/utils/tests/certificates.js';
 import { KeetaAnchorCertificateRequiredError } from '../../lib/error.js';
 import Resolver from '../../lib/resolver.js';
+import { MemoryReplayGuard } from '../../lib/http-server/replay-guard.js';
 
 const DEBUG = false;
 const logger = DEBUG ? console : undefined;
@@ -189,7 +190,7 @@ interface GatedNotificationFixture extends AsyncDisposable {
  * certificates for arbitrary accounts on the same node and a `makeCaller`
  * helper that builds a notification client bound to a given account.
  */
-async function setupGatedNotificationServer(seed: string | ArrayBuffer): Promise<GatedNotificationFixture> {
+async function setupGatedNotificationServer(seed: string | ArrayBuffer, replayGuard?: MemoryReplayGuard): Promise<GatedNotificationFixture> {
 	const providerAccount = KeetaNet.lib.Account.fromSeed(seed, 0);
 	const nodeAndClient = await createNodeAndClient(providerAccount);
 
@@ -210,7 +211,8 @@ async function setupGatedNotificationServer(seed: string | ArrayBuffer): Promise
 			supportedChannels: { FCM: [] },
 			supportedSubscriptions: ['RECEIVE_FUNDS']
 		},
-		requireCertificateChain: { trustedIssuers: [rootCA], client: client.client }
+		requireCertificateChain: { trustedIssuers: [rootCA], client: client.client },
+		replayGuard
 	});
 
 	await server.start();
@@ -258,6 +260,39 @@ test('notification cert-gate: account without published cert is rejected (401 mi
 	});
 }, 20_000);
 
+test('notification cert-gate: a caller without a cert spends no request nonce', async function() {
+	/*
+	 * The guard holds a single live nonce, so the certified request at
+	 * the end is accepted only if none of the refused requests before it
+	 * claimed one.
+	 */
+	const seed = KeetaNet.lib.Account.generateRandomSeed();
+	await using gate = await setupGatedNotificationServer(seed, new MemoryReplayGuard({ maxEntries: 1 }));
+
+	const noCertAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const registerWithoutCert = await gate.makeCaller(noCertAccount);
+	for (let attempt = 0; attempt < 3; attempt++) {
+		await expect(registerWithoutCert()).rejects.toSatisfy(KeetaAnchorCertificateRequiredError.isInstance.bind(KeetaAnchorCertificateRequiredError));
+	}
+
+	const certifiedAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	const { leaf } = await buildChain({
+		rootIssuer: KeetaNet.lib.Account.fromSeed(seed, 200),
+		leafSubject: certifiedAccount
+	});
+	const certifiedUserClient = new KeetaNet.UserClient({
+		client: gate.client.client,
+		signer: certifiedAccount,
+		usePublishAid: false,
+		network: gate.client.network,
+		networkAlias: 'test'
+	});
+	await certifiedUserClient.modifyCertificate(KeetaNet.lib.Block.AdjustMethod.ADD, leaf, null);
+
+	const registerWithCert = await gate.makeCaller(certifiedAccount);
+	await expect(registerWithCert()).resolves.toEqual({ id: 'ok' });
+}, 20_000);
+
 test('notification cert-gate: account with cert outside trust set is rejected (403 untrusted)', async () => {
 	await using gate = await setupGatedNotificationServer(KeetaNet.lib.Account.generateRandomSeed());
 
@@ -281,3 +316,92 @@ test('notification cert-gate: account with cert outside trust set is rejected (4
 		return(KeetaAnchorCertificateRequiredError.isInstance(error) && error.kind === 'untrusted' && error.statusCode === 403);
 	});
 }, 20_000);
+
+test('a signed notification request is accepted once, and only by the anchor it was made for', async function() {
+	const rootAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+	await using nodeAndClient = await createNodeAndClient(rootAccount);
+	const client = nodeAndClient.userClient;
+	const userAccount = KeetaNet.lib.Account.fromSeed(KeetaNet.lib.Account.generateRandomSeed(), 0);
+
+	function makeServer(targets: Map<string, unknown>) {
+		return(new KeetaNetNotificationAnchorHTTPServer({
+			logger,
+			notification: {
+				async registerTarget({ channel }) {
+					const id = String(targets.size + 1);
+					targets.set(id, channel);
+					return({ id });
+				},
+				async listTargets() {
+					return({ targets: [] });
+				},
+				supportedChannels: { FCM: [{ projectId: 'p', messagingSenderId: 'm', appId: 'hello', apiKey: 'k' }] },
+				supportedSubscriptions: []
+			}
+		}));
+	}
+
+	const targetsA = new Map<string, unknown>();
+	const targetsB = new Map<string, unknown>();
+	await using serverA = makeServer(targetsA);
+	await using serverB = makeServer(targetsB);
+	await serverA.start();
+	await serverB.start();
+
+	await client.setInfo({
+		description: '', name: '',
+		metadata: Resolver.Metadata.formatMetadata({
+			version: 1,
+			currencyMap: {},
+			services: {
+				notification: { A: await serverA.serviceMetadata(), B: await serverB.serviceMetadata() }
+			}
+		})
+	});
+
+	const notificationClient = new KeetaNotificationAnchorClient(client, { root: rootAccount, account: userAccount, logger });
+	const providerA = asNonNull(await notificationClient.getProvider('A'));
+
+	/* Record the exact requests the client sends to anchor A */
+	const sent: { url: string; body: string | undefined }[] = [];
+	const realFetch = globalThis.fetch;
+	const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async function(input, init) {
+		const body = typeof init?.body === 'string' ? init.body : undefined;
+		sent.push({ url: (input instanceof Request ? input.url : input.toString()), body });
+		return(await realFetch(input, init));
+	});
+	try {
+		await providerA.registerTarget({ account: userAccount, channel: { type: 'FCM', fcmToken: 'device-token', appId: 'hello' }});
+		await providerA.listTargets({ account: userAccount });
+	} finally {
+		spy.mockRestore();
+	}
+	expect(targetsA.size).toBe(1);
+
+	const register = sent.find(function(entry) { return(entry.body !== undefined); });
+	const list = sent.find(function(entry) { return(entry.body === undefined); });
+	if (register === undefined || list === undefined) {
+		throw(new Error('Expected a register and a list request'));
+	}
+
+	async function replay(url: URL, body?: string): Promise<number> {
+		const response = await realFetch(url, body === undefined ? { method: 'GET' } : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+		await response.arrayBuffer();
+		return(response.status);
+	}
+
+	function atServer(url: string, server: { url: string }): URL {
+		const original = new URL(url);
+		return(new URL(`${original.pathname}${original.search}`, server.url));
+	}
+
+	/* The same request again, at the same anchor */
+	expect(await replay(new URL(register.url), register.body)).not.toBe(200);
+	expect(await replay(new URL(list.url))).not.toBe(200);
+	expect(targetsA.size).toBe(1);
+
+	/* The same request at another anchor */
+	expect(await replay(atServer(register.url, serverB), register.body)).not.toBe(200);
+	expect(await replay(atServer(list.url, serverB))).not.toBe(200);
+	expect(targetsB.size).toBe(0);
+}, 30_000);
