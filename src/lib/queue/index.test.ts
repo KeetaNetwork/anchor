@@ -20,6 +20,7 @@ import type {
 	KeetaAnchorPipeableQueueStatus
 } from './index.ts';
 import { Errors } from './common.js';
+import { ConvertStringToRequestID } from './internal.js';
 
 import * as os from 'os';
 import * as path from 'path';
@@ -889,6 +890,42 @@ test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
 	}
 });
 
+
+test('Maintenance writes the runner lock only to release a stale lock', async function() {
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'runner-lock-maintain-test',
+		logger: logger
+	});
+
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string }, string>({
+		id: 'runner-lock-maintain-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function() {
+			return({ status: 'completed', output: null });
+		}
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 1, processTimeout: 50, maxRetries: 3, stuckMultiplier: 2 });
+
+	const lockID = ConvertStringToRequestID('@runner-lock:9ba756f0-7aa2-41c7-a1ea-b010dc752ae8.worker.0');
+	await runner.maintain();
+
+	const setStatus = vi.spyOn(queue, 'setStatus');
+	await runner.maintain();
+	expect(setStatus).not.toHaveBeenCalled();
+
+	await queue.setStatus(lockID, 'processing', { oldStatus: '@internal' });
+	setStatus.mockClear();
+	await runner.maintain();
+	expect(setStatus).not.toHaveBeenCalled();
+	expect((await queue.get(lockID))?.status).toBe('processing');
+
+	await asleep(150);
+	await runner.maintain();
+	expect(setStatus).toHaveBeenCalledTimes(1);
+	expect((await queue.get(lockID))?.status).toBe('@internal');
+});
 
 test('A processor that throws or times out keeps the stored output', async function() {
 	await using queue = new KeetaAnchorQueueStorageDriverMemory({

@@ -1106,21 +1106,16 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 	private async maintainRunnerLock(): Promise<void> {
 		const logger = this.methodLogger('maintainRunnerLock');
 		const moment = new Date();
-		await using cleanup = new AsyncDisposableStack();
 
-		const obtained = await this.getRunnerLock(cleanup);
-		if (obtained) {
-			return;
-		}
-
-		/**
-		 * Check to see if the lock is stale
+		/*
+		 * Read the lock and write only to release a stale one, so an
+		 * idle runner's maintenance costs one read
 		 */
 		const lockEntry = await this.queue.get(this.runnerLockKey);
-
-		if (!lockEntry) {
+		if (lockEntry?.status !== 'processing') {
 			return;
 		}
+
 		const lockAge = moment.getTime() - lockEntry.updated.getTime();
 		if (lockAge > this.processTimeout * this.stuckMultiplier) {
 			logger?.warn('Processing lock is stale, taking over lock for worker ID', this.workerID);
