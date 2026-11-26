@@ -1185,7 +1185,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 		const processJob = async (entry: KeetaAnchorQueueEntry<QueueRequest, QueueResult>, startingStatus: KeetaAnchorQueueStatus, claimed: boolean, processor: EntryProcessor): Promise<typeof processJobOk | typeof processJobContended> => {
 			await this.updateRunnerLockTimestamp();
 
-			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null; error?: string | undefined; } = { status: 'failed_temporarily', output: null };
+			/*
+			 * An undefined output leaves the stored output as it is, so a
+			 * processor that throws or times out does not erase the output
+			 * of an earlier run
+			 */
+			let setEntryStatus: { status: KeetaAnchorQueueStatus; output: UserResult | null | undefined; error?: string | undefined; } = { status: 'failed_temporarily', output: undefined };
 
 			logger?.debug(`Trying to acquire process lock for entry request with id ${String(entry.id)}`);
 
@@ -1212,9 +1217,9 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 				 */
 				let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 				setEntryStatus = await Promise.race([
-					new Promise<{ status: 'aborted', output: null }>(function(resolve) {
+					new Promise<{ status: 'aborted', output: undefined }>(function(resolve) {
 						timeoutTimer = setTimeout(function() {
-							resolve({ status: 'aborted', output: null });
+							resolve({ status: 'aborted', output: undefined });
 						}, processTimeout);
 					}),
 					(async () => {
@@ -1262,7 +1267,12 @@ export abstract class KeetaAnchorQueueRunner<UserRequest = unknown, UserResult =
 
 			logger?.info(`Finished processing entry request with id ${String(entry.id)} with new status`, setEntryStatus.status);
 
-			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: this.encodeResponse(setEntryStatus.output), error: setEntryStatus.error });
+			let encodedOutput: QueueResult | null | undefined;
+			if (setEntryStatus.output !== undefined) {
+				encodedOutput = this.encodeResponse(setEntryStatus.output);
+			}
+
+			await this.queue.setStatus(entry.id, setEntryStatus.status, { oldStatus: 'processing', by: by, output: encodedOutput, error: setEntryStatus.error });
 
 			return(processJobOk);
 		};

@@ -890,6 +890,51 @@ test('Queue Runner Aborted and Stuck Jobs Helpers Tests', async function() {
 });
 
 
+test('A processor that throws or times out keeps the stored output', async function() {
+	await using queue = new KeetaAnchorQueueStorageDriverMemory({
+		id: 'keep-output-test',
+		logger: logger
+	});
+
+	let mode: 'save' | 'throw' | 'timeout' = 'save';
+	await using runner = new KeetaAnchorQueueRunnerJSONConfigProc<{ key: string }, string>({
+		id: 'keep-output-test-runner',
+		queue: queue,
+		logger: logger,
+		processor: async function() {
+			if (mode === 'throw') {
+				throw(new Error('Processing error'));
+			}
+
+			if (mode === 'timeout') {
+				await asleep(500);
+			}
+
+			return({ status: 'pending', output: 'saved state' });
+		}
+	});
+
+	runner._Testing(TestingKey).setParams({ batchSize: 1, processTimeout: 50, maxRetries: 10, retryDelay: 0 });
+
+	const id = await runner.add({ key: 'keep-output' });
+
+	await runner.run();
+	expect((await runner.get(id))?.output).toBe('saved state');
+
+	mode = 'throw';
+	await runner.run();
+	const thrown = await runner.get(id);
+	expect(thrown?.status).toBe('failed_temporarily');
+	expect(thrown?.output).toBe('saved state');
+
+	await queue.setStatus(id, 'pending', { oldStatus: 'failed_temporarily' });
+	mode = 'timeout';
+	await runner.run();
+	const aborted = await runner.get(id);
+	expect(aborted?.status).toBe('aborted');
+	expect(aborted?.output).toBe('saved state');
+});
+
 for (const singleWorkerID of [true, false]) {
 	let mode = 'Multiple Workers IDs';
 	let name = 'multiworker';
