@@ -1861,14 +1861,14 @@ test('FX Server Pricing test', async function() {
 		if (!gbpResult) {
 			throw(new Error('No result for GBP'));
 		}
-		expect(gbpResult.averageConvertedAmount).toBe(12500);
+		expect(gbpResult.averageConvertedAmount).toBe(12500n);
 		expect(gbpResult.providerMarketPrices.length + gbpResult.providerEstimates.length).toBe(1);
 
 		const usdResult = retval.get(testCurrencyUSD);
 		if (!usdResult) {
 			throw(new Error('No result for USD'));
 		}
-		expect(usdResult.averageConvertedAmount).toBe(10025);
+		expect(usdResult.averageConvertedAmount).toBe(10025n);
 		expect(usdResult.providerMarketPrices.length + usdResult.providerEstimates.length).toBe(2);
 	}
 
@@ -1878,7 +1878,7 @@ test('FX Server Pricing test', async function() {
 			arguments: GetPricesArgs<keyof typeof currencyMap | TokenAddress>;
 			expected: {
 				asset: keyof typeof currencyMap | TokenAddress;
-				average: number;
+				average: bigint;
 				providerCount: number;
 			}[]
 		}[] = [
@@ -1890,8 +1890,8 @@ test('FX Server Pricing test', async function() {
 					conversionAffinity: 'from'
 				},
 				expected: [
-					{ asset: 'GBP', average: 12500, providerCount: 1 },
-					{ asset: testCurrencyUSD, average: 10025, providerCount: 2 }
+					{ asset: 'GBP', average: 12500n, providerCount: 1 },
+					{ asset: testCurrencyUSD, average: 10025n, providerCount: 2 }
 				]
 			},
 			{
@@ -1902,7 +1902,8 @@ test('FX Server Pricing test', async function() {
 					conversionAffinity: 'to'
 				},
 				expected: [
-					{ asset: 'USD', average: 9975, providerCount: 2 }
+					// Rounded up: affinity "to" is the amount that has to be sent
+					{ asset: 'USD', average: 9976n, providerCount: 2 }
 				]
 			},
 			{
@@ -1921,8 +1922,8 @@ test('FX Server Pricing test', async function() {
 					conversionAffinity: 'from'
 				},
 				expected: [
-					{ asset: 'EUR', average: 9980, providerCount: 1 },
-					{ asset: 'GBP', average: 25553, providerCount: 3 }
+					{ asset: 'EUR', average: 9980n, providerCount: 1 },
+					{ asset: 'GBP', average: 25553n, providerCount: 3 }
 				]
 			}
 		];
@@ -1936,7 +1937,7 @@ test('FX Server Pricing test', async function() {
 				if (!result) {
 					throw(new Error(`No result for ${toJSONSerializable(expectedEntry.asset)}`));
 				}
-				expect(Math.round(result.averageConvertedAmount)).toBe(Math.round(expectedEntry.average));
+				expect(result.averageConvertedAmount).toBe(expectedEntry.average);
 				expect(result.providerMarketPrices.length + result.providerEstimates.length).toBe(expectedEntry.providerCount);
 			}
 		}
@@ -1956,14 +1957,14 @@ test('FX Server Pricing test', async function() {
 			quoteAssets: {
 				[usdString]: {
 					valueRatio: {
-						quote: '1000',
-						base: '1002'
+						quote: '1000000',
+						base: '1002000'
 					}
 				},
 				[gbpString]: {
 					valueRatio: {
-						quote: '1000',
-						base: '1250'
+						quote: '1000000',
+						base: '1250000'
 					}
 				}
 			}
@@ -2166,8 +2167,8 @@ test.each([
 		]));
 	}
 
-	expect(usdPrices.get(testCurrencyUSD)?.averageConvertedAmount).toBe(10020);
-	expect(gbpPrices.get(testCurrencyGBP)?.averageConvertedAmount).toBe(12500);
+	expect(usdPrices.get(testCurrencyUSD)?.averageConvertedAmount).toBe(10020n);
+	expect(gbpPrices.get(testCurrencyGBP)?.averageConvertedAmount).toBe(12500n);
 });
 
 test('FX Server Queue extensions', async function() {

@@ -150,13 +150,24 @@ export type KeetaFXAnchorEstimateResponse = ({
 	error: string;
 });
 
+/**
+ * An exchange rate between two tokens, in base units: `quote` base units of
+ * the quote (source) token are worth `base` base units of the base
+ * (destination) token. Both are non-negative integers as strings, so they
+ * carry each token's decimal places: a client converts with
+ * `amount * base / quote` on base-unit amounts. They are not whole-token
+ * prices and have no size limit.
+ *
+ * Example: 1 KTA (18 decimal places) is worth 0.44 USD (2 decimal places),
+ * so `{ quote: '1000000000000000000', base: '44' }` (or any equal fraction).
+ */
 export type KeetaFXAnchorMarketPriceRatio = {
 	/**
-	 * Amount of the base (destination) token in the price ratio
+	 * Amount of the base (destination) token in the price ratio, in base units
 	 */
 	base: string;
 	/**
-	 * Amount of the quote (source) token in the price ratio
+	 * Amount of the quote (source) token in the price ratio, in base units
 	 */
 	quote: string;
 };

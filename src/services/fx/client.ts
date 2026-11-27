@@ -1065,7 +1065,11 @@ interface GetProvidersOptions extends AccountOptions {
 
 interface GetPricesAssetReturnValue {
 	value: bigint;
-	averageConvertedAmount: number;
+	/**
+	 * The mean of every provider's converted amount, in base units of the
+	 * converted token. Rounded down for affinity "from" and up for "to".
+	 */
+	averageConvertedAmount: bigint;
 	providerMarketPrices: {
 		provider: KeetaFXAnchorProviderBase;
 		price: KeetaFXAnchorMarketPriceRatio;
@@ -1075,6 +1079,15 @@ interface GetPricesAssetReturnValue {
 
 function providerSupportsGetMarketPrices(provider: KeetaFXAnchorProviderBase): boolean {
 	return(Object.prototype.hasOwnProperty.call(provider.serviceInfo.operations, 'getMarketPrices'));
+}
+
+function divideRoundingUp(numerator: bigint, denominator: bigint): bigint {
+	const quotient = numerator / denominator;
+	if (numerator % denominator !== 0n) {
+		return(quotient + 1n);
+	}
+
+	return(quotient);
 }
 
 function convertUsingMarketPriceRatio(
@@ -1088,12 +1101,17 @@ function convertUsingMarketPriceRatio(
 		throw(new Error(`Invalid market price ratio: quote=${ratio.quote} base=${ratio.base}`));
 	}
 
+	/*
+	 * Round in the provider's favor, as estimates do: down for what is
+	 * received (affinity "from"), up for what has to be sent (affinity "to").
+	 */
 	if (affinity === 'from') {
 		return(conversionValue * base / quote);
 	}
 
-	return(conversionValue * quote / base);
+	return(divideRoundingUp(conversionValue * quote, base));
 }
+
 
 export interface GetPricesArgs<Asset extends ConversionInput['from']> {
 	assets: Asset[],
@@ -1736,7 +1754,7 @@ class KeetaFXAnchorClient extends KeetaFXAnchorBase {
 
 			retval.set(entry.asset, {
 				value: entry.conversionValue,
-				averageConvertedAmount: Number(convertedAmountSum) / providerCount,
+				averageConvertedAmount: affinity === 'from' ? convertedAmountSum / BigInt(providerCount) : divideRoundingUp(convertedAmountSum, BigInt(providerCount)),
 				providerMarketPrices,
 				providerEstimates
 			});
