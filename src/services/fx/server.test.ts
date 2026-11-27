@@ -1314,6 +1314,109 @@ test('getMarketPrices config controls cache, reference amount, and disable', asy
 	expect(disabledResponse.status).toBe(404);
 }, 30000);
 
+test('getMarketPrices scales the default reference amount until the price keeps its precision', async function() {
+	await using harness = await createFXTestHarness();
+	const { token1, token2, serverAccount, createServer } = harness;
+
+	const token1String = token1.publicKeyString.get();
+	const token2String = token2.publicKeyString.get();
+
+	/*
+	 * Like an 18 decimal place token priced in a 2 decimal place one at
+	 * 0.44: 1000 base units convert to 0, which used to drop the pair.
+	 */
+	const requestedAmounts: bigint[] = [];
+	await using scaledServer = createServer({
+		getMarketPrices: {},
+		getConversionRateAndFee: async function(request) {
+			const amount = BigInt(request.amount);
+			requestedAmounts.push(amount);
+			if (amount > 10n ** 30n) {
+				throw(new Error('amount above provider limit'));
+			}
+
+			return({
+				account: serverAccount,
+				convertedAmount: amount * 44n / (10n ** 18n),
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await scaledServer.start();
+	const response = await fetch(`${scaledServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(response.status).toBe(200);
+	expect(await response.json()).toEqual({
+		ok: true,
+		base: token2String,
+		quoteAssets: {
+			[token1String]: {
+				valueRatio: {
+					quote: (10n ** 24n).toString(),
+					base: '44000000'
+				}
+			}
+		}
+	});
+	expect(requestedAmounts).toEqual([10n ** 3n, 10n ** 6n, 10n ** 9n, 10n ** 12n, 10n ** 15n, 10n ** 18n, 10n ** 21n, 10n ** 24n]);
+
+	/*
+	 * When the provider rejects a larger amount, the last good ratio is
+	 * used, even below the precision target.
+	 */
+	requestedAmounts.length = 0;
+	await using limitedServer = createServer({
+		getMarketPrices: {},
+		getConversionRateAndFee: async function(request) {
+			const amount = BigInt(request.amount);
+			requestedAmounts.push(amount);
+			if (amount > 10n ** 18n) {
+				throw(new Error('amount above provider limit'));
+			}
+
+			return({
+				account: serverAccount,
+				convertedAmount: amount * 44n / (10n ** 18n),
+				cost: {
+					amount: 0n,
+					token: token1
+				}
+			});
+		}
+	});
+
+	await limitedServer.start();
+	const limitedResponse = await fetch(`${limitedServer.url}/api/getMarketPrices?quoteAssets=${encodeURIComponent(token1String)}&base=${encodeURIComponent(token2String)}`, {
+		method: 'GET',
+		headers: {
+			'Accept': 'application/json'
+		}
+	});
+
+	expect(await limitedResponse.json()).toEqual({
+		ok: true,
+		base: token2String,
+		quoteAssets: {
+			[token1String]: {
+				valueRatio: {
+					quote: (10n ** 18n).toString(),
+					base: '44'
+				}
+			}
+		}
+	});
+	expect(requestedAmounts.at(-1)).toBe(10n ** 21n);
+}, 30000);
+
 test('getMarketPrices omits or throws failed quote assets based on onQuoteError', async function() {
 	await using harness = await createFXTestHarness();
 	const { token1, token2, serverAccount, serverClient, createServer } = harness;
@@ -1363,8 +1466,8 @@ test('getMarketPrices omits or throws failed quote assets based on onQuoteError'
 		quoteAssets: {
 			[token1String]: {
 				valueRatio: {
-					quote: '1000',
-					base: '2000'
+					quote: '1000000',
+					base: '2000000'
 				}
 			}
 		}

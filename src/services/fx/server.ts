@@ -94,6 +94,26 @@ function getPostRequest(postData: unknown): unknown {
 const PARANOID = true;
 
 /**
+ * Starting reference amount, in quote asset base units, for prices derived
+ * from estimates when no `referenceAmount` is configured.
+ */
+const MARKET_PRICE_DEFAULT_REFERENCE_AMOUNT = 1000n;
+
+/**
+ * Smallest converted amount, in base asset base units, that a derived
+ * price aims for: about six significant digits.
+ */
+export const MARKET_PRICE_MINIMUM_CONVERTED_AMOUNT = 1_000_000n;
+
+const MARKET_PRICE_SCALE_FACTOR = 1000n;
+
+/**
+ * Up to 1000 * 1000^12 = 10^39 base units, enough for an 18 decimal
+ * place quote asset priced in a 0 decimal place base asset.
+ */
+const MARKET_PRICE_MAX_SCALE_STEPS = 12;
+
+/**
  * Controls Cache-Control for GET /api/getMarketPrices responses.
  */
 export type KeetaFXAnchorMarketPricesCacheControl = {
@@ -122,8 +142,16 @@ export type KeetaFXAnchorMarketPricesConfig = {
 	cacheControl?: KeetaFXAnchorMarketPricesCacheControl;
 
 	/**
-	 * Reference quote amount used when deriving prices from estimate
-	 * rate data. Defaults to `1000n`. Ignored when `get` is provided.
+	 * Reference quote amount, in base units of the quote asset, used
+	 * when deriving prices from estimate rate data. Ignored when `get`
+	 * is provided.
+	 *
+	 * When set, the estimate for exactly this amount becomes the ratio.
+	 * When omitted, the server starts at `1000n` and multiplies the
+	 * amount by 1000 until the converted amount has at least
+	 * {@link MARKET_PRICE_MINIMUM_CONVERTED_AMOUNT} base units, so
+	 * pairs with very different decimal places (e.g. 18 to 2) do not
+	 * round to zero.
 	 */
 	referenceAmount?: bigint;
 
@@ -1357,17 +1385,38 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			return(await config.get(request));
 		}
 
-		const referenceAmount = config.referenceAmount ?? 1000n;
 		const onQuoteError = config.onQuoteError ?? 'omit';
+		const estimate = async (quoteAsset: typeof request.quoteAssets[number], amount: bigint) => {
+			const rateAndFee = await this.getUnsignedQuoteData({
+				from: quoteAsset,
+				to: request.base,
+				amount: amount.toString(),
+				affinity: 'from'
+			}, 'estimate');
+
+			return({ referenceAmount: amount, convertedAmount: rateAndFee.convertedAmount });
+		};
+
 		const quoteAssetEntries = await Promise.all(request.quoteAssets.map(async (quoteAsset) => {
-			let rateAndFee;
+			let ratio;
 			try {
-				rateAndFee = await this.getUnsignedQuoteData({
-					from: quoteAsset,
-					to: request.base,
-					amount: referenceAmount.toString(),
-					affinity: 'from'
-				}, 'estimate');
+				if (config.referenceAmount !== undefined) {
+					ratio = await estimate(quoteAsset, config.referenceAmount);
+				} else {
+					ratio = await estimate(quoteAsset, MARKET_PRICE_DEFAULT_REFERENCE_AMOUNT);
+					for (let step = 0; step < MARKET_PRICE_MAX_SCALE_STEPS && ratio.convertedAmount < MARKET_PRICE_MINIMUM_CONVERTED_AMOUNT; step++) {
+						try {
+							ratio = await estimate(quoteAsset, ratio.referenceAmount * MARKET_PRICE_SCALE_FACTOR);
+						} catch (error) {
+							/*
+							 * A larger amount can fall outside the
+							 * provider's limits; keep the last good ratio.
+							 */
+							this.logger.debug('GET /api/getMarketPrices', `Stopped scaling reference amount for quote asset ${quoteAsset} against base ${request.base}:`, error);
+							break;
+						}
+					}
+				}
 			} catch (error) {
 				this.logger.error('GET /api/getMarketPrices', `Failed to derive price for quote asset ${quoteAsset} against base ${request.base}:`, error);
 				if (onQuoteError === 'throw') {
@@ -1376,8 +1425,9 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 				return(null);
 			}
 
-			if (referenceAmount === 0n || rateAndFee.convertedAmount === 0n) {
-				const error = new Error(`Invalid market price ratio for quote asset ${quoteAsset} against base ${request.base}: quote=${referenceAmount.toString()} base=${rateAndFee.convertedAmount.toString()}`);
+			const { referenceAmount, convertedAmount } = ratio;
+			if (referenceAmount === 0n || convertedAmount === 0n) {
+				const error = new Error(`Invalid market price ratio for quote asset ${quoteAsset} against base ${request.base}: quote=${referenceAmount.toString()} base=${convertedAmount.toString()}`);
 				this.logger.error('GET /api/getMarketPrices', error.message);
 				if (onQuoteError === 'throw') {
 					throw(error);
@@ -1388,7 +1438,7 @@ abstract class BaseKeetaNetFXAnchorHTTPServer<ConfigType extends SharedHTTPServe
 			return([quoteAsset, {
 				valueRatio: {
 					quote: referenceAmount.toString(),
-					base: rateAndFee.convertedAmount.toString()
+					base: convertedAmount.toString()
 				}
 			}] as const);
 		}));
